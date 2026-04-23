@@ -1,0 +1,11 @@
+[Unit]
+Description=Plow PR reviewer kid index refresh (hourly at :30)
+
+[Timer]
+OnCalendar=*:30
+Persistent=false
+AccuracySec=10s
+Unit=pr-reviewer-kid-refresh.service
+
+[Install]
+WantedBy=timers.target

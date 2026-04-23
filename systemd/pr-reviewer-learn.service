@@ -1,0 +1,28 @@
+[Unit]
+Description=Plow PR reviewer — learn-from-replies (tune guidance files from author pushback)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=odio
+Group=odio
+WorkingDirectory=/home/odio/.pr-reviewer
+Environment=HOME=/home/odio
+Environment=PATH=/home/odio/.local/bin:/home/odio/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/home/odio/.pr-reviewer/learn-from-replies.sh
+TimeoutStartSec=15min
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pr-reviewer-learn
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectHome=read-only
+ReadWritePaths=/home/odio/.pr-reviewer /home/odio/.codex /home/odio/.claude /home/odio/.cache /home/odio/.local /home/odio/.config
+
+[Install]
+WantedBy=multi-user.target

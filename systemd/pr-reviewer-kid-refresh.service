@@ -1,0 +1,28 @@
+[Unit]
+Description=Plow PR reviewer — refresh plow-kid mirror + re-index for semantic search
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=odio
+Group=odio
+WorkingDirectory=/home/odio/.pr-reviewer
+Environment=HOME=/home/odio
+Environment=PATH=/home/odio/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/odio/.pr-reviewer/plow-kid-refresh.sh
+TimeoutStartSec=20min
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pr-reviewer-kid-refresh
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectHome=read-only
+ReadWritePaths=/home/odio/.pr-reviewer /home/odio/Hacking/plow-kid /home/odio/.cache /home/odio/.local /home/odio/.config
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,11 @@
+[Unit]
+Description=Plow PR reviewer learn-from-replies (hourly at :00)
+
+[Timer]
+OnCalendar=*:00
+Persistent=false
+AccuracySec=10s
+Unit=pr-reviewer-learn.service
+
+[Install]
+WantedBy=timers.target
