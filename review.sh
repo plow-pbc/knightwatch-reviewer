@@ -253,7 +253,7 @@ ${TEST_TAIL}
         SPECIALISTS_DIR="$REPO_DIR/.codex-scratch/specialists"
         mkdir -p "$SPECIALISTS_DIR"
 
-        log "$PR_ID: launching 4 specialists in parallel..."
+        log "$PR_ID: launching 5 specialists in parallel..."
 
         for angle in security data-integrity architecture simplification tests; do
             PROMPT=$(build_specialist_prompt \
@@ -283,7 +283,7 @@ ${TEST_TAIL}
             continue
         fi
 
-        log "$PR_ID: all 4 specialists completed"
+        log "$PR_ID: all 5 specialists completed"
 
         for angle in security data-integrity architecture simplification tests; do
             LINES=$(wc -l < "$SPECIALISTS_DIR/${angle}.md")
