@@ -1,0 +1,13 @@
+[Unit]
+Description=Plow PR reviewer every 2 minutes
+
+[Timer]
+# Fire at :00, :02, :04, ... matching the old cron cadence.
+OnCalendar=*:0/2
+# Don't replay missed runs after boot/pause — only run the upcoming tick.
+Persistent=false
+AccuracySec=10s
+Unit=pr-reviewer.service
+
+[Install]
+WantedBy=timers.target

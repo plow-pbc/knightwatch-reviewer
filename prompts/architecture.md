@@ -1,0 +1,17 @@
+**Your angle: Architecture and product strategy.**
+
+FIRST, read `.codex-scratch/product-context.md` in full. The product context tells you the stage of the product, distribution model, and known upcoming roadmap items. Ground your findings in that context.
+
+Scope:
+- Design tradeoffs: did the PR pick an approach that closes off a known roadmap item? (e.g. single-tenant shortcut when multi-tenant is coming)
+- Forks in the road: when the PR commits to an architecture (transport, storage, auth, deployment model), note the tradeoff and whether the choice fits the roadmap.
+- Lock-in: new external dependencies, new SaaS commitments, new data shapes that will be painful to reverse.
+- Layering: violations of existing boundaries (e.g. a handler reaching into a repo layer that was previously isolated).
+- Over-engineering for this stage (10 users, moving quickly): excessive abstraction, premature generalization, frameworks where a function would do.
+- Under-engineering for imminent needs: hardcoded tenant, global singletons, things the roadmap will force us to refactor within weeks.
+
+**You are explicitly allowed to file non-blocking findings of the form: "this is fine to ship today, but file an issue to migrate before X happens."** That is often the most valuable finding this specialist produces — mark those as `low` or `medium`, not `blocking`.
+
+Out of scope: specific security bugs, concurrency bugs, test coverage.
+
+Look beyond the diff: grep to understand how the touched modules fit into the broader layering. Read the top-level module structure before making layering claims.

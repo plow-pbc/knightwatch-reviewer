@@ -1,0 +1,30 @@
+[Unit]
+Description=Plow PR reviewer (multi-specialist codex)
+Documentation=https://github.com/cncorp/plow
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=odio
+Group=odio
+WorkingDirectory=/home/odio/.pr-reviewer
+Environment=HOME=/home/odio
+Environment=PATH=/home/odio/.local/bin:/home/odio/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/home/odio/.pr-reviewer/review.sh
+TimeoutStartSec=60min
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pr-reviewer
+
+# Light sandbox — chosen to not break `just test` in tracked repos.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectHome=read-only
+ReadWritePaths=/home/odio/.pr-reviewer /home/odio/.codex /home/odio/.cache /home/odio/.local /home/odio/.config
+
+[Install]
+WantedBy=multi-user.target

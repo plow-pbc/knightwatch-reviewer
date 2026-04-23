@@ -205,3 +205,20 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Runtime artifacts (only present if the repo is used as the STATE_DIR itself).
+# In normal installs, state lives in ~/.pr-reviewer/ and doesn't touch this tree.
+state.json
+state.json.bak
+reviewed.txt
+reviewed.txt.bak
+replies-seen.json
+repos/
+last-run-scratch/
+review.log*
+cron.log*
+learn.log*
+*-index.log
+*.cron.log
+plow-kid-refresh.log
+kid-last-failure
