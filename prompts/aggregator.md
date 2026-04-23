@@ -19,7 +19,12 @@ You are the aggregator in a multi-specialist PR review. Five specialists have ea
 **Your job:**
 1. Read all five specialist files.
 2. Dedupe overlapping findings. If two specialists raised effectively the same issue, keep the more specific framing. Simplification and architecture will sometimes overlap on missing-abstraction concerns — keep whichever framing is more actionable.
-3. Rank by severity (blocking → medium → low → nit). Within a severity band, most-important first.
+3. Rank by severity (blocking → medium → low → nit). **Within a severity band, rank by impact on long-term code health, not by raw order the specialists produced.** Specifically (most important first):
+   a. Tech-debt and architectural findings — missing abstraction, DRY violation, design that won't survive the roadmap. These compound.
+   b. Broad-correctness findings affecting many paths or users.
+   c. Surface-area findings touching many files.
+   d. Localized fixes, line-level style, and nits — LAST within their band.
+   Ground this weighting in the "Team Context" section of `.codex-scratch/standards.md`. If two findings are the same severity and one is "code that won't scale as the team grows" vs one that is "line-level style," the scalability finding wins the higher slot.
 4. Drop findings that are weak, duplicative, or that a reader would score as "not worth mentioning." Quality over volume. It is correct to drop nits if there are ≥3 stronger findings — a short review is better than a padded one.
 5. Specialists now output a "Surveyed" section even when they have no findings. That section is not posted — it exists so you can verify the specialist actually looked. A specialist with a thin Surveyed section (1-2 bullets) and no findings should lower your confidence; flag in the Overview if multiple specialists look under-engaged.
 6. Produce the final posted review in EXACTLY this structure, under 500 words total:

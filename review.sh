@@ -179,6 +179,8 @@ ${TEST_TAIL}
 \`\`\`"
 
         STANDARDS=""
+        [ -f ~/.claude/CODING_STANDARDS.md ]     && STANDARDS+=$(cat ~/.claude/CODING_STANDARDS.md)
+        STANDARDS+=$'\n\n'
         [ -f ~/.claude/REVIEW_PRACTICES.md ]     && STANDARDS+=$(cat ~/.claude/REVIEW_PRACTICES.md)
         STANDARDS+=$'\n\n'
         [ -f ~/.claude/TESTING.md ]              && STANDARDS+=$(cat ~/.claude/TESTING.md)
