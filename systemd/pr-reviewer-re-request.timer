@@ -1,0 +1,12 @@
+[Unit]
+Description=Plow PR reviewer re-request poller (every 2 minutes, staggered from main reviewer)
+
+[Timer]
+# Odd-minute cadence so we don't overlap with the main reviewer's :0/2 schedule.
+OnCalendar=*:1/2
+Persistent=false
+AccuracySec=10s
+Unit=pr-reviewer-re-request.service
+
+[Install]
+WantedBy=timers.target
