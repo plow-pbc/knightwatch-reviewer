@@ -277,6 +277,37 @@ ${TEST_TAIL}
         done < <(git -C "$REPO_DIR" diff --name-only "$DEFAULT_BRANCH"...HEAD 2>/dev/null | head -30)
         write_scratch "$REPO_DIR" "file-history.md" "${FILE_HISTORY:-(no touched files)}"
 
+        # Pre-compute author intent: the PR's own description plus any linked
+        # issues. Helps distinguish "author missed the invariant" from "author
+        # is deliberately changing documented behavior."
+        PR_DATA=$(gh pr view "$PR_NUM" --repo "$REPO" --json title,body,closingIssuesReferences 2>/dev/null)
+        AUTHOR_INTENT="## PR Title
+$(printf '%s' "$PR_DATA" | jq -r '.title // empty')
+
+## PR Description (author's own explanation)
+
+$(printf '%s' "$PR_DATA" | jq -r '.body // "(no description provided)"')
+"
+        # Expand closing-issue references (issues this PR claims to close).
+        # Cap at 5 to avoid runaway bodies on PRs that close many issues.
+        ISSUE_COUNT=0
+        while IFS=$'\t' read -r IS_OWNER IS_NAME IS_NUM; do
+            [ -z "$IS_NUM" ] && continue
+            [ "$ISSUE_COUNT" -ge 5 ] && break
+            ISSUE_DATA=$(gh issue view "$IS_NUM" --repo "$IS_OWNER/$IS_NAME" --json title,body 2>/dev/null)
+            IS_TITLE=$(printf '%s' "$ISSUE_DATA" | jq -r '.title // empty')
+            IS_BODY=$(printf '%s' "$ISSUE_DATA" | jq -r '.body // empty')
+            if [ -n "$IS_TITLE" ]; then
+                [ "$ISSUE_COUNT" -eq 0 ] && AUTHOR_INTENT+=$'\n## Linked issues (this PR closes)\n\n'
+                AUTHOR_INTENT+="### $IS_OWNER/$IS_NAME#$IS_NUM: $IS_TITLE
+$IS_BODY
+
+"
+                ISSUE_COUNT=$((ISSUE_COUNT+1))
+            fi
+        done < <(printf '%s' "$PR_DATA" | jq -r '.closingIssuesReferences[]? | [.owner.login, .repo.name, (.number|tostring)] | @tsv' 2>/dev/null)
+        write_scratch "$REPO_DIR" "author-intent.md" "$AUTHOR_INTENT"
+
         PR_URL="https://github.com/$REPO/pull/$PR_NUM"
         SPECIALISTS_DIR="$REPO_DIR/.codex-scratch/specialists"
         mkdir -p "$SPECIALISTS_DIR"
@@ -320,25 +351,60 @@ ${TEST_TAIL}
             log "$PR_ID: specialist=$angle lines=$LINES$NO_FINDINGS"
         done
 
-        log "$PR_ID: running aggregator..."
-
-        AGG_PROMPT=$(build_specialist_prompt \
+        # ========== Stage 1 of 3: aggregator DRAFT ==========
+        log "$PR_ID: aggregator draft..."
+        AGG_DRAFT_PROMPT=$(build_specialist_prompt \
             "aggregator" \
             "$HOME/.pr-reviewer/prompts/aggregator.md" \
             "$PR_ID" "$PR_TITLE" "$PR_URL")
-
-        AGG_OUT="$REPO_DIR/.codex-scratch/aggregator-output.md"
+        AGG_DRAFT_OUT="$REPO_DIR/.codex-scratch/aggregator-draft.md"
         codex exec \
             -C "$REPO_DIR" \
             --dangerously-bypass-approvals-and-sandbox \
             -c model_reasoning_effort=high \
-            -o "$AGG_OUT" \
-            "$AGG_PROMPT" \
+            -o "$AGG_DRAFT_OUT" \
+            "$AGG_DRAFT_PROMPT" \
             >> "$LOG_FILE" 2>&1
-        AGG_EXIT=$?
 
-        if [ "$AGG_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
-            log "$PR_ID: aggregator failed (exit $AGG_EXIT) or empty output — aborting"
+        if [ ! -s "$AGG_DRAFT_OUT" ]; then
+            log "$PR_ID: aggregator draft failed or empty — aborting"
+            preserve_scratch "$REPO_DIR" "$(echo "$PR_ID" | tr "/#" "__")"
+            rm -f "$LOCK_FILE"
+            continue
+        fi
+
+        # ========== Stage 2 of 3: critic pass ==========
+        log "$PR_ID: critic pass..."
+        CRITIC_PROMPT=$(cat "$HOME/.pr-reviewer/prompts/critic.md")
+        CRITIC_OUT="$REPO_DIR/.codex-scratch/critic.md"
+        codex exec \
+            -C "$REPO_DIR" \
+            --dangerously-bypass-approvals-and-sandbox \
+            -c model_reasoning_effort=high \
+            -o "$CRITIC_OUT" \
+            "$CRITIC_PROMPT" \
+            >> "$LOG_FILE" 2>&1
+
+        AGG_OUT="$REPO_DIR/.codex-scratch/aggregator-output.md"
+
+        # ========== Stage 3 of 3: reviser — or skip if critic was silent ==========
+        if [ -s "$CRITIC_OUT" ] && ! grep -q "All findings survive scrutiny. No missed findings identified." "$CRITIC_OUT"; then
+            log "$PR_ID: critic raised counterarguments — running reviser..."
+            REVISER_PROMPT=$(cat "$HOME/.pr-reviewer/prompts/reviser.md")
+            codex exec \
+                -C "$REPO_DIR" \
+                --dangerously-bypass-approvals-and-sandbox \
+                -c model_reasoning_effort=high \
+                -o "$AGG_OUT" \
+                "$REVISER_PROMPT" \
+                >> "$LOG_FILE" 2>&1
+        else
+            log "$PR_ID: critic passed through — using draft as final"
+            cp "$AGG_DRAFT_OUT" "$AGG_OUT"
+        fi
+
+        if [ ! -s "$AGG_OUT" ]; then
+            log "$PR_ID: final review empty — aborting"
             preserve_scratch "$REPO_DIR" "$(echo "$PR_ID" | tr "/#" "__")"
             rm -f "$LOCK_FILE"
             continue
