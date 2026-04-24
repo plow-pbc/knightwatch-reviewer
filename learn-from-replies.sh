@@ -1,22 +1,22 @@
 #!/bin/bash
 # Hourly: maintain ~/.claude/COMMENT_REVIEW_MISTAKES.md as a ranked top-48
 # list of calibration mistakes, and post acks to humans who pushed back on
-# bot reviews. Two signals feed the list:
-#   [Explicit] — human replies to our review that pass the review-topicality
-#     filter below. These are direct pushback.
-#   [Inferred] — PRs that were merged despite our VERDICT: COMMENT (blocking
-#     findings). The team merged anyway; our concern was probably wrong.
+# bot reviews.
 #
-# REVIEW_PRACTICES.md and TESTING.md are no longer auto-tuned here. They
-# are hand-curated principles; auto-tune targets only the mistakes file
-# to avoid stacking brittle case-specific rules.
+# Only EXPLICIT signal is consumed: human replies to our review that pass
+# the review-topicality filter below. Inferred signals (e.g. "PR merged
+# despite our VERDICT: COMMENT") are intentionally NOT used — they produced
+# too many speculative rules from too little signal. Rules that enter the
+# mistakes list must be grounded in a real human reply with a clear @srosro
+# tag, quote of our review, or severity reference.
+#
+# REVIEW_PRACTICES.md and TESTING.md are not auto-tuned here. They are
+# hand-curated; auto-tune targets only the mistakes file.
 
 export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
 
 REPOS=("cncorp/plow" "srosro/tkmx-client" "srosro/tkmx-server")
 REPLIES_SEEN_FILE="$HOME/.pr-reviewer/replies-seen.json"
-INFERRED_SEEN_FILE="$HOME/.pr-reviewer/inferred-seen.json"
-STATE_FILE="$HOME/.pr-reviewer/state.json"
 LOG_FILE="$HOME/.pr-reviewer/learn.log"
 MAC_HOST="so@so-mbp"
 CLAUDE_DIR="$HOME/.claude"
@@ -25,17 +25,11 @@ MAC_CLAUDE_DIR="/Users/so/.claude"
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"; }
 
 [ -f "$REPLIES_SEEN_FILE" ]  || echo '{}' > "$REPLIES_SEEN_FILE"
-[ -f "$INFERRED_SEEN_FILE" ] || echo '{}' > "$INFERRED_SEEN_FILE"
 
 reply_seen_get() { jq -r --arg k "$1" '.[$k] // empty' "$REPLIES_SEEN_FILE"; }
 reply_seen_set() {
     local tmp; tmp=$(jq --arg k "$1" --argjson v true '.[$k] = $v' "$REPLIES_SEEN_FILE")
     echo "$tmp" > "$REPLIES_SEEN_FILE"
-}
-inferred_seen_get() { jq -r --arg k "$1" '.[$k] // empty' "$INFERRED_SEEN_FILE"; }
-inferred_seen_set() {
-    local tmp; tmp=$(jq --arg k "$1" --argjson v true '.[$k] = $v' "$INFERRED_SEEN_FILE")
-    echo "$tmp" > "$INFERRED_SEEN_FILE"
 }
 
 # Heuristic: does this comment look like a response to our review?
@@ -46,9 +40,7 @@ looks_like_review_reply() {
 # ---------- Explicit signal: human replies to bot comments ----------
 REPLIES=""
 REPLIES_META_FILE=$(mktemp)
-INFERRED=""
-INFERRED_META_FILE=$(mktemp)
-trap 'rm -f "$REPLIES_META_FILE" "$INFERRED_META_FILE"' EXIT
+trap 'rm -f "$REPLIES_META_FILE"' EXIT
 
 for REPO in "${REPOS[@]}"; do
     PR_LIST=$(gh pr list --repo "$REPO" --json number --state all --limit 200 2>/dev/null | jq -r '.[].number') || continue
@@ -95,43 +87,21 @@ for REPO in "${REPOS[@]}"; do
     done
 done
 
-# ---------- Inferred signal: merged-despite-comment ----------
-# From state.json: entries where approved=false (our last verdict was COMMENT).
-# For each, if the PR is now MERGED and we haven't recorded this as inferred
-# yet, include it as a signal. Key includes the sha so a fresh comment verdict
-# on a new sha counts as a new signal.
-while IFS=$'\t' read -r PR_KEY SHA BODY; do
-    [ -z "$PR_KEY" ] && continue
-    REPO="${PR_KEY%#*}"
-    PR_NUM="${PR_KEY##*#}"
-    INF_KEY="${PR_KEY}#merged-despite-comment@${SHA:0:12}"
-    [ -n "$(inferred_seen_get "$INF_KEY")" ] && continue
-
-    STATE=$(gh pr view "$PR_NUM" --repo "$REPO" --json state --jq '.state' 2>/dev/null) || continue
-    [ "$STATE" != "MERGED" ] && continue
-
-    INFERRED+="--- Inferred signal [${INF_KEY}] ${REPO} PR #${PR_NUM} merged despite our VERDICT: COMMENT ---"$'\n'
-    INFERRED+="$BODY"$'\n\n'
-    jq -c --null-input --arg k "$INF_KEY" '{key:$k}' >> "$INFERRED_META_FILE"
-done < <(jq -r 'to_entries | map(select(.value.approved == false)) | .[] | [.key, .value.sha, .value.body] | @tsv' "$STATE_FILE")
-
-if [ -z "$REPLIES" ] && [ -z "$INFERRED" ]; then
-    log "no new signals (explicit or inferred)"
+if [ -z "$REPLIES" ]; then
+    log "no new explicit signals (no human replies passed the filter)"
     exit 0
 fi
 
 REPLY_COUNT=$(wc -l < "$REPLIES_META_FILE" 2>/dev/null || echo 0)
-INFERRED_COUNT=$(wc -l < "$INFERRED_META_FILE" 2>/dev/null || echo 0)
-log "signals: explicit=$REPLY_COUNT inferred=$INFERRED_COUNT — updating mistakes list..."
+log "signals: explicit=$REPLY_COUNT — updating mistakes list..."
 
 MISTAKES=$(cat "$CLAUDE_DIR/COMMENT_REVIEW_MISTAKES.md")
 
-PROMPT="You maintain a ranked top-48 list of review-calibration mistakes. This list is rewritten end-to-end on each update — it is not append-only. Your default action is to make the SMALLEST possible change that captures new signal; over-writing the whole list for one datapoint is a failure mode.
+PROMPT="You maintain a ranked top-48 list of review-calibration mistakes based on EXPLICIT HUMAN FEEDBACK only. Every entry in this list must be grounded in a real human reply that pushed back on, agreed with, or otherwise directly engaged with a bot review comment. This list is rewritten end-to-end on each update — it is not append-only. Your default action is to make the SMALLEST possible change that captures new signal; over-writing the whole list for one datapoint is a failure mode.
 
 INPUTS:
 - The current \`COMMENT_REVIEW_MISTAKES.md\` (the list you are editing)
 - New explicit signals (human replies to bot reviews)
-- New inferred signals (PRs merged despite our VERDICT: COMMENT)
 
 YOUR JOB:
 
@@ -145,13 +115,14 @@ YOUR JOB:
 
 3. Produce the updated list. Keep the format EXACTLY:
    - Numbered list, 1..N, with N ≤ 48.
-   - Each line: \`N. [Explicit|Inferred] <pattern statement>. <why it matters, one clause>.\`
+   - Each line: \`N. [Explicit] <pattern statement>. <why it matters, one clause>.\`
+   - Every entry is tagged [Explicit]; no [Inferred] entries exist in this file any more.
    - Under ~200 chars per item. Patterns, not case studies.
-   - Ranked by importance: explicit signals outrank inferred at similar severity; frequently-seen patterns outrank one-offs.
+   - Ranked by importance: frequently-seen patterns outrank one-offs.
    - If the list exceeds 48 items after edits, DROP the lowest-ranked items.
    - Preserve the header text above the numbered list.
 
-4. Produce a per-explicit-reply acknowledgment inside an <ACKS> block. For each explicit reply that genuinely responds to the review (agreeing, pushing back, reporting a fix, debating a finding), emit one <ACK> line that names the reply by its key and explains in ONE CONCISE LINE what you learned (what rule you added, what over-call you corrected, or that you made no change and why). For off-topic replies, OMIT them from <ACKS> — silence is correct. Inferred signals DO NOT get ACKs (nobody to tag).
+4. Produce a per-reply acknowledgment inside an <ACKS> block. For each reply that genuinely responds to the review (agreeing, pushing back, reporting a fix, debating a finding), emit one <ACK> line that names the reply by its key and explains in ONE CONCISE LINE what you learned (what rule you added, what over-call you corrected, or that you made no change and why). For off-topic replies, OMIT them from <ACKS> — silence is correct.
 
 ACK constraints:
 - One line per ACK, under ~200 chars, plain prose.
@@ -173,11 +144,8 @@ Default to conservative edits. If a batch of signals doesn't clearly indicate th
 Current COMMENT_REVIEW_MISTAKES.md:
 $MISTAKES
 
-New explicit signals:
-$REPLIES
-
-New inferred signals:
-$INFERRED"
+New explicit signals (human replies to bot reviews):
+$REPLIES"
 
 RAW=$(printf '%s' "$PROMPT" | codex exec --skip-git-repo-check "Update the top-48 mistakes list and produce per-reply acknowledgments. Output COMMENT_REVIEW_MISTAKES + ACKS tags only." 2>&1)
 
@@ -209,16 +177,12 @@ else
     log "no content change in COMMENT_REVIEW_MISTAKES.md"
 fi
 
-# Mark signals as seen — only after codex succeeded, so a crash leaves them
+# Mark replies as seen — only after codex succeeded, so a crash leaves them
 # eligible for the next tick.
 while IFS= read -r META; do
     KEY=$(printf '%s' "$META" | jq -r '.key')
     [ -n "$KEY" ] && reply_seen_set "$KEY"
 done < "$REPLIES_META_FILE"
-while IFS= read -r META; do
-    KEY=$(printf '%s' "$META" | jq -r '.key')
-    [ -n "$KEY" ] && inferred_seen_set "$KEY"
-done < "$INFERRED_META_FILE"
 
 # Post per-reply acknowledgments.
 ACKS_BLOCK=$(echo "$OUTPUT" | awk '/<ACKS>/{found=1; next} found && /<\/ACKS>/{exit} found{print}')
