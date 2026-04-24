@@ -335,6 +335,12 @@ write_scratch "$REPO_DIR" "author-intent.md" "$AUTHOR_INTENT"
 SPECIALISTS_DIR="$REPO_DIR/.codex-scratch/specialists"
 mkdir -p "$SPECIALISTS_DIR"
 
+# Post a "reviewing" status comment so the PR author sees the bot picked up
+# the work. Best-effort — failure here doesn't block the actual review.
+gh pr comment "$PR_NUM" --repo "$REPO" \
+    --body "👀 reviewing — [sam's ai review bot](https://github.com/srosro/knightwatch-reviewer)" \
+    >/dev/null 2>&1 || log "$PR_ID: failed to post reviewing-status comment (continuing)"
+
 log "$PR_ID: launching 5 specialists in parallel..."
 for angle in security data-integrity architecture simplification tests; do
     PROMPT=$(build_specialist_prompt \
