@@ -24,7 +24,7 @@ state_set() {
         tmp=$(jq --arg id "$pr_id" --arg sha "$sha" --arg body "$body" \
             --argjson ts "$(date +%s)" --argjson appr "$approved" \
             '.[$id] = {sha: $sha, reviewed_at: $ts, approved: $appr, body: $body}' \
-            "$STATE_FILE")
+            "$STATE_FILE") || exit 1
         # Atomic rename pattern
         printf '%s' "$tmp" > "${STATE_FILE}.tmp"
         mv -f "${STATE_FILE}.tmp" "$STATE_FILE"
