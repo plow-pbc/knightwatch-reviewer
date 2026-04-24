@@ -106,12 +106,20 @@ fi
 log "Fan-out: ${#ELIGIBLE[@]} eligible PR(s), max $MAX_CONCURRENT concurrent"
 
 # ---------- fan out with bounded concurrency ----------
+# We capture each worker's exit code as it finishes so a failed worker
+# propagates into the service's exit code instead of silently degrading
+# the tick to "successful with log-only evidence". Per-PR flock skips
+# (another copy already reviewing the same PR) exit 0 and don't count
+# here.
 active=0
+FAILED=0
 for spec in "${ELIGIBLE[@]}"; do
     IFS=$'\t' read -r REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR <<< "$spec"
 
     while [ "$active" -ge "$MAX_CONCURRENT" ]; do
-        wait -n
+        if ! wait -n; then
+            FAILED=$((FAILED + 1))
+        fi
         active=$((active - 1))
     done
 
@@ -121,6 +129,16 @@ for spec in "${ELIGIBLE[@]}"; do
     active=$((active + 1))
 done
 
-wait
+while [ "$active" -gt 0 ]; do
+    if ! wait -n; then
+        FAILED=$((FAILED + 1))
+    fi
+    active=$((active - 1))
+done
+
+if [ "$FAILED" -gt 0 ]; then
+    log "Fan-out complete with $FAILED worker failure(s) out of ${#ELIGIBLE[@]}"
+    exit 1
+fi
 log "Fan-out complete (${#ELIGIBLE[@]} review(s) ended)"
 exit 0

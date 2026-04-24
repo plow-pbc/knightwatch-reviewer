@@ -102,20 +102,46 @@ log "Reviewing $PR_ID (force_whole_pr=$FORCE_WHOLE_PR)"
 # `fetch`. Multiple PR reviews on the same repo coexist by each working in
 # their own per-PR workdir that shares objects (via git clone --shared) with
 # the canonical clone.
+#
+# A repo-scoped flock serializes canonical clone/fetch and the per-PR
+# shared-clone read. Without this, two workers on the same repo race through
+# `git fetch` and can hand a half-initialized object store to `git clone
+# --shared`. The lock is released before the slow specialist/aggregator
+# phases, so cross-repo fan-out remains fully parallel and same-repo fan-out
+# is only serialized for the short clone/fetch window.
 REPO_SLUG=$(echo "$REPO" | tr '/' '_')
 CANONICAL_DIR="$REPOS_DIR/$REPO_SLUG"
 PR_WORKDIR_SLUG="${REPO_SLUG}__${PR_NUM}"
 REPO_DIR="$WORKDIRS_DIR/${PR_WORKDIR_SLUG}"
 
+CANONICAL_LOCK_DIR="$STATE_DIR/canonical-locks"
+mkdir -p "$CANONICAL_LOCK_DIR"
+CANONICAL_LOCK_FILE="$CANONICAL_LOCK_DIR/$REPO_SLUG"
+exec {CANONICAL_LOCK_FD}> "$CANONICAL_LOCK_FILE"
+flock "$CANONICAL_LOCK_FD" || { log "$PR_ID: canonical flock failed — aborting"; exit 1; }
+
 if [ ! -d "$CANONICAL_DIR/.git" ]; then
     log "Cloning canonical $REPO..."
-    gh repo clone "$REPO" "$CANONICAL_DIR" -- --depth=50 --no-single-branch 2>&1 | tail -2
+    if ! gh repo clone "$REPO" "$CANONICAL_DIR" -- --depth=50 --no-single-branch; then
+        log "$PR_ID: canonical clone failed — aborting"
+        exit 1
+    fi
 fi
 
 # Fetch latest refs into the canonical clone.
 DEFAULT_BRANCH=$(gh repo view "$REPO" --json defaultBranchRef --jq '.defaultBranchRef.name')
-git -C "$CANONICAL_DIR" fetch origin "$DEFAULT_BRANCH" --depth=50 --quiet
-git -C "$CANONICAL_DIR" fetch origin "$PR_BRANCH"      --depth=50 --quiet
+if [ -z "$DEFAULT_BRANCH" ]; then
+    log "$PR_ID: could not resolve default branch from gh repo view — aborting"
+    exit 1
+fi
+if ! git -C "$CANONICAL_DIR" fetch origin "$DEFAULT_BRANCH" --depth=50 --quiet; then
+    log "$PR_ID: canonical fetch of $DEFAULT_BRANCH failed — aborting"
+    exit 1
+fi
+if ! git -C "$CANONICAL_DIR" fetch origin "$PR_BRANCH" --depth=50 --quiet; then
+    log "$PR_ID: canonical fetch of $PR_BRANCH failed — aborting"
+    exit 1
+fi
 
 # Tear down any stale per-PR workdir (previous abort, etc.) and create a
 # fresh shared clone. --shared makes this a local hardlink-ish clone — fast
@@ -123,7 +149,14 @@ git -C "$CANONICAL_DIR" fetch origin "$PR_BRANCH"      --depth=50 --quiet
 # so we fetch the PR branch into this new workdir too.
 rm -rf "$REPO_DIR"
 mkdir -p "$(dirname "$REPO_DIR")"
-git clone --shared "$CANONICAL_DIR" "$REPO_DIR" --no-single-branch --quiet
+if ! git clone --shared "$CANONICAL_DIR" "$REPO_DIR" --no-single-branch --quiet; then
+    log "$PR_ID: git clone --shared failed — aborting"
+    exit 1
+fi
+
+# Release the canonical lock now; the rest of the worker operates in
+# $REPO_DIR and doesn't touch canonical object state.
+exec {CANONICAL_LOCK_FD}>&-
 
 # Make the PR branch available in the new clone and check it out.
 git -C "$REPO_DIR" fetch origin "$PR_BRANCH" --depth=50 --quiet 2>/dev/null || true
@@ -374,7 +407,12 @@ if [ -z "$COMMENT_BODY" ]; then
     rm -rf "$REPO_DIR"
     exit 1
 fi
-gh pr comment "$PR_NUM" --repo "$REPO" --body "$COMMENT_BODY"
+if ! gh pr comment "$PR_NUM" --repo "$REPO" --body "$COMMENT_BODY"; then
+    log "$PR_ID: gh pr comment FAILED — not updating state (next tick will retry)"
+    preserve_scratch "$REPO_DIR" "$(echo "$PR_ID" | tr "/#" "__")"
+    rm -rf "$REPO_DIR"
+    exit 1
+fi
 log "Posted review comment on $PR_ID"
 
 APPROVED=false
@@ -393,7 +431,12 @@ else
     log "Commented on $PR_ID (no approval)"
 fi
 
-state_set "$PR_ID" "$PR_SHA" "$APPROVED" "$COMMENT_BODY"
+if ! state_set "$PR_ID" "$PR_SHA" "$APPROVED" "$COMMENT_BODY"; then
+    log "$PR_ID: state_set FAILED — review posted but state.json not updated; next tick will re-review this SHA"
+    preserve_scratch "$REPO_DIR" "$(echo "$PR_ID" | tr "/#" "__")"
+    rm -rf "$REPO_DIR"
+    exit 1
+fi
 preserve_scratch "$REPO_DIR" "$(echo "$PR_ID" | tr "/#" "__")"
 rm -rf "$REPO_DIR"
 log "Done with $PR_ID"
