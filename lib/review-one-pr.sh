@@ -128,14 +128,14 @@ if [ ! -d "$CANONICAL_DIR/.git" ]; then
     fi
 fi
 
-# Fetch latest refs into the canonical clone. The PR branch uses an
-# explicit `+X:X` refspec so canonical ends up with the PR branch as a
-# *local* ref (refs/heads/X). That matters because `git clone --shared`
-# from canonical only exposes canonical's refs/heads/* to the per-PR
-# workdir as refs/remotes/origin/* — without a local ref on canonical,
-# the workdir has no way to see the PR branch and silently stays on
-# main. This was a latent bug that silently reviewed the wrong code on
-# every incremental re-review.
+# Fetch latest refs into the canonical clone. We fetch the PR head via
+# `refs/pull/N/head` rather than by branch name, so fork PRs work
+# uniformly with same-repo PRs (fork PRs' heads live on the fork, not
+# on the base repo, so `origin/$PR_BRANCH` doesn't exist there — but
+# GitHub mirrors every open PR's head at `refs/pull/N/head` on the base
+# repo regardless of source). We still alias it into `refs/heads/
+# $PR_BRANCH` so downstream code (per-PR workdir checkout, diff, log
+# messages) can use the human-readable branch name.
 #
 # The default branch stays as a plain fetch (updating only refs/remotes/
 # origin/$DEFAULT_BRANCH) because canonical has $DEFAULT_BRANCH checked
@@ -150,8 +150,8 @@ if ! git -C "$CANONICAL_DIR" fetch origin "$DEFAULT_BRANCH" --depth=50 --quiet; 
     log "$PR_ID: canonical fetch of $DEFAULT_BRANCH failed — aborting"
     exit 1
 fi
-if ! git -C "$CANONICAL_DIR" fetch origin "+$PR_BRANCH:$PR_BRANCH" --depth=50 --quiet; then
-    log "$PR_ID: PR branch $PR_BRANCH not fetchable (likely deleted) — skipping"
+if ! git -C "$CANONICAL_DIR" fetch origin "+refs/pull/$PR_NUM/head:$PR_BRANCH" --depth=50 --quiet; then
+    log "$PR_ID: refs/pull/$PR_NUM/head not fetchable (PR closed?) — skipping"
     exit 0
 fi
 
