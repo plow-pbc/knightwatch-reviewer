@@ -16,6 +16,8 @@ eggs/
 .eggs/
 lib/*
 !lib/*.sh
+!lib/tests/
+!lib/tests/*.sh
 lib64/
 parts/
 sdist/
