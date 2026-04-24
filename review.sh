@@ -205,22 +205,30 @@ ${TEST_TAIL}
             REVIEW_TASK="Re-review: the author has pushed new commits since your previous review (at ${KNOWN_SHA:0:7}, approved=$PREV_APPROVED). Your prior review is in .codex-scratch/previous-review.md. The incremental diff since that review is in .codex-scratch/diff.patch. Assess whether the new commits address your prior concerns, then produce an updated review."
         fi
 
-        # Kid prior-art lookup (cncorp/plow only; Python + Swift).
-        # Prior-art is nice-to-have, not a correctness gate. On failure:
-        # log loud, write a sticky flag file, degrade to kid-less review.
+        # Kid prior-art lookup. Per-repo index — plow uses a dedicated mirror
+        # at ~/Hacking/plow-kid; tkmx repos are indexed in place. Prior-art
+        # is nice-to-have, not a correctness gate. On failure: log loud,
+        # write a sticky flag file, degrade to kid-less review.
         PRIOR_ART=""
         KID_FLAG="$STATE_DIR/kid-last-failure"
-        if [ "$REPO" = "cncorp/plow" ] && [ -n "$KID_INPUT_DIFF" ]; then
-            export KID_PROJECT="$HOME/Hacking/plow-kid"
+        case "$REPO" in
+            "cncorp/plow")         KID_PROJECT_PATH="$HOME/Hacking/plow-kid" ;;
+            "srosro/tkmx-client")  KID_PROJECT_PATH="$HOME/Hacking/tkmx-client" ;;
+            "srosro/tkmx-server")  KID_PROJECT_PATH="$HOME/Hacking/tkmx-server" ;;
+            *)                     KID_PROJECT_PATH="" ;;
+        esac
+        if [ -n "$KID_PROJECT_PATH" ] && [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -n "$KID_INPUT_DIFF" ]; then
+            export KID_PROJECT="$KID_PROJECT_PATH"
             KID_STDERR=$(mktemp)
             PRIOR_ART=$(printf '%s' "$KID_INPUT_DIFF" | python3 "$HOME/Hacking/knightwatch-kid/scripts/kid_dry_check.py" 2>"$KID_STDERR")
             KID_EXIT=$?
             if [ $KID_EXIT -ne 0 ]; then
                 KID_ERR_SUMMARY=$(tail -n 3 "$KID_STDERR" | tr '\n' ' ')
-                log "$PR_ID: KID FAILURE (exit $KID_EXIT) — degrading to kid-less review. stderr tail: $KID_ERR_SUMMARY"
+                log "$PR_ID: KID FAILURE (exit $KID_EXIT, project $KID_PROJECT) — degrading to kid-less review. stderr tail: $KID_ERR_SUMMARY"
                 {
                     echo "timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
                     echo "pr: $PR_ID"
+                    echo "project: $KID_PROJECT"
                     echo "exit: $KID_EXIT"
                     echo "--- stderr tail ---"
                     tail -n 20 "$KID_STDERR"
@@ -234,6 +242,8 @@ ${TEST_TAIL}
                 fi
             fi
             rm -f "$KID_STDERR"
+        elif [ -n "$KID_PROJECT_PATH" ] && [ -n "$KID_INPUT_DIFF" ]; then
+            log "$PR_ID: kid index not yet built at $KID_PROJECT_PATH — skipping prior-art lookup (will be indexed on next refresh tick)"
         fi
 
         log "$PR_ID: diff is ${#KID_INPUT_DIFF} bytes"
