@@ -9,7 +9,7 @@ STATE_FILE="$STATE_DIR/state.json"
 LOG_FILE="$STATE_DIR/review.log"
 REPOS=("cncorp/plow" "srosro/tkmx-client" "srosro/tkmx-server")
 REPOS_DIR="$STATE_DIR/repos"
-STABLE_SECS=$((4 * 3600))
+STABLE_SECS=$((2 * 3600))
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"; }
 
@@ -118,7 +118,8 @@ for REPO in "${REPOS[@]}"; do
             continue
         fi
 
-        # For re-reviews only (and not forced): wait 4h after the last commit
+        # For re-reviews only (and not forced): wait for the commit to stabilize
+        # (STABLE_SECS) so we don't burn tokens re-reviewing on every push.
         if [ -n "$KNOWN_SHA" ] && [ "$FORCE_REVIEW" = "false" ]; then
             LAST_COMMIT_DATE=$(gh api "repos/$REPO/pulls/$PR_NUM/commits" \
                 --jq '.[-1].commit.committer.date' 2>/dev/null)
@@ -129,7 +130,7 @@ for REPO in "${REPOS[@]}"; do
             LAST_COMMIT_TS=$(date -d "$LAST_COMMIT_DATE" +%s)
             AGE_SECS=$(( $(date +%s) - LAST_COMMIT_TS ))
             if [ "$AGE_SECS" -lt "$STABLE_SECS" ]; then
-                log "$PR_ID: re-review pending — last commit $(( AGE_SECS / 3600 ))h ago, waiting for 4h stability"
+                log "$PR_ID: re-review pending — last commit $(( AGE_SECS / 60 ))m ago, waiting for $(( STABLE_SECS / 3600 ))h stability"
                 continue
             fi
         fi
