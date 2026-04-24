@@ -16,6 +16,27 @@ FORCE_WHOLE_PR="${6:-false}"
 PR_ID="${REPO}#${PR_NUM}"
 PR_URL="https://github.com/$REPO/pull/$PR_NUM"
 
+# --- per-PR advisory lock ----------------------------------------------------
+# Prevents two concurrent invocations from stepping on each other for the same
+# PR. If we can't acquire, exit silently (with a log line) — the other
+# invocation will finish its own work.
+#
+# NB: this block runs BEFORE state-io.sh is sourced, so `log` isn't yet
+# available. Use raw echo+tee for the contention message. We also don't have
+# LOG_FILE defaulted yet, so fall back to $STATE_DIR/review.log or /dev/null.
+PR_LOCK_SLUG="${REPO//\//_}__${PR_NUM}"
+PR_LOCK_DIR="/tmp/pr-review-locks"
+mkdir -p "$PR_LOCK_DIR"
+PR_LOCK_FILE="${PR_LOCK_DIR}/${PR_LOCK_SLUG}"
+exec {PR_LOCK_FD}> "$PR_LOCK_FILE"
+if ! flock -n "$PR_LOCK_FD"; then
+    _raw_log="${LOG_FILE:-${STATE_DIR:-$HOME/.pr-reviewer}/review.log}"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $PR_ID: another review already in flight (lock held on $PR_LOCK_FILE) — skipping this invocation" \
+        | tee -a "$_raw_log" 2>/dev/null || true
+    exit 0
+fi
+# flock is held for the lifetime of PR_LOCK_FD; releases automatically on exit.
+
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 STATE_FILE="${STATE_FILE:-$STATE_DIR/state.json}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/review.log}"
