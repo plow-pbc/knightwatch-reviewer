@@ -15,9 +15,13 @@
 
 export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
 
-REPOS=("cncorp/plow" "srosro/tkmx-client" "srosro/tkmx-server")
-REPLIES_SEEN_FILE="$HOME/.pr-reviewer/replies-seen.json"
-LOG_FILE="$HOME/.pr-reviewer/learn.log"
+STATE_DIR="$HOME/.pr-reviewer"
+[ -f "$STATE_DIR/config.env" ] && . "$STATE_DIR/config.env"
+BOT_USER="${BOT_USER:-srosro}"
+
+REPOS=("cncorp/plow" "srosro/tkmx-client" "srosro/tkmx-server" "srosro/knightwatch-reviewer")
+REPLIES_SEEN_FILE="$STATE_DIR/replies-seen.json"
+LOG_FILE="$STATE_DIR/learn.log"
 MAC_HOST="so@so-mbp"
 CLAUDE_DIR="$HOME/.claude"
 MAC_CLAUDE_DIR="/Users/so/.claude"
@@ -34,7 +38,7 @@ reply_seen_set() {
 
 # Heuristic: does this comment look like a response to our review?
 looks_like_review_reply() {
-    printf '%s' "$1" | grep -qE '@srosro|^>|\[blocking\]|\[medium\]|\[low\]|\[nit\]'
+    printf '%s' "$1" | grep -qE "@${BOT_USER}|^>|\[blocking\]|\[medium\]|\[low\]|\[nit\]"
 }
 
 # ---------- Explicit signal: human replies to bot comments ----------
@@ -52,7 +56,7 @@ for REPO in "${REPOS[@]}"; do
         while IFS= read -r COMMENT; do
             ID=$(echo "$COMMENT" | jq -r '.id')
             USER=$(echo "$COMMENT" | jq -r '.user.login')
-            [ "$USER" = "srosro" ] && OUR_COMMENT_IDS+=("$ID")
+            [ "$USER" = "$BOT_USER" ] && OUR_COMMENT_IDS+=("$ID")
         done < <(echo "$COMMENTS" | jq -c '.[]')
 
         [ ${#OUR_COMMENT_IDS[@]} -eq 0 ] && continue
@@ -65,7 +69,7 @@ for REPO in "${REPOS[@]}"; do
             CREATED=$(echo "$COMMENT" | jq -r '.created_at')
             TS=$(date -d "$CREATED" +%s 2>/dev/null || echo 0)
 
-            if [ "$USER" = "srosro" ]; then
+            if [ "$USER" = "$BOT_USER" ]; then
                 LAST_OUR_TS=$TS
             elif [ "$LAST_OUR_TS" -gt 0 ] && [ "$TS" -gt "$LAST_OUR_TS" ]; then
                 case "$USER" in
@@ -126,7 +130,7 @@ YOUR JOB:
 
 ACK constraints:
 - One line per ACK, under ~200 chars, plain prose.
-- Do NOT use \`@srosro\` or \`/review\` (those would trigger a re-review loop).
+- Do NOT use \`@${BOT_USER}\` or \`/review\` (those would trigger a re-review loop).
 - Focus on what changed (or didn't), not pleasantries.
 
 OUTPUT FORMAT — exactly this shape, nothing else:
@@ -196,7 +200,7 @@ if [ -n "$ACKS_BLOCK" ]; then
         esac
         KEY=$(printf '%s' "$LINE" | sed -n 's|.*key="\([^"]*\)".*|\1|p')
         ACK_BODY=$(printf '%s' "$LINE" | sed -e 's|.*<ACK[^>]*>||' -e 's|</ACK>.*||')
-        ACK_BODY=$(printf '%s' "$ACK_BODY" | sed -e 's|@srosro|srosro|gI' -e 's|/review|re-review|gI')
+        ACK_BODY=$(printf '%s' "$ACK_BODY" | sed -e "s|@${BOT_USER}|${BOT_USER}|gI" -e 's|/review|re-review|gI')
 
         [ -z "$KEY" ] || [ -z "$ACK_BODY" ] && { ACK_SKIPPED=$((ACK_SKIPPED+1)); continue; }
 

@@ -13,10 +13,12 @@ set -u
 export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
 
 STATE_DIR="$HOME/.pr-reviewer"
+[ -f "$STATE_DIR/config.env" ] && . "$STATE_DIR/config.env"
+BOT_USER="${BOT_USER:-srosro}"
+
 LOG_FILE="$STATE_DIR/re-request.log"
 SEEN_FILE="$STATE_DIR/re-request-seen.json"
-REPOS=("cncorp/plow" "srosro/tkmx-client" "srosro/tkmx-server")
-BOT_USER="srosro"
+REPOS=("cncorp/plow" "srosro/tkmx-client" "srosro/tkmx-server" "srosro/knightwatch-reviewer")
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"; }
 

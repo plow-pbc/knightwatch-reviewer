@@ -21,6 +21,7 @@ PROJECTS=(
     "plow:$HOME/Hacking/plow-kid"
     "tkmx-client:$HOME/Hacking/tkmx-client"
     "tkmx-server:$HOME/Hacking/tkmx-server"
+    "knightwatch-reviewer:$HOME/Hacking/knightwatch-reviewer"
 )
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG"; }

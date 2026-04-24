@@ -7,9 +7,13 @@ LOCK_FILE="/tmp/pr-reviewer.lock"
 STATE_DIR="$HOME/.pr-reviewer"
 STATE_FILE="$STATE_DIR/state.json"
 LOG_FILE="$STATE_DIR/review.log"
-REPOS=("cncorp/plow" "srosro/tkmx-client" "srosro/tkmx-server")
+REPOS=("cncorp/plow" "srosro/tkmx-client" "srosro/tkmx-server" "srosro/knightwatch-reviewer")
 REPOS_DIR="$STATE_DIR/repos"
 STABLE_SECS=$((2 * 3600))
+
+# Shared config (BOT_USER etc); fall back to sensible defaults if missing.
+[ -f "$STATE_DIR/config.env" ] && . "$STATE_DIR/config.env"
+BOT_USER="${BOT_USER:-srosro}"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"; }
 
@@ -101,14 +105,28 @@ for REPO in "${REPOS[@]}"; do
 
         KNOWN_SHA=$(state_get "$PR_ID" "sha")
         FORCE_REVIEW=false
+        FORCE_WHOLE_PR=false
 
-        # Check for @srosro mention or /review tag since our last review
+        # Check for trigger comments since our last review:
+        #   /review (anywhere in body)   → force whole-PR re-review (ignore state's KNOWN_SHA)
+        #   @BOT_USER (without /review) → force incremental re-review
+        # Both bypass the SHA-unchanged skip and the stability cooldown.
         if [ -n "$KNOWN_SHA" ]; then
             REVIEWED_AT=$(state_get "$PR_ID" "reviewed_at")
             REVIEWED_AT_ISO=$(date -d "@${REVIEWED_AT}" -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null)
-            MENTION_COUNT=$(gh api "repos/$REPO/issues/$PR_NUM/comments" 2>/dev/null |                 jq --arg since "$REVIEWED_AT_ISO"                 '[.[] | select(.created_at > $since and (.body | test("@srosro|/review"; "i")))] | length')
-            if [ "${MENTION_COUNT:-0}" -gt 0 ]; then
-                log "$PR_ID: tagged/refresh requested — forcing re-review"
+            COMMENTS_JSON=$(gh api "repos/$REPO/issues/$PR_NUM/comments" 2>/dev/null)
+            WHOLE_MENTION=$(printf '%s' "$COMMENTS_JSON" |
+                jq --arg since "$REVIEWED_AT_ISO" \
+                    '[.[] | select(.created_at > $since and (.body | test("/review"; "i")))] | length')
+            INCREMENTAL_MENTION=$(printf '%s' "$COMMENTS_JSON" |
+                jq --arg since "$REVIEWED_AT_ISO" --arg user "$BOT_USER" \
+                    '[.[] | select(.created_at > $since and (.body | test("@" + $user; "i")) and ((.body | test("/review"; "i")) | not))] | length')
+            if [ "${WHOLE_MENTION:-0}" -gt 0 ]; then
+                log "$PR_ID: /review requested — forcing WHOLE-PR re-review"
+                FORCE_REVIEW=true
+                FORCE_WHOLE_PR=true
+            elif [ "${INCREMENTAL_MENTION:-0}" -gt 0 ]; then
+                log "$PR_ID: @$BOT_USER mentioned — forcing INCREMENTAL re-review"
                 FORCE_REVIEW=true
             fi
         fi
@@ -188,11 +206,18 @@ ${TEST_TAIL}
         STANDARDS+=$'\n\n'
         [ -f ~/.claude/COMMENT_REVIEW_MISTAKES.md ] && STANDARDS+="## Known Review Mistakes (avoid repeating these)\n"$(cat ~/.claude/COMMENT_REVIEW_MISTAKES.md)
 
-        # Build review input depending on first review vs re-review
+        # Build review input. Three paths:
+        #   1. First review (no prior state)              → whole PR diff.
+        #   2. FORCE_WHOLE_PR (/review comment)           → whole PR diff, skip previous-review context.
+        #   3. Normal re-review (SHA changed OR @mention) → incremental diff since KNOWN_SHA.
         PREV_BODY=""
-        if [ -z "$KNOWN_SHA" ]; then
+        if [ -z "$KNOWN_SHA" ] || [ "$FORCE_WHOLE_PR" = "true" ]; then
             KID_INPUT_DIFF=$(gh pr diff "$PR_NUM" --repo "$REPO" 2>/dev/null)
-            REVIEW_TASK="Review the diff at .codex-scratch/diff.patch against the standards in .codex-scratch/standards.md."
+            if [ "$FORCE_WHOLE_PR" = "true" ]; then
+                REVIEW_TASK="Whole-PR re-review (requested via /review comment). Review the full PR diff at .codex-scratch/diff.patch against the standards in .codex-scratch/standards.md. Any prior review is intentionally NOT provided — evaluate this PR from scratch."
+            else
+                REVIEW_TASK="Review the diff at .codex-scratch/diff.patch against the standards in .codex-scratch/standards.md."
+            fi
         else
             PREV_BODY=$(state_get "$PR_ID" "body")
             PREV_APPROVED=$(state_get "$PR_ID" "approved")
@@ -212,10 +237,11 @@ ${TEST_TAIL}
         PRIOR_ART=""
         KID_FLAG="$STATE_DIR/kid-last-failure"
         case "$REPO" in
-            "cncorp/plow")         KID_PROJECT_PATH="$HOME/Hacking/plow-kid" ;;
-            "srosro/tkmx-client")  KID_PROJECT_PATH="$HOME/Hacking/tkmx-client" ;;
-            "srosro/tkmx-server")  KID_PROJECT_PATH="$HOME/Hacking/tkmx-server" ;;
-            *)                     KID_PROJECT_PATH="" ;;
+            "cncorp/plow")                 KID_PROJECT_PATH="$HOME/Hacking/plow-kid" ;;
+            "srosro/tkmx-client")          KID_PROJECT_PATH="$HOME/Hacking/tkmx-client" ;;
+            "srosro/tkmx-server")          KID_PROJECT_PATH="$HOME/Hacking/tkmx-server" ;;
+            "srosro/knightwatch-reviewer") KID_PROJECT_PATH="$HOME/Hacking/knightwatch-reviewer" ;;
+            *)                             KID_PROJECT_PATH="" ;;
         esac
         if [ -n "$KID_PROJECT_PATH" ] && [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -n "$KID_INPUT_DIFF" ]; then
             export KID_PROJECT="$KID_PROJECT_PATH"
