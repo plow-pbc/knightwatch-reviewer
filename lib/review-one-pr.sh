@@ -128,7 +128,19 @@ if [ ! -d "$CANONICAL_DIR/.git" ]; then
     fi
 fi
 
-# Fetch latest refs into the canonical clone.
+# Fetch latest refs into the canonical clone. The PR branch uses an
+# explicit `+X:X` refspec so canonical ends up with the PR branch as a
+# *local* ref (refs/heads/X). That matters because `git clone --shared`
+# from canonical only exposes canonical's refs/heads/* to the per-PR
+# workdir as refs/remotes/origin/* — without a local ref on canonical,
+# the workdir has no way to see the PR branch and silently stays on
+# main. This was a latent bug that silently reviewed the wrong code on
+# every incremental re-review.
+#
+# The default branch stays as a plain fetch (updating only refs/remotes/
+# origin/$DEFAULT_BRANCH) because canonical has $DEFAULT_BRANCH checked
+# out and git refuses to force-update a checked-out ref. Stale local
+# main is fine for our use — we only need it for listing touched files.
 DEFAULT_BRANCH=$(gh repo view "$REPO" --json defaultBranchRef --jq '.defaultBranchRef.name')
 if [ -z "$DEFAULT_BRANCH" ]; then
     log "$PR_ID: could not resolve default branch from gh repo view — aborting"
@@ -138,15 +150,14 @@ if ! git -C "$CANONICAL_DIR" fetch origin "$DEFAULT_BRANCH" --depth=50 --quiet; 
     log "$PR_ID: canonical fetch of $DEFAULT_BRANCH failed — aborting"
     exit 1
 fi
-if ! git -C "$CANONICAL_DIR" fetch origin "$PR_BRANCH" --depth=50 --quiet; then
+if ! git -C "$CANONICAL_DIR" fetch origin "+$PR_BRANCH:$PR_BRANCH" --depth=50 --quiet; then
     log "$PR_ID: canonical fetch of $PR_BRANCH failed — aborting"
     exit 1
 fi
 
-# Tear down any stale per-PR workdir (previous abort, etc.) and create a
-# fresh shared clone. --shared makes this a local hardlink-ish clone — fast
-# and cheap. FETCH_HEAD from the canonical clone isn't directly usable here,
-# so we fetch the PR branch into this new workdir too.
+# Tear down any stale per-PR workdir and create a fresh shared clone.
+# --shared gives us hardlinked objects from canonical, so this is cheap.
+# Canonical's refs/heads/$PR_BRANCH shows up here as origin/$PR_BRANCH.
 rm -rf "$REPO_DIR"
 mkdir -p "$(dirname "$REPO_DIR")"
 if ! git clone --shared "$CANONICAL_DIR" "$REPO_DIR" --no-single-branch --quiet; then
@@ -158,10 +169,13 @@ fi
 # $REPO_DIR and doesn't touch canonical object state.
 exec {CANONICAL_LOCK_FD}>&-
 
-# Make the PR branch available in the new clone and check it out.
-git -C "$REPO_DIR" fetch origin "$PR_BRANCH" --depth=50 --quiet 2>/dev/null || true
-if ! git -C "$REPO_DIR" checkout -B "pr-$PR_NUM" FETCH_HEAD --quiet 2>/dev/null; then
-    git -C "$REPO_DIR" checkout -B "pr-$PR_NUM" "origin/$PR_BRANCH" --quiet
+# Check out the PR branch. Fail loud if it isn't there — silently falling
+# back to the default branch (as the old code did) made every incremental
+# re-review diff against the wrong base.
+if ! git -C "$REPO_DIR" checkout -B "pr-$PR_NUM" "origin/$PR_BRANCH" --quiet; then
+    log "$PR_ID: checkout of origin/$PR_BRANCH failed in workdir — aborting"
+    rm -rf "$REPO_DIR"
+    exit 1
 fi
 
 # ---- just test ----
