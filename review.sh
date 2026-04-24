@@ -262,6 +262,21 @@ ${TEST_TAIL}
             write_scratch "$REPO_DIR" "product-context.md" "(no product context configured for $REPO)"
         fi
 
+        # Pre-compute recent git history for each touched file (5 most recent
+        # commits each, capped at 30 files to avoid overwhelming the prompt on
+        # huge merges). Gives specialists context for "is this file stable or
+        # churny?" without each needing to run git log themselves. Specialists
+        # can still run `git blame -L a,b <file>` on specific lines when intent
+        # is unclear; this pre-compute is the starting surface.
+        FILE_HISTORY=""
+        while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            FILE_HISTORY+="### $f"$'\n'
+            hist=$(git -C "$REPO_DIR" log --oneline -n 5 -- "$f" 2>/dev/null)
+            FILE_HISTORY+="${hist:-(no history)}"$'\n\n'
+        done < <(git -C "$REPO_DIR" diff --name-only "$DEFAULT_BRANCH"...HEAD 2>/dev/null | head -30)
+        write_scratch "$REPO_DIR" "file-history.md" "${FILE_HISTORY:-(no touched files)}"
+
         PR_URL="https://github.com/$REPO/pull/$PR_NUM"
         SPECIALISTS_DIR="$REPO_DIR/.codex-scratch/specialists"
         mkdir -p "$SPECIALISTS_DIR"
@@ -316,6 +331,7 @@ ${TEST_TAIL}
         codex exec \
             -C "$REPO_DIR" \
             --dangerously-bypass-approvals-and-sandbox \
+            -c model_reasoning_effort=high \
             -o "$AGG_OUT" \
             "$AGG_PROMPT" \
             >> "$LOG_FILE" 2>&1

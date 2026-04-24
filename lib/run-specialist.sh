@@ -38,6 +38,7 @@ echo "[$(date '+%H:%M:%S')] specialist=$NAME starting" >> "$LOG_FILE"
 codex exec \
     -C "$REPO_DIR" \
     --dangerously-bypass-approvals-and-sandbox \
+    -c model_reasoning_effort=high \
     -o "$OUT_FILE" \
     "$PROMPT" \
     >> "$LOG_FILE" 2>&1

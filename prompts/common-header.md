@@ -13,6 +13,9 @@ You are one specialist in a multi-specialist code review of a GitHub PR.
 - `.codex-scratch/prior-art.md` — knightwatch-kid dry-check prior-art surface, if applicable. May be empty.
 - `.codex-scratch/standards.md` — coding/testing standards and known review mistakes to avoid.
 - `.codex-scratch/product-context.md` — product stage, distribution model, roadmap. READ THIS before judging architectural tradeoffs.
+- `.codex-scratch/file-history.md` — for each touched file, the 5 most recent commit subjects. Use this to distinguish "stable file being surgically touched" from "churning area where this is the Nth rewrite" — the latter usually means a deeper design problem than any one PR can fix.
+
+**When to dig into git history:** if the intent of a modified line is unclear (e.g. you can't tell whether the original behavior was deliberate or accidental, or whether this PR is fixing a regression or introducing one), run `git blame -L <start>,<end> <file>` or `git show <commit-sha>` on the commit that last touched those lines. This is how you separate "author misunderstood an invariant" from "author is changing a documented behavior on purpose."
 
 **Rules for your output:**
 1. Read `.codex-scratch/diff.patch` first. Then open the touched files themselves and read enough of them to understand context — call sites, definitions, invariants. Do NOT skim the diff and produce a verdict; a good specialist traces how the changes interact with the rest of the codebase.
