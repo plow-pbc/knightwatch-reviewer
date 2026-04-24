@@ -127,6 +127,29 @@ printf '%s\n' "$NEW_TESTING"   > "$CLAUDE_DIR/TESTING.md"
 printf '%s\n' "$NEW_MISTAKES"  > "$CLAUDE_DIR/COMMENT_REVIEW_MISTAKES.md"
 log "Guidance files updated"
 
+# Auto-commit + push to the vibe-engineering repo where ~/.claude/*.md
+# symlinks point. Non-fatal on any step so a transient push failure doesn't
+# kill the whole learn pass.
+VIBE_REPO="$HOME/Hacking/vibe-engineering"
+if [ -d "$VIBE_REPO/.git" ]; then
+    if git -C "$VIBE_REPO" diff --quiet claude-config/ 2>/dev/null; then
+        log "vibe-engineering: no changes to commit"
+    else
+        git -C "$VIBE_REPO" add claude-config/ 2>>"$LOG_FILE"
+        if git -C "$VIBE_REPO" -c user.email=eng@plow.co -c user.name=odio \
+            commit -m "auto: tune guidance files from PR-review replies" \
+            >> "$LOG_FILE" 2>&1; then
+            if git -C "$VIBE_REPO" push >> "$LOG_FILE" 2>&1; then
+                log "vibe-engineering: committed + pushed auto-tune"
+            else
+                log "vibe-engineering: committed locally; push failed (check log)"
+            fi
+        else
+            log "vibe-engineering: commit failed (check log)"
+        fi
+    fi
+fi
+
 # Sync to Mac
 rsync -az "$CLAUDE_DIR/REVIEW_PRACTICES.md" \
           "$CLAUDE_DIR/TESTING.md" \
