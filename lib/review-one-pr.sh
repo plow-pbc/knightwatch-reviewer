@@ -151,8 +151,8 @@ if ! git -C "$CANONICAL_DIR" fetch origin "$DEFAULT_BRANCH" --depth=50 --quiet; 
     exit 1
 fi
 if ! git -C "$CANONICAL_DIR" fetch origin "+$PR_BRANCH:$PR_BRANCH" --depth=50 --quiet; then
-    log "$PR_ID: canonical fetch of $PR_BRANCH failed — aborting"
-    exit 1
+    log "$PR_ID: PR branch $PR_BRANCH not fetchable (likely deleted) — skipping"
+    exit 0
 fi
 
 # Tear down any stale per-PR workdir and create a fresh shared clone.
