@@ -25,9 +25,10 @@ state_set() {
             --argjson ts "$(date +%s)" --argjson appr "$approved" \
             '.[$id] = {sha: $sha, reviewed_at: $ts, approved: $appr, body: $body}' \
             "$STATE_FILE") || exit 1
-        # Atomic rename pattern
-        printf '%s' "$tmp" > "${STATE_FILE}.tmp"
-        mv -f "${STATE_FILE}.tmp" "$STATE_FILE"
+        # Atomic rename pattern — fail loud on either step so callers know
+        # the write didn't land rather than silently continuing.
+        printf '%s' "$tmp" > "${STATE_FILE}.tmp" || exit 1
+        mv -f "${STATE_FILE}.tmp" "$STATE_FILE" || exit 1
     )
 }
 
