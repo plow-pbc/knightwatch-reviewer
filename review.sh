@@ -10,6 +10,7 @@ STATE_FILE="${STATE_FILE:-$STATE_DIR/state.json}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/review.log}"
 REPOS=("cncorp/plow" "srosro/tkmx-client" "srosro/tkmx-server" "srosro/knightwatch-reviewer")
 REPOS_DIR="${REPOS_DIR:-$STATE_DIR/repos}"
+WORKDIRS_DIR="${WORKDIRS_DIR:-$STATE_DIR/workdirs}"
 STABLE_SECS="${STABLE_SECS:-$((2 * 3600))}"
 MAX_CONCURRENT="${MAX_CONCURRENT:-3}"
 
@@ -29,7 +30,7 @@ for _log in "$LOG_FILE" "$STATE_DIR/cron.log"; do
 done
 
 [ -f "$STATE_FILE" ] || echo '{}' > "$STATE_FILE"
-mkdir -p "$STATE_DIR" "$REPOS_DIR" /tmp/pr-review /tmp/pr-review-locks
+mkdir -p "$STATE_DIR" "$REPOS_DIR" "$WORKDIRS_DIR" /tmp/pr-review-locks
 
 # ---------- enumerate eligible PRs ----------
 declare -a ELIGIBLE=()

@@ -41,6 +41,10 @@ STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 STATE_FILE="${STATE_FILE:-$STATE_DIR/state.json}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/review.log}"
 REPOS_DIR="${REPOS_DIR:-$STATE_DIR/repos}"
+# Per-PR workdirs live under $STATE_DIR (not /tmp). When the service runs with
+# PrivateTmp=yes, /tmp is a unit-private mount — codex 0.122's unified-exec
+# helper doesn't inherit that namespace and fails to find cwds under /tmp.
+WORKDIRS_DIR="${WORKDIRS_DIR:-$STATE_DIR/workdirs}"
 
 [ -f "$STATE_DIR/config.env" ] && . "$STATE_DIR/config.env"
 BOT_USER="${BOT_USER:-srosro}"
@@ -101,7 +105,7 @@ log "Reviewing $PR_ID (force_whole_pr=$FORCE_WHOLE_PR)"
 REPO_SLUG=$(echo "$REPO" | tr '/' '_')
 CANONICAL_DIR="$REPOS_DIR/$REPO_SLUG"
 PR_WORKDIR_SLUG="${REPO_SLUG}__${PR_NUM}"
-REPO_DIR="/tmp/pr-review/${PR_WORKDIR_SLUG}"
+REPO_DIR="$WORKDIRS_DIR/${PR_WORKDIR_SLUG}"
 
 if [ ! -d "$CANONICAL_DIR/.git" ]; then
     log "Cloning canonical $REPO..."
@@ -128,7 +132,7 @@ if ! git -C "$REPO_DIR" checkout -B "pr-$PR_NUM" FETCH_HEAD --quiet 2>/dev/null;
 fi
 
 # ---- just test ----
-TEST_LOG="/tmp/review-tests-${REPO_SLUG}-${PR_NUM}.log"
+TEST_LOG="$REPO_DIR/.test-output.log"
 TEST_TIMEOUT=30m
 log "$PR_ID: running \`just test\` (timeout ${TEST_TIMEOUT})..."
 (cd "$REPO_DIR" && timeout "$TEST_TIMEOUT" just test) > "$TEST_LOG" 2>&1
