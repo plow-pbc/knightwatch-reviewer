@@ -23,6 +23,16 @@ seen_set() {
     echo "$tmp" > "$STATE_FILE"
 }
 
+# Heuristic: does this comment look like a response to our review? Looks for
+# any of:
+#   - @srosro tag (explicit response to the bot)
+#   - ^> at line start (markdown blockquote of our review)
+#   - severity tag ([blocking] / [medium] / [low] / [nit]) — reuses our tags
+# If none match, skip. Codex gets a second pass-level gate too (see prompt).
+looks_like_review_reply() {
+    printf '%s' "$1" | grep -qE '@srosro|^>|\[blocking\]|\[medium\]|\[low\]|\[nit\]'
+}
+
 REPLIES=""
 REPLIES_META_FILE=$(mktemp)    # jsonl: one {key,repo,pr,user} record per new reply
 trap 'rm -f "$REPLIES_META_FILE"' EXIT
@@ -61,6 +71,10 @@ for REPO in "${REPOS[@]}"; do
                 case "$USER" in
                     *"[bot]"|"Copilot"|"copilot") continue ;;
                 esac
+                # Skip comments that don't look like they're responding to our review.
+                if ! looks_like_review_reply "$BODY"; then
+                    continue
+                fi
                 REPLY_KEY="${REPO}#${PR_NUM}#${ID}"
                 if [ -z "$(seen_get "$REPLY_KEY")" ]; then
                     # Tag each reply with a key so codex can target its ACK back
@@ -93,10 +107,12 @@ PROMPT="You are maintaining a code reviewer's guidance files. Authors have repli
 
 1. Update the three guidance files below based on the feedback — refine rules, correct over-calls, adjust the testing bar. Output the complete updated content for each file inside XML tags.
 
-2. Produce a per-reply acknowledgment inside an <ACKS> block. For each reply above, emit one <ACK> line that:
+2. Produce a per-reply acknowledgment inside an <ACKS> block. For each reply that is **genuinely responding to our review** (agreeing, pushing back, reporting a fix, or debating a specific finding), emit one <ACK> line that:
    - names the reply by its key (the bracketed id in the reply header)
    - explains in ONE CONCISE LINE what you learned from that specific reply (what rule you added, what over-call you corrected, what testing bar you adjusted)
-   - if the reply did NOT lead to a guidance change (it was a question, a pushback you decided was unfounded, or a judgment call), say so honestly in one line
+   - if the reply did NOT lead to a guidance change (it was a pushback you decided was unfounded, or a judgment call), say so honestly in one line
+
+If a reply is NOT actually a response to our review (off-topic chatter, unrelated discussion between teammates, a general question), OMIT it from the <ACKS> block entirely. Silence is correct for those. Do not force an ACK on every reply — only the ones where our review is clearly the subject.
 
 Important ACK constraints:
 - One line per ACK, under ~200 characters, plain prose.
