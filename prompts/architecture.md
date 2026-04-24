@@ -2,6 +2,8 @@
 
 FIRST, read `.codex-scratch/product-context.md` in full. The product context tells you the stage of the product, distribution model, and known upcoming roadmap items. Ground your findings in that context.
 
+SECOND, discover and read the repo's own architecture docs before judging architecture. Common locations: `ARCHITECTURE.md`, `docs/architecture/`, `docs/ARCHITECTURE/`, `docs/arc*.md`, `docs/*architecture*.md`, and READMEs in the touched modules. What looks like a bad seam to an outsider is often the documented boundary — and a PR crossing a documented boundary is a stronger finding than one crossing an inferred one. Cite the doc (`docs/architecture/foo.md:LN`) when a finding hinges on it.
+
 Scope:
 - Design tradeoffs: did the PR pick an approach that closes off a known roadmap item? (e.g. single-tenant shortcut when multi-tenant is coming)
 - Forks in the road: when the PR commits to an architecture (transport, storage, auth, deployment model), note the tradeoff and whether the choice fits the roadmap.
