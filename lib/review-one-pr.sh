@@ -73,18 +73,38 @@ preserve_scratch() {
 
 log "Reviewing $PR_ID (force_whole_pr=$FORCE_WHOLE_PR)"
 
-# Clone-or-update the per-repo canonical clone (same location as before).
+# Canonical clone lives at $REPOS_DIR/<slug>/ and is the source of truth for
+# `fetch`. Multiple PR reviews on the same repo coexist by each working in
+# their own per-PR workdir that shares objects (via git clone --shared) with
+# the canonical clone.
 REPO_SLUG=$(echo "$REPO" | tr '/' '_')
-REPO_DIR="$REPOS_DIR/$REPO_SLUG"
-if [ ! -d "$REPO_DIR/.git" ]; then
-    log "Cloning $REPO..."
-    gh repo clone "$REPO" "$REPO_DIR" -- --depth=50 --no-single-branch 2>&1 | tail -2
+CANONICAL_DIR="$REPOS_DIR/$REPO_SLUG"
+PR_WORKDIR_SLUG="${REPO_SLUG}__${PR_NUM}"
+REPO_DIR="/tmp/pr-review/${PR_WORKDIR_SLUG}"
+
+if [ ! -d "$CANONICAL_DIR/.git" ]; then
+    log "Cloning canonical $REPO..."
+    gh repo clone "$REPO" "$CANONICAL_DIR" -- --depth=50 --no-single-branch 2>&1 | tail -2
 fi
 
+# Fetch latest refs into the canonical clone.
 DEFAULT_BRANCH=$(gh repo view "$REPO" --json defaultBranchRef --jq '.defaultBranchRef.name')
-git -C "$REPO_DIR" fetch origin "$DEFAULT_BRANCH" --depth=50 --quiet
-git -C "$REPO_DIR" fetch origin "$PR_BRANCH"      --depth=50 --quiet
-git -C "$REPO_DIR" checkout -B "pr-$PR_NUM" FETCH_HEAD --quiet
+git -C "$CANONICAL_DIR" fetch origin "$DEFAULT_BRANCH" --depth=50 --quiet
+git -C "$CANONICAL_DIR" fetch origin "$PR_BRANCH"      --depth=50 --quiet
+
+# Tear down any stale per-PR workdir (previous abort, etc.) and create a
+# fresh shared clone. --shared makes this a local hardlink-ish clone — fast
+# and cheap. FETCH_HEAD from the canonical clone isn't directly usable here,
+# so we fetch the PR branch into this new workdir too.
+rm -rf "$REPO_DIR"
+mkdir -p "$(dirname "$REPO_DIR")"
+git clone --shared "$CANONICAL_DIR" "$REPO_DIR" --no-single-branch --quiet
+
+# Make the PR branch available in the new clone and check it out.
+git -C "$REPO_DIR" fetch origin "$PR_BRANCH" --depth=50 --quiet 2>/dev/null || true
+if ! git -C "$REPO_DIR" checkout -B "pr-$PR_NUM" FETCH_HEAD --quiet 2>/dev/null; then
+    git -C "$REPO_DIR" checkout -B "pr-$PR_NUM" "origin/$PR_BRANCH" --quiet
+fi
 
 # ---- just test ----
 TEST_LOG="/tmp/review-tests-${REPO_SLUG}-${PR_NUM}.log"
@@ -94,6 +114,7 @@ log "$PR_ID: running \`just test\` (timeout ${TEST_TIMEOUT})..."
 TEST_EXIT=$?
 if [ "$TEST_EXIT" -eq 127 ]; then
     log "$PR_ID: 'just test' not available (exit 127) — aborting; check just is installed and a justfile exists at repo root"
+    rm -rf "$REPO_DIR"
     exit 1
 fi
 case "$TEST_EXIT" in
@@ -145,6 +166,7 @@ fi
 
 if [ -z "$KID_INPUT_DIFF" ]; then
     log "$PR_ID: empty diff — gh pr diff / git diff returned nothing (possible auth, network, or rebase issue), aborting"
+    rm -rf "$REPO_DIR"
     exit 1
 fi
 
@@ -265,6 +287,7 @@ for angle in security data-integrity architecture simplification tests; do
 done
 if [ "$SPECIALIST_FAILURE" -ne 0 ]; then
     preserve_scratch "$REPO_DIR" "$(echo "$PR_ID" | tr "/#" "__")"
+    rm -rf "$REPO_DIR"
     exit 1
 fi
 log "$PR_ID: all 5 specialists completed"
@@ -308,12 +331,14 @@ codex exec \
 if [ ! -s "$AGG_OUT" ]; then
     log "$PR_ID: aggregator output empty — aborting"
     preserve_scratch "$REPO_DIR" "$(echo "$PR_ID" | tr "/#" "__")"
+    rm -rf "$REPO_DIR"
     exit 1
 fi
 REVIEW=$(cat "$AGG_OUT")
 if ! echo "$REVIEW" | grep -q '^VERDICT:'; then
     log "$PR_ID: aggregator output missing VERDICT line — aborting"
     preserve_scratch "$REPO_DIR" "$(echo "$PR_ID" | tr "/#" "__")"
+    rm -rf "$REPO_DIR"
     exit 1
 fi
 VERDICT=$(echo "$REVIEW" | grep '^VERDICT:' | tail -1)
@@ -321,6 +346,7 @@ COMMENT_BODY=$(echo "$REVIEW" | grep -v '^VERDICT:' | sed '/^[[:space:]]*$/{ N; 
 if [ -z "$COMMENT_BODY" ]; then
     log "Empty review body for $PR_ID, skipping"
     preserve_scratch "$REPO_DIR" "$(echo "$PR_ID" | tr "/#" "__")"
+    rm -rf "$REPO_DIR"
     exit 1
 fi
 gh pr comment "$PR_NUM" --repo "$REPO" --body "$COMMENT_BODY"
@@ -344,5 +370,6 @@ fi
 
 state_set "$PR_ID" "$PR_SHA" "$APPROVED" "$COMMENT_BODY"
 preserve_scratch "$REPO_DIR" "$(echo "$PR_ID" | tr "/#" "__")"
+rm -rf "$REPO_DIR"
 log "Done with $PR_ID"
 exit 0
