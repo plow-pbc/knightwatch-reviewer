@@ -44,5 +44,5 @@ Files: path/to/file.ext:LINE (and additional citations as needed)
 
 4. Severity is exactly one of: `blocking`, `medium`, `low`, `nit`. Use `blocking` ONLY for issues that must be fixed before merge.
 5. The Surveyed section is REQUIRED even if you have zero findings. A specialist that returns only "No findings" has failed to do its job. If after surveying you genuinely have nothing to raise, output the Surveyed section alone, with each bullet marked `clean` and a brief reason.
-6. Be specific. Cite file paths and line numbers. Quote the problematic code in ≤2 lines when it clarifies.
+6. Be specific. Cite file paths and line numbers. Quote the problematic code in ≤2 lines when it clarifies. **Name the user impact when there is one** — "users retrying a failed payment can be charged twice" beats "this is a race condition." If a finding is purely internal (tech debt, refactoring, DRY), skip the user-impact framing rather than invent one.
 7. Keep each finding under 120 words. No preamble, no conclusion, no verdict. The aggregator will assemble the final review.
