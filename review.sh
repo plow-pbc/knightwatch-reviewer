@@ -3,13 +3,13 @@
 
 export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
 
-LOCK_FILE="/tmp/pr-reviewer.lock"
-STATE_DIR="$HOME/.pr-reviewer"
-STATE_FILE="$STATE_DIR/state.json"
-LOG_FILE="$STATE_DIR/review.log"
+LOCK_FILE="${LOCK_FILE:-/tmp/pr-reviewer.lock}"
+STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
+STATE_FILE="${STATE_FILE:-$STATE_DIR/state.json}"
+LOG_FILE="${LOG_FILE:-$STATE_DIR/review.log}"
 REPOS=("cncorp/plow" "srosro/tkmx-client" "srosro/tkmx-server" "srosro/knightwatch-reviewer")
-REPOS_DIR="$STATE_DIR/repos"
-STABLE_SECS=$((2 * 3600))
+REPOS_DIR="${REPOS_DIR:-$STATE_DIR/repos}"
+STABLE_SECS="${STABLE_SECS:-$((2 * 3600))}"
 
 # Shared config (BOT_USER etc); fall back to sensible defaults if missing.
 [ -f "$STATE_DIR/config.env" ] && . "$STATE_DIR/config.env"
