@@ -12,7 +12,7 @@ WorkingDirectory=/home/odio/.pr-reviewer
 Environment=HOME=/home/odio
 Environment=PATH=/home/odio/.local/bin:/home/odio/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/home/odio/.pr-reviewer/review.sh
-TimeoutStartSec=60min
+TimeoutStartSec=90min
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=pr-reviewer
