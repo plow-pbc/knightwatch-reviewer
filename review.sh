@@ -108,12 +108,17 @@ for REPO in "${REPOS[@]}"; do
         touch "$LOCK_FILE"
 
         # Delegate the entire per-PR pipeline to the worker.
-        REVIEWER_LIB_DIR="$REVIEWER_LIB_DIR" \
-            "$REVIEWER_LIB_DIR/review-one-pr.sh" \
-            "$REPO" "$PR_NUM" "$PR_SHA" "$PR_BRANCH" "$PR_TITLE" "$FORCE_WHOLE_PR"
+        if REVIEWER_LIB_DIR="$REVIEWER_LIB_DIR" \
+                "$REVIEWER_LIB_DIR/review-one-pr.sh" \
+                "$REPO" "$PR_NUM" "$PR_SHA" "$PR_BRANCH" "$PR_TITLE" "$FORCE_WHOLE_PR"; then
+            # One successful review per tick, matching pre-refactor behavior.
+            rm -f "$LOCK_FILE"
+            exit 0
+        fi
 
+        # Worker failed on this PR. Release the lock and try the next eligible
+        # PR in the enumeration, matching pre-refactor `continue`.
         rm -f "$LOCK_FILE"
-        exit 0
 
     done < <(echo "$PR_LIST" | jq -c '.[]')
 done

@@ -24,7 +24,10 @@ REPOS_DIR="${REPOS_DIR:-$STATE_DIR/repos}"
 [ -f "$STATE_DIR/config.env" ] && . "$STATE_DIR/config.env"
 BOT_USER="${BOT_USER:-srosro}"
 
-. "$(dirname "${BASH_SOURCE[0]}")/state-io.sh"
+# Source state-io. Prefer REVIEWER_LIB_DIR if caller set it (smoke-test
+# isolation); fall back to the worker's own directory.
+_LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
+. "$_LIB_DIR/state-io.sh"
 
 # --- sed escape for PR metadata placeholders ----------------------------------
 safe_sed() {
@@ -90,7 +93,7 @@ log "$PR_ID: running \`just test\` (timeout ${TEST_TIMEOUT})..."
 (cd "$REPO_DIR" && timeout "$TEST_TIMEOUT" just test) > "$TEST_LOG" 2>&1
 TEST_EXIT=$?
 if [ "$TEST_EXIT" -eq 127 ]; then
-    log "$PR_ID: 'just test' not available (exit 127) — aborting"
+    log "$PR_ID: 'just test' not available (exit 127) — aborting; check just is installed and a justfile exists at repo root"
     exit 1
 fi
 case "$TEST_EXIT" in
@@ -120,6 +123,7 @@ STANDARDS+=$'\n\n'
 # ---- build diff + REVIEW_TASK (three paths) ----
 KNOWN_SHA=$(state_get "$PR_ID" "sha")
 PREV_BODY=""
+PREV_APPROVED=""
 if [ -z "$KNOWN_SHA" ] || [ "$FORCE_WHOLE_PR" = "true" ]; then
     KID_INPUT_DIFF=$(gh pr diff "$PR_NUM" --repo "$REPO" 2>/dev/null)
     if [ "$FORCE_WHOLE_PR" = "true" ]; then
@@ -137,6 +141,11 @@ else
         KID_INPUT_DIFF=$(gh pr diff "$PR_NUM" --repo "$REPO" 2>/dev/null)
     fi
     REVIEW_TASK="Re-review: the author has pushed new commits since your previous review (at ${KNOWN_SHA:0:7}, approved=$PREV_APPROVED). Your prior review is in .codex-scratch/previous-review.md. The incremental diff since that review is in .codex-scratch/diff.patch. Assess whether the new commits address your prior concerns, then produce an updated review."
+fi
+
+if [ -z "$KID_INPUT_DIFF" ]; then
+    log "$PR_ID: empty diff — gh pr diff / git diff returned nothing (possible auth, network, or rebase issue), aborting"
+    exit 1
 fi
 
 # ---- kid prior-art ----
