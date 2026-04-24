@@ -63,7 +63,8 @@ for REPO in "${REPOS[@]}"; do
                     jq -c --null-input \
                         --arg k "$REPLY_KEY" --arg r "$REPO" --arg p "$PR_NUM" --arg u "$USER" \
                         '{key:$k, repo:$r, pr:$p, user:$u}' >> "$REPLIES_META_FILE"
-                    seen_set "$REPLY_KEY"
+                    # NOTE: seen_set is deferred until after codex succeeds so
+                    # a codex failure doesn't leave replies marked seen-but-unacked.
                 fi
             fi
         done < <(echo "$COMMENTS" | jq -c '.[]')
@@ -124,7 +125,7 @@ $MISTAKES
 New author replies to process:
 $REPLIES"
 
-RAW=$(printf '%s' "$PROMPT" | codex exec "Update guidance files and produce per-reply acknowledgments. Output full file contents in XML tags plus an <ACKS> block." 2>&1)
+RAW=$(printf '%s' "$PROMPT" | codex exec --skip-git-repo-check "Update guidance files and produce per-reply acknowledgments. Output full file contents in XML tags plus an <ACKS> block." 2>&1)
 
 # Extract output between the last "codex" marker and "tokens used"
 OUTPUT=$(echo "$RAW" | awk '
@@ -153,6 +154,13 @@ printf '%s\n' "$NEW_PRACTICES" > "$CLAUDE_DIR/REVIEW_PRACTICES.md"
 printf '%s\n' "$NEW_TESTING"   > "$CLAUDE_DIR/TESTING.md"
 printf '%s\n' "$NEW_MISTAKES"  > "$CLAUDE_DIR/COMMENT_REVIEW_MISTAKES.md"
 log "Guidance files updated"
+
+# Now mark the scanned replies as seen — only after codex succeeded + files
+# updated, so a crash doesn't leave replies flagged seen-but-unacked.
+while IFS= read -r META; do
+    KEY=$(printf '%s' "$META" | jq -r '.key')
+    [ -n "$KEY" ] && seen_set "$KEY"
+done < "$REPLIES_META_FILE"
 
 # Post per-reply acknowledgments. Parse each <ACK key="..."> line; look up
 # the repo/pr/user from the meta jsonl; post a tagged comment.
