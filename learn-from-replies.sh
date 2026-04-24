@@ -55,6 +55,12 @@ for REPO in "${REPOS[@]}"; do
             if [ "$USER" = "srosro" ]; then
                 LAST_OUR_TS=$TS
             elif [ "$LAST_OUR_TS" -gt 0 ] && [ "$TS" -gt "$LAST_OUR_TS" ]; then
+                # Skip bot-authored comments (GitHub convention: login ends in [bot]).
+                # Catches vercel[bot], dependabot[bot], github-actions[bot], etc.
+                # Also skip the Copilot assistant by its canonical login.
+                case "$USER" in
+                    *"[bot]"|"Copilot"|"copilot") continue ;;
+                esac
                 REPLY_KEY="${REPO}#${PR_NUM}#${ID}"
                 if [ -z "$(seen_get "$REPLY_KEY")" ]; then
                     # Tag each reply with a key so codex can target its ACK back
