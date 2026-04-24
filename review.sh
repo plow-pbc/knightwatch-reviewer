@@ -351,29 +351,7 @@ $IS_BODY
             log "$PR_ID: specialist=$angle lines=$LINES$NO_FINDINGS"
         done
 
-        # ========== Stage 1 of 3: aggregator DRAFT ==========
-        log "$PR_ID: aggregator draft..."
-        AGG_DRAFT_PROMPT=$(build_specialist_prompt \
-            "aggregator" \
-            "$HOME/.pr-reviewer/prompts/aggregator.md" \
-            "$PR_ID" "$PR_TITLE" "$PR_URL")
-        AGG_DRAFT_OUT="$REPO_DIR/.codex-scratch/aggregator-draft.md"
-        codex exec \
-            -C "$REPO_DIR" \
-            --dangerously-bypass-approvals-and-sandbox \
-            -c model_reasoning_effort=high \
-            -o "$AGG_DRAFT_OUT" \
-            "$AGG_DRAFT_PROMPT" \
-            >> "$LOG_FILE" 2>&1
-
-        if [ ! -s "$AGG_DRAFT_OUT" ]; then
-            log "$PR_ID: aggregator draft failed or empty — aborting"
-            preserve_scratch "$REPO_DIR" "$(echo "$PR_ID" | tr "/#" "__")"
-            rm -f "$LOCK_FILE"
-            continue
-        fi
-
-        # ========== Stage 2 of 3: critic pass ==========
+        # ========== Stage 1 of 2: critic stress-tests specialist findings ==========
         log "$PR_ID: critic pass..."
         CRITIC_PROMPT=$(cat "$HOME/.pr-reviewer/prompts/critic.md")
         CRITIC_OUT="$REPO_DIR/.codex-scratch/critic.md"
@@ -385,26 +363,28 @@ $IS_BODY
             "$CRITIC_PROMPT" \
             >> "$LOG_FILE" 2>&1
 
-        AGG_OUT="$REPO_DIR/.codex-scratch/aggregator-output.md"
-
-        # ========== Stage 3 of 3: reviser — or skip if critic was silent ==========
-        if [ -s "$CRITIC_OUT" ] && ! grep -q "All findings survive scrutiny. No missed findings identified." "$CRITIC_OUT"; then
-            log "$PR_ID: critic raised counterarguments — running reviser..."
-            REVISER_PROMPT=$(cat "$HOME/.pr-reviewer/prompts/reviser.md")
-            codex exec \
-                -C "$REPO_DIR" \
-                --dangerously-bypass-approvals-and-sandbox \
-                -c model_reasoning_effort=high \
-                -o "$AGG_OUT" \
-                "$REVISER_PROMPT" \
-                >> "$LOG_FILE" 2>&1
-        else
-            log "$PR_ID: critic passed through — using draft as final"
-            cp "$AGG_DRAFT_OUT" "$AGG_OUT"
+        if [ ! -s "$CRITIC_OUT" ]; then
+            log "$PR_ID: critic output empty — continuing without counterarguments (aggregator will fall back to raw specialist findings)"
+            echo "(critic output empty — fall back)" > "$CRITIC_OUT"
         fi
 
+        # ========== Stage 2 of 2: aggregator synthesizes final review ==========
+        log "$PR_ID: aggregator (with critic input)..."
+        AGG_PROMPT=$(build_specialist_prompt \
+            "aggregator" \
+            "$HOME/.pr-reviewer/prompts/aggregator.md" \
+            "$PR_ID" "$PR_TITLE" "$PR_URL")
+        AGG_OUT="$REPO_DIR/.codex-scratch/aggregator-output.md"
+        codex exec \
+            -C "$REPO_DIR" \
+            --dangerously-bypass-approvals-and-sandbox \
+            -c model_reasoning_effort=high \
+            -o "$AGG_OUT" \
+            "$AGG_PROMPT" \
+            >> "$LOG_FILE" 2>&1
+
         if [ ! -s "$AGG_OUT" ]; then
-            log "$PR_ID: final review empty — aborting"
+            log "$PR_ID: aggregator output empty — aborting"
             preserve_scratch "$REPO_DIR" "$(echo "$PR_ID" | tr "/#" "__")"
             rm -f "$LOCK_FILE"
             continue
