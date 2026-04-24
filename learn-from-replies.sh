@@ -115,8 +115,8 @@ YOUR JOB:
 
 3. Produce the updated list. Keep the format EXACTLY:
    - Numbered list, 1..N, with N ≤ 48.
-   - Each line: \`N. [Explicit] <pattern statement>. <why it matters, one clause>.\`
-   - Every entry is tagged [Explicit]; no [Inferred] entries exist in this file any more.
+   - Each line: \`N. <pattern statement>. <why it matters, one clause>.\`
+   - No source tag prefix — this file only accepts explicit signals now, so there's no tag to disambiguate.
    - Under ~200 chars per item. Patterns, not case studies.
    - Ranked by importance: frequently-seen patterns outrank one-offs.
    - If the list exceeds 48 items after edits, DROP the lowest-ranked items.
