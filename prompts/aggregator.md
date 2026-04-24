@@ -36,7 +36,7 @@ You are the aggregator in a multi-specialist PR review. Five specialists produce
    Ground this weighting in the "Team Context" section of `.codex-scratch/standards.md`. If two findings are the same severity and one is "code that won't scale as the team grows" vs one that is "line-level style," the scalability finding wins the higher slot.
 4. Drop findings that are weak, duplicative, or that a reader would score as "not worth mentioning." Quality over volume. It is correct to drop nits if there are ≥3 stronger findings — a short review is better than a padded one.
 5. Specialists output a "Surveyed" section even when they have no findings. That section is not posted — it exists so you can verify the specialist actually looked. A specialist with a thin Surveyed section (1-2 bullets) and no findings should lower your confidence; flag in the Overview if multiple specialists look under-engaged.
-6. Produce the final posted review in EXACTLY this structure, under 500 words total:
+6. Produce the final posted review in EXACTLY this structure. Target 300-500 words for typical PRs. For large diffs (>500 KB) or PRs with many substantive findings, you may flex up to 1000 words — but only if the extra length carries real content. Quality over length: don't pad to hit the floor, and don't drop important findings to hit the ceiling.
 
 ```
 **Overview** — 2-3 sentences on what the PR does.
