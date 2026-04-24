@@ -12,7 +12,7 @@ REPOS=("cncorp/plow" "srosro/tkmx-client" "srosro/tkmx-server" "srosro/knightwat
 REPOS_DIR="${REPOS_DIR:-$STATE_DIR/repos}"
 WORKDIRS_DIR="${WORKDIRS_DIR:-$STATE_DIR/workdirs}"
 STABLE_SECS="${STABLE_SECS:-$((2 * 3600))}"
-MAX_CONCURRENT="${MAX_CONCURRENT:-4}"
+MAX_CONCURRENT="${MAX_CONCURRENT:-8}"
 
 [ -f "$STATE_DIR/config.env" ] && . "$STATE_DIR/config.env"
 BOT_USER="${BOT_USER:-srosro}"
