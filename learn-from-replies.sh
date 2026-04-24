@@ -15,16 +15,16 @@
 
 export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
 
-STATE_DIR="$HOME/.pr-reviewer"
+STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 [ -f "$STATE_DIR/config.env" ] && . "$STATE_DIR/config.env"
 BOT_USER="${BOT_USER:-srosro}"
 
 REPOS=("cncorp/plow" "srosro/tkmx-client" "srosro/tkmx-server" "srosro/knightwatch-reviewer")
-REPLIES_SEEN_FILE="$STATE_DIR/replies-seen.json"
-LOG_FILE="$STATE_DIR/learn.log"
-MAC_HOST="so@so-mbp"
-CLAUDE_DIR="$HOME/.claude"
-MAC_CLAUDE_DIR="/Users/so/.claude"
+REPLIES_SEEN_FILE="${REPLIES_SEEN_FILE:-$STATE_DIR/replies-seen.json}"
+LOG_FILE="${LOG_FILE:-$STATE_DIR/learn.log}"
+MAC_HOST="${MAC_HOST:-so@so-mbp}"
+CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
+MAC_CLAUDE_DIR="${MAC_CLAUDE_DIR:-/Users/so/.claude}"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"; }
 

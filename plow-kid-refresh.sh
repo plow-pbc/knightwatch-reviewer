@@ -11,8 +11,8 @@
 set -u
 export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
-LOG="$HOME/.pr-reviewer/plow-kid-refresh.log"
-LOCK="/tmp/plow-kid-refresh.lock"
+LOG="${LOG:-$HOME/.pr-reviewer/plow-kid-refresh.log}"
+LOCK="${LOCK:-/tmp/plow-kid-refresh.lock}"
 
 # Map project label → local checkout path. Label is logging-only; the path
 # is what kid indexes. Plow uses a dedicated mirror under plow-kid; tkmx
