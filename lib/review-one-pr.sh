@@ -324,6 +324,15 @@ $IS_BODY
 done < <(printf '%s' "$PR_DATA" | jq -r '.closingIssuesReferences[]? | [.owner.login, .repo.name, (.number|tostring)] | @tsv' 2>/dev/null)
 write_scratch "$REPO_DIR" "author-intent.md" "$AUTHOR_INTENT"
 
+COMMITS=$(printf '%s' "$PR_DATA" | jq -r '.commits[]? | "\(.oid[0:7]) \(.messageHeadline)"')
+if [ -z "$COMMITS" ]; then
+    log "$PR_ID: gh pr view returned no commits — aborting"
+    preserve_scratch "$REPO_DIR" "$(echo "$PR_ID" | tr "/#" "__")"
+    rm -rf "$REPO_DIR"
+    exit 1
+fi
+write_scratch "$REPO_DIR" "commits.md" "$COMMITS"
+
 SPECIALISTS_DIR="$REPO_DIR/.codex-scratch/specialists"
 mkdir -p "$SPECIALISTS_DIR"
 
