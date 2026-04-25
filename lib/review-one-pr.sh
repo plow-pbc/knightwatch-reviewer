@@ -201,6 +201,48 @@ done < <(find "$REPO_DIR" -type f -name '.env*.example' \
 [ "${#COPIED_ENV_FILES[@]}" -gt 0 ] && \
     log "$PR_ID: mirrored ${#COPIED_ENV_FILES[@]} env file(s) from canonical"
 
+# ---- build diff + REVIEW_TASK (three paths) ----
+# Hoisted ahead of `just test` so an empty-diff abort (re-review triggered
+# without new commits since the prior review) costs seconds instead of
+# burning a full `just test` cycle — including live-API recipes — on a
+# workdir that has nothing to review.
+KNOWN_SHA=$(state_get "$PR_ID" "sha")
+PREV_BODY=""
+PREV_APPROVED=""
+if [ -z "$KNOWN_SHA" ] || [ "$FORCE_WHOLE_PR" = "true" ]; then
+    KID_INPUT_DIFF=$(gh pr diff "$PR_NUM" --repo "$REPO" 2>/dev/null)
+    if [ "$FORCE_WHOLE_PR" = "true" ]; then
+        REVIEW_TASK="Whole-PR re-review (requested via /review comment). Review the full PR diff at .codex-scratch/diff.patch against the standards in .codex-scratch/standards.md. Any prior review is intentionally NOT provided — evaluate this PR from scratch."
+    else
+        REVIEW_TASK="Review the diff at .codex-scratch/diff.patch against the standards in .codex-scratch/standards.md."
+    fi
+else
+    PREV_BODY=$(state_get "$PR_ID" "body")
+    PREV_APPROVED=$(state_get "$PR_ID" "approved")
+    if git -C "$REPO_DIR" cat-file -e "${KNOWN_SHA}^{commit}" 2>/dev/null; then
+        KID_INPUT_DIFF=$(git -C "$REPO_DIR" diff "$KNOWN_SHA..HEAD")
+        # Specialists work the incremental diff; the aggregator separately
+        # gets the full PR diff so it can verify whether prior blocking
+        # findings touch code that's actually changed in this PR vs. has
+        # been left as-is and is still unaddressed.
+        FULL_PR_DIFF=$(gh pr diff "$PR_NUM" --repo "$REPO" 2>/dev/null)
+        if [ -z "$FULL_PR_DIFF" ]; then
+            log "$PR_ID: full-PR diff fetch returned empty — re-review will run without full-diff.patch and the aggregator's prior-finding verification is degraded"
+        fi
+    else
+        log "$PR_ID: prior SHA $KNOWN_SHA not in local history; using full PR diff"
+        KID_INPUT_DIFF=$(gh pr diff "$PR_NUM" --repo "$REPO" 2>/dev/null)
+        FULL_PR_DIFF="$KID_INPUT_DIFF"
+    fi
+    REVIEW_TASK="Re-review: the author has pushed new commits since your previous review (at ${KNOWN_SHA:0:7}, approved=$PREV_APPROVED). Your prior review is in .codex-scratch/previous-review.md. The incremental diff since that review is in .codex-scratch/diff.patch; the full PR diff is in .codex-scratch/full-diff.patch (consult it when verifying whether prior findings are addressed). Assess whether the new commits address your prior concerns, then produce an updated review."
+fi
+
+if [ -z "$KID_INPUT_DIFF" ]; then
+    log "$PR_ID: empty diff — gh pr diff / git diff returned nothing (possible auth, network, or rebase issue), aborting"
+    rm -rf "$REPO_DIR"
+    exit 1
+fi
+
 # ---- just test ----
 TEST_LOG="$REPO_DIR/.test-output.log"
 TEST_TIMEOUT=30m
@@ -242,44 +284,6 @@ STANDARDS+=$'\n\n'
 [ -f ~/.claude/TESTING.md ]              && STANDARDS+=$(cat ~/.claude/TESTING.md)
 STANDARDS+=$'\n\n'
 [ -f ~/.claude/COMMENT_REVIEW_MISTAKES.md ] && STANDARDS+="## Known Review Mistakes (avoid repeating these)\n"$(cat ~/.claude/COMMENT_REVIEW_MISTAKES.md)
-
-# ---- build diff + REVIEW_TASK (three paths) ----
-KNOWN_SHA=$(state_get "$PR_ID" "sha")
-PREV_BODY=""
-PREV_APPROVED=""
-if [ -z "$KNOWN_SHA" ] || [ "$FORCE_WHOLE_PR" = "true" ]; then
-    KID_INPUT_DIFF=$(gh pr diff "$PR_NUM" --repo "$REPO" 2>/dev/null)
-    if [ "$FORCE_WHOLE_PR" = "true" ]; then
-        REVIEW_TASK="Whole-PR re-review (requested via /review comment). Review the full PR diff at .codex-scratch/diff.patch against the standards in .codex-scratch/standards.md. Any prior review is intentionally NOT provided — evaluate this PR from scratch."
-    else
-        REVIEW_TASK="Review the diff at .codex-scratch/diff.patch against the standards in .codex-scratch/standards.md."
-    fi
-else
-    PREV_BODY=$(state_get "$PR_ID" "body")
-    PREV_APPROVED=$(state_get "$PR_ID" "approved")
-    if git -C "$REPO_DIR" cat-file -e "${KNOWN_SHA}^{commit}" 2>/dev/null; then
-        KID_INPUT_DIFF=$(git -C "$REPO_DIR" diff "$KNOWN_SHA..HEAD")
-        # Specialists work the incremental diff; the aggregator separately
-        # gets the full PR diff so it can verify whether prior blocking
-        # findings touch code that's actually changed in this PR vs. has
-        # been left as-is and is still unaddressed.
-        FULL_PR_DIFF=$(gh pr diff "$PR_NUM" --repo "$REPO" 2>/dev/null)
-        if [ -z "$FULL_PR_DIFF" ]; then
-            log "$PR_ID: full-PR diff fetch returned empty — re-review will run without full-diff.patch and the aggregator's prior-finding verification is degraded"
-        fi
-    else
-        log "$PR_ID: prior SHA $KNOWN_SHA not in local history; using full PR diff"
-        KID_INPUT_DIFF=$(gh pr diff "$PR_NUM" --repo "$REPO" 2>/dev/null)
-        FULL_PR_DIFF="$KID_INPUT_DIFF"
-    fi
-    REVIEW_TASK="Re-review: the author has pushed new commits since your previous review (at ${KNOWN_SHA:0:7}, approved=$PREV_APPROVED). Your prior review is in .codex-scratch/previous-review.md. The incremental diff since that review is in .codex-scratch/diff.patch; the full PR diff is in .codex-scratch/full-diff.patch (consult it when verifying whether prior findings are addressed). Assess whether the new commits address your prior concerns, then produce an updated review."
-fi
-
-if [ -z "$KID_INPUT_DIFF" ]; then
-    log "$PR_ID: empty diff — gh pr diff / git diff returned nothing (possible auth, network, or rebase issue), aborting"
-    rm -rf "$REPO_DIR"
-    exit 1
-fi
 
 # ---- kid prior-art ----
 PRIOR_ART=""
