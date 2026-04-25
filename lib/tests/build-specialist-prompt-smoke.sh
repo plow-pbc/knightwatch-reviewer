@@ -1,9 +1,17 @@
 #!/bin/bash
-# Smoke test for lib/prompt-build.sh's build_specialist_prompt.
+# Smoke test for lib/prompt-build.sh.
 #
-# Verifies all five placeholders ({{PR_ID}}, {{PR_TITLE}}, {{PR_URL}},
-# {{SPECIALIST_NAME}}, {{PR_AUTHOR}}) are substituted correctly, and
-# that no unsubstituted {{...}} markers remain in the output.
+# Verifies:
+#   - All five placeholders ({{PR_ID}}, {{PR_TITLE}}, {{PR_URL}},
+#     {{SPECIALIST_NAME}}, {{PR_AUTHOR}}) substitute correctly.
+#   - No unsubstituted {{...}} markers remain in build_specialist_prompt output.
+#   - sed-special chars in inputs are escaped, not interpreted.
+#   - Placeholders inside the ANGLE FILE (not just common-header) are
+#     substituted by build_specialist_prompt. This covers the case where a
+#     non-common-header prompt uses placeholders directly in its body
+#     (e.g. prompts/intent.md uses {{PR_AUTHOR}} in its template line).
+#   - substitute_placeholders works standalone (used by the intent step,
+#     which deliberately bypasses common-header).
 
 set -euo pipefail
 
@@ -23,7 +31,11 @@ Author: {{PR_AUTHOR}}
 EOF
 
 ANGLE_FILE="$TMPDIR/angle.md"
-echo "Angle: focus on X" > "$ANGLE_FILE"
+cat > "$ANGLE_FILE" <<'EOF'
+Angle: focus on X
+Author handle in angle: @{{PR_AUTHOR}}
+PR id in angle: {{PR_ID}}
+EOF
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$SCRIPT_DIR/prompt-build.sh"
@@ -36,13 +48,23 @@ OUTPUT=$(build_specialist_prompt \
     "https://github.com/owner/repo/pull/42" \
     "plucas")
 
-echo "  asserting all five placeholders substituted..."
+echo "  asserting all five placeholders substituted in common-header..."
 for pair in "PR: owner/repo#42" "Title: Add caching to /api/foo" \
             "URL: https://github.com/owner/repo/pull/42" \
             "Specialist: security" "Author: plucas" \
             "Angle: focus on X"; do
     if ! echo "$OUTPUT" | grep -qF "$pair"; then
         echo "FAIL: expected '$pair' in output"
+        echo "--- output ---"
+        echo "$OUTPUT"
+        exit 1
+    fi
+done
+
+echo "  asserting placeholders in the ANGLE file are also substituted..."
+for pair in "Author handle in angle: @plucas" "PR id in angle: owner/repo#42"; do
+    if ! echo "$OUTPUT" | grep -qF "$pair"; then
+        echo "FAIL: angle-file placeholder not substituted: '$pair'"
         echo "--- output ---"
         echo "$OUTPUT"
         exit 1
@@ -66,6 +88,36 @@ if ! echo "$TRICKY_OUTPUT" | grep -qF "Title with & ampersand and | pipe and \\b
     echo "FAIL: tricky title not preserved verbatim"
     echo "--- output ---"
     echo "$TRICKY_OUTPUT"
+    exit 1
+fi
+
+echo "  asserting substitute_placeholders works standalone (no common-header)..."
+STANDALONE_PROMPT="$TMPDIR/standalone.md"
+cat > "$STANDALONE_PROMPT" <<'EOF'
+PR: {{PR_ID}}
+Author: @{{PR_AUTHOR}}
+Title: {{PR_TITLE}}
+EOF
+STANDALONE_OUTPUT=$(substitute_placeholders \
+    "$STANDALONE_PROMPT" \
+    "owner/repo#7" "Standalone title" "https://example.com/7" "alice")
+for pair in "PR: owner/repo#7" "Author: @alice" "Title: Standalone title"; do
+    if ! echo "$STANDALONE_OUTPUT" | grep -qF "$pair"; then
+        echo "FAIL: standalone substitute_placeholders missing '$pair'"
+        echo "--- output ---"
+        echo "$STANDALONE_OUTPUT"
+        exit 1
+    fi
+done
+if echo "$STANDALONE_OUTPUT" | grep -q '{{[^}]*}}'; then
+    echo "FAIL: standalone output has unsubstituted placeholder"
+    echo "$STANDALONE_OUTPUT" | grep '{{[^}]*}}'
+    exit 1
+fi
+# substitute_placeholders alone should NOT prepend common-header content.
+if echo "$STANDALONE_OUTPUT" | grep -q "Specialist:"; then
+    echo "FAIL: substitute_placeholders unexpectedly included common-header content"
+    echo "$STANDALONE_OUTPUT"
     exit 1
 fi
 
