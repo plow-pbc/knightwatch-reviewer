@@ -9,12 +9,14 @@ You are running BEFORE a fan-out of 5 review specialists. Your job is to write a
 
 **Inputs:**
 - `.codex-scratch/diff.patch` — the diff under review
-- `.codex-scratch/author-intent.md` — PR title + body + linked issues. The body may be AI-written and misleading; trust the diff and commit subjects when they conflict.
 - `.codex-scratch/commits.md` — commit subjects on this branch, one per line
 - `.codex-scratch/file-history.md` — recent commits per touched file
+- The PR title is in this prompt's header above (`**Title:**`). That is the canonical author-stated framing — use it.
+
+**Privacy — read this first.** The aggregator copies your output verbatim into a public PR comment on GitHub. Linked issues, internal docs, and any other text you might be tempted to summarize may be private to the bot's GitHub identity. Do NOT read `.codex-scratch/author-intent.md` (it contains issue bodies that should not be reproduced publicly). Do NOT speculate about the contents of linked issues. Derive intent strictly from the diff, commits, file history, and PR title. If the public-facing surface of the change isn't clear from those sources, fall back to the "no inferable end-user-facing intent" output described below.
 
 **Rules:**
-1. Read the diff, the commits, and the linked issues. Triangulate.
+1. Read the diff, the commits, and the file history. Triangulate against the PR title.
 2. Output exactly ONE block, no preamble, no commentary, no headers:
 
    ```
