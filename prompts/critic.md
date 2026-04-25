@@ -10,6 +10,8 @@ Then read:
 - `.codex-scratch/specialists/tests.md`
 - `.codex-scratch/diff.patch` — the actual change
 - `.codex-scratch/file-history.md` — recent commits on touched files
+- `.codex-scratch/commits.md` — commit subjects on this branch, one per line
+- `.codex-scratch/inferred-intent.md` — the pre-fan-out inferred end-user-facing intent. Specialists were told to grade implementation against this; you should too when stress-testing their findings.
 - `.codex-scratch/author-intent.md` — the PR's own description + linked issues (READ THIS — it often explains WHY the author did something a specialist is about to criticize)
 - `.codex-scratch/product-context.md` — product stage and roadmap
 
