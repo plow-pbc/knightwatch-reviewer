@@ -342,6 +342,37 @@ gh pr comment "$PR_NUM" --repo "$REPO" \
     --body "👀 reviewing — [sam's ai review bot](https://github.com/srosro/knightwatch-reviewer)" \
     >/dev/null 2>&1 || log "$PR_ID: failed to post reviewing-status comment (continuing)"
 
+log "$PR_ID: inferring developer intent..."
+INTENT_PROMPT=$(build_specialist_prompt \
+    "intent" \
+    "$HOME/.pr-reviewer/prompts/intent.md" \
+    "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR")
+INTENT_OUT="$REPO_DIR/.codex-scratch/inferred-intent.md"
+codex exec \
+    -C "$REPO_DIR" \
+    --dangerously-bypass-approvals-and-sandbox \
+    -c model_reasoning_effort=high \
+    -o "$INTENT_OUT" \
+    "$INTENT_PROMPT" \
+    >> "$LOG_FILE" 2>&1
+INTENT_EXIT=$?
+
+if [ "$INTENT_EXIT" -ne 0 ] || [ ! -s "$INTENT_OUT" ]; then
+    log "$PR_ID: intent inference failed (codex exit=$INTENT_EXIT, output empty=$([ ! -s "$INTENT_OUT" ] && echo true || echo false)) — aborting"
+    preserve_scratch "$REPO_DIR" "$(echo "$PR_ID" | tr "/#" "__")"
+    rm -rf "$REPO_DIR"
+    exit 1
+fi
+
+if ! head -1 "$INTENT_OUT" | grep -q '^Inferred intent: '; then
+    log "$PR_ID: intent output does not start with 'Inferred intent: ' prefix — aborting"
+    preserve_scratch "$REPO_DIR" "$(echo "$PR_ID" | tr "/#" "__")"
+    rm -rf "$REPO_DIR"
+    exit 1
+fi
+
+log "$PR_ID: intent inference complete: $(head -1 "$INTENT_OUT")"
+
 log "$PR_ID: launching 5 specialists in parallel..."
 for angle in security data-integrity architecture simplification tests; do
     PROMPT=$(build_specialist_prompt \
