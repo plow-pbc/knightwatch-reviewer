@@ -77,6 +77,18 @@ for REPO in "${REPOS[@]}"; do
         # aborts in lib/review-one-pr.sh. /review (FORCE_WHOLE_PR=true)
         # bypasses this because the worker uses `gh pr diff` for the full
         # PR regardless of base SHA, so there's always something to review.
+        #
+        # Stale-mention behavior (deliberate): a skipped @-mention is NOT
+        # consumed — the comment-selection query keys off
+        # `created_at > reviewed_at`, so the mention stays "open" until the
+        # next actual review. If the author later pushes a commit before
+        # that review, the still-open mention flips FORCE_REVIEW=true on
+        # the next tick and bypasses the 2h stability gate. We accept this
+        # as eager-review behavior: the user pinged the bot for attention,
+        # and we deliver it as soon as there is something meaningful to
+        # review (the new commits). Marking mentions consumed on skip
+        # would require a state schema change for a low-impact edge case
+        # at our scale.
         if [ "$PR_SHA" = "$KNOWN_SHA" ] && [ "$FORCE_WHOLE_PR" = "false" ]; then
             continue
         fi
