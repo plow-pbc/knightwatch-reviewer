@@ -163,12 +163,42 @@ if ! git -C "$REPO_DIR" checkout -B "pr-$PR_NUM" "origin/$PR_BRANCH" --quiet; th
     exit 1
 fi
 
+# Mirror gitignored env files from canonical into the workdir. `git clone
+# --shared` only carries tracked content, so .env files the user keeps in
+# canonical's working tree (e.g. live-API credentials for `just test`'s
+# scenario suites) never land here, and recipes that source them trip
+# `${ANTHROPIC_API_KEY:?...}`-style guards identically on every PR. For
+# each `.env*.example` the repo ships, copy the matching real env file
+# (name minus `.example`) from canonical if one exists. Deleted right
+# after `just test` so secret-bearing files don't linger.
+COPIED_ENV_FILES=()
+while IFS= read -r -d '' example_path; do
+    rel="${example_path#$REPO_DIR/}"
+    target_rel="${rel%.example}"
+    canonical_src="$CANONICAL_DIR/$target_rel"
+    workdir_dst="$REPO_DIR/$target_rel"
+    if [ -e "$canonical_src" ] && [ ! -e "$workdir_dst" ]; then
+        cp -L "$canonical_src" "$workdir_dst"
+        COPIED_ENV_FILES+=("$workdir_dst")
+    fi
+done < <(find "$REPO_DIR" -type f -name '.env*.example' \
+    -not -path '*/.git/*' -not -path '*/node_modules/*' -print0)
+[ "${#COPIED_ENV_FILES[@]}" -gt 0 ] && \
+    log "$PR_ID: mirrored ${#COPIED_ENV_FILES[@]} env file(s) from canonical"
+
 # ---- just test ----
 TEST_LOG="$REPO_DIR/.test-output.log"
 TEST_TIMEOUT=30m
 log "$PR_ID: running \`just test\` (timeout ${TEST_TIMEOUT})..."
 (cd "$REPO_DIR" && timeout "$TEST_TIMEOUT" just test) > "$TEST_LOG" 2>&1
 TEST_EXIT=$?
+# Env files were only needed for `just test`; delete eagerly so secrets
+# don't sit in the workdir during the long specialist phase. REPO_DIR
+# is also rm -rf'd on every exit path below, so this is a belt-and-
+# suspenders early sweep, not the only cleanup.
+for f in "${COPIED_ENV_FILES[@]}"; do
+    rm -f "$f"
+done
 if [ "$TEST_EXIT" -eq 127 ]; then
     log "$PR_ID: 'just test' not available (exit 127) — aborting; check just is installed and a justfile exists at repo root"
     rm -rf "$REPO_DIR"
