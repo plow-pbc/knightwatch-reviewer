@@ -16,6 +16,13 @@ FORCE_WHOLE_PR="${6:-false}"
 PR_ID="${REPO}#${PR_NUM}"
 PR_URL="https://github.com/$REPO/pull/$PR_NUM"
 
+# Captured here (before anything that can take minutes: just test, specialists,
+# aggregator) and stamped into state.reviewed_at on success. The orchestrator
+# filters "new comments since last review" with created_at > reviewed_at, so if
+# we stamped completion time instead, a /review posted during this run would
+# fall before the stamp and be invisible to the next tick.
+REVIEW_START_TS=$(date +%s)
+
 # --- per-PR advisory lock ----------------------------------------------------
 # Prevents two concurrent invocations from stepping on each other for the same
 # PR. If we can't acquire, exit silently (with a log line) — the other
@@ -456,7 +463,7 @@ else
     log "Commented on $PR_ID (no approval)"
 fi
 
-if ! state_set "$PR_ID" "$PR_SHA" "$APPROVED" "$COMMENT_BODY"; then
+if ! state_set "$PR_ID" "$PR_SHA" "$APPROVED" "$COMMENT_BODY" "$REVIEW_START_TS"; then
     log "$PR_ID: state_set FAILED — review posted but state.json not updated; next tick will re-review this SHA"
     preserve_scratch "$REPO_DIR" "$(echo "$PR_ID" | tr "/#" "__")"
     rm -rf "$REPO_DIR"

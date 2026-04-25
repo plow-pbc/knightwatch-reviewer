@@ -14,7 +14,11 @@ state_get() {
 }
 
 state_set() {
-    local pr_id="$1" sha="$2" approved="$3" body="$4"
+    # $5 (reviewed_at timestamp) is optional. Callers that want to pin the
+    # "since" window for the next tick's comment filter to an earlier moment
+    # (e.g. the worker's start time, so a /review posted during this review
+    # isn't swallowed) pass it explicitly; everyone else gets "now".
+    local pr_id="$1" sha="$2" approved="$3" body="$4" ts="${5:-$(date +%s)}"
     local lockfile="${STATE_FILE}.lock"
     (
         # subshell holds the lock for its lifetime
@@ -22,7 +26,7 @@ state_set() {
         flock "$fd"
         local tmp
         tmp=$(jq --arg id "$pr_id" --arg sha "$sha" --arg body "$body" \
-            --argjson ts "$(date +%s)" --argjson appr "$approved" \
+            --argjson ts "$ts" --argjson appr "$approved" \
             '.[$id] = {sha: $sha, reviewed_at: $ts, approved: $appr, body: $body}' \
             "$STATE_FILE") || exit 1
         # Atomic rename pattern — fail loud on either step so callers know
