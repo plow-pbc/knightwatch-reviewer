@@ -61,30 +61,8 @@ BOT_USER="${BOT_USER:-srosro}"
 _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 . "$_LIB_DIR/state-io.sh"
 
-# --- sed escape for PR metadata placeholders ----------------------------------
-safe_sed() {
-    printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'
-}
-
-# --- build a specialist prompt by concatenating common-header + angle file ----
-build_specialist_prompt() {
-    local specialist_name="$1" specialist_file="$2" pr_id="$3" pr_title="$4" pr_url="$5"
-    local common="$HOME/.pr-reviewer/prompts/common-header.md"
-    local esc_id esc_title esc_url esc_name
-    esc_id=$(safe_sed "$pr_id")
-    esc_title=$(safe_sed "$pr_title")
-    esc_url=$(safe_sed "$pr_url")
-    esc_name=$(safe_sed "$specialist_name")
-    {
-        sed -e "s|{{PR_ID}}|$esc_id|g" \
-            -e "s|{{PR_TITLE}}|$esc_title|g" \
-            -e "s|{{PR_URL}}|$esc_url|g" \
-            -e "s|{{SPECIALIST_NAME}}|$esc_name|g" \
-            "$common"
-        echo ""
-        cat "$specialist_file"
-    }
-}
+# --- prompt-build helpers (sourced from lib/prompt-build.sh) ---
+. "$_LIB_DIR/prompt-build.sh"
 
 write_scratch() {
     local repo_dir="$1" filename="$2" content="$3"
