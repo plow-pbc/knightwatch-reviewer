@@ -11,12 +11,13 @@ You are running BEFORE a fan-out of 5 review specialists. Your job is to write a
 - `.codex-scratch/diff.patch` — the diff under review
 - `.codex-scratch/commits.md` — commit subjects on this branch, one per line
 - `.codex-scratch/file-history.md` — recent commits per touched file
+- `.codex-scratch/trigger-comment.md` — present *only when* this review was kicked off by a `/review` or `@<bot>` comment. Contains the commenter's GitHub login + the comment body. When present, this is the requester's explicit framing of what they want reviewed — weight it heavily.
 - The PR title is in this prompt's header above (`**Title:**`). That is the canonical author-stated framing — use it.
 
 **Privacy — read this first.** The aggregator copies your output verbatim into a public PR comment on GitHub. Linked issues, internal docs, and any other text you might be tempted to summarize may be private to the bot's GitHub identity. Do NOT read `.codex-scratch/author-intent.md` (it contains issue bodies that should not be reproduced publicly). Do NOT speculate about the contents of linked issues. Derive intent strictly from the diff, commits, file history, and PR title. If the public-facing surface of the change isn't clear from those sources, fall back to the "no inferable end-user-facing intent" output described below.
 
 **Rules:**
-1. Read the diff, the commits, and the file history. Triangulate against the PR title.
+1. Read the diff, the commits, and the file history. Triangulate against the PR title. If `.codex-scratch/trigger-comment.md` exists, read it too: the commenter's prose usually names the *intended* end-user-facing goal directly ("trying to DRY this up", "trying to cut checkout latency", etc.) — let that anchor your inferred intent, and frame the rest in tension with it if the diff doesn't match (e.g. "trying to reduce duplication, but the diff grew by ~2k LoC"). Don't quote the comment verbatim — extract the goal and write the intent line to read naturally. If the comment body is only the trigger token (`/review` or `@<bot>`) with no further prose, ignore it.
 2. Output exactly ONE block, no preamble, no commentary, no headers:
 
    ```

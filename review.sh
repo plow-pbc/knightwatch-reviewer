@@ -52,6 +52,7 @@ for REPO in "${REPOS[@]}"; do
         KNOWN_SHA=$(state_get "$PR_ID" "sha")
         FORCE_REVIEW=false
         FORCE_WHOLE_PR=false
+        TRIGGER_FILE=""
 
         if [ -n "$KNOWN_SHA" ]; then
             REVIEWED_AT=$(state_get "$PR_ID" "reviewed_at")
@@ -68,6 +69,29 @@ for REPO in "${REPOS[@]}"; do
                 FORCE_WHOLE_PR=true
             elif [ "${INCREMENTAL_MENTION:-0}" -gt 0 ]; then
                 FORCE_REVIEW=true
+            fi
+            # If a comment triggered this re-review, capture the latest matching
+            # comment's author + body to a tmp file so the worker can stage it
+            # as `.codex-scratch/trigger-comment.md`. Lets the requester's own
+            # framing ("trying to DRY but ended up adding 2k LoC...") shape the
+            # inferred intent and the review's emphasis. Path is passed via the
+            # 7th spec field; the worker reads and rm -fs it once received.
+            if [ "$FORCE_REVIEW" = "true" ]; then
+                if [ "$FORCE_WHOLE_PR" = "true" ]; then
+                    TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
+                        jq -c --arg since "$REVIEWED_AT_ISO" \
+                            '[.[] | select(.created_at > $since and (.body | test("/review"; "i")))] | sort_by(.created_at) | last // empty' 2>/dev/null)
+                else
+                    TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
+                        jq -c --arg since "$REVIEWED_AT_ISO" --arg user "$BOT_USER" \
+                            '[.[] | select(.created_at > $since and (.body | test("@" + $user; "i")) and ((.body | test("/review"; "i")) | not))] | sort_by(.created_at) | last // empty' 2>/dev/null)
+                fi
+                if [ -n "$TRIGGER_JSON" ]; then
+                    TRIGGER_USER=$(printf '%s' "$TRIGGER_JSON" | jq -r '.user.login // ""')
+                    TRIGGER_BODY=$(printf '%s' "$TRIGGER_JSON" | jq -r '.body // ""')
+                    TRIGGER_FILE=$(mktemp /tmp/pr-review-trigger.XXXXXX)
+                    printf 'Comment by @%s:\n\n%s\n' "$TRIGGER_USER" "$TRIGGER_BODY" > "$TRIGGER_FILE"
+                fi
             fi
         fi
 
@@ -119,7 +143,7 @@ for REPO in "${REPOS[@]}"; do
         fi
 
         # Tab-separated spec so titles with spaces survive.
-        ELIGIBLE+=("$REPO"$'\t'"$PR_NUM"$'\t'"$PR_SHA"$'\t'"$PR_BRANCH"$'\t'"$PR_TITLE"$'\t'"$FORCE_WHOLE_PR")
+        ELIGIBLE+=("$REPO"$'\t'"$PR_NUM"$'\t'"$PR_SHA"$'\t'"$PR_BRANCH"$'\t'"$PR_TITLE"$'\t'"$FORCE_WHOLE_PR"$'\t'"$TRIGGER_FILE")
     done < <(echo "$PR_LIST" | jq -c '.[]')
 done
 
@@ -139,7 +163,7 @@ log "Fan-out: ${#ELIGIBLE[@]} eligible PR(s), max $MAX_CONCURRENT concurrent"
 active=0
 FAILED=0
 for spec in "${ELIGIBLE[@]}"; do
-    IFS=$'\t' read -r REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR <<< "$spec"
+    IFS=$'\t' read -r REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR TRIGGER_FILE <<< "$spec"
 
     while [ "$active" -ge "$MAX_CONCURRENT" ]; do
         if ! wait -n; then
@@ -148,6 +172,7 @@ for spec in "${ELIGIBLE[@]}"; do
         active=$((active - 1))
     done
 
+    TRIGGER_COMMENT_FILE="$TRIGGER_FILE" \
     REVIEWER_LIB_DIR="$REVIEWER_LIB_DIR" \
         "$REVIEWER_LIB_DIR/review-one-pr.sh" \
         "$REPO" "$PR_NUM" "$PR_SHA" "$PR_BRANCH" "$PR_TITLE" "$FORCE_WHOLE_PR" &

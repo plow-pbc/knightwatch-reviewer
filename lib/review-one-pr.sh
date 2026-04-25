@@ -1,7 +1,10 @@
 #!/bin/bash
 # Reviews one PR end-to-end. Invoked by review.sh as:
-#   lib/review-one-pr.sh REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR
-# where FORCE_WHOLE_PR is "true" or "false".
+#   TRIGGER_COMMENT_FILE=<path> lib/review-one-pr.sh REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR
+# where FORCE_WHOLE_PR is "true" or "false". TRIGGER_COMMENT_FILE is
+# optional and points to a tmp file holding the body of the comment that
+# kicked off this review (when triggered by /review or @bot mention);
+# the worker slurps it and rm -fs the file early.
 
 set -u
 export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
@@ -15,6 +18,18 @@ FORCE_WHOLE_PR="${6:-false}"
 
 PR_ID="${REPO}#${PR_NUM}"
 PR_URL="https://github.com/$REPO/pull/$PR_NUM"
+
+# Trigger-comment context: review.sh sets TRIGGER_COMMENT_FILE to a tmp
+# path holding the body of the comment that kicked off this review (when
+# the trigger was a /review or @bot mention). Slurp it now and rm -f
+# eagerly so the tmp file doesn't survive past this worker, regardless
+# of which exit path we take below. Empty string when this review
+# wasn't triggered by a comment.
+TRIGGER_COMMENT_BODY=""
+if [ -n "${TRIGGER_COMMENT_FILE:-}" ] && [ -f "${TRIGGER_COMMENT_FILE}" ]; then
+    TRIGGER_COMMENT_BODY=$(cat "${TRIGGER_COMMENT_FILE}")
+    rm -f "${TRIGGER_COMMENT_FILE}"
+fi
 
 # Captured here (before anything that can take minutes: just test, specialists,
 # aggregator) and stamped into state.reviewed_at on success. The orchestrator
@@ -244,11 +259,20 @@ else
     PREV_APPROVED=$(state_get "$PR_ID" "approved")
     if git -C "$REPO_DIR" cat-file -e "${KNOWN_SHA}^{commit}" 2>/dev/null; then
         KID_INPUT_DIFF=$(git -C "$REPO_DIR" diff "$KNOWN_SHA..HEAD")
+        # Specialists work the incremental diff; the aggregator separately
+        # gets the full PR diff so it can verify whether prior blocking
+        # findings touch code that's actually changed in this PR vs. has
+        # been left as-is and is still unaddressed.
+        FULL_PR_DIFF=$(gh pr diff "$PR_NUM" --repo "$REPO" 2>/dev/null)
+        if [ -z "$FULL_PR_DIFF" ]; then
+            log "$PR_ID: full-PR diff fetch returned empty — re-review will run without full-diff.patch and the aggregator's prior-finding verification is degraded"
+        fi
     else
         log "$PR_ID: prior SHA $KNOWN_SHA not in local history; using full PR diff"
         KID_INPUT_DIFF=$(gh pr diff "$PR_NUM" --repo "$REPO" 2>/dev/null)
+        FULL_PR_DIFF="$KID_INPUT_DIFF"
     fi
-    REVIEW_TASK="Re-review: the author has pushed new commits since your previous review (at ${KNOWN_SHA:0:7}, approved=$PREV_APPROVED). Your prior review is in .codex-scratch/previous-review.md. The incremental diff since that review is in .codex-scratch/diff.patch. Assess whether the new commits address your prior concerns, then produce an updated review."
+    REVIEW_TASK="Re-review: the author has pushed new commits since your previous review (at ${KNOWN_SHA:0:7}, approved=$PREV_APPROVED). Your prior review is in .codex-scratch/previous-review.md. The incremental diff since that review is in .codex-scratch/diff.patch; the full PR diff is in .codex-scratch/full-diff.patch (consult it when verifying whether prior findings are addressed). Assess whether the new commits address your prior concerns, then produce an updated review."
 fi
 
 if [ -z "$KID_INPUT_DIFF" ]; then
@@ -304,6 +328,10 @@ write_scratch "$REPO_DIR" "previous-review.md" "$PREV_BODY"
 write_scratch "$REPO_DIR" "test-results.md"    "$TEST_RESULTS"
 write_scratch "$REPO_DIR" "prior-art.md"       "${PRIOR_ART:-}"
 write_scratch "$REPO_DIR" "standards.md"       "$STANDARDS"
+[ -n "${FULL_PR_DIFF:-}" ] && \
+    write_scratch "$REPO_DIR" "full-diff.patch" "$FULL_PR_DIFF"
+[ -n "$TRIGGER_COMMENT_BODY" ] && \
+    write_scratch "$REPO_DIR" "trigger-comment.md" "$TRIGGER_COMMENT_BODY"
 
 CONTEXT_FILE="$HOME/.pr-reviewer/contexts/$(echo "$REPO" | tr '/' '_').md"
 if [ -f "$CONTEXT_FILE" ]; then
