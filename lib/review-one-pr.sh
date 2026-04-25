@@ -343,8 +343,7 @@ gh pr comment "$PR_NUM" --repo "$REPO" \
     >/dev/null 2>&1 || log "$PR_ID: failed to post reviewing-status comment (continuing)"
 
 log "$PR_ID: inferring developer intent..."
-INTENT_PROMPT=$(build_specialist_prompt \
-    "intent" \
+INTENT_PROMPT=$(substitute_placeholders \
     "$HOME/.pr-reviewer/prompts/intent.md" \
     "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR")
 INTENT_OUT="$REPO_DIR/.codex-scratch/inferred-intent.md"
@@ -364,8 +363,16 @@ if [ "$INTENT_EXIT" -ne 0 ] || [ ! -s "$INTENT_OUT" ]; then
     exit 1
 fi
 
-if ! head -1 "$INTENT_OUT" | grep -q '^Inferred intent: '; then
-    log "$PR_ID: intent output does not start with 'Inferred intent: ' prefix — aborting"
+INTENT_NONBLANK_LINES=$(grep -cv '^[[:space:]]*$' "$INTENT_OUT")
+if [ "$INTENT_NONBLANK_LINES" -ne 1 ]; then
+    log "$PR_ID: intent output has $INTENT_NONBLANK_LINES non-blank lines, expected exactly 1 — aborting"
+    preserve_scratch "$REPO_DIR" "$(echo "$PR_ID" | tr "/#" "__")"
+    rm -rf "$REPO_DIR"
+    exit 1
+fi
+
+if ! grep -q '^Inferred intent: ' "$INTENT_OUT"; then
+    log "$PR_ID: intent output missing 'Inferred intent: ' prefix — aborting"
     preserve_scratch "$REPO_DIR" "$(echo "$PR_ID" | tr "/#" "__")"
     rm -rf "$REPO_DIR"
     exit 1
