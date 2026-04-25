@@ -21,4 +21,8 @@ test:
     bash lib/tests/state-io-smoke.sh
 
     echo ""
+    echo "=== prompt-build smoke test ==="
+    bash lib/tests/build-specialist-prompt-smoke.sh
+
+    echo ""
     echo "all checks passed"
