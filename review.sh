@@ -64,18 +64,31 @@ for REPO in "${REPOS[@]}"; do
                 jq --arg since "$REVIEWED_AT_ISO" --arg user "$BOT_USER" \
                     '[.[] | select(.created_at > $since and (.body | test("@" + $user; "i")) and ((.body | test("/review"; "i")) | not))] | length')
             if [ "${WHOLE_MENTION:-0}" -gt 0 ]; then
-                log "$PR_ID: /review requested — whole-PR re-review"
                 FORCE_REVIEW=true
                 FORCE_WHOLE_PR=true
             elif [ "${INCREMENTAL_MENTION:-0}" -gt 0 ]; then
-                log "$PR_ID: @$BOT_USER mentioned — incremental re-review"
                 FORCE_REVIEW=true
             fi
         fi
 
-        # Skip if same SHA and not forced.
-        if [ "$PR_SHA" = "$KNOWN_SHA" ] && [ "$FORCE_REVIEW" = "false" ]; then
+        # Skip if SHA unchanged and not /review-forced. A bare @-mention with
+        # no new commits would otherwise spawn a worker that runs `git diff
+        # KNOWN_SHA..HEAD`, gets an empty diff (KNOWN_SHA == HEAD), and
+        # aborts in lib/review-one-pr.sh. /review (FORCE_WHOLE_PR=true)
+        # bypasses this because the worker uses `gh pr diff` for the full
+        # PR regardless of base SHA, so there's always something to review.
+        if [ "$PR_SHA" = "$KNOWN_SHA" ] && [ "$FORCE_WHOLE_PR" = "false" ]; then
             continue
+        fi
+
+        # Log the trigger reason now that we know we're dispatching. Logged
+        # AFTER the skip check so the log matches what actually runs (a
+        # bare @-mention on an unchanged PR no longer logs "incremental
+        # re-review" before silently skipping).
+        if [ "$FORCE_WHOLE_PR" = "true" ]; then
+            log "$PR_ID: /review requested — whole-PR re-review"
+        elif [ "$FORCE_REVIEW" = "true" ]; then
+            log "$PR_ID: @$BOT_USER mentioned + new commits — incremental re-review"
         fi
 
         # Stability cooldown for non-forced re-reviews.
