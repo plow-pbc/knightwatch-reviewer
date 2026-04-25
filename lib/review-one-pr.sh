@@ -291,7 +291,14 @@ while IFS= read -r f; do
 done < <(git -C "$REPO_DIR" diff --name-only "$DEFAULT_BRANCH"...HEAD 2>/dev/null | head -30)
 write_scratch "$REPO_DIR" "file-history.md" "${FILE_HISTORY:-(no touched files)}"
 
-PR_DATA=$(gh pr view "$PR_NUM" --repo "$REPO" --json title,body,closingIssuesReferences 2>/dev/null)
+PR_DATA=$(gh pr view "$PR_NUM" --repo "$REPO" --json title,body,author,commits,closingIssuesReferences 2>/dev/null)
+PR_AUTHOR=$(printf '%s' "$PR_DATA" | jq -r '.author.login // empty')
+if [ -z "$PR_AUTHOR" ]; then
+    log "$PR_ID: gh pr view returned no author handle — aborting"
+    preserve_scratch "$REPO_DIR" "$(echo "$PR_ID" | tr "/#" "__")"
+    rm -rf "$REPO_DIR"
+    exit 1
+fi
 AUTHOR_INTENT="## PR Title
 $(printf '%s' "$PR_DATA" | jq -r '.title // empty')
 
@@ -331,7 +338,7 @@ for angle in security data-integrity architecture simplification tests; do
     PROMPT=$(build_specialist_prompt \
         "$angle" \
         "$HOME/.pr-reviewer/prompts/${angle}.md" \
-        "$PR_ID" "$PR_TITLE" "$PR_URL")
+        "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR")
     ~/.pr-reviewer/lib/run-specialist.sh \
         "$angle" \
         "$REPO_DIR" \
@@ -381,7 +388,7 @@ log "$PR_ID: aggregator (with critic input)..."
 AGG_PROMPT=$(build_specialist_prompt \
     "aggregator" \
     "$HOME/.pr-reviewer/prompts/aggregator.md" \
-    "$PR_ID" "$PR_TITLE" "$PR_URL")
+    "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR")
 AGG_OUT="$REPO_DIR/.codex-scratch/aggregator-output.md"
 codex exec \
     -C "$REPO_DIR" \
