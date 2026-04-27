@@ -18,6 +18,7 @@ export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 [ -f "$STATE_DIR/config.env" ] && . "$STATE_DIR/config.env"
 BOT_USER="${BOT_USER:-srosro}"
+BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
 
 REPOS=("cncorp/plow" "srosro/tkmx-client" "srosro/tkmx-server" "srosro/knightwatch-reviewer")
 REPLIES_SEEN_FILE="${REPLIES_SEEN_FILE:-$STATE_DIR/replies-seen.json}"
@@ -214,7 +215,8 @@ if [ -n "$ACKS_BLOCK" ]; then
         PR=$(printf '%s' "$META" | jq -r '.pr')
         USER=$(printf '%s' "$META" | jq -r '.user')
 
-        COMMENT_BODY="@${USER} — noted. ${ACK_BODY}"
+        COMMENT_BODY="$BOT_AUTO_POST_MARKER
+@${USER} — noted. ${ACK_BODY}"
         if gh pr comment "$PR" --repo "$REPO" --body "$COMMENT_BODY" >/dev/null 2>>"$LOG_FILE"; then
             ACK_POSTED=$((ACK_POSTED+1))
         else

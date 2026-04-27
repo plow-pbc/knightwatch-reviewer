@@ -70,6 +70,7 @@ WORKDIRS_DIR="${WORKDIRS_DIR:-$STATE_DIR/workdirs}"
 
 [ -f "$STATE_DIR/config.env" ] && . "$STATE_DIR/config.env"
 BOT_USER="${BOT_USER:-srosro}"
+BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
 
 # Source state-io. Prefer REVIEWER_LIB_DIR if caller set it (smoke-test
 # isolation); fall back to the worker's own directory.
@@ -400,8 +401,15 @@ mkdir -p "$SPECIALISTS_DIR"
 
 # Post a "reviewing" status comment so the PR author sees the bot picked up
 # the work. Best-effort — failure here doesn't block the actual review.
+# The leading HTML comment is invisible in rendered Markdown but lets the
+# orchestrator's jq filter recognize this as one of our auto-posts so we
+# don't self-trigger on the next tick. BOT_USER and the human running this
+# bot are the same GitHub identity in single-account deployments, so a
+# user.login check would also exclude the human's legitimate /review or
+# @<bot> comments — the marker discriminates by post origin instead.
 gh pr comment "$PR_NUM" --repo "$REPO" \
-    --body "👀 reviewing — [sam's ai review bot](https://github.com/srosro/knightwatch-reviewer)" \
+    --body "$BOT_AUTO_POST_MARKER
+👀 reviewing — [sam's ai review bot](https://github.com/srosro/knightwatch-reviewer)" \
     >/dev/null 2>&1 || log "$PR_ID: failed to post reviewing-status comment (continuing)"
 
 log "$PR_ID: inferring developer intent..."
@@ -528,7 +536,10 @@ if [ -z "$COMMENT_BODY" ]; then
     rm -rf "$REPO_DIR"
     exit 1
 fi
-COMMENT_BODY="$COMMENT_BODY
+# Leading HTML comment is the orchestrator's discriminator for "this is
+# one of our auto-posts" — see the corresponding jq filter in review.sh.
+COMMENT_BODY="$BOT_AUTO_POST_MARKER
+$COMMENT_BODY
 
 ---
 
