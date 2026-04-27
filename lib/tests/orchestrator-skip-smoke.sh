@@ -123,7 +123,7 @@ fi
 # aborted on `git diff KNOWN_SHA..HEAD` returning empty.
 echo "  scenario 2: same SHA + bare @-mention (the bug fix)..."
 NOW_ISO=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-printf '[{"created_at":"%s","body":"hey @srosro can you take another look?"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"hey @srosro can you take another look?"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 run_orchestrator
 n=$(count_dispatches)
 if [ "$n" -ne 0 ]; then
@@ -136,7 +136,7 @@ fi
 # /review must still work; the worker uses gh pr diff for the full PR
 # diff regardless of base SHA, so there's always something to review.
 echo "  scenario 3: same SHA + /review comment..."
-printf '[{"created_at":"%s","body":"/review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 run_orchestrator
 n=$(count_dispatches)
 if [ "$n" -ne 1 ]; then
@@ -150,4 +150,23 @@ if ! grep -q 'force_whole=true' "$LOG_FILE"; then
     exit 1
 fi
 
-echo "  PASS (3 scenarios: no-comments, bare-mention, /review)"
+# Scenario 4 (bot self-trigger filter): same SHA, comment authored by the
+# bot with body matching `/review` → no dispatch. The bot's own posted
+# review comments contain `@<bot>` in the inferred-intent line, so without
+# `.user.login != $user` in the orchestrator's jq filter, every successful
+# review re-triggered itself on the next tick. We exercise the WHOLE_MENTION
+# path here (body=`/review`) so the same-SHA skip can't mask the filter:
+# pre-fix, WHOLE_MENTION=1 → FORCE_WHOLE_PR=true bypasses the same-SHA
+# skip and dispatches a worker; post-fix, the bot's comment is excluded
+# and the same-SHA skip applies.
+echo "  scenario 4: same SHA + bot's own /review comment (self-trigger filter)..."
+printf '[{"created_at":"%s","user":{"login":"srosro"},"body":"/review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+run_orchestrator
+n=$(count_dispatches)
+if [ "$n" -ne 0 ]; then
+    echo "FAIL scenario 4 (self-trigger filter regression): expected 0 dispatches, got $n"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+
+echo "  PASS (4 scenarios: no-comments, bare-mention, /review, bot-self-trigger)"
