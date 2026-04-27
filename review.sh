@@ -67,7 +67,7 @@ for REPO in "${REPOS[@]}"; do
                     '[.[] | select(.user.login != $user and .created_at > $since and (.body | test("/review"; "i")))] | length')
             INCREMENTAL_MENTION=$(printf '%s' "$COMMENTS_JSON" |
                 jq --arg since "$REVIEWED_AT_ISO" --arg user "$BOT_USER" \
-                    '[.[] | select(.user.login != $user and .created_at > $since and (.body | test("@" + $user; "i")) and ((.body | test("/review"; "i")) | not))] | length')
+                    '[.[] | select(.user.login != $user and .created_at > $since and (.body | test("@" + $user + "\\b"; "i")) and ((.body | test("/review"; "i")) | not))] | length')
             if [ "${WHOLE_MENTION:-0}" -gt 0 ]; then
                 FORCE_REVIEW=true
                 FORCE_WHOLE_PR=true
@@ -88,7 +88,7 @@ for REPO in "${REPOS[@]}"; do
                 else
                     TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
                         jq -c --arg since "$REVIEWED_AT_ISO" --arg user "$BOT_USER" \
-                            '[.[] | select(.user.login != $user and .created_at > $since and (.body | test("@" + $user; "i")) and ((.body | test("/review"; "i")) | not))] | sort_by(.created_at) | last // empty' 2>/dev/null)
+                            '[.[] | select(.user.login != $user and .created_at > $since and (.body | test("@" + $user + "\\b"; "i")) and ((.body | test("/review"; "i")) | not))] | sort_by(.created_at) | last // empty' 2>/dev/null)
                 fi
                 if [ -n "$TRIGGER_JSON" ]; then
                     TRIGGER_USER=$(printf '%s' "$TRIGGER_JSON" | jq -r '.user.login // ""')
