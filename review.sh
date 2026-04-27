@@ -24,10 +24,11 @@ BOT_USER="${BOT_USER:-srosro}"
 # catches drift.
 BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
 
-# Source state-io helpers. Use $REVIEWER_LIB_DIR if set (for sandboxed smoke
-# tests), else fall back to ~/.pr-reviewer/lib (the production symlink).
+# Source helpers. Use $REVIEWER_LIB_DIR if set (for sandboxed smoke tests),
+# else fall back to ~/.pr-reviewer/lib (the production symlink).
 REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 . "$REVIEWER_LIB_DIR/state-io.sh"
+. "$REVIEWER_LIB_DIR/auth.sh"
 
 # Rotate logs when they exceed 5MB.
 for _log in "$LOG_FILE" "$STATE_DIR/cron.log"; do
@@ -102,9 +103,21 @@ for REPO in "${REPOS[@]}"; do
                 fi
                 if [ -n "$TRIGGER_JSON" ]; then
                     TRIGGER_USER=$(printf '%s' "$TRIGGER_JSON" | jq -r '.user.login // ""')
-                    TRIGGER_BODY=$(printf '%s' "$TRIGGER_JSON" | jq -r '.body // ""')
-                    TRIGGER_FILE=$(mktemp /tmp/pr-review-trigger.XXXXXX)
-                    printf 'Comment by @%s:\n\n%s\n' "$TRIGGER_USER" "$TRIGGER_BODY" > "$TRIGGER_FILE"
+                    # Trust gate: the /review or @<bot> trigger itself is
+                    # honored regardless of who posted it (re-request-poller
+                    # and external requesters need to keep working), but the
+                    # comment's prose only gets staged as
+                    # `.codex-scratch/trigger-comment.md` when the commenter
+                    # has push access. Otherwise drive-by commenters could
+                    # shape intent inference + aggregator on the
+                    # auto-approve path.
+                    if is_trusted_repo_author "$REPO" "$TRIGGER_USER"; then
+                        TRIGGER_BODY=$(printf '%s' "$TRIGGER_JSON" | jq -r '.body // ""')
+                        TRIGGER_FILE=$(mktemp /tmp/pr-review-trigger.XXXXXX)
+                        printf 'Comment by @%s:\n\n%s\n' "$TRIGGER_USER" "$TRIGGER_BODY" > "$TRIGGER_FILE"
+                    else
+                        log "$PR_ID: trigger from @$TRIGGER_USER — not staging trigger-comment.md (no push access)"
+                    fi
                 fi
             fi
         fi

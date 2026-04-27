@@ -47,8 +47,10 @@ mkdir -p "$HOME/.local/bin"
 #   gh pr list --repo <repo> --json number,title,headRefName,headRefOid
 #   gh api repos/<owner>/<repo>/issues/<num>/comments
 #   gh api repos/<owner>/<repo>/pulls/<num>/commits --jq ...
-# We return a single PR for cncorp/plow and read scenario-specific
-# comments from $MOCK_COMMENTS_FILE.
+#   gh api repos/<owner>/<repo>/collaborators/<user>/permission --jq .permission
+# Scenarios drive trust answers via $MOCK_TRUSTED_USERS (space-separated
+# usernames the stub treats as having `write` access; everything else
+# returns `none`).
 cat > "$HOME/.local/bin/gh" <<'STUB'
 #!/bin/bash
 if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
@@ -66,6 +68,16 @@ elif [ "$1" = "api" ]; then
         # the skip happens before cooldown), but stub it anyway so a
         # regression that leaks through doesn't hang on a missing stub.
         echo "2020-01-01T00:00:00Z"
+    elif [[ "$2" == */collaborators/*/permission ]]; then
+        # Extract the username segment between "collaborators/" and "/permission".
+        user="${2##*/collaborators/}"
+        user="${user%/permission}"
+        for trusted in ${MOCK_TRUSTED_USERS:-}; do
+            if [ "$user" = "$trusted" ]; then
+                echo "write"; exit 0
+            fi
+        done
+        echo "none"
     else
         echo "{}"
     fi
@@ -75,15 +87,18 @@ fi
 STUB
 chmod +x "$HOME/.local/bin/gh"
 
-# Sandbox lib dir: real state-io.sh, stub worker that just logs the
-# dispatch instead of running a review.
+# Sandbox lib dir: real state-io.sh + auth.sh, stub worker that logs the
+# dispatch (including the trigger-comment file path so trust-gate
+# scenarios can assert presence/absence) instead of running a review.
 export REVIEWER_LIB_DIR="$TMPDIR/lib"
 mkdir -p "$REVIEWER_LIB_DIR"
 cp "$PROJECT_ROOT/lib/state-io.sh" "$REVIEWER_LIB_DIR/state-io.sh"
+cp "$PROJECT_ROOT/lib/auth.sh"     "$REVIEWER_LIB_DIR/auth.sh"
 cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<'WORKER'
 #!/bin/bash
 # Args from review.sh: REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR
-echo "WORKER_DISPATCHED repo=$1 pr=$2 sha=$3 force_whole=$6" >> "$LOG_FILE"
+# TRIGGER_COMMENT_FILE comes through as an env var.
+echo "WORKER_DISPATCHED repo=$1 pr=$2 sha=$3 force_whole=$6 trigger_file=${TRIGGER_COMMENT_FILE:-}" >> "$LOG_FILE"
 WORKER
 chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
 
@@ -94,6 +109,11 @@ chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
 state_set "cncorp/plow#1" "abc123" false "prior review body" "$(($(date +%s) - 3600))"
 
 export MOCK_COMMENTS_FILE="$TMPDIR/comments.json"
+# Default trust set for the existing scenarios: srosro is the bot operator
+# and "someuser" is the realistic external collaborator shape. Scenarios
+# that need to test the untrusted path override this just before
+# run_orchestrator.
+export MOCK_TRUSTED_USERS="srosro someuser"
 
 run_orchestrator() {
     : > "$LOG_FILE"   # reset
@@ -149,6 +169,11 @@ if ! grep -q 'force_whole=true' "$LOG_FILE"; then
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
+if ! grep -q 'trigger_file=/tmp/pr-review-trigger' "$LOG_FILE"; then
+    echo "FAIL scenario 3: expected trigger_file=/tmp/... in dispatch (someuser is in MOCK_TRUSTED_USERS)"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
 
 # Scenario 4 (bot self-trigger filter): same SHA, comment whose body
 # carries the auto-post marker → no dispatch. The bot's own posted review
@@ -191,5 +216,39 @@ if ! grep -q 'force_whole=true' "$LOG_FILE"; then
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
+if ! grep -q 'trigger_file=/tmp/pr-review-trigger' "$LOG_FILE"; then
+    echo "FAIL scenario 5: expected trigger_file=/tmp/... in dispatch (srosro is in MOCK_TRUSTED_USERS)"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
 
-echo "  PASS (5 scenarios: no-comments, bare-mention, /review, marker-self-filter, single-account-/review)"
+# Scenario 6 (trigger-comment trust gate): same SHA, /review from a
+# commenter without push access → the trigger still dispatches a worker
+# (so re-request-poller and external requesters keep working), but the
+# orchestrator does NOT stage `.codex-scratch/trigger-comment.md`. The
+# bot's trigger-comment plumbing weights the comment body heavily on the
+# pipeline that ends in `gh pr review --approve`, so a drive-by
+# commenter's prose is kept off that path. Stranger is deliberately
+# omitted from MOCK_TRUSTED_USERS for this scenario.
+echo "  scenario 6: same SHA + /review from untrusted commenter (trigger-comment trust gate)..."
+MOCK_TRUSTED_USERS="srosro" \
+    printf '[{"created_at":"%s","user":{"login":"stranger"},"body":"/review please"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+MOCK_TRUSTED_USERS="srosro" run_orchestrator
+n=$(count_dispatches)
+if [ "$n" -ne 1 ]; then
+    echo "FAIL scenario 6: expected 1 dispatch (review still triggered), got $n"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+if ! grep -q 'force_whole=true' "$LOG_FILE"; then
+    echo "FAIL scenario 6: expected force_whole=true in dispatch"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+if grep -q 'trigger_file=/tmp/pr-review-trigger' "$LOG_FILE"; then
+    echo "FAIL scenario 6 (trust gate regression): expected trigger_file empty for untrusted commenter, but a tmp path was staged"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+
+echo "  PASS (6 scenarios: no-comments, bare-mention, /review, marker-self-filter, single-account-/review, untrusted-trigger-comment)"
