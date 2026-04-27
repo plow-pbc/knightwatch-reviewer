@@ -72,10 +72,11 @@ WORKDIRS_DIR="${WORKDIRS_DIR:-$STATE_DIR/workdirs}"
 BOT_USER="${BOT_USER:-srosro}"
 BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
 
-# Source state-io. Prefer REVIEWER_LIB_DIR if caller set it (smoke-test
+# Source helpers. Prefer REVIEWER_LIB_DIR if caller set it (smoke-test
 # isolation); fall back to the worker's own directory.
 _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 . "$_LIB_DIR/state-io.sh"
+. "$_LIB_DIR/auth.sh"
 
 # --- prompt-build helpers (sourced from lib/prompt-build.sh) ---
 . "$_LIB_DIR/prompt-build.sh"
@@ -179,6 +180,17 @@ if ! git -C "$REPO_DIR" checkout -B "pr-$PR_NUM" "origin/$PR_BRANCH" --quiet; th
     exit 1
 fi
 
+# Fetch PR metadata once, here, so PR_AUTHOR is available before the env
+# mirror runs (the trust gate below depends on it). The full PR_DATA blob
+# is reused later for AUTHOR_INTENT, commits, and linked-issue context.
+PR_DATA=$(gh pr view "$PR_NUM" --repo "$REPO" --json title,body,author,commits,closingIssuesReferences 2>/dev/null)
+PR_AUTHOR=$(printf '%s' "$PR_DATA" | jq -r '.author.login // empty')
+if [ -z "$PR_AUTHOR" ]; then
+    log "$PR_ID: gh pr view returned no author handle — aborting"
+    rm -rf "$REPO_DIR"
+    exit 1
+fi
+
 # Mirror gitignored env files from canonical into the workdir. `git clone
 # --shared` only carries tracked content, so .env files the user keeps in
 # canonical's working tree (e.g. live-API credentials for `just test`'s
@@ -187,20 +199,31 @@ fi
 # each `.env*.example` the repo ships, copy the matching real env file
 # (name minus `.example`) from canonical if one exists. Deleted right
 # after `just test` so secret-bearing files don't linger.
+#
+# Trust gate: only mirror when PR_AUTHOR has push access to the repo.
+# Otherwise an untrusted contributor's `just test` recipe could
+# exfiltrate live API keys before the eager-delete runs. Untrusted PRs
+# still get a `just test` run, just without canonical's secrets — the
+# scenario-suite recipes that need live keys will trip their guards
+# (unchanged from pre-72a9cad behavior for those PRs).
 COPIED_ENV_FILES=()
-while IFS= read -r -d '' example_path; do
-    rel="${example_path#$REPO_DIR/}"
-    target_rel="${rel%.example}"
-    canonical_src="$CANONICAL_DIR/$target_rel"
-    workdir_dst="$REPO_DIR/$target_rel"
-    if [ -e "$canonical_src" ] && [ ! -e "$workdir_dst" ]; then
-        cp -L "$canonical_src" "$workdir_dst"
-        COPIED_ENV_FILES+=("$workdir_dst")
-    fi
-done < <(find "$REPO_DIR" -type f -name '.env*.example' \
-    -not -path '*/.git/*' -not -path '*/node_modules/*' -print0)
-[ "${#COPIED_ENV_FILES[@]}" -gt 0 ] && \
-    log "$PR_ID: mirrored ${#COPIED_ENV_FILES[@]} env file(s) from canonical"
+if is_trusted_repo_author "$REPO" "$PR_AUTHOR"; then
+    while IFS= read -r -d '' example_path; do
+        rel="${example_path#"$REPO_DIR"/}"
+        target_rel="${rel%.example}"
+        canonical_src="$CANONICAL_DIR/$target_rel"
+        workdir_dst="$REPO_DIR/$target_rel"
+        if [ -e "$canonical_src" ] && [ ! -e "$workdir_dst" ]; then
+            cp -L "$canonical_src" "$workdir_dst"
+            COPIED_ENV_FILES+=("$workdir_dst")
+        fi
+    done < <(find "$REPO_DIR" -type f -name '.env*.example' \
+        -not -path '*/.git/*' -not -path '*/node_modules/*' -print0)
+    [ "${#COPIED_ENV_FILES[@]}" -gt 0 ] && \
+        log "$PR_ID: mirrored ${#COPIED_ENV_FILES[@]} env file(s) from canonical (PR_AUTHOR=$PR_AUTHOR trusted)"
+else
+    log "$PR_ID: skipping .env mirror — PR_AUTHOR=$PR_AUTHOR has no push access (just test will run without canonical's secrets)"
+fi
 
 # ---- build diff + REVIEW_TASK (three paths) ----
 # Hoisted ahead of `just test` so an empty-diff abort (re-review triggered
@@ -354,14 +377,8 @@ while IFS= read -r f; do
 done < <(git -C "$REPO_DIR" diff --name-only "$DEFAULT_BRANCH"...HEAD 2>/dev/null | head -30)
 write_scratch "$REPO_DIR" "file-history.md" "${FILE_HISTORY:-(no touched files)}"
 
-PR_DATA=$(gh pr view "$PR_NUM" --repo "$REPO" --json title,body,author,commits,closingIssuesReferences 2>/dev/null)
-PR_AUTHOR=$(printf '%s' "$PR_DATA" | jq -r '.author.login // empty')
-if [ -z "$PR_AUTHOR" ]; then
-    log "$PR_ID: gh pr view returned no author handle — aborting"
-    preserve_scratch "$REPO_DIR" "$(echo "$PR_ID" | tr "/#" "__")"
-    rm -rf "$REPO_DIR"
-    exit 1
-fi
+# PR_DATA + PR_AUTHOR were fetched earlier (above the env mirror) so the
+# trust gate could see the author. Reuse them here.
 AUTHOR_INTENT="## PR Title
 $(printf '%s' "$PR_DATA" | jq -r '.title // empty')
 
