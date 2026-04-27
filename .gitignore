@@ -225,3 +225,4 @@ learn.log*
 *.cron.log
 plow-kid-refresh.log
 kid-last-failure
+.keepitdry/
