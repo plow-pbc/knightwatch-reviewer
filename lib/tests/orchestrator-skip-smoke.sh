@@ -150,17 +150,17 @@ if ! grep -q 'force_whole=true' "$LOG_FILE"; then
     exit 1
 fi
 
-# Scenario 4 (bot self-trigger filter): same SHA, comment authored by the
-# bot with body matching `/review` → no dispatch. The bot's own posted
-# review comments contain `@<bot>` in the inferred-intent line, so without
-# `.user.login != $user` in the orchestrator's jq filter, every successful
-# review re-triggered itself on the next tick. We exercise the WHOLE_MENTION
-# path here (body=`/review`) so the same-SHA skip can't mask the filter:
-# pre-fix, WHOLE_MENTION=1 → FORCE_WHOLE_PR=true bypasses the same-SHA
-# skip and dispatches a worker; post-fix, the bot's comment is excluded
-# and the same-SHA skip applies.
-echo "  scenario 4: same SHA + bot's own /review comment (self-trigger filter)..."
-printf '[{"created_at":"%s","user":{"login":"srosro"},"body":"/review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+# Scenario 4 (bot self-trigger filter): same SHA, comment whose body
+# carries the auto-post marker → no dispatch. The bot's own posted review
+# comments prepend `<!-- knightwatch-reviewer:auto-post -->` to the body;
+# the orchestrator excludes any comment containing that marker so a
+# successful review doesn't re-trigger itself when the bot's
+# inferred-intent line matches the @<bot>-mention regex on the next tick.
+# Exercises the WHOLE_MENTION path so the same-SHA skip can't mask the
+# filter: pre-fix this would have produced WHOLE_MENTION=1 →
+# FORCE_WHOLE_PR=true → dispatch.
+echo "  scenario 4: same SHA + auto-post marker in body (self-trigger filter)..."
+printf '[{"created_at":"%s","user":{"login":"srosro"},"body":"<!-- knightwatch-reviewer:auto-post -->\\n/review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 run_orchestrator
 n=$(count_dispatches)
 if [ "$n" -ne 0 ]; then
@@ -169,4 +169,27 @@ if [ "$n" -ne 0 ]; then
     exit 1
 fi
 
-echo "  PASS (4 scenarios: no-comments, bare-mention, /review, bot-self-trigger)"
+# Scenario 5 (single-account regression): same SHA, comment authored by
+# BOT_USER (the bot's own GH identity) with a /review body but NO marker
+# → 1 dispatch. This is the case the earlier `.user.login != $user`
+# filter (e1d91a0) silently broke: in single-account deployments the
+# human running the bot posts as BOT_USER, and a user-based filter drops
+# their legitimate /review along with the bot's auto-posts. The
+# content-marker filter must let unmarked comments through regardless of
+# author.
+echo "  scenario 5: same SHA + /review by BOT_USER without marker (single-account /review)..."
+printf '[{"created_at":"%s","user":{"login":"srosro"},"body":"/review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+run_orchestrator
+n=$(count_dispatches)
+if [ "$n" -ne 1 ]; then
+    echo "FAIL scenario 5 (single-account /review regression): expected 1 dispatch, got $n"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+if ! grep -q 'force_whole=true' "$LOG_FILE"; then
+    echo "FAIL scenario 5: expected force_whole=true in dispatch"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+
+echo "  PASS (5 scenarios: no-comments, bare-mention, /review, marker-self-filter, single-account-/review)"

@@ -16,6 +16,13 @@ MAX_CONCURRENT="${MAX_CONCURRENT:-8}"
 
 [ -f "$STATE_DIR/config.env" ] && . "$STATE_DIR/config.env"
 BOT_USER="${BOT_USER:-srosro}"
+# Hidden HTML-comment marker prepended to every auto-post by this repo
+# (review ack, final review, learn-from-replies ack). The orchestrator's
+# jq filter excludes any comment containing this string so the bot
+# doesn't self-trigger on its own posts. Must match the literal used in
+# lib/review-one-pr.sh and learn-from-replies.sh — a smoke-test scenario
+# catches drift.
+BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
 
 # Source state-io helpers. Use $REVIEWER_LIB_DIR if set (for sandboxed smoke
 # tests), else fall back to ~/.pr-reviewer/lib (the production symlink).
@@ -58,16 +65,19 @@ for REPO in "${REPOS[@]}"; do
             REVIEWED_AT=$(state_get "$PR_ID" "reviewed_at")
             REVIEWED_AT_ISO=$(date -d "@${REVIEWED_AT}" -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null)
             COMMENTS_JSON=$(gh api "repos/$REPO/issues/$PR_NUM/comments" 2>/dev/null)
-            # `.user.login != $user` excludes the bot's own posted comments,
-            # whose body contains `@<bot>` in the inferred-intent line —
-            # without this filter the bot self-triggers a re-review every
-            # tick after each successful post.
+            # Exclude the bot's own auto-posts (review ack, final review,
+            # learn-from-replies acks) by matching the hidden HTML-comment
+            # marker every auto-post template prepends. The earlier
+            # `.user.login != $user` filter (e1d91a0) over-excluded: in
+            # single-account deployments BOT_USER is the human's own GH
+            # identity, so user-based filtering also drops legitimate
+            # /review and @<bot> comments the human posts.
             WHOLE_MENTION=$(printf '%s' "$COMMENTS_JSON" |
-                jq --arg since "$REVIEWED_AT_ISO" --arg user "$BOT_USER" \
-                    '[.[] | select(.user.login != $user and .created_at > $since and (.body | test("/review"; "i")))] | length')
+                jq --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" \
+                    '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/review"; "i")))] | length')
             INCREMENTAL_MENTION=$(printf '%s' "$COMMENTS_JSON" |
-                jq --arg since "$REVIEWED_AT_ISO" --arg user "$BOT_USER" \
-                    '[.[] | select(.user.login != $user and .created_at > $since and (.body | test("@" + $user + "\\b"; "i")) and ((.body | test("/review"; "i")) | not))] | length')
+                jq --arg since "$REVIEWED_AT_ISO" --arg user "$BOT_USER" --arg mark "$BOT_AUTO_POST_MARKER" \
+                    '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("@" + $user + "\\b"; "i")) and ((.body | test("/review"; "i")) | not))] | length')
             if [ "${WHOLE_MENTION:-0}" -gt 0 ]; then
                 FORCE_REVIEW=true
                 FORCE_WHOLE_PR=true
@@ -83,12 +93,12 @@ for REPO in "${REPOS[@]}"; do
             if [ "$FORCE_REVIEW" = "true" ]; then
                 if [ "$FORCE_WHOLE_PR" = "true" ]; then
                     TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
-                        jq -c --arg since "$REVIEWED_AT_ISO" --arg user "$BOT_USER" \
-                            '[.[] | select(.user.login != $user and .created_at > $since and (.body | test("/review"; "i")))] | sort_by(.created_at) | last // empty' 2>/dev/null)
+                        jq -c --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" \
+                            '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/review"; "i")))] | sort_by(.created_at) | last // empty' 2>/dev/null)
                 else
                     TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
-                        jq -c --arg since "$REVIEWED_AT_ISO" --arg user "$BOT_USER" \
-                            '[.[] | select(.user.login != $user and .created_at > $since and (.body | test("@" + $user + "\\b"; "i")) and ((.body | test("/review"; "i")) | not))] | sort_by(.created_at) | last // empty' 2>/dev/null)
+                        jq -c --arg since "$REVIEWED_AT_ISO" --arg user "$BOT_USER" --arg mark "$BOT_AUTO_POST_MARKER" \
+                            '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("@" + $user + "\\b"; "i")) and ((.body | test("/review"; "i")) | not))] | sort_by(.created_at) | last // empty' 2>/dev/null)
                 fi
                 if [ -n "$TRIGGER_JSON" ]; then
                     TRIGGER_USER=$(printf '%s' "$TRIGGER_JSON" | jq -r '.user.login // ""')
