@@ -22,7 +22,7 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 ProtectHome=read-only
-ReadWritePaths=/home/odio/.pr-reviewer /home/odio/Hacking/plow-kid /home/odio/Hacking/tkmx-client /home/odio/Hacking/tkmx-server /home/odio/Hacking/knightwatch-reviewer /home/odio/.cache /home/odio/.local /home/odio/.config
+ReadWritePaths=/home/odio/.pr-reviewer /home/odio/Hacking/plow-kid /home/odio/Hacking/tkmx-client /home/odio/Hacking/tkmx-server /home/odio/Hacking/knightwatch-reviewer /home/odio/Hacking/vibe-engineering /home/odio/.cache /home/odio/.local /home/odio/.config
 
 [Install]
 WantedBy=multi-user.target

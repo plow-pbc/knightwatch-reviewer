@@ -18,7 +18,7 @@ BOT_USER="${BOT_USER:-srosro}"
 
 LOG_FILE="${LOG_FILE:-$STATE_DIR/re-request.log}"
 SEEN_FILE="${SEEN_FILE:-$STATE_DIR/re-request-seen.json}"
-REPOS=("cncorp/plow" "srosro/tkmx-client" "srosro/tkmx-server" "srosro/knightwatch-reviewer")
+REPOS=("cncorp/plow" "srosro/tkmx-client" "srosro/tkmx-server" "srosro/knightwatch-reviewer" "srosro/vibe-engineering")
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"; }
 

@@ -317,6 +317,7 @@ case "$REPO" in
     "srosro/tkmx-client")          KID_PROJECT_PATH="$HOME/Hacking/tkmx-client" ;;
     "srosro/tkmx-server")          KID_PROJECT_PATH="$HOME/Hacking/tkmx-server" ;;
     "srosro/knightwatch-reviewer") KID_PROJECT_PATH="$HOME/Hacking/knightwatch-reviewer" ;;
+    "srosro/vibe-engineering")     KID_PROJECT_PATH="$HOME/Hacking/vibe-engineering" ;;
     *)                             KID_PROJECT_PATH="" ;;
 esac
 if [ -n "$KID_PROJECT_PATH" ] && [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -n "$KID_INPUT_DIFF" ]; then
