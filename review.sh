@@ -11,7 +11,7 @@ LOG_FILE="${LOG_FILE:-$STATE_DIR/review.log}"
 REPOS=("cncorp/plow" "srosro/tkmx-client" "srosro/tkmx-server" "srosro/knightwatch-reviewer" "srosro/vibe-engineering")
 REPOS_DIR="${REPOS_DIR:-$STATE_DIR/repos}"
 WORKDIRS_DIR="${WORKDIRS_DIR:-$STATE_DIR/workdirs}"
-STABLE_SECS="${STABLE_SECS:-$((2 * 3600))}"
+STABLE_SECS="${STABLE_SECS:-3600}"
 MAX_CONCURRENT="${MAX_CONCURRENT:-8}"
 
 [ -f "$STATE_DIR/config.env" ] && . "$STATE_DIR/config.env"
@@ -67,22 +67,29 @@ for REPO in "${REPOS[@]}"; do
             REVIEWED_AT_ISO=$(date -d "@${REVIEWED_AT}" -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null)
             COMMENTS_JSON=$(gh api "repos/$REPO/issues/$PR_NUM/comments" 2>/dev/null)
             # Exclude the bot's own auto-posts (review ack, final review,
-            # learn-from-replies acks) by matching the hidden HTML-comment
-            # marker every auto-post template prepends. The earlier
-            # `.user.login != $user` filter (e1d91a0) over-excluded: in
-            # single-account deployments BOT_USER is the human's own GH
-            # identity, so user-based filtering also drops legitimate
-            # /review and @<bot> comments the human posts.
-            WHOLE_MENTION=$(printf '%s' "$COMMENTS_JSON" |
+            # learn-from-replies acks, and the usage footer that appears on
+            # every review and itself contains the slash commands) by
+            # matching the hidden HTML-comment marker every auto-post
+            # template prepends. The earlier `.user.login != $user` filter
+            # (e1d91a0) over-excluded: in single-account deployments
+            # BOT_USER is the human's own GH identity, so user-based
+            # filtering also drops legitimate slash-command comments the
+            # human posts.
+            #
+            # Two slash commands; substring tests are sufficient because
+            # the strings are disjoint (neither contains the other as a
+            # substring). Whole-PR check excludes /srosro-update-review so
+            # the longer command doesn't accidentally satisfy both paths.
+            WHOLE_TRIGGER=$(printf '%s' "$COMMENTS_JSON" |
                 jq --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" \
-                    '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/review"; "i")))] | length')
-            INCREMENTAL_MENTION=$(printf '%s' "$COMMENTS_JSON" |
-                jq --arg since "$REVIEWED_AT_ISO" --arg user "$BOT_USER" --arg mark "$BOT_AUTO_POST_MARKER" \
-                    '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("@" + $user + "\\b"; "i")) and ((.body | test("/review"; "i")) | not))] | length')
-            if [ "${WHOLE_MENTION:-0}" -gt 0 ]; then
+                    '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/srosro-review"; "i")) and ((.body | test("/srosro-update-review"; "i")) | not))] | length')
+            INCREMENTAL_TRIGGER=$(printf '%s' "$COMMENTS_JSON" |
+                jq --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" \
+                    '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/srosro-update-review"; "i")))] | length')
+            if [ "${WHOLE_TRIGGER:-0}" -gt 0 ]; then
                 FORCE_REVIEW=true
                 FORCE_WHOLE_PR=true
-            elif [ "${INCREMENTAL_MENTION:-0}" -gt 0 ]; then
+            elif [ "${INCREMENTAL_TRIGGER:-0}" -gt 0 ]; then
                 FORCE_REVIEW=true
             fi
             # If a comment triggered this re-review, capture the latest matching
@@ -95,15 +102,15 @@ for REPO in "${REPOS[@]}"; do
                 if [ "$FORCE_WHOLE_PR" = "true" ]; then
                     TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
                         jq -c --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" \
-                            '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/review"; "i")))] | sort_by(.created_at) | last // empty' 2>/dev/null)
+                            '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/srosro-review"; "i")) and ((.body | test("/srosro-update-review"; "i")) | not))] | sort_by(.created_at) | last // empty' 2>/dev/null)
                 else
                     TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
-                        jq -c --arg since "$REVIEWED_AT_ISO" --arg user "$BOT_USER" --arg mark "$BOT_AUTO_POST_MARKER" \
-                            '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("@" + $user + "\\b"; "i")) and ((.body | test("/review"; "i")) | not))] | sort_by(.created_at) | last // empty' 2>/dev/null)
+                        jq -c --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" \
+                            '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/srosro-update-review"; "i")))] | sort_by(.created_at) | last // empty' 2>/dev/null)
                 fi
                 if [ -n "$TRIGGER_JSON" ]; then
                     TRIGGER_USER=$(printf '%s' "$TRIGGER_JSON" | jq -r '.user.login // ""')
-                    # Trust gate: the /review or @<bot> trigger itself is
+                    # Trust gate: the slash-command trigger itself is
                     # honored regardless of who posted it (re-request-poller
                     # and external requesters need to keep working), but the
                     # comment's prose only gets staged as
@@ -122,36 +129,37 @@ for REPO in "${REPOS[@]}"; do
             fi
         fi
 
-        # Skip if SHA unchanged and not /review-forced. A bare @-mention with
-        # no new commits would otherwise spawn a worker that runs `git diff
-        # KNOWN_SHA..HEAD`, gets an empty diff (KNOWN_SHA == HEAD), and
-        # aborts in lib/review-one-pr.sh. /review (FORCE_WHOLE_PR=true)
-        # bypasses this because the worker uses `gh pr diff` for the full
-        # PR regardless of base SHA, so there's always something to review.
+        # Skip if SHA unchanged and not whole-PR-forced. /srosro-update-review
+        # on an unchanged SHA would otherwise spawn a worker that runs
+        # `git diff KNOWN_SHA..HEAD`, gets an empty diff (KNOWN_SHA == HEAD),
+        # and aborts in lib/review-one-pr.sh. /srosro-review
+        # (FORCE_WHOLE_PR=true) bypasses this because the worker uses
+        # `gh pr diff` for the full PR regardless of base SHA, so there's
+        # always something to review.
         #
-        # Stale-mention behavior (deliberate): a skipped @-mention is NOT
-        # consumed — the comment-selection query keys off
-        # `created_at > reviewed_at`, so the mention stays "open" until the
+        # Stale-trigger behavior (deliberate): a skipped /srosro-update-review
+        # is NOT consumed — the comment-selection query keys off
+        # `created_at > reviewed_at`, so the trigger stays "open" until the
         # next actual review. If the author later pushes a commit before
-        # that review, the still-open mention flips FORCE_REVIEW=true on
-        # the next tick and bypasses the 2h stability gate. We accept this
-        # as eager-review behavior: the user pinged the bot for attention,
-        # and we deliver it as soon as there is something meaningful to
-        # review (the new commits). Marking mentions consumed on skip
-        # would require a state schema change for a low-impact edge case
-        # at our scale.
+        # that review, the still-open trigger flips FORCE_REVIEW=true on
+        # the next tick and bypasses the 1h stability gate. We accept this
+        # as eager-review behavior: the user asked the bot to update, and
+        # we deliver it as soon as there is something meaningful to review
+        # (the new commits). Marking triggers consumed on skip would
+        # require a state schema change for a low-impact edge case at our
+        # scale.
         if [ "$PR_SHA" = "$KNOWN_SHA" ] && [ "$FORCE_WHOLE_PR" = "false" ]; then
             continue
         fi
 
         # Log the trigger reason now that we know we're dispatching. Logged
         # AFTER the skip check so the log matches what actually runs (a
-        # bare @-mention on an unchanged PR no longer logs "incremental
-        # re-review" before silently skipping).
+        # /srosro-update-review on an unchanged PR no longer logs
+        # "incremental re-review" before silently skipping).
         if [ "$FORCE_WHOLE_PR" = "true" ]; then
-            log "$PR_ID: /review requested — whole-PR re-review"
+            log "$PR_ID: /srosro-review requested — whole-PR re-review"
         elif [ "$FORCE_REVIEW" = "true" ]; then
-            log "$PR_ID: @$BOT_USER mentioned + new commits — incremental re-review"
+            log "$PR_ID: /srosro-update-review requested — incremental re-review"
         fi
 
         # Stability cooldown for non-forced re-reviews.

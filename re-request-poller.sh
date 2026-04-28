@@ -1,13 +1,13 @@
 #!/bin/bash
-# Translates GitHub "Re-request review" button events into /review comments
-# so the existing review.sh force-review path picks them up. Runs every 2 min
-# via systemd timer.
+# Translates GitHub "Re-request review" button events into /srosro-review
+# comments so the existing review.sh force-review path picks them up. Runs
+# every 2 min via systemd timer.
 #
 # Mechanism: polls the issue timeline for each tracked PR, finds
 # review_requested events targeting $BOT_USER newer than the last-seen event
-# we recorded for that PR, and posts a /review trigger comment once per new
-# event. Seen events are recorded in ~/.pr-reviewer/re-request-seen.json so
-# we never double-post.
+# we recorded for that PR, and posts a /srosro-review trigger comment once
+# per new event. Seen events are recorded in
+# ~/.pr-reviewer/re-request-seen.json so we never double-post.
 
 set -u
 export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
@@ -52,12 +52,12 @@ for REPO in "${REPOS[@]}"; do
             continue
         fi
 
-        log "$PR_KEY: re-request review event at $LATEST — posting /review trigger"
+        log "$PR_KEY: re-request review event at $LATEST — posting /srosro-review trigger"
         if gh pr comment "$PR_NUM" --repo "$REPO" \
-            --body "/review (triggered by GitHub re-request-review)" >/dev/null 2>&1; then
+            --body "/srosro-review (triggered by GitHub re-request-review)" >/dev/null 2>&1; then
             seen_set "$PR_KEY" "$LATEST"
         else
-            log "$PR_KEY: failed to post /review trigger comment"
+            log "$PR_KEY: failed to post /srosro-review trigger comment"
         fi
     done
 done

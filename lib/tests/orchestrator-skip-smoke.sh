@@ -1,20 +1,28 @@
 #!/bin/bash
 # Smoke test for review.sh's same-SHA dispatch decision.
 #
-# Locks in the regression for the bug fixed by "Orchestrator: skip
-# @-mention re-reviews when SHA is unchanged." Three scenarios, all on a
-# PR whose head SHA matches what was last reviewed:
-#
-#   1. No new comments → no worker dispatched (pre-existing behavior)
+# Covers the trigger model:
+#   1. No new comments → no worker dispatched.
 #   2. Bare @<bot> mention since last review → no worker dispatched
-#      (the bug fix; pre-fix this would have spawned a worker that
-#      aborts on empty incremental diff)
-#   3. /review comment since last review → worker dispatched with
-#      FORCE_WHOLE_PR=true (preserved behavior, since the worker uses
-#      `gh pr diff` for the full PR diff regardless of base SHA)
+#      (mentions are not triggers — only the slash commands are).
+#   3. /srosro-review comment since last review → worker dispatched with
+#      FORCE_WHOLE_PR=true (the worker uses `gh pr diff` for the full PR
+#      diff regardless of base SHA, so there's always something to review).
+#   4. Bot's own auto-post containing /srosro-review → no dispatch
+#      (self-trigger filter via the BOT_AUTO_POST_MARKER).
+#   5. /srosro-review by BOT_USER without the marker → 1 dispatch
+#      (single-account regression: human running the bot must be able to
+#      trigger reviews on their own account).
+#   6. /srosro-review from a commenter without push access → 1 dispatch
+#      (the trigger itself is honored), but no trigger-comment.md is
+#      staged for the worker (trust gate keeps drive-by prose off the
+#      auto-approve path).
+#   7. /srosro-update-review on an unchanged SHA → no dispatch (skipped
+#      to avoid empty-diff aborts; the trigger stays open until commits
+#      land and a future tick picks it up).
 #
-# Stubs `gh` via PATH and the worker via REVIEWER_LIB_DIR so neither
-# the network nor real PR infrastructure is touched.
+# Stubs `gh` via PATH and the worker via REVIEWER_LIB_DIR so neither the
+# network nor real PR infrastructure is touched.
 
 set -euo pipefail
 
@@ -137,26 +145,27 @@ if [ "$n" -ne 0 ]; then
     exit 1
 fi
 
-# Scenario 2 (the bug fix): same SHA, bare @<bot> mention → no dispatch.
-# Pre-fix, this would have set FORCE_REVIEW=true, bypassed the
-# unchanged-SHA skip, spawned a worker, and the worker would have
-# aborted on `git diff KNOWN_SHA..HEAD` returning empty.
-echo "  scenario 2: same SHA + bare @-mention (the bug fix)..."
+# Scenario 2: same SHA, bare @<bot> mention → no dispatch. @-mentions are
+# not triggers in the new model — only /srosro-review and
+# /srosro-update-review are. This guards against a regression that
+# accidentally re-introduces an @-mention trigger.
+echo "  scenario 2: same SHA + bare @-mention (mentions are not triggers)..."
 NOW_ISO=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"hey @srosro can you take another look?"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 run_orchestrator
 n=$(count_dispatches)
 if [ "$n" -ne 0 ]; then
-    echo "FAIL scenario 2 (bug-fix regression): expected 0 dispatches, got $n"
+    echo "FAIL scenario 2 (mentions-are-not-triggers regression): expected 0 dispatches, got $n"
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
 
-# Scenario 3: same SHA, /review → 1 dispatch with FORCE_WHOLE_PR=true.
-# /review must still work; the worker uses gh pr diff for the full PR
-# diff regardless of base SHA, so there's always something to review.
-echo "  scenario 3: same SHA + /review comment..."
-printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+# Scenario 3: same SHA, /srosro-review → 1 dispatch with FORCE_WHOLE_PR=true.
+# /srosro-review must still work even on an unchanged SHA; the worker uses
+# gh pr diff for the full PR diff regardless of base SHA, so there's
+# always something to review.
+echo "  scenario 3: same SHA + /srosro-review comment..."
+printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 run_orchestrator
 n=$(count_dispatches)
 if [ "$n" -ne 1 ]; then
@@ -177,15 +186,12 @@ fi
 
 # Scenario 4 (bot self-trigger filter): same SHA, comment whose body
 # carries the auto-post marker → no dispatch. The bot's own posted review
-# comments prepend `<!-- knightwatch-reviewer:auto-post -->` to the body;
-# the orchestrator excludes any comment containing that marker so a
-# successful review doesn't re-trigger itself when the bot's
-# inferred-intent line matches the @<bot>-mention regex on the next tick.
-# Exercises the WHOLE_MENTION path so the same-SHA skip can't mask the
-# filter: pre-fix this would have produced WHOLE_MENTION=1 →
-# FORCE_WHOLE_PR=true → dispatch.
+# comments prepend `<!-- knightwatch-reviewer:auto-post -->` to the body
+# AND the usage footer always names the slash commands literally; the
+# orchestrator excludes any comment containing that marker so a successful
+# review doesn't re-trigger itself on the next tick.
 echo "  scenario 4: same SHA + auto-post marker in body (self-trigger filter)..."
-printf '[{"created_at":"%s","user":{"login":"srosro"},"body":"<!-- knightwatch-reviewer:auto-post -->\\n/review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+printf '[{"created_at":"%s","user":{"login":"srosro"},"body":"<!-- knightwatch-reviewer:auto-post -->\\n/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 run_orchestrator
 n=$(count_dispatches)
 if [ "$n" -ne 0 ]; then
@@ -195,19 +201,19 @@ if [ "$n" -ne 0 ]; then
 fi
 
 # Scenario 5 (single-account regression): same SHA, comment authored by
-# BOT_USER (the bot's own GH identity) with a /review body but NO marker
-# → 1 dispatch. This is the case the earlier `.user.login != $user`
+# BOT_USER (the bot's own GH identity) with a /srosro-review body but NO
+# marker → 1 dispatch. This is the case the earlier `.user.login != $user`
 # filter (e1d91a0) silently broke: in single-account deployments the
 # human running the bot posts as BOT_USER, and a user-based filter drops
-# their legitimate /review along with the bot's auto-posts. The
+# their legitimate slash commands along with the bot's auto-posts. The
 # content-marker filter must let unmarked comments through regardless of
 # author.
-echo "  scenario 5: same SHA + /review by BOT_USER without marker (single-account /review)..."
-printf '[{"created_at":"%s","user":{"login":"srosro"},"body":"/review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+echo "  scenario 5: same SHA + /srosro-review by BOT_USER without marker (single-account)..."
+printf '[{"created_at":"%s","user":{"login":"srosro"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 run_orchestrator
 n=$(count_dispatches)
 if [ "$n" -ne 1 ]; then
-    echo "FAIL scenario 5 (single-account /review regression): expected 1 dispatch, got $n"
+    echo "FAIL scenario 5 (single-account regression): expected 1 dispatch, got $n"
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
@@ -222,7 +228,7 @@ if ! grep -q 'trigger_file=/tmp/pr-review-trigger' "$LOG_FILE"; then
     exit 1
 fi
 
-# Scenario 6 (trigger-comment trust gate): same SHA, /review from a
+# Scenario 6 (trigger-comment trust gate): same SHA, /srosro-review from a
 # commenter without push access → the trigger still dispatches a worker
 # (so re-request-poller and external requesters keep working), but the
 # orchestrator does NOT stage `.codex-scratch/trigger-comment.md`. The
@@ -230,9 +236,9 @@ fi
 # pipeline that ends in `gh pr review --approve`, so a drive-by
 # commenter's prose is kept off that path. Stranger is deliberately
 # omitted from MOCK_TRUSTED_USERS for this scenario.
-echo "  scenario 6: same SHA + /review from untrusted commenter (trigger-comment trust gate)..."
+echo "  scenario 6: same SHA + /srosro-review from untrusted commenter (trigger-comment trust gate)..."
 MOCK_TRUSTED_USERS="srosro" \
-    printf '[{"created_at":"%s","user":{"login":"stranger"},"body":"/review please"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+    printf '[{"created_at":"%s","user":{"login":"stranger"},"body":"/srosro-review please"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 MOCK_TRUSTED_USERS="srosro" run_orchestrator
 n=$(count_dispatches)
 if [ "$n" -ne 1 ]; then
@@ -251,4 +257,19 @@ if grep -q 'trigger_file=/tmp/pr-review-trigger' "$LOG_FILE"; then
     exit 1
 fi
 
-echo "  PASS (6 scenarios: no-comments, bare-mention, /review, marker-self-filter, single-account-/review, untrusted-trigger-comment)"
+# Scenario 7: same SHA, /srosro-update-review → no dispatch. Incremental
+# triggers on an unchanged SHA hit the empty-diff abort path, so we skip
+# at the orchestrator instead of burning a worker. The trigger stays open
+# until commits land. The longer command must NOT also satisfy the
+# /srosro-review (whole-PR) substring check.
+echo "  scenario 7: same SHA + /srosro-update-review (skipped on unchanged SHA)..."
+printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-update-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+run_orchestrator
+n=$(count_dispatches)
+if [ "$n" -ne 0 ]; then
+    echo "FAIL scenario 7 (incremental same-SHA skip regression): expected 0 dispatches, got $n"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+
+echo "  PASS (7 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha)"
