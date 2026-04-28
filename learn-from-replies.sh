@@ -1,14 +1,17 @@
 #!/bin/bash
 # Hourly: maintain ~/.claude/COMMENT_REVIEW_MISTAKES.md as a ranked top-48
-# list of calibration mistakes, and post acks to humans who pushed back on
-# bot reviews.
+# list of calibration rules, and post acks to humans whose feedback shaped
+# the list.
 #
-# Only EXPLICIT signal is consumed: human replies to our review that pass
-# the review-topicality filter below. Inferred signals (e.g. "PR merged
-# despite our VERDICT: COMMENT") are intentionally NOT used — they produced
-# too many speculative rules from too little signal. Rules that enter the
-# mistakes list must be grounded in a real human reply with a clear @srosro
-# tag, quote of our review, or severity reference.
+# Only EXPLICIT, OPT-IN signal is consumed: comments containing
+# `/srosro-memorize` posted by trusted (push-access) repo collaborators
+# after a bot review on the same PR. The earlier heuristic filter
+# (looks_like_review_reply) over-included noise — bot replies, tangential
+# human chatter, anything that happened to mention @<bot> or quote a
+# severity tag. The slash command makes the signal opt-in: a human is
+# explicitly asking the bot to remember a lesson, the trust gate keeps
+# drive-by commenters from mutating the rule list, and the "after a bot
+# review" sequencing keeps the request anchored to actual review context.
 #
 # REVIEW_PRACTICES.md and TESTING.md are not auto-tuned here. They are
 # hand-curated; auto-tune targets only the mistakes file.
@@ -27,6 +30,10 @@ MAC_HOST="${MAC_HOST:-so@so-mbp}"
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
 MAC_CLAUDE_DIR="${MAC_CLAUDE_DIR:-/Users/so/.claude}"
 
+# is_trusted_repo_author() — push-access trust gate, shared with review.sh.
+REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
+. "$REVIEWER_LIB_DIR/auth.sh"
+
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"; }
 
 [ -f "$REPLIES_SEEN_FILE" ]  || echo '{}' > "$REPLIES_SEEN_FILE"
@@ -37,12 +44,15 @@ reply_seen_set() {
     echo "$tmp" > "$REPLIES_SEEN_FILE"
 }
 
-# Heuristic: does this comment look like a response to our review?
-looks_like_review_reply() {
-    printf '%s' "$1" | grep -qE "@${BOT_USER}|^>|\[blocking\]|\[medium\]|\[low\]|\[nit\]"
+# Opt-in signal: comment body must contain the literal `/srosro-memorize`
+# slash command (case-insensitive). The bot's own review footer mentions
+# this command but BOT_USER posts hit the LAST_OUR_TS branch above and
+# never reach this check, so the footer can't self-trigger.
+is_memorize_request() {
+    printf '%s' "$1" | grep -qiF '/srosro-memorize'
 }
 
-# ---------- Explicit signal: human replies to bot comments ----------
+# ---------- Opt-in signal: /srosro-memorize requests from trusted humans ----------
 REPLIES=""
 REPLIES_META_FILE=$(mktemp)
 trap 'rm -f "$REPLIES_META_FILE"' EXIT
@@ -73,15 +83,28 @@ for REPO in "${REPOS[@]}"; do
             if [ "$USER" = "$BOT_USER" ]; then
                 LAST_OUR_TS=$TS
             elif [ "$LAST_OUR_TS" -gt 0 ] && [ "$TS" -gt "$LAST_OUR_TS" ]; then
+                # Defensive: trust gate below would catch most bots (no
+                # push access), but keep the explicit *[bot]/Copilot
+                # filter as a cheap pre-check before the API call.
                 case "$USER" in
                     *"[bot]"|"Copilot"|"copilot") continue ;;
                 esac
-                if ! looks_like_review_reply "$BODY"; then
+                # Cheap body filter first — skip the trust API call for
+                # any reply that isn't an explicit memorize request.
+                if ! is_memorize_request "$BODY"; then
+                    continue
+                fi
+                # Trust gate: only push-access collaborators can mutate
+                # the rule list. Drive-by commenters can post
+                # /srosro-memorize all they want; we ignore them. Logged
+                # at info so misuse is visible.
+                if ! is_trusted_repo_author "$REPO" "$USER"; then
+                    log "${REPO}#${PR_NUM}: /srosro-memorize from @${USER} ignored (no push access)"
                     continue
                 fi
                 REPLY_KEY="${REPO}#${PR_NUM}#${ID}"
                 if [ -z "$(reply_seen_get "$REPLY_KEY")" ]; then
-                    REPLIES+="--- Explicit reply [${REPLY_KEY}] by @${USER} on ${REPO} PR #${PR_NUM} ---"$'\n'
+                    REPLIES+="--- Memorize request [${REPLY_KEY}] by @${USER} on ${REPO} PR #${PR_NUM} ---"$'\n'
                     REPLIES+="$BODY"$'\n\n'
                     jq -c --null-input \
                         --arg k "$REPLY_KEY" --arg r "$REPO" --arg p "$PR_NUM" --arg u "$USER" \
@@ -93,45 +116,45 @@ for REPO in "${REPOS[@]}"; do
 done
 
 if [ -z "$REPLIES" ]; then
-    log "no new explicit signals (no human replies passed the filter)"
+    log "no new /srosro-memorize requests"
     exit 0
 fi
 
 REPLY_COUNT=$(wc -l < "$REPLIES_META_FILE" 2>/dev/null || echo 0)
-log "signals: explicit=$REPLY_COUNT — updating mistakes list..."
+log "signals: memorize_requests=$REPLY_COUNT — updating mistakes list..."
 
 MISTAKES=$(cat "$CLAUDE_DIR/COMMENT_REVIEW_MISTAKES.md")
 
-PROMPT="You maintain a ranked top-48 list of review-calibration mistakes based on EXPLICIT HUMAN FEEDBACK only. Every entry in this list must be grounded in a real human reply that pushed back on, agreed with, or otherwise directly engaged with a bot review comment. This list is rewritten end-to-end on each update — it is not append-only. Your default action is to make the SMALLEST possible change that captures new signal; over-writing the whole list for one datapoint is a failure mode.
+PROMPT="You maintain a ranked top-48 list of review-calibration rules based on EXPLICIT, OPT-IN feedback. Each new signal is a comment containing \`/srosro-memorize\` posted by a trusted (push-access) human collaborator after a bot review on the same PR — they're explicitly asking the bot to remember a lesson. This list is rewritten end-to-end on each update — it is not append-only. Your default action is to make the SMALLEST possible change that captures new signal; over-writing the whole list for one datapoint is a failure mode.
 
 INPUTS:
 - The current \`COMMENT_REVIEW_MISTAKES.md\` (the list you are editing)
-- New explicit signals (human replies to bot reviews)
+- New /srosro-memorize requests (each is a trusted human's explicit ask to remember something)
 
 YOUR JOB:
 
-1. For each new signal, infer the UNDERLYING PATTERN the feedback points at — NOT the specific instance. If a reply said 'this manifest mirroring doesn't need dedup,' the pattern is 'don't demand refactors when parity/drift tests adequately cover the risk.' Generalize before writing. No file paths, no specific PR references, no company-specific details — those belong in a commit message, not in a durable rule.
+1. For each new signal, infer the UNDERLYING PATTERN the human is teaching — NOT the specific instance. If they wrote 'this manifest mirroring doesn't need dedup,' the pattern is 'don't demand refactors when parity/drift tests adequately cover the risk.' Generalize before writing. No file paths, no specific PR references, no company-specific details — those belong in a commit message, not in a durable rule.
 
 2. Decide what to do with each signal:
    - **Match an existing item** → merge it in (implicit: the item stays or moves up in rank). Do not add a near-duplicate.
    - **Genuinely new general pattern** → add it, but only if the pattern would plausibly repeat on FUTURE PRs. One-off observations are not rules.
-   - **Not a real calibration signal** (question, agreement, off-topic) → ignore it.
+   - **Not a clear calibration lesson** (vague request, just thanks/acknowledgment, or '/srosro-memorize' with nothing actionable after it) → ignore it.
    - **Soften an existing rule** → if the signal contradicts a too-broad rule, NARROW or soften that rule rather than adding a new one alongside.
 
 3. Produce the updated list. Keep the format EXACTLY:
    - Numbered list, 1..N, with N ≤ 48.
    - Each line: \`N. <pattern statement>. <why it matters, one clause>.\`
-   - No source tag prefix — this file only accepts explicit signals now, so there's no tag to disambiguate.
+   - No source tag prefix.
    - Under ~200 chars per item. Patterns, not case studies.
    - Ranked by importance: frequently-seen patterns outrank one-offs.
    - If the list exceeds 48 items after edits, DROP the lowest-ranked items.
    - Preserve the header text above the numbered list.
 
-4. Produce a per-reply acknowledgment inside an <ACKS> block. For each reply that genuinely responds to the review (agreeing, pushing back, reporting a fix, debating a finding), emit one <ACK> line that names the reply by its key and explains in ONE CONCISE LINE what you learned (what rule you added, what over-call you corrected, or that you made no change and why). For off-topic replies, OMIT them from <ACKS> — silence is correct.
+4. Produce a per-request acknowledgment inside an <ACKS> block. For each /srosro-memorize request, emit one <ACK> line that names the request by its key and explains in ONE CONCISE LINE what you did: what rule you added, what existing rule you softened, or that you made no change and why. ACK every request — the human asked you to remember something, so silence is wrong; tell them what happened.
 
 ACK constraints:
 - One line per ACK, under ~200 chars, plain prose.
-- Do NOT use \`@${BOT_USER}\` or \`/review\` (those would trigger a re-review loop).
+- Do NOT use \`@${BOT_USER}\`, \`/srosro-review\`, \`/srosro-update-review\`, or \`/srosro-memorize\` in the ACK body (those would either trigger a re-review loop or recursively register as a new memorize request on the next tick).
 - Focus on what changed (or didn't), not pleasantries.
 
 OUTPUT FORMAT — exactly this shape, nothing else:
@@ -140,16 +163,16 @@ OUTPUT FORMAT — exactly this shape, nothing else:
 ...full updated file contents (header + numbered list)...
 </COMMENT_REVIEW_MISTAKES>
 <ACKS>
-<ACK key=\"repo#pr#commentid\">One-line what-I-learned.</ACK>
+<ACK key=\"repo#pr#commentid\">One-line what-I-did.</ACK>
 ...
 </ACKS>
 
-Default to conservative edits. If a batch of signals doesn't clearly indicate the reviewer erred in a generalizable way, output the current list unchanged and minimal/no ACKs. Quality over volume.
+Default to conservative edits. If a request doesn't clearly indicate a generalizable rule, leave the list unchanged and ACK with what you considered and why you didn't update. Quality over volume.
 
 Current COMMENT_REVIEW_MISTAKES.md:
 $MISTAKES
 
-New explicit signals (human replies to bot reviews):
+New /srosro-memorize requests:
 $REPLIES"
 
 RAW=$(printf '%s' "$PROMPT" | codex exec --skip-git-repo-check "Update the top-48 mistakes list and produce per-reply acknowledgments. Output COMMENT_REVIEW_MISTAKES + ACKS tags only." 2>&1)
@@ -201,7 +224,18 @@ if [ -n "$ACKS_BLOCK" ]; then
         esac
         KEY=$(printf '%s' "$LINE" | sed -n 's|.*key="\([^"]*\)".*|\1|p')
         ACK_BODY=$(printf '%s' "$LINE" | sed -e 's|.*<ACK[^>]*>||' -e 's|</ACK>.*||')
-        ACK_BODY=$(printf '%s' "$ACK_BODY" | sed -e "s|@${BOT_USER}|${BOT_USER}|gI" -e 's|/review|re-review|gI')
+        # Defang: strip leading @ and / so the ACK body can't (a) re-trigger
+        # the orchestrator's slash-command tests, or (b) recursively register
+        # as a new /srosro-memorize request on the next learn tick. The
+        # codex prompt tells the model not to emit these, but belt-and-
+        # suspenders: the marker filter alone protects us, and so does the
+        # USER=BOT_USER filter, but a defanged body is also harder to
+        # accidentally copy-paste into a real trigger.
+        ACK_BODY=$(printf '%s' "$ACK_BODY" | sed \
+            -e "s|@${BOT_USER}|${BOT_USER}|gI" \
+            -e 's|/srosro-update-review|srosro-update-review|gI' \
+            -e 's|/srosro-review|srosro-review|gI' \
+            -e 's|/srosro-memorize|srosro-memorize|gI')
 
         [ -z "$KEY" ] || [ -z "$ACK_BODY" ] && { ACK_SKIPPED=$((ACK_SKIPPED+1)); continue; }
 
@@ -237,7 +271,7 @@ if [ -d "$VIBE_REPO/.git" ]; then
     else
         git -C "$VIBE_REPO" add claude-config/ 2>>"$LOG_FILE"
         if git -C "$VIBE_REPO" -c user.email=eng@plow.co -c user.name=odio \
-            commit -m "auto: tune review-mistakes list from PR-review signals" \
+            commit -m "auto: tune review-mistakes list from /srosro-memorize requests" \
             >> "$LOG_FILE" 2>&1; then
             if git -C "$VIBE_REPO" push >> "$LOG_FILE" 2>&1; then
                 log "vibe-engineering: committed + pushed auto-tune"
