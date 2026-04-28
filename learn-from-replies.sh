@@ -20,7 +20,7 @@ STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 BOT_USER="${BOT_USER:-srosro}"
 BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
 
-REPOS=("cncorp/plow" "srosro/tkmx-client" "srosro/tkmx-server" "srosro/knightwatch-reviewer")
+REPOS=("cncorp/plow" "srosro/tkmx-client" "srosro/tkmx-server" "srosro/knightwatch-reviewer" "srosro/vibe-engineering")
 REPLIES_SEEN_FILE="${REPLIES_SEEN_FILE:-$STATE_DIR/replies-seen.json}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/learn.log}"
 MAC_HOST="${MAC_HOST:-so@so-mbp}"
