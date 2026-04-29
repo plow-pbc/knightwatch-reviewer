@@ -735,10 +735,21 @@ if [[ "$VERDICT" == VERDICT:\ APPROVE* ]]; then
     else
         APPROVE_BODY="Approving per automated review above."
     fi
-    gh pr review "$PR_NUM" --repo "$REPO" --approve --body "$APPROVE_BODY" 2>&1 \
-        || log "Approve skipped (own PR or already approved)"
-    APPROVED=true
-    log "Approved $PR_ID ($APPROVE_BODY)"
+    # Preflight: GitHub forbids self-approval. Skipping the API call
+    # avoids a "GraphQL: Review Can not approve your own pull request"
+    # error in the journal AND keeps state.json honest (the prior code
+    # unconditionally set APPROVED=true even when the call had failed).
+    if is_pr_author "$REPO" "$PR_NUM" "$BOT_USER"; then
+        log "Skipping approve on $PR_ID — PR authored by $BOT_USER (GitHub forbids self-approval)"
+    elif gh pr review "$PR_NUM" --repo "$REPO" --approve --body "$APPROVE_BODY" 2>&1 >/dev/null; then
+        APPROVED=true
+        log "Approved $PR_ID ($APPROVE_BODY)"
+    else
+        # Most likely cause: a previous tick already approved at this SHA
+        # (idempotent dupes are harmless but worth logging), or the API
+        # is transiently down. Don't lie about state.
+        log "$PR_ID: gh pr review --approve FAILED — see journal; not marking approved"
+    fi
 else
     log "Commented on $PR_ID (no approval)"
 fi
