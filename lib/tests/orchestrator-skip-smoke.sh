@@ -308,7 +308,7 @@ cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<WORKER
 echo "WORKER_DISPATCHED repo=\$1 pr=\$2 sha=\$3 force_whole=\$6 trigger_file=\${TRIGGER_COMMENT_FILE:-}" >> "$LOG_FILE"
 echo \$\$ > "$WORKER_PID_FILE"
 touch "$WORKER_MARKER"
-sleep 60   # would block orchestrator's old `wait` loop
+exec sleep 60   # exec preserves PID so reap_worker hits the actual sleeper, not the wrapper shell
 WORKER
 chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
 
@@ -350,7 +350,69 @@ ORCH_ELAPSED=$((END - START))
 # Sanity: the worker actually got dispatched.
 [ -f "$WORKER_MARKER" ] || { reap_worker; echo "FAIL scenario 9: worker never started — orchestrator may have errored before fan-out"; cat "$LOG_FILE"; exit 1; }
 
+# Liveness: scenario 9 claims "worker keeps running." Verify the worker
+# PID is actually still alive AFTER the orchestrator exited. Catches a
+# regression where (e.g.) cgroup-kill on orchestrator exit would leave
+# WORKER_MARKER touched but the sleep dead.
+WORKER_PID=$(cat "$WORKER_PID_FILE")
+[ -n "$WORKER_PID" ] && kill -0 "$WORKER_PID" 2>/dev/null || { reap_worker; echo "FAIL scenario 9 (worker-died-with-orchestrator regression): worker PID '$WORKER_PID' is no longer alive after orchestrator exit"; exit 1; }
+
 # Reap the sleeping worker so the test exits cleanly.
 reap_worker
 
-echo "  PASS (9 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit)"
+# Scenario 10: per-PR flock provides mutual exclusion across separate
+# review-one-pr.sh invocations. Calls acquire_pr_lock() (the same
+# function lib/review-one-pr.sh sources from lib/locking.sh) so a
+# regression that moves the lock dir back to /tmp would have to break
+# the helper too. Behavior + structural assertions together: the
+# second concurrent acquirer must lose, AND the lock file path must
+# be under $STATE_DIR/locks/, never /tmp.
+echo "  scenario 10: per-PR flock — second concurrent acquire loses on contention, lock path under \$STATE_DIR..."
+
+LOCK_TEST_STATE_DIR="$TMPDIR/lock-test-state"
+mkdir -p "$LOCK_TEST_STATE_DIR"
+
+HOLDER_MARKER="$TMPDIR/holder-acquired.flag"
+HOLDER_RELEASE="$TMPDIR/holder-release.flag"
+cat > "$TMPDIR/holder.sh" <<HOLDER
+#!/bin/bash
+. "$PROJECT_ROOT/lib/locking.sh"
+if ! acquire_pr_lock "$LOCK_TEST_STATE_DIR" "test_repo__1"; then
+    echo "HOLDER_FAILED_TO_ACQUIRE" >&2
+    exit 1
+fi
+echo "got_lock pid=\$\$ file=\$PR_LOCK_FILE" > "$HOLDER_MARKER"
+for i in \$(seq 1 100); do
+    [ -f "$HOLDER_RELEASE" ] && exit 0
+    sleep 0.1
+done
+exit 0
+HOLDER
+chmod +x "$TMPDIR/holder.sh"
+
+bash "$TMPDIR/holder.sh" >"$TMPDIR/holder.log" 2>&1 &
+HOLDER_PID=$!
+for _ in $(seq 1 50); do
+    [ -f "$HOLDER_MARKER" ] && break
+    sleep 0.1
+done
+[ -f "$HOLDER_MARKER" ] || { kill "$HOLDER_PID" 2>/dev/null; echo "FAIL scenario 10: holder never acquired the lock"; cat "$TMPDIR/holder.log"; exit 1; }
+
+if ( . "$PROJECT_ROOT/lib/locking.sh" && acquire_pr_lock "$LOCK_TEST_STATE_DIR" "test_repo__1" ); then
+    touch "$HOLDER_RELEASE"; wait "$HOLDER_PID" 2>/dev/null
+    echo "FAIL scenario 10 (lock-isolation regression): contender acquired lock while holder still held it"
+    cat "$HOLDER_MARKER"; exit 1
+fi
+
+HOLDER_LOCK_FILE=$(grep -o 'file=[^ ]*' "$HOLDER_MARKER" | sed 's/^file=//')
+if [[ "$HOLDER_LOCK_FILE" != "$LOCK_TEST_STATE_DIR/locks/test_repo__1" ]]; then
+    touch "$HOLDER_RELEASE"; wait "$HOLDER_PID" 2>/dev/null
+    echo "FAIL scenario 10 (lock-path regression): expected $LOCK_TEST_STATE_DIR/locks/test_repo__1 but got '$HOLDER_LOCK_FILE'"
+    exit 1
+fi
+
+touch "$HOLDER_RELEASE"
+wait "$HOLDER_PID" 2>/dev/null
+( . "$PROJECT_ROOT/lib/locking.sh" && acquire_pr_lock "$LOCK_TEST_STATE_DIR" "test_repo__1" ) || { echo "FAIL scenario 10: post-release acquire failed; lock may be stuck"; exit 1; }
+
+echo "  PASS (10 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir)"
