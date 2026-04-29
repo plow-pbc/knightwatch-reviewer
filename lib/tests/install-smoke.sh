@@ -110,14 +110,17 @@ shopt -u nullglob
 # Discover the same script list install.sh now derives from the unit
 # files' ExecStart= directives, so the assertion in scenario 1 stays
 # in sync without a parallel hand-maintained list. Mirror install.sh's
-# *.sh-existing-in-repo filter so both code paths agree on what counts
-# as a "script that should be symlinked."
+# command-token-then-basename parse so both code paths handle argv'd
+# ExecStart= variants identically.
 PROD_SCRIPTS=()
-while IFS= read -r script; do
+while IFS= read -r execstart; do
+    cmd_path="${execstart#ExecStart=}"
+    cmd_path="${cmd_path%% *}"
+    script="${cmd_path##*/}"
     [[ -n "$script" ]] || continue
     [[ "$script" == *.sh ]] || continue
     [[ -f "$PROJECT_ROOT/$script" ]] && PROD_SCRIPTS+=("$script")
-done < <(grep -h "^ExecStart=" "$PROJECT_ROOT"/systemd/*.service | sed 's|^ExecStart=||;s|.*/||' | sort -u)
+done < <(grep -h "^ExecStart=" "$PROJECT_ROOT"/systemd/*.service | sort -u)
 [[ ${#PROD_SCRIPTS[@]} -ge 1 ]] || { echo "FAIL setup: no scripts discovered from production unit files"; exit 1; }
 
 # --- Scenario 1: first-run install -----------------------------------------
@@ -161,8 +164,6 @@ MOCK_TIMERS_ENABLED=1 run_install "$PROJECT_ROOT/install.sh" || { echo "FAIL sce
 
 # --- Scenario 3: new unit added → only that one installs+enables -----------
 echo "  scenario 3: drop a new unit into systemd/ — only that one is copied + enabled..."
-NEW_UNIT="$TMPDIR/repo-overlay-systemd"
-mkdir -p "$NEW_UNIT"
 # Copy current units into an overlay so the test doesn't mutate the real
 # repo, then add a fake one and point install.sh at the overlay via a
 # wrapper that swaps the systemd/ source dir. The cleanest way to do
@@ -215,11 +216,10 @@ MOCK_TIMERS_ENABLED=1 \
 MOCK_NEWLY_ADDED_TIMERS="pr-reviewer-fakenew.timer" \
     run_install "$OVERLAY/install.sh" || { echo "FAIL scenario 3: install.sh exited non-zero"; cat "$STUB_LOG"; exit 1; }
 
-# Exactly one new unit copied (the fake one) — the existing ones are
-# in sync because scenario 1 already copied them and SYSTEMD_DIR is
-# preserved across scenarios.
+# Two new units copied (the fakenew .service + .timer pair) — every
+# existing unit is in sync because scenario 1 already copied them and
+# SYSTEMD_DIR is preserved across scenarios.
 n_cp="$(count_stub 'SUDO cp')"
-# We added a service + a timer = 2 new units.
 [ "$n_cp" = "2" ] || { echo "FAIL scenario 3: expected 2 sudo cp (new service + new timer), got $n_cp"; cat "$STUB_LOG"; exit 1; }
 # daemon-reload called exactly once because something changed
 [ "$(count_stub 'SYSTEMCTL daemon-reload')" = "1" ] || { echo "FAIL scenario 3: expected 1 daemon-reload"; cat "$STUB_LOG"; exit 1; }

@@ -61,7 +61,17 @@ shopt -u nullglob
 [[ ${#service_units[@]} -ge 1 ]] || fail "no systemd .service files in $REPO_DIR/systemd/"
 
 SCRIPTS=()
-while IFS= read -r script; do
+while IFS= read -r execstart; do
+    # An ExecStart= line is `ExecStart=/path/to/cmd [arg1] [arg2] ...`.
+    # Strip the directive prefix, then split off everything after the
+    # first whitespace so we ONLY take the command path. Without this
+    # split, a future `ExecStart=/home/odio/.pr-reviewer/review.sh
+    # --repo cncorp/plow` would basename to "plow" (greedy `.*/` eats
+    # through the last `/` in `cncorp/plow`) and silently drop
+    # review.sh from the managed list.
+    cmd_path="${execstart#ExecStart=}"
+    cmd_path="${cmd_path%% *}"   # everything before the first space
+    script="${cmd_path##*/}"     # basename
     [[ -n "$script" ]] || continue
     if [[ -f "$REPO_DIR/$script" ]]; then
         SCRIPTS+=("$script")
@@ -74,7 +84,7 @@ while IFS= read -r script; do
     # else: ExecStart points at a non-script path (e.g. /bin/true in test
     # fixtures, or a hypothetical absolute /usr/bin/something). Nothing
     # to symlink for those; skip without warning.
-done < <(grep -h "^ExecStart=" "${service_units[@]}" | sed 's|^ExecStart=||;s|.*/||' | sort -u)
+done < <(grep -h "^ExecStart=" "${service_units[@]}" | sort -u)
 [[ ${#SCRIPTS[@]} -ge 1 ]] || fail "no scripts discovered from ExecStart= directives — check systemd/*.service shape"
 
 DIRS=(lib contexts docs prompts)
