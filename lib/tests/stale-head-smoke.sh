@@ -73,6 +73,22 @@ if ! printf '%s' "$result" | grep -q "commands at the bottom"; then
     echo "$result"
     exit 1
 fi
+# 2c-bis. Regression fence on the wording change in 40e9372: must NOT
+# claim auto-recovery on the next orchestrator tick (the actual contract
+# is STABLE_SECS=3600 — non-forced re-reviews wait an hour). Explicit
+# rejection of the buggy phrase + positive assertion of the corrected
+# wording, so a copy-revert fails CI instead of silently regressing the
+# trust-restoring UX.
+if printf '%s' "$result" | grep -q "next orchestrator tick"; then
+    echo "FAIL: scenario 2 — warning re-introduced the misleading 'next orchestrator tick' auto-recovery promise"
+    echo "$result"
+    exit 1
+fi
+if ! printf '%s' "$result" | grep -q "trigger a fresh review"; then
+    echo "FAIL: scenario 2 — warning lost the corrected 'trigger a fresh review' wording"
+    echo "$result"
+    exit 1
+fi
 if printf '%s' "$result" | grep -q "/srosro-update-review"; then
     # The footer in the real bot post DOES contain /srosro-update-review,
     # but BODY in this test doesn't include the footer — so a hit means
