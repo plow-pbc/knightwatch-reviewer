@@ -43,12 +43,22 @@ REVIEW_START_TS=$(date +%s)
 # PR. If we can't acquire, exit silently (with a log line) — the other
 # invocation will finish its own work.
 #
+# IMPORTANT: lock dir is under $STATE_DIR (real fs, declared in the
+# unit's ReadWritePaths), NOT /tmp. The orchestrator service runs with
+# PrivateTmp=yes, which means each oneshot invocation gets its own
+# private /tmp namespace. With detached workers (KillMode=process), a
+# worker from tick N keeps its private-tmp lock file while tick N+1's
+# orchestrator + new workers see a fresh /tmp — the locks would
+# completely fail to gate cross-tick races for the same PR. $STATE_DIR
+# is shared across all ticks and survives the namespace boundary.
+#
 # NB: this block runs BEFORE state-io.sh is sourced, so `log` isn't yet
 # available. Use raw echo+tee for the contention message. We also don't have
 # LOG_FILE defaulted yet (the per-run dir is set up below). Fall back to
 # $STATE_DIR/orchestrator.log so this skip line still lands somewhere durable.
+STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 PR_LOCK_SLUG="${REPO//\//_}__${PR_NUM}"
-PR_LOCK_DIR="/tmp/pr-review-locks"
+PR_LOCK_DIR="$STATE_DIR/locks"
 mkdir -p "$PR_LOCK_DIR"
 PR_LOCK_FILE="${PR_LOCK_DIR}/${PR_LOCK_SLUG}"
 exec {PR_LOCK_FD}> "$PR_LOCK_FILE"
@@ -60,7 +70,6 @@ if ! flock -n "$PR_LOCK_FD"; then
 fi
 # flock is held for the lifetime of PR_LOCK_FD; releases automatically on exit.
 
-STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 STATE_FILE="${STATE_FILE:-$STATE_DIR/state.json}"
 # Per-run dir is set up below once we've sourced helpers; until then the
 # orchestrator-level fallback catches any early `log` call.

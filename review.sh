@@ -37,7 +37,7 @@ if [ -f "$LOG_FILE" ] && [ "$(stat -c%s "$LOG_FILE" 2>/dev/null)" -gt 5242880 ];
 fi
 
 [ -f "$STATE_FILE" ] || echo '{}' > "$STATE_FILE"
-mkdir -p "$STATE_DIR" "$REPOS_DIR" "$WORKDIRS_DIR" /tmp/pr-review-locks
+mkdir -p "$STATE_DIR" "$REPOS_DIR" "$WORKDIRS_DIR" "$STATE_DIR/locks"
 
 # ---------- enumerate eligible PRs ----------
 declare -a ELIGIBLE=()

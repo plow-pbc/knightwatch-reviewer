@@ -298,16 +298,25 @@ fi
 echo "  scenario 9: slow worker — orchestrator returns within 5s, worker keeps running..."
 # Replace the worker stub with one that sleeps "indefinitely" (long
 # enough that the orchestrator's `wait` would block the test if it
-# regressed). Touch a marker file so we can confirm the worker actually
-# started before asserting orchestrator timing.
+# regressed). The stub writes its own PID so the test can kill the
+# exact process at cleanup time — `pkill -f "sleep 60"` is too broad
+# (would match unrelated `sleep 60` processes on a shared CI box).
 WORKER_MARKER="$TMPDIR/worker-started.flag"
+WORKER_PID_FILE="$TMPDIR/worker.pid"
 cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<WORKER
 #!/bin/bash
 echo "WORKER_DISPATCHED repo=\$1 pr=\$2 sha=\$3 force_whole=\$6 trigger_file=\${TRIGGER_COMMENT_FILE:-}" >> "$LOG_FILE"
+echo \$\$ > "$WORKER_PID_FILE"
 touch "$WORKER_MARKER"
 sleep 60   # would block orchestrator's old `wait` loop
 WORKER
 chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
+
+reap_worker() {
+    [ -f "$WORKER_PID_FILE" ] || return 0
+    local pid; pid=$(cat "$WORKER_PID_FILE")
+    [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+}
 
 printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 
@@ -329,19 +338,19 @@ while kill -0 "$ORCH_PID" 2>/dev/null; do
         echo "--- log ---"; cat "$LOG_FILE"
         # Reap the still-running worker so the trap's rm -rf can run.
         pkill -P "$ORCH_PID" 2>/dev/null || true
-        pkill -f "sleep 60" 2>/dev/null || true
+        reap_worker
         exit 1
     fi
 done
 END=$(date +%s)
 ORCH_ELAPSED=$((END - START))
 
-[ "$ORCH_ELAPSED" -lt 5 ] || { echo "FAIL scenario 9: orchestrator took ${ORCH_ELAPSED}s, expected <5s"; cat "$LOG_FILE"; exit 1; }
+[ "$ORCH_ELAPSED" -lt 5 ] || { reap_worker; echo "FAIL scenario 9: orchestrator took ${ORCH_ELAPSED}s, expected <5s"; cat "$LOG_FILE"; exit 1; }
 
 # Sanity: the worker actually got dispatched.
-[ -f "$WORKER_MARKER" ] || { echo "FAIL scenario 9: worker never started — orchestrator may have errored before fan-out"; cat "$LOG_FILE"; exit 1; }
+[ -f "$WORKER_MARKER" ] || { reap_worker; echo "FAIL scenario 9: worker never started — orchestrator may have errored before fan-out"; cat "$LOG_FILE"; exit 1; }
 
 # Reap the sleeping worker so the test exits cleanly.
-pkill -f "sleep 60" 2>/dev/null || true
+reap_worker
 
 echo "  PASS (9 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit)"
