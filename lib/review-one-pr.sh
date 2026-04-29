@@ -158,6 +158,13 @@ ln -sfn "$RUN_DIR" "$LATEST_LINK_DIR/latest"
 # code only stamped status on the success path, so abort dirs were
 # indistinguishable from in-flight ones.
 RUN_STATUS="aborted"
+# Tracks whether `gh pr comment` ever returned success during this run.
+# Used by finalize_run to repair meta.json.posted_at when the early stamp
+# fails — once we've published the review, persisting that fact must be
+# guaranteed before exit so the recurrence detector never undercounts a
+# real prior author-visible review. Set to "true" right after the gh
+# pr comment success in the post-aggregator section.
+GH_POSTED=false
 finalize_run() {
     local tmp="$RUN_DIR/meta.json.tmp"
     # The trap fires from EXIT, so we can't recover from a write failure
@@ -165,8 +172,19 @@ finalize_run() {
     # un-stamped. log() goes to RUN_DIR/run.log which is in the same
     # filesystem; if it's unwritable, the message at least lands on
     # stderr (which systemd captures into the journal).
-    if ! jq --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg status "$RUN_STATUS" \
-            '. + {finished_at: $ts, status: $status}' \
+    #
+    # Repair posted_at if gh did post but the immediate stamp didn't make
+    # it onto disk: the early write is best-effort (if its jq/mv fails we
+    # log + continue so the worker doesn't abort after a successful publish),
+    # but recurrence detection treats missing posted_at as "not author-
+    # visible" — so finalize is the last chance to repair the persisted
+    # signal. The jq below stamps posted_at = $ts ONLY if GH_POSTED is true
+    # AND the field is currently empty; existing posted_at values from the
+    # early stamp are preserved.
+    local ts
+    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    if ! jq --arg ts "$ts" --arg status "$RUN_STATUS" --arg gh_posted "$GH_POSTED" \
+            '. + {finished_at: $ts, status: $status} + (if ($gh_posted == "true") and ((.posted_at // "") == "") then {posted_at: $ts} else {} end)' \
             "$RUN_DIR/meta.json" > "$tmp"; then
         log "$PR_ID: finalize_run jq failed — meta.json left un-stamped"
         rm -f "$tmp"
@@ -698,20 +716,19 @@ if ! gh pr comment "$PR_NUM" --repo "$REPO" --body "$COMMENT_BODY"; then
     rm -rf "$REPO_DIR"
     exit 1
 fi
-# Stamp posted_at on meta.json — distinct from finalize_run's status,
-# which only flips to "completed" after state_set succeeds. Once gh has
-# accepted the comment, the author has already received the notification
-# and seen the review on GitHub, so this is the right boundary for the
-# Bug-Class-Recurrence detector to key off (NOT lifecycle status, which
-# would silently exclude reviews where state_set or the meta finalize
-# happened to fail after a successful publish).
+# Mark "we posted" as a runtime fact; finalize_run will guarantee
+# persistence even if the immediate stamp below fails. The early stamp
+# is best-effort — if it succeeds, recurrence detection sees posted_at
+# right away (useful for runs that race two workers); if it fails, the
+# trap repairs it on the way out.
+GH_POSTED=true
 META_TMP="$RUN_DIR/meta.json.tmp"
 if jq --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '. + {posted_at: $ts}' \
         "$RUN_DIR/meta.json" > "$META_TMP" 2>/dev/null; then
     mv -f "$META_TMP" "$RUN_DIR/meta.json" || rm -f "$META_TMP"
 else
     rm -f "$META_TMP"
-    log "$PR_ID: meta.json posted_at stamp failed — recurrence detector may undercount this review"
+    log "$PR_ID: meta.json posted_at stamp failed — finalize_run will repair on exit"
 fi
 # Review posted as a fresh comment (so the author gets a notification).
 # Mark eyes resolved BEFORE attempting the placeholder DELETE — if anything

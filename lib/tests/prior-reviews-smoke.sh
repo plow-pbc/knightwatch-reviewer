@@ -17,8 +17,13 @@
 #   4c. Run with posted_at present but status=aborted — this is the case
 #      where gh pr comment succeeded but state_set or finalize failed
 #      afterward. The author DID see the review on GitHub, so the helper
-#      MUST include it. Keying off status="completed" would have excluded
-#      this; keying off posted_at correctly includes it.
+#      MUST include it.
+#   4d. Legacy run with status=completed but no posted_at — runs created
+#      before this PR added the posted_at field. status only flips to
+#      "completed" after state_set succeeds, which in production runs
+#      after gh has posted, so status=completed reliably implies
+#      "gh post succeeded" for any preserved run. Without this fallback,
+#      the first-deploy rollout drops all pre-#15 history.
 #   5. Run dirs from a DIFFERENT PR or DIFFERENT repo sharing the slug
 #      prefix → not included (slug+pr glob filters them)
 #
@@ -145,6 +150,21 @@ if ! echo "$result" | grep -q "review three body"; then
     exit 1
 fi
 
+# ---- scenario 4d: legacy run (status=completed, no posted_at) → INCLUDED ----
+# Runs created before this PR landed have status=completed but no
+# posted_at field. On first deploy, those legacy runs MUST count for
+# recurrence detection — the long-running PRs this feature targets
+# already have multi-review history. Predicate falls back to status when
+# posted_at is missing.
+echo "  scenario 4d: legacy run (status=completed, no posted_at) → INCLUDED..."
+make_run "$REPO_SLUG" "$PR" "20260429T060000000Z" "6666666" "## review four body — legacy pre-#15 completed run" "completed" "" >/dev/null
+result=$(stage_prior_reviews "$TMPDIR/state" "$REPO_SLUG" "$PR" "$current")
+if ! echo "$result" | grep -q "review four body"; then
+    echo "FAIL: scenario 4d — legacy completed run (no posted_at) was excluded; rollout drops history exactly where the feature is needed"
+    echo "$result"
+    exit 1
+fi
+
 # ---- scenario 5: different PR / repo slug → not included ----
 echo "  scenario 5: runs from other PR / repo slug → filtered out..."
 make_run "$REPO_SLUG" "999" "20260429T120000000Z" "9999999" "## OTHER PR review (should NOT appear)" >/dev/null
@@ -161,4 +181,4 @@ if echo "$result" | grep -q "OTHER REPO review"; then
     exit 1
 fi
 
-echo "  PASS (7 scenarios: no-runs, self-excluded, chronological-prior, aborted-skipped, no-meta-skipped, posted-but-aborted-INCLUDED, foreign-pr-filtered)"
+echo "  PASS (8 scenarios: no-runs, self-excluded, chronological-prior, aborted-skipped, no-meta-skipped, posted-but-aborted-INCLUDED, legacy-completed-no-posted-at-INCLUDED, foreign-pr-filtered)"
