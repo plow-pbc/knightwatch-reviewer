@@ -25,10 +25,11 @@
 
 set -euo pipefail
 
-# Match the PATH prepend in review.sh / learn-from-replies.sh /
-# approve-from-replies.sh so sandboxed smoke tests can intercept `sudo`
-# and `systemctl` via $HOME/.local/bin/ stubs.
-export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
+# Don't prepend $HOME/.local/bin to PATH. The script invokes `sudo` and
+# `systemctl` (privilege-escalation surface), and a writable-home shim
+# could intercept either. The smoke test sets PATH itself before
+# invoking install.sh — that's the right seam for test-only command
+# interception, not the production script's own PATH.
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
 REPO_DIR="$PWD"
@@ -39,16 +40,43 @@ fail() { echo "✗ $1" >&2; exit 1; }
 info() { echo "→ $1"; }
 ok()   { echo "✓ $1"; }
 
+# Refuse to run as root. The systemd unit ExecStart= paths bake in
+# /home/odio/.pr-reviewer/ — under sudo, $HOME becomes /root and
+# INSTALL_DIR resolves to /root/.pr-reviewer/, so the install would
+# write to a path systemd never reads. The internal `sudo cp` /
+# `sudo systemctl` calls below escalate privilege only where needed.
+if [ "${EUID:-$(id -u)}" -eq 0 ]; then
+    fail "run install.sh as the bot user, NOT root. Resolved INSTALL_DIR=$INSTALL_DIR — systemd units are pinned to /home/odio/.pr-reviewer/, so a sudo invocation would write to the wrong tree. The script's internal sudo cp / sudo systemctl handle the privileged bits."
+fi
+
 # --- 1. Symlinks into $INSTALL_DIR ------------------------------------------
-# Each script the systemd ExecStart= lines point at, plus the directories
-# the scripts themselves source via $INSTALL_DIR/lib etc.
-SCRIPTS=(
-  review.sh
-  learn-from-replies.sh
-  approve-from-replies.sh
-  re-request-poller.sh
-  plow-kid-refresh.sh
-)
+# Discover the script list from the systemd unit files' ExecStart=
+# directives — the units are the source of truth for what runs in
+# production. A new poller landing as <name>.service (with its
+# ExecStart=$INSTALL_DIR/<script>.sh) automatically gets symlinked here
+# without a parallel manifest to keep in sync.
+shopt -s nullglob
+service_units=( systemd/*.service )
+shopt -u nullglob
+[[ ${#service_units[@]} -ge 1 ]] || fail "no systemd .service files in $REPO_DIR/systemd/"
+
+SCRIPTS=()
+while IFS= read -r script; do
+    [[ -n "$script" ]] || continue
+    if [[ -f "$REPO_DIR/$script" ]]; then
+        SCRIPTS+=("$script")
+    elif [[ "$script" == *.sh ]]; then
+        # ExecStart points at a *.sh basename but the repo doesn't have it —
+        # drift between the unit file and the repo. Fail loud rather than
+        # silently dropping the symlink and shipping a broken install.
+        fail "unit ExecStart references '$script' but $REPO_DIR/$script doesn't exist"
+    fi
+    # else: ExecStart points at a non-script path (e.g. /bin/true in test
+    # fixtures, or a hypothetical absolute /usr/bin/something). Nothing
+    # to symlink for those; skip without warning.
+done < <(grep -h "^ExecStart=" "${service_units[@]}" | sed 's|^ExecStart=||;s|.*/||' | sort -u)
+[[ ${#SCRIPTS[@]} -ge 1 ]] || fail "no scripts discovered from ExecStart= directives — check systemd/*.service shape"
+
 DIRS=(lib contexts docs prompts)
 
 mkdir -p "$INSTALL_DIR"
