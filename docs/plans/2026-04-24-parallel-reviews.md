@@ -546,6 +546,8 @@ if [ ! -s "$CRITIC_OUT" ]; then
 fi
 
 log "$PR_ID: aggregator (with critic input)..."
+# (Superseded by PR #12: aggregator now uses substitute_placeholders
+# directly to avoid the specialist common-header.)
 AGG_PROMPT=$(build_specialist_prompt \
     "aggregator" \
     "$HOME/.pr-reviewer/prompts/aggregator.md" \

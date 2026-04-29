@@ -426,6 +426,8 @@ AGG_PROMPT=$(build_specialist_prompt \
     "$PR_ID" "$PR_TITLE" "$PR_URL")
 ```
 
+(Superseded by PR #12: the aggregator now bypasses `build_specialist_prompt` entirely and calls `substitute_placeholders` directly. Steps below are historical.)
+
 Change to:
 
 ```bash
