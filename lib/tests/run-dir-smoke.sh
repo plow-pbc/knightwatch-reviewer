@@ -4,7 +4,10 @@
 # Locks down the no-overwrite guarantee at the worker's runtime guard:
 #   1. Clean run dir → created with agents/ + inputs/ subdirs, returns 0
 #   2. Pre-existing run dir → returns 1, logs "collision"
-#   3. RUN_DIR's parent unwritable (read-only) → returns 1, logs the
+#   3. Subdir mkdir partially fails → rollback removes RUN_DIR; "as a
+#      unit" contract holds (mkdir is function-stubbed since real
+#      filesystem partial failures aren't easily simulable)
+#   4. RUN_DIR's parent unwritable (read-only) → returns 1, logs the
 #      parent-create failure
 #
 # Sources lib/run-dir.sh directly so this test exercises the same
@@ -59,7 +62,42 @@ if ! grep -q "$RD" "$LOG_CAPTURE"; then
     exit 1
 fi
 
-echo "  scenario 3: parent unwritable → returns 1, logs real failure (not 'collision')..."
+echo "  scenario 3: subdir mkdir partially fails → rollback removes RUN_DIR..."
+: > "$LOG_CAPTURE"
+RD="$TMPDIR/state/runs/rollback-id"
+
+# Override mkdir to simulate a partial-success failure on the third call
+# (the agents/inputs creation in allocate_run_dir): create the first arg,
+# fail before the second. Calls 1 (mkdir -p parent) and 2 (mkdir $run_dir)
+# go through unchanged.
+mkdir_calls=0
+mkdir() {
+    mkdir_calls=$((mkdir_calls + 1))
+    if [ "$mkdir_calls" -eq 3 ]; then
+        command mkdir "$1" 2>/dev/null
+        return 1
+    fi
+    command mkdir "$@"
+}
+
+if allocate_run_dir "$RD"; then
+    echo "FAIL: subdir-mkdir-failure allocation should have returned non-zero"
+    unset -f mkdir
+    exit 1
+fi
+unset -f mkdir
+if [ -e "$RD" ]; then
+    echo "FAIL: $RD was not rolled back after subdir mkdir failure"
+    ls -laR "$RD"
+    exit 1
+fi
+if ! grep -q "rolling back" "$LOG_CAPTURE"; then
+    echo "FAIL: rollback log line not emitted"
+    cat "$LOG_CAPTURE"
+    exit 1
+fi
+
+echo "  scenario 4: parent unwritable → returns 1, logs real failure (not 'collision')..."
 : > "$LOG_CAPTURE"
 RO_PARENT="$TMPDIR/readonly"
 mkdir -p "$RO_PARENT"
@@ -88,4 +126,4 @@ else
     chmod +w "$RO_PARENT"
 fi
 
-echo "  PASS (3 scenarios: clean allocation, collision detected, real failure not mislabeled)"
+echo "  PASS (4 scenarios: clean allocation, collision detected, subdir-failure rollback, real failure not mislabeled)"
