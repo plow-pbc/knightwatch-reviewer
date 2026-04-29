@@ -42,6 +42,14 @@ mkdir -p "$STATE_DIR" "$REPOS_DIR" "$WORKDIRS_DIR"
 echo "{}" > "$STATE_FILE"
 export BOT_USER="srosro"
 
+# Sandboxed repos.conf — review.sh fails loud now if no tracked repos
+# are defined. The gh stub below returns a PR for "cncorp/plow" only,
+# so the test must declare exactly that repo as tracked.
+cat > "$STATE_DIR/repos.conf" <<'CONF'
+REPOS=("cncorp/plow")
+declare -A KID_PATHS=()
+CONF
+
 # Sandbox HOME. review.sh's first action is `export PATH="$HOME/.local/bin:
 # $HOME/.npm-global/bin:$PATH"`, so to make our stubbed `gh` actually
 # resolve we have to either (a) put the stub at $HOME/.local/bin/gh under

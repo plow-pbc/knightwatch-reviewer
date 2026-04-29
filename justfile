@@ -17,6 +17,10 @@ test:
     done < <(git ls-files '*.sh')
 
     echo ""
+    echo "=== repos.conf smoke test ==="
+    bash lib/tests/repos-conf-smoke.sh
+
+    echo ""
     echo "=== state-io smoke test ==="
     bash lib/tests/state-io-smoke.sh
 

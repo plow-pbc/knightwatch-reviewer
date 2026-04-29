@@ -433,15 +433,11 @@ STANDARDS+=$'\n\n'
 # ---- kid prior-art ----
 PRIOR_ART=""
 KID_FLAG="$STATE_DIR/kid-last-failure"
-case "$REPO" in
-    "cncorp/plow")                 KID_PROJECT_PATH="$HOME/Hacking/plow-kid" ;;
-    "cncorp/plow-content")         KID_PROJECT_PATH="$HOME/Hacking/plow-content" ;;
-    "srosro/tkmx-client")          KID_PROJECT_PATH="$HOME/Hacking/tkmx-client" ;;
-    "srosro/tkmx-server")          KID_PROJECT_PATH="$HOME/Hacking/tkmx-server" ;;
-    "srosro/knightwatch-reviewer") KID_PROJECT_PATH="$HOME/Hacking/knightwatch-reviewer" ;;
-    "srosro/vibe-engineering")     KID_PROJECT_PATH="$HOME/Hacking/vibe-engineering" ;;
-    *)                             KID_PROJECT_PATH="" ;;
-esac
+# Per-repo kid index path. KID_PATHS comes from repos.conf (sourced
+# below in the orchestrator pipeline; review-one-pr.sh sees the
+# inherited environment OR sources it directly here as a fallback).
+[ "${#KID_PATHS[@]:-0}" -eq 0 ] && [ -f "$STATE_DIR/repos.conf" ] && . "$STATE_DIR/repos.conf"
+KID_PROJECT_PATH="${KID_PATHS[$REPO]:-}"
 if [ -n "$KID_PROJECT_PATH" ] && [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -n "$KID_INPUT_DIFF" ]; then
     export KID_PROJECT="$KID_PROJECT_PATH"
     KID_STDERR=$(mktemp)

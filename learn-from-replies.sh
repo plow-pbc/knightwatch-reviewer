@@ -24,14 +24,13 @@ set -o pipefail
 export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
 
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
-# Defaults FIRST, then config.env so an operator override actually wins —
-# matches review.sh's order. The previous order (config.env then
-# REPOS=(...)) silently clobbered any operator override of REPOS.
-REPOS=("cncorp/plow" "cncorp/plow-content" "srosro/tkmx-client" "srosro/tkmx-server" "srosro/knightwatch-reviewer" "srosro/vibe-engineering")
 REPLIES_SEEN_FILE="${REPLIES_SEEN_FILE:-$STATE_DIR/replies-seen.json}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/learn.log}"
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
+# Tracked-repo manifest (single source of truth in repos.conf).
+[ -f "$STATE_DIR/repos.conf" ] && . "$STATE_DIR/repos.conf"
 [ -f "$STATE_DIR/config.env" ] && . "$STATE_DIR/config.env"
+[ ${#REPOS[@]} -ge 1 ] || { echo "FATAL: no tracked repos — populate $STATE_DIR/repos.conf or set REPOS in config.env" >&2; exit 1; }
 BOT_USER="${BOT_USER:-srosro}"
 BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
 

@@ -8,13 +8,17 @@ export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 STATE_FILE="${STATE_FILE:-$STATE_DIR/state.json}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/orchestrator.log}"
-REPOS=("cncorp/plow" "cncorp/plow-content" "srosro/tkmx-client" "srosro/tkmx-server" "srosro/knightwatch-reviewer" "srosro/vibe-engineering")
 REPOS_DIR="${REPOS_DIR:-$STATE_DIR/repos}"
 WORKDIRS_DIR="${WORKDIRS_DIR:-$STATE_DIR/workdirs}"
 STABLE_SECS="${STABLE_SECS:-3600}"
 MAX_CONCURRENT="${MAX_CONCURRENT:-8}"
 
+# Tracked-repo manifest (REPOS array + KID_PROJECT_PATH assoc array).
+# Single source of truth at repos.conf — adding a repo only edits one
+# file. config.env can still REPOS=(...) override on top.
+[ -f "$STATE_DIR/repos.conf" ] && . "$STATE_DIR/repos.conf"
 [ -f "$STATE_DIR/config.env" ] && . "$STATE_DIR/config.env"
+[ ${#REPOS[@]} -ge 1 ] || { echo "FATAL: no tracked repos — populate $STATE_DIR/repos.conf or set REPOS in config.env" >&2; exit 1; }
 BOT_USER="${BOT_USER:-srosro}"
 # Hidden HTML-comment marker prepended to every auto-post by this repo
 # (review ack, final review, learn-from-replies ack). The orchestrator's
