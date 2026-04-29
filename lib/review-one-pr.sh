@@ -636,8 +636,12 @@ critic_fallback "$CRITIC_EXIT" "$CRITIC_OUT"
 ln -sfn "$CRITIC_OUT" "$REPO_DIR/.codex-scratch/critic.md"
 
 log "$PR_ID: aggregator (with critic input)..."
-AGG_PROMPT=$(build_specialist_prompt \
-    "aggregator" \
+# Substitute placeholders directly — the aggregator is NOT a specialist
+# and must not get the specialist common-header (which would tell it
+# "you are one specialist" and demand the Surveyed/Finding-N output
+# shape, conflicting with the aggregator's own contract). Same pattern
+# as intent above.
+AGG_PROMPT=$(substitute_placeholders \
     "$HOME/.pr-reviewer/prompts/aggregator.md" \
     "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR")
 "$_LIB_DIR/run-specialist.sh" "aggregator" "$REPO_DIR" "$AGG_PROMPT" "$RUN_DIR/agents/aggregator"
