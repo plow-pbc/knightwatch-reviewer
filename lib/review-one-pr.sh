@@ -481,6 +481,26 @@ write_scratch "$REPO_DIR" "standards.md"       "$STANDARDS"
 [ -n "$TRIGGER_COMMENT_BODY" ] && \
     write_scratch "$REPO_DIR" "trigger-comment.md" "$TRIGGER_COMMENT_BODY"
 
+# Stage prior aggregator outputs for this PR (every preserved run dir
+# except the current one) so the aggregator can detect Bug-Class-Recurrence
+# across reviews. Uses the per-run layout from PR #11; before that layout
+# only the most recent scratch was kept, so longitudinal recurrence couldn't
+# be detected. Empty / absent on the first review of a PR.
+PRIOR_REVIEWS=""
+while IFS= read -r prior_run; do
+    [ "$prior_run" = "$RUN_DIR" ] && continue
+    [ -s "$prior_run/agents/aggregator/output.md" ] || continue
+    prior_ts=$(basename "$prior_run" | grep -oE 'T[0-9]+Z' | head -1)
+    PRIOR_REVIEWS+=$'\n--- review at '"${prior_ts:-unknown}"$' ---\n'
+    PRIOR_REVIEWS+=$(cat "$prior_run/agents/aggregator/output.md")
+    PRIOR_REVIEWS+=$'\n'
+done < <(find "$STATE_DIR/runs" -maxdepth 1 -type d -name "${REPO_SLUG_FOR_RUN}__${PR_NUM}__*" 2>/dev/null | sort)
+if [ -n "$PRIOR_REVIEWS" ]; then
+    PRIOR_COUNT=$(printf '%s' "$PRIOR_REVIEWS" | grep -c '^--- review at ')
+    log "$PR_ID: staging $PRIOR_COUNT prior review(s) for recurrence detection"
+    write_scratch "$REPO_DIR" "prior-reviews.md" "$PRIOR_REVIEWS"
+fi
+
 CONTEXT_FILE="$HOME/.pr-reviewer/contexts/$(echo "$REPO" | tr '/' '_').md"
 if [ -f "$CONTEXT_FILE" ]; then
     write_scratch "$REPO_DIR" "product-context.md" "$(cat "$CONTEXT_FILE")"

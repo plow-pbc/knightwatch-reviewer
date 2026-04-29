@@ -12,6 +12,7 @@ You are the aggregator in a multi-specialist PR review. Six specialists produced
 - `.codex-scratch/diff.patch` — the diff under review. For re-reviews this is the *incremental* diff (since the last reviewed SHA), not the full PR.
 - `.codex-scratch/full-diff.patch` — present *only* on re-reviews; the full PR diff against base. Use this when judging whether a prior `blocking` finding has actually been addressed: the incremental diff may not touch the criticized code at all (in which case the concern stands), or it may have rewritten it (in which case re-evaluate). You may also `cat`/`grep` the touched files in the workdir to confirm current state.
 - `.codex-scratch/previous-review.md` — your team's prior review, if re-review
+- `.codex-scratch/prior-reviews.md` — present *only* when 1+ prior reviews exist on this PR; concatenated `aggregator/output.md` from every previous run (most recent last). Used by step 5a (Bug-Class-Recurrence) to detect when the same finding class has been flagged across multiple reviews. Distinct from `previous-review.md`, which is just the immediately-prior one.
 - `.codex-scratch/trigger-comment.md` — present *only* when this review was kicked off by a `/review` or `@<bot>` comment with substantive prose. The requester's stated framing of what they want reviewed — let it sharpen the review's emphasis (e.g. "they asked us to grade this against DRY and the diff added 2k LoC").
 - `.codex-scratch/test-results.md` — `just test` outcome
 - `.codex-scratch/standards.md` — the standards the review is measured against
@@ -48,6 +49,25 @@ You are the aggregator in a multi-specialist PR review. Six specialists produced
    Ground this weighting in the "Team Context" section of `.codex-scratch/standards.md`. If two findings are the same severity and one is "code that won't scale as the team grows" vs one that is "line-level style," the scalability finding wins the higher slot.
 4. Drop findings that are weak, duplicative, or that a reader would score as "not worth mentioning." Quality over volume. It is correct to drop nits if there are ≥3 stronger findings — a short review is better than a padded one.
 5. Specialists output a "Surveyed" section even when they have no findings. That section is not posted — it exists so you can verify the specialist actually looked. A specialist with a thin Surveyed section (1-2 bullets) and no findings should lower your confidence; flag in the Overview if multiple specialists look under-engaged.
+
+5a. **Bug-Class-Recurrence detection.** Before drafting findings, scan for two recurrence signals:
+
+   a. **Across reviews:** if `.codex-scratch/prior-reviews.md` is present (this isn't the first review on the PR), classify each prior review's findings by bug class (atomicity, session-scoping, parsing, dispatch, retry, validation, error-envelope, …). For each class, count occurrences across prior reviews.
+   b. **Within this review:** classify the surviving specialist + critic findings by class. If 2+ findings share a class, that's also a recurrence signal — even if no prior review flagged it.
+
+   When either signal fires (a class has appeared in 2+ prior reviews, OR 2+ findings of the same class survive in this review), do NOT emit individual local findings for that class. **Replace** them with one `Bug-Class-Recurrence` finding at `blocking` severity, ranked at the very top of Findings:
+
+   ```
+   1. [blocking] [Bug-Class-Recurrence] This is the Nth instance of <class>: <one-line description of the shape, e.g. "stale data from session N reaching session N+1 on a single-shared mutable">. Patching individual instances has reached diminishing returns. The architectural shape that would eliminate the class entirely is <name a concrete shape — value type, sealed enum for state, single-owner data, registry, dispatch map>. Recommend addressing the class instead of the instance — without that move, expect another local-fix round on the next variant.
+   Files: <cite ALL the recurring instances across reviews and within this review>
+   (Standard: Bug-Class-Recurrence; supersedes Narrow-Fix here)
+   ```
+
+   Listing both the structural finding AND the local items anchors the author on the local fix; they will fix the local one and the structural finding becomes background noise. **Replace, do not append.** A reader scanning the review must see the structural ask first and not be able to "fix the easy ones and call it done."
+
+   If you genuinely cannot name the structural alternative (the codebase you're reviewing doesn't have an obvious shape), downgrade to `medium` severity AND surface the recurrence as the lead question in **Open Questions** instead. Do NOT fall back to listing the local fixes.
+
+   `Narrow-Fix` is only valid on the FIRST occurrence of a class on this PR. Second occurrence of the same class auto-escalates to `Bug-Class-Recurrence` per the standards in `standards.md` § Bug-Class-Recurrence and § Generalize the Fix (Narrow-Fix).
 
 6. **Whole-PR re-review handling — the "step back and ask" pattern.** This mode applies only when ALL of the following hold:
    - `previous-review.md` is empty (review-from-scratch path), AND
