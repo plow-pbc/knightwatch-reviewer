@@ -45,16 +45,17 @@ export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 APPROVES_SEEN_FILE="${APPROVES_SEEN_FILE:-$STATE_DIR/approves-seen.json}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/approve.log}"
-# Tracked-repo manifest (single source of truth in repos.conf).
-[ -f "$STATE_DIR/repos.conf" ] && . "$STATE_DIR/repos.conf"
-[ -f "$STATE_DIR/config.env" ] && . "$STATE_DIR/config.env"
+# Tracked-repo manifest (single source of truth in repos.conf). The
+# shared loader at lib/tracked-repos.sh is the ONE seam every consumer
+# goes through.
+REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
+. "$REVIEWER_LIB_DIR/tracked-repos.sh"
 [ ${#REPOS[@]} -ge 1 ] || { echo "FATAL: no tracked repos — populate $STATE_DIR/repos.conf or set REPOS in config.env" >&2; exit 1; }
 BOT_USER="${BOT_USER:-srosro}"
 BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
 
 # is_trusted_repo_author() — push-access trust gate, shared with review.sh.
 # seen_get / seen_set — flock + atomic-rename, shared with learn-from-replies.sh.
-REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 . "$REVIEWER_LIB_DIR/auth.sh"
 . "$REVIEWER_LIB_DIR/state-io.sh"
 
