@@ -33,7 +33,11 @@ allocate_run_dir() {
         return 1
     fi
     if ! mkdir "$run_dir/agents" "$run_dir/inputs"; then
-        log "$PR_ID: failed to create $run_dir/{agents,inputs} subdirs — aborting"
+        # Roll back the half-created tree so post-mortem tooling doesn't
+        # see a phantom run dir without the per-agent + inputs scaffolding
+        # the rest of the worker assumes — keeps the "as a unit" contract.
+        log "$PR_ID: failed to create $run_dir/{agents,inputs} subdirs — rolling back $run_dir, aborting"
+        rm -rf "$run_dir"
         return 1
     fi
 }
