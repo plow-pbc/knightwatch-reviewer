@@ -24,6 +24,16 @@
 #     marked seen so we don't retry forever.
 #   - PR already merged/closed: `gh pr review --approve` returns non-zero;
 #     same outcome — log + mark seen.
+#
+# Idempotency model: at-most-once-per-tick, NOT true exactly-once. seen_set
+# uses flock + atomic-rename (lib/state-io.sh) so concurrent ticks can't
+# produce torn JSON. After a successful approve, the comment is marked
+# seen so subsequent ticks skip it. On a process crash between the gh
+# call and the seen_set, the next tick will replay the request — GitHub
+# stacks reviews from the same user so a duplicate APPROVED is harmless.
+# We deliberately do NOT implement claim-before-act exactly-once because
+# it would silently lose requests on transient gh failures (worse UX
+# than the very rare duplicate approval).
 
 export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
 
