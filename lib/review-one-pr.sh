@@ -735,10 +735,11 @@ if [[ "$VERDICT" == VERDICT:\ APPROVE* ]]; then
     else
         APPROVE_BODY="Approving per automated review above."
     fi
-    gh pr review "$PR_NUM" --repo "$REPO" --approve --body "$APPROVE_BODY" 2>&1 \
-        || log "Approve skipped (own PR or already approved)"
-    APPROVED=true
-    log "Approved $PR_ID ($APPROVE_BODY)"
+    # PR_AUTHOR was fetched at line ~305 — pass it through so submit_approval
+    # doesn't re-query GitHub for a value the worker already has.
+    if submit_approval "$REPO" "$PR_NUM" "$BOT_USER" "$PR_AUTHOR" "$APPROVE_BODY"; then
+        APPROVED=true
+    fi
 else
     log "Commented on $PR_ID (no approval)"
 fi
