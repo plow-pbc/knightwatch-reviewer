@@ -73,6 +73,10 @@ test:
     bash lib/tests/re-request-poller-smoke.sh
 
     echo ""
+    echo "=== plow-kid-refresh smoke test ==="
+    bash lib/tests/plow-kid-refresh-smoke.sh
+
+    echo ""
     echo "=== install smoke test ==="
     bash lib/tests/install-smoke.sh
 
