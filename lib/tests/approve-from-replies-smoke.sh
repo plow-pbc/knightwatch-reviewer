@@ -122,10 +122,9 @@ cp "$PROJECT_ROOT/lib/state-io.sh" "$REVIEWER_LIB_DIR/state-io.sh"
 export MOCK_COMMENTS_FILE="$TMPDIR/comments.json"
 
 # Single-repo override so tests don't iterate the production REPOS list.
-# approve-from-replies.sh's REPOS array is set after config.env is sourced
-# (so a user-provided config.env can override it). Simulate that by
-# writing a minimal config.env that pins REPOS to just cncorp/plow — the
-# only repo the gh stub returns a PR for.
+# approve-from-replies.sh sets REPOS to its hardcoded default first, then
+# sources config.env so an operator override actually wins. Pin REPOS to
+# just cncorp/plow — the only repo the gh stub returns a PR for.
 mkdir -p "$STATE_DIR"
 cat > "$STATE_DIR/config.env" <<'CONF'
 REPOS=("cncorp/plow")

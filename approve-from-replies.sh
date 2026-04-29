@@ -38,13 +38,16 @@
 export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
 
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
-[ -f "$STATE_DIR/config.env" ] && . "$STATE_DIR/config.env"
-BOT_USER="${BOT_USER:-srosro}"
-BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
-
+# Defaults FIRST, then config.env so an operator override actually wins —
+# matches review.sh's order. The previous order (config.env then
+# REPOS=(...)) silently clobbered any operator override of REPOS, leaving
+# /srosro-approve covering a different repo set than review.sh did.
 REPOS=("cncorp/plow" "srosro/tkmx-client" "srosro/tkmx-server" "srosro/knightwatch-reviewer" "srosro/vibe-engineering")
 APPROVES_SEEN_FILE="${APPROVES_SEEN_FILE:-$STATE_DIR/approves-seen.json}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/approve.log}"
+[ -f "$STATE_DIR/config.env" ] && . "$STATE_DIR/config.env"
+BOT_USER="${BOT_USER:-srosro}"
+BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
 
 # is_trusted_repo_author() — push-access trust gate, shared with review.sh.
 # seen_get / seen_set — flock + atomic-rename, shared with learn-from-replies.sh.
@@ -117,7 +120,14 @@ for REPO in "${REPOS[@]}"; do
 Approved on @${USER}'s /srosro-approve request."
             if gh pr review "$PR_NUM" --repo "$REPO" --approve --body "$APPROVE_BODY" >/dev/null 2>>"$LOG_FILE"; then
                 log "$APPROVE_KEY: approved on @${USER}'s request"
-                seen_set "$APPROVES_SEEN_FILE" "$APPROVE_KEY"
+                # Critical call site: if seen_set fails after a successful
+                # approval, the next tick will post a duplicate APPROVED
+                # review. The helper already logs a generic failure line;
+                # this extra warning makes the user-visible consequence
+                # explicit so an operator knows what to expect.
+                if ! seen_set "$APPROVES_SEEN_FILE" "$APPROVE_KEY"; then
+                    log "$APPROVE_KEY: WARNING — seen_set failed AFTER successful approval; next tick may post a duplicate APPROVED review"
+                fi
                 PROCESSED=$((PROCESSED + 1))
             else
                 # Most common failures: PR author trying to self-approve,

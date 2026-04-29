@@ -19,14 +19,16 @@
 export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
 
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
-[ -f "$STATE_DIR/config.env" ] && . "$STATE_DIR/config.env"
-BOT_USER="${BOT_USER:-srosro}"
-BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
-
+# Defaults FIRST, then config.env so an operator override actually wins —
+# matches review.sh's order. The previous order (config.env then
+# REPOS=(...)) silently clobbered any operator override of REPOS.
 REPOS=("cncorp/plow" "srosro/tkmx-client" "srosro/tkmx-server" "srosro/knightwatch-reviewer" "srosro/vibe-engineering")
 REPLIES_SEEN_FILE="${REPLIES_SEEN_FILE:-$STATE_DIR/replies-seen.json}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/learn.log}"
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
+[ -f "$STATE_DIR/config.env" ] && . "$STATE_DIR/config.env"
+BOT_USER="${BOT_USER:-srosro}"
+BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
 
 # is_trusted_repo_author() — push-access trust gate, shared with review.sh.
 # seen_get / seen_set + log — flock + atomic-rename, shared with approve-from-replies.sh.
