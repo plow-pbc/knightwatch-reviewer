@@ -65,14 +65,33 @@ if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
         echo '[]'
     fi
 elif [ "$1" = "api" ]; then
+    # MOCK_GH_API_FAIL=1 simulates an API outage on the comments fetch.
+    # The script's pipefail-aware `gh api ... | jq` should surface this
+    # as a pipeline failure, log it, and skip the PR.
+    if [ -n "${MOCK_GH_API_FAIL:-}" ]; then
+        echo "API down" >&2
+        exit 1
+    fi
+    paginate=""
     endpoint=""
     for arg in "$@"; do
         case "$arg" in
-            repos/*) endpoint="$arg" ;;
+            --paginate) paginate=1 ;;
+            repos/*)    endpoint="$arg" ;;
         esac
     done
     if [[ "$endpoint" == */issues/*/comments* ]]; then
-        cat "$MOCK_COMMENTS_FILE"
+        # When --paginate is set AND a page-2 fixture exists, emit both
+        # pages back-to-back. `gh api --paginate` produces N JSON arrays
+        # concatenated; the script's `| jq -s 'add // []'` slurps and
+        # merges. A regression to single-page-fetch would only see page 1
+        # and the page-2 scenario in this file would fail.
+        if [ -n "$paginate" ] && [ -s "${MOCK_COMMENTS_FILE_PAGE2:-/dev/null}" ]; then
+            cat "$MOCK_COMMENTS_FILE"
+            cat "$MOCK_COMMENTS_FILE_PAGE2"
+        else
+            cat "$MOCK_COMMENTS_FILE"
+        fi
     elif [[ "$endpoint" == */collaborators/*/permission ]]; then
         echo "none"
     else
@@ -129,4 +148,32 @@ run_learn
 grep -q "/srosro-memorize from @stranger ignored (no push access)" "$LOG_FILE" || { echo "FAIL scenario 2: expected trust-gate ignore log for @stranger"; cat "$LOG_FILE"; exit 1; }
 grep -q "no new /srosro-memorize requests" "$LOG_FILE" || { echo "FAIL scenario 2: untrusted request should not have been collected"; cat "$LOG_FILE"; exit 1; }
 
-echo "  PASS (2 scenarios: REPOS-override-observed, untrusted-memorize-ignored)"
+# Scenario 3: pagination — a /srosro-memorize comment lives on page 2 of
+# the issue-comments response. With the fixed `gh api --paginate ... |
+# jq -s 'add // []'` pipeline, the script sees both pages and the
+# trust-gate ignore log fires for the page-2 commenter. With the old
+# single-page fetch, the request is invisible and the script logs "no
+# new requests" instead — this scenario fails on that regression.
+echo "  scenario 3: /srosro-memorize on page 2 — pagination merges both pages..."
+EARLIER_ISO=$(date -u -d "@$(($(date +%s) - 60))" +"%Y-%m-%dT%H:%M:%SZ")
+NOW_ISO=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+# Page 1: bot's auto-post anchoring LAST_OUR_TS.
+printf '[{"id":920,"created_at":"%s","user":{"login":"srosro"},"body":"%s\\nbot review"}]\n' "$EARLIER_ISO" "$BOT_AUTO_POST_MARKER" > "$MOCK_COMMENTS_FILE"
+# Page 2: untrusted /srosro-memorize.
+export MOCK_COMMENTS_FILE_PAGE2="$TMPDIR/comments-page2.json"
+printf '[{"id":921,"created_at":"%s","user":{"login":"stranger"},"body":"/srosro-memorize page-two reply"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE_PAGE2"
+run_learn
+grep -q "/srosro-memorize from @stranger ignored (no push access)" "$LOG_FILE" || { echo "FAIL scenario 3 (single-page-fetch regression): expected page-2 /srosro-memorize to be observed and trust-gate-ignored"; cat "$LOG_FILE"; exit 1; }
+unset MOCK_COMMENTS_FILE_PAGE2
+rm -f "$TMPDIR/comments-page2.json"
+
+# Scenario 4: gh api fetch failure — pipefail surfaces the failure, the
+# script logs the boundary error and skips that PR. Without pipefail (or
+# without the `|| { log; continue }` wrapper) the failed fetch would
+# silently produce [] from jq and the run would look successful.
+echo "  scenario 4: gh api comments fetch fails — log + skip (pipefail wins)..."
+echo "[]" > "$MOCK_COMMENTS_FILE"
+MOCK_GH_API_FAIL=1 run_learn
+grep -q "comments fetch failed — skipping this PR for this tick" "$LOG_FILE" || { echo "FAIL scenario 4: expected fail-loud log line on gh api failure"; cat "$LOG_FILE"; exit 1; }
+
+echo "  PASS (4 scenarios: REPOS-override-observed, untrusted-memorize-ignored, page-2-paginated, gh-api-failure-fail-loud)"

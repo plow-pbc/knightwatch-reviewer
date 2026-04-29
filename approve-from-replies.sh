@@ -35,6 +35,11 @@
 # it would silently lose requests on transient gh failures (worse UX
 # than the very rare duplicate approval).
 
+# pipefail so a failing `gh api ... | jq -s ...` propagates jq's 0 exit
+# code into a non-zero pipeline exit. Without it, a failed gh api call
+# produces empty input that jq turns into [] without surfacing the
+# failure — silently dropping page-1 comments or a whole fetch.
+set -o pipefail
 export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
 
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
@@ -75,7 +80,12 @@ for REPO in "${REPOS[@]}"; do
     for PR_NUM in $PR_LIST; do
         # --paginate so /srosro-approve requests on long PR threads (>30
         # issue comments) don't silently fall off the end of page 1.
-        COMMENTS=$(gh api --paginate "repos/$REPO/issues/$PR_NUM/comments" 2>/dev/null | jq -s 'add // []') || continue
+        # On fetch failure, log loud + skip this PR for this tick rather
+        # than silently treating "API broken" as "no comments".
+        COMMENTS=$(gh api --paginate "repos/$REPO/issues/$PR_NUM/comments" 2>/dev/null | jq -s 'add // []') || {
+            log "$REPO#$PR_NUM: comments fetch failed — skipping this PR for this tick"
+            continue
+        }
 
         while IFS= read -r COMMENT; do
             BODY=$(echo "$COMMENT" | jq -r '.body')
