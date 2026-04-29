@@ -53,8 +53,27 @@ export STUB_ACTIONS_LOG
 
 cat > "$HOME/.local/bin/gh" <<'STUB'
 #!/bin/bash
+# Each `gh pr list --repo X` records the repo it was called with so the
+# REPOS-override scenario can assert which repos were actually polled.
+# Without that assertion, an override-clobbered run still passes when
+# the gh stub returns the same PR for the override repo and a default
+# repo (the bug both REPOS-default-then-override paths produced).
 if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
-    if [[ "$*" == *"cncorp/plow"* ]]; then
+    # Capture every pr-list call into a log so tests can assert.
+    repo=""
+    for ((i=1; i<=$#; i++)); do
+        if [ "${!i}" = "--repo" ]; then
+            j=$((i+1))
+            repo="${!j}"
+            break
+        fi
+    done
+    echo "PR_LIST repo=$repo" >> "${STUB_PR_LIST_LOG:-/dev/null}"
+    # Gh stub returns a PR only for the smoke's "probe" repo. Tests pin
+    # config.env REPOS=("test-org/probe-repo") so an override-honored
+    # run polls that repo and gets a PR; an override-clobbered run polls
+    # the script's hardcoded default list (cncorp/plow, ...) and gets [].
+    if [ "$repo" = "test-org/probe-repo" ]; then
         echo '[{"number":1}]'
     else
         echo '[]'
@@ -120,18 +139,23 @@ cp "$PROJECT_ROOT/lib/auth.sh"     "$REVIEWER_LIB_DIR/auth.sh"
 cp "$PROJECT_ROOT/lib/state-io.sh" "$REVIEWER_LIB_DIR/state-io.sh"
 
 export MOCK_COMMENTS_FILE="$TMPDIR/comments.json"
+export STUB_PR_LIST_LOG="$STATE_DIR/gh-pr-list.log"
 
-# Single-repo override so tests don't iterate the production REPOS list.
-# approve-from-replies.sh sets REPOS to its hardcoded default first, then
-# sources config.env so an operator override actually wins. Pin REPOS to
-# just cncorp/plow — the only repo the gh stub returns a PR for.
+# REPOS override: the gh stub returns a PR only for "test-org/probe-repo",
+# which is NOT in the script's hardcoded default list. So if the
+# override is honored we poll the probe repo and the test sees a PR;
+# if the override is clobbered (the bug) we poll the hardcoded list,
+# get [] from every repo, and the smoke fails. This is the regression
+# coverage that the previous "pin to cncorp/plow" version was missing
+# — both override-honored and override-clobbered passed there.
 mkdir -p "$STATE_DIR"
 cat > "$STATE_DIR/config.env" <<'CONF'
-REPOS=("cncorp/plow")
+REPOS=("test-org/probe-repo")
 CONF
 
 run_approve() {
     : > "$STUB_ACTIONS_LOG"   # reset action log
+    : > "$STUB_PR_LIST_LOG"   # reset pr-list log so override scenario can assert per-run
     : > "$LOG_FILE"           # reset script log
     bash "$PROJECT_ROOT/approve-from-replies.sh" >/dev/null 2>&1 || true
 }
@@ -160,7 +184,7 @@ run_approve
 n=$(count_approves)
 [ "$n" -eq 1 ] || { echo "FAIL scenario 2: expected 1 approve, got $n"; cat "$STUB_ACTIONS_LOG"; cat "$LOG_FILE"; exit 1; }
 grep -qF "$BOT_AUTO_POST_MARKER" "$STUB_ACTIONS_LOG" || { echo "FAIL scenario 2: approve body missing BOT_AUTO_POST_MARKER"; cat "$STUB_ACTIONS_LOG"; exit 1; }
-[ -n "$(jq -r '."cncorp/plow#1#1001" // empty' "$APPROVES_SEEN_FILE")" ] || { echo "FAIL scenario 2: seen state not marked"; cat "$APPROVES_SEEN_FILE"; exit 1; }
+[ -n "$(jq -r '."test-org/probe-repo#1#1001" // empty' "$APPROVES_SEEN_FILE")" ] || { echo "FAIL scenario 2: seen state not marked"; cat "$APPROVES_SEEN_FILE"; exit 1; }
 
 # Scenario 3: same comment on a second tick — already-seen, no approve
 echo "  scenario 3: re-running with same comment — no second approve..."
@@ -183,7 +207,7 @@ printf '[{"id":1003,"created_at":"%s","user":{"login":"stranger"},"body":"/srosr
 MOCK_TRUSTED_USERS="srosro" run_approve
 n=$(count_approves)
 [ "$n" -eq 0 ] || { echo "FAIL scenario 5: expected 0 approves from untrusted user, got $n"; cat "$STUB_ACTIONS_LOG"; exit 1; }
-[ -n "$(jq -r '."cncorp/plow#1#1003" // empty' "$APPROVES_SEEN_FILE")" ] || { echo "FAIL scenario 5: untrusted seen state not marked"; cat "$APPROVES_SEEN_FILE"; exit 1; }
+[ -n "$(jq -r '."test-org/probe-repo#1#1003" // empty' "$APPROVES_SEEN_FILE")" ] || { echo "FAIL scenario 5: untrusted seen state not marked"; cat "$APPROVES_SEEN_FILE"; exit 1; }
 
 # Scenario 6: *[bot] commenter — no approve, seen marked
 echo "  scenario 6: *[bot] commenter — no approve, seen marked..."
@@ -192,7 +216,7 @@ printf '[{"id":1004,"created_at":"%s","user":{"login":"copilot-swe-agent[bot]"},
 run_approve
 n=$(count_approves)
 [ "$n" -eq 0 ] || { echo "FAIL scenario 6: expected 0 approves from [bot], got $n"; cat "$STUB_ACTIONS_LOG"; exit 1; }
-[ -n "$(jq -r '."cncorp/plow#1#1004" // empty' "$APPROVES_SEEN_FILE")" ] || { echo "FAIL scenario 6: [bot] seen state not marked"; cat "$APPROVES_SEEN_FILE"; exit 1; }
+[ -n "$(jq -r '."test-org/probe-repo#1#1004" // empty' "$APPROVES_SEEN_FILE")" ] || { echo "FAIL scenario 6: [bot] seen state not marked"; cat "$APPROVES_SEEN_FILE"; exit 1; }
 
 # Scenario 7: mid-sentence mention — no approve (regression for is_approve_request)
 echo "  scenario 7: mid-sentence /srosro-approve mention — no approve (regression)..."
@@ -228,7 +252,7 @@ printf '[{"id":1010,"created_at":"%s","user":{"login":"someuser"},"body":"/srosr
 MOCK_FAIL_PR_REVIEW=1 run_approve
 n=$(count_approves)
 [ "$n" -eq 0 ] || { echo "FAIL scenario 10: expected 0 successful approves on failure, got $n"; cat "$STUB_ACTIONS_LOG"; cat "$LOG_FILE"; exit 1; }
-[ -n "$(jq -r '."cncorp/plow#1#1010" // empty' "$APPROVES_SEEN_FILE")" ] || { echo "FAIL scenario 10: seen state not marked after failure (would retry on every tick)"; cat "$APPROVES_SEEN_FILE"; cat "$LOG_FILE"; exit 1; }
+[ -n "$(jq -r '."test-org/probe-repo#1#1010" // empty' "$APPROVES_SEEN_FILE")" ] || { echo "FAIL scenario 10: seen state not marked after failure (would retry on every tick)"; cat "$APPROVES_SEEN_FILE"; cat "$LOG_FILE"; exit 1; }
 # Rerun without the fail flag — must NOT retry the previously-failed
 # request. (If marking-seen-on-failure regresses, this rerun would now
 # succeed and we'd see 1 approve.)
@@ -236,4 +260,24 @@ run_approve
 n=$(count_approves)
 [ "$n" -eq 0 ] || { echo "FAIL scenario 10: rerun retried after failure; expected 0 approves, got $n (mark-seen-on-failure regression)"; cat "$STUB_ACTIONS_LOG"; exit 1; }
 
-echo "  PASS (10 scenarios: empty, trusted-approve, already-seen, bot-self-marker, untrusted-skip, [bot]-skip, mid-sentence-no-match, second-line-match, trailing-arg-match, gh-failure-marked-seen)"
+# Scenario 11: REPOS override observability.
+# Asserts that the run actually polled config.env's REPOS=(test-org/probe-repo)
+# and NOT the script's hardcoded default list. This is the explicit
+# regression test for the order-of-operations bug where REPOS=(cncorp/plow ...)
+# was set after sourcing config.env and silently clobbered the override.
+# Every other scenario depends on this implicitly (the gh stub returns a
+# PR only for test-org/probe-repo), so a regression turns those red too —
+# but this dedicated scenario produces a clear "REPOS override clobbered"
+# diagnostic before the broader cascade.
+echo "  scenario 11: REPOS override is observed (not clobbered by hardcoded default)..."
+echo '{}' > "$APPROVES_SEEN_FILE"
+echo "[]" > "$MOCK_COMMENTS_FILE"
+run_approve
+grep -q "PR_LIST repo=test-org/probe-repo" "$STUB_PR_LIST_LOG" || { echo "FAIL scenario 11: REPOS override not honored (expected to poll test-org/probe-repo)"; cat "$STUB_PR_LIST_LOG"; exit 1; }
+if grep -q "PR_LIST repo=cncorp/plow" "$STUB_PR_LIST_LOG"; then
+    echo "FAIL scenario 11 (REPOS-override regression): script polled hardcoded cncorp/plow — config.env override was clobbered"
+    cat "$STUB_PR_LIST_LOG"
+    exit 1
+fi
+
+echo "  PASS (11 scenarios: empty, trusted-approve, already-seen, bot-self-marker, untrusted-skip, [bot]-skip, mid-sentence-no-match, second-line-match, trailing-arg-match, gh-failure-marked-seen, REPOS-override-observed)"

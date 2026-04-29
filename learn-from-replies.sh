@@ -55,7 +55,9 @@ for REPO in "${REPOS[@]}"; do
     PR_LIST=$(gh pr list --repo "$REPO" --json number --state all --limit 200 2>/dev/null | jq -r '.[].number') || continue
 
     for PR_NUM in $PR_LIST; do
-        COMMENTS=$(gh api "repos/$REPO/issues/$PR_NUM/comments" 2>/dev/null) || continue
+        # --paginate so /srosro-memorize requests on long PR threads (>30
+        # issue comments) don't silently fall off the end of page 1.
+        COMMENTS=$(gh api --paginate "repos/$REPO/issues/$PR_NUM/comments" 2>/dev/null | jq -s 'add // []') || continue
 
         OUR_COMMENT_IDS=()
         while IFS= read -r COMMENT; do
@@ -200,10 +202,16 @@ else
 fi
 
 # Mark replies as seen — only after codex succeeded, so a crash leaves them
-# eligible for the next tick.
+# eligible for the next tick. Honor seen_set's fail-loud return code so a
+# silent write failure can't lead to a duplicate ACK + duplicate codex
+# work on the next tick.
 while IFS= read -r META; do
     KEY=$(printf '%s' "$META" | jq -r '.key')
-    [ -n "$KEY" ] && seen_set "$REPLIES_SEEN_FILE" "$KEY"
+    if [ -n "$KEY" ]; then
+        if ! seen_set "$REPLIES_SEEN_FILE" "$KEY"; then
+            log "$KEY: WARNING — seen_set failed AFTER posting ACK; next tick may re-learn from this request and post a duplicate ACK"
+        fi
+    fi
 done < "$REPLIES_META_FILE"
 
 # Post per-reply acknowledgments.

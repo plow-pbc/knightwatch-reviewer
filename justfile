@@ -45,4 +45,8 @@ test:
     bash lib/tests/approve-from-replies-smoke.sh
 
     echo ""
+    echo "=== learn-from-replies smoke test ==="
+    bash lib/tests/learn-from-replies-smoke.sh
+
+    echo ""
     echo "all checks passed"
