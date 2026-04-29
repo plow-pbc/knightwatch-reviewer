@@ -1,6 +1,6 @@
 **Your job: infer the developer's end-user-facing intent for this PR.**
 
-You are running BEFORE a fan-out of 5 review specialists. Your job is to write a short, tentative statement of *the end-user experience the developer is trying to deliver* — so the architecture and simplification specialists can grade the implementation against the spirit of the goal, not just the literal code.
+You are running BEFORE the fan-out of review specialists. Your job is to write a short, tentative statement of *the end-user experience the developer is trying to deliver* — so the architecture, simplification, and shape specialists can grade the implementation against the spirit of the goal, not just the literal code.
 
 **PR:** {{PR_ID}}
 **Title:** {{PR_TITLE}}
