@@ -213,16 +213,13 @@ for spec in "${ELIGIBLE[@]}"; do
     active=$((active + 1))
 done
 
-while [ "$active" -gt 0 ]; do
-    if ! wait -n; then
-        FAILED=$((FAILED + 1))
-    fi
-    active=$((active - 1))
-done
-
-if [ "$FAILED" -gt 0 ]; then
-    log "Fan-out complete with $FAILED worker failure(s) out of ${#ELIGIBLE[@]}"
-    exit 1
-fi
-log "Fan-out complete (${#ELIGIBLE[@]} review(s) ended)"
+# Detached fan-out: workers are running in the background and will
+# continue past this script's exit (KillMode=process on the systemd
+# unit; children reparent to PID 1). We do NOT wait for them — the
+# orchestrator's job is to enumerate eligible PRs and dispatch; per-
+# worker outcomes land in $STATE_DIR/runs/<id>/run.log and the systemd
+# journal. Without this, the next 2-min timer tick is blocked until the
+# slowest worker finishes (15–20 min in production), making
+# /srosro-update-review pickup unboundedly slow.
+log "Fan-out: dispatched ${#ELIGIBLE[@]} worker(s) (detached, running in background)"
 exit 0
