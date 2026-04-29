@@ -26,9 +26,7 @@ BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-pos
 REPOS=("cncorp/plow" "srosro/tkmx-client" "srosro/tkmx-server" "srosro/knightwatch-reviewer" "srosro/vibe-engineering")
 REPLIES_SEEN_FILE="${REPLIES_SEEN_FILE:-$STATE_DIR/replies-seen.json}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/learn.log}"
-MAC_HOST="${MAC_HOST:-so@so-mbp}"
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
-MAC_CLAUDE_DIR="${MAC_CLAUDE_DIR:-/Users/so/.claude}"
 
 # is_trusted_repo_author() — push-access trust gate, shared with review.sh.
 REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
@@ -283,11 +281,3 @@ if [ -d "$VIBE_REPO/.git" ]; then
         fi
     fi
 fi
-
-# Sync to Mac (best-effort).
-rsync -az "$CLAUDE_DIR/REVIEW_PRACTICES.md" \
-          "$CLAUDE_DIR/TESTING.md" \
-          "$CLAUDE_DIR/COMMENT_REVIEW_MISTAKES.md" \
-          "$MAC_CLAUDE_DIR/" 2>/dev/null \
-    && log "Synced to Mac" \
-    || log "Sync to Mac failed (check MAC_HOST/ssh config)"
