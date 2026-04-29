@@ -57,4 +57,8 @@ test:
     bash lib/tests/learn-from-replies-smoke.sh
 
     echo ""
+    echo "=== install smoke test ==="
+    bash lib/tests/install-smoke.sh
+
+    echo ""
     echo "all checks passed"
