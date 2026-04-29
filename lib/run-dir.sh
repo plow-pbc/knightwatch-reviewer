@@ -59,6 +59,37 @@ allocate_run_dir() {
 # worker calls — a wrong glob, missing self-exclusion, or empty-file
 # filter regression silently disables Bug-Class-Recurrence detection
 # without tripping any other test.
+# finalize_meta_json META_FILE FINISHED_AT STATUS GH_POSTED
+#
+# Atomically rewrites $META_FILE with finished_at + status, and repairs
+# posted_at = $FINISHED_AT iff GH_POSTED == "true" AND existing posted_at
+# is empty. Existing posted_at values are preserved (the early-stamp path
+# in review-one-pr.sh sets posted_at right after gh succeeds; this
+# function must not clobber that).
+#
+# Hermetic — no closures, all inputs are args. Caller handles logging on
+# non-zero return so the smoke can drive the function without setting up
+# log()/PR_ID/LOG_FILE state.
+#
+# Returns 0 on success; returns 1 on jq parse / mv failure (and cleans
+# up the .tmp file). The worker's EXIT trap calls this; failures are
+# caught by the trap and logged. Smoke regression-fences the four
+# branches the worker depends on (see lib/tests/finalize-meta-smoke.sh).
+finalize_meta_json() {
+    local meta_file="$1" finished_at="$2" status="$3" gh_posted="$4"
+    local tmp="${meta_file}.tmp"
+    if ! jq --arg ts "$finished_at" --arg status "$status" --arg gh_posted "$gh_posted" \
+            '. + {finished_at: $ts, status: $status} + (if ($gh_posted == "true") and ((.posted_at // "") == "") then {posted_at: $ts} else {} end)' \
+            "$meta_file" > "$tmp" 2>/dev/null; then
+        rm -f "$tmp"
+        return 1
+    fi
+    if ! mv -f "$tmp" "$meta_file"; then
+        rm -f "$tmp"
+        return 1
+    fi
+}
+
 stage_prior_reviews() {
     local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"
     local prior_run prior_ts included result=""

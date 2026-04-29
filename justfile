@@ -41,6 +41,10 @@ test:
     bash lib/tests/prior-reviews-smoke.sh
 
     echo ""
+    echo "=== finalize-meta smoke test ==="
+    bash lib/tests/finalize-meta-smoke.sh
+
+    echo ""
     echo "=== orchestrator skip smoke test ==="
     bash lib/tests/orchestrator-skip-smoke.sh
 

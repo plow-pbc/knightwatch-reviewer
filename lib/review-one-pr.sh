@@ -159,40 +159,21 @@ ln -sfn "$RUN_DIR" "$LATEST_LINK_DIR/latest"
 # indistinguishable from in-flight ones.
 RUN_STATUS="aborted"
 # Tracks whether `gh pr comment` ever returned success during this run.
-# Used by finalize_run to repair meta.json.posted_at when the early stamp
-# fails — once we've published the review, persisting that fact must be
-# guaranteed before exit so the recurrence detector never undercounts a
-# real prior author-visible review. Set to "true" right after the gh
-# pr comment success in the post-aggregator section.
+# Used by finalize_meta_json to repair meta.json.posted_at when the early
+# stamp fails — once we've published the review, persisting that fact
+# must be guaranteed before exit so the recurrence detector never
+# undercounts a real prior author-visible review. Set to "true" right
+# after the gh pr comment success in the post-aggregator section.
 GH_POSTED=false
 finalize_run() {
-    local tmp="$RUN_DIR/meta.json.tmp"
-    # The trap fires from EXIT, so we can't recover from a write failure
-    # here — but we can fail loud rather than silently leaving meta.json
-    # un-stamped. log() goes to RUN_DIR/run.log which is in the same
-    # filesystem; if it's unwritable, the message at least lands on
-    # stderr (which systemd captures into the journal).
-    #
-    # Repair posted_at if gh did post but the immediate stamp didn't make
-    # it onto disk: the early write is best-effort (if its jq/mv fails we
-    # log + continue so the worker doesn't abort after a successful publish),
-    # but recurrence detection treats missing posted_at as "not author-
-    # visible" — so finalize is the last chance to repair the persisted
-    # signal. The jq below stamps posted_at = $ts ONLY if GH_POSTED is true
-    # AND the field is currently empty; existing posted_at values from the
-    # early stamp are preserved.
-    local ts
-    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    if ! jq --arg ts "$ts" --arg status "$RUN_STATUS" --arg gh_posted "$GH_POSTED" \
-            '. + {finished_at: $ts, status: $status} + (if ($gh_posted == "true") and ((.posted_at // "") == "") then {posted_at: $ts} else {} end)' \
-            "$RUN_DIR/meta.json" > "$tmp"; then
-        log "$PR_ID: finalize_run jq failed — meta.json left un-stamped"
-        rm -f "$tmp"
-        return
-    fi
-    if ! mv -f "$tmp" "$RUN_DIR/meta.json"; then
-        log "$PR_ID: finalize_run mv failed — meta.json left un-stamped"
-        rm -f "$tmp"
+    # Thin wrapper around finalize_meta_json (lib/run-dir.sh) that supplies
+    # the worker's runtime closure (RUN_DIR / RUN_STATUS / GH_POSTED / now).
+    # Helper handles the atomic jq+mv + posted_at repair; this only logs
+    # on failure (the trap fires from EXIT, so we can't recover, but we
+    # can fail loud rather than silently leaving meta.json un-stamped).
+    if ! finalize_meta_json "$RUN_DIR/meta.json" \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$RUN_STATUS" "$GH_POSTED"; then
+        log "$PR_ID: finalize_run failed — meta.json left un-stamped"
     fi
 }
 
