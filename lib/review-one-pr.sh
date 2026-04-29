@@ -158,23 +158,22 @@ ln -sfn "$RUN_DIR" "$LATEST_LINK_DIR/latest"
 # code only stamped status on the success path, so abort dirs were
 # indistinguishable from in-flight ones.
 RUN_STATUS="aborted"
+# Tracks whether `gh pr comment` ever returned success during this run.
+# Used by finalize_meta_json to repair meta.json.posted_at when the early
+# stamp fails — once we've published the review, persisting that fact
+# must be guaranteed before exit so the recurrence detector never
+# undercounts a real prior author-visible review. Set to "true" right
+# after the gh pr comment success in the post-aggregator section.
+GH_POSTED=false
 finalize_run() {
-    local tmp="$RUN_DIR/meta.json.tmp"
-    # The trap fires from EXIT, so we can't recover from a write failure
-    # here — but we can fail loud rather than silently leaving meta.json
-    # un-stamped. log() goes to RUN_DIR/run.log which is in the same
-    # filesystem; if it's unwritable, the message at least lands on
-    # stderr (which systemd captures into the journal).
-    if ! jq --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg status "$RUN_STATUS" \
-            '. + {finished_at: $ts, status: $status}' \
-            "$RUN_DIR/meta.json" > "$tmp"; then
-        log "$PR_ID: finalize_run jq failed — meta.json left un-stamped"
-        rm -f "$tmp"
-        return
-    fi
-    if ! mv -f "$tmp" "$RUN_DIR/meta.json"; then
-        log "$PR_ID: finalize_run mv failed — meta.json left un-stamped"
-        rm -f "$tmp"
+    # Thin wrapper around finalize_meta_json (lib/run-dir.sh) that supplies
+    # the worker's runtime closure (RUN_DIR / RUN_STATUS / GH_POSTED / now).
+    # Helper handles the atomic jq+mv + posted_at repair; this only logs
+    # on failure (the trap fires from EXIT, so we can't recover, but we
+    # can fail loud rather than silently leaving meta.json un-stamped).
+    if ! finalize_meta_json "$RUN_DIR/meta.json" \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$RUN_STATUS" "$GH_POSTED"; then
+        log "$PR_ID: finalize_run failed — meta.json left un-stamped"
     fi
 }
 
@@ -481,6 +480,20 @@ write_scratch "$REPO_DIR" "standards.md"       "$STANDARDS"
 [ -n "$TRIGGER_COMMENT_BODY" ] && \
     write_scratch "$REPO_DIR" "trigger-comment.md" "$TRIGGER_COMMENT_BODY"
 
+# Stage prior aggregator outputs for this PR (every preserved run dir
+# except the current one) so the aggregator can detect Bug-Class-Recurrence
+# across reviews. Uses the per-run layout from PR #11; before that layout
+# only the most recent scratch was kept, so longitudinal recurrence couldn't
+# be detected. Empty / absent on the first review of a PR. Logic lives in
+# lib/run-dir.sh::stage_prior_reviews so the smoke test exercises the same
+# function the worker calls.
+PRIOR_REVIEWS=$(stage_prior_reviews "$STATE_DIR" "$REPO_SLUG_FOR_RUN" "$PR_NUM" "$RUN_DIR")
+if [ -n "$PRIOR_REVIEWS" ]; then
+    PRIOR_COUNT=$(printf '%s' "$PRIOR_REVIEWS" | grep -c '^--- review at ')
+    log "$PR_ID: staging $PRIOR_COUNT prior review(s) for recurrence detection"
+    write_scratch "$REPO_DIR" "prior-reviews.md" "$PRIOR_REVIEWS"
+fi
+
 CONTEXT_FILE="$HOME/.pr-reviewer/contexts/$(echo "$REPO" | tr '/' '_').md"
 if [ -f "$CONTEXT_FILE" ]; then
     write_scratch "$REPO_DIR" "product-context.md" "$(cat "$CONTEXT_FILE")"
@@ -683,6 +696,20 @@ if ! gh pr comment "$PR_NUM" --repo "$REPO" --body "$COMMENT_BODY"; then
     log "$PR_ID: gh pr comment FAILED — not updating state (next tick will retry)"
     rm -rf "$REPO_DIR"
     exit 1
+fi
+# Mark "we posted" as a runtime fact; finalize_run will guarantee
+# persistence even if the immediate stamp below fails. The early stamp
+# is best-effort — if it succeeds, recurrence detection sees posted_at
+# right away (useful for runs that race two workers); if it fails, the
+# trap repairs it on the way out.
+GH_POSTED=true
+META_TMP="$RUN_DIR/meta.json.tmp"
+if jq --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '. + {posted_at: $ts}' \
+        "$RUN_DIR/meta.json" > "$META_TMP" 2>/dev/null; then
+    mv -f "$META_TMP" "$RUN_DIR/meta.json" || rm -f "$META_TMP"
+else
+    rm -f "$META_TMP"
+    log "$PR_ID: meta.json posted_at stamp failed — finalize_run will repair on exit"
 fi
 # Review posted as a fresh comment (so the author gets a notification).
 # Mark eyes resolved BEFORE attempting the placeholder DELETE — if anything

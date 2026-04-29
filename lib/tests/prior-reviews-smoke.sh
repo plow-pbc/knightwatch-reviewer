@@ -1,0 +1,184 @@
+#!/bin/bash
+# Smoke for stage_prior_reviews (lib/run-dir.sh).
+#
+# Bug-Class-Recurrence detection depends entirely on this helper returning
+# the right concatenation of prior aggregator outputs. A bad `find` glob,
+# missing self-exclusion, wrong predicate, or other-PR cross-contamination
+# would silently disable or distort recurrence detection without tripping
+# any existing smoke. Lock down the branches:
+#
+#   1. No runs at all → empty output (first review on PR)
+#   2. Only the current run → empty output (self-exclusion works)
+#   3. Two prior posted runs + current → both prior outputs in chronological
+#      order, current excluded, headers correct
+#   4. Aborted run with no posted_at (worker exited before reaching gh
+#      pr comment, e.g. missing VERDICT or aggregator empty) → skipped
+#   4b. Run with no meta.json at all (in-flight or legacy pre-#11) → skipped
+#   4c. Run with posted_at present but status=aborted — this is the case
+#      where gh pr comment succeeded but state_set or finalize failed
+#      afterward. The author DID see the review on GitHub, so the helper
+#      MUST include it.
+#   4d. Legacy run with status=completed but no posted_at — runs created
+#      before this PR added the posted_at field. status only flips to
+#      "completed" after state_set succeeds, which in production runs
+#      after gh has posted, so status=completed reliably implies
+#      "gh post succeeded" for any preserved run. Without this fallback,
+#      the first-deploy rollout drops all pre-#15 history.
+#   5. Run dirs from a DIFFERENT PR or DIFFERENT repo sharing the slug
+#      prefix → not included (slug+pr glob filters them)
+#
+# Sources lib/run-dir.sh directly so the test exercises the same function
+# the worker calls. Runs in a private tmpdir.
+
+set -uo pipefail
+
+TMPDIR=$(mktemp -d -t prior-reviews-smoke-XXXXXX)
+trap 'rm -rf "$TMPDIR"' EXIT
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=../run-dir.sh
+. "$PROJECT_ROOT/lib/run-dir.sh"
+
+# Helper: create a run dir with a given timestamp suffix, aggregator
+# output, status, and posted_at. Defaults model a typical posted+completed
+# run (the production happy path). Pass status="aborted" + posted_at=""
+# for "review never reached gh"; pass status="aborted" + posted_at="<ts>"
+# for the rare "gh succeeded, state_set failed" case (review was
+# delivered but lifecycle aborted afterward). Pass status="" to skip
+# writing meta.json entirely (legacy/in-flight case).
+make_run() {
+    local slug="$1" pr="$2" ts="$3" sha7="$4" body="$5"
+    local status="${6-completed}" posted_at="${7-2026-04-29T15:00:00Z}"
+    local rd="$TMPDIR/state/runs/${slug}__${pr}__${ts}__${sha7}"
+    mkdir -p "$rd/agents/aggregator"
+    if [ -n "$body" ]; then
+        printf '%s' "$body" > "$rd/agents/aggregator/output.md"
+    fi
+    if [ -n "$status" ]; then
+        if [ -n "$posted_at" ]; then
+            printf '{"status":"%s","posted_at":"%s"}' "$status" "$posted_at" > "$rd/meta.json"
+        else
+            printf '{"status":"%s"}' "$status" > "$rd/meta.json"
+        fi
+    fi
+    echo "$rd"
+}
+
+REPO_SLUG="cncorp_plow"
+PR=523
+
+# ---- scenario 1: no runs at all ----
+echo "  scenario 1: no runs → empty output..."
+result=$(stage_prior_reviews "$TMPDIR/state" "$REPO_SLUG" "$PR" "$TMPDIR/state/runs/missing")
+if [ -n "$result" ]; then
+    echo "FAIL: expected empty, got: $result"
+    exit 1
+fi
+
+# ---- scenario 2: only the current run → self-excluded ----
+echo "  scenario 2: only current run → empty (self-excluded)..."
+current=$(make_run "$REPO_SLUG" "$PR" "20260429T120000000Z" "aaaaaaa" "## current review (should be excluded)")
+result=$(stage_prior_reviews "$TMPDIR/state" "$REPO_SLUG" "$PR" "$current")
+if [ -n "$result" ]; then
+    echo "FAIL: current run was not excluded:"
+    echo "$result"
+    exit 1
+fi
+
+# ---- scenario 3: two prior runs + current → chronological, current excluded ----
+echo "  scenario 3: two prior runs + current → both prior, chronological, current excluded..."
+make_run "$REPO_SLUG" "$PR" "20260429T100000000Z" "1111111" "## review one body" >/dev/null
+make_run "$REPO_SLUG" "$PR" "20260429T110000000Z" "2222222" "## review two body" >/dev/null
+result=$(stage_prior_reviews "$TMPDIR/state" "$REPO_SLUG" "$PR" "$current")
+
+if ! echo "$result" | grep -q "review one body"; then
+    echo "FAIL: scenario 3 — first prior review missing"
+    echo "$result"
+    exit 1
+fi
+if ! echo "$result" | grep -q "review two body"; then
+    echo "FAIL: scenario 3 — second prior review missing"
+    echo "$result"
+    exit 1
+fi
+if echo "$result" | grep -q "current review (should be excluded)"; then
+    echo "FAIL: scenario 3 — current review leaked through"
+    echo "$result"
+    exit 1
+fi
+# Chronological: review one's marker appears before review two's marker.
+one_pos=$(echo "$result" | grep -n "T100000000Z" | head -1 | cut -d: -f1)
+two_pos=$(echo "$result" | grep -n "T110000000Z" | head -1 | cut -d: -f1)
+if [ -z "$one_pos" ] || [ -z "$two_pos" ] || [ "$one_pos" -ge "$two_pos" ]; then
+    echo "FAIL: scenario 3 — prior reviews not in chronological order (one_pos=$one_pos, two_pos=$two_pos)"
+    echo "$result"
+    exit 1
+fi
+
+# ---- scenario 4: aborted run with no posted_at → skipped ----
+# Worker exited before reaching gh pr comment (e.g. aggregator empty,
+# VERDICT missing). Author never saw this review.
+echo "  scenario 4: aborted run with no posted_at → skipped..."
+make_run "$REPO_SLUG" "$PR" "20260429T090000000Z" "3333333" "## aborted review body — author never saw this" "aborted" "" >/dev/null
+result=$(stage_prior_reviews "$TMPDIR/state" "$REPO_SLUG" "$PR" "$current")
+if echo "$result" | grep -q "aborted review body"; then
+    echo "FAIL: scenario 4 — aborted run with no posted_at was not skipped"
+    echo "$result"
+    exit 1
+fi
+
+# ---- scenario 4b: missing meta.json → skipped (in-flight or legacy) ----
+echo "  scenario 4b: run with no meta.json (in-flight or legacy) → skipped..."
+make_run "$REPO_SLUG" "$PR" "20260429T080000000Z" "4444444" "## in-flight review body" "" "" >/dev/null
+result=$(stage_prior_reviews "$TMPDIR/state" "$REPO_SLUG" "$PR" "$current")
+if echo "$result" | grep -q "in-flight review body"; then
+    echo "FAIL: scenario 4b — run without meta.json was not skipped"
+    echo "$result"
+    exit 1
+fi
+
+# ---- scenario 4c: posted_at present but status=aborted → INCLUDED ----
+# gh pr comment succeeded (author saw the review on GitHub) but state_set
+# or finalize failed afterward. The earlier fix (key off status="completed")
+# would have excluded this; keying off posted_at correctly includes it.
+echo "  scenario 4c: posted_at present, status=aborted (gh-ok+state_set-failed) → INCLUDED..."
+make_run "$REPO_SLUG" "$PR" "20260429T070000000Z" "5555555" "## review three body — author saw this even though state_set failed" "aborted" "2026-04-29T07:05:00Z" >/dev/null
+result=$(stage_prior_reviews "$TMPDIR/state" "$REPO_SLUG" "$PR" "$current")
+if ! echo "$result" | grep -q "review three body"; then
+    echo "FAIL: scenario 4c — posted-but-aborted review was not included; recurrence detector would undercount"
+    echo "$result"
+    exit 1
+fi
+
+# ---- scenario 4d: legacy run (status=completed, no posted_at) → INCLUDED ----
+# Runs created before this PR landed have status=completed but no
+# posted_at field. On first deploy, those legacy runs MUST count for
+# recurrence detection — the long-running PRs this feature targets
+# already have multi-review history. Predicate falls back to status when
+# posted_at is missing.
+echo "  scenario 4d: legacy run (status=completed, no posted_at) → INCLUDED..."
+make_run "$REPO_SLUG" "$PR" "20260429T060000000Z" "6666666" "## review four body — legacy pre-#15 completed run" "completed" "" >/dev/null
+result=$(stage_prior_reviews "$TMPDIR/state" "$REPO_SLUG" "$PR" "$current")
+if ! echo "$result" | grep -q "review four body"; then
+    echo "FAIL: scenario 4d — legacy completed run (no posted_at) was excluded; rollout drops history exactly where the feature is needed"
+    echo "$result"
+    exit 1
+fi
+
+# ---- scenario 5: different PR / repo slug → not included ----
+echo "  scenario 5: runs from other PR / repo slug → filtered out..."
+make_run "$REPO_SLUG" "999" "20260429T120000000Z" "9999999" "## OTHER PR review (should NOT appear)" >/dev/null
+make_run "other_repo" "$PR" "20260429T120000000Z" "8888888" "## OTHER REPO review (should NOT appear)" >/dev/null
+result=$(stage_prior_reviews "$TMPDIR/state" "$REPO_SLUG" "$PR" "$current")
+if echo "$result" | grep -q "OTHER PR review"; then
+    echo "FAIL: scenario 5 — run from a different PR leaked through"
+    echo "$result"
+    exit 1
+fi
+if echo "$result" | grep -q "OTHER REPO review"; then
+    echo "FAIL: scenario 5 — run from a different repo leaked through"
+    echo "$result"
+    exit 1
+fi
+
+echo "  PASS (8 scenarios: no-runs, self-excluded, chronological-prior, aborted-skipped, no-meta-skipped, posted-but-aborted-INCLUDED, legacy-completed-no-posted-at-INCLUDED, foreign-pr-filtered)"

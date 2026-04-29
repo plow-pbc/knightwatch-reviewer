@@ -41,3 +41,81 @@ allocate_run_dir() {
         return 1
     fi
 }
+
+# stage_prior_reviews STATE_DIR REPO_SLUG PR_NUM CURRENT_RUN_DIR
+#
+# Walks $STATE_DIR/runs/<repo-slug>__<pr>__* dirs in chronological order
+# (sortable by RUN_TS) and concatenates each prior aggregator output to
+# stdout, separated by `--- review at <ts> ---` headers. The current run
+# is excluded explicitly. Run dirs from other PRs are filtered by the
+# slug+pr glob. Run dirs without an aggregator output (aborted runs that
+# never reached the aggregator phase) are skipped.
+#
+# Empty stdout when this is the first review on the PR. Caller checks
+# `[ -n "$result" ]` and decides whether to write_scratch the result.
+#
+# Pure read-only walk; no side effects. Lives here so the smoke test in
+# lib/tests/prior-reviews-smoke.sh exercises the same function the
+# worker calls — a wrong glob, missing self-exclusion, or empty-file
+# filter regression silently disables Bug-Class-Recurrence detection
+# without tripping any other test.
+# finalize_meta_json META_FILE FINISHED_AT STATUS GH_POSTED
+#
+# Atomically rewrites $META_FILE with finished_at + status, and repairs
+# posted_at = $FINISHED_AT iff GH_POSTED == "true" AND existing posted_at
+# is empty. Existing posted_at values are preserved (the early-stamp path
+# in review-one-pr.sh sets posted_at right after gh succeeds; this
+# function must not clobber that).
+#
+# Hermetic — no closures, all inputs are args. Caller handles logging on
+# non-zero return so the smoke can drive the function without setting up
+# log()/PR_ID/LOG_FILE state.
+#
+# Returns 0 on success; returns 1 on jq parse / mv failure (and cleans
+# up the .tmp file). The worker's EXIT trap calls this; failures are
+# caught by the trap and logged. Smoke regression-fences the four
+# branches the worker depends on (see lib/tests/finalize-meta-smoke.sh).
+finalize_meta_json() {
+    local meta_file="$1" finished_at="$2" status="$3" gh_posted="$4"
+    local tmp="${meta_file}.tmp"
+    if ! jq --arg ts "$finished_at" --arg status "$status" --arg gh_posted "$gh_posted" \
+            '. + {finished_at: $ts, status: $status} + (if ($gh_posted == "true") and ((.posted_at // "") == "") then {posted_at: $ts} else {} end)' \
+            "$meta_file" > "$tmp" 2>/dev/null; then
+        rm -f "$tmp"
+        return 1
+    fi
+    if ! mv -f "$tmp" "$meta_file"; then
+        rm -f "$tmp"
+        return 1
+    fi
+}
+
+stage_prior_reviews() {
+    local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"
+    local prior_run prior_ts included result=""
+    while IFS= read -r prior_run; do
+        [ "$prior_run" = "$current_run_dir" ] && continue
+        # Two signals say "the author saw this review on GitHub":
+        #   1. posted_at present — primary signal, stamped immediately after
+        #      `gh pr comment` succeeds in review-one-pr.sh. Set BEFORE
+        #      state_set runs, so it correctly includes the rare case where
+        #      gh succeeded but state_set or finalize failed afterward.
+        #   2. status == "completed" — fallback for legacy runs created
+        #      before this PR added the posted_at field. status only flips
+        #      to "completed" after state_set succeeds, which in the
+        #      production worker flow only runs after gh has posted, so
+        #      "status == completed" reliably implies "gh post succeeded"
+        #      for any preserved run.
+        # Either signal is sufficient — the union captures all
+        # author-visible reviews including legacy history, while excluding
+        # aborted runs where the author never received the review.
+        included=$(jq -r 'if ((.posted_at // "") != "") or ((.status // "") == "completed") then "yes" else "no" end' \
+            "$prior_run/meta.json" 2>/dev/null)
+        [ "$included" = "yes" ] || continue
+        prior_ts=$(basename "$prior_run" | grep -oE 'T[0-9]+Z' | head -1)
+        result+=$'\n--- review at '"${prior_ts:-unknown}"$' ---\n'
+        result+=$(cat "$prior_run/agents/aggregator/output.md")
+        result+=$'\n'
+    done < <(find "$state_dir/runs" -maxdepth 1 -type d -name "${repo_slug}__${pr_num}__*" 2>/dev/null | sort)
+    printf '%s' "$result"
+}

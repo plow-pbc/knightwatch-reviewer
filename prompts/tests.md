@@ -13,3 +13,5 @@ Scope:
 Out of scope: the underlying code correctness (data-integrity specialist handles that), security, architecture. Stay on tests.
 
 Look beyond the diff: grep `tests/` for existing patterns the PR should have followed.
+
+**Race-sensitive / hard-to-test findings must propose the seam.** When you flag missing test coverage on code that would require process injection, time mocking, ordering primitives, or other non-trivial harness work, your finding MUST also name a concrete seam that would make the behavior testable: function extraction (e.g., `applyStatusToSession(id:status:) -> Bool`), dependency injection (`init(now: () -> Date)`), value-type extraction (move per-session state into a `Session` value), or a registry / observability hook. A "this isn't tested" finding without a proposed seam is incomplete — either rewrite to include the seam or downgrade severity to an observation in the Surveyed section. The point is calibration: a reviewer who cannot name the seam is asking the author to do reviewer-shaped work, and the finding will rightly get pushed back as "out of scope for this PR." Naming the seam is what makes the finding actionable.
