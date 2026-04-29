@@ -1,6 +1,6 @@
 #!/bin/bash
-# Smoke test for lib/auth.sh — covers both is_trusted_repo_author and
-# is_pr_author. Stubs `gh` so the real GitHub API is never touched.
+# Smoke test for lib/auth.sh — covers is_trusted_repo_author and
+# submit_approval. Stubs `gh` so the real GitHub API is never touched.
 
 set -euo pipefail
 
@@ -14,11 +14,19 @@ export HOME="$TMPDIR/home"
 mkdir -p "$HOME/.local/bin"
 export PATH="$HOME/.local/bin:$PATH"
 
-# `gh` stub. Two endpoints we care about:
+# log() comes from lib/state-io.sh; submit_approval calls it. Set
+# LOG_FILE to a tmp path so we can assert which log line fired per
+# scenario (the helper writes the same line via tee in production).
+export LOG_FILE="$TMPDIR/log"
+. "$PROJECT_ROOT/lib/state-io.sh"
+
+# `gh` stub for two endpoints:
 #   gh api repos/<repo>/collaborators/<user>/permission --jq .permission
-#       → echoes $MOCK_TRUSTED_USERS membership
-#   gh pr view <num> --repo <repo> --json author --jq .author.login
-#       → echoes $MOCK_PR_AUTHOR
+#       → echoes "write" if user ∈ MOCK_TRUSTED_USERS, else "none"
+#   gh pr review <num> --repo <repo> --approve --body <body>
+#       → records the call, exits 0 unless MOCK_GH_REVIEW_FAILS=1
+GH_REVIEW_LOG="$TMPDIR/gh-review.log"
+export GH_REVIEW_LOG
 cat > "$HOME/.local/bin/gh" <<'STUB'
 #!/bin/bash
 if [ "$1" = "api" ]; then
@@ -36,13 +44,13 @@ if [ "$1" = "api" ]; then
     else
         echo "{}"
     fi
-elif [ "$1" = "pr" ] && [ "$2" = "view" ]; then
-    # MOCK_PR_AUTHOR_FAIL=1 simulates a non-existent PR / API outage.
-    if [ -n "${MOCK_PR_AUTHOR_FAIL:-}" ]; then
-        echo "gh: not found" >&2
+elif [ "$1" = "pr" ] && [ "$2" = "review" ]; then
+    echo "REVIEW $*" >> "$GH_REVIEW_LOG"
+    if [ -n "${MOCK_GH_REVIEW_FAILS:-}" ]; then
+        echo "gh: server error" >&2
         exit 1
     fi
-    echo "${MOCK_PR_AUTHOR:-someuser}"
+    exit 0
 else
     echo "{}"
 fi
@@ -51,6 +59,11 @@ chmod +x "$HOME/.local/bin/gh"
 
 # Source the helpers under test.
 . "$PROJECT_ROOT/lib/auth.sh"
+
+reset_state() {
+    : > "$LOG_FILE"
+    : > "$GH_REVIEW_LOG"
+}
 
 # --- is_trusted_repo_author ---
 echo "  scenario 1: is_trusted_repo_author returns true for a write-access user..."
@@ -62,17 +75,23 @@ MOCK_TRUSTED_USERS="srosro" is_trusted_repo_author "cncorp/plow" "stranger" && {
 echo "  scenario 3: is_trusted_repo_author returns false for empty user..."
 is_trusted_repo_author "cncorp/plow" "" && { echo "FAIL scenario 3: empty user should not be trusted"; exit 1; } || true
 
-# --- is_pr_author ---
-echo "  scenario 4: is_pr_author returns true when login matches the PR author..."
-MOCK_PR_AUTHOR="srosro" is_pr_author "cncorp/plow" "100" "srosro" || { echo "FAIL scenario 4: expected match"; exit 1; }
+# --- submit_approval ---
+echo "  scenario 4: submit_approval skips the API call when bot is the PR author..."
+reset_state
+submit_approval "cncorp/plow" "100" "srosro" "srosro" "Approving per automated review above." && { echo "FAIL scenario 4: expected return 1 on self-author"; exit 1; } || true
+[ ! -s "$GH_REVIEW_LOG" ] || { echo "FAIL scenario 4: gh pr review was called when bot is the PR author"; cat "$GH_REVIEW_LOG"; exit 1; }
+grep -q "Skipping approve on cncorp/plow#100 — PR authored by srosro" "$LOG_FILE" || { echo "FAIL scenario 4: expected 'Skipping approve' log line"; cat "$LOG_FILE"; exit 1; }
 
-echo "  scenario 5: is_pr_author returns false when login differs..."
-MOCK_PR_AUTHOR="srosro" is_pr_author "cncorp/plow" "100" "delattre1" && { echo "FAIL scenario 5: expected no match"; exit 1; } || true
+echo "  scenario 5: submit_approval calls gh pr review --approve and returns 0 on success..."
+reset_state
+submit_approval "cncorp/plow" "100" "srosro" "delattre1" "Approving per automated review above." || { echo "FAIL scenario 5: expected return 0 on successful approve"; cat "$LOG_FILE"; exit 1; }
+[ "$(grep -c '^REVIEW' "$GH_REVIEW_LOG")" = "1" ] || { echo "FAIL scenario 5: expected exactly 1 gh pr review call, got $(grep -c '^REVIEW' "$GH_REVIEW_LOG" 2>/dev/null || echo 0)"; cat "$GH_REVIEW_LOG"; exit 1; }
+grep -q "Approved cncorp/plow#100" "$LOG_FILE" || { echo "FAIL scenario 5: expected 'Approved' log line"; cat "$LOG_FILE"; exit 1; }
 
-echo "  scenario 6: is_pr_author returns false on empty user..."
-is_pr_author "cncorp/plow" "100" "" && { echo "FAIL scenario 6: empty user should not be the author"; exit 1; } || true
+echo "  scenario 6: submit_approval logs failure and returns 1 when gh pr review --approve fails..."
+reset_state
+MOCK_GH_REVIEW_FAILS=1 submit_approval "cncorp/plow" "100" "srosro" "delattre1" "Approving per automated review above." && { echo "FAIL scenario 6: expected return 1 on gh failure"; exit 1; } || true
+[ "$(grep -c '^REVIEW' "$GH_REVIEW_LOG")" = "1" ] || { echo "FAIL scenario 6: expected exactly 1 gh pr review call (the failed attempt)"; cat "$GH_REVIEW_LOG"; exit 1; }
+grep -q "gh pr review --approve FAILED" "$LOG_FILE" || { echo "FAIL scenario 6: expected 'FAILED' log line"; cat "$LOG_FILE"; exit 1; }
 
-echo "  scenario 7: is_pr_author returns false on gh API failure (defaults to 'not author')..."
-MOCK_PR_AUTHOR_FAIL=1 is_pr_author "cncorp/plow" "100" "srosro" && { echo "FAIL scenario 7: API failure should not assert authorship"; exit 1; } || true
-
-echo "  PASS (7 scenarios: trust-yes, trust-no, trust-empty, author-match, author-mismatch, author-empty, author-api-failure)"
+echo "  PASS (6 scenarios: trust-yes, trust-no, trust-empty, approval-self-skipped, approval-success, approval-failure-fail-loud)"

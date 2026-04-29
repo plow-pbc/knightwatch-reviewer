@@ -27,18 +27,28 @@ is_trusted_repo_author() {
     esac
 }
 
-# is_pr_author REPO PR_NUM USER — true (exit 0) iff $USER is the GitHub
-# account that opened PR_NUM in REPO. Used by lib/review-one-pr.sh's
-# auto-approve gate to skip approving the bot's own PRs (GitHub rejects
-# with "Can not approve your own pull request").
+# submit_approval REPO PR_NUM BOT_USER PR_AUTHOR APPROVE_BODY — wraps the
+# full auto-approve flow that lib/review-one-pr.sh used to inline:
+#   - If PR_AUTHOR == BOT_USER, skip the API call (GitHub rejects
+#     self-approval with "Can not approve your own pull request"; the
+#     resulting GraphQL noise pollutes the journal). Returns 1.
+#   - Else call `gh pr review --approve`. Returns 0 on success, 1 on
+#     failure. Failures are logged loud instead of being swallowed by
+#     the prior `||`-suppressed call (which used to leave the caller
+#     setting APPROVED=true unconditionally).
 #
-# A 404 / API error returns 1 (treat as "not the author" — the
-# subsequent gh pr review call will then fail loud with a real diagnostic
-# instead of silently degrading to "skip").
-is_pr_author() {
-    local repo="$1" pr_num="$2" user="$3"
-    [ -z "$user" ] && return 1
-    local author
-    author=$(gh pr view "$pr_num" --repo "$repo" --json author --jq '.author.login' 2>/dev/null)
-    [ "$author" = "$user" ]
+# PR_AUTHOR is passed in (not refetched) so this re-uses the value the
+# worker already fetched once at the top of review-one-pr.sh.
+submit_approval() {
+    local repo="$1" pr_num="$2" bot_user="$3" pr_author="$4" body="$5"
+    if [ "$pr_author" = "$bot_user" ]; then
+        log "Skipping approve on $repo#$pr_num — PR authored by $bot_user (GitHub forbids self-approval)"
+        return 1
+    fi
+    if gh pr review "$pr_num" --repo "$repo" --approve --body "$body" 2>&1 >/dev/null; then
+        log "Approved $repo#$pr_num ($body)"
+        return 0
+    fi
+    log "$repo#$pr_num: gh pr review --approve FAILED — see journal; not marking approved"
+    return 1
 }
