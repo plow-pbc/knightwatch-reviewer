@@ -42,6 +42,37 @@ allocate_run_dir() {
     fi
 }
 
+# prepend_stale_head_note COMMENT_BODY REVIEWED_SHA CURRENT_HEAD
+#
+# If REVIEWED_SHA matches CURRENT_HEAD (or CURRENT_HEAD is empty —
+# best-effort gh-fetch failed), echoes COMMENT_BODY unchanged.
+#
+# Otherwise, the PR head moved during this run and the review the user is
+# about to see is for an older SHA. Inject a deterministic warning right
+# after the auto-post marker (first line) so the user doesn't read the
+# review as "the bot didn't see my fix" — it literally never saw it.
+#
+# The warning intentionally does NOT name a specific slash-command —
+# it points to "the commands at the bottom of this comment" so there's
+# one source of truth for usage (the existing footer), and so updating
+# the available commands later doesn't fork into two surfaces.
+#
+# Hermetic — pure string transform. Smoke verifies all three branches:
+# matched-shas (no-op), differing-shas (warning prepended), empty
+# CURRENT_HEAD (gh failure path: no-op).
+prepend_stale_head_note() {
+    local comment_body="$1" reviewed_sha="$2" current_head="$3"
+    if [ -z "$current_head" ] || [ "$current_head" = "$reviewed_sha" ]; then
+        printf '%s' "$comment_body"
+        return
+    fi
+    local warning first_line rest
+    warning="> ⚠️ **Stale review** — generated against \`${reviewed_sha:0:7}\`, but the PR head has advanced to \`${current_head:0:7}\` since this review started. Findings below may already be addressed in newer commits. A fresh review will run on the next orchestrator tick — see the commands at the bottom of this comment to trigger one immediately."
+    first_line=$(printf '%s' "$comment_body" | head -1)
+    rest=$(printf '%s' "$comment_body" | tail -n +2)
+    printf '%s\n%s\n\n%s' "$first_line" "$warning" "$rest"
+}
+
 # stage_prior_reviews STATE_DIR REPO_SLUG PR_NUM CURRENT_RUN_DIR
 #
 # Walks $STATE_DIR/runs/<repo-slug>__<pr>__* dirs in chronological order
