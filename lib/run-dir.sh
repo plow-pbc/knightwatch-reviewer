@@ -67,7 +67,7 @@ prepend_stale_head_note() {
         return
     fi
     local warning first_line rest
-    warning="> ⚠️ **Stale review** — generated against \`${reviewed_sha:0:7}\`, but the PR head has advanced to \`${current_head:0:7}\` since this review started. Findings below may already be addressed in newer commits. A fresh review will run on the next orchestrator tick — see the commands at the bottom of this comment to trigger one immediately."
+    warning="> ⚠️ **Stale review** — generated against \`${reviewed_sha:0:7}\`, but the PR head has advanced to \`${current_head:0:7}\` since this review started. Findings below may already be addressed in newer commits. To trigger a fresh review against the current head, see the commands at the bottom of this comment."
     first_line=$(printf '%s' "$comment_body" | head -1)
     rest=$(printf '%s' "$comment_body" | tail -n +2)
     printf '%s\n%s\n\n%s' "$first_line" "$warning" "$rest"
