@@ -25,6 +25,10 @@ test:
     bash lib/tests/build-specialist-prompt-smoke.sh
 
     echo ""
+    echo "=== run-specialist smoke test ==="
+    bash lib/tests/run-specialist-smoke.sh
+
+    echo ""
     echo "=== orchestrator skip smoke test ==="
     bash lib/tests/orchestrator-skip-smoke.sh
 
