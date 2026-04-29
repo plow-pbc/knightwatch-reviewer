@@ -26,3 +26,19 @@ is_trusted_repo_author() {
         *) return 1 ;;
     esac
 }
+
+# is_pr_author REPO PR_NUM USER — true (exit 0) iff $USER is the GitHub
+# account that opened PR_NUM in REPO. Used by lib/review-one-pr.sh's
+# auto-approve gate to skip approving the bot's own PRs (GitHub rejects
+# with "Can not approve your own pull request").
+#
+# A 404 / API error returns 1 (treat as "not the author" — the
+# subsequent gh pr review call will then fail loud with a real diagnostic
+# instead of silently degrading to "skip").
+is_pr_author() {
+    local repo="$1" pr_num="$2" user="$3"
+    [ -z "$user" ] && return 1
+    local author
+    author=$(gh pr view "$pr_num" --repo "$repo" --json author --jq '.author.login' 2>/dev/null)
+    [ "$author" = "$user" ]
+}
