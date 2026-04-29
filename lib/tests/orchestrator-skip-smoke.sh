@@ -102,6 +102,7 @@ export REVIEWER_LIB_DIR="$TMPDIR/lib"
 mkdir -p "$REVIEWER_LIB_DIR"
 cp "$PROJECT_ROOT/lib/state-io.sh" "$REVIEWER_LIB_DIR/state-io.sh"
 cp "$PROJECT_ROOT/lib/auth.sh"     "$REVIEWER_LIB_DIR/auth.sh"
+cp "$PROJECT_ROOT/lib/locking.sh"  "$REVIEWER_LIB_DIR/locking.sh"
 cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<'WORKER'
 #!/bin/bash
 # Args from review.sh: REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR
@@ -115,6 +116,19 @@ chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
 # so $MOCK_COMMENTS_FILE timestamps written as "now" are after it.
 . "$REVIEWER_LIB_DIR/state-io.sh"
 state_set "cncorp/plow#1" "abc123" false "prior review body" "$(($(date +%s) - 3600))"
+
+# --- Systemd contract static check (fails the suite at setup) -------------
+# Detached-worker correctness depends on KillMode=process in the service
+# unit — it's the directive that lets workers survive when the
+# orchestrator (oneshot ExecStart) exits. We can't execute systemd
+# inside a bash smoke, but we CAN assert the directive is in the unit
+# file. A regression that drops it would silently break detached-worker
+# survival in production; this catches it at the suite gate before any
+# scenario runs.
+grep -q '^KillMode=process$' "$PROJECT_ROOT/systemd/pr-reviewer.service" || {
+    echo "FAIL setup: systemd/pr-reviewer.service is missing 'KillMode=process' — detached workers won't survive orchestrator exit in production"
+    exit 1
+}
 
 export MOCK_COMMENTS_FILE="$TMPDIR/comments.json"
 # Default trust set for the existing scenarios: srosro is the bot operator
@@ -376,7 +390,7 @@ HOLDER_MARKER="$TMPDIR/holder-acquired.flag"
 HOLDER_RELEASE="$TMPDIR/holder-release.flag"
 cat > "$TMPDIR/holder.sh" <<HOLDER
 #!/bin/bash
-. "$PROJECT_ROOT/lib/locking.sh"
+. "$REVIEWER_LIB_DIR/locking.sh"
 if ! acquire_pr_lock "$LOCK_TEST_STATE_DIR" "test_repo__1"; then
     echo "HOLDER_FAILED_TO_ACQUIRE" >&2
     exit 1
@@ -398,7 +412,7 @@ for _ in $(seq 1 50); do
 done
 [ -f "$HOLDER_MARKER" ] || { kill "$HOLDER_PID" 2>/dev/null; echo "FAIL scenario 10: holder never acquired the lock"; cat "$TMPDIR/holder.log"; exit 1; }
 
-if ( . "$PROJECT_ROOT/lib/locking.sh" && acquire_pr_lock "$LOCK_TEST_STATE_DIR" "test_repo__1" ); then
+if ( . "$REVIEWER_LIB_DIR/locking.sh" && acquire_pr_lock "$LOCK_TEST_STATE_DIR" "test_repo__1" ); then
     touch "$HOLDER_RELEASE"; wait "$HOLDER_PID" 2>/dev/null
     echo "FAIL scenario 10 (lock-isolation regression): contender acquired lock while holder still held it"
     cat "$HOLDER_MARKER"; exit 1
@@ -413,6 +427,6 @@ fi
 
 touch "$HOLDER_RELEASE"
 wait "$HOLDER_PID" 2>/dev/null
-( . "$PROJECT_ROOT/lib/locking.sh" && acquire_pr_lock "$LOCK_TEST_STATE_DIR" "test_repo__1" ) || { echo "FAIL scenario 10: post-release acquire failed; lock may be stuck"; exit 1; }
+( . "$REVIEWER_LIB_DIR/locking.sh" && acquire_pr_lock "$LOCK_TEST_STATE_DIR" "test_repo__1" ) || { echo "FAIL scenario 10: post-release acquire failed; lock may be stuck"; exit 1; }
 
 echo "  PASS (10 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir)"
