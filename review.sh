@@ -189,20 +189,18 @@ fi
 log "Fan-out: ${#ELIGIBLE[@]} eligible PR(s), max $MAX_CONCURRENT concurrent"
 
 # ---------- fan out with bounded concurrency ----------
-# We capture each worker's exit code as it finishes so a failed worker
-# propagates into the service's exit code instead of silently degrading
-# the tick to "successful with log-only evidence". Per-PR flock skips
-# (another copy already reviewing the same PR) exit 0 and don't count
-# here.
+# Rate-limit fan-out to MAX_CONCURRENT in-flight workers per tick. We
+# don't track outcomes here — workers detach (KillMode=process on the
+# unit) and the next tick runs regardless of this tick's per-worker
+# results. Per-worker outcomes live in $STATE_DIR/runs/<id>/run.log
+# and the systemd journal. Per-PR flock in lib/review-one-pr.sh
+# prevents duplicate-dispatch races for the same PR.
 active=0
-FAILED=0
 for spec in "${ELIGIBLE[@]}"; do
     IFS=$'\t' read -r REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR TRIGGER_FILE <<< "$spec"
 
     while [ "$active" -ge "$MAX_CONCURRENT" ]; do
-        if ! wait -n; then
-            FAILED=$((FAILED + 1))
-        fi
+        wait -n || true
         active=$((active - 1))
     done
 
