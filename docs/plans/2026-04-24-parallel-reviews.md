@@ -1,5 +1,7 @@
 # Parallel Reviews Implementation Plan
 
+> **HISTORICAL — runtime contract has changed since this plan landed.** As of the orchestrator-detach-workers PR (April 2026), `review.sh` no longer `wait`s for its forked workers. Workers detach (`KillMode=process` on the unit) and run independently of the orchestrator's lifetime; the orchestrator returns in <1s after dispatching. `TimeoutStartSec` is no longer sized around one full tick of worker runtime. The per-PR `flock` lives at `$STATE_DIR/locks/<slug>` (not `/tmp/pr-review-locks/...`) so it survives the unit's `PrivateTmp=yes` namespace boundary across detached workers. See `lib/locking.sh` and the scenario-9/10 coverage in `lib/tests/orchestrator-skip-smoke.sh` for the current shape. Lines below describe the original parallel-reviews work and are kept for historical context only.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Let the `pr-reviewer.service` systemd tick process up to **3 eligible PRs in parallel** instead of serializing everything through a global lock.

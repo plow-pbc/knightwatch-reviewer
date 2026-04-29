@@ -37,7 +37,7 @@ if [ -f "$LOG_FILE" ] && [ "$(stat -c%s "$LOG_FILE" 2>/dev/null)" -gt 5242880 ];
 fi
 
 [ -f "$STATE_FILE" ] || echo '{}' > "$STATE_FILE"
-mkdir -p "$STATE_DIR" "$REPOS_DIR" "$WORKDIRS_DIR" /tmp/pr-review-locks
+mkdir -p "$STATE_DIR" "$REPOS_DIR" "$WORKDIRS_DIR" "$STATE_DIR/locks"
 
 # ---------- enumerate eligible PRs ----------
 declare -a ELIGIBLE=()
@@ -186,43 +186,58 @@ if [ ${#ELIGIBLE[@]} -eq 0 ]; then
     exit 0
 fi
 
-log "Fan-out: ${#ELIGIBLE[@]} eligible PR(s), max $MAX_CONCURRENT concurrent"
+# Fail loud at the dispatcher level if the worker script is missing
+# or not executable. Without this check, the loop below `& backgrounds`
+# the worker and exits 0 even on `exec` failure — the service journal
+# would still report "dispatched N worker(s)" while no review actually
+# ran. Catches the catastrophic class of dispatch failures (broken
+# install, accidental chmod -x, deleted symlink) before fan-out.
+if [[ ! -x "$REVIEWER_LIB_DIR/review-one-pr.sh" ]]; then
+    log "FATAL: $REVIEWER_LIB_DIR/review-one-pr.sh missing or not executable — aborting fan-out"
+    exit 1
+fi
+
+# Per-worker timeout. With detached workers (KillMode=process), the
+# service-level TimeoutStartSec=90min no longer bounds worker runtime
+# (orchestrator returns before workers complete). A wedged Codex phase
+# could hold the per-PR flock indefinitely, blocking all future
+# /srosro-update-review for that PR. `timeout 90m` re-establishes the
+# pre-detach ceiling at the worker level; the worker exits, the flock
+# releases, and the next tick can re-dispatch.
+WORKER_TIMEOUT="${WORKER_TIMEOUT:-90m}"
+
+log "Fan-out: ${#ELIGIBLE[@]} eligible PR(s), max $MAX_CONCURRENT concurrent, per-worker timeout $WORKER_TIMEOUT"
 
 # ---------- fan out with bounded concurrency ----------
-# We capture each worker's exit code as it finishes so a failed worker
-# propagates into the service's exit code instead of silently degrading
-# the tick to "successful with log-only evidence". Per-PR flock skips
-# (another copy already reviewing the same PR) exit 0 and don't count
-# here.
+# Rate-limit fan-out to MAX_CONCURRENT in-flight workers per tick. We
+# don't track outcomes here — workers detach (KillMode=process on the
+# unit) and the next tick runs regardless of this tick's per-worker
+# results. Per-worker outcomes live in $STATE_DIR/runs/<id>/run.log
+# and the systemd journal. Per-PR flock in lib/review-one-pr.sh
+# prevents duplicate-dispatch races for the same PR.
 active=0
-FAILED=0
 for spec in "${ELIGIBLE[@]}"; do
     IFS=$'\t' read -r REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR TRIGGER_FILE <<< "$spec"
 
     while [ "$active" -ge "$MAX_CONCURRENT" ]; do
-        if ! wait -n; then
-            FAILED=$((FAILED + 1))
-        fi
+        wait -n || true
         active=$((active - 1))
     done
 
     TRIGGER_COMMENT_FILE="$TRIGGER_FILE" \
     REVIEWER_LIB_DIR="$REVIEWER_LIB_DIR" \
-        "$REVIEWER_LIB_DIR/review-one-pr.sh" \
+        timeout "$WORKER_TIMEOUT" "$REVIEWER_LIB_DIR/review-one-pr.sh" \
         "$REPO" "$PR_NUM" "$PR_SHA" "$PR_BRANCH" "$PR_TITLE" "$FORCE_WHOLE_PR" &
     active=$((active + 1))
 done
 
-while [ "$active" -gt 0 ]; do
-    if ! wait -n; then
-        FAILED=$((FAILED + 1))
-    fi
-    active=$((active - 1))
-done
-
-if [ "$FAILED" -gt 0 ]; then
-    log "Fan-out complete with $FAILED worker failure(s) out of ${#ELIGIBLE[@]}"
-    exit 1
-fi
-log "Fan-out complete (${#ELIGIBLE[@]} review(s) ended)"
+# Detached fan-out: workers are running in the background and will
+# continue past this script's exit (KillMode=process on the systemd
+# unit; children reparent to PID 1). We do NOT wait for them — the
+# orchestrator's job is to enumerate eligible PRs and dispatch; per-
+# worker outcomes land in $STATE_DIR/runs/<id>/run.log and the systemd
+# journal. Without this, the next 2-min timer tick is blocked until the
+# slowest worker finishes (15–20 min in production), making
+# /srosro-update-review pickup unboundedly slow.
+log "Fan-out: dispatched ${#ELIGIBLE[@]} worker(s) (detached, running in background)"
 exit 0

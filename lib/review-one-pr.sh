@@ -43,16 +43,20 @@ REVIEW_START_TS=$(date +%s)
 # PR. If we can't acquire, exit silently (with a log line) — the other
 # invocation will finish its own work.
 #
+# Lock acquisition lives in lib/locking.sh::acquire_pr_lock so the
+# smoke test can call the same function this production path does —
+# a regression that moves the lock dir back to /tmp would have to
+# break the helper too, which the smoke catches directly.
+#
 # NB: this block runs BEFORE state-io.sh is sourced, so `log` isn't yet
 # available. Use raw echo+tee for the contention message. We also don't have
 # LOG_FILE defaulted yet (the per-run dir is set up below). Fall back to
 # $STATE_DIR/orchestrator.log so this skip line still lands somewhere durable.
+STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
+_LIB_DIR_EARLY="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
+. "$_LIB_DIR_EARLY/locking.sh"
 PR_LOCK_SLUG="${REPO//\//_}__${PR_NUM}"
-PR_LOCK_DIR="/tmp/pr-review-locks"
-mkdir -p "$PR_LOCK_DIR"
-PR_LOCK_FILE="${PR_LOCK_DIR}/${PR_LOCK_SLUG}"
-exec {PR_LOCK_FD}> "$PR_LOCK_FILE"
-if ! flock -n "$PR_LOCK_FD"; then
+if ! acquire_pr_lock "$STATE_DIR" "$PR_LOCK_SLUG"; then
     _raw_log="${LOG_FILE:-${STATE_DIR:-$HOME/.pr-reviewer}/orchestrator.log}"
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $PR_ID: another review already in flight (lock held on $PR_LOCK_FILE) — skipping this invocation" \
         | tee -a "$_raw_log" 2>/dev/null || true
@@ -60,7 +64,6 @@ if ! flock -n "$PR_LOCK_FD"; then
 fi
 # flock is held for the lifetime of PR_LOCK_FD; releases automatically on exit.
 
-STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 STATE_FILE="${STATE_FILE:-$STATE_DIR/state.json}"
 # Per-run dir is set up below once we've sourced helpers; until then the
 # orchestrator-level fallback catches any early `log` call.

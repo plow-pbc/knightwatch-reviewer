@@ -6,6 +6,13 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+# KillMode=process so workers survive the orchestrator's exit. With the
+# default `control-group` mode, systemd would kill every process in the
+# unit's cgroup when ExecStart returns — including the detached workers
+# review.sh just spawned. With `process`, only the main process (review.sh)
+# is tracked for kill purposes; workers reparent to PID 1 and run to
+# completion independently.
+KillMode=process
 User=odio
 Group=odio
 WorkingDirectory=/home/odio/.pr-reviewer
