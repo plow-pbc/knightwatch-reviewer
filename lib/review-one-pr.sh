@@ -45,14 +45,15 @@ REVIEW_START_TS=$(date +%s)
 #
 # NB: this block runs BEFORE state-io.sh is sourced, so `log` isn't yet
 # available. Use raw echo+tee for the contention message. We also don't have
-# LOG_FILE defaulted yet, so fall back to $STATE_DIR/review.log or /dev/null.
+# LOG_FILE defaulted yet (the per-run dir is set up below). Fall back to
+# $STATE_DIR/orchestrator.log so this skip line still lands somewhere durable.
 PR_LOCK_SLUG="${REPO//\//_}__${PR_NUM}"
 PR_LOCK_DIR="/tmp/pr-review-locks"
 mkdir -p "$PR_LOCK_DIR"
 PR_LOCK_FILE="${PR_LOCK_DIR}/${PR_LOCK_SLUG}"
 exec {PR_LOCK_FD}> "$PR_LOCK_FILE"
 if ! flock -n "$PR_LOCK_FD"; then
-    _raw_log="${LOG_FILE:-${STATE_DIR:-$HOME/.pr-reviewer}/review.log}"
+    _raw_log="${LOG_FILE:-${STATE_DIR:-$HOME/.pr-reviewer}/orchestrator.log}"
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $PR_ID: another review already in flight (lock held on $PR_LOCK_FILE) — skipping this invocation" \
         | tee -a "$_raw_log" 2>/dev/null || true
     exit 0
@@ -61,7 +62,9 @@ fi
 
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 STATE_FILE="${STATE_FILE:-$STATE_DIR/state.json}"
-LOG_FILE="${LOG_FILE:-$STATE_DIR/review.log}"
+# Per-run dir is set up below once we've sourced helpers; until then the
+# orchestrator-level fallback catches any early `log` call.
+LOG_FILE="${LOG_FILE:-$STATE_DIR/orchestrator.log}"
 REPOS_DIR="${REPOS_DIR:-$STATE_DIR/repos}"
 # Per-PR workdirs live under $STATE_DIR (not /tmp). When the service runs with
 # PrivateTmp=yes, /tmp is a unit-private mount — codex 0.122's unified-exec
@@ -81,22 +84,54 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # --- prompt-build helpers (sourced from lib/prompt-build.sh) ---
 . "$_LIB_DIR/prompt-build.sh"
 
+# --- per-run dir -------------------------------------------------------------
+# Every worker invocation gets its own runs/<RUN_ID>/ dir holding the run log,
+# input scratch, and one subdir per agent (prompt + output + log). The git
+# checkout under workdirs/<slug>__<pr>/ is rm -rf'd at the end of the run
+# (large + ephemeral); meta.json records its path so a post-mortem reader
+# can locate it before cleanup, and `sha` lets you re-check out from
+# repos/<slug>/ at any time.
+REPO_SLUG_FOR_RUN="${REPO//\//_}"
+RUN_TS="$(date -u +%Y%m%dT%H%M%SZ)"
+RUN_ID="${REPO_SLUG_FOR_RUN}__${PR_NUM}__${RUN_TS}__${PR_SHA:0:7}"
+RUN_DIR="$STATE_DIR/runs/$RUN_ID"
+mkdir -p "$RUN_DIR/agents" "$RUN_DIR/inputs"
+LOG_FILE="$RUN_DIR/run.log"
+
+# meta.json — minimal post-mortem header. Title is JSON-escaped via jq so
+# titles with quotes / newlines don't break the file. Workdir path is
+# recorded for the live-run window even though rm -rf eventually clears it.
+jq -n \
+    --arg repo "$REPO" \
+    --arg pr_id "$PR_ID" \
+    --argjson pr_num "$PR_NUM" \
+    --arg sha "$PR_SHA" \
+    --arg branch "$PR_BRANCH" \
+    --arg title "$PR_TITLE" \
+    --arg force_whole_pr "$FORCE_WHOLE_PR" \
+    --arg workdir "$WORKDIRS_DIR/${REPO_SLUG_FOR_RUN}__${PR_NUM}" \
+    --arg started_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{repo: $repo, pr_id: $pr_id, pr_num: $pr_num, sha: $sha, branch: $branch, title: $title, force_whole_pr: ($force_whole_pr == "true"), workdir: $workdir, started_at: $started_at}' \
+    > "$RUN_DIR/meta.json"
+
+# write_scratch — writes input artifacts into the run dir's inputs/ and
+# exposes them under the codex-scratch view in the workdir so agents can
+# read them via the paths their prompts cite (e.g. ".codex-scratch/diff.patch").
 write_scratch() {
     local repo_dir="$1" filename="$2" content="$3"
+    local input_path="$RUN_DIR/inputs/$filename"
     local scratch_dir="$repo_dir/.codex-scratch"
-    mkdir -p "$scratch_dir/specialists"
-    printf '%s' "$content" > "$scratch_dir/$filename"
+    mkdir -p "$(dirname "$input_path")" "$scratch_dir/specialists"
+    printf '%s' "$content" > "$input_path"
+    ln -sfn "$input_path" "$scratch_dir/$filename"
 }
 
-preserve_scratch() {
-    local repo_dir="$1" pr_slug="$2"
-    local archive="$STATE_DIR/last-run-scratch/$pr_slug"
-    if [ -d "$repo_dir/.codex-scratch" ]; then
-        rm -rf "$archive"
-        mkdir -p "$(dirname "$archive")"
-        mv "$repo_dir/.codex-scratch" "$archive"
-    fi
-}
+# Convenience symlink: latest run for this PR. Lets `tail -f
+# runs-by-pr/<repo-slug>/<pr>/latest/run.log` follow the most recent worker
+# without knowing the run id.
+LATEST_LINK_DIR="$STATE_DIR/runs-by-pr/$REPO_SLUG_FOR_RUN/$PR_NUM"
+mkdir -p "$LATEST_LINK_DIR"
+ln -sfn "$RUN_DIR" "$LATEST_LINK_DIR/latest"
 
 log "Reviewing $PR_ID (force_whole_pr=$FORCE_WHOLE_PR)"
 
@@ -447,7 +482,6 @@ write_scratch "$REPO_DIR" "author-intent.md" "$AUTHOR_INTENT"
 COMMITS=$(printf '%s' "$PR_DATA" | jq -r '.commits[]? | "\(.oid[0:7]) \(.messageHeadline)"')
 if [ -z "$COMMITS" ]; then
     log "$PR_ID: gh pr view returned no commits — aborting"
-    preserve_scratch "$REPO_DIR" "$(echo "$PR_ID" | tr "/#" "__")"
     rm -rf "$REPO_DIR"
     exit 1
 fi
@@ -456,23 +490,22 @@ write_scratch "$REPO_DIR" "commits.md" "$COMMITS"
 SPECIALISTS_DIR="$REPO_DIR/.codex-scratch/specialists"
 mkdir -p "$SPECIALISTS_DIR"
 
+# Every codex invocation goes through run-specialist.sh — it writes the
+# prompt, output, and codex stderr into runs/<RUN_ID>/agents/<name>/.
+# Symlinks under .codex-scratch/ keep the prompt-cited paths
+# (.codex-scratch/inferred-intent.md, .codex-scratch/specialists/<angle>.md,
+# .codex-scratch/critic.md) resolving to those outputs.
 log "$PR_ID: inferring developer intent..."
 INTENT_PROMPT=$(substitute_placeholders \
     "$HOME/.pr-reviewer/prompts/intent.md" \
     "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR")
-INTENT_OUT="$REPO_DIR/.codex-scratch/inferred-intent.md"
-codex exec \
-    -C "$REPO_DIR" \
-    --dangerously-bypass-approvals-and-sandbox \
-    -c model_reasoning_effort=high \
-    -o "$INTENT_OUT" \
-    "$INTENT_PROMPT" \
-    >> "$LOG_FILE" 2>&1
+"$_LIB_DIR/run-specialist.sh" "intent" "$REPO_DIR" "$INTENT_PROMPT" "$RUN_DIR/agents/intent"
 INTENT_EXIT=$?
+INTENT_OUT="$RUN_DIR/agents/intent/output.md"
+ln -sfn "$INTENT_OUT" "$REPO_DIR/.codex-scratch/inferred-intent.md"
 
 if [ "$INTENT_EXIT" -ne 0 ] || [ ! -s "$INTENT_OUT" ]; then
     log "$PR_ID: intent inference failed (codex exit=$INTENT_EXIT, output empty=$([ ! -s "$INTENT_OUT" ] && echo true || echo false)) — aborting"
-    preserve_scratch "$REPO_DIR" "$(echo "$PR_ID" | tr "/#" "__")"
     rm -rf "$REPO_DIR"
     exit 1
 fi
@@ -480,14 +513,12 @@ fi
 INTENT_NONBLANK_LINES=$(grep -cv '^[[:space:]]*$' "$INTENT_OUT")
 if [ "$INTENT_NONBLANK_LINES" -ne 1 ]; then
     log "$PR_ID: intent output has $INTENT_NONBLANK_LINES non-blank lines, expected exactly 1 — aborting"
-    preserve_scratch "$REPO_DIR" "$(echo "$PR_ID" | tr "/#" "__")"
     rm -rf "$REPO_DIR"
     exit 1
 fi
 
 if ! grep -q '^Inferred intent: ' "$INTENT_OUT"; then
     log "$PR_ID: intent output missing 'Inferred intent: ' prefix — aborting"
-    preserve_scratch "$REPO_DIR" "$(echo "$PR_ID" | tr "/#" "__")"
     rm -rf "$REPO_DIR"
     exit 1
 fi
@@ -502,15 +533,22 @@ for angle in "${ANGLES[@]}"; do
         "$angle" \
         "$HOME/.pr-reviewer/prompts/${angle}.md" \
         "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR")
-    ~/.pr-reviewer/lib/run-specialist.sh \
+    "$_LIB_DIR/run-specialist.sh" \
         "$angle" \
         "$REPO_DIR" \
         "$PROMPT" \
-        "$SPECIALISTS_DIR/${angle}.md" \
-        "$LOG_FILE" &
+        "$RUN_DIR/agents/$angle" &
 done
 
 wait
+# Symlink each specialist's output into the codex-scratch view so the
+# critic + aggregator prompts ('.codex-scratch/specialists/<angle>.md')
+# resolve to it. Done after wait so a half-written output isn't visible
+# through the symlink during the parallel phase.
+for angle in "${ANGLES[@]}"; do
+    ln -sfn "$RUN_DIR/agents/$angle/output.md" "$SPECIALISTS_DIR/${angle}.md"
+done
+
 SPECIALIST_FAILURE=0
 for angle in "${ANGLES[@]}"; do
     if [ ! -s "$SPECIALISTS_DIR/${angle}.md" ]; then
@@ -519,7 +557,6 @@ for angle in "${ANGLES[@]}"; do
     fi
 done
 if [ "$SPECIALIST_FAILURE" -ne 0 ]; then
-    preserve_scratch "$REPO_DIR" "$(echo "$PR_ID" | tr "/#" "__")"
     rm -rf "$REPO_DIR"
     exit 1
 fi
@@ -533,14 +570,9 @@ done
 
 log "$PR_ID: critic pass..."
 CRITIC_PROMPT=$(cat "$HOME/.pr-reviewer/prompts/critic.md")
-CRITIC_OUT="$REPO_DIR/.codex-scratch/critic.md"
-codex exec \
-    -C "$REPO_DIR" \
-    --dangerously-bypass-approvals-and-sandbox \
-    -c model_reasoning_effort=high \
-    -o "$CRITIC_OUT" \
-    "$CRITIC_PROMPT" \
-    >> "$LOG_FILE" 2>&1
+"$_LIB_DIR/run-specialist.sh" "critic" "$REPO_DIR" "$CRITIC_PROMPT" "$RUN_DIR/agents/critic"
+CRITIC_OUT="$RUN_DIR/agents/critic/output.md"
+ln -sfn "$CRITIC_OUT" "$REPO_DIR/.codex-scratch/critic.md"
 
 if [ ! -s "$CRITIC_OUT" ]; then
     log "$PR_ID: critic output empty — continuing without counterarguments"
@@ -552,25 +584,17 @@ AGG_PROMPT=$(build_specialist_prompt \
     "aggregator" \
     "$HOME/.pr-reviewer/prompts/aggregator.md" \
     "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR")
-AGG_OUT="$REPO_DIR/.codex-scratch/aggregator-output.md"
-codex exec \
-    -C "$REPO_DIR" \
-    --dangerously-bypass-approvals-and-sandbox \
-    -c model_reasoning_effort=high \
-    -o "$AGG_OUT" \
-    "$AGG_PROMPT" \
-    >> "$LOG_FILE" 2>&1
+"$_LIB_DIR/run-specialist.sh" "aggregator" "$REPO_DIR" "$AGG_PROMPT" "$RUN_DIR/agents/aggregator"
+AGG_OUT="$RUN_DIR/agents/aggregator/output.md"
 
 if [ ! -s "$AGG_OUT" ]; then
     log "$PR_ID: aggregator output empty — aborting"
-    preserve_scratch "$REPO_DIR" "$(echo "$PR_ID" | tr "/#" "__")"
     rm -rf "$REPO_DIR"
     exit 1
 fi
 REVIEW=$(cat "$AGG_OUT")
 if ! echo "$REVIEW" | grep -q '^VERDICT:'; then
     log "$PR_ID: aggregator output missing VERDICT line — aborting"
-    preserve_scratch "$REPO_DIR" "$(echo "$PR_ID" | tr "/#" "__")"
     rm -rf "$REPO_DIR"
     exit 1
 fi
@@ -578,7 +602,6 @@ VERDICT=$(echo "$REVIEW" | grep '^VERDICT:' | tail -1)
 COMMENT_BODY=$(echo "$REVIEW" | grep -v '^VERDICT:' | sed '/^[[:space:]]*$/{ N; /^\n$/d }')
 if [ -z "$COMMENT_BODY" ]; then
     log "Empty review body for $PR_ID, skipping"
-    preserve_scratch "$REPO_DIR" "$(echo "$PR_ID" | tr "/#" "__")"
     rm -rf "$REPO_DIR"
     exit 1
 fi
@@ -594,7 +617,6 @@ _How to use: this bot reviews every new PR and re-reviews new commits after one 
 _Generated by [sam's ai review bot](https://github.com/srosro/knightwatch-reviewer)._"
 if ! gh pr comment "$PR_NUM" --repo "$REPO" --body "$COMMENT_BODY"; then
     log "$PR_ID: gh pr comment FAILED — not updating state (next tick will retry)"
-    preserve_scratch "$REPO_DIR" "$(echo "$PR_ID" | tr "/#" "__")"
     rm -rf "$REPO_DIR"
     exit 1
 fi
@@ -632,11 +654,13 @@ fi
 
 if ! state_set "$PR_ID" "$PR_SHA" "$APPROVED" "$COMMENT_BODY" "$REVIEW_START_TS"; then
     log "$PR_ID: state_set FAILED — review posted but state.json not updated; next tick will re-review this SHA"
-    preserve_scratch "$REPO_DIR" "$(echo "$PR_ID" | tr "/#" "__")"
     rm -rf "$REPO_DIR"
     exit 1
 fi
-preserve_scratch "$REPO_DIR" "$(echo "$PR_ID" | tr "/#" "__")"
 rm -rf "$REPO_DIR"
+# Stamp finished_at on the run dir so post-mortem tools can tell completed
+# from in-flight runs (and how long each took).
+jq --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '. + {finished_at: $ts, status: "completed"}' \
+    "$RUN_DIR/meta.json" > "$RUN_DIR/meta.json.tmp" && mv "$RUN_DIR/meta.json.tmp" "$RUN_DIR/meta.json"
 log "Done with $PR_ID"
 exit 0

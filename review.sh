@@ -7,7 +7,7 @@ export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
 
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 STATE_FILE="${STATE_FILE:-$STATE_DIR/state.json}"
-LOG_FILE="${LOG_FILE:-$STATE_DIR/review.log}"
+LOG_FILE="${LOG_FILE:-$STATE_DIR/orchestrator.log}"
 REPOS=("cncorp/plow" "srosro/tkmx-client" "srosro/tkmx-server" "srosro/knightwatch-reviewer" "srosro/vibe-engineering")
 REPOS_DIR="${REPOS_DIR:-$STATE_DIR/repos}"
 WORKDIRS_DIR="${WORKDIRS_DIR:-$STATE_DIR/workdirs}"
@@ -30,12 +30,11 @@ REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 . "$REVIEWER_LIB_DIR/state-io.sh"
 . "$REVIEWER_LIB_DIR/auth.sh"
 
-# Rotate logs when they exceed 5MB.
-for _log in "$LOG_FILE" "$STATE_DIR/cron.log"; do
-    if [ -f "$_log" ] && [ "$(stat -c%s "$_log" 2>/dev/null)" -gt 5242880 ]; then
-        mv "$_log" "$_log.1"
-    fi
-done
+# Rotate the orchestrator log when it exceeds 5MB. Per-run logs under
+# runs/<id>/ aren't rotated — they're already bounded by run.
+if [ -f "$LOG_FILE" ] && [ "$(stat -c%s "$LOG_FILE" 2>/dev/null)" -gt 5242880 ]; then
+    mv "$LOG_FILE" "$LOG_FILE.1"
+fi
 
 [ -f "$STATE_FILE" ] || echo '{}' > "$STATE_FILE"
 mkdir -p "$STATE_DIR" "$REPOS_DIR" "$WORKDIRS_DIR" /tmp/pr-review-locks
