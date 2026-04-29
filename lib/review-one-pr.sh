@@ -101,18 +101,25 @@ LOG_FILE="$RUN_DIR/run.log"
 # meta.json — minimal post-mortem header. Title is JSON-escaped via jq so
 # titles with quotes / newlines don't break the file. Workdir path is
 # recorded for the live-run window even though rm -rf eventually clears it.
-jq -n \
-    --arg repo "$REPO" \
-    --arg pr_id "$PR_ID" \
-    --argjson pr_num "$PR_NUM" \
-    --arg sha "$PR_SHA" \
-    --arg branch "$PR_BRANCH" \
-    --arg title "$PR_TITLE" \
-    --arg force_whole_pr "$FORCE_WHOLE_PR" \
-    --arg workdir "$WORKDIRS_DIR/${REPO_SLUG_FOR_RUN}__${PR_NUM}" \
-    --arg started_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '{repo: $repo, pr_id: $pr_id, pr_num: $pr_num, sha: $sha, branch: $branch, title: $title, force_whole_pr: ($force_whole_pr == "true"), workdir: $workdir, started_at: $started_at}' \
-    > "$RUN_DIR/meta.json"
+if ! jq -n \
+        --arg repo "$REPO" \
+        --arg pr_id "$PR_ID" \
+        --argjson pr_num "$PR_NUM" \
+        --arg sha "$PR_SHA" \
+        --arg branch "$PR_BRANCH" \
+        --arg title "$PR_TITLE" \
+        --arg force_whole_pr "$FORCE_WHOLE_PR" \
+        --arg workdir "$WORKDIRS_DIR/${REPO_SLUG_FOR_RUN}__${PR_NUM}" \
+        --arg started_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{repo: $repo, pr_id: $pr_id, pr_num: $pr_num, sha: $sha, branch: $branch, title: $title, force_whole_pr: ($force_whole_pr == "true"), workdir: $workdir, started_at: $started_at}' \
+        > "$RUN_DIR/meta.json"; then
+    # Without meta.json the run header is broken from the start — abort
+    # rather than running blind. Falls through to the EXIT trap, which
+    # may in turn fail to update meta.json; that's acceptable because
+    # the file already doesn't exist as expected.
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $PR_ID: failed to write $RUN_DIR/meta.json — aborting" >&2
+    exit 1
+fi
 
 # write_scratch — writes input artifacts into the run dir's inputs/ and
 # exposes them under the codex-scratch view in the workdir so agents can
@@ -142,11 +149,20 @@ ln -sfn "$RUN_DIR" "$LATEST_LINK_DIR/latest"
 RUN_STATUS="aborted"
 finalize_run() {
     local tmp="$RUN_DIR/meta.json.tmp"
-    if jq --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg status "$RUN_STATUS" \
+    # The trap fires from EXIT, so we can't recover from a write failure
+    # here — but we can fail loud rather than silently leaving meta.json
+    # un-stamped. log() goes to RUN_DIR/run.log which is in the same
+    # filesystem; if it's unwritable, the message at least lands on
+    # stderr (which systemd captures into the journal).
+    if ! jq --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg status "$RUN_STATUS" \
             '. + {finished_at: $ts, status: $status}' \
-            "$RUN_DIR/meta.json" > "$tmp" 2>/dev/null; then
-        mv -f "$tmp" "$RUN_DIR/meta.json" 2>/dev/null || rm -f "$tmp"
-    else
+            "$RUN_DIR/meta.json" > "$tmp"; then
+        log "$PR_ID: finalize_run jq failed — meta.json left un-stamped"
+        rm -f "$tmp"
+        return
+    fi
+    if ! mv -f "$tmp" "$RUN_DIR/meta.json"; then
+        log "$PR_ID: finalize_run mv failed — meta.json left un-stamped"
         rm -f "$tmp"
     fi
 }
@@ -594,13 +610,22 @@ done
 log "$PR_ID: critic pass..."
 CRITIC_PROMPT=$(cat "$HOME/.pr-reviewer/prompts/critic.md")
 "$_LIB_DIR/run-specialist.sh" "critic" "$REPO_DIR" "$CRITIC_PROMPT" "$RUN_DIR/agents/critic"
+CRITIC_EXIT=$?
 CRITIC_OUT="$RUN_DIR/agents/critic/output.md"
-ln -sfn "$CRITIC_OUT" "$REPO_DIR/.codex-scratch/critic.md"
 
-if [ ! -s "$CRITIC_OUT" ]; then
+# Critic stays best-effort (the aggregator prompt explicitly tolerates an
+# empty critic file), but a failed codex run can leave a *non-empty*
+# truncated output behind — the empty-file check would let that ship
+# garbage into the aggregator's first input. Discard partial output on
+# any non-zero exit and substitute the same placeholder we use on empty.
+if [ "$CRITIC_EXIT" -ne 0 ]; then
+    log "$PR_ID: critic exited $CRITIC_EXIT — discarding partial output, falling back to placeholder (see agents/critic/log.txt)"
+    echo "(critic failed with exit=$CRITIC_EXIT — fall back)" > "$CRITIC_OUT"
+elif [ ! -s "$CRITIC_OUT" ]; then
     log "$PR_ID: critic output empty — continuing without counterarguments"
     echo "(critic output empty — fall back)" > "$CRITIC_OUT"
 fi
+ln -sfn "$CRITIC_OUT" "$REPO_DIR/.codex-scratch/critic.md"
 
 log "$PR_ID: aggregator (with critic input)..."
 AGG_PROMPT=$(build_specialist_prompt \
