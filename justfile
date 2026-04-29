@@ -37,6 +37,10 @@ test:
     bash lib/tests/run-dir-smoke.sh
 
     echo ""
+    echo "=== prior-reviews smoke test ==="
+    bash lib/tests/prior-reviews-smoke.sh
+
+    echo ""
     echo "=== orchestrator skip smoke test ==="
     bash lib/tests/orchestrator-skip-smoke.sh
 

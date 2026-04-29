@@ -41,3 +41,34 @@ allocate_run_dir() {
         return 1
     fi
 }
+
+# stage_prior_reviews STATE_DIR REPO_SLUG PR_NUM CURRENT_RUN_DIR
+#
+# Walks $STATE_DIR/runs/<repo-slug>__<pr>__* dirs in chronological order
+# (sortable by RUN_TS) and concatenates each prior aggregator output to
+# stdout, separated by `--- review at <ts> ---` headers. The current run
+# is excluded explicitly. Run dirs from other PRs are filtered by the
+# slug+pr glob. Run dirs without an aggregator output (aborted runs that
+# never reached the aggregator phase) are skipped.
+#
+# Empty stdout when this is the first review on the PR. Caller checks
+# `[ -n "$result" ]` and decides whether to write_scratch the result.
+#
+# Pure read-only walk; no side effects. Lives here so the smoke test in
+# lib/tests/prior-reviews-smoke.sh exercises the same function the
+# worker calls — a wrong glob, missing self-exclusion, or empty-file
+# filter regression silently disables Bug-Class-Recurrence detection
+# without tripping any other test.
+stage_prior_reviews() {
+    local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"
+    local prior_run prior_ts result=""
+    while IFS= read -r prior_run; do
+        [ "$prior_run" = "$current_run_dir" ] && continue
+        [ -s "$prior_run/agents/aggregator/output.md" ] || continue
+        prior_ts=$(basename "$prior_run" | grep -oE 'T[0-9]+Z' | head -1)
+        result+=$'\n--- review at '"${prior_ts:-unknown}"$' ---\n'
+        result+=$(cat "$prior_run/agents/aggregator/output.md")
+        result+=$'\n'
+    done < <(find "$state_dir/runs" -maxdepth 1 -type d -name "${repo_slug}__${pr_num}__*" 2>/dev/null | sort)
+    printf '%s' "$result"
+}

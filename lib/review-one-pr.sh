@@ -485,16 +485,10 @@ write_scratch "$REPO_DIR" "standards.md"       "$STANDARDS"
 # except the current one) so the aggregator can detect Bug-Class-Recurrence
 # across reviews. Uses the per-run layout from PR #11; before that layout
 # only the most recent scratch was kept, so longitudinal recurrence couldn't
-# be detected. Empty / absent on the first review of a PR.
-PRIOR_REVIEWS=""
-while IFS= read -r prior_run; do
-    [ "$prior_run" = "$RUN_DIR" ] && continue
-    [ -s "$prior_run/agents/aggregator/output.md" ] || continue
-    prior_ts=$(basename "$prior_run" | grep -oE 'T[0-9]+Z' | head -1)
-    PRIOR_REVIEWS+=$'\n--- review at '"${prior_ts:-unknown}"$' ---\n'
-    PRIOR_REVIEWS+=$(cat "$prior_run/agents/aggregator/output.md")
-    PRIOR_REVIEWS+=$'\n'
-done < <(find "$STATE_DIR/runs" -maxdepth 1 -type d -name "${REPO_SLUG_FOR_RUN}__${PR_NUM}__*" 2>/dev/null | sort)
+# be detected. Empty / absent on the first review of a PR. Logic lives in
+# lib/run-dir.sh::stage_prior_reviews so the smoke test exercises the same
+# function the worker calls.
+PRIOR_REVIEWS=$(stage_prior_reviews "$STATE_DIR" "$REPO_SLUG_FOR_RUN" "$PR_NUM" "$RUN_DIR")
 if [ -n "$PRIOR_REVIEWS" ]; then
     PRIOR_COUNT=$(printf '%s' "$PRIOR_REVIEWS" | grep -c '^--- review at ')
     log "$PR_ID: staging $PRIOR_COUNT prior review(s) for recurrence detection"
