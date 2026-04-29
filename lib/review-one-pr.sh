@@ -494,8 +494,10 @@ fi
 
 log "$PR_ID: intent inference complete: $(head -1 "$INTENT_OUT")"
 
-log "$PR_ID: launching 6 specialists in parallel..."
-for angle in security data-integrity architecture simplification tests shape; do
+ANGLES=(security data-integrity architecture simplification tests shape)
+
+log "$PR_ID: launching ${#ANGLES[@]} specialists in parallel..."
+for angle in "${ANGLES[@]}"; do
     PROMPT=$(build_specialist_prompt \
         "$angle" \
         "$HOME/.pr-reviewer/prompts/${angle}.md" \
@@ -510,7 +512,7 @@ done
 
 wait
 SPECIALIST_FAILURE=0
-for angle in security data-integrity architecture simplification tests shape; do
+for angle in "${ANGLES[@]}"; do
     if [ ! -s "$SPECIALISTS_DIR/${angle}.md" ]; then
         log "$PR_ID: specialist $angle produced empty output — aborting review"
         SPECIALIST_FAILURE=1
@@ -521,8 +523,8 @@ if [ "$SPECIALIST_FAILURE" -ne 0 ]; then
     rm -rf "$REPO_DIR"
     exit 1
 fi
-log "$PR_ID: all 6 specialists completed"
-for angle in security data-integrity architecture simplification tests shape; do
+log "$PR_ID: all ${#ANGLES[@]} specialists completed"
+for angle in "${ANGLES[@]}"; do
     LINES=$(wc -l < "$SPECIALISTS_DIR/${angle}.md")
     NO_FINDINGS=""
     grep -q '^No findings\.' "$SPECIALISTS_DIR/${angle}.md" && NO_FINDINGS=" (no findings)"
