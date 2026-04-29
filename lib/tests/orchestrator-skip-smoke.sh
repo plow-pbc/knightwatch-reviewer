@@ -429,4 +429,63 @@ touch "$HOLDER_RELEASE"
 wait "$HOLDER_PID" 2>/dev/null
 ( . "$REVIEWER_LIB_DIR/locking.sh" && acquire_pr_lock "$LOCK_TEST_STATE_DIR" "test_repo__1" ) || { echo "FAIL scenario 10: post-release acquire failed; lock may be stuck"; exit 1; }
 
-echo "  PASS (10 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir)"
+# Scenario 11: review.sh fails LOUD if the worker script is missing
+# or not executable. With detached fan-out, `bash worker &` returns 0
+# regardless of whether the worker actually started, so an accidental
+# `chmod -x` or a missing symlink would silently produce "dispatched N
+# worker(s)" while no review ran. The pre-fan-out executable check
+# catches that class.
+echo "  scenario 11: missing/non-executable worker — orchestrator fails loud, no dispatch..."
+chmod -x "$REVIEWER_LIB_DIR/review-one-pr.sh"
+printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+: > "$LOG_FILE"
+if bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1; then
+    chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
+    echo "FAIL scenario 11 (silent-dispatch-failure regression): review.sh exited 0 with a non-executable worker"
+    cat "$LOG_FILE"; exit 1
+fi
+grep -q "FATAL: $REVIEWER_LIB_DIR/review-one-pr.sh missing or not executable" "$LOG_FILE" || { chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"; echo "FAIL scenario 11: expected FATAL log line about missing worker"; cat "$LOG_FILE"; exit 1; }
+chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"   # restore for any later scenario
+
+# Scenario 12: per-worker WORKER_TIMEOUT bounds wedged-codex risk.
+# With detached workers, the service-level TimeoutStartSec=90min no
+# longer caps worker runtime — a hung Codex phase could hold the per-PR
+# flock indefinitely. WORKER_TIMEOUT (default 90m) wraps each worker
+# spawn with `timeout` so the ceiling is preserved at the worker level.
+# Smoke uses WORKER_TIMEOUT=2s + a worker that sleeps 10s, asserts the
+# orchestrator killed it (worker PID dead within ~3s of dispatch).
+echo "  scenario 12: WORKER_TIMEOUT — wedged worker is killed at the per-worker ceiling..."
+WORKER_TIMEOUT_PID_FILE="$TMPDIR/timeout-worker.pid"
+cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<TWORKER
+#!/bin/bash
+echo \$\$ > "$WORKER_TIMEOUT_PID_FILE"
+exec sleep 10   # > WORKER_TIMEOUT=2s; the orchestrator's timeout(1) wrapper must SIGTERM us before this completes
+TWORKER
+chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
+
+printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+: > "$LOG_FILE"
+WORKER_TIMEOUT=2s bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 &
+ORCH12_PID=$!
+wait "$ORCH12_PID" 2>/dev/null || true   # orchestrator returns fast; the timeout(1) child is what we care about
+
+# Wait up to 5s for the worker to die under timeout(1).
+for _ in $(seq 1 50); do
+    [ -f "$WORKER_TIMEOUT_PID_FILE" ] || { sleep 0.1; continue; }
+    WORKER_TPID=$(cat "$WORKER_TIMEOUT_PID_FILE")
+    kill -0 "$WORKER_TPID" 2>/dev/null || break   # dead = timeout fired
+    sleep 0.1
+done
+WORKER_TPID=$(cat "$WORKER_TIMEOUT_PID_FILE" 2>/dev/null || echo "")
+if [ -n "$WORKER_TPID" ] && kill -0 "$WORKER_TPID" 2>/dev/null; then
+    kill "$WORKER_TPID" 2>/dev/null || true
+    echo "FAIL scenario 12 (no-worker-timeout regression): worker PID $WORKER_TPID still alive ~5s after WORKER_TIMEOUT=2s should have killed it"
+    exit 1
+fi
+
+# Confirm the orchestrator's "Fan-out:" line includes the timeout
+# value, so an operator tail-ing the journal can see what cap is in
+# force this tick.
+grep -q "per-worker timeout 2s" "$LOG_FILE" || { echo "FAIL scenario 12: expected 'per-worker timeout 2s' in fan-out log line"; cat "$LOG_FILE"; exit 1; }
+
+echo "  PASS (12 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced)"

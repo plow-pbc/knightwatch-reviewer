@@ -186,7 +186,27 @@ if [ ${#ELIGIBLE[@]} -eq 0 ]; then
     exit 0
 fi
 
-log "Fan-out: ${#ELIGIBLE[@]} eligible PR(s), max $MAX_CONCURRENT concurrent"
+# Fail loud at the dispatcher level if the worker script is missing
+# or not executable. Without this check, the loop below `& backgrounds`
+# the worker and exits 0 even on `exec` failure — the service journal
+# would still report "dispatched N worker(s)" while no review actually
+# ran. Catches the catastrophic class of dispatch failures (broken
+# install, accidental chmod -x, deleted symlink) before fan-out.
+if [[ ! -x "$REVIEWER_LIB_DIR/review-one-pr.sh" ]]; then
+    log "FATAL: $REVIEWER_LIB_DIR/review-one-pr.sh missing or not executable — aborting fan-out"
+    exit 1
+fi
+
+# Per-worker timeout. With detached workers (KillMode=process), the
+# service-level TimeoutStartSec=90min no longer bounds worker runtime
+# (orchestrator returns before workers complete). A wedged Codex phase
+# could hold the per-PR flock indefinitely, blocking all future
+# /srosro-update-review for that PR. `timeout 90m` re-establishes the
+# pre-detach ceiling at the worker level; the worker exits, the flock
+# releases, and the next tick can re-dispatch.
+WORKER_TIMEOUT="${WORKER_TIMEOUT:-90m}"
+
+log "Fan-out: ${#ELIGIBLE[@]} eligible PR(s), max $MAX_CONCURRENT concurrent, per-worker timeout $WORKER_TIMEOUT"
 
 # ---------- fan out with bounded concurrency ----------
 # Rate-limit fan-out to MAX_CONCURRENT in-flight workers per tick. We
@@ -206,7 +226,7 @@ for spec in "${ELIGIBLE[@]}"; do
 
     TRIGGER_COMMENT_FILE="$TRIGGER_FILE" \
     REVIEWER_LIB_DIR="$REVIEWER_LIB_DIR" \
-        "$REVIEWER_LIB_DIR/review-one-pr.sh" \
+        timeout "$WORKER_TIMEOUT" "$REVIEWER_LIB_DIR/review-one-pr.sh" \
         "$REPO" "$PR_NUM" "$PR_SHA" "$PR_BRANCH" "$PR_TITLE" "$FORCE_WHOLE_PR" &
     active=$((active + 1))
 done
