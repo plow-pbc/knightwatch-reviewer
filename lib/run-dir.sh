@@ -61,10 +61,19 @@ allocate_run_dir() {
 # without tripping any other test.
 stage_prior_reviews() {
     local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"
-    local prior_run prior_ts result=""
+    local prior_run prior_ts status result=""
     while IFS= read -r prior_run; do
         [ "$prior_run" = "$current_run_dir" ] && continue
-        [ -s "$prior_run/agents/aggregator/output.md" ] || continue
+        # Key off meta.json.status, NOT output.md existence. run-specialist.sh
+        # creates the aggregator's output.md from the moment codex starts
+        # writing — so checking the file alone would stage aborted retries
+        # (missing VERDICT, empty body, gh-comment-post failure, state_set
+        # failure — all paths in review-one-pr.sh that exit 1 after the
+        # aggregator wrote something). meta.json's status is the canonical
+        # "this review actually landed in front of the author" signal,
+        # written by finalize_run on every exit path.
+        status=$(jq -r '.status // ""' "$prior_run/meta.json" 2>/dev/null)
+        [ "$status" = "completed" ] || continue
         prior_ts=$(basename "$prior_run" | grep -oE 'T[0-9]+Z' | head -1)
         result+=$'\n--- review at '"${prior_ts:-unknown}"$' ---\n'
         result+=$(cat "$prior_run/agents/aggregator/output.md")

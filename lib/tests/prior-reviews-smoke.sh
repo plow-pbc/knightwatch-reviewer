@@ -10,10 +10,15 @@
 #
 #   1. No runs at all → empty output (first review on PR)
 #   2. Only the current run → empty output (self-exclusion works)
-#   3. Two prior runs + current → both prior outputs in chronological order,
-#      current excluded, headers correct
-#   4. Prior run dir exists but aggregator/output.md missing or empty
-#      (aborted run that never reached aggregator) → skipped
+#   3. Two prior completed runs + current → both prior outputs in chronological
+#      order, current excluded, headers correct
+#   4. Aborted run (meta.json.status="aborted") with non-empty output.md
+#      → skipped (this is the bug fix from the bot's round-2 review:
+#      output.md exists from the moment codex starts writing, so the prior
+#      [-s output.md] check would stage reviews that never landed in front
+#      of the author after a downstream worker abort like missing VERDICT
+#      or gh-post failure)
+#   4b. Run dir with no meta.json at all (in-flight or legacy) → skipped
 #   5. Run dirs from a DIFFERENT PR or DIFFERENT repo sharing the slug
 #      prefix → not included (slug+pr glob filters them)
 #
@@ -29,13 +34,19 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=../run-dir.sh
 . "$PROJECT_ROOT/lib/run-dir.sh"
 
-# Helper: create a run dir with a given timestamp suffix and aggregator output.
+# Helper: create a run dir with a given timestamp suffix, aggregator output,
+# and meta.json status. Status defaults to "completed" (the typical
+# post-finalize state); pass "aborted" to simulate a failed run, or empty
+# string to skip writing meta.json entirely (legacy/in-flight case).
 make_run() {
-    local slug="$1" pr="$2" ts="$3" sha7="$4" body="$5"
+    local slug="$1" pr="$2" ts="$3" sha7="$4" body="$5" status="${6-completed}"
     local rd="$TMPDIR/state/runs/${slug}__${pr}__${ts}__${sha7}"
     mkdir -p "$rd/agents/aggregator"
     if [ -n "$body" ]; then
         printf '%s' "$body" > "$rd/agents/aggregator/output.md"
+    fi
+    if [ -n "$status" ]; then
+        printf '{"status":"%s"}' "$status" > "$rd/meta.json"
     fi
     echo "$rd"
 }
@@ -91,25 +102,24 @@ if [ -z "$one_pos" ] || [ -z "$two_pos" ] || [ "$one_pos" -ge "$two_pos" ]; then
     exit 1
 fi
 
-# ---- scenario 4: aborted run with no aggregator output → skipped ----
-echo "  scenario 4: aborted run (empty aggregator output) → skipped..."
-aborted_rd="$TMPDIR/state/runs/${REPO_SLUG}__${PR}__20260429T090000000Z__3333333"
-mkdir -p "$aborted_rd/agents/aggregator"
-# No output.md written — aborted before aggregator step.
+# ---- scenario 4: aborted run (status=aborted) → skipped ----
+# Even with non-empty output.md, an aborted run never landed in front of
+# the author and must not contribute to recurrence detection.
+echo "  scenario 4: aborted run (status=aborted) with output.md → skipped..."
+make_run "$REPO_SLUG" "$PR" "20260429T090000000Z" "3333333" "## aborted review body — author never saw this" "aborted" >/dev/null
 result=$(stage_prior_reviews "$TMPDIR/state" "$REPO_SLUG" "$PR" "$current")
-# The result still has reviews 1 and 2 from scenario 3 (didn't tear down).
-if echo "$result" | grep -q "T090000000Z"; then
-    echo "FAIL: scenario 4 — aborted run with missing output.md was not skipped"
+if echo "$result" | grep -q "aborted review body"; then
+    echo "FAIL: scenario 4 — run with status=aborted was not skipped"
     echo "$result"
     exit 1
 fi
-# Also test: aggregator output.md exists but is empty.
-empty_rd="$TMPDIR/state/runs/${REPO_SLUG}__${PR}__20260429T080000000Z__4444444"
-mkdir -p "$empty_rd/agents/aggregator"
-: > "$empty_rd/agents/aggregator/output.md"
+
+# ---- scenario 4b: missing meta.json → skipped (in-flight or legacy) ----
+echo "  scenario 4b: run with no meta.json (in-flight or legacy) → skipped..."
+make_run "$REPO_SLUG" "$PR" "20260429T080000000Z" "4444444" "## in-flight review body" "" >/dev/null
 result=$(stage_prior_reviews "$TMPDIR/state" "$REPO_SLUG" "$PR" "$current")
-if echo "$result" | grep -q "T080000000Z"; then
-    echo "FAIL: scenario 4 — run with zero-byte aggregator output was not skipped"
+if echo "$result" | grep -q "in-flight review body"; then
+    echo "FAIL: scenario 4b — run without meta.json was not skipped"
     echo "$result"
     exit 1
 fi
@@ -130,4 +140,4 @@ if echo "$result" | grep -q "OTHER REPO review"; then
     exit 1
 fi
 
-echo "  PASS (5 scenarios: no-runs, self-excluded, chronological-prior, aborted-skipped, foreign-pr-filtered)"
+echo "  PASS (6 scenarios: no-runs, self-excluded, chronological-prior, aborted-skipped, no-meta-skipped, foreign-pr-filtered)"
