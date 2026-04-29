@@ -29,6 +29,10 @@ test:
     bash lib/tests/run-specialist-smoke.sh
 
     echo ""
+    echo "=== critic-fallback smoke test ==="
+    bash lib/tests/critic-fallback-smoke.sh
+
+    echo ""
     echo "=== orchestrator skip smoke test ==="
     bash lib/tests/orchestrator-skip-smoke.sh
 

@@ -84,6 +84,9 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # --- prompt-build helpers (sourced from lib/prompt-build.sh) ---
 . "$_LIB_DIR/prompt-build.sh"
 
+# --- agent-failure helpers (sourced from lib/agent-fallback.sh) ---
+. "$_LIB_DIR/agent-fallback.sh"
+
 # --- per-run dir -------------------------------------------------------------
 # Every worker invocation gets its own runs/<RUN_ID>/ dir holding the run log,
 # input scratch, and one subdir per agent (prompt + output + log). The git
@@ -92,7 +95,13 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # can locate it before cleanup, and `sha` lets you re-check out from
 # repos/<slug>/ at any time.
 REPO_SLUG_FOR_RUN="${REPO//\//_}"
-RUN_TS="$(date -u +%Y%m%dT%H%M%SZ)"
+# Millisecond resolution: per-PR flock + retry-after-error sequencing can
+# put two runs of the same SHA back-to-back, and a whole-second timestamp
+# would collide and overwrite the earlier run dir. ms makes that
+# essentially impossible for sequential retries (which are the only way
+# the same-PR-same-SHA pair can recur — concurrent runs are blocked by
+# the flock at the top of the worker).
+RUN_TS="$(date -u +%Y%m%dT%H%M%S%3NZ)"
 RUN_ID="${REPO_SLUG_FOR_RUN}__${PR_NUM}__${RUN_TS}__${PR_SHA:0:7}"
 RUN_DIR="$STATE_DIR/runs/$RUN_ID"
 mkdir -p "$RUN_DIR/agents" "$RUN_DIR/inputs"
@@ -613,18 +622,15 @@ CRITIC_PROMPT=$(cat "$HOME/.pr-reviewer/prompts/critic.md")
 CRITIC_EXIT=$?
 CRITIC_OUT="$RUN_DIR/agents/critic/output.md"
 
-# Critic stays best-effort (the aggregator prompt explicitly tolerates an
-# empty critic file), but a failed codex run can leave a *non-empty*
-# truncated output behind — the empty-file check would let that ship
-# garbage into the aggregator's first input. Discard partial output on
-# any non-zero exit and substitute the same placeholder we use on empty.
+# Log the failure mode for the run.log narrative; critic_fallback in
+# lib/agent-fallback.sh handles the actual file substitution and is the
+# regression-fenced path (see lib/tests/critic-fallback-smoke.sh).
 if [ "$CRITIC_EXIT" -ne 0 ]; then
     log "$PR_ID: critic exited $CRITIC_EXIT — discarding partial output, falling back to placeholder (see agents/critic/log.txt)"
-    echo "(critic failed with exit=$CRITIC_EXIT — fall back)" > "$CRITIC_OUT"
 elif [ ! -s "$CRITIC_OUT" ]; then
     log "$PR_ID: critic output empty — continuing without counterarguments"
-    echo "(critic output empty — fall back)" > "$CRITIC_OUT"
 fi
+critic_fallback "$CRITIC_EXIT" "$CRITIC_OUT"
 ln -sfn "$CRITIC_OUT" "$REPO_DIR/.codex-scratch/critic.md"
 
 log "$PR_ID: aggregator (with critic input)..."
