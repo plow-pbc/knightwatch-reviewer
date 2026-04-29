@@ -893,7 +893,7 @@ Replace with:
         fi
 ```
 
-Note: `build_specialist_prompt` treats aggregator.md as just another prompt file — the common-header substitution of `{{SPECIALIST_NAME}}` → `aggregator` is harmless since the aggregator prompt doesn't use that placeholder.
+Note (superseded by PR #12): this claim was wrong. The common-header isn't just placeholder substitution — it tells the agent "you are one specialist in a multi-specialist code review" and demands the Surveyed/Finding-N output shape, which conflicts with the aggregator's own contract. The aggregator is now routed through `substitute_placeholders` directly (same pattern as intent), not `build_specialist_prompt`.
 
 - [ ] **Step 2: Smoke test — end-to-end with aggregator, dry-run**
 
