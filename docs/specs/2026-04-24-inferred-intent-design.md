@@ -121,7 +121,7 @@ PR_AUTHOR=$(printf '%s' "$PR_DATA" | jq -r '.author.login // empty')
 [ -z "$PR_AUTHOR" ] && { log "$PR_ID: could not resolve PR author — aborting"; exit 1; }
 ```
 
-Hard-fail if the author handle can't be resolved. Every existing call site of `build_specialist_prompt` (intent, 5 specialists, aggregator) gets the new `PR_AUTHOR` argument.
+Hard-fail if the author handle can't be resolved. Every existing call site of `build_specialist_prompt` (intent + 5 specialists + aggregator at the time of writing) gets the new `PR_AUTHOR` argument. (Subsequent: intent split off to `substitute_placeholders` directly in the inferred-intent implementation; aggregator did the same in PR #12. Today only the specialists go through `build_specialist_prompt`.)
 
 ### Component 4 — new scratch file `commits.md`
 
