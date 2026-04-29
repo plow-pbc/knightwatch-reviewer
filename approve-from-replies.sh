@@ -37,24 +37,19 @@ APPROVES_SEEN_FILE="${APPROVES_SEEN_FILE:-$STATE_DIR/approves-seen.json}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/approve.log}"
 
 # is_trusted_repo_author() — push-access trust gate, shared with review.sh.
+# seen_get / seen_set — flock + atomic-rename, shared with learn-from-replies.sh.
 REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 . "$REVIEWER_LIB_DIR/auth.sh"
-
-log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"; }
+. "$REVIEWER_LIB_DIR/state-io.sh"
 
 [ -f "$APPROVES_SEEN_FILE" ] || echo '{}' > "$APPROVES_SEEN_FILE"
 
-approve_seen_get() { jq -r --arg k "$1" '.[$k] // empty' "$APPROVES_SEEN_FILE"; }
-approve_seen_set() {
-    local tmp; tmp=$(jq --arg k "$1" --argjson v true '.[$k] = $v' "$APPROVES_SEEN_FILE")
-    echo "$tmp" > "$APPROVES_SEEN_FILE"
-}
-
-# Opt-in signal: comment body must contain the literal `/srosro-approve`.
-# Bot's own footer also names the command literally, but bot posts carry
-# the BOT_AUTO_POST_MARKER and are filtered out before this check.
+# Opt-in signal: comment body must START with `/srosro-approve` on a line
+# (optional leading whitespace, optional trailing args). The earlier
+# substring match would treat "don't use /srosro-approve yet" as an
+# approval, which is the wrong call for a side effect this strong.
 is_approve_request() {
-    printf '%s' "$1" | grep -qiF '/srosro-approve'
+    printf '%s' "$1" | grep -qiE '^[[:space:]]*/srosro-approve([[:space:]]|$)'
 }
 
 PROCESSED=0
@@ -65,7 +60,9 @@ for REPO in "${REPOS[@]}"; do
     PR_LIST=$(gh pr list --repo "$REPO" --json number --state open --limit 200 2>/dev/null | jq -r '.[].number') || continue
 
     for PR_NUM in $PR_LIST; do
-        COMMENTS=$(gh api "repos/$REPO/issues/$PR_NUM/comments" 2>/dev/null) || continue
+        # --paginate so /srosro-approve requests on long PR threads (>30
+        # issue comments) don't silently fall off the end of page 1.
+        COMMENTS=$(gh api --paginate "repos/$REPO/issues/$PR_NUM/comments" 2>/dev/null | jq -s 'add // []') || continue
 
         while IFS= read -r COMMENT; do
             BODY=$(echo "$COMMENT" | jq -r '.body')
@@ -82,14 +79,14 @@ for REPO in "${REPOS[@]}"; do
             USER=$(echo "$COMMENT" | jq -r '.user.login')
             APPROVE_KEY="${REPO}#${PR_NUM}#${ID}"
             # Already-processed: skip silently.
-            if [ -n "$(approve_seen_get "$APPROVE_KEY")" ]; then
+            if [ -n "$(seen_get "$APPROVES_SEEN_FILE" "$APPROVE_KEY")" ]; then
                 continue
             fi
             # Defensive bot filter (cheap pre-check before the trust API call).
             case "$USER" in
                 *"[bot]"|"Copilot"|"copilot")
                     log "$APPROVE_KEY: /srosro-approve from bot @$USER ignored"
-                    approve_seen_set "$APPROVE_KEY"
+                    seen_set "$APPROVES_SEEN_FILE" "$APPROVE_KEY"
                     continue
                     ;;
             esac
@@ -98,7 +95,7 @@ for REPO in "${REPOS[@]}"; do
             # don't re-log on every tick.
             if ! is_trusted_repo_author "$REPO" "$USER"; then
                 log "$APPROVE_KEY: /srosro-approve from @$USER ignored (no push access)"
-                approve_seen_set "$APPROVE_KEY"
+                seen_set "$APPROVES_SEEN_FILE" "$APPROVE_KEY"
                 SKIPPED_UNTRUSTED=$((SKIPPED_UNTRUSTED + 1))
                 continue
             fi
@@ -110,7 +107,7 @@ for REPO in "${REPOS[@]}"; do
 Approved on @${USER}'s /srosro-approve request."
             if gh pr review "$PR_NUM" --repo "$REPO" --approve --body "$APPROVE_BODY" >/dev/null 2>>"$LOG_FILE"; then
                 log "$APPROVE_KEY: approved on @${USER}'s request"
-                approve_seen_set "$APPROVE_KEY"
+                seen_set "$APPROVES_SEEN_FILE" "$APPROVE_KEY"
                 PROCESSED=$((PROCESSED + 1))
             else
                 # Most common failures: PR author trying to self-approve,
@@ -118,7 +115,7 @@ Approved on @${USER}'s /srosro-approve request."
                 # seen so we don't retry forever — the human can re-post
                 # /srosro-approve if they want another shot.
                 log "$APPROVE_KEY: gh pr review --approve FAILED — see log; marking seen"
-                approve_seen_set "$APPROVE_KEY"
+                seen_set "$APPROVES_SEEN_FILE" "$APPROVE_KEY"
                 SKIPPED_FAILED=$((SKIPPED_FAILED + 1))
             fi
         done < <(echo "$COMMENTS" | jq -c '.[]')

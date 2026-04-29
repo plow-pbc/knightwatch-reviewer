@@ -29,18 +29,12 @@ LOG_FILE="${LOG_FILE:-$STATE_DIR/learn.log}"
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
 
 # is_trusted_repo_author() — push-access trust gate, shared with review.sh.
+# seen_get / seen_set + log — flock + atomic-rename, shared with approve-from-replies.sh.
 REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 . "$REVIEWER_LIB_DIR/auth.sh"
+. "$REVIEWER_LIB_DIR/state-io.sh"
 
-log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"; }
-
-[ -f "$REPLIES_SEEN_FILE" ]  || echo '{}' > "$REPLIES_SEEN_FILE"
-
-reply_seen_get() { jq -r --arg k "$1" '.[$k] // empty' "$REPLIES_SEEN_FILE"; }
-reply_seen_set() {
-    local tmp; tmp=$(jq --arg k "$1" --argjson v true '.[$k] = $v' "$REPLIES_SEEN_FILE")
-    echo "$tmp" > "$REPLIES_SEEN_FILE"
-}
+[ -f "$REPLIES_SEEN_FILE" ] || echo '{}' > "$REPLIES_SEEN_FILE"
 
 # Opt-in signal: comment body must contain the literal `/srosro-memorize`
 # slash command (case-insensitive). The bot's own review footer mentions
@@ -101,7 +95,7 @@ for REPO in "${REPOS[@]}"; do
                     continue
                 fi
                 REPLY_KEY="${REPO}#${PR_NUM}#${ID}"
-                if [ -z "$(reply_seen_get "$REPLY_KEY")" ]; then
+                if [ -z "$(seen_get "$REPLIES_SEEN_FILE" "$REPLY_KEY")" ]; then
                     REPLIES+="--- Memorize request [${REPLY_KEY}] by @${USER} on ${REPO} PR #${PR_NUM} ---"$'\n'
                     REPLIES+="$BODY"$'\n\n'
                     jq -c --null-input \
@@ -207,7 +201,7 @@ fi
 # eligible for the next tick.
 while IFS= read -r META; do
     KEY=$(printf '%s' "$META" | jq -r '.key')
-    [ -n "$KEY" ] && reply_seen_set "$KEY"
+    [ -n "$KEY" ] && seen_set "$REPLIES_SEEN_FILE" "$KEY"
 done < "$REPLIES_META_FILE"
 
 # Post per-reply acknowledgments.

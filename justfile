@@ -41,4 +41,8 @@ test:
     bash lib/tests/orchestrator-skip-smoke.sh
 
     echo ""
+    echo "=== approve-from-replies smoke test ==="
+    bash lib/tests/approve-from-replies-smoke.sh
+
+    echo ""
     echo "all checks passed"
