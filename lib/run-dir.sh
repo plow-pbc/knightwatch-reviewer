@@ -121,6 +121,62 @@ finalize_meta_json() {
     fi
 }
 
+# prepend_review_scope_note COMMENT_BODY SCOPE
+#
+# Injects a one-line "what kind of review is this" notice right after
+# the auto-post marker (first line) of $COMMENT_BODY. So the user sees
+# at a glance whether they're reading a first review, a /srosro-review
+# whole-PR re-review, an incremental re-review (and from which prior
+# SHA), or the silent full-diff fallback that fires when the prior SHA
+# was evicted by force-push/rebase.
+#
+# Without this note, the worker's prose ("Re-review: the author has
+# pushed new commits since your previous review") doesn't disclose the
+# review scope — incremental and silent-fallback runs read identically
+# even though the first sees N files and the second sees the whole PR.
+#
+# SCOPE format:
+#   "first"               — first review of this PR
+#   "whole"               — force_whole_pr=true (e.g. /srosro-review)
+#   "incremental:<sha>"   — KNOWN_SHA in local history; specialists got
+#                           git diff KNOWN_SHA..HEAD
+#   "fallback:<sha>"      — KNOWN_SHA NOT in local history (force-push
+#                           / rebase evicted it); worker silently fell
+#                           back to gh pr diff (the full PR), framing
+#                           it as incremental — this scope name calls
+#                           it out explicitly
+#   anything else         — no-op, returns body unchanged (best-effort)
+#
+# Pure string transform — hermetic. Smoke fences each branch.
+prepend_review_scope_note() {
+    local comment_body="$1" scope="$2"
+    local note=""
+    case "$scope" in
+        first)
+            note="> 📋 **First review** of this PR."
+            ;;
+        whole)
+            note="> 📋 **Whole-PR re-review** — full diff evaluated from scratch (no prior review consulted)."
+            ;;
+        incremental:*)
+            local sha="${scope#incremental:}"
+            note="> 📋 **Re-review of changes since \`${sha:0:7}\`.** Specialists evaluated the incremental diff; aggregator verified prior findings against the current full PR state."
+            ;;
+        fallback:*)
+            local sha="${scope#fallback:}"
+            note="> 📋 **Re-review** — prior SHA \`${sha:0:7}\` is no longer in local history (likely a force-push or rebase); evaluated the full PR diff instead of an incremental one."
+            ;;
+        *)
+            printf '%s' "$comment_body"
+            return
+            ;;
+    esac
+    local first_line rest
+    first_line=$(printf '%s' "$comment_body" | head -1)
+    rest=$(printf '%s' "$comment_body" | tail -n +2)
+    printf '%s\n%s\n\n%s' "$first_line" "$note" "$rest"
+}
+
 stage_prior_reviews() {
     local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"
     local prior_run prior_ts included result=""

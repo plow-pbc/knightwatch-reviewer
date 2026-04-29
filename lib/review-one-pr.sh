@@ -168,6 +168,14 @@ RUN_STATUS="aborted"
 # undercounts a real prior author-visible review. Set to "true" right
 # after the gh pr comment success in the post-aggregator section.
 GH_POSTED=false
+# Tracks whether we silently fell back to the full PR diff because the
+# prior-review SHA isn't in local history (force-push or rebase evicted
+# it). The worker still frames the run as a re-review (REVIEW_TASK names
+# previous-review.md), but specialists see the whole PR — that
+# divergence is hidden from the reader unless we disclose it. Used by
+# REVIEW_SCOPE construction below to pick "fallback:<sha>" vs
+# "incremental:<sha>" so prepend_review_scope_note can call it out.
+USED_FALLBACK=false
 finalize_run() {
     # Thin wrapper around finalize_meta_json (lib/run-dir.sh) that supplies
     # the worker's runtime closure (RUN_DIR / RUN_STATUS / GH_POSTED / now).
@@ -378,6 +386,7 @@ else
         log "$PR_ID: prior SHA $KNOWN_SHA not in local history; using full PR diff"
         KID_INPUT_DIFF=$(gh pr diff "$PR_NUM" --repo "$REPO" 2>/dev/null)
         FULL_PR_DIFF="$KID_INPUT_DIFF"
+        USED_FALLBACK=true
     fi
     REVIEW_TASK="Re-review: the author has pushed new commits since your previous review (at ${KNOWN_SHA:0:7}, approved=$PREV_APPROVED). Your prior review is in .codex-scratch/previous-review.md. The incremental diff since that review is in .codex-scratch/diff.patch; the full PR diff is in .codex-scratch/full-diff.patch (consult it when verifying whether prior findings are addressed). Assess whether the new commits address your prior concerns, then produce an updated review."
 fi
@@ -707,6 +716,30 @@ CURRENT_HEAD=$(gh pr view "$PR_NUM" --repo "$REPO" --json headRefOid --jq '.head
 if [ -n "$CURRENT_HEAD" ] && [ "$CURRENT_HEAD" != "$PR_SHA" ]; then
     log "$PR_ID: head moved during review (reviewed=${PR_SHA:0:7}, now=${CURRENT_HEAD:0:7}) — prepending stale-review note"
 fi
+
+# Disclose the review's scope (first / whole-PR re-review / incremental
+# re-review / silent-fallback re-review) at the top of the comment, so
+# the author can tell at a glance whether what they're reading evaluated
+# the full PR or just the incremental diff. The fallback case
+# (USED_FALLBACK=true) is the one that was previously invisible — the
+# worker silently used the full PR diff but framed it as incremental.
+if [ "$FORCE_WHOLE_PR" = "true" ]; then
+    REVIEW_SCOPE="whole"
+elif [ -z "$KNOWN_SHA" ]; then
+    REVIEW_SCOPE="first"
+elif [ "$USED_FALLBACK" = "true" ]; then
+    REVIEW_SCOPE="fallback:$KNOWN_SHA"
+else
+    REVIEW_SCOPE="incremental:$KNOWN_SHA"
+fi
+log "$PR_ID: review scope = $REVIEW_SCOPE"
+# Order matters: scope first (always present), stale-head second (only
+# present when head moved). prepend_*_note both inject right after the
+# auto-post marker line, so the LAST one called appears CLOSEST to the
+# marker. We want the reader to see (top→down): marker, ⚠ stale (when
+# applicable), 📋 scope, intent line — so call scope first, stale-head
+# last.
+COMMENT_BODY=$(prepend_review_scope_note "$COMMENT_BODY" "$REVIEW_SCOPE")
 COMMENT_BODY=$(prepend_stale_head_note "$COMMENT_BODY" "$PR_SHA" "$CURRENT_HEAD")
 
 if ! gh pr comment "$PR_NUM" --repo "$REPO" --body "$COMMENT_BODY"; then

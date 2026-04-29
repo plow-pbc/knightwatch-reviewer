@@ -53,6 +53,10 @@ test:
     bash lib/tests/stale-head-smoke.sh
 
     echo ""
+    echo "=== review-scope smoke test ==="
+    bash lib/tests/review-scope-smoke.sh
+
+    echo ""
     echo "=== orchestrator skip smoke test ==="
     bash lib/tests/orchestrator-skip-smoke.sh
 
