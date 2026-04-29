@@ -35,7 +35,7 @@ trap 'rm -rf "$TMPDIR"' EXIT
 # Sandbox state dir — every path the orchestrator writes to is here.
 export STATE_DIR="$TMPDIR/state"
 export STATE_FILE="$STATE_DIR/state.json"
-export LOG_FILE="$STATE_DIR/review.log"
+export LOG_FILE="$STATE_DIR/orchestrator.log"
 export REPOS_DIR="$STATE_DIR/repos"
 export WORKDIRS_DIR="$STATE_DIR/workdirs"
 mkdir -p "$STATE_DIR" "$REPOS_DIR" "$WORKDIRS_DIR"

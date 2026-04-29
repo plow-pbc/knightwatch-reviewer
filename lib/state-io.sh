@@ -6,7 +6,7 @@
 
 # Callers must have already set:
 #   STATE_FILE=~/.pr-reviewer/state.json
-#   LOG_FILE=~/.pr-reviewer/review.log
+#   LOG_FILE=<orchestrator.log for review.sh, runs/<id>/run.log for the worker>
 
 state_get() {
     # Read is safe without a lock; last-written wins but jq reads atomically enough.
@@ -37,7 +37,7 @@ state_set() {
 }
 
 # Shared structured logger. Prepends timestamp; tee's to LOG_FILE and stdout so
-# both systemd journal and legacy tail -f of review.log keep working.
+# the systemd journal and a tail -f of LOG_FILE both reflect every event.
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"
 }
