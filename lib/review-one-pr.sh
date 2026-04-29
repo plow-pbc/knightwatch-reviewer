@@ -698,6 +698,21 @@ if ! gh pr comment "$PR_NUM" --repo "$REPO" --body "$COMMENT_BODY"; then
     rm -rf "$REPO_DIR"
     exit 1
 fi
+# Stamp posted_at on meta.json — distinct from finalize_run's status,
+# which only flips to "completed" after state_set succeeds. Once gh has
+# accepted the comment, the author has already received the notification
+# and seen the review on GitHub, so this is the right boundary for the
+# Bug-Class-Recurrence detector to key off (NOT lifecycle status, which
+# would silently exclude reviews where state_set or the meta finalize
+# happened to fail after a successful publish).
+META_TMP="$RUN_DIR/meta.json.tmp"
+if jq --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '. + {posted_at: $ts}' \
+        "$RUN_DIR/meta.json" > "$META_TMP" 2>/dev/null; then
+    mv -f "$META_TMP" "$RUN_DIR/meta.json" || rm -f "$META_TMP"
+else
+    rm -f "$META_TMP"
+    log "$PR_ID: meta.json posted_at stamp failed — recurrence detector may undercount this review"
+fi
 # Review posted as a fresh comment (so the author gets a notification).
 # Mark eyes resolved BEFORE attempting the placeholder DELETE — if anything
 # below trips, the trap shouldn't mark the placeholder as "aborted" when
