@@ -206,6 +206,24 @@ Unit=pr-reviewer-fakenew.service
 WantedBy=timers.target
 NEWTIMER
 
+# Argv-bearing fixture for the parser. Without the command-token split
+# in install.sh's ExecStart= parser, `s|.*/||` would greedy-eat through
+# `/cncorp/` and basename to "plow" instead of "argv-fakenew.sh", and
+# argv-fakenew.sh would silently drop out of the symlinked list. The
+# script needs to actually exist in the overlay so install.sh's
+# `[[ -f "$REPO_DIR/$script" ]]` check passes — a missing file would
+# trigger the fail-loud path instead.
+echo '#!/bin/bash' > "$OVERLAY/argv-fakenew.sh"
+chmod +x "$OVERLAY/argv-fakenew.sh"
+cat > "$OVERLAY/systemd/pr-reviewer-argv-fakenew.service" <<'ARGVUNIT'
+[Unit]
+Description=Argv-bearing fixture for install-smoke parser regression
+
+[Service]
+Type=oneshot
+ExecStart=/home/odio/.pr-reviewer/argv-fakenew.sh --some-flag value --repo cncorp/plow
+ARGVUNIT
+
 : > "$STUB_LOG"
 # Name-aware stub: existing timers are already enabled+active (avoiding
 # spurious enable --now calls), but the brand-new timer must still get
@@ -216,16 +234,22 @@ MOCK_TIMERS_ENABLED=1 \
 MOCK_NEWLY_ADDED_TIMERS="pr-reviewer-fakenew.timer" \
     run_install "$OVERLAY/install.sh" || { echo "FAIL scenario 3: install.sh exited non-zero"; cat "$STUB_LOG"; exit 1; }
 
-# Two new units copied (the fakenew .service + .timer pair) — every
-# existing unit is in sync because scenario 1 already copied them and
-# SYSTEMD_DIR is preserved across scenarios.
+# Three new units copied (fakenew .service + fakenew .timer +
+# argv-fakenew .service) — every existing unit is in sync because
+# scenario 1 already copied them and SYSTEMD_DIR is preserved across
+# scenarios.
 n_cp="$(count_stub 'SUDO cp')"
-[ "$n_cp" = "2" ] || { echo "FAIL scenario 3: expected 2 sudo cp (new service + new timer), got $n_cp"; cat "$STUB_LOG"; exit 1; }
+[ "$n_cp" = "3" ] || { echo "FAIL scenario 3: expected 3 sudo cp (new .service + new .timer + argv .service), got $n_cp"; cat "$STUB_LOG"; exit 1; }
 # daemon-reload called exactly once because something changed
 [ "$(count_stub 'SYSTEMCTL daemon-reload')" = "1" ] || { echo "FAIL scenario 3: expected 1 daemon-reload"; cat "$STUB_LOG"; exit 1; }
-# Both new files exist in the sandboxed SYSTEMD_DIR
+# All three new files exist in the sandboxed SYSTEMD_DIR
 [ -f "$SYSTEMD_DIR/pr-reviewer-fakenew.service" ] || { echo "FAIL scenario 3: new .service not copied"; exit 1; }
 [ -f "$SYSTEMD_DIR/pr-reviewer-fakenew.timer" ] || { echo "FAIL scenario 3: new .timer not copied"; exit 1; }
+[ -f "$SYSTEMD_DIR/pr-reviewer-argv-fakenew.service" ] || { echo "FAIL scenario 3: argv-bearing .service not copied"; exit 1; }
+# Argv-parser regression test: argv-fakenew.sh must be symlinked into
+# INSTALL_DIR despite the ExecStart= line carrying argv args. A regression
+# to greedy-basename parsing would silently drop it.
+[ -L "$INSTALL_DIR/argv-fakenew.sh" ] || { echo "FAIL scenario 3 (argv-parser regression): argv-fakenew.sh not symlinked into $INSTALL_DIR"; ls -la "$INSTALL_DIR"; exit 1; }
 # The KEY new assertion: the brand-new timer must have been enabled+started
 # exactly once. Without name-aware stubbing this branch was untested — a
 # regression that copied unit files but never enabled the new timer would
