@@ -32,5 +32,8 @@ allocate_run_dir() {
         log "$PR_ID: failed to create $run_dir (not a collision: dir didn't exist before mkdir) — aborting"
         return 1
     fi
-    mkdir "$run_dir/agents" "$run_dir/inputs"
+    if ! mkdir "$run_dir/agents" "$run_dir/inputs"; then
+        log "$PR_ID: failed to create $run_dir/{agents,inputs} subdirs — aborting"
+        return 1
+    fi
 }
