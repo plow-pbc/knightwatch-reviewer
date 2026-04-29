@@ -118,6 +118,7 @@ CONSUMERS=(
     "learn-from-replies.sh"
     "approve-from-replies.sh"
     "lib/review-one-pr.sh"
+    "plow-kid-refresh.sh"
 )
 for c in "${CONSUMERS[@]}"; do
     f="$PROJECT_ROOT/$c"

@@ -69,6 +69,10 @@ test:
     bash lib/tests/learn-from-replies-smoke.sh
 
     echo ""
+    echo "=== re-request-poller smoke test ==="
+    bash lib/tests/re-request-poller-smoke.sh
+
+    echo ""
     echo "=== install smoke test ==="
     bash lib/tests/install-smoke.sh
 

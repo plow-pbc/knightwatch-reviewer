@@ -11,19 +11,16 @@
 set -u
 export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
-LOG="${LOG:-$HOME/.pr-reviewer/plow-kid-refresh.log}"
+STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
+LOG="${LOG:-$STATE_DIR/plow-kid-refresh.log}"
 LOCK="${LOCK:-/tmp/plow-kid-refresh.lock}"
 
-# Map project label → local checkout path. Label is logging-only; the path
-# is what kid indexes. Plow uses a dedicated mirror under plow-kid; tkmx
-# repos are indexed in place.
-PROJECTS=(
-    "plow:$HOME/Hacking/plow-kid"
-    "tkmx-client:$HOME/Hacking/tkmx-client"
-    "tkmx-server:$HOME/Hacking/tkmx-server"
-    "knightwatch-reviewer:$HOME/Hacking/knightwatch-reviewer"
-    "vibe-engineering:$HOME/Hacking/vibe-engineering"
-)
+# Tracked-repo manifest — same KID_PATHS this script's siblings use.
+# The refresh iterates every entry; a repo that hasn't been indexed
+# yet (no .keepitdry dir) gets a bootstrap index on first run. Adding
+# a repo here is a one-line edit in repos.conf.
+REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$STATE_DIR/lib}"
+. "$REVIEWER_LIB_DIR/tracked-repos.sh"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG"; }
 
@@ -34,9 +31,8 @@ fi
 touch "$LOCK"
 trap 'rm -f "$LOCK"' EXIT
 
-for entry in "${PROJECTS[@]}"; do
-    NAME="${entry%%:*}"
-    PROJECT="${entry#*:}"
+for NAME in "${!KID_PATHS[@]}"; do
+    PROJECT="${KID_PATHS[$NAME]}"
 
     if [ ! -d "$PROJECT/.git" ]; then
         log "$NAME: checkout missing or not a git repo ($PROJECT) — skipping"
