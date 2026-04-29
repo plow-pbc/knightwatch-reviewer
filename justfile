@@ -33,6 +33,10 @@ test:
     bash lib/tests/critic-fallback-smoke.sh
 
     echo ""
+    echo "=== run-dir smoke test ==="
+    bash lib/tests/run-dir-smoke.sh
+
+    echo ""
     echo "=== orchestrator skip smoke test ==="
     bash lib/tests/orchestrator-skip-smoke.sh
 

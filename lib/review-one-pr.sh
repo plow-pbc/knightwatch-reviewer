@@ -84,8 +84,9 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # --- prompt-build helpers (sourced from lib/prompt-build.sh) ---
 . "$_LIB_DIR/prompt-build.sh"
 
-# --- agent-failure helpers (sourced from lib/agent-fallback.sh) ---
+# --- agent-failure + run-dir helpers ---
 . "$_LIB_DIR/agent-fallback.sh"
+. "$_LIB_DIR/run-dir.sh"
 
 # --- per-run dir -------------------------------------------------------------
 # Every worker invocation gets its own runs/<RUN_ID>/ dir holding the run log,
@@ -96,21 +97,16 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # repos/<slug>/ at any time.
 REPO_SLUG_FOR_RUN="${REPO//\//_}"
 # Millisecond resolution minimizes collisions on back-to-back retries of
-# the same SHA (per-PR flock blocks concurrent runs, but a quick
-# error-and-retry can land in the same second). The strict mkdir below
-# is the actual no-overwrite guarantee: if anything ever produces a
-# duplicate RUN_ID — format revert, logic bug, race we didn't anticipate
-# — the second worker fails loud at the worker level instead of silently
-# corrupting the first run's run.log/output.md.
+# the same SHA. allocate_run_dir is the actual no-overwrite guarantee:
+# if anything ever produces a duplicate RUN_ID — format revert, logic
+# bug, race we didn't anticipate — the second worker aborts loud
+# instead of silently corrupting the first run's run.log/output.md.
 RUN_TS="$(date -u +%Y%m%dT%H%M%S%3NZ)"
 RUN_ID="${REPO_SLUG_FOR_RUN}__${PR_NUM}__${RUN_TS}__${PR_SHA:0:7}"
 RUN_DIR="$STATE_DIR/runs/$RUN_ID"
-mkdir -p "$STATE_DIR/runs"
-if ! mkdir "$RUN_DIR" 2>/dev/null; then
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $PR_ID: RUN_DIR collision: $RUN_DIR already exists — aborting" >&2
+if ! allocate_run_dir "$RUN_DIR"; then
     exit 1
 fi
-mkdir -p "$RUN_DIR/agents" "$RUN_DIR/inputs"
 LOG_FILE="$RUN_DIR/run.log"
 
 # meta.json — minimal post-mortem header. Title is JSON-escaped via jq so
