@@ -138,4 +138,44 @@ if [ "$result" != "$BODY" ]; then
     exit 1
 fi
 
-echo "  PASS (5 scenarios: first, whole, incremental, fallback, unknown-noop)"
+# ===== compute_review_scope (worker seam) =====
+# The formatter scenarios above only cover the post-time injection. A
+# second drift surface — flagged in PR #22's bot review as the recurring
+# class — is the worker computation itself: if the case that flips
+# USED_FALLBACK or the precedence between FORCE_WHOLE_PR / KNOWN_SHA
+# regresses, the formatter still produces valid output but for the
+# wrong scope. Pin the worker-seam mapping directly so a regression at
+# either layer trips CI.
+
+assert_scope() {
+    local got="$1" want="$2" desc="$3"
+    if [ "$got" != "$want" ]; then
+        echo "FAIL: compute_review_scope — $desc: expected '$want', got '$got'"
+        exit 1
+    fi
+}
+
+echo "  compute_review_scope: force=true + no sha → 'whole'..."
+assert_scope "$(compute_review_scope true "" false)" "whole" "force-only"
+
+echo "  compute_review_scope: force=true + sha + fallback=true → 'whole' (force precedence)..."
+# Precedence regression-fence: /srosro-review explicitly asks for a
+# whole-PR re-review and must NOT be downgraded to incremental or
+# fallback even when KNOWN_SHA is set or the SHA was evicted. If a
+# refactor accidentally checks KNOWN_SHA first, this trips.
+assert_scope "$(compute_review_scope true "abc1234567" true)" "whole" "force takes precedence over sha+fallback"
+
+echo "  compute_review_scope: no force + no sha → 'first'..."
+assert_scope "$(compute_review_scope false "" false)" "first" "no-sha → first"
+
+echo "  compute_review_scope: no force + sha + fallback=false → 'incremental:<sha>'..."
+assert_scope "$(compute_review_scope false "abc1234567" false)" "incremental:abc1234567" "incremental path"
+
+echo "  compute_review_scope: no force + sha + fallback=true → 'fallback:<sha>'..."
+# The bug the original PR #22 was meant to disclose: USED_FALLBACK=true
+# previously got framed as incremental in the banner. This pin prevents
+# a refactor from dropping the fallback branch and silently regressing
+# back to the original misframe.
+assert_scope "$(compute_review_scope false "abc1234567" true)" "fallback:abc1234567" "fallback path — must not be misframed as incremental"
+
+echo "  PASS (5 formatter scenarios + 5 worker-seam scenarios)"

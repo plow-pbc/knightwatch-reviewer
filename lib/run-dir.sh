@@ -121,6 +121,41 @@ finalize_meta_json() {
     fi
 }
 
+# compute_review_scope FORCE_WHOLE_PR KNOWN_SHA USED_FALLBACK
+#
+# Pure function. Maps the worker's per-run state (force-flag from the
+# trigger comment, prior-reviewed SHA from state, fallback flag set when
+# the prior SHA isn't in local history) to one of four scope strings:
+#
+#   "first"               — no KNOWN_SHA and not forced; first review on this PR
+#   "whole"               — FORCE_WHOLE_PR=true (e.g. /srosro-review); takes
+#                           precedence over KNOWN_SHA
+#   "incremental:<sha>"   — KNOWN_SHA in local history; specialists see git diff
+#                           KNOWN_SHA..HEAD, aggregator sees full-diff.patch
+#   "fallback:<sha>"      — KNOWN_SHA NOT in local history (force-push/rebase
+#                           evicted it); specialists silently see the full PR
+#                           via gh pr diff because the incremental view is
+#                           unavailable — the scope name calls this out so
+#                           prepend_review_scope_note + REVIEW_TASK both
+#                           disclose it instead of framing it as incremental
+#
+# Single source of truth: REVIEW_TASK construction and the post-time
+# scope-note injection both read from this so the banner ("📋 fallback
+# re-review") and the prompts ("diff.patch is the FULL PR diff") cannot
+# drift. Drift is the BCR class fenced by review-scope-smoke.sh.
+compute_review_scope() {
+    local force_whole_pr="$1" known_sha="$2" used_fallback="$3"
+    if [ "$force_whole_pr" = "true" ]; then
+        printf 'whole'
+    elif [ -z "$known_sha" ]; then
+        printf 'first'
+    elif [ "$used_fallback" = "true" ]; then
+        printf 'fallback:%s' "$known_sha"
+    else
+        printf 'incremental:%s' "$known_sha"
+    fi
+}
+
 # prepend_review_scope_note COMMENT_BODY SCOPE
 #
 # Injects a one-line "what kind of review is this" notice right after

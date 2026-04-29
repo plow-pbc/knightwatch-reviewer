@@ -364,11 +364,6 @@ PREV_BODY=""
 PREV_APPROVED=""
 if [ -z "$KNOWN_SHA" ] || [ "$FORCE_WHOLE_PR" = "true" ]; then
     KID_INPUT_DIFF=$(gh pr diff "$PR_NUM" --repo "$REPO" 2>/dev/null)
-    if [ "$FORCE_WHOLE_PR" = "true" ]; then
-        REVIEW_TASK="Whole-PR re-review (requested via /review comment). Review the full PR diff at .codex-scratch/diff.patch against the standards in .codex-scratch/standards.md. Any prior review is intentionally NOT provided — evaluate this PR from scratch."
-    else
-        REVIEW_TASK="Review the diff at .codex-scratch/diff.patch against the standards in .codex-scratch/standards.md."
-    fi
 else
     PREV_BODY=$(state_get "$PR_ID" "body")
     PREV_APPROVED=$(state_get "$PR_ID" "approved")
@@ -380,7 +375,15 @@ else
         # been left as-is and is still unaddressed.
         FULL_PR_DIFF=$(gh pr diff "$PR_NUM" --repo "$REPO" 2>/dev/null)
         if [ -z "$FULL_PR_DIFF" ]; then
-            log "$PR_ID: full-PR diff fetch returned empty — re-review will run without full-diff.patch and the aggregator's prior-finding verification is degraded"
+            # Fail loud per CLAUDE.md / feedback_fail_hard: previous code
+            # silently degraded (skipped full-diff.patch, kept going)
+            # while the posted banner still claimed "aggregator verified
+            # prior findings against the current full PR state". Aborting
+            # here lets the orchestrator retry on the next tick instead
+            # of publishing a re-review that lies about what it evaluated.
+            log "$PR_ID: incremental re-review needs full-PR context but \`gh pr diff\` returned empty (auth/network) — aborting to avoid posting a degraded review framed as full"
+            rm -rf "$REPO_DIR"
+            exit 1
         fi
     else
         log "$PR_ID: prior SHA $KNOWN_SHA not in local history; using full PR diff"
@@ -388,8 +391,35 @@ else
         FULL_PR_DIFF="$KID_INPUT_DIFF"
         USED_FALLBACK=true
     fi
-    REVIEW_TASK="Re-review: the author has pushed new commits since your previous review (at ${KNOWN_SHA:0:7}, approved=$PREV_APPROVED). Your prior review is in .codex-scratch/previous-review.md. The incremental diff since that review is in .codex-scratch/diff.patch; the full PR diff is in .codex-scratch/full-diff.patch (consult it when verifying whether prior findings are addressed). Assess whether the new commits address your prior concerns, then produce an updated review."
 fi
+
+# Single source of truth for "what kind of review is this". Computed
+# here so REVIEW_TASK (below) and the post-time scope-note injection
+# (much later, just before gh pr comment) read the same value — without
+# this seam, the prompt could say "incremental" while the banner said
+# "fallback" or vice versa, the BCR class fenced by review-scope-smoke.
+REVIEW_SCOPE=$(compute_review_scope "$FORCE_WHOLE_PR" "$KNOWN_SHA" "$USED_FALLBACK")
+
+# REVIEW_TASK is the opening message the specialists/aggregator see.
+# It must accurately describe what's in .codex-scratch/diff.patch and
+# .codex-scratch/full-diff.patch for THIS run — the static prompt text
+# in prompts/common-header.md and prompts/aggregator.md describes the
+# general case but defers to this message when it differs (e.g. on the
+# fallback path, diff.patch is the full PR, not an incremental subset).
+case "$REVIEW_SCOPE" in
+    whole)
+        REVIEW_TASK="Whole-PR re-review (requested via /srosro-review). Review the full PR diff at .codex-scratch/diff.patch against the standards in .codex-scratch/standards.md. Any prior review is intentionally NOT provided — evaluate this PR from scratch."
+        ;;
+    first)
+        REVIEW_TASK="Review the diff at .codex-scratch/diff.patch against the standards in .codex-scratch/standards.md."
+        ;;
+    incremental:*)
+        REVIEW_TASK="Re-review: the author has pushed new commits since your previous review (at ${KNOWN_SHA:0:7}, approved=$PREV_APPROVED). Your prior review is in .codex-scratch/previous-review.md. The incremental diff since that review is in .codex-scratch/diff.patch; the full PR diff is in .codex-scratch/full-diff.patch (consult it when verifying whether prior findings are addressed). Assess whether the new commits address your prior concerns, then produce an updated review."
+        ;;
+    fallback:*)
+        REVIEW_TASK="Re-review (silent fallback — your prior reviewed SHA ${KNOWN_SHA:0:7} is no longer in local history, likely from a force-push or rebase). Your prior review is in .codex-scratch/previous-review.md. Because the incremental view is unavailable, .codex-scratch/diff.patch contains the FULL PR diff (identical to .codex-scratch/full-diff.patch) — evaluate accordingly. Assess whether the current state addresses your prior concerns, then produce an updated review."
+        ;;
+esac
 
 if [ -z "$KID_INPUT_DIFF" ]; then
     log "$PR_ID: empty diff — gh pr diff / git diff returned nothing (possible auth, network, or rebase issue), aborting"
@@ -718,20 +748,11 @@ if [ -n "$CURRENT_HEAD" ] && [ "$CURRENT_HEAD" != "$PR_SHA" ]; then
 fi
 
 # Disclose the review's scope (first / whole-PR re-review / incremental
-# re-review / silent-fallback re-review) at the top of the comment, so
-# the author can tell at a glance whether what they're reading evaluated
-# the full PR or just the incremental diff. The fallback case
-# (USED_FALLBACK=true) is the one that was previously invisible — the
-# worker silently used the full PR diff but framed it as incremental.
-if [ "$FORCE_WHOLE_PR" = "true" ]; then
-    REVIEW_SCOPE="whole"
-elif [ -z "$KNOWN_SHA" ]; then
-    REVIEW_SCOPE="first"
-elif [ "$USED_FALLBACK" = "true" ]; then
-    REVIEW_SCOPE="fallback:$KNOWN_SHA"
-else
-    REVIEW_SCOPE="incremental:$KNOWN_SHA"
-fi
+# re-review / silent-fallback re-review) at the top of the comment so
+# the author can tell at a glance what was actually evaluated. REVIEW_SCOPE
+# was computed earlier (right after diff setup) via compute_review_scope —
+# the same value that drove REVIEW_TASK, so the prompt and the banner can't
+# disagree.
 log "$PR_ID: review scope = $REVIEW_SCOPE"
 # Order matters: scope first (always present), stale-head second (only
 # present when head moved). prepend_*_note both inject right after the
