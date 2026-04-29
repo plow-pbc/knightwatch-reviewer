@@ -133,6 +133,24 @@ LATEST_LINK_DIR="$STATE_DIR/runs-by-pr/$REPO_SLUG_FOR_RUN/$PR_NUM"
 mkdir -p "$LATEST_LINK_DIR"
 ln -sfn "$RUN_DIR" "$LATEST_LINK_DIR/latest"
 
+# Run-status finalization. The success path flips RUN_STATUS to "completed"
+# right before exit 0; every other exit (errors, signals, abort branches)
+# leaves "aborted" so post-mortem tooling can tell completed from "still
+# running" / "died mid-flight" by reading meta.json alone — the previous
+# code only stamped status on the success path, so abort dirs were
+# indistinguishable from in-flight ones.
+RUN_STATUS="aborted"
+finalize_run() {
+    local tmp="$RUN_DIR/meta.json.tmp"
+    if jq --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg status "$RUN_STATUS" \
+            '. + {finished_at: $ts, status: $status}' \
+            "$RUN_DIR/meta.json" > "$tmp" 2>/dev/null; then
+        mv -f "$tmp" "$RUN_DIR/meta.json" 2>/dev/null || rm -f "$tmp"
+    else
+        rm -f "$tmp"
+    fi
+}
+
 log "Reviewing $PR_ID (force_whole_pr=$FORCE_WHOLE_PR)"
 
 # Post a "reviewing" placeholder immediately so the PR author sees the bot
@@ -166,7 +184,7 @@ cleanup_eyes() {
 review aborted before completion — see knightwatch-reviewer logs; will retry on the next tick if the PR head hasn't moved." \
         >/dev/null 2>&1 || true
 }
-trap cleanup_eyes EXIT
+trap 'finalize_run; cleanup_eyes' EXIT
 
 if [ -n "$EYES_COMMENT_ID" ]; then
     log "$PR_ID: posted reviewing placeholder (comment id=$EYES_COMMENT_ID)"
@@ -528,6 +546,7 @@ log "$PR_ID: intent inference complete: $(head -1 "$INTENT_OUT")"
 ANGLES=(security data-integrity architecture simplification tests shape)
 
 log "$PR_ID: launching ${#ANGLES[@]} specialists in parallel..."
+declare -A AGENT_PIDS=()
 for angle in "${ANGLES[@]}"; do
     PROMPT=$(build_specialist_prompt \
         "$angle" \
@@ -538,25 +557,29 @@ for angle in "${ANGLES[@]}"; do
         "$REPO_DIR" \
         "$PROMPT" \
         "$RUN_DIR/agents/$angle" &
+    AGENT_PIDS["$angle"]=$!
 done
 
-wait
-# Symlink each specialist's output into the codex-scratch view so the
-# critic + aggregator prompts ('.codex-scratch/specialists/<angle>.md')
-# resolve to it. Done after wait so a half-written output isn't visible
-# through the symlink during the parallel phase.
-for angle in "${ANGLES[@]}"; do
-    ln -sfn "$RUN_DIR/agents/$angle/output.md" "$SPECIALISTS_DIR/${angle}.md"
-done
-
+# Per-PID wait so a non-zero exit from run-specialist.sh (codex error or
+# empty output) actually surfaces as a worker abort. Bare `wait` returns 0
+# even when individual children failed, so a partial codex output could
+# previously slip through the empty-file check and reach the aggregator.
 SPECIALIST_FAILURE=0
 for angle in "${ANGLES[@]}"; do
-    if [ ! -s "$SPECIALISTS_DIR/${angle}.md" ]; then
-        log "$PR_ID: specialist $angle produced empty output — aborting review"
+    if ! wait "${AGENT_PIDS[$angle]}"; then
+        log "$PR_ID: specialist $angle exited non-zero (see $RUN_DIR/agents/$angle/log.txt)"
         SPECIALIST_FAILURE=1
     fi
 done
+# Symlink each specialist's output into the codex-scratch view so the
+# critic + aggregator prompts ('.codex-scratch/specialists/<angle>.md')
+# resolve to it. Created after the per-PID wait completes — half-written
+# outputs aren't visible through the symlink during the parallel phase.
+for angle in "${ANGLES[@]}"; do
+    ln -sfn "$RUN_DIR/agents/$angle/output.md" "$SPECIALISTS_DIR/${angle}.md"
+done
 if [ "$SPECIALIST_FAILURE" -ne 0 ]; then
+    log "$PR_ID: at least one specialist failed — aborting review"
     rm -rf "$REPO_DIR"
     exit 1
 fi
@@ -585,10 +608,14 @@ AGG_PROMPT=$(build_specialist_prompt \
     "$HOME/.pr-reviewer/prompts/aggregator.md" \
     "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR")
 "$_LIB_DIR/run-specialist.sh" "aggregator" "$REPO_DIR" "$AGG_PROMPT" "$RUN_DIR/agents/aggregator"
+AGG_EXIT=$?
 AGG_OUT="$RUN_DIR/agents/aggregator/output.md"
 
-if [ ! -s "$AGG_OUT" ]; then
-    log "$PR_ID: aggregator output empty — aborting"
+# Aggregator output is what gets posted to GitHub — abort on any codex error
+# even if a partial output happens to be non-empty, so a truncated review
+# never ships.
+if [ "$AGG_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
+    log "$PR_ID: aggregator failed (exit=$AGG_EXIT, output empty=$([ ! -s "$AGG_OUT" ] && echo true || echo false)) — aborting"
     rm -rf "$REPO_DIR"
     exit 1
 fi
@@ -658,9 +685,7 @@ if ! state_set "$PR_ID" "$PR_SHA" "$APPROVED" "$COMMENT_BODY" "$REVIEW_START_TS"
     exit 1
 fi
 rm -rf "$REPO_DIR"
-# Stamp finished_at on the run dir so post-mortem tools can tell completed
-# from in-flight runs (and how long each took).
-jq --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '. + {finished_at: $ts, status: "completed"}' \
-    "$RUN_DIR/meta.json" > "$RUN_DIR/meta.json.tmp" && mv "$RUN_DIR/meta.json.tmp" "$RUN_DIR/meta.json"
+# Mark the run completed; the EXIT trap stamps meta.json on the way out.
+RUN_STATUS="completed"
 log "Done with $PR_ID"
 exit 0
