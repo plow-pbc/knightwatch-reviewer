@@ -95,15 +95,21 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # can locate it before cleanup, and `sha` lets you re-check out from
 # repos/<slug>/ at any time.
 REPO_SLUG_FOR_RUN="${REPO//\//_}"
-# Millisecond resolution: per-PR flock + retry-after-error sequencing can
-# put two runs of the same SHA back-to-back, and a whole-second timestamp
-# would collide and overwrite the earlier run dir. ms makes that
-# essentially impossible for sequential retries (which are the only way
-# the same-PR-same-SHA pair can recur — concurrent runs are blocked by
-# the flock at the top of the worker).
+# Millisecond resolution minimizes collisions on back-to-back retries of
+# the same SHA (per-PR flock blocks concurrent runs, but a quick
+# error-and-retry can land in the same second). The strict mkdir below
+# is the actual no-overwrite guarantee: if anything ever produces a
+# duplicate RUN_ID — format revert, logic bug, race we didn't anticipate
+# — the second worker fails loud at the worker level instead of silently
+# corrupting the first run's run.log/output.md.
 RUN_TS="$(date -u +%Y%m%dT%H%M%S%3NZ)"
 RUN_ID="${REPO_SLUG_FOR_RUN}__${PR_NUM}__${RUN_TS}__${PR_SHA:0:7}"
 RUN_DIR="$STATE_DIR/runs/$RUN_ID"
+mkdir -p "$STATE_DIR/runs"
+if ! mkdir "$RUN_DIR" 2>/dev/null; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $PR_ID: RUN_DIR collision: $RUN_DIR already exists — aborting" >&2
+    exit 1
+fi
 mkdir -p "$RUN_DIR/agents" "$RUN_DIR/inputs"
 LOG_FILE="$RUN_DIR/run.log"
 
@@ -625,10 +631,10 @@ CRITIC_OUT="$RUN_DIR/agents/critic/output.md"
 # Log the failure mode for the run.log narrative; critic_fallback in
 # lib/agent-fallback.sh handles the actual file substitution and is the
 # regression-fenced path (see lib/tests/critic-fallback-smoke.sh).
+# Empty-output is reported as exit 3 by run-specialist.sh, so it lands
+# here as a non-zero CRITIC_EXIT — there's no separate elif branch.
 if [ "$CRITIC_EXIT" -ne 0 ]; then
-    log "$PR_ID: critic exited $CRITIC_EXIT — discarding partial output, falling back to placeholder (see agents/critic/log.txt)"
-elif [ ! -s "$CRITIC_OUT" ]; then
-    log "$PR_ID: critic output empty — continuing without counterarguments"
+    log "$PR_ID: critic exited $CRITIC_EXIT — discarding any partial/empty output, falling back to placeholder (see agents/critic/log.txt)"
 fi
 critic_fallback "$CRITIC_EXIT" "$CRITIC_OUT"
 ln -sfn "$CRITIC_OUT" "$REPO_DIR/.codex-scratch/critic.md"
