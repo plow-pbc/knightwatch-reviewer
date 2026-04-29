@@ -435,6 +435,7 @@ PRIOR_ART=""
 KID_FLAG="$STATE_DIR/kid-last-failure"
 case "$REPO" in
     "cncorp/plow")                 KID_PROJECT_PATH="$HOME/Hacking/plow-kid" ;;
+    "cncorp/plow-content")         KID_PROJECT_PATH="$HOME/Hacking/plow-content" ;;
     "srosro/tkmx-client")          KID_PROJECT_PATH="$HOME/Hacking/tkmx-client" ;;
     "srosro/tkmx-server")          KID_PROJECT_PATH="$HOME/Hacking/tkmx-server" ;;
     "srosro/knightwatch-reviewer") KID_PROJECT_PATH="$HOME/Hacking/knightwatch-reviewer" ;;

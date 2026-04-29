@@ -62,7 +62,19 @@ mkdir -p "$HOME/.local/bin"
 cat > "$HOME/.local/bin/gh" <<'STUB'
 #!/bin/bash
 if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
-    if [[ "$*" == *"cncorp/plow"* ]]; then
+    # Parse --repo arg by name. Substring matching on $* would
+    # incorrectly fire for both "cncorp/plow" and "cncorp/plow-content"
+    # (or any future cncorp/plow-* tracked repo) and double the
+    # dispatch count under scenarios that expect exactly 1.
+    repo=""
+    for ((i=1; i<=$#; i++)); do
+        if [ "${!i}" = "--repo" ]; then
+            j=$((i+1))
+            repo="${!j}"
+            break
+        fi
+    done
+    if [ "$repo" = "cncorp/plow" ]; then
         echo '[{"number":1,"title":"Test PR","headRefName":"feat/test","headRefOid":"abc123"}]'
     else
         echo '[]'

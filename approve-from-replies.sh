@@ -47,7 +47,7 @@ STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 # matches review.sh's order. The previous order (config.env then
 # REPOS=(...)) silently clobbered any operator override of REPOS, leaving
 # /srosro-approve covering a different repo set than review.sh did.
-REPOS=("cncorp/plow" "srosro/tkmx-client" "srosro/tkmx-server" "srosro/knightwatch-reviewer" "srosro/vibe-engineering")
+REPOS=("cncorp/plow" "cncorp/plow-content" "srosro/tkmx-client" "srosro/tkmx-server" "srosro/knightwatch-reviewer" "srosro/vibe-engineering")
 APPROVES_SEEN_FILE="${APPROVES_SEEN_FILE:-$STATE_DIR/approves-seen.json}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/approve.log}"
 [ -f "$STATE_DIR/config.env" ] && . "$STATE_DIR/config.env"

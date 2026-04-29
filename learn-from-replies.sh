@@ -27,7 +27,7 @@ STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 # Defaults FIRST, then config.env so an operator override actually wins —
 # matches review.sh's order. The previous order (config.env then
 # REPOS=(...)) silently clobbered any operator override of REPOS.
-REPOS=("cncorp/plow" "srosro/tkmx-client" "srosro/tkmx-server" "srosro/knightwatch-reviewer" "srosro/vibe-engineering")
+REPOS=("cncorp/plow" "cncorp/plow-content" "srosro/tkmx-client" "srosro/tkmx-server" "srosro/knightwatch-reviewer" "srosro/vibe-engineering")
 REPLIES_SEEN_FILE="${REPLIES_SEEN_FILE:-$STATE_DIR/replies-seen.json}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/learn.log}"
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
