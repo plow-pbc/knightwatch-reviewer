@@ -272,4 +272,20 @@ if [ "$n" -ne 0 ]; then
     exit 1
 fi
 
-echo "  PASS (7 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha)"
+# Scenario 8: same SHA, /srosro-approve → no dispatch. Approve requests
+# are handled out-of-band by approve-from-replies.sh, not by the review
+# orchestrator. The orchestrator's substring filter looks for
+# /srosro-review and /srosro-update-review; /srosro-approve must not
+# match either. Guards against a future filter change that accidentally
+# triggers a re-review on every approve request.
+echo "  scenario 8: same SHA + /srosro-approve (handled by approve-from-replies, not orchestrator)..."
+printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-approve looks good"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+run_orchestrator
+n=$(count_dispatches)
+if [ "$n" -ne 0 ]; then
+    echo "FAIL scenario 8 (approve-as-review regression): expected 0 dispatches, got $n"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+
+echo "  PASS (8 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review)"
