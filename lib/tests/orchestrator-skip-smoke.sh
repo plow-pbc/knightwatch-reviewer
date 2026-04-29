@@ -288,4 +288,60 @@ if [ "$n" -ne 0 ]; then
     exit 1
 fi
 
-echo "  PASS (8 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review)"
+# Scenario 9: orchestrator returns quickly even when a worker is still
+# running. Pre-detach behavior had the orchestrator `wait` for every
+# forked worker before exiting, so a slow worker (15–20 min in
+# production) blocked the next 2-min timer firing and made
+# /srosro-update-review pickup unboundedly slow. With the post-fan-out
+# `wait` loop removed, the orchestrator must dispatch the worker and
+# return promptly, regardless of worker runtime.
+echo "  scenario 9: slow worker — orchestrator returns within 5s, worker keeps running..."
+# Replace the worker stub with one that sleeps "indefinitely" (long
+# enough that the orchestrator's `wait` would block the test if it
+# regressed). Touch a marker file so we can confirm the worker actually
+# started before asserting orchestrator timing.
+WORKER_MARKER="$TMPDIR/worker-started.flag"
+cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<WORKER
+#!/bin/bash
+echo "WORKER_DISPATCHED repo=\$1 pr=\$2 sha=\$3 force_whole=\$6 trigger_file=\${TRIGGER_COMMENT_FILE:-}" >> "$LOG_FILE"
+touch "$WORKER_MARKER"
+sleep 60   # would block orchestrator's old `wait` loop
+WORKER
+chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
+
+printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+
+# Time the orchestrator. If it returns in <5s the wait was correctly
+# dropped; if it sits at 60s the regression is back.
+: > "$LOG_FILE"
+START=$(date +%s)
+bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 &
+ORCH_PID=$!
+# Cap the test at 10s so a regression doesn't hang CI for a full minute.
+TIMEOUT=10
+ELAPSED=0
+while kill -0 "$ORCH_PID" 2>/dev/null; do
+    sleep 1
+    ELAPSED=$((ELAPSED + 1))
+    if [ "$ELAPSED" -ge "$TIMEOUT" ]; then
+        kill "$ORCH_PID" 2>/dev/null
+        echo "FAIL scenario 9 (wait-loop regression): orchestrator did not return within ${TIMEOUT}s — likely waiting on the slow worker"
+        echo "--- log ---"; cat "$LOG_FILE"
+        # Reap the still-running worker so the trap's rm -rf can run.
+        pkill -P "$ORCH_PID" 2>/dev/null || true
+        pkill -f "sleep 60" 2>/dev/null || true
+        exit 1
+    fi
+done
+END=$(date +%s)
+ORCH_ELAPSED=$((END - START))
+
+[ "$ORCH_ELAPSED" -lt 5 ] || { echo "FAIL scenario 9: orchestrator took ${ORCH_ELAPSED}s, expected <5s"; cat "$LOG_FILE"; exit 1; }
+
+# Sanity: the worker actually got dispatched.
+[ -f "$WORKER_MARKER" ] || { echo "FAIL scenario 9: worker never started — orchestrator may have errored before fan-out"; cat "$LOG_FILE"; exit 1; }
+
+# Reap the sleeping worker so the test exits cleanly.
+pkill -f "sleep 60" 2>/dev/null || true
+
+echo "  PASS (9 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit)"
