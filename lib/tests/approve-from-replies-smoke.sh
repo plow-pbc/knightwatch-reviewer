@@ -104,18 +104,33 @@ elif [ "$1" = "pr" ] && [ "$2" = "review" ]; then
     body_oneline=$(printf '%s' "$body" | tr '\n' '|')
     echo "APPROVE repo=$repo pr=$pr_num body=$body_oneline" >> "$STUB_ACTIONS_LOG"
 elif [ "$1" = "api" ]; then
-    # Walk args and pick out the endpoint (any arg that looks like
-    # "repos/..."). The script invokes `gh api --paginate <endpoint>`
-    # for comments and `gh api <endpoint> --jq <expr>` for permissions,
-    # so neither $2 nor ${!#} is reliable across both shapes.
+    # MOCK_GH_API_FAIL=1 simulates an API outage on the comments fetch.
+    # The script's pipefail-aware `gh api ... | jq` should surface this
+    # as a pipeline failure, log it, and skip the PR.
+    if [ -n "${MOCK_GH_API_FAIL:-}" ]; then
+        echo "API down" >&2
+        exit 1
+    fi
+    paginate=""
     endpoint=""
     for arg in "$@"; do
         case "$arg" in
-            repos/*) endpoint="$arg" ;;
+            --paginate) paginate=1 ;;
+            repos/*)    endpoint="$arg" ;;
         esac
     done
     if [[ "$endpoint" == */issues/*/comments* ]]; then
-        cat "$MOCK_COMMENTS_FILE"
+        # When --paginate is set AND a page-2 fixture exists, emit both
+        # pages back-to-back (same shape `gh api --paginate` produces).
+        # The script's `| jq -s 'add // []'` slurps and merges. A
+        # regression to single-page-fetch would only see page 1 and the
+        # page-2 scenario in this file would fail.
+        if [ -n "$paginate" ] && [ -s "${MOCK_COMMENTS_FILE_PAGE2:-/dev/null}" ]; then
+            cat "$MOCK_COMMENTS_FILE"
+            cat "$MOCK_COMMENTS_FILE_PAGE2"
+        else
+            cat "$MOCK_COMMENTS_FILE"
+        fi
     elif [[ "$endpoint" == */collaborators/*/permission ]]; then
         user="${endpoint##*/collaborators/}"
         user="${user%/permission}"
@@ -280,4 +295,32 @@ if grep -q "PR_LIST repo=cncorp/plow" "$STUB_PR_LIST_LOG"; then
     exit 1
 fi
 
-echo "  PASS (11 scenarios: empty, trusted-approve, already-seen, bot-self-marker, untrusted-skip, [bot]-skip, mid-sentence-no-match, second-line-match, trailing-arg-match, gh-failure-marked-seen, REPOS-override-observed)"
+# Scenario 12: pagination — a trusted /srosro-approve lives on page 2
+# of the issue-comments response. With `gh api --paginate ... |
+# jq -s 'add // []'`, the script sees both pages and the approve fires.
+# With single-page-fetch, the request is invisible and no approve is
+# logged — scenario 12 fails on that regression.
+echo "  scenario 12: trusted /srosro-approve on page 2 — pagination merges both pages..."
+echo '{}' > "$APPROVES_SEEN_FILE"
+echo '[]' > "$MOCK_COMMENTS_FILE"
+export MOCK_COMMENTS_FILE_PAGE2="$TMPDIR/comments-page2.json"
+printf '[{"id":1012,"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-approve"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE_PAGE2"
+run_approve
+n=$(count_approves)
+[ "$n" -eq 1 ] || { echo "FAIL scenario 12 (single-page-fetch regression): expected 1 approve from page 2, got $n"; cat "$STUB_ACTIONS_LOG"; cat "$LOG_FILE"; exit 1; }
+unset MOCK_COMMENTS_FILE_PAGE2
+rm -f "$TMPDIR/comments-page2.json"
+
+# Scenario 13: gh api comments fetch fails — pipefail surfaces it, the
+# script logs the boundary error and skips the PR. Without pipefail or
+# the fail-loud log, the failed fetch would silently produce [] from jq
+# and the run would look successful.
+echo "  scenario 13: gh api comments fetch fails — log + skip (pipefail wins)..."
+echo '{}' > "$APPROVES_SEEN_FILE"
+echo '[]' > "$MOCK_COMMENTS_FILE"
+MOCK_GH_API_FAIL=1 run_approve
+n=$(count_approves)
+[ "$n" -eq 0 ] || { echo "FAIL scenario 13: expected 0 approves on api failure, got $n"; cat "$STUB_ACTIONS_LOG"; exit 1; }
+grep -q "comments fetch failed — skipping this PR for this tick" "$LOG_FILE" || { echo "FAIL scenario 13: expected fail-loud log line on gh api failure"; cat "$LOG_FILE"; exit 1; }
+
+echo "  PASS (13 scenarios: empty, trusted-approve, already-seen, bot-self-marker, untrusted-skip, [bot]-skip, mid-sentence-no-match, second-line-match, trailing-arg-match, gh-failure-marked-seen, REPOS-override-observed, page-2-paginated, gh-api-failure-fail-loud)"

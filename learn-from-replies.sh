@@ -57,7 +57,13 @@ REPLIES_META_FILE=$(mktemp)
 trap 'rm -f "$REPLIES_META_FILE"' EXIT
 
 for REPO in "${REPOS[@]}"; do
-    PR_LIST=$(gh pr list --repo "$REPO" --json number --state all --limit 200 2>/dev/null | jq -r '.[].number') || continue
+    # Same fail-loud-then-skip pattern as the comments fetch below: an
+    # outage on `gh pr list` shouldn't look like "this repo had no PRs"
+    # in the operator's journal.
+    PR_LIST=$(gh pr list --repo "$REPO" --json number --state all --limit 200 2>/dev/null | jq -r '.[].number') || {
+        log "$REPO: pr list failed — skipping this repo for this tick"
+        continue
+    }
 
     for PR_NUM in $PR_LIST; do
         # --paginate so /srosro-memorize requests on long PR threads (>30

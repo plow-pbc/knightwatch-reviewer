@@ -75,7 +75,13 @@ SKIPPED_UNTRUSTED=0
 SKIPPED_FAILED=0
 
 for REPO in "${REPOS[@]}"; do
-    PR_LIST=$(gh pr list --repo "$REPO" --json number --state open --limit 200 2>/dev/null | jq -r '.[].number') || continue
+    # Same fail-loud-then-skip pattern as the comments fetch below: an
+    # outage on `gh pr list` shouldn't look like "this repo had no PRs"
+    # in the operator's journal.
+    PR_LIST=$(gh pr list --repo "$REPO" --json number --state open --limit 200 2>/dev/null | jq -r '.[].number') || {
+        log "$REPO: pr list failed — skipping this repo for this tick"
+        continue
+    }
 
     for PR_NUM in $PR_LIST; do
         # --paginate so /srosro-approve requests on long PR threads (>30
