@@ -16,31 +16,32 @@
 # REVIEW_PRACTICES.md and TESTING.md are not auto-tuned here. They are
 # hand-curated; auto-tune targets only the mistakes file.
 
+# pipefail so a failing `gh api ... | jq -s ...` propagates jq's 0 exit
+# code into a non-zero pipeline exit. Without it, a failed gh api call
+# produces empty input that jq turns into [] without surfacing the
+# failure — silently dropping page-1 comments or a whole fetch.
+set -o pipefail
 export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
 
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
-[ -f "$STATE_DIR/config.env" ] && . "$STATE_DIR/config.env"
-BOT_USER="${BOT_USER:-srosro}"
-BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
-
+# Defaults FIRST, then config.env so an operator override actually wins —
+# matches review.sh's order. The previous order (config.env then
+# REPOS=(...)) silently clobbered any operator override of REPOS.
 REPOS=("cncorp/plow" "srosro/tkmx-client" "srosro/tkmx-server" "srosro/knightwatch-reviewer" "srosro/vibe-engineering")
 REPLIES_SEEN_FILE="${REPLIES_SEEN_FILE:-$STATE_DIR/replies-seen.json}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/learn.log}"
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
+[ -f "$STATE_DIR/config.env" ] && . "$STATE_DIR/config.env"
+BOT_USER="${BOT_USER:-srosro}"
+BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
 
 # is_trusted_repo_author() — push-access trust gate, shared with review.sh.
+# seen_get / seen_set + log — flock + atomic-rename, shared with approve-from-replies.sh.
 REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 . "$REVIEWER_LIB_DIR/auth.sh"
+. "$REVIEWER_LIB_DIR/state-io.sh"
 
-log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"; }
-
-[ -f "$REPLIES_SEEN_FILE" ]  || echo '{}' > "$REPLIES_SEEN_FILE"
-
-reply_seen_get() { jq -r --arg k "$1" '.[$k] // empty' "$REPLIES_SEEN_FILE"; }
-reply_seen_set() {
-    local tmp; tmp=$(jq --arg k "$1" --argjson v true '.[$k] = $v' "$REPLIES_SEEN_FILE")
-    echo "$tmp" > "$REPLIES_SEEN_FILE"
-}
+[ -f "$REPLIES_SEEN_FILE" ] || echo '{}' > "$REPLIES_SEEN_FILE"
 
 # Opt-in signal: comment body must contain the literal `/srosro-memorize`
 # slash command (case-insensitive). The bot's own review footer mentions
@@ -56,10 +57,23 @@ REPLIES_META_FILE=$(mktemp)
 trap 'rm -f "$REPLIES_META_FILE"' EXIT
 
 for REPO in "${REPOS[@]}"; do
-    PR_LIST=$(gh pr list --repo "$REPO" --json number --state all --limit 200 2>/dev/null | jq -r '.[].number') || continue
+    # Same fail-loud-then-skip pattern as the comments fetch below: an
+    # outage on `gh pr list` shouldn't look like "this repo had no PRs"
+    # in the operator's journal.
+    PR_LIST=$(gh pr list --repo "$REPO" --json number --state all --limit 200 2>/dev/null | jq -r '.[].number') || {
+        log "$REPO: pr list failed — skipping this repo for this tick"
+        continue
+    }
 
     for PR_NUM in $PR_LIST; do
-        COMMENTS=$(gh api "repos/$REPO/issues/$PR_NUM/comments" 2>/dev/null) || continue
+        # --paginate so /srosro-memorize requests on long PR threads (>30
+        # issue comments) don't silently fall off the end of page 1.
+        # On fetch failure, log loud + skip this PR for this tick rather
+        # than silently treating "API broken" as "no comments".
+        COMMENTS=$(gh api --paginate "repos/$REPO/issues/$PR_NUM/comments" 2>/dev/null | jq -s 'add // []') || {
+            log "$REPO#$PR_NUM: comments fetch failed — skipping this PR for this tick"
+            continue
+        }
 
         OUR_COMMENT_IDS=()
         while IFS= read -r COMMENT; do
@@ -101,7 +115,7 @@ for REPO in "${REPOS[@]}"; do
                     continue
                 fi
                 REPLY_KEY="${REPO}#${PR_NUM}#${ID}"
-                if [ -z "$(reply_seen_get "$REPLY_KEY")" ]; then
+                if [ -z "$(seen_get "$REPLIES_SEEN_FILE" "$REPLY_KEY")" ]; then
                     REPLIES+="--- Memorize request [${REPLY_KEY}] by @${USER} on ${REPO} PR #${PR_NUM} ---"$'\n'
                     REPLIES+="$BODY"$'\n\n'
                     jq -c --null-input \
@@ -204,10 +218,16 @@ else
 fi
 
 # Mark replies as seen — only after codex succeeded, so a crash leaves them
-# eligible for the next tick.
+# eligible for the next tick. Honor seen_set's fail-loud return code so a
+# silent write failure can't lead to a duplicate ACK + duplicate codex
+# work on the next tick.
 while IFS= read -r META; do
     KEY=$(printf '%s' "$META" | jq -r '.key')
-    [ -n "$KEY" ] && reply_seen_set "$KEY"
+    if [ -n "$KEY" ]; then
+        if ! seen_set "$REPLIES_SEEN_FILE" "$KEY"; then
+            log "$KEY: WARNING — seen_set failed AFTER posting ACK; next tick may re-learn from this request and post a duplicate ACK"
+        fi
+    fi
 done < "$REPLIES_META_FILE"
 
 # Post per-reply acknowledgments.

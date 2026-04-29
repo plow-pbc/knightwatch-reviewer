@@ -1,0 +1,15 @@
+[Unit]
+Description=Plow PR reviewer /srosro-approve handler (every minute at :30)
+
+[Timer]
+# Every minute at the :30 mark — sub-minute response time for human
+# /srosro-approve requests, and the :30 offset doesn't collide with the
+# main reviewer (:0/2) or re-request poller (:1/2) which both fire on the
+# minute boundary.
+OnCalendar=*-*-* *:*:30
+Persistent=false
+AccuracySec=10s
+Unit=pr-reviewer-approve.service
+
+[Install]
+WantedBy=timers.target
