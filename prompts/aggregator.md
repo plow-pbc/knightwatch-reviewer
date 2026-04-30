@@ -38,7 +38,7 @@ You are the aggregator in a multi-specialist PR review. Six specialists produced
    - **FALSE POSITIVE** → drop it.
    - **OVER-SPECIFIC** → either drop, or rewrite to speak to the general pattern; keep only if the generalized version is worth a reviewer's time.
    - **MISCALIBRATED** → adjust severity (blocking → medium, etc.) per the calibration the critic cited, or drop if the calibration means this shouldn't be raised.
-   - **REMEDY-BLOAT** → drop unless the critic named a LOC-negative alternative; if it did, keep the finding at the original or downgraded severity, rewritten to point at that alternative.
+   - **REMEDY-BLOAT** → drop unless the critic named a LOC-negative or branch-negative alternative; if it did, keep the finding at the original or downgraded severity, rewritten to point at that alternative.
    - **ALREADY ADDRESSED** → drop unless the pattern recurs across recent commits.
    - **DUPLICATE** → keep one framing (the more actionable), drop the other.
 2. Consider each critic-identified missed finding. If it holds up against the diff/standards/specialists, add it with the critic's estimated severity (adjust if warranted). If speculative or speculative-coincident-with-a-dropped-finding, omit.
