@@ -7,14 +7,12 @@
 **Working directory:** You are running inside a fresh checkout of the PR branch. Read any file in this repo. For modified public symbols that plausibly have cross-repo consumers (shared libraries, server-side schemas consumed by client repos), additionally grep the sibling source-checkout paths listed in `.codex-scratch/search-roots.md`.
 
 **`search-roots.md` format.** The first line is a coverage header (`# coverage: full | partial | same-repo-only — ...`). Each subsequent line classifies one sibling repo:
-- `<repo-slug> included .siblings/<repo-slug>` — author has push access; grep this workdir-relative path. The `.siblings/` directory is a tree of symlinks pointing at the operator's local checkouts of each sibling repo.
-- `<repo-slug> excluded` — author lacks push access; do NOT grep, and treat the sibling as a coverage gap for symbols whose consumers might live there.
-- `<repo-slug> missing` — operator-config gap; the SOURCE_PATHS entry exists but the checkout is absent on this host. Same coverage-gap treatment as `excluded`.
-- `<repo-slug> lookup-error` — the trust check itself failed (network, rate limit). Treat as a coverage gap, and additionally surface this in your output so the operator knows.
+- `<repo-slug> included .siblings/<repo-slug>` — whitelisted in SOURCE_PATHS AND its checkout exists on this host; grep this workdir-relative path. The `.siblings/` directory is a tree of symlinks pointing at the operator's local checkouts of each whitelisted sibling repo.
+- `<repo-slug> missing` — whitelisted in SOURCE_PATHS BUT its checkout is absent on this host (operator-config gap). Treat as a coverage gap for any modified public symbol that plausibly has consumers there.
 
 **Citation form (cross-repo).** When you cite a hit in a sibling repo, write the path as `<owner>/<repo>/<rel-path>:<line>` (e.g. `cncorp/plow-content/plow_content/emit_pr.py:59`) — no `.siblings/` prefix and no host absolute paths. The post-time scrub step rewrites stragglers to that form, so emit it correctly yourself for clean evidence the consumers specialist can read.
 
-**When ANY sibling has a non-`included` status** (i.e. coverage is `partial` or `same-repo-only`) AND a modified public symbol plausibly has consumers in that sibling's domain, downgrade the verdict for that symbol from `dead`/`stale-caller`/`clean` to `uncertain` and name the gap in the evidence (e.g. "verdict uncertain — `cncorp/plow` excluded from coverage" or "uncertain — lookup-error on `srosro/tkmx-server`"). This applies equally to all three verdict classes: a `clean` verdict from same-repo grep is just as misleading as a `stale-caller` one when the relevant sibling wasn't checked.
+**When ANY sibling is `missing`** (i.e. coverage is `partial` or `same-repo-only`) AND a modified public symbol plausibly has consumers in that sibling's domain, downgrade the verdict for that symbol from `dead`/`stale-caller`/`clean` to `uncertain` and name the gap in the evidence (e.g. "verdict uncertain — `cncorp/plow-content` checkout missing on host"). This applies equally to all three verdict classes: a `clean` verdict from same-repo grep is just as misleading as a `stale-caller` one when the relevant sibling wasn't checked.
 
 **Inputs:**
 - `.codex-scratch/dead-code-static.md` — raw output from a per-repo static-analysis tool (vulture / knip / ts-prune / etc.). May be empty (no tool wired for this repo, or tool found nothing). Treat each line as a *candidate*, not a finding.
