@@ -154,7 +154,7 @@ Update the output-format header line to include `REMEDY-BLOAT`:
 
 - [ ] **Step 4: Update the aggregator's handling — note for next task**
 
-The aggregator at `prompts/aggregator.md:36–43` lists how to handle each critic verdict (AGREE, FALSE POSITIVE, OVER-SPECIFIC, etc). It doesn't yet know about `REMEDY-BLOAT`. Add to that list (in the *next task*, not this one — keep this commit focused) a single line: "**REMEDY-BLOAT** → either drop, or rewrite the finding to recommend the LOC-negative alternative the critic named."
+The aggregator at `prompts/aggregator.md:36–43` lists how to handle each critic verdict (AGREE, FALSE POSITIVE, OVER-SPECIFIC, etc). It doesn't yet know about `REMEDY-BLOAT`. Add to that list (in the *next task*, not this one — keep this commit focused) a single line: "**REMEDY-BLOAT** → either drop, or rewrite the finding to recommend the LOC-negative or branch-negative alternative the critic named."
 
 For now, just append a TODO note to your commit message so it's visible in `git log` for follow-up.
 
@@ -247,7 +247,7 @@ The cost being managed is **conditionals + special cases + defensive branches**,
 ## Test plan
 
 - [ ] `~/.pr-reviewer/prompts/*.md` picks up the merged content automatically via symlink (no `cp` step)
-- [ ] Manual prompt-assembly check: `build_specialist_prompt shape ...` produces a prompt that includes Rule 8 with placeholders substituted
+- [ ] `just test` includes `lib/tests/anti-bloat-contract-smoke.sh` and passes (token-level handshake check between common-header / critic / aggregator)
 - [ ] Live observation on the next 1-2 active PRs: the bot does not propose any of the 5 patterns from the spec
 - [ ] Two-week follow-up to evaluate whether scope creep has measurably dropped
 

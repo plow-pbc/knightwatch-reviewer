@@ -33,6 +33,10 @@ test:
     bash lib/tests/build-specialist-prompt-smoke.sh
 
     echo ""
+    echo "=== anti-bloat contract smoke test ==="
+    bash lib/tests/anti-bloat-contract-smoke.sh
+
+    echo ""
     echo "=== run-specialist smoke test ==="
     bash lib/tests/run-specialist-smoke.sh
 

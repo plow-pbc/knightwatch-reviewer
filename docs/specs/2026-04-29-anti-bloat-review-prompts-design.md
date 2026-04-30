@@ -54,7 +54,7 @@ Net: -5 to -8 LOC, no loss of content.
 
 #### Change C — Add `REMEDY-BLOAT` bucket to `prompts/critic.md` step 1
 
-The critic currently has 6 status buckets: AGREE, FALSE POSITIVE, OVER-SPECIFIC, MISCALIBRATED, ALREADY ADDRESSED, DUPLICATE. Add a 7th: **REMEDY-BLOAT** — the finding may be real but the implied remedy adds N conditionals/defensive branches/edge-case handlers for a scenario that doesn't actually happen. Either rewrite to point at the LOC-negative alternative, or drop.
+The critic currently has 6 status buckets: AGREE, FALSE POSITIVE, OVER-SPECIFIC, MISCALIBRATED, ALREADY ADDRESSED, DUPLICATE. Add a 7th: **REMEDY-BLOAT** — the finding may be real but the implied remedy adds N conditionals/defensive branches/edge-case handlers for a scenario that doesn't actually happen. The critic names a LOC-negative or branch-negative alternative the aggregator should rewrite the finding to point at, or recommends the aggregator drop.
 
 The critic's structural role is "stress-test specialist findings"; this gives it a name for the most common stress-test outcome that the existing buckets don't cleanly capture.
 
@@ -110,7 +110,7 @@ Net: 0 to -5 LOC depending on how much we collapse the redundancy.
 
 The changes are markdown edits to LLM-prompt files; behavior tests don't apply. Validation comes in two forms:
 
-1. **Smoke** — run `scripts/smoke-stale-head-warning.sh` and any other existing smoke that exercises prompt assembly to confirm `standards.md` still composes correctly with the seeded `COMMENT_REVIEW_MISTAKES.md`.
+1. **Smoke** — `lib/tests/anti-bloat-contract-smoke.sh` (wired into `just test`) fences the REMEDY-BLOAT handshake between `prompts/critic.md` and `prompts/aggregator.md`, and Rule 8's presence in `prompts/common-header.md`. Token-level only — no content pinning, since Rule 8 itself forbids tests that calcify prose. The existing `build-specialist-prompt-smoke.sh` continues to fence the substitution machinery against fake input. Live PR review is the additional safety net — drift in prompt content shows up as a regression in the next bot review against any tracked repo.
 2. **Live observation** — over the next 1-2 active PRs after the edits land, check whether the bot proposes any of the 5 patterns from § "Five recurring bloat patterns." Each surfaced pattern is either (a) the prompt change failed to land, (b) the model didn't generalize from the rule (revisit phrasing), or (c) the pattern wasn't actually in the seeded list.
 
 A two-week follow-up is appropriate to evaluate whether Change D's seeded entries are reducing scope creep in observed PRs, or whether more aggressive language is needed.
