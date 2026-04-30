@@ -6,12 +6,13 @@
 
 **Working directory:** You are running inside a fresh checkout of the PR branch. Read any file in this repo. For modified public symbols that plausibly have cross-repo consumers (shared libraries, server-side schemas consumed by client repos), additionally grep the sibling source-checkout paths listed in `.codex-scratch/search-roots.md`.
 
-**Coverage marker.** The first line of `search-roots.md` always starts with `# coverage:`. Possible values:
-- `# coverage: full` — every sibling SOURCE_PATHS entry was included; you have full cross-repo grep coverage.
-- `# coverage: partial — included: <list>; excluded (no push access): <list>` — some siblings excluded because the PR author lacks push access there. Sibling lines on the file are still followed by the included subset.
-- `# coverage: same-repo-only — <reason>` — no sibling search; you only have this-repo evidence.
+**`search-roots.md` format.** The first line is a coverage header (`# coverage: full | partial | same-repo-only — ...`). Each subsequent line classifies one sibling repo:
+- `<repo-slug> included <absolute-path>` — author has push access; grep this path.
+- `<repo-slug> excluded` — author lacks push access; do NOT grep, and treat the sibling as a coverage gap for symbols whose consumers might live there.
+- `<repo-slug> missing` — operator-config gap; the SOURCE_PATHS entry exists but the checkout is absent on this host. Same coverage-gap treatment as `excluded`.
+- `<repo-slug> lookup-error` — the trust check itself failed (network, rate limit). Treat as a coverage gap, and additionally surface this in your output so the operator knows.
 
-**When coverage is reduced (`partial` or `same-repo-only`)**, downgrade the verdict on any modified public symbol whose plausible consumers live in an excluded repo from `dead`/`stale-caller`/`clean` to `uncertain`, and note the missing coverage in the evidence (e.g. "stale-caller verdict pending — `cncorp/plow` not in coverage"). This is the fail-fast equivalent for evidence: don't emit confident verdicts from same-repo-only grep when the symbol could have hidden consumers in an excluded sibling.
+**When ANY sibling has a non-`included` status** (i.e. coverage is `partial` or `same-repo-only`) AND a modified public symbol plausibly has consumers in that sibling's domain, downgrade the verdict for that symbol from `dead`/`stale-caller`/`clean` to `uncertain` and name the gap in the evidence (e.g. "verdict uncertain — `cncorp/plow` excluded from coverage" or "uncertain — lookup-error on `srosro/tkmx-server`"). This applies equally to all three verdict classes: a `clean` verdict from same-repo grep is just as misleading as a `stale-caller` one when the relevant sibling wasn't checked.
 
 **Inputs:**
 - `.codex-scratch/dead-code-static.md` — raw output from a per-repo static-analysis tool (vulture / knip / ts-prune / etc.). May be empty (no tool wired for this repo, or tool found nothing). Treat each line as a *candidate*, not a finding.
