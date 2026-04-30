@@ -2,10 +2,10 @@
 # Smoke for lib/sibling-symlinks.sh. Three invariants:
 #
 #   1. Only symlink siblings the caller explicitly classified as
-#      `included` — auth-gated upstream by stage_search_roots, not by
-#      this helper's own iteration over SOURCE_PATHS. (Bot Finding 2:
-#      the original ordering exposed every configured checkout to
-#      Codex even when the auth seam would have excluded it.)
+#      `included` — whitelist-gated upstream by stage_search_roots,
+#      not by this helper's own iteration over SOURCE_PATHS. (Otherwise
+#      we'd materialize symlinks for siblings whose checkouts are
+#      absent — dangling symlinks, confused specialists.)
 #
 #   2. Defeat committed-symlink path-redirect attacks. The PR's
 #      checkout might already contain `.siblings/` (e.g. an attacker
@@ -37,7 +37,7 @@ declare -A SOURCE_PATHS=(
 )
 
 # --- scenario 1: only `included` siblings get symlinked ---------------
-echo "  scenario 1: auth-gated to included slugs..."
+echo "  scenario 1: whitelist-gated to included slugs..."
 materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/foo" "acme/bar"
 
 got_foo=$(readlink "$WORKDIR/.siblings/acme/foo")
@@ -52,7 +52,7 @@ if [ "$got_bar" != "$TMPDIR/bar" ]; then
 fi
 # baz is in SOURCE_PATHS but was NOT in the included list — must NOT exist.
 if [ -e "$WORKDIR/.siblings/acme/baz" ]; then
-    echo "FAIL: baz symlink should not exist (auth-excluded by caller)"
+    echo "FAIL: baz symlink should not exist (not in included list)"
     exit 1
 fi
 
@@ -143,4 +143,4 @@ if [ -d "$WORKDIR/.siblings" ] && [ -n "$(ls -A "$WORKDIR/.siblings" 2>/dev/null
     exit 1
 fi
 
-echo "  ok: sibling symlinks auth-gated, redirect-safe, and idempotent"
+echo "  ok: sibling symlinks whitelist-gated, redirect-safe, and idempotent"

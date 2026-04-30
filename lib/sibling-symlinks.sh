@@ -9,14 +9,15 @@
 # target (.siblings/<owner>/<repo>/...) and a citation form
 # (<owner>/<repo>/<rel-path>) that's safe to post.
 #
-# Two security-relevant design points (bot Finding 2 on PR #28):
+# Two security-relevant design points:
 #
-# 1. Auth-gating happens UPSTREAM, in stage_search_roots. The caller
-#    passes the explicit list of `included` slugs (the ones the PR
-#    author has push access to) — this helper does NOT iterate over
-#    SOURCE_PATHS itself. Otherwise an untrusted PR author would still
-#    get every configured sibling exposed to the codex agent, even
-#    though search-roots would have classified them as `excluded`.
+# 1. Whitelist-gating happens UPSTREAM, in stage_search_roots. The
+#    caller passes the explicit list of `included` slugs (those
+#    whitelisted in SOURCE_PATHS AND with checkouts present on disk)
+#    — this helper does NOT iterate over SOURCE_PATHS itself.
+#    Otherwise we'd materialize symlinks for siblings whose checkouts
+#    are absent — symlinks would dangle and specialists would get
+#    confused.
 #
 # 2. The PR's own checkout might already contain `.siblings/` with a
 #    committed symlink redirecting `.siblings/<owner>` (or any
@@ -31,8 +32,10 @@
 #   source_paths_var   name of the SOURCE_PATHS associative array
 #                      (passed by name; bash declare -n)
 #   included_slug...   variadic list of "<owner>/<repo>" entries that
-#                      the auth gate has cleared. NOTHING outside this
-#                      list gets symlinked. Empty list = empty .siblings/.
+#                      stage_search_roots classified as `included`
+#                      (whitelisted + checkout-present). NOTHING
+#                      outside this list gets symlinked. Empty list =
+#                      empty .siblings/.
 #
 # Idempotent: safe to call multiple times in the same workdir.
 materialize_sibling_symlinks() {
