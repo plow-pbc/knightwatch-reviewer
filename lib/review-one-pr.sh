@@ -760,7 +760,11 @@ log "$PR_ID: review scope = $REVIEW_SCOPE"
 # marker. We want the reader to see (top→down): marker, ⚠ stale (when
 # applicable), 📋 scope, intent line — so call scope first, stale-head
 # last.
-COMMENT_BODY=$(prepend_review_scope_note "$COMMENT_BODY" "$REVIEW_SCOPE")
+if ! COMMENT_BODY=$(prepend_review_scope_note "$COMMENT_BODY" "$REVIEW_SCOPE"); then
+    log "$PR_ID: prepend_review_scope_note failed for scope=$REVIEW_SCOPE — internal invariant violated, aborting (orchestrator will retry)"
+    rm -rf "$REPO_DIR"
+    exit 1
+fi
 COMMENT_BODY=$(prepend_stale_head_note "$COMMENT_BODY" "$PR_SHA" "$CURRENT_HEAD")
 
 if ! gh pr comment "$PR_NUM" --repo "$REPO" --body "$COMMENT_BODY"; then

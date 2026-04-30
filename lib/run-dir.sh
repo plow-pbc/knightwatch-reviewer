@@ -202,8 +202,15 @@ prepend_review_scope_note() {
             note="> 📋 **Re-review** — prior SHA \`${sha:0:7}\` is no longer in local history (likely a force-push or rebase); evaluated the full PR diff instead of an incremental one."
             ;;
         *)
-            printf '%s' "$comment_body"
-            return
+            # scope is internal — only compute_review_scope produces it.
+            # An unknown value means the worker has violated its own
+            # invariant (e.g. a new scope was added to compute_review_scope
+            # but not wired here). Per CLAUDE.md / feedback_fail_hard,
+            # crash loudly instead of silently omitting the very disclosure
+            # this helper exists to add — that would let a regression ship
+            # as a normal-looking review with the scope banner missing.
+            printf 'prepend_review_scope_note: unknown scope "%s" — internal invariant violated, refusing to silently omit scope disclosure\n' "$scope" >&2
+            return 1
             ;;
     esac
     local first_line rest
