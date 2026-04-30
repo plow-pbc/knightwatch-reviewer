@@ -511,6 +511,37 @@ elif [ -n "$KID_PROJECT_PATH" ] && [ -n "$KID_INPUT_DIFF" ]; then
     log "$PR_ID: kid index not yet built at $KID_PROJECT_PATH — skipping prior-art lookup"
 fi
 
+# ---- dead-code static-tool pre-pass ----
+# Mirrors the kid block above: per-repo command, graceful degrade on
+# failure, output to a scratch file consumed by ONE downstream step
+# (the dead-code-search LLM pre-pass). DEAD_CODE_CMDS was loaded at
+# file scope via the tracked-repos.sh loader; the pre-declared empty
+# assoc array makes the lookup safe under `set -u` even in sandboxes
+# without repos.conf.
+DEAD_CODE_STATIC=""
+DEAD_CODE_CMD="${DEAD_CODE_CMDS[$REPO]:-}"
+if [ -n "$DEAD_CODE_CMD" ] && [ -n "$KID_INPUT_DIFF" ]; then
+    # TOUCHED_FILES = paths relative to repo root, extracted from the
+    # diff's `+++ b/<path>` lines. Used by tools that need explicit
+    # file args (vulture, ruff F401); ignored by tools that auto-scan
+    # (knip, ts-prune).
+    TOUCHED_FILES=$(printf '%s' "$KID_INPUT_DIFF" | grep -E '^\+\+\+ b/' | sed 's|^+++ b/||' | tr '\n' ' ')
+    if [ -n "$TOUCHED_FILES" ]; then
+        DC_STATIC_STDERR=$(mktemp)
+        DEAD_CODE_STATIC=$(cd "$REPO_DIR" && eval "$DEAD_CODE_CMD" 2>"$DC_STATIC_STDERR")
+        DC_STATIC_EXIT=$?
+        if [ "$DC_STATIC_EXIT" -ne 0 ]; then
+            DC_ERR_SUMMARY=$(tail -n 3 "$DC_STATIC_STDERR" | tr '\n' ' ')
+            log "$PR_ID: dead-code static pre-pass exit $DC_STATIC_EXIT — degrading static-only (LLM grep still runs). stderr tail: $DC_ERR_SUMMARY"
+            DEAD_CODE_STATIC=""
+        elif [ -n "$DEAD_CODE_STATIC" ]; then
+            DC_LINE_COUNT=$(printf '%s\n' "$DEAD_CODE_STATIC" | wc -l)
+            log "$PR_ID: dead-code static pre-pass produced $DC_LINE_COUNT candidate line(s)"
+        fi
+        rm -f "$DC_STATIC_STDERR"
+    fi
+fi
+
 log "$PR_ID: diff is ${#KID_INPUT_DIFF} bytes"
 
 # ---- write scratch files ----
@@ -518,6 +549,7 @@ write_scratch "$REPO_DIR" "diff.patch"         "$KID_INPUT_DIFF"
 write_scratch "$REPO_DIR" "previous-review.md" "$PREV_BODY"
 write_scratch "$REPO_DIR" "test-results.md"    "$TEST_RESULTS"
 write_scratch "$REPO_DIR" "prior-art.md"       "${PRIOR_ART:-}"
+write_scratch "$REPO_DIR" "dead-code-static.md" "${DEAD_CODE_STATIC:-}"
 write_scratch "$REPO_DIR" "standards.md"       "$STANDARDS"
 [ -n "${FULL_PR_DIFF:-}" ] && \
     write_scratch "$REPO_DIR" "full-diff.patch" "$FULL_PR_DIFF"
@@ -626,6 +658,28 @@ if ! grep -q '^Inferred intent: ' "$INTENT_OUT"; then
 fi
 
 log "$PR_ID: intent inference complete: $(head -1 "$INTENT_OUT")"
+
+# ---- dead-code-search LLM pre-pass ----
+# Reads .codex-scratch/dead-code-static.md (raw static-tool output) +
+# diff.patch and writes structured evidence to .codex-scratch/dead-code.md
+# for the `consumers` specialist to file findings from. Same pattern as
+# the intent pre-pass above: synchronous, sequential, non-fatal on
+# failure (degrades to empty evidence; consumers specialist falls back
+# to its degraded LLM-grep mode).
+log "$PR_ID: dead-code search..."
+DC_PROMPT=$(substitute_placeholders \
+    "$HOME/.pr-reviewer/prompts/dead-code-search.md" \
+    "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR")
+"$_LIB_DIR/run-specialist.sh" "dead-code-search" "$REPO_DIR" "$DC_PROMPT" "$RUN_DIR/agents/dead-code-search"
+DC_EXIT=$?
+DC_OUT="$RUN_DIR/agents/dead-code-search/output.md"
+if [ "$DC_EXIT" -eq 0 ] && [ -s "$DC_OUT" ]; then
+    ln -sfn "$DC_OUT" "$REPO_DIR/.codex-scratch/dead-code.md"
+    log "$PR_ID: dead-code search complete ($(wc -l < "$DC_OUT") line(s) of evidence)"
+else
+    log "$PR_ID: dead-code search failed (exit $DC_EXIT, empty=$([ ! -s "$DC_OUT" ] && echo true || echo false)) — consumers specialist falls back to degraded LLM-grep mode"
+    : > "$REPO_DIR/.codex-scratch/dead-code.md"
+fi
 
 ANGLES=(security data-integrity architecture simplification tests shape performance consumers)
 

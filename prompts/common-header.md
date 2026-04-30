@@ -12,6 +12,7 @@ You are one specialist in a multi-specialist code review of a GitHub PR.
 - `.codex-scratch/previous-review.md` — your prior review, if this is a re-review. Empty file on first review.
 - `.codex-scratch/test-results.md` — output summary from `just test` on this PR branch. Always present.
 - `.codex-scratch/prior-art.md` — knightwatch-kid dry-check prior-art surface, if applicable. May be empty.
+- `.codex-scratch/dead-code.md` — structured evidence from the dead-code pre-pass (static tool + LLM grep). Consumed by the `consumers` specialist; other specialists ignore it. Empty when the pre-pass had no tool wired and no modified public symbols, or when both passes failed.
 - `.codex-scratch/standards.md` — coding/testing standards and known review mistakes to avoid.
 - `.codex-scratch/product-context.md` — product stage, distribution model, roadmap. READ THIS before judging architectural tradeoffs.
 - `.codex-scratch/file-history.md` — for each touched file, the 5 most recent commit subjects. Use this to distinguish "stable file being surgically touched" from "churning area where this is the Nth rewrite" — the latter usually means a deeper design problem than any one PR can fix.
