@@ -62,4 +62,23 @@ assert_contains "scenario 2: foo included" "acme/foo included .siblings/acme/foo
 assert_contains "scenario 2: bar included" "acme/bar included .siblings/acme/bar" "$OUT"
 assert_contains "scenario 2: qux missing" "acme/qux missing" "$OUT"
 
-echo "  PASS (2 scenarios: full-coverage, missing-on-disk)"
+# --- scenario 3: zero whitelisted siblings -> same-repo-only ---------
+echo "  scenario 3: zero whitelisted siblings (just the base repo)..."
+saved_repos=("${REPOS[@]}")
+REPOS=("acme/self")
+OUT=$(stage_search_roots "acme/self")
+REPOS=("${saved_repos[@]}")
+assert_contains "scenario 3: header same-repo-only" "no sibling SOURCE_PATHS in scope" "$OUT"
+
+# --- scenario 4: every whitelisted sibling missing on disk -----------
+echo "  scenario 4: every whitelisted sibling missing on disk..."
+rm -rf "$TMPDIR/repos/foo" "$TMPDIR/repos/bar"
+saved_repos=("${REPOS[@]}")
+REPOS=("acme/self" "acme/foo" "acme/bar")
+OUT=$(stage_search_roots "acme/self")
+REPOS=("${saved_repos[@]}")
+assert_contains "scenario 4: header same-repo-only" "same-repo-only — included=0 missing=2" "$OUT"
+assert_contains "scenario 4: foo missing" "acme/foo missing" "$OUT"
+assert_contains "scenario 4: bar missing" "acme/bar missing" "$OUT"
+
+echo "  PASS (4 scenarios: full-coverage, missing-on-disk, no-siblings, all-missing)"
