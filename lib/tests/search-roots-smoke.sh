@@ -174,10 +174,40 @@ assert_contains "scenario 6: header same-repo-only" "# coverage: same-repo-only"
 assert_contains "scenario 6: cites untrusted on \$REPO" "author untrusted on acme/self" "$OUT"
 # Critically: NO sibling line at all — not even excluded entries —
 # because the outer gate short-circuits before per-sibling classification.
-if printf '%s' "$OUT" | grep -qE "(included|excluded|missing|lookup-error)"; then
+# Per-sibling lines start with a repo slug; marker line starts with `#`.
+if printf '%s' "$OUT" | grep -qE '^[^#].*(included|excluded|missing|lookup-error)'; then
     echo "FAIL: scenario 6: untrusted-on-\$REPO must short-circuit; got per-sibling lines"
     echo "  output: $OUT"
     exit 1
 fi
 
-echo "  PASS (6 scenarios: full, partial-excluded, same-repo-only, missing-checkout, lookup-error, outer-gate-short-circuit)"
+# --- scenario 7: base-repo lookup-error distinct from untrusted ---------------
+# Symmetric to scenario 5 (sibling lookup-error), but for $REPO itself.
+# When gh api fails on the base-repo permission check, the marker must
+# say "lookup-error on base repo" — NOT "author untrusted" — so prompts
+# can distinguish "we don't know" from "we know the author lacks access".
+echo "  scenario 7: base-repo lookup-error..."
+saved_repos=("${REPOS[@]}")
+REPOS=("acme/self" "acme/foo" "acme/bar")
+# Author is trusted on every sibling, but the base-repo permission
+# call fails (network/rate-limit simulated).
+MOCK_PERMS="acme/self:ERR:network,acme/foo:write,acme/bar:write"
+OUT=$(stage_search_roots "acme/self" "alice")
+REPOS=("${saved_repos[@]}")
+assert_contains "scenario 7: header same-repo-only" "# coverage: same-repo-only" "$OUT"
+assert_contains "scenario 7: lookup-error on base repo" "lookup-error on base repo acme/self" "$OUT"
+# Critically, the message must NOT say "untrusted" — that would collapse
+# lookup-error into untrusted again, the exact regression of round 5.
+if printf '%s' "$OUT" | grep -q "author untrusted on acme/self"; then
+    echo "FAIL: scenario 7: base-repo lookup-error must not be reported as untrusted"
+    exit 1
+fi
+# Still no per-sibling lines (outer gate short-circuits on lookup-error too).
+# Per-sibling lines start with a repo slug; marker line starts with `#`.
+if printf '%s' "$OUT" | grep -qE '^[^#].*(included|excluded|missing|lookup-error)'; then
+    echo "FAIL: scenario 7: base-repo short-circuit must skip per-sibling classification"
+    echo "  output: $OUT"
+    exit 1
+fi
+
+echo "  PASS (7 scenarios: full, partial-excluded, same-repo-only, missing-checkout, sibling-lookup-error, outer-gate-short-circuit, base-repo-lookup-error)"

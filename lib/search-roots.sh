@@ -43,10 +43,26 @@ stage_search_roots() {
     # readable, so sibling grep results are exposed to every $repo
     # reader regardless of whether *they* have access to X. The
     # per-sibling gate below is necessary but not sufficient.
-    if ! is_trusted_repo_author "$repo" "$pr_author"; then
-        printf '%s\n' "# coverage: same-repo-only — author untrusted on $repo"
+    #
+    # Inline the gh api call (same shape as the per-sibling block
+    # below) instead of going through is_trusted_repo_author so we can
+    # distinguish base-repo lookup-error from untrusted — the
+    # coverage marker now carries complete provenance for every repo
+    # in the seam, not just siblings.
+    local repo_perm repo_perm_exit
+    repo_perm=$(gh api "repos/$repo/collaborators/$pr_author/permission" --jq '.permission' 2>/dev/null)
+    repo_perm_exit=$?
+    if [ "$repo_perm_exit" -ne 0 ] || [ -z "$repo_perm" ]; then
+        printf '%s\n' "# coverage: same-repo-only — lookup-error on base repo $repo"
         return 0
     fi
+    case "$repo_perm" in
+        admin|write|maintain) ;;  # trusted on base repo, continue
+        *)
+            printf '%s\n' "# coverage: same-repo-only — author untrusted on $repo"
+            return 0
+            ;;
+    esac
 
     for sibling_repo in "${REPOS[@]}"; do
         [ "$sibling_repo" = "$repo" ] && continue
