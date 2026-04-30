@@ -982,6 +982,12 @@ if [ -n "$CURRENT_HEAD" ] && [ "$CURRENT_HEAD" != "$PR_SHA" ]; then
     log "$PR_ID: head moved during review (reviewed=${PR_SHA:0:7}, now=${CURRENT_HEAD:0:7}) — appending stale-head suffix"
 fi
 log "$PR_ID: review scope = $REVIEW_SCOPE"
+# TODO(future): rename SKIPPED_CHECKS -> REVIEW_NOTES — the array
+# carries warnings (e.g. KID/Tests skips) that get formatted at the
+# top of the posted review. The signature of prepend_review_header
+# could also absorb review_scope and stale_head as additional notes
+# in the same array. Mechanical refactor; lands cleaner as its own
+# focused PR.
 # Compose the skipped-checks list for the disclosure header. One line
 # per pre-review check the worker tracks; add a new capability (e.g. a
 # future dead-code analyzer) by appending one line — `[ "$X_RAN" =
