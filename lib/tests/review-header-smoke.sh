@@ -353,56 +353,69 @@ assert_classify 0 "" "true" "PASSED" "tests ran and passed"
 echo "  classify: exit 124 → TIMED OUT..."
 assert_classify 124 "" "true" "TIMED OUT (>30m)" "timeout expired"
 
-echo "  classify: exit 127 → recipe broken..."
-# Bot's actual failure mode on cncorp/plow-content#1 before this PR:
-# `pytest` not on PATH, recipe exits 127, was previously a hard abort.
-assert_classify 127 "Recipe \`test\` failed on line 2 with exit code 127" \
-    "false" "not run (recipe failed: command-not-found inside justfile, exit 127)" \
-    "recipe ran but command-not-found inside (e.g. pytest missing)"
+echo "  classify: exit 127 + 'Recipe failed' → not run (cmd-not-found inside)..."
+# Bot's actual failure on cncorp/plow-content#1 before this PR:
+# `pytest` not on PATH, recipe exits 127. Recipe DID run (just's
+# "Recipe failed" line appears), but the test framework never executed.
+assert_classify 127 "sh: 1: pytest: not found
+error: Recipe \`test\` failed on line 2 with exit code 127" \
+    "false" "not run (recipe ran but command-not-found inside, exit 127)" \
+    "recipe invoked, command inside missing (e.g. pytest)"
 
-echo "  classify: exit 1 + 'No justfile found' → no justfile..."
-# Critical regression-fence for finding 2: this pins behavior without
-# inventing a parallel filename rule. Whatever set of names `just`
-# accepts (justfile, Justfile, .justfile, JUSTFILE, etc.), the helper
-# defers to just's own discovery via the stderr text.
-assert_classify 1 "error: No justfile found" \
-    "false" "not run (no justfile found by \`just\` in repo root)" \
-    "just couldn't discover any justfile — defers to just's own rules"
-
-echo "  classify: exit 1 + 'does not contain recipe' → no test recipe..."
-# Repo has a justfile but it doesn't define `test`. The bot can review
-# the diff anyway; don't abort.
-assert_classify 1 "error: Justfile does not contain recipe \`test\`" \
-    "false" "not run (justfile has no \`test\` recipe)" \
-    "justfile present but missing \`test\` target"
-
-echo "  classify: exit 1 + plain failure (not just-discovery) → FAILED..."
-# Pytest failures, lint failures, etc. — exit 1 from inside the recipe.
-# Distinguished from "exit 1 + No justfile found" by the absence of
-# just's discovery error in stderr.
-assert_classify 1 "FAILED tests/test_foo.py::test_bar - assert 1 == 2" \
+echo "  classify: exit 1 + 'Recipe failed' → FAILED (exit 1, real test failure)..."
+# Recipe ran and the test framework reported failures.
+# The "Recipe failed" line distinguishes this from a pre-recipe error.
+assert_classify 1 "FAILED tests/test_foo.py::test_bar - assert 1 == 2
+error: Recipe \`test\` failed on line 2 with exit code 1" \
     "true" "FAILED (exit 1)" \
-    "real test failure inside the recipe (no just discovery error in log)"
+    "recipe ran, test framework returned failure"
 
-echo "  classify: exit 2 → FAILED..."
-# pytest collection error etc.
-assert_classify 2 "" "true" "FAILED (exit 2)" "non-special non-zero exit"
+echo "  classify: exit 1 + no 'Recipe failed' line ('No justfile found') → not run (pre-recipe)..."
+# Pre-recipe failure: no justfile means the recipe never started, so
+# no "Recipe failed" line. The single-signal discriminator handles it
+# without enumerating "No justfile found" specifically.
+assert_classify 1 "error: No justfile found" \
+    "false" "not run (just pre-recipe failure: see test-results below)" \
+    "just couldn't discover any justfile — pre-recipe failure"
 
-# Edge: empty log file (timeout before any output, e.g.) on exit 1
-# must NOT misclassify as the discovery / recipe paths — those rules
-# require specific stderr text. Defaults to FAILED.
-echo "  classify: exit 1 + empty log → FAILED (no discovery match)..."
-assert_classify 1 "" "true" "FAILED (exit 1)" "exit 1 with empty log doesn't trigger no-justfile path"
+echo "  classify: exit 1 + no 'Recipe failed' line ('does not contain recipe') → not run (pre-recipe)..."
+# Justfile exists but no \`test\` recipe — same pre-recipe class.
+assert_classify 1 "error: Justfile does not contain recipe \`test\`" \
+    "false" "not run (just pre-recipe failure: see test-results below)" \
+    "missing test recipe — pre-recipe failure, no Recipe-failed line"
 
-# Edge: log file missing entirely (the redirect failed, etc) on exit 1
-# must not crash — the [ -f "$test_log" ] guard handles this. Treat as
-# plain FAILED.
-echo "  classify: exit 1 + missing log file → FAILED..."
+echo "  classify: exit 1 + no 'Recipe failed' line ('Failed to write recipe to /tmp/just-…') → not run (pre-recipe)..."
+# Regression-fence for the bot's own observed PR #24 review failure:
+# /tmp couldn't be created, just bailed before invoking the recipe.
+# The previous classifier (with enumerated stderr strings) misclassified
+# this as FAILED (exit 1) → suppressed the 🧪 warning. The Recipe-failed
+# discriminator catches it correctly without naming this specific error.
+assert_classify 1 "error: Failed to write recipe to /tmp/just-AbC123/test" \
+    "false" "not run (just pre-recipe failure: see test-results below)" \
+    "just-internal infra error (e.g. /tmp not writable) — must not be misclassified as FAILED"
+
+echo "  classify: exit 2 + 'Recipe failed' → FAILED (exit 2, e.g. pytest collection error)..."
+assert_classify 2 "ERROR collecting tests/test_foo.py
+error: Recipe \`test\` failed on line 2 with exit code 2" \
+    "true" "FAILED (exit 2)" \
+    "non-special non-zero exit, recipe ran"
+
+echo "  classify: exit 1 + empty log → not run (defaults to safe pre-recipe class)..."
+# If the redirect failed or `just` produced no stderr at all, default
+# to the safer "not run" classification — the 🧪 warning errs on the
+# side of disclosing that test results may be untrustworthy, rather
+# than silently suppressing it as FAILED.
+assert_classify 1 "" "false" "not run (just pre-recipe failure: see test-results below)" \
+    "no 'Recipe failed' line in empty log → safe default to pre-recipe class"
+
+# Edge: log file missing entirely (the redirect failed, etc.) — must
+# not crash on the [ -f "$test_log" ] guard.
+echo "  classify: exit 1 + missing log file → not run (defaults to safe pre-recipe class)..."
 GHOST_LOG="$TMPLOG.ghost"
 rm -f "$GHOST_LOG"
 IFS=$'\t' read -r got_ran got_summary < <(classify_just_test_outcome 1 "$GHOST_LOG" "30m")
-if [ "$got_ran" != "true" ] || [ "$got_summary" != "FAILED (exit 1)" ]; then
-    echo "FAIL: classify with missing log file — expected (true, FAILED (exit 1)), got ($got_ran, $got_summary)"
+if [ "$got_ran" != "false" ] || [ "$got_summary" != "not run (just pre-recipe failure: see test-results below)" ]; then
+    echo "FAIL: classify with missing log file — expected (false, 'not run (just pre-recipe...)'), got ($got_ran, $got_summary)"
     exit 1
 fi
 

@@ -127,68 +127,46 @@ compute_review_scope() {
 
 # classify_just_test_outcome TEST_EXIT TEST_LOG TEST_TIMEOUT
 #
-# Pure function. Maps a `just test` invocation's (exit code, stderr log)
-# pair to a (TESTS_RAN, TEST_SUMMARY) tuple, tab-separated, one line.
-#
-# The worker runs `just test` and reads classify's output via:
-#   IFS=$'\t' read -r TESTS_RAN TEST_SUMMARY \
-#       < <(classify_just_test_outcome $TEST_EXIT $TEST_LOG $TEST_TIMEOUT)
+# Pure function. Maps `just test`'s (exit, stderr) to (TESTS_RAN,
+# TEST_SUMMARY) tab-separated. The discriminator: `just` always
+# appends `error: Recipe \`test\` failed on line N` to stderr when it
+# actually ran a recipe (regardless of whether the command inside
+# succeeded). It does NOT appear when `just` failed before invoking
+# the recipe (no justfile, missing recipe, /tmp not writable, etc).
+# So one signal handles every pre-recipe failure — no enumerated
+# stderr-string list to expand for each new infra error.
 #
 # Outcomes:
-#   - exit 0           → "true\tPASSED"
-#   - exit 124         → "true\tTIMED OUT (>${TEST_TIMEOUT})"
-#   - exit 127         → "false\tnot run (recipe failed: command-not-found
-#                        inside justfile, exit 127)"
-#                        — `just` ran the recipe but a command inside it
-#                        (pytest, npm, etc.) wasn't on the bot's PATH.
-#                        Per-PR-author problem; review the diff anyway.
-#   - exit 1 + log says "No justfile found"
-#                       → "false\tnot run (no justfile found by `just` in
-#                          repo root)"
-#                          — Uses `just`'s own discovery, so a repo with
-#                          .justfile / Justfile / JUSTFILE etc. is NOT
-#                          misclassified as missing.
-#   - exit 1 + log says "does not contain recipe"
-#                       → "false\tnot run (justfile has no `test` recipe)"
-#                          — justfile exists but lacks a `test` target.
-#                          Repo isn't gated on `just test`; review anyway.
-#   - other            → "true\tFAILED (exit N)"
-#                        — tests ran and failed; the body's test-results
-#                        section carries the log tail. No top-of-comment
-#                        warning needed (the failure is in the review
-#                        the reader is about to read).
+#   - exit 0                              → ran, PASSED
+#   - exit 124                            → ran, TIMED OUT
+#   - "Recipe failed" present + exit 127  → didn't run (recipe
+#                                            invoked, but a command
+#                                            inside — pytest, npm,
+#                                            etc. — wasn't on PATH)
+#   - "Recipe failed" present + other     → ran, FAILED (exit N)
+#   - "Recipe failed" absent              → didn't run (just
+#                                            pre-recipe failure: no
+#                                            justfile / missing
+#                                            recipe / sandbox blocked
+#                                            /tmp / etc.)
 #
-# Single source of truth: REVIEW_TASK construction reads TESTS_RAN to
-# decide prompt text, prepend_review_header reads it to decide whether
-# to surface the 🧪 suffix, and the test-results section displays
-# TEST_SUMMARY directly. Without this seam, those three places could
-# drift on a future addition (e.g. adding a 6th outcome wired into one
-# but not all consumers — same BCR class fenced by review-header-smoke).
-#
-# Hermetic — TEST_LOG must already be on disk; helper does not invoke
-# `just` itself, so the smoke can drive every branch with crafted
-# (exit, log file) pairs.
+# Hermetic — caller writes TEST_LOG; helper doesn't invoke `just`, so
+# the smoke drives every branch with crafted (exit, log) pairs.
 classify_just_test_outcome() {
     local test_exit="$1" test_log="$2" test_timeout="$3"
-    if [ "$test_exit" -eq 127 ]; then
-        printf 'false\tnot run (recipe failed: command-not-found inside justfile, exit 127)\n'
-        return
-    fi
-    if [ "$test_exit" -eq 1 ] && [ -f "$test_log" ]; then
-        if grep -q "No justfile found" "$test_log"; then
-            printf 'false\tnot run (no justfile found by `just` in repo root)\n'
-            return
-        fi
-        if grep -q "does not contain recipe" "$test_log"; then
-            printf 'false\tnot run (justfile has no `test` recipe)\n'
-            return
-        fi
-    fi
     case "$test_exit" in
-        0)   printf 'true\tPASSED\n' ;;
-        124) printf 'true\tTIMED OUT (>%s)\n' "$test_timeout" ;;
-        *)   printf 'true\tFAILED (exit %s)\n' "$test_exit" ;;
+        0)   printf 'true\tPASSED\n' ; return ;;
+        124) printf 'true\tTIMED OUT (>%s)\n' "$test_timeout" ; return ;;
     esac
+    if [ -f "$test_log" ] && grep -q "^error: Recipe .* failed" "$test_log"; then
+        if [ "$test_exit" -eq 127 ]; then
+            printf 'false\tnot run (recipe ran but command-not-found inside, exit 127)\n'
+        else
+            printf 'true\tFAILED (exit %s)\n' "$test_exit"
+        fi
+    else
+        printf 'false\tnot run (just pre-recipe failure: see test-results below)\n'
+    fi
 }
 
 # prepend_review_header COMMENT_BODY SCOPE REVIEWED_SHA CURRENT_HEAD TESTS_RAN
