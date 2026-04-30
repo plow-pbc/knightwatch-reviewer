@@ -389,27 +389,36 @@ fi
 # raw `gh pr diff` view (three-dot) includes everything brought in via
 # `git merge origin/<default-branch>`, so PRs that merge main pull in
 # unrelated commits and specialists file findings against the wrong author
-# (cncorp/plow#552 caught flagging PR #547/#548 changes as plonkus's). The
-# filter restricts the diff to `git log --no-merges origin/main..HEAD`'s
-# touched-files set. Falls back to the raw `gh pr diff` if local history is
-# too shallow for merge-base or the branch has no non-merge content — both
-# rare and either equivalent to today's behavior or trivially degraded.
+# (cncorp/plow#552 caught flagging PR #547/#548 changes as plonkus's).
+# Falls back to the raw `gh pr diff` if local history is too shallow for
+# merge-base or the branch has no non-merge content — both rare and
+# either equivalent to today's behavior or trivially degraded.
 build_pr_diff() {
     local repo_dir="$1" repo="$2" pr_num="$3" default_branch="$4"
-    local authored diff_out
-    if authored=$(compute_pr_authored_files "$repo_dir" "$default_branch"); then
-        diff_out=$(printf '%s\n' "$authored" \
-            | (cd "$repo_dir" && xargs -d '\n' git diff "origin/${default_branch}...HEAD" --) \
-            2>/dev/null)
-        if [ -n "$diff_out" ]; then
-            printf '%s' "$diff_out"
-            return 0
-        fi
-        log "$PR_ID: filtered diff was empty despite $(printf '%s\n' "$authored" | wc -l) authored file(s) — falling back to gh pr diff"
-    else
-        log "$PR_ID: no non-merge commits on branch (or shallow history) — falling back to gh pr diff"
+    local out
+    if out=$(build_authored_diff "$repo_dir" "HEAD" "origin/${default_branch}"); then
+        printf '%s' "$out"
+        return 0
     fi
+    log "$PR_ID: build_authored_diff produced no content (no non-merge commits, shallow history, or empty filter) — falling back to gh pr diff"
     gh pr diff "$pr_num" --repo "$repo" 2>/dev/null
+}
+
+# build_incremental_diff produces the diff handed to specialists on a
+# re-review (commits since the prior reviewed SHA), filtered the same way
+# as build_pr_diff. Excludes BOTH the prior SHA AND origin/<default-branch>
+# so any merge-from-main commits pulled in between then and now don't
+# resurface as "new findings against the wrong author" — same class of
+# regression the full-PR filter catches.
+build_incremental_diff() {
+    local repo_dir="$1" prior_sha="$2" default_branch="$3"
+    local out
+    if out=$(build_authored_diff "$repo_dir" "HEAD" "$prior_sha" "origin/${default_branch}"); then
+        printf '%s' "$out"
+        return 0
+    fi
+    log "$PR_ID: incremental authored-diff produced no content — falling back to unfiltered git diff ${prior_sha:0:7}..HEAD"
+    git -C "$repo_dir" diff "${prior_sha}..HEAD"
 }
 
 KNOWN_SHA=$(state_get "$PR_ID" "sha")
@@ -421,7 +430,7 @@ else
     PREV_BODY=$(state_get "$PR_ID" "body")
     PREV_APPROVED=$(state_get "$PR_ID" "approved")
     if git -C "$REPO_DIR" cat-file -e "${KNOWN_SHA}^{commit}" 2>/dev/null; then
-        KID_INPUT_DIFF=$(git -C "$REPO_DIR" diff "$KNOWN_SHA..HEAD")
+        KID_INPUT_DIFF=$(build_incremental_diff "$REPO_DIR" "$KNOWN_SHA" "$DEFAULT_BRANCH")
         # Specialists work the incremental diff; the aggregator separately
         # gets the full PR diff so it can verify whether prior blocking
         # findings touch code that's actually changed in this PR vs. has
@@ -750,12 +759,17 @@ else
 fi
 
 FILE_HISTORY=""
+# Reuse the diff-scope authored-files seam so file-history.md tracks the
+# same "files this PR's commits touched" set the specialists' diff was
+# scoped to. The previous code shelled `git diff --name-only $DEFAULT_BRANCH...HEAD`
+# against the bare branch name, which doesn't exist as a local ref in the
+# shared workdir clone — file-history.md was empty in production runs.
 while IFS= read -r f; do
     [ -z "$f" ] && continue
     FILE_HISTORY+="### $f"$'\n'
     hist=$(git -C "$REPO_DIR" log --oneline -n 5 -- "$f" 2>/dev/null)
     FILE_HISTORY+="${hist:-(no history)}"$'\n\n'
-done < <(git -C "$REPO_DIR" diff --name-only "$DEFAULT_BRANCH"...HEAD 2>/dev/null | head -30)
+done < <(compute_pr_authored_files "$REPO_DIR" "$DEFAULT_BRANCH" 2>/dev/null | head -30)
 write_scratch "$REPO_DIR" "file-history.md" "${FILE_HISTORY:-(no touched files)}"
 
 # PR_DATA + PR_AUTHOR were fetched earlier (above the env mirror) so the

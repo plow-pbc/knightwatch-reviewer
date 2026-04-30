@@ -62,9 +62,10 @@ git -C "$REPO" commit -qm "add feature2.txt"
 # Authored files (non-merge, branch-only) should be feature.txt + feature2.txt.
 # main-only.txt and a.txt's mainline edit must NOT appear — those rode in
 # via the merge and were not authored on the branch.
-got=$(compute_pr_authored_files "$REPO" "main" | sort)
 want=$(printf '%s\n' "feature.txt" "feature2.txt" | sort)
 
+# Compatibility wrapper still works (full-PR case).
+got=$(compute_pr_authored_files "$REPO" "main" | sort)
 if [ "$got" != "$want" ]; then
     echo "FAIL: compute_pr_authored_files returned wrong list"
     echo "  got:"
@@ -74,8 +75,43 @@ if [ "$got" != "$want" ]; then
     exit 1
 fi
 
+# Generalized helper, single exclude (full-PR analog).
+got_general=$(compute_authored_files "$REPO" "HEAD" "origin/main" | sort)
+if [ "$got_general" != "$want" ]; then
+    echo "FAIL: compute_authored_files single-exclude returned wrong list"
+    exit 1
+fi
+
+# Incremental scenario: prior reviewed SHA = first feature commit. The
+# later branch state has the merge of main + feature2.txt. Authored-since-
+# prior, EXCLUDING merged-in main content, should be ONLY feature2.txt.
+# Bot's finding 1 was that the incremental path didn't have this exclusion
+# and bogus findings reappeared from the merged-in commits — verify it
+# now does, with both prior-SHA AND origin/main as exclude refs.
+PRIOR_SHA=$(git -C "$REPO" rev-parse "feature^{/add feature.txt}")
+got_incr=$(compute_authored_files "$REPO" "HEAD" "$PRIOR_SHA" "origin/main" | sort)
+want_incr="feature2.txt"
+if [ "$got_incr" != "$want_incr" ]; then
+    echo "FAIL: compute_authored_files(prior + origin/main excludes) wrong"
+    echo "  got:"
+    printf '%s\n' "$got_incr" | sed 's/^/    /'
+    echo "  want: $want_incr"
+    exit 1
+fi
+
+# build_authored_diff produces a unified diff restricted to authored files.
+diff_out=$(build_authored_diff "$REPO" "HEAD" "origin/main")
+if ! printf '%s' "$diff_out" | grep -q '^diff --git a/feature.txt'; then
+    echo "FAIL: build_authored_diff missing feature.txt hunk"
+    exit 1
+fi
+if printf '%s' "$diff_out" | grep -q '^diff --git a/main-only.txt'; then
+    echo "FAIL: build_authored_diff leaked main-only.txt (merged-in content)"
+    exit 1
+fi
+
 # Empty-result fallback: when the branch has zero non-merge commits
-# (degenerate case), the function should print nothing and exit non-zero
+# (degenerate case), the helpers should print nothing and exit non-zero
 # so callers can detect and fall back.
 git -C "$REPO" checkout -q main
 git -C "$REPO" checkout -qb only-merges
@@ -87,5 +123,9 @@ if compute_pr_authored_files "$REPO" "main" 2>/dev/null; then
     echo "FAIL: expected non-zero exit for branch-equals-main case"
     exit 1
 fi
+if build_authored_diff "$REPO" "HEAD" "origin/main" 2>/dev/null; then
+    echo "FAIL: build_authored_diff should exit non-zero for branch-equals-main"
+    exit 1
+fi
 
-echo "  ok: compute_pr_authored_files filters merge-from-main content"
+echo "  ok: diff-scope helpers filter merge-from-main content (full + incremental)"
