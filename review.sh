@@ -70,7 +70,14 @@ for REPO in "${REPOS[@]}"; do
         if [ -n "$KNOWN_SHA" ]; then
             REVIEWED_AT=$(state_get "$PR_ID" "reviewed_at")
             REVIEWED_AT_ISO=$(date -d "@${REVIEWED_AT}" -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null)
-            COMMENTS_JSON=$(fetch_issue_comments "$REPO" "$PR_NUM")
+            # Fail loud on a transient gh outage rather than treating
+            # "API broken" as "no comments" and silently missing a
+            # /srosro-update-review trigger. Same wrapper shape as
+            # approve-from-replies.sh + learn-from-replies.sh.
+            COMMENTS_JSON=$(fetch_issue_comments "$REPO" "$PR_NUM") || {
+                log "$PR_ID: comments fetch failed — skipping this PR for this tick"
+                continue
+            }
             # Exclude the bot's own auto-posts (review ack, final review,
             # learn-from-replies acks, and the usage footer that appears on
             # every review and itself contains the slash commands) by

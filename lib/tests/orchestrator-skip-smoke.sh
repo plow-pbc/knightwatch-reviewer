@@ -20,6 +20,11 @@
 #   7. /srosro-update-review on an unchanged SHA → no dispatch (skipped
 #      to avoid empty-diff aborts; the trigger stays open until commits
 #      land and a future tick picks it up).
+#  13. /srosro-update-review on PAGE 2 of the issue-comments endpoint
+#      → 1 dispatch. Stub emits page 2 only when --paginate is in args,
+#      so a regression that drops --paginate from lib/gh-comments.sh
+#      would silently lose the trigger and fail the dispatch assertion.
+#      This is the original user-facing bug the PR exists to fence.
 #
 # Stubs `gh` via PATH and the worker via REVIEWER_LIB_DIR so neither the
 # network nor real PR infrastructure is touched.
@@ -99,7 +104,26 @@ elif [ "$1" = "api" ]; then
         esac
     done
     if [[ "$url" == */issues/*/comments* ]]; then
-        cat "$MOCK_COMMENTS_FILE"
+        # Pagination-aware mode: when MOCK_COMMENTS_PAGE1_FILE is set,
+        # emit page 1 always and emit page 2 ONLY if --paginate is in
+        # args AND MOCK_COMMENTS_PAGE2_FILE is set. Lets scenario 13
+        # fence the original bug — review.sh dropping --paginate from
+        # the helper would lose any trigger past page 1. Legacy
+        # single-file mode (MOCK_COMMENTS_FILE) is what every earlier
+        # scenario uses; pagination doesn't matter there.
+        if [ -n "${MOCK_COMMENTS_PAGE1_FILE:-}" ]; then
+            cat "$MOCK_COMMENTS_PAGE1_FILE"
+            if [ -n "${MOCK_COMMENTS_PAGE2_FILE:-}" ]; then
+                for arg in "$@"; do
+                    if [ "$arg" = "--paginate" ]; then
+                        cat "$MOCK_COMMENTS_PAGE2_FILE"
+                        break
+                    fi
+                done
+            fi
+        else
+            cat "$MOCK_COMMENTS_FILE"
+        fi
     elif [[ "$url" == */pulls/*/commits* ]]; then
         # Old date so cooldown is bypassed if it ever runs. None of these
         # scenarios should reach the cooldown branch (all are same-SHA;
@@ -520,4 +544,49 @@ fi
 # force this tick.
 grep -q "per-worker timeout 2s" "$LOG_FILE" || { echo "FAIL scenario 12: expected 'per-worker timeout 2s' in fan-out log line"; cat "$LOG_FILE"; exit 1; }
 
-echo "  PASS (12 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced)"
+# Scenario 13: page-2 trigger fence. The original bug this PR exists to
+# fix: review.sh's pre-DRY fetch was a single-page `gh api`, so any
+# /srosro-update-review past page 1 (~30 comments) was silently
+# dropped — review.sh saw no trigger and the orchestrator never
+# dispatched a re-review. The gh stub here emits page 2 ONLY when
+# --paginate is in args, so a regression that drops --paginate from
+# lib/gh-comments.sh would make the trigger invisible and fail the
+# dispatch assertion. Uses a different KNOWN_SHA so the changed-SHA
+# branch handles dispatch (incremental triggers on an unchanged SHA
+# are deliberately skipped — scenario 7 covers that path).
+echo "  scenario 13: /srosro-update-review on page 2 of comments — page-2 pagination fence..."
+
+# Restore a vanilla worker stub — scenarios 11 (chmod -x), 12 (sleep
+# under timeout) left it in non-default state.
+cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<'WORKER'
+#!/bin/bash
+echo "WORKER_DISPATCHED repo=$1 pr=$2 sha=$3 force_whole=$6 trigger_file=${TRIGGER_COMMENT_FILE:-}" >> "$LOG_FILE"
+WORKER
+chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
+
+# Pre-stamp with a SHA that differs from the gh stub's headRefOid
+# (abc123). reviewed_at far in the past so MOCK_COMMENTS_PAGE*_FILE
+# timestamps written as "now" satisfy `created_at > reviewed_at`.
+state_set "cncorp/plow#1" "old_sha_999" false "prior review body" "$(($(date +%s) - 7200))"
+
+PAGE1="$TMPDIR/page1.json"
+PAGE2="$TMPDIR/page2.json"
+printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"unrelated comment"}]\n' "$NOW_ISO" > "$PAGE1"
+printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-update-review"}]\n' "$NOW_ISO" > "$PAGE2"
+export MOCK_COMMENTS_PAGE1_FILE="$PAGE1"
+export MOCK_COMMENTS_PAGE2_FILE="$PAGE2"
+unset MOCK_COMMENTS_FILE   # force the pagination-aware branch in the stub
+
+run_orchestrator
+n=$(count_dispatches)
+if [ "$n" -ne 1 ]; then
+    echo "FAIL scenario 13 (page-2 pagination regression): expected 1 dispatch on page-2 /srosro-update-review, got $n — review.sh likely dropped --paginate from the helper and lost the trigger"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+if grep -q 'force_whole=true' "$LOG_FILE"; then
+    echo "FAIL scenario 13: expected force_whole=false (incremental trigger), got force_whole=true"
+    cat "$LOG_FILE"; exit 1
+fi
+
+echo "  PASS (13 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence)"

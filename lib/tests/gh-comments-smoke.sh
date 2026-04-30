@@ -45,6 +45,11 @@ if [ -n "${STUB_PAGES_DIR:-}" ] && [ -d "$STUB_PAGES_DIR" ]; then
         [ -f "$page" ] && cat "$page"
     done
 fi
+# Belt: real `gh api --paginate` exits 0 on success regardless of
+# how many pages it emitted. Without this, an empty pages-dir would
+# leak the trailing `[ -f ]` test's failure into the stub's exit
+# code and falsely surface as a gh-failure to the caller.
+exit 0
 STUB
 chmod +x "$TMPDIR/bin/gh"
 export PATH="$TMPDIR/bin:$PATH"
@@ -91,12 +96,13 @@ if [ "$got_page2_trigger" != "1" ]; then
 fi
 
 # ---- Scenario 2: empty response ----
-# gh succeeds but returns no pages (e.g. PR with zero issue comments).
-# Must return `[]`, not empty string, so callers can iterate without
-# a guard.
+# Real `gh api --paginate` on a PR with zero issue comments emits a
+# single `[]` page (not empty stdout) and exits 0. Helper must return
+# `[]` so callers can iterate without a guard.
 echo "  scenario 2: empty response → []..."
 EMPTY="$TMPDIR/pages-empty"
 mkdir -p "$EMPTY"
+echo '[]' > "$EMPTY/page-1.json"
 export STUB_PAGES_DIR="$EMPTY"
 export STUB_EXIT=""
 result=$(fetch_issue_comments "owner/repo" "42")
