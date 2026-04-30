@@ -1,7 +1,13 @@
 #!/bin/bash
 # Smoke for the consolidated top-of-comment disclosure helper:
-#   prepend_review_header COMMENT_BODY SCOPE REVIEWED_SHA CURRENT_HEAD TESTS_RAN
-# (and the pure helper compute_review_scope it depends on).
+#   prepend_review_header COMMENT_BODY SCOPE REVIEWED_SHA CURRENT_HEAD SKIPPED_CHECKS
+# (and the pure helpers compute_review_scope + classify_just_test_outcome).
+#
+# SKIPPED_CHECKS is a comma-separated list of pre-rendered labels (e.g.
+# "🧪 Tests,🔍 Prior-art (KID)"). Empty → no suffix. Worker composes
+# the list; helper just joins on ", " and appends a fixed tail. Adding
+# a new capability (dead-code analyzer, type-check runner) is one line
+# in the worker, no helper change.
 #
 # Replaces the two prior smokes (stale-head-smoke.sh + review-scope-
 # smoke.sh) that fenced the two helpers stacked into separate
@@ -116,7 +122,7 @@ assert_one_blockquote() {
 
 # ===== Scope variants × stale=matched (no suffix) =====
 echo "  scope=first  + matched-shas → header has scope only..."
-result=$(prepend_review_header "$BODY" "first" "$SHA_OLD" "$SHA_OLD" "true")
+result=$(prepend_review_header "$BODY" "first" "$SHA_OLD" "$SHA_OLD" "")
 assert_marker_first "$result" "first/matched"
 assert_body_preserved "$result" "first/matched"
 assert_one_blockquote "$result" "first/matched"
@@ -125,7 +131,7 @@ assert_no_stale_suffix "$result" "first/matched"
 assert_no_tests_suffix "$result" "first/matched"
 
 echo "  scope=whole  + matched-shas → header has scope only..."
-result=$(prepend_review_header "$BODY" "whole" "$SHA_OLD" "$SHA_OLD" "true")
+result=$(prepend_review_header "$BODY" "whole" "$SHA_OLD" "$SHA_OLD" "")
 assert_marker_first "$result" "whole/matched"
 assert_body_preserved "$result" "whole/matched"
 assert_one_blockquote "$result" "whole/matched"
@@ -135,7 +141,7 @@ assert_contains "$result" "from scratch" "whole/matched discloses no-prior-revie
 assert_no_stale_suffix "$result" "whole/matched"
 
 echo "  scope=incremental:<sha> + matched-shas → header cites prior SHA..."
-result=$(prepend_review_header "$BODY" "incremental:$SHA_OLD" "$SHA_OLD" "$SHA_OLD" "true")
+result=$(prepend_review_header "$BODY" "incremental:$SHA_OLD" "$SHA_OLD" "$SHA_OLD" "")
 assert_marker_first "$result" "incremental/matched"
 assert_body_preserved "$result" "incremental/matched"
 assert_one_blockquote "$result" "incremental/matched"
@@ -143,7 +149,7 @@ assert_contains "$result" 'Re-review of changes since `abc1234`' "incremental/ma
 assert_no_stale_suffix "$result" "incremental/matched"
 
 echo "  scope=fallback:<sha> + matched-shas → header discloses force-push/rebase..."
-result=$(prepend_review_header "$BODY" "fallback:$SHA_OLD" "$SHA_OLD" "$SHA_OLD" "true")
+result=$(prepend_review_header "$BODY" "fallback:$SHA_OLD" "$SHA_OLD" "$SHA_OLD" "")
 assert_marker_first "$result" "fallback/matched"
 assert_body_preserved "$result" "fallback/matched"
 assert_one_blockquote "$result" "fallback/matched"
@@ -154,7 +160,7 @@ assert_no_stale_suffix "$result" "fallback/matched"
 
 # ===== Scope variants × stale=differs (suffix appended) =====
 echo "  scope=first  + differing-shas → header has scope + stale suffix on same line..."
-result=$(prepend_review_header "$BODY" "first" "$SHA_OLD" "$SHA_NEW" "true")
+result=$(prepend_review_header "$BODY" "first" "$SHA_OLD" "$SHA_NEW" "")
 assert_marker_first "$result" "first/stale"
 assert_body_preserved "$result" "first/stale"
 assert_one_blockquote "$result" "first/stale"
@@ -178,7 +184,7 @@ if printf '%s' "$result" | grep -q "/srosro-update-review"; then
 fi
 
 echo "  scope=incremental:<sha> + differing-shas → both signals on one line..."
-result=$(prepend_review_header "$BODY" "incremental:$SHA_OLD" "$SHA_OLD" "$SHA_NEW" "true")
+result=$(prepend_review_header "$BODY" "incremental:$SHA_OLD" "$SHA_OLD" "$SHA_NEW" "")
 assert_marker_first "$result" "incremental/stale"
 assert_one_blockquote "$result" "incremental/stale"
 assert_contains "$result" "Re-review of changes since" "incremental/stale scope text"
@@ -186,13 +192,13 @@ assert_contains "$result" "Stale: head moved" "incremental/stale suffix"
 assert_contains "$result" '`def9876`' "incremental/stale cites new head"
 
 echo "  scope=whole + differing-shas → scope + stale on one line..."
-result=$(prepend_review_header "$BODY" "whole" "$SHA_OLD" "$SHA_NEW" "true")
+result=$(prepend_review_header "$BODY" "whole" "$SHA_OLD" "$SHA_NEW" "")
 assert_one_blockquote "$result" "whole/stale"
 assert_contains "$result" "Whole-PR re-review" "whole/stale scope text"
 assert_contains "$result" "Stale: head moved" "whole/stale suffix"
 
 echo "  scope=fallback:<sha> + differing-shas → scope + stale on one line..."
-result=$(prepend_review_header "$BODY" "fallback:$SHA_OLD" "$SHA_OLD" "$SHA_NEW" "true")
+result=$(prepend_review_header "$BODY" "fallback:$SHA_OLD" "$SHA_OLD" "$SHA_NEW" "")
 assert_one_blockquote "$result" "fallback/stale"
 assert_contains "$result" "force-push/rebase" "fallback/stale scope text"
 assert_contains "$result" "Stale: head moved" "fallback/stale suffix"
@@ -200,7 +206,7 @@ assert_contains "$result" "Stale: head moved" "fallback/stale suffix"
 # ===== Scope variants × stale=empty CURRENT_HEAD (gh-failure path) =====
 # Best-effort fetch fails → no warning. Identical to matched.
 echo "  scope=incremental + empty CURRENT_HEAD (gh-failure) → no stale suffix..."
-result=$(prepend_review_header "$BODY" "incremental:$SHA_OLD" "$SHA_OLD" "" "true")
+result=$(prepend_review_header "$BODY" "incremental:$SHA_OLD" "$SHA_OLD" "" "")
 assert_marker_first "$result" "incremental/gh-fail"
 assert_one_blockquote "$result" "incremental/gh-fail"
 assert_contains "$result" "Re-review of changes since" "incremental/gh-fail scope text"
@@ -208,12 +214,12 @@ assert_no_stale_suffix "$result" "incremental/gh-fail"
 
 # ===== Unknown scope → fail-fast =====
 echo "  scope=bogus → fail-fast (non-zero exit + stderr diagnostic)..."
-result=$(prepend_review_header "$BODY" "bogus" "$SHA_OLD" "$SHA_OLD" "true" 2>/dev/null)
+result=$(prepend_review_header "$BODY" "bogus" "$SHA_OLD" "$SHA_OLD" "" 2>/dev/null)
 if [ "$?" -eq 0 ]; then
     echo "FAIL: bogus scope — function returned 0 (silent degrade); should exit non-zero per CLAUDE.md fail-fast"
     exit 1
 fi
-err=$(prepend_review_header "$BODY" "bogus" "$SHA_OLD" "$SHA_OLD" "true" 2>&1 >/dev/null)
+err=$(prepend_review_header "$BODY" "bogus" "$SHA_OLD" "$SHA_OLD" "" 2>&1 >/dev/null)
 if ! printf '%s' "$err" | grep -q "unknown scope"; then
     echo "FAIL: bogus scope — stderr diagnostic missing 'unknown scope' phrasing; got: $err"
     exit 1
@@ -225,7 +231,7 @@ fi
 # The header must disclose that — otherwise the reader assumes "no test
 # failures flagged" means tests ran and passed.
 echo "  scope=first + tests-not-run → tests suffix appended..."
-result=$(prepend_review_header "$BODY" "first" "$SHA_OLD" "$SHA_OLD" "false")
+result=$(prepend_review_header "$BODY" "first" "$SHA_OLD" "$SHA_OLD" "🧪 Tests")
 assert_marker_first "$result" "first/no-tests"
 assert_body_preserved "$result" "first/no-tests"
 assert_one_blockquote "$result" "first/no-tests"
@@ -233,23 +239,23 @@ assert_contains "$result" "First review" "first/no-tests scope text"
 assert_no_stale_suffix "$result" "first/no-tests"
 assert_contains "$result" "🧪 Tests not run" "first/no-tests tests suffix"
 assert_contains "$result" "diff alone" "first/no-tests names what review is based on"
-assert_contains "$result" "test-results section" "first/no-tests points reader to details"
+assert_contains "$result" "review based on the diff alone" "first/no-tests names what review is based on"
 
 echo "  scope=incremental + tests-not-run → tests suffix on one line with scope..."
-result=$(prepend_review_header "$BODY" "incremental:$SHA_OLD" "$SHA_OLD" "$SHA_OLD" "false")
+result=$(prepend_review_header "$BODY" "incremental:$SHA_OLD" "$SHA_OLD" "$SHA_OLD" "🧪 Tests")
 assert_one_blockquote "$result" "incremental/no-tests"
 assert_contains "$result" "Re-review of changes since" "incremental/no-tests scope text"
 assert_contains "$result" "Tests not run" "incremental/no-tests tests suffix"
 assert_no_stale_suffix "$result" "incremental/no-tests"
 
 echo "  scope=whole + tests-not-run → both signals..."
-result=$(prepend_review_header "$BODY" "whole" "$SHA_OLD" "$SHA_OLD" "false")
+result=$(prepend_review_header "$BODY" "whole" "$SHA_OLD" "$SHA_OLD" "🧪 Tests")
 assert_one_blockquote "$result" "whole/no-tests"
 assert_contains "$result" "Whole-PR re-review" "whole/no-tests scope text"
 assert_contains "$result" "Tests not run" "whole/no-tests tests suffix"
 
 echo "  scope=fallback + tests-not-run → both signals..."
-result=$(prepend_review_header "$BODY" "fallback:$SHA_OLD" "$SHA_OLD" "$SHA_OLD" "false")
+result=$(prepend_review_header "$BODY" "fallback:$SHA_OLD" "$SHA_OLD" "$SHA_OLD" "🧪 Tests")
 assert_one_blockquote "$result" "fallback/no-tests"
 assert_contains "$result" "force-push/rebase" "fallback/no-tests scope text"
 assert_contains "$result" "Tests not run" "fallback/no-tests tests suffix"
@@ -258,7 +264,7 @@ assert_contains "$result" "Tests not run" "fallback/no-tests tests suffix"
 # blockquote line. Worst-case header — make sure it doesn't fork into
 # multiple lines and all three pieces are present.
 echo "  scope=incremental + stale + tests-not-run → all three signals on one line..."
-result=$(prepend_review_header "$BODY" "incremental:$SHA_OLD" "$SHA_OLD" "$SHA_NEW" "false")
+result=$(prepend_review_header "$BODY" "incremental:$SHA_OLD" "$SHA_OLD" "$SHA_NEW" "🧪 Tests")
 assert_marker_first "$result" "all-three"
 assert_body_preserved "$result" "all-three"
 assert_one_blockquote "$result" "all-three"
@@ -280,16 +286,48 @@ if ! { [ "$scope_pos" -lt "$stale_pos" ] && [ "$stale_pos" -lt "$tests_pos" ]; }
     exit 1
 fi
 
-# TESTS_RAN="" (empty) and "anything-else" must NOT add the suffix —
-# only literal "false" triggers it. Defensive: a future bug that
-# stringifies a bool as "0" / "False" / "no" must not silently start
-# warning on every review.
-echo "  TESTS_RAN='' (empty) → no tests suffix (only literal 'false' triggers)..."
+# SKIPPED_CHECKS="" (empty CSV) → no skipped suffix.
+echo "  SKIPPED_CHECKS='' (empty) → no skipped suffix..."
 result=$(prepend_review_header "$BODY" "first" "$SHA_OLD" "$SHA_OLD" "")
-assert_no_tests_suffix "$result" "tests_ran=empty"
-echo "  TESTS_RAN='no' (non-'false' truthy variant) → no tests suffix..."
-result=$(prepend_review_header "$BODY" "first" "$SHA_OLD" "$SHA_OLD" "no")
-assert_no_tests_suffix "$result" "tests_ran=no"
+assert_no_tests_suffix "$result" "skipped_checks=empty"
+
+# SKIPPED_CHECKS with KID only — the "tests" label isn't the only one
+# the worker can pass; helper renders whatever string it gets.
+echo "  SKIPPED_CHECKS='🔍 Prior-art (KID)' → KID-only suffix..."
+result=$(prepend_review_header "$BODY" "first" "$SHA_OLD" "$SHA_OLD" "🔍 Prior-art (KID)")
+assert_one_blockquote "$result" "kid-only"
+assert_contains "$result" "First review" "kid-only scope text"
+assert_contains "$result" "🔍 Prior-art (KID) not run — review based on the diff alone." "kid-only suffix"
+# Negative: must NOT include the tests label — helper must not invent labels.
+if printf '%s' "$result" | grep -q "🧪 Tests"; then
+    echo "FAIL: kid-only — unexpected '🧪 Tests' in header (helper invented a label)"
+    exit 1
+fi
+
+# Multiple labels — the whole point of the generic seam: worker
+# composes any combination, helper just joins. Adding a future
+# capability (dead-code analyzer) is one line in the worker — no
+# helper change needed.
+echo "  SKIPPED_CHECKS='🧪 Tests,🔍 Prior-art (KID)' → both joined with ', '..."
+result=$(prepend_review_header "$BODY" "first" "$SHA_OLD" "$SHA_OLD" "🧪 Tests,🔍 Prior-art (KID)")
+assert_one_blockquote "$result" "tests+kid"
+assert_contains "$result" "🧪 Tests, 🔍 Prior-art (KID) not run — review based on the diff alone." "tests+kid joined output"
+
+# Multi-skip stacked with stale + scope → all three signal types on one
+# blockquote. Worst-case header.
+echo "  scope=incremental + stale + tests+kid → all signals on one line..."
+result=$(prepend_review_header "$BODY" "incremental:$SHA_OLD" "$SHA_OLD" "$SHA_NEW" "🧪 Tests,🔍 Prior-art (KID)")
+assert_one_blockquote "$result" "incremental/stale/tests+kid"
+assert_contains "$result" "Re-review of changes since" "incremental/stale/tests+kid scope"
+assert_contains "$result" "Stale: head moved" "incremental/stale/tests+kid stale suffix"
+assert_contains "$result" "🧪 Tests, 🔍 Prior-art (KID) not run" "incremental/stale/tests+kid skipped suffix"
+
+# Three-label join (regression-fence for the comma → ", " substitution
+# being O(N) regardless of label count). Generic, so any new capability
+# slots in without a helper change.
+echo "  SKIPPED_CHECKS='A,B,C' → three labels joined with ', '..."
+result=$(prepend_review_header "$BODY" "first" "$SHA_OLD" "$SHA_OLD" "A,B,C")
+assert_contains "$result" "A, B, C not run" "three-label join"
 
 # ===== compute_review_scope (worker seam) =====
 # A second drift surface — flagged in PR #22's bot review as the recurring
@@ -419,4 +457,4 @@ if [ "$got_ran" != "false" ] || [ "$got_summary" != "not run (just pre-recipe fa
     exit 1
 fi
 
-echo "  PASS (12 header combinations + 4 tests-not-run × scope + all-three-signals + ordering + 2 non-'false' tests_ran + unknown-scope fail-fast + 5 worker-seam scope scenarios + 9 classify scenarios)"
+echo "  PASS (12 header combinations + 4 tests-skipped × scope + all-three-signals + ordering + empty/kid-only/multi/three-label skipped-checks + unknown-scope fail-fast + 5 worker-seam scope scenarios + 9 classify scenarios)"

@@ -169,7 +169,7 @@ classify_just_test_outcome() {
     fi
 }
 
-# prepend_review_header COMMENT_BODY SCOPE REVIEWED_SHA CURRENT_HEAD TESTS_RAN
+# prepend_review_header COMMENT_BODY SCOPE REVIEWED_SHA CURRENT_HEAD SKIPPED_CHECKS
 #
 # Single source of truth for the disclosure header that goes right under
 # the auto-post marker. Combines three signals into one concise blockquote:
@@ -186,12 +186,17 @@ classify_just_test_outcome() {
 #      blockquote. Empty CURRENT_HEAD (best-effort gh-fetch failed) is
 #      treated as "no warning" — same as matched.
 #
-#   3. Tests-not-run warning (conditional): if TESTS_RAN="false", the
-#      worker couldn't run `just test` (no justfile, or recipe failed
-#      with command-not-found inside). Specialists reviewed the diff
-#      alone — disclose so the reader doesn't assume "no test failures
-#      flagged" means the bot ran tests and they passed. Any other value
-#      ("true" or empty) suppresses the suffix.
+#   3. Skipped-checks warning (conditional): SKIPPED_CHECKS is a comma-
+#      separated list of pre-rendered labels (icon + name) for any
+#      pre-review checks the worker couldn't run. Empty → no suffix.
+#      Examples of what the worker passes:
+#        ""                               → no suffix
+#        "🧪 Tests"                       → " 🧪 Tests not run — …"
+#        "🧪 Tests,🔍 Prior-art (KID)"    → " 🧪 Tests, 🔍 Prior-art (KID) not run — …"
+#      Adding a new capability (e.g. a future dead-code analyzer) is
+#      one line in the worker — `[ "$X_RAN" = "false" ] && SKIPPED+=("🧹 X")`
+#      — with no helper change. Renderer just joins on ", " and appends
+#      a fixed " not run — review based on the diff alone." tail.
 #
 # Replaces the previous two helpers (prepend_review_scope_note +
 # prepend_stale_head_note) that stacked two separate verbose
@@ -214,8 +219,8 @@ classify_just_test_outcome() {
 # Pure string transform — hermetic. All branches fenced in
 # review-header-smoke.sh.
 prepend_review_header() {
-    local comment_body="$1" scope="$2" reviewed_sha="$3" current_head="$4" tests_ran="$5"
-    local scope_text stale_suffix="" tests_suffix="" sha
+    local comment_body="$1" scope="$2" reviewed_sha="$3" current_head="$4" skipped_checks="$5"
+    local scope_text stale_suffix="" skipped_suffix="" sha
     case "$scope" in
         first)
             scope_text="📋 First review of this PR."
@@ -246,13 +251,14 @@ prepend_review_header() {
     if [ -n "$current_head" ] && [ "$current_head" != "$reviewed_sha" ]; then
         stale_suffix=" ⚠️ Stale: head moved from \`${reviewed_sha:0:7}\` to \`${current_head:0:7}\` mid-run — see commands below to re-run."
     fi
-    if [ "$tests_ran" = "false" ]; then
-        tests_suffix=" 🧪 Tests not run — review based on the diff alone (see test-results section for why)."
+    if [ -n "$skipped_checks" ]; then
+        # Comma in input → ", " for human-readable join; tail is fixed.
+        skipped_suffix=" ${skipped_checks//,/, } not run — review based on the diff alone."
     fi
     local first_line rest
     first_line=$(printf '%s' "$comment_body" | head -1)
     rest=$(printf '%s' "$comment_body" | tail -n +2)
-    printf '%s\n> %s%s%s\n\n%s' "$first_line" "$scope_text" "$stale_suffix" "$tests_suffix" "$rest"
+    printf '%s\n> %s%s%s\n\n%s' "$first_line" "$scope_text" "$stale_suffix" "$skipped_suffix" "$rest"
 }
 
 stage_prior_reviews() {

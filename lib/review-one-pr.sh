@@ -497,6 +497,11 @@ STANDARDS+=$'\n\n'
 # ---- kid prior-art ----
 PRIOR_ART=""
 KID_FLAG="$STATE_DIR/kid-last-failure"
+# KID_RAN tracks whether the prior-art lookup actually executed and
+# returned. Flipped false on any "didn't run" path so the disclosure
+# header (built below) can warn the reader that the simplification
+# specialist's cross-repo DRY signal is missing for this run.
+KID_RAN=false
 # Per-repo kid index path. KID_PATHS was loaded at file scope via the
 # tracked-repos.sh loader (Bash arrays don't survive the process
 # boundary between review.sh and this worker; the loader pre-declares
@@ -522,13 +527,16 @@ if [ -n "$KID_PROJECT_PATH" ] && [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -n "
         PRIOR_ART=""
     else
         rm -f "$KID_FLAG"
+        KID_RAN=true
         if [ -n "$PRIOR_ART" ]; then
             BLOCK_COUNT=$(printf '%s\n' "$PRIOR_ART" | grep -c '^### New block')
             log "$PR_ID: kid surfaced prior-art for $BLOCK_COUNT block(s)"
         fi
     fi
     rm -f "$KID_STDERR"
-elif [ -n "$KID_PROJECT_PATH" ] && [ -n "$KID_INPUT_DIFF" ]; then
+elif [ -z "$KID_PROJECT_PATH" ]; then
+    log "$PR_ID: no KID_PATHS entry for $REPO — skipping prior-art lookup"
+elif [ -n "$KID_INPUT_DIFF" ]; then
     log "$PR_ID: kid index not yet built at $KID_PROJECT_PATH — skipping prior-art lookup"
 fi
 
@@ -770,7 +778,16 @@ if [ -n "$CURRENT_HEAD" ] && [ "$CURRENT_HEAD" != "$PR_SHA" ]; then
     log "$PR_ID: head moved during review (reviewed=${PR_SHA:0:7}, now=${CURRENT_HEAD:0:7}) — appending stale-head suffix"
 fi
 log "$PR_ID: review scope = $REVIEW_SCOPE"
-if ! COMMENT_BODY=$(prepend_review_header "$COMMENT_BODY" "$REVIEW_SCOPE" "$PR_SHA" "$CURRENT_HEAD" "$TESTS_RAN"); then
+# Compose the skipped-checks list for the disclosure header. One line
+# per pre-review check the worker tracks; add a new capability (e.g. a
+# future dead-code analyzer) by appending one line — `[ "$X_RAN" =
+# "false" ] && SKIPPED_CHECKS+=("🧹 X")` — no helper change needed.
+SKIPPED_CHECKS=()
+[ "$TESTS_RAN" = "false" ] && SKIPPED_CHECKS+=("🧪 Tests")
+[ "$KID_RAN" = "false" ] && SKIPPED_CHECKS+=("🔍 Prior-art (KID)")
+SKIPPED_CHECKS_CSV=$(IFS=','; printf '%s' "${SKIPPED_CHECKS[*]}")
+log "$PR_ID: skipped checks = ${SKIPPED_CHECKS_CSV:-none}"
+if ! COMMENT_BODY=$(prepend_review_header "$COMMENT_BODY" "$REVIEW_SCOPE" "$PR_SHA" "$CURRENT_HEAD" "$SKIPPED_CHECKS_CSV"); then
     log "$PR_ID: prepend_review_header failed for scope=$REVIEW_SCOPE — internal invariant violated, aborting (orchestrator will retry)"
     rm -rf "$REPO_DIR"
     exit 1
