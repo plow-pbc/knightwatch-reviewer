@@ -71,6 +71,18 @@ for repo in "${REPOS[@]}"; do
     declare -p DEAD_CODE_CMDS | grep -qE "\\[$repo\\]=" || { echo "FAIL A3e: DEAD_CODE_CMDS missing key for $repo"; exit 1; }
 done
 
+echo "  A3f: STRICT_TYPING_CMDS is an associative array (declare -A)..."
+declare -p STRICT_TYPING_CMDS 2>/dev/null | grep -q '^declare -A' || { echo "FAIL A3f: STRICT_TYPING_CMDS is not declared as an associative array"; exit 1; }
+
+echo "  A3g: every REPO has a STRICT_TYPING_CMDS entry (empty allowed)..."
+# Same fence as DEAD_CODE_CMDS — empty = check skipped (e.g. bash repos
+# don't have a strict-typing concept). The worker's `${STRICT_TYPING_CMDS[$REPO]:-}`
+# tolerates a missing key, but a missing key is also config drift the
+# operator should know about.
+for repo in "${REPOS[@]}"; do
+    declare -p STRICT_TYPING_CMDS | grep -qE "\\[$repo\\]=" || { echo "FAIL A3g: STRICT_TYPING_CMDS missing key for $repo"; exit 1; }
+done
+
 echo "  A4: every KID_PATHS key corresponds to a tracked REPO..."
 # Catch the inverse: a stale KID_PATHS entry whose repo got removed
 # from REPOS. (Harmless functionally, but a config-drift signal.)
@@ -109,8 +121,8 @@ out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; echo \"RE
 
 echo "  B2: loader survives missing repos.conf under set -u (empty arrays)..."
 rm -f "$SAND_STATE/repos.conf"
-out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; echo \"REPOS=\${#REPOS[@]} KID_PATHS=\${#KID_PATHS[@]} SOURCE_PATHS=\${#SOURCE_PATHS[@]} DEAD_CODE_CMDS=\${#DEAD_CODE_CMDS[@]}\"")
-[ "$out" = "REPOS=0 KID_PATHS=0 SOURCE_PATHS=0 DEAD_CODE_CMDS=0" ] || { echo "FAIL B2: loader output: $out"; exit 1; }
+out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; echo \"REPOS=\${#REPOS[@]} KID_PATHS=\${#KID_PATHS[@]} SOURCE_PATHS=\${#SOURCE_PATHS[@]} DEAD_CODE_CMDS=\${#DEAD_CODE_CMDS[@]} STRICT_TYPING_CMDS=\${#STRICT_TYPING_CMDS[@]}\"")
+[ "$out" = "REPOS=0 KID_PATHS=0 SOURCE_PATHS=0 DEAD_CODE_CMDS=0 STRICT_TYPING_CMDS=0" ] || { echo "FAIL B2: loader output: $out"; exit 1; }
 
 echo "  B3: config.env override wins over repos.conf (legacy seam)..."
 cat > "$SAND_STATE/repos.conf" <<'CONF'
