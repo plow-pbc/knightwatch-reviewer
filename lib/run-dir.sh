@@ -125,10 +125,54 @@ compute_review_scope() {
     fi
 }
 
-# prepend_review_header COMMENT_BODY SCOPE REVIEWED_SHA CURRENT_HEAD
+# classify_just_test_outcome TEST_EXIT TEST_LOG TEST_TIMEOUT
+#
+# Pure function. Maps `just test`'s (exit, stderr) to (TESTS_RAN,
+# TEST_SUMMARY) tab-separated. The discriminator: `just` always
+# appends `error: Recipe \`test\` failed on line N` to stderr when it
+# actually ran a recipe (regardless of whether the command inside
+# succeeded). It does NOT appear when `just` failed before invoking
+# the recipe (no justfile, missing recipe, /tmp not writable, etc).
+# So one signal handles every pre-recipe failure — no enumerated
+# stderr-string list to expand for each new infra error.
+#
+# Outcomes:
+#   - exit 0                              → ran, PASSED
+#   - exit 124                            → ran, TIMED OUT
+#   - "Recipe failed" present + exit 127  → didn't run (recipe
+#                                            invoked, but a command
+#                                            inside — pytest, npm,
+#                                            etc. — wasn't on PATH)
+#   - "Recipe failed" present + other     → ran, FAILED (exit N)
+#   - "Recipe failed" absent              → didn't run (just
+#                                            pre-recipe failure: no
+#                                            justfile / missing
+#                                            recipe / sandbox blocked
+#                                            /tmp / etc.)
+#
+# Hermetic — caller writes TEST_LOG; helper doesn't invoke `just`, so
+# the smoke drives every branch with crafted (exit, log) pairs.
+classify_just_test_outcome() {
+    local test_exit="$1" test_log="$2" test_timeout="$3"
+    case "$test_exit" in
+        0)   printf 'true\tPASSED\n' ; return ;;
+        124) printf 'true\tTIMED OUT (>%s)\n' "$test_timeout" ; return ;;
+    esac
+    if [ -f "$test_log" ] && grep -q "^error: Recipe .* failed" "$test_log"; then
+        if [ "$test_exit" -eq 127 ]; then
+            printf 'false\tnot run (recipe ran but command-not-found inside, exit 127)\n'
+        else
+            printf 'true\tFAILED (exit %s)\n' "$test_exit"
+        fi
+    else
+        printf 'false\tnot run (just pre-recipe failure: see test-results below)\n'
+    fi
+}
+
+# prepend_review_header COMMENT_BODY SCOPE REVIEWED_SHA CURRENT_HEAD SKIPPED_CHECKS
 #
 # Single source of truth for the disclosure header that goes right under
-# the auto-post marker. Combines two signals into one concise blockquote:
+# the auto-post marker. Combines three signals into one concise blockquote:
 #
 #   1. Scope (always present): what kind of review this is — first,
 #      whole-PR re-review, incremental re-review, or silent-fallback
@@ -142,10 +186,24 @@ compute_review_scope() {
 #      blockquote. Empty CURRENT_HEAD (best-effort gh-fetch failed) is
 #      treated as "no warning" — same as matched.
 #
+#   3. Skipped-checks warning (conditional): SKIPPED_CHECKS is a comma-
+#      separated list of pre-rendered labels (icon + name) for any
+#      pre-review checks the worker couldn't run. Empty → no suffix.
+#      Examples of what the worker passes:
+#        ""                               → no suffix
+#        "🧪 Tests"                       → " 🧪 Tests not run — …"
+#        "🧪 Tests,🔍 Prior-art (KID)"    → " 🧪 Tests, 🔍 Prior-art (KID) not run — …"
+#      Adding a new capability (e.g. a future dead-code analyzer) is
+#      one line in the worker — `[ "$X_RAN" = "false" ] && SKIPPED+=("🧹 X")`
+#      — with no helper change. Renderer joins on ", " and appends a
+#      bare " not run." — the icons + labels disclose what skipped, no
+#      generic "diff alone" tail (which overstated degradation when
+#      only one check skipped).
+#
 # Replaces the previous two helpers (prepend_review_scope_note +
 # prepend_stale_head_note) that stacked two separate verbose
 # blockquotes. One concise line keeps the header from dominating the
-# review and gives the reader both signals at the same vertical glance.
+# review and gives the reader all signals at the same vertical glance.
 #
 # SCOPE format:
 #   "first"               — first review of this PR
@@ -163,8 +221,8 @@ compute_review_scope() {
 # Pure string transform — hermetic. All branches fenced in
 # review-header-smoke.sh.
 prepend_review_header() {
-    local comment_body="$1" scope="$2" reviewed_sha="$3" current_head="$4"
-    local scope_text stale_suffix="" sha
+    local comment_body="$1" scope="$2" reviewed_sha="$3" current_head="$4" skipped_checks="$5"
+    local scope_text stale_suffix="" skipped_suffix="" sha
     case "$scope" in
         first)
             scope_text="📋 First review of this PR."
@@ -195,10 +253,18 @@ prepend_review_header() {
     if [ -n "$current_head" ] && [ "$current_head" != "$reviewed_sha" ]; then
         stale_suffix=" ⚠️ Stale: head moved from \`${reviewed_sha:0:7}\` to \`${current_head:0:7}\` mid-run — see commands below to re-run."
     fi
+    if [ -n "$skipped_checks" ]; then
+        # Comma in input → ", " for human-readable join. No trailing
+        # generic clause: each label names exactly one degraded surface,
+        # so a blanket "review based on the diff alone" tail overstated
+        # the degradation whenever only one check skipped (e.g. KID-only
+        # skip — tests + specialists + aggregator still ran).
+        skipped_suffix=" ${skipped_checks//,/, } not run."
+    fi
     local first_line rest
     first_line=$(printf '%s' "$comment_body" | head -1)
     rest=$(printf '%s' "$comment_body" | tail -n +2)
-    printf '%s\n> %s%s\n\n%s' "$first_line" "$scope_text" "$stale_suffix" "$rest"
+    printf '%s\n> %s%s%s\n\n%s' "$first_line" "$scope_text" "$stale_suffix" "$skipped_suffix" "$rest"
 }
 
 stage_prior_reviews() {

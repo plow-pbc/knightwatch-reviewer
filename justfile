@@ -33,8 +33,16 @@ test:
     bash lib/tests/gh-comments-smoke.sh
 
     echo ""
+    echo "=== search-roots smoke test ==="
+    bash lib/tests/search-roots-smoke.sh
+
+    echo ""
     echo "=== prompt-build smoke test ==="
     bash lib/tests/build-specialist-prompt-smoke.sh
+
+    echo ""
+    echo "=== anti-bloat contract smoke test ==="
+    bash lib/tests/anti-bloat-contract-smoke.sh
 
     echo ""
     echo "=== run-specialist smoke test ==="
@@ -59,6 +67,10 @@ test:
     echo ""
     echo "=== review-header smoke test ==="
     bash lib/tests/review-header-smoke.sh
+
+    echo ""
+    echo "=== strict-typing checks smoke test ==="
+    bash lib/tests/strict-typing-checks-smoke.sh
 
     echo ""
     echo "=== orchestrator skip smoke test ==="

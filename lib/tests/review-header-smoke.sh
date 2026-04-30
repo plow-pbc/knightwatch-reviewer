@@ -1,20 +1,32 @@
 #!/bin/bash
 # Smoke for the consolidated top-of-comment disclosure helper:
-#   prepend_review_header COMMENT_BODY SCOPE REVIEWED_SHA CURRENT_HEAD
-# (and the pure helper compute_review_scope it depends on).
+#   prepend_review_header COMMENT_BODY SCOPE REVIEWED_SHA CURRENT_HEAD SKIPPED_CHECKS
+# (and the pure helpers compute_review_scope + classify_just_test_outcome).
+#
+# SKIPPED_CHECKS is a comma-separated list of pre-rendered labels (e.g.
+# "🧪 Tests,🔍 Prior-art (KID)"). Empty → no suffix. Worker composes
+# the list; helper just joins on ", " and appends a fixed tail. Adding
+# a new capability (dead-code analyzer, type-check runner) is one line
+# in the worker, no helper change.
 #
 # Replaces the two prior smokes (stale-head-smoke.sh + review-scope-
 # smoke.sh) that fenced the two helpers stacked into separate
-# blockquotes. The current contract is one concise blockquote: scope
-# text always present, stale-head one-sentence suffix appended only when
-# CURRENT_HEAD differs from REVIEWED_SHA. Both signals visible at one
-# vertical glance.
+# blockquotes. The current contract is one concise blockquote with three
+# signals: scope text always present, stale-head one-sentence suffix
+# appended only when CURRENT_HEAD differs from REVIEWED_SHA, and
+# tests-not-run suffix appended only when TESTS_RAN="false". All
+# signals visible at one vertical glance.
 #
 # Coverage matrix:
 #
 #   scope = first | whole | incremental:<sha> | fallback:<sha>
 #   × stale-head = matched | differs | empty (gh-failure)
-#   = 12 combinations, all fenced below.
+#   = 12 combinations (TESTS_RAN=true), all fenced below.
+#
+# Plus a separate axis for TESTS_RAN=false (no justfile / recipe broken):
+#   - tests-not-run + matched-shas → tests suffix only
+#   - tests-not-run + stale-shas   → stale + tests suffixes both present
+#   - all four scope variants exercised at TESTS_RAN=false
 #
 # Plus:
 #   - unknown scope → fail-fast (return non-zero, stderr diagnostic).
@@ -87,6 +99,15 @@ assert_no_stale_suffix() {
     fi
 }
 
+assert_no_tests_suffix() {
+    local result="$1" scenario="$2"
+    if printf '%s' "$result" | grep -q "Tests not run"; then
+        echo "FAIL: $scenario — unexpected tests-not-run suffix in header"
+        echo "$result"
+        exit 1
+    fi
+}
+
 assert_one_blockquote() {
     # The whole point of consolidating: one blockquote line, not two
     # stacked ones. Count lines starting with `> ` — must be exactly 1.
@@ -101,15 +122,16 @@ assert_one_blockquote() {
 
 # ===== Scope variants × stale=matched (no suffix) =====
 echo "  scope=first  + matched-shas → header has scope only..."
-result=$(prepend_review_header "$BODY" "first" "$SHA_OLD" "$SHA_OLD")
+result=$(prepend_review_header "$BODY" "first" "$SHA_OLD" "$SHA_OLD" "")
 assert_marker_first "$result" "first/matched"
 assert_body_preserved "$result" "first/matched"
 assert_one_blockquote "$result" "first/matched"
 assert_contains "$result" "First review of this PR." "first/matched scope text"
 assert_no_stale_suffix "$result" "first/matched"
+assert_no_tests_suffix "$result" "first/matched"
 
 echo "  scope=whole  + matched-shas → header has scope only..."
-result=$(prepend_review_header "$BODY" "whole" "$SHA_OLD" "$SHA_OLD")
+result=$(prepend_review_header "$BODY" "whole" "$SHA_OLD" "$SHA_OLD" "")
 assert_marker_first "$result" "whole/matched"
 assert_body_preserved "$result" "whole/matched"
 assert_one_blockquote "$result" "whole/matched"
@@ -119,7 +141,7 @@ assert_contains "$result" "from scratch" "whole/matched discloses no-prior-revie
 assert_no_stale_suffix "$result" "whole/matched"
 
 echo "  scope=incremental:<sha> + matched-shas → header cites prior SHA..."
-result=$(prepend_review_header "$BODY" "incremental:$SHA_OLD" "$SHA_OLD" "$SHA_OLD")
+result=$(prepend_review_header "$BODY" "incremental:$SHA_OLD" "$SHA_OLD" "$SHA_OLD" "")
 assert_marker_first "$result" "incremental/matched"
 assert_body_preserved "$result" "incremental/matched"
 assert_one_blockquote "$result" "incremental/matched"
@@ -127,7 +149,7 @@ assert_contains "$result" 'Re-review of changes since `abc1234`' "incremental/ma
 assert_no_stale_suffix "$result" "incremental/matched"
 
 echo "  scope=fallback:<sha> + matched-shas → header discloses force-push/rebase..."
-result=$(prepend_review_header "$BODY" "fallback:$SHA_OLD" "$SHA_OLD" "$SHA_OLD")
+result=$(prepend_review_header "$BODY" "fallback:$SHA_OLD" "$SHA_OLD" "$SHA_OLD" "")
 assert_marker_first "$result" "fallback/matched"
 assert_body_preserved "$result" "fallback/matched"
 assert_one_blockquote "$result" "fallback/matched"
@@ -138,7 +160,7 @@ assert_no_stale_suffix "$result" "fallback/matched"
 
 # ===== Scope variants × stale=differs (suffix appended) =====
 echo "  scope=first  + differing-shas → header has scope + stale suffix on same line..."
-result=$(prepend_review_header "$BODY" "first" "$SHA_OLD" "$SHA_NEW")
+result=$(prepend_review_header "$BODY" "first" "$SHA_OLD" "$SHA_NEW" "")
 assert_marker_first "$result" "first/stale"
 assert_body_preserved "$result" "first/stale"
 assert_one_blockquote "$result" "first/stale"
@@ -162,7 +184,7 @@ if printf '%s' "$result" | grep -q "/srosro-update-review"; then
 fi
 
 echo "  scope=incremental:<sha> + differing-shas → both signals on one line..."
-result=$(prepend_review_header "$BODY" "incremental:$SHA_OLD" "$SHA_OLD" "$SHA_NEW")
+result=$(prepend_review_header "$BODY" "incremental:$SHA_OLD" "$SHA_OLD" "$SHA_NEW" "")
 assert_marker_first "$result" "incremental/stale"
 assert_one_blockquote "$result" "incremental/stale"
 assert_contains "$result" "Re-review of changes since" "incremental/stale scope text"
@@ -170,13 +192,13 @@ assert_contains "$result" "Stale: head moved" "incremental/stale suffix"
 assert_contains "$result" '`def9876`' "incremental/stale cites new head"
 
 echo "  scope=whole + differing-shas → scope + stale on one line..."
-result=$(prepend_review_header "$BODY" "whole" "$SHA_OLD" "$SHA_NEW")
+result=$(prepend_review_header "$BODY" "whole" "$SHA_OLD" "$SHA_NEW" "")
 assert_one_blockquote "$result" "whole/stale"
 assert_contains "$result" "Whole-PR re-review" "whole/stale scope text"
 assert_contains "$result" "Stale: head moved" "whole/stale suffix"
 
 echo "  scope=fallback:<sha> + differing-shas → scope + stale on one line..."
-result=$(prepend_review_header "$BODY" "fallback:$SHA_OLD" "$SHA_OLD" "$SHA_NEW")
+result=$(prepend_review_header "$BODY" "fallback:$SHA_OLD" "$SHA_OLD" "$SHA_NEW" "")
 assert_one_blockquote "$result" "fallback/stale"
 assert_contains "$result" "force-push/rebase" "fallback/stale scope text"
 assert_contains "$result" "Stale: head moved" "fallback/stale suffix"
@@ -184,7 +206,7 @@ assert_contains "$result" "Stale: head moved" "fallback/stale suffix"
 # ===== Scope variants × stale=empty CURRENT_HEAD (gh-failure path) =====
 # Best-effort fetch fails → no warning. Identical to matched.
 echo "  scope=incremental + empty CURRENT_HEAD (gh-failure) → no stale suffix..."
-result=$(prepend_review_header "$BODY" "incremental:$SHA_OLD" "$SHA_OLD" "")
+result=$(prepend_review_header "$BODY" "incremental:$SHA_OLD" "$SHA_OLD" "" "")
 assert_marker_first "$result" "incremental/gh-fail"
 assert_one_blockquote "$result" "incremental/gh-fail"
 assert_contains "$result" "Re-review of changes since" "incremental/gh-fail scope text"
@@ -192,16 +214,125 @@ assert_no_stale_suffix "$result" "incremental/gh-fail"
 
 # ===== Unknown scope → fail-fast =====
 echo "  scope=bogus → fail-fast (non-zero exit + stderr diagnostic)..."
-result=$(prepend_review_header "$BODY" "bogus" "$SHA_OLD" "$SHA_OLD" 2>/dev/null)
+result=$(prepend_review_header "$BODY" "bogus" "$SHA_OLD" "$SHA_OLD" "" 2>/dev/null)
 if [ "$?" -eq 0 ]; then
     echo "FAIL: bogus scope — function returned 0 (silent degrade); should exit non-zero per CLAUDE.md fail-fast"
     exit 1
 fi
-err=$(prepend_review_header "$BODY" "bogus" "$SHA_OLD" "$SHA_OLD" 2>&1 >/dev/null)
+err=$(prepend_review_header "$BODY" "bogus" "$SHA_OLD" "$SHA_OLD" "" 2>&1 >/dev/null)
 if ! printf '%s' "$err" | grep -q "unknown scope"; then
     echo "FAIL: bogus scope — stderr diagnostic missing 'unknown scope' phrasing; got: $err"
     exit 1
 fi
+
+# ===== TESTS_RAN=false (worker couldn't run `just test`) =====
+# When the bot can't run the project's tests (no justfile, or recipe
+# command-not-found inside justfile), specialists review the diff alone.
+# The header must disclose that — otherwise the reader assumes "no test
+# failures flagged" means tests ran and passed.
+echo "  scope=first + tests-not-run → tests suffix appended..."
+result=$(prepend_review_header "$BODY" "first" "$SHA_OLD" "$SHA_OLD" "🧪 Tests")
+assert_marker_first "$result" "first/no-tests"
+assert_body_preserved "$result" "first/no-tests"
+assert_one_blockquote "$result" "first/no-tests"
+assert_contains "$result" "First review" "first/no-tests scope text"
+assert_no_stale_suffix "$result" "first/no-tests"
+assert_contains "$result" "🧪 Tests not run." "first/no-tests tests suffix (bare 'not run.' — no overclaiming 'diff alone' tail)"
+# Regression-fence: the bot flagged the trailing "review based on the
+# diff alone" clause as misleading on KID-only skips (tests + specialists
+# still ran). Make sure it doesn't sneak back in.
+if printf '%s' "$result" | grep -q "diff alone"; then
+    echo "FAIL: first/no-tests — re-introduced misleading 'diff alone' tail (PR #24 round 4 finding)"
+    exit 1
+fi
+
+echo "  scope=incremental + tests-not-run → tests suffix on one line with scope..."
+result=$(prepend_review_header "$BODY" "incremental:$SHA_OLD" "$SHA_OLD" "$SHA_OLD" "🧪 Tests")
+assert_one_blockquote "$result" "incremental/no-tests"
+assert_contains "$result" "Re-review of changes since" "incremental/no-tests scope text"
+assert_contains "$result" "Tests not run" "incremental/no-tests tests suffix"
+assert_no_stale_suffix "$result" "incremental/no-tests"
+
+echo "  scope=whole + tests-not-run → both signals..."
+result=$(prepend_review_header "$BODY" "whole" "$SHA_OLD" "$SHA_OLD" "🧪 Tests")
+assert_one_blockquote "$result" "whole/no-tests"
+assert_contains "$result" "Whole-PR re-review" "whole/no-tests scope text"
+assert_contains "$result" "Tests not run" "whole/no-tests tests suffix"
+
+echo "  scope=fallback + tests-not-run → both signals..."
+result=$(prepend_review_header "$BODY" "fallback:$SHA_OLD" "$SHA_OLD" "$SHA_OLD" "🧪 Tests")
+assert_one_blockquote "$result" "fallback/no-tests"
+assert_contains "$result" "force-push/rebase" "fallback/no-tests scope text"
+assert_contains "$result" "Tests not run" "fallback/no-tests tests suffix"
+
+# All three signals at once: scope + stale + tests-not-run on a single
+# blockquote line. Worst-case header — make sure it doesn't fork into
+# multiple lines and all three pieces are present.
+echo "  scope=incremental + stale + tests-not-run → all three signals on one line..."
+result=$(prepend_review_header "$BODY" "incremental:$SHA_OLD" "$SHA_OLD" "$SHA_NEW" "🧪 Tests")
+assert_marker_first "$result" "all-three"
+assert_body_preserved "$result" "all-three"
+assert_one_blockquote "$result" "all-three"
+assert_contains "$result" "Re-review of changes since" "all-three scope text"
+assert_contains "$result" "Stale: head moved" "all-three stale suffix"
+assert_contains "$result" "Tests not run" "all-three tests suffix"
+
+# Ordering fence: scope first, stale second, tests third. If a future
+# refactor swaps the order, the assertion below trips. Order matters
+# for readability — scope sets the frame, stale-head warns about
+# freshness, tests-not-run is the smallest scope-of-disclosure.
+result_line=$(printf '%s\n' "$result" | grep '^> ')
+scope_pos=$(printf '%s' "$result_line" | grep -bo 'Re-review of changes since' | head -1 | cut -d: -f1)
+stale_pos=$(printf '%s' "$result_line" | grep -bo 'Stale: head moved' | head -1 | cut -d: -f1)
+tests_pos=$(printf '%s' "$result_line" | grep -bo 'Tests not run' | head -1 | cut -d: -f1)
+if ! { [ "$scope_pos" -lt "$stale_pos" ] && [ "$stale_pos" -lt "$tests_pos" ]; }; then
+    echo "FAIL: all-three — suffix order regressed (scope=$scope_pos, stale=$stale_pos, tests=$tests_pos); expected scope < stale < tests"
+    echo "$result_line"
+    exit 1
+fi
+
+# SKIPPED_CHECKS="" (empty CSV) → no skipped suffix.
+echo "  SKIPPED_CHECKS='' (empty) → no skipped suffix..."
+result=$(prepend_review_header "$BODY" "first" "$SHA_OLD" "$SHA_OLD" "")
+assert_no_tests_suffix "$result" "skipped_checks=empty"
+
+# SKIPPED_CHECKS with KID only — the "tests" label isn't the only one
+# the worker can pass; helper renders whatever string it gets.
+echo "  SKIPPED_CHECKS='🔍 Prior-art (KID)' → KID-only suffix..."
+result=$(prepend_review_header "$BODY" "first" "$SHA_OLD" "$SHA_OLD" "🔍 Prior-art (KID)")
+assert_one_blockquote "$result" "kid-only"
+assert_contains "$result" "First review" "kid-only scope text"
+assert_contains "$result" "🔍 Prior-art (KID) not run." "kid-only suffix"
+# Negative: must NOT include the tests label — helper must not invent labels.
+if printf '%s' "$result" | grep -q "🧪 Tests"; then
+    echo "FAIL: kid-only — unexpected '🧪 Tests' in header (helper invented a label)"
+    exit 1
+fi
+
+# Multiple labels — the whole point of the generic seam: worker
+# composes any combination, helper just joins. Adding a future
+# capability (dead-code analyzer) is one line in the worker — no
+# helper change needed.
+echo "  SKIPPED_CHECKS='🧪 Tests,🔍 Prior-art (KID)' → both joined with ', '..."
+result=$(prepend_review_header "$BODY" "first" "$SHA_OLD" "$SHA_OLD" "🧪 Tests,🔍 Prior-art (KID)")
+assert_one_blockquote "$result" "tests+kid"
+assert_contains "$result" "🧪 Tests, 🔍 Prior-art (KID) not run." "tests+kid joined output"
+
+# Multi-skip stacked with stale + scope → all three signal types on one
+# blockquote. Worst-case header.
+echo "  scope=incremental + stale + tests+kid → all signals on one line..."
+result=$(prepend_review_header "$BODY" "incremental:$SHA_OLD" "$SHA_OLD" "$SHA_NEW" "🧪 Tests,🔍 Prior-art (KID)")
+assert_one_blockquote "$result" "incremental/stale/tests+kid"
+assert_contains "$result" "Re-review of changes since" "incremental/stale/tests+kid scope"
+assert_contains "$result" "Stale: head moved" "incremental/stale/tests+kid stale suffix"
+assert_contains "$result" "🧪 Tests, 🔍 Prior-art (KID) not run" "incremental/stale/tests+kid skipped suffix"
+
+# Three-label join (regression-fence for the comma → ", " substitution
+# being O(N) regardless of label count). Generic, so any new capability
+# slots in without a helper change.
+echo "  SKIPPED_CHECKS='A,B,C' → three labels joined with ', '..."
+result=$(prepend_review_header "$BODY" "first" "$SHA_OLD" "$SHA_OLD" "A,B,C")
+assert_contains "$result" "A, B, C not run" "three-label join"
 
 # ===== compute_review_scope (worker seam) =====
 # A second drift surface — flagged in PR #22's bot review as the recurring
@@ -237,4 +368,98 @@ echo "  compute_review_scope: no force + sha + fallback=true → 'fallback:<sha>
 # framed as incremental in the banner. Pin against regression.
 assert_scope "$(compute_review_scope false "abc1234567" true)" "fallback:abc1234567" "fallback path — must not be misframed as incremental"
 
-echo "  PASS (12 header combinations + unknown-scope fail-fast + 5 worker-seam scenarios)"
+# ===== classify_just_test_outcome (worker seam) =====
+# The disclosure helper alone doesn't pin the worker's decision tree —
+# a future refactor could break the (exit, stderr) → (TESTS_RAN, summary)
+# mapping while the formatter scenarios above still pass. Pin every
+# branch directly with crafted log files. Same regression-fence shape
+# as compute_review_scope's smoke from PR #22.
+TMPLOG=$(mktemp)
+trap 'rm -f "$TMPLOG"' EXIT
+
+assert_classify() {
+    local test_exit="$1" log_content="$2" expected_ran="$3" expected_summary="$4" desc="$5"
+    printf '%s' "$log_content" > "$TMPLOG"
+    local got_ran got_summary
+    IFS=$'\t' read -r got_ran got_summary < <(classify_just_test_outcome "$test_exit" "$TMPLOG" "30m")
+    if [ "$got_ran" != "$expected_ran" ] || [ "$got_summary" != "$expected_summary" ]; then
+        echo "FAIL: classify($test_exit, ...) — $desc"
+        echo "  expected: ($expected_ran, $expected_summary)"
+        echo "  got:      ($got_ran, $got_summary)"
+        exit 1
+    fi
+}
+
+echo "  classify: exit 0 → PASSED..."
+assert_classify 0 "" "true" "PASSED" "tests ran and passed"
+
+echo "  classify: exit 124 → TIMED OUT..."
+assert_classify 124 "" "true" "TIMED OUT (>30m)" "timeout expired"
+
+echo "  classify: exit 127 + 'Recipe failed' → not run (cmd-not-found inside)..."
+# Bot's actual failure on cncorp/plow-content#1 before this PR:
+# `pytest` not on PATH, recipe exits 127. Recipe DID run (just's
+# "Recipe failed" line appears), but the test framework never executed.
+assert_classify 127 "sh: 1: pytest: not found
+error: Recipe \`test\` failed on line 2 with exit code 127" \
+    "false" "not run (recipe ran but command-not-found inside, exit 127)" \
+    "recipe invoked, command inside missing (e.g. pytest)"
+
+echo "  classify: exit 1 + 'Recipe failed' → FAILED (exit 1, real test failure)..."
+# Recipe ran and the test framework reported failures.
+# The "Recipe failed" line distinguishes this from a pre-recipe error.
+assert_classify 1 "FAILED tests/test_foo.py::test_bar - assert 1 == 2
+error: Recipe \`test\` failed on line 2 with exit code 1" \
+    "true" "FAILED (exit 1)" \
+    "recipe ran, test framework returned failure"
+
+echo "  classify: exit 1 + no 'Recipe failed' line ('No justfile found') → not run (pre-recipe)..."
+# Pre-recipe failure: no justfile means the recipe never started, so
+# no "Recipe failed" line. The single-signal discriminator handles it
+# without enumerating "No justfile found" specifically.
+assert_classify 1 "error: No justfile found" \
+    "false" "not run (just pre-recipe failure: see test-results below)" \
+    "just couldn't discover any justfile — pre-recipe failure"
+
+echo "  classify: exit 1 + no 'Recipe failed' line ('does not contain recipe') → not run (pre-recipe)..."
+# Justfile exists but no \`test\` recipe — same pre-recipe class.
+assert_classify 1 "error: Justfile does not contain recipe \`test\`" \
+    "false" "not run (just pre-recipe failure: see test-results below)" \
+    "missing test recipe — pre-recipe failure, no Recipe-failed line"
+
+echo "  classify: exit 1 + no 'Recipe failed' line ('Failed to write recipe to /tmp/just-…') → not run (pre-recipe)..."
+# Regression-fence for the bot's own observed PR #24 review failure:
+# /tmp couldn't be created, just bailed before invoking the recipe.
+# The previous classifier (with enumerated stderr strings) misclassified
+# this as FAILED (exit 1) → suppressed the 🧪 warning. The Recipe-failed
+# discriminator catches it correctly without naming this specific error.
+assert_classify 1 "error: Failed to write recipe to /tmp/just-AbC123/test" \
+    "false" "not run (just pre-recipe failure: see test-results below)" \
+    "just-internal infra error (e.g. /tmp not writable) — must not be misclassified as FAILED"
+
+echo "  classify: exit 2 + 'Recipe failed' → FAILED (exit 2, e.g. pytest collection error)..."
+assert_classify 2 "ERROR collecting tests/test_foo.py
+error: Recipe \`test\` failed on line 2 with exit code 2" \
+    "true" "FAILED (exit 2)" \
+    "non-special non-zero exit, recipe ran"
+
+echo "  classify: exit 1 + empty log → not run (defaults to safe pre-recipe class)..."
+# If the redirect failed or `just` produced no stderr at all, default
+# to the safer "not run" classification — the 🧪 warning errs on the
+# side of disclosing that test results may be untrustworthy, rather
+# than silently suppressing it as FAILED.
+assert_classify 1 "" "false" "not run (just pre-recipe failure: see test-results below)" \
+    "no 'Recipe failed' line in empty log → safe default to pre-recipe class"
+
+# Edge: log file missing entirely (the redirect failed, etc.) — must
+# not crash on the [ -f "$test_log" ] guard.
+echo "  classify: exit 1 + missing log file → not run (defaults to safe pre-recipe class)..."
+GHOST_LOG="$TMPLOG.ghost"
+rm -f "$GHOST_LOG"
+IFS=$'\t' read -r got_ran got_summary < <(classify_just_test_outcome 1 "$GHOST_LOG" "30m")
+if [ "$got_ran" != "false" ] || [ "$got_summary" != "not run (just pre-recipe failure: see test-results below)" ]; then
+    echo "FAIL: classify with missing log file — expected (false, 'not run (just pre-recipe...)'), got ($got_ran, $got_summary)"
+    exit 1
+fi
+
+echo "  PASS (12 header combinations + 4 tests-skipped × scope + all-three-signals + ordering + empty/kid-only/multi/three-label skipped-checks + unknown-scope fail-fast + 5 worker-seam scope scenarios + 9 classify scenarios)"
