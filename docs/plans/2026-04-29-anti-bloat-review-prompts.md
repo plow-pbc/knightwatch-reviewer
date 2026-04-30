@@ -4,7 +4,7 @@
 
 **Goal:** Tighten the kw-reviewer + babysit-pr loop so it stops proposing remedies that add defensive branches, fallback chains, type-checks outside trust boundaries, or wrappers for theoretical edge cases.
 
-**Architecture:** Five markdown edits across `knightwatch-reviewer3` (3 files) and `vibe-engineering` (2 files). One high-leverage rule lands in `prompts/common-header.md` and inherits to all 7 specialists. Two downstream gates (`critic.md` bucket, `babysit-pr` triage bucket) catch anything that slips past. `COMMENT_REVIEW_MISTAKES.md` gets seeded with 5 explicit anti-patterns. `architecture.md` loses two paragraphs that the new common-header rule supersedes.
+**Architecture:** Five markdown edits across `knightwatch-reviewer3` (3 files) and `vibe-engineering` (2 files). One high-leverage rule lands in `prompts/common-header.md` and inherits to the 6 finding-producing specialists (security, data-integrity, architecture, simplification, tests, shape) via `build_specialist_prompt`. The `intent`, `critic`, and `aggregator` prompts bypass the common header by design — their `REMEDY-BLOAT` bucket and handling are added directly in their own files. Two downstream gates (`critic.md` bucket, `babysit-pr` triage bucket) catch anything that slips past. `COMMENT_REVIEW_MISTAKES.md` gets seeded with 5 explicit anti-patterns. `architecture.md` loses two paragraphs that the new common-header rule supersedes.
 
 **Tech Stack:** Markdown only. No code, no tests beyond the existing smoke scripts that exercise prompt assembly.
 
@@ -45,21 +45,18 @@ Insert after the line ending Rule 7 (the line about keeping each finding under 1
 
 Run: `wc -l prompts/common-header.md` — expect 58–59 lines (was 51). Open the file in any reader, confirm Rule 8 sits between Rule 7 and the trailing closing of the rules block (or the end of file).
 
-- [ ] **Step 4: Sync to deployed copy and smoke-test prompt assembly**
+- [ ] **Step 4: Smoke-test prompt assembly**
 
-The deployed copy at `~/.pr-reviewer/prompts/common-header.md` is what the running review pipeline reads. Sync it:
+**Deployment is automatic on this box**: `~/.pr-reviewer/` symlinks `prompts/`, `lib/`, `contexts/`, etc. into `~/Hacking/knightwatch-reviewer/`, so the running pipeline picks up changes the moment they land on `main` and the canonical install pulls (≤2 min after merge per the systemd timers). **Do NOT `cp` from this checkout into `~/.pr-reviewer/`** — `cp` writes through the symlink into the canonical install's working tree, polluting its git state and creating drift between this branch and the deployed prompt. Verification happens against the source files in this branch.
 
-Run: `cp prompts/common-header.md ~/.pr-reviewer/prompts/common-header.md`
-
-Then exercise prompt assembly via the existing helper. Pick any tracked repo + made-up PR identifier:
+Verify the new rule is present in the source file (the existing `lib/tests/build-specialist-prompt-smoke.sh` already fences the substitution machinery with a controlled fake header — it does NOT need updating to pin Rule 8's literal text, which would calcify wording without catching quality regressions per Rule 8 itself):
 
 Run:
 ```bash
-source lib/prompt-build.sh
-build_specialist_prompt "shape" "prompts/shape.md" "cncorp/plow#999" "test PR" "https://example/999" "testuser" | grep -A3 "Remedy-cost framing"
+grep -A2 "Remedy-cost framing" prompts/common-header.md
 ```
 
-Expected: the `Remedy-cost framing` heading appears in the assembled prompt, with the placeholder substitution applied (no literal `{{PR_ID}}` left in the surrounding header).
+Expected: the rule body is present and includes the bans (defensive guards on internal callers, fallback chains, type validation outside trust boundaries, wrapper dataclasses for one call site, streaming rewrites, extra error handling on fail-fast paths). To exercise the full pipeline end-to-end including substitution, wait for merge → the canonical install pulls automatically and the next timer tick (≤2 min) reviews the live prompt against the next inbound PR.
 
 - [ ] **Step 5: Commit**
 
@@ -111,11 +108,7 @@ Expected new line count: 13–16 LOC (down from 21).
 
 Run: `wc -l prompts/architecture.md` — expect 13–16. Open and read end-to-end to confirm flow still reads cleanly without the dropped sentences.
 
-- [ ] **Step 4: Sync to deployed copy**
-
-Run: `cp prompts/architecture.md ~/.pr-reviewer/prompts/architecture.md`
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add prompts/architecture.md
@@ -165,9 +158,7 @@ The aggregator at `prompts/aggregator.md:36–43` lists how to handle each criti
 
 For now, just append a TODO note to your commit message so it's visible in `git log` for follow-up.
 
-- [ ] **Step 5: Sync and verify**
-
-Run: `cp prompts/critic.md ~/.pr-reviewer/prompts/critic.md`
+- [ ] **Step 5: Verify**
 
 Run: `wc -l prompts/critic.md` — expect 73–74 (was 70).
 
@@ -211,9 +202,7 @@ Insert after the `**MISCALIBRATED**` line (matching style — bolded verdict nam
    - **REMEDY-BLOAT** → drop unless the critic named a LOC-negative alternative; if it did, keep the finding at the original or downgraded severity, rewritten to point at that alternative.
 ```
 
-- [ ] **Step 3: Sync and verify**
-
-Run: `cp prompts/aggregator.md ~/.pr-reviewer/prompts/aggregator.md`
+- [ ] **Step 3: Verify**
 
 Run: `grep -A1 "REMEDY-BLOAT" prompts/aggregator.md | head -3` — expect to see the new line under step 1.
 
@@ -257,7 +246,7 @@ The cost being managed is **conditionals + special cases + defensive branches**,
 
 ## Test plan
 
-- [ ] `~/.pr-reviewer/prompts/*.md` synced from this branch
+- [ ] `~/.pr-reviewer/prompts/*.md` picks up the merged content automatically via symlink (no `cp` step)
 - [ ] Manual prompt-assembly check: `build_specialist_prompt shape ...` produces a prompt that includes Rule 8 with placeholders substituted
 - [ ] Live observation on the next 1-2 active PRs: the bot does not propose any of the 5 patterns from the spec
 - [ ] Two-week follow-up to evaluate whether scope creep has measurably dropped

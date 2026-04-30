@@ -34,13 +34,13 @@ The kw-reviewer + babysit-pr loop is producing scope creep on PRs in `cncorp/plo
 
 ## Architecture
 
-Five edits across two repos. The unifying mental model: **introduce one "remedy-cost" framing rule at the highest leverage point (`common-header.md`), inherited by all 7 specialists**, then add downstream gates so neither the critic nor babysit-pr lets a bloat-y remedy through.
+Five edits across two repos. The unifying mental model: **introduce one "remedy-cost" framing rule at the highest leverage point (`common-header.md`), inherited by all 6 finding-producing specialists (security, data-integrity, architecture, simplification, tests, shape)** — then add downstream gates so neither the critic nor babysit-pr lets a bloat-y remedy through. Note: `intent`, `critic`, and `aggregator` deliberately bypass `build_specialist_prompt` because their contracts conflict with the specialist common header; their changes (the `REMEDY-BLOAT` bucket and handling) are made directly in their own prompt files.
 
 ### kw-reviewer changes (knightwatch-reviewer3)
 
 #### Change A — Add a "Remedy-cost framing" rule to `prompts/common-header.md`
 
-Single edit, applies to all 7 specialists. Adds a numbered rule (~6 LOC) that mandates LOC delta + complexity framing for any proposed remedy, and explicitly forbids defensive guards, fallback chains, type validation outside boundaries, and wrapper dataclasses for theoretical concerns.
+Single edit, applies to all 6 finding-producing specialists (security, data-integrity, architecture, simplification, tests, shape). Adds a numbered rule (~6 LOC) that mandates LOC delta + complexity framing for any proposed remedy, and explicitly forbids defensive guards, fallback chains, type validation outside boundaries, and wrapper dataclasses for theoretical concerns.
 
 The rule must use the user's own framing: **LOC is a stand-in for conditionals, special cases, and defensive branches**. The test for any edge-case handler is whether the edge case actually happens or will happen in the near future.
 
