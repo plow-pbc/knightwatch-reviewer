@@ -263,7 +263,7 @@ flock "$CANONICAL_LOCK_FD" || { log "$PR_ID: canonical flock failed — aborting
 
 if [ ! -d "$CANONICAL_DIR/.git" ]; then
     log "Cloning canonical $REPO..."
-    if ! gh repo clone "$REPO" "$CANONICAL_DIR" -- --depth=50 --no-single-branch; then
+    if ! gh repo clone "$REPO" "$CANONICAL_DIR" -- --depth=500 --no-single-branch; then
         log "$PR_ID: canonical clone failed — aborting"
         exit 1
     fi
@@ -287,11 +287,11 @@ if [ -z "$DEFAULT_BRANCH" ]; then
     log "$PR_ID: could not resolve default branch from gh repo view — aborting"
     exit 1
 fi
-if ! git -C "$CANONICAL_DIR" fetch origin "$DEFAULT_BRANCH" --depth=50 --quiet; then
+if ! git -C "$CANONICAL_DIR" fetch origin "$DEFAULT_BRANCH" --depth=500 --quiet; then
     log "$PR_ID: canonical fetch of $DEFAULT_BRANCH failed — aborting"
     exit 1
 fi
-if ! git -C "$CANONICAL_DIR" fetch origin "+refs/pull/$PR_NUM/head:$PR_BRANCH" --depth=50 --quiet; then
+if ! git -C "$CANONICAL_DIR" fetch origin "+refs/pull/$PR_NUM/head:$PR_BRANCH" --depth=500 --quiet; then
     log "$PR_ID: refs/pull/$PR_NUM/head not fetchable (PR closed?) — skipping"
     exit 0
 fi
