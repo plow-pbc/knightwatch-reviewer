@@ -42,37 +42,6 @@ allocate_run_dir() {
     fi
 }
 
-# prepend_stale_head_note COMMENT_BODY REVIEWED_SHA CURRENT_HEAD
-#
-# If REVIEWED_SHA matches CURRENT_HEAD (or CURRENT_HEAD is empty —
-# best-effort gh-fetch failed), echoes COMMENT_BODY unchanged.
-#
-# Otherwise, the PR head moved during this run and the review the user is
-# about to see is for an older SHA. Inject a deterministic warning right
-# after the auto-post marker (first line) so the user doesn't read the
-# review as "the bot didn't see my fix" — it literally never saw it.
-#
-# The warning intentionally does NOT name a specific slash-command —
-# it points to "the commands at the bottom of this comment" so there's
-# one source of truth for usage (the existing footer), and so updating
-# the available commands later doesn't fork into two surfaces.
-#
-# Hermetic — pure string transform. Smoke verifies all three branches:
-# matched-shas (no-op), differing-shas (warning prepended), empty
-# CURRENT_HEAD (gh failure path: no-op).
-prepend_stale_head_note() {
-    local comment_body="$1" reviewed_sha="$2" current_head="$3"
-    if [ -z "$current_head" ] || [ "$current_head" = "$reviewed_sha" ]; then
-        printf '%s' "$comment_body"
-        return
-    fi
-    local warning first_line rest
-    warning="> ⚠️ **Stale review** — generated against \`${reviewed_sha:0:7}\`, but the PR head has advanced to \`${current_head:0:7}\` since this review started. Findings below may already be addressed in newer commits. To trigger a fresh review against the current head, see the commands at the bottom of this comment."
-    first_line=$(printf '%s' "$comment_body" | head -1)
-    rest=$(printf '%s' "$comment_body" | tail -n +2)
-    printf '%s\n%s\n\n%s' "$first_line" "$warning" "$rest"
-}
-
 # stage_prior_reviews STATE_DIR REPO_SLUG PR_NUM CURRENT_RUN_DIR
 #
 # Walks $STATE_DIR/runs/<repo-slug>__<pr>__* dirs in chronological order
@@ -156,19 +125,27 @@ compute_review_scope() {
     fi
 }
 
-# prepend_review_scope_note COMMENT_BODY SCOPE
+# prepend_review_header COMMENT_BODY SCOPE REVIEWED_SHA CURRENT_HEAD
 #
-# Injects a one-line "what kind of review is this" notice right after
-# the auto-post marker (first line) of $COMMENT_BODY. So the user sees
-# at a glance whether they're reading a first review, a /srosro-review
-# whole-PR re-review, an incremental re-review (and from which prior
-# SHA), or the silent full-diff fallback that fires when the prior SHA
-# was evicted by force-push/rebase.
+# Single source of truth for the disclosure header that goes right under
+# the auto-post marker. Combines two signals into one concise blockquote:
 #
-# Without this note, the worker's prose ("Re-review: the author has
-# pushed new commits since your previous review") doesn't disclose the
-# review scope — incremental and silent-fallback runs read identically
-# even though the first sees N files and the second sees the whole PR.
+#   1. Scope (always present): what kind of review this is — first,
+#      whole-PR re-review, incremental re-review, or silent-fallback
+#      re-review. Lets the reader interpret findings in the right
+#      context (e.g. an incremental re-review didn't look at unchanged
+#      code; a fallback evaluated the whole PR despite framing).
+#
+#   2. Stale-head warning (conditional): if CURRENT_HEAD differs from
+#      REVIEWED_SHA, the PR head moved during the run and the review is
+#      for an older SHA — appended as one-sentence suffix to the same
+#      blockquote. Empty CURRENT_HEAD (best-effort gh-fetch failed) is
+#      treated as "no warning" — same as matched.
+#
+# Replaces the previous two helpers (prepend_review_scope_note +
+# prepend_stale_head_note) that stacked two separate verbose
+# blockquotes. One concise line keeps the header from dominating the
+# review and gives the reader both signals at the same vertical glance.
 #
 # SCOPE format:
 #   "first"               — first review of this PR
@@ -177,46 +154,51 @@ compute_review_scope() {
 #                           git diff KNOWN_SHA..HEAD
 #   "fallback:<sha>"      — KNOWN_SHA NOT in local history (force-push
 #                           / rebase evicted it); worker silently fell
-#                           back to gh pr diff (the full PR), framing
-#                           it as incremental — this scope name calls
-#                           it out explicitly
-#   anything else         — no-op, returns body unchanged (best-effort)
+#                           back to gh pr diff (the full PR)
 #
-# Pure string transform — hermetic. Smoke fences each branch.
-prepend_review_scope_note() {
-    local comment_body="$1" scope="$2"
-    local note=""
+# Unknown SCOPE: fail-fast (return 1, stderr diagnostic) — see the
+# default case in compute_review_scope's contract. Caller must check
+# the exit code and abort the run.
+#
+# Pure string transform — hermetic. All branches fenced in
+# review-header-smoke.sh.
+prepend_review_header() {
+    local comment_body="$1" scope="$2" reviewed_sha="$3" current_head="$4"
+    local scope_text stale_suffix="" sha
     case "$scope" in
         first)
-            note="> 📋 **First review** of this PR."
+            scope_text="📋 First review of this PR."
             ;;
         whole)
-            note="> 📋 **Whole-PR re-review** — full diff evaluated from scratch (no prior review consulted)."
+            scope_text="📋 Whole-PR re-review (\`/srosro-review\`) — evaluated from scratch, no prior review consulted."
             ;;
         incremental:*)
-            local sha="${scope#incremental:}"
-            note="> 📋 **Re-review of changes since \`${sha:0:7}\`.** Specialists evaluated the incremental diff; aggregator verified prior findings against the current full PR state."
+            sha="${scope#incremental:}"
+            scope_text="📋 Re-review of changes since \`${sha:0:7}\`."
             ;;
         fallback:*)
-            local sha="${scope#fallback:}"
-            note="> 📋 **Re-review** — prior SHA \`${sha:0:7}\` is no longer in local history (likely a force-push or rebase); evaluated the full PR diff instead of an incremental one."
+            sha="${scope#fallback:}"
+            scope_text="📋 Re-review — prior SHA \`${sha:0:7}\` no longer in local history (force-push/rebase); evaluated full PR."
             ;;
         *)
             # scope is internal — only compute_review_scope produces it.
             # An unknown value means the worker has violated its own
             # invariant (e.g. a new scope was added to compute_review_scope
             # but not wired here). Per CLAUDE.md / feedback_fail_hard,
-            # crash loudly instead of silently omitting the very disclosure
-            # this helper exists to add — that would let a regression ship
-            # as a normal-looking review with the scope banner missing.
-            printf 'prepend_review_scope_note: unknown scope "%s" — internal invariant violated, refusing to silently omit scope disclosure\n' "$scope" >&2
+            # crash loudly instead of silently omitting the very header
+            # this helper exists to add — that would let a regression
+            # ship as a normal-looking review with no disclosure at all.
+            printf 'prepend_review_header: unknown scope "%s" — internal invariant violated, refusing to silently omit header\n' "$scope" >&2
             return 1
             ;;
     esac
+    if [ -n "$current_head" ] && [ "$current_head" != "$reviewed_sha" ]; then
+        stale_suffix=" ⚠️ Stale: head moved from \`${reviewed_sha:0:7}\` to \`${current_head:0:7}\` mid-run — see commands below to re-run."
+    fi
     local first_line rest
     first_line=$(printf '%s' "$comment_body" | head -1)
     rest=$(printf '%s' "$comment_body" | tail -n +2)
-    printf '%s\n%s\n\n%s' "$first_line" "$note" "$rest"
+    printf '%s\n> %s%s\n\n%s' "$first_line" "$scope_text" "$stale_suffix" "$rest"
 }
 
 stage_prior_reviews() {
