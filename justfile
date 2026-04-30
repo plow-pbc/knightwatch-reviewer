@@ -29,6 +29,10 @@ test:
     bash lib/tests/auth-smoke.sh
 
     echo ""
+    echo "=== gh-comments smoke test ==="
+    bash lib/tests/gh-comments-smoke.sh
+
+    echo ""
     echo "=== search-roots smoke test ==="
     bash lib/tests/search-roots-smoke.sh
 
