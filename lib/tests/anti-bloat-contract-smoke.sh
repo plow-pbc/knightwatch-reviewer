@@ -42,4 +42,31 @@ echo "  asserting aggregator handler accepts branch-negative alternatives..."
 assert_grep "aggregator.md should mention branch-negative alternative" \
     "branch-negative" prompts/aggregator.md
 
+# ----- new specialist + scratch wiring (PR#25) ----------------------
+# Token-level fence that the performance + consumers specialists are
+# wired into the critic and aggregator read lists, and that
+# common-header documents the dead-code.md scratch the consumers
+# specialist consumes. Catches the "added a prompt file but forgot
+# to register it" omission class.
+
+echo "  asserting performance specialist registered in critic.md..."
+assert_grep "critic.md should reference performance specialist" \
+    "specialists/performance.md" prompts/critic.md
+
+echo "  asserting consumers specialist registered in critic.md..."
+assert_grep "critic.md should reference consumers specialist" \
+    "specialists/consumers.md" prompts/critic.md
+
+echo "  asserting performance specialist registered in aggregator.md..."
+assert_grep "aggregator.md should reference performance specialist" \
+    "specialists/performance.md" prompts/aggregator.md
+
+echo "  asserting consumers specialist registered in aggregator.md..."
+assert_grep "aggregator.md should reference consumers specialist" \
+    "specialists/consumers.md" prompts/aggregator.md
+
+echo "  asserting common-header documents dead-code.md scratch..."
+assert_grep "common-header.md should document dead-code.md" \
+    "dead-code.md" prompts/common-header.md
+
 echo "  PASS"

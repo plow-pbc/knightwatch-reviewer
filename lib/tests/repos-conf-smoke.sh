@@ -49,6 +49,28 @@ for repo in "${REPOS[@]}"; do
     [ -n "$val" ] || { echo "FAIL A3: KID_PATHS[$repo] is missing or empty"; exit 1; }
 done
 
+echo "  A3b: SOURCE_PATHS is an associative array (declare -A)..."
+declare -p SOURCE_PATHS 2>/dev/null | grep -q '^declare -A' || { echo "FAIL A3b: SOURCE_PATHS is not declared as an associative array"; exit 1; }
+
+echo "  A3c: every REPO has a non-empty SOURCE_PATHS entry..."
+# Cross-repo grep depends on a source-checkout path per repo.
+# Empty entries are allowed (= exclude that repo from the grep
+# surface), but undeclared keys mean the manifest drifted.
+for repo in "${REPOS[@]}"; do
+    declare -p SOURCE_PATHS | grep -qE "\\[$repo\\]=" || { echo "FAIL A3c: SOURCE_PATHS missing key for $repo"; exit 1; }
+done
+
+echo "  A3d: DEAD_CODE_CMDS is an associative array (declare -A)..."
+declare -p DEAD_CODE_CMDS 2>/dev/null | grep -q '^declare -A' || { echo "FAIL A3d: DEAD_CODE_CMDS is not declared as an associative array"; exit 1; }
+
+echo "  A3e: every REPO has a DEAD_CODE_CMDS entry (empty allowed)..."
+# Empty string = no static tool wired (LLM grep still runs). What we
+# fence is that adding a repo without adding a DEAD_CODE_CMDS entry
+# trips set -u in the worker.
+for repo in "${REPOS[@]}"; do
+    declare -p DEAD_CODE_CMDS | grep -qE "\\[$repo\\]=" || { echo "FAIL A3e: DEAD_CODE_CMDS missing key for $repo"; exit 1; }
+done
+
 echo "  A4: every KID_PATHS key corresponds to a tracked REPO..."
 # Catch the inverse: a stale KID_PATHS entry whose repo got removed
 # from REPOS. (Harmless functionally, but a config-drift signal.)
@@ -87,8 +109,8 @@ out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; echo \"RE
 
 echo "  B2: loader survives missing repos.conf under set -u (empty arrays)..."
 rm -f "$SAND_STATE/repos.conf"
-out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; echo \"REPOS=\${#REPOS[@]} KID_PATHS=\${#KID_PATHS[@]}\"")
-[ "$out" = "REPOS=0 KID_PATHS=0" ] || { echo "FAIL B2: loader output: $out"; exit 1; }
+out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; echo \"REPOS=\${#REPOS[@]} KID_PATHS=\${#KID_PATHS[@]} SOURCE_PATHS=\${#SOURCE_PATHS[@]} DEAD_CODE_CMDS=\${#DEAD_CODE_CMDS[@]}\"")
+[ "$out" = "REPOS=0 KID_PATHS=0 SOURCE_PATHS=0 DEAD_CODE_CMDS=0" ] || { echo "FAIL B2: loader output: $out"; exit 1; }
 
 echo "  B3: config.env override wins over repos.conf (legacy seam)..."
 cat > "$SAND_STATE/repos.conf" <<'CONF'
