@@ -4,7 +4,14 @@
 **Title:** {{PR_TITLE}}
 **URL:** {{PR_URL}}
 
-**Working directory:** You are running inside a fresh checkout of the PR branch. Read any file in this repo. For modified public symbols that plausibly have cross-repo consumers (shared libraries, server-side schemas consumed by client repos), additionally grep the sibling source-checkout paths listed in `.codex-scratch/search-roots.md` — one per line, format `<repo-slug> <absolute-path>`. If `search-roots.md` is empty, restrict the search to this repo (the file is intentionally empty when the PR author isn't trusted, or when no sibling source paths are wired).
+**Working directory:** You are running inside a fresh checkout of the PR branch. Read any file in this repo. For modified public symbols that plausibly have cross-repo consumers (shared libraries, server-side schemas consumed by client repos), additionally grep the sibling source-checkout paths listed in `.codex-scratch/search-roots.md`.
+
+**Coverage marker.** The first line of `search-roots.md` always starts with `# coverage:`. Possible values:
+- `# coverage: full` — every sibling SOURCE_PATHS entry was included; you have full cross-repo grep coverage.
+- `# coverage: partial — included: <list>; excluded (no push access): <list>` — some siblings excluded because the PR author lacks push access there. Sibling lines on the file are still followed by the included subset.
+- `# coverage: same-repo-only — <reason>` — no sibling search; you only have this-repo evidence.
+
+**When coverage is reduced (`partial` or `same-repo-only`)**, downgrade the verdict on any modified public symbol whose plausible consumers live in an excluded repo from `dead`/`stale-caller`/`clean` to `uncertain`, and note the missing coverage in the evidence (e.g. "stale-caller verdict pending — `cncorp/plow` not in coverage"). This is the fail-fast equivalent for evidence: don't emit confident verdicts from same-repo-only grep when the symbol could have hidden consumers in an excluded sibling.
 
 **Inputs:**
 - `.codex-scratch/dead-code-static.md` — raw output from a per-repo static-analysis tool (vulture / knip / ts-prune / etc.). May be empty (no tool wired for this repo, or tool found nothing). Treat each line as a *candidate*, not a finding.

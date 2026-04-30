@@ -557,18 +557,43 @@ log "$PR_ID: diff is ${#KID_INPUT_DIFF} bytes"
 # paths (one per line: `<repo-slug> <absolute-path>`). The dead-code-search
 # pre-pass and the consumers specialist consume this scratch instead of
 # rediscovering topology from prose — KID_PATHS is not a source locator
-# (e.g. cncorp/plow → plow-kid index, not plow source). Trust-gated:
-# untrusted PR authors can choose probe symbols and the grep results
-# land in the public review, so cross-repo grep is disabled for them
-# (specialists fall back to same-repo only).
+# (e.g. cncorp/plow → plow-kid index, not plow source).
+#
+# Trust gate is layered: outer check requires push on $REPO (no
+# cross-repo data flows for an untrusted PR at all), inner per-sibling
+# check requires push on each sibling individually. A collaborator on
+# $REPO without access to a sibling no longer pulls that sibling's
+# code locations into the public review.
+#
+# Coverage marker (first line of search-roots.md) lets downstream
+# prompts qualify their verdicts when sibling coverage was reduced —
+# fail-fast on silent coverage loss instead of confident output from
+# same-repo-only evidence. Distinguishes "untrusted PR", "trusted PR
+# but excluded from some siblings", and "trusted, full coverage".
 SEARCH_ROOTS=""
+INCLUDED_SIBLINGS=()
+EXCLUDED_SIBLINGS=()
 if is_trusted_repo_author "$REPO" "$PR_AUTHOR"; then
     for sibling_repo in "${REPOS[@]}"; do
         [ "$sibling_repo" = "$REPO" ] && continue
         sibling_path="${SOURCE_PATHS[$sibling_repo]:-}"
-        [ -n "$sibling_path" ] && [ -d "$sibling_path" ] && \
+        [ -n "$sibling_path" ] && [ -d "$sibling_path" ] || continue
+        if is_trusted_repo_author "$sibling_repo" "$PR_AUTHOR"; then
             SEARCH_ROOTS+="$sibling_repo $sibling_path"$'\n'
+            INCLUDED_SIBLINGS+=("$sibling_repo")
+        else
+            EXCLUDED_SIBLINGS+=("$sibling_repo")
+        fi
     done
+fi
+if [ "${#INCLUDED_SIBLINGS[@]}" -eq 0 ] && [ "${#EXCLUDED_SIBLINGS[@]}" -eq 0 ]; then
+    SEARCH_ROOTS="# coverage: same-repo-only — author untrusted on $REPO or no sibling SOURCE_PATHS available"$'\n'
+elif [ "${#EXCLUDED_SIBLINGS[@]}" -eq 0 ]; then
+    SEARCH_ROOTS="# coverage: full"$'\n'"$SEARCH_ROOTS"
+elif [ "${#INCLUDED_SIBLINGS[@]}" -eq 0 ]; then
+    SEARCH_ROOTS="# coverage: same-repo-only — author lacks push access to all siblings: ${EXCLUDED_SIBLINGS[*]}"$'\n'
+else
+    SEARCH_ROOTS="# coverage: partial — included: ${INCLUDED_SIBLINGS[*]}; excluded (no push access): ${EXCLUDED_SIBLINGS[*]}"$'\n'"$SEARCH_ROOTS"
 fi
 
 # ---- write scratch files ----
