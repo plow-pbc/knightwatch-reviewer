@@ -9,24 +9,30 @@
 #
 # Coverage:
 #   Python checker:
-#     - pyproject.toml `[tool.mypy] strict = true`            → no gap
-#     - pyproject.toml `[tool.pyright] strict = true`         → no gap
-#     - pyproject.toml `[tool.basedpyright] strict = true`    → no gap
-#     - pyrightconfig.json `"strict": true`                   → no gap
-#     - mypy.ini `strict = True`                              → no gap
-#     - bare pyproject.toml (no strict config)                → gap
-#     - empty workdir (no Python at all)                      → gap (caller
-#                                                              chose to
-#                                                              run the cmd
-#                                                              for this repo,
-#                                                              so silence
-#                                                              would be the
-#                                                              wrong answer)
+#     - pyproject.toml [tool.mypy] strict = true                  → no gap
+#     - pyproject.toml [tool.pyright] typeCheckingMode="strict"   → no gap
+#     - pyproject.toml [tool.basedpyright] typeCheckingMode=...   → no gap
+#       (the canonical signal — pyright/basedpyright `strict` is a
+#       list of paths, not a boolean; matches plow's api/pyproject.toml)
+#     - pyrightconfig.json `"strict": true`                       → no gap
+#     - mypy.ini [mypy] strict = True                             → no gap
+#     - setup.cfg [mypy] strict = True                            → no gap
+#     - setup.cfg `strict = true` outside [mypy] (e.g. [other])   → gap
+#       (regression-fences against the line-grep false-positive)
+#     - bare pyproject.toml (no strict config)                    → gap
+#     - per-flag mypy strictness without strict=true              → gap
+#     - empty workdir (no Python at all)                          → gap
+#     - symlinked pyproject.toml                                  → gap
+#       (refused: fork-trust-boundary leak)
+#     - PROJECT_DIR arg points to subdir with strict config       → no gap
+#       (plow-style nested project root)
 #   TypeScript checker:
-#     - tsconfig.json `compilerOptions.strict: true`          → no gap
-#     - tsconfig.json `compilerOptions.strict: false`         → gap
-#     - tsconfig.json without compilerOptions.strict          → gap
-#     - no tsconfig.json                                      → gap
+#     - tsconfig.json `compilerOptions.strict: true`              → no gap
+#     - tsconfig.json `compilerOptions.strict: false`             → gap
+#     - tsconfig.json without compilerOptions.strict              → gap
+#     - no tsconfig.json                                          → gap
+#     - symlinked tsconfig.json                                   → gap
+#     - PROJECT_DIR arg points to subdir with strict tsconfig     → no gap
 
 set -uo pipefail
 
@@ -39,8 +45,9 @@ trap 'rm -rf "$TMPDIR"' EXIT
 
 assert_no_gap() {
     local check="$1" desc="$2"
+    shift 2
     local out
-    out=$(bash "$check")
+    out=$(bash "$check" "$@")
     if [ -n "$out" ]; then
         echo "FAIL: $desc — expected empty (no gap), got: $out"
         exit 1
@@ -49,8 +56,9 @@ assert_no_gap() {
 
 assert_gap() {
     local check="$1" desc="$2" expected_substring="$3"
+    shift 3
     local out
-    out=$(bash "$check")
+    out=$(bash "$check" "$@")
     if [ -z "$out" ]; then
         echo "FAIL: $desc — expected gap message on stdout, got empty"
         exit 1
@@ -72,19 +80,19 @@ strict = true
 EOF
 (cd "$W" && assert_no_gap "$PY_CHECK" "py-mypy")
 
-echo "  Python: pyproject.toml [tool.pyright] strict=true → no gap..."
+echo "  Python: pyproject.toml [tool.pyright] typeCheckingMode=\"strict\" → no gap..."
 W="$TMPDIR/py-pyright"; mkdir -p "$W"
 cat > "$W/pyproject.toml" <<'EOF'
 [tool.pyright]
-strict = true
+typeCheckingMode = "strict"
 EOF
 (cd "$W" && assert_no_gap "$PY_CHECK" "py-pyright")
 
-echo "  Python: pyproject.toml [tool.basedpyright] strict=true → no gap..."
+echo "  Python: pyproject.toml [tool.basedpyright] typeCheckingMode=\"strict\" → no gap..."
 W="$TMPDIR/py-basedpyright"; mkdir -p "$W"
 cat > "$W/pyproject.toml" <<'EOF'
 [tool.basedpyright]
-strict = true
+typeCheckingMode = "strict"
 EOF
 (cd "$W" && assert_no_gap "$PY_CHECK" "py-basedpyright")
 
@@ -93,13 +101,33 @@ W="$TMPDIR/py-pyrightconfig"; mkdir -p "$W"
 echo '{"strict": true}' > "$W/pyrightconfig.json"
 (cd "$W" && assert_no_gap "$PY_CHECK" "py-pyrightconfig")
 
-echo "  Python: mypy.ini strict=True → no gap..."
+echo "  Python: mypy.ini [mypy] strict=True → no gap..."
 W="$TMPDIR/py-mypyini"; mkdir -p "$W"
 cat > "$W/mypy.ini" <<'EOF'
 [mypy]
 strict = True
 EOF
 (cd "$W" && assert_no_gap "$PY_CHECK" "py-mypyini")
+
+echo "  Python: setup.cfg [mypy] strict=True → no gap..."
+W="$TMPDIR/py-setupcfg-mypy"; mkdir -p "$W"
+cat > "$W/setup.cfg" <<'EOF'
+[mypy]
+strict = True
+EOF
+(cd "$W" && assert_no_gap "$PY_CHECK" "py-setupcfg-mypy")
+
+# Regression-fence on the line-grep false-positive: a `strict = true`
+# line outside the [mypy] section (e.g. another tool in setup.cfg) MUST
+# NOT count as strict typing. Catches the bug-class the structural INI
+# parse fixes.
+echo "  Python: setup.cfg strict=true outside [mypy] → gap (line-grep false-positive defense)..."
+W="$TMPDIR/py-setupcfg-other"; mkdir -p "$W"
+cat > "$W/setup.cfg" <<'EOF'
+[some_other_tool]
+strict = true
+EOF
+(cd "$W" && assert_gap "$PY_CHECK" "py-setupcfg-other" "no strict-mode config")
 
 echo "  Python: bare pyproject.toml (no strict config) → gap..."
 W="$TMPDIR/py-bare"; mkdir -p "$W"
@@ -126,6 +154,29 @@ warn_unused_ignores = true
 EOF
 (cd "$W" && assert_gap "$PY_CHECK" "py-per-flag" "no strict-mode config")
 
+# Symlink-refusal regression-fence. A fork PR could symlink pyproject.toml
+# to an arbitrary host file to leak one bit per review (whether the
+# target's TOML happens to encode strict mode). Refuse rather than read.
+echo "  Python: pyproject.toml symlink → gap (symlink refused)..."
+W="$TMPDIR/py-symlink"; mkdir -p "$W"
+echo '[tool.mypy]' > "$TMPDIR/py-symlink-target.toml"
+echo 'strict = true' >> "$TMPDIR/py-symlink-target.toml"
+ln -s "$TMPDIR/py-symlink-target.toml" "$W/pyproject.toml"
+(cd "$W" && assert_gap "$PY_CHECK" "py-symlink" "no strict-mode config")
+
+# Project-root arg: plow's strict config lives in api/pyproject.toml,
+# not at repo root. Without the arg, repo-root scan misses it; with the
+# arg, the helper scopes to api/.
+echo "  Python: PROJECT_DIR arg points to subdir with strict config → no gap..."
+W="$TMPDIR/py-subdir"; mkdir -p "$W/api"
+cat > "$W/api/pyproject.toml" <<'EOF'
+[tool.basedpyright]
+typeCheckingMode = "strict"
+EOF
+(cd "$W" && assert_no_gap "$PY_CHECK" "py-subdir-positive" api)
+# Sanity: without the arg, the same workdir reports a gap (root has no config).
+(cd "$W" && assert_gap "$PY_CHECK" "py-subdir-without-arg" "no strict-mode config")
+
 # ===== TypeScript =====
 echo "  TS: tsconfig.json compilerOptions.strict=true → no gap..."
 W="$TMPDIR/ts-strict"; mkdir -p "$W"
@@ -146,4 +197,15 @@ echo "  TS: no tsconfig.json → gap..."
 W="$TMPDIR/ts-none"; mkdir -p "$W"
 (cd "$W" && assert_gap "$TS_CHECK" "ts-none" "tsconfig.json not found")
 
-echo "  PASS (8 Python + 4 TS scenarios; per-flag-strict + no-config regression-fences)"
+echo "  TS: tsconfig.json symlink → gap (symlink refused)..."
+W="$TMPDIR/ts-symlink"; mkdir -p "$W"
+echo '{"compilerOptions": {"strict": true}}' > "$TMPDIR/ts-symlink-target.json"
+ln -s "$TMPDIR/ts-symlink-target.json" "$W/tsconfig.json"
+(cd "$W" && assert_gap "$TS_CHECK" "ts-symlink" "tsconfig.json is a symlink")
+
+echo "  TS: PROJECT_DIR arg points to subdir with strict tsconfig → no gap..."
+W="$TMPDIR/ts-subdir"; mkdir -p "$W/web"
+echo '{"compilerOptions": {"strict": true}}' > "$W/web/tsconfig.json"
+(cd "$W" && assert_no_gap "$TS_CHECK" "ts-subdir-positive" web)
+
+echo "  PASS (12 Python + 6 TS scenarios; per-flag-strict + line-grep + symlink + project-dir regression-fences)"
