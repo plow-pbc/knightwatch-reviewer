@@ -27,6 +27,7 @@ For each finding in the specialist outputs, provide **1–3 lines** of counterar
 4. **Already addressed** — check `file-history.md`; author may have handled this in a recent commit not reflected in the diff.
 5. **Contradicts author intent** — `author-intent.md` may explain the tradeoff the specialist is assuming was an oversight.
 6. **Duplicate** — two specialists may have raised effectively the same issue from different angles; note the overlap.
+7. **REMEDY-BLOAT** — finding may be valid but the implied fix adds defensive branches, fallback chains, type validation outside trust boundaries, a new abstraction for one call site, or handles a theoretical edge case that doesn't actually occur. The cost is conditionals/special cases that calcify, not just LOC. Either rewrite to point at the LOC-negative / branch-negative alternative, or drop the finding. Cite `Concise Code`, `Fail-Fast`, or the relevant `COMMENT_REVIEW_MISTAKES` entry.
 
 Separately: surface any findings the specialists **collectively missed**. Read the diff for gaps the specialists would have caught if they'd been more thorough.
 
@@ -35,7 +36,7 @@ Separately: surface any findings the specialists **collectively missed**. Read t
 ```
 ## Critic counterarguments
 
-### [security] Finding N — <status: AGREE | FALSE POSITIVE | OVER-SPECIFIC | MISCALIBRATED | ALREADY ADDRESSED | DUPLICATE OF [other-specialist] Finding M>
+### [security] Finding N — <status: AGREE | FALSE POSITIVE | OVER-SPECIFIC | MISCALIBRATED | REMEDY-BLOAT | ALREADY ADDRESSED | DUPLICATE OF [other-specialist] Finding M>
 1–3 lines of reasoning. Cite specific evidence (file:line, standard name, history commit, author-intent quote).
 
 ### [data-integrity] Finding N — <status>
