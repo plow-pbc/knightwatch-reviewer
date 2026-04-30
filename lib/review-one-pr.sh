@@ -544,12 +544,32 @@ fi
 
 log "$PR_ID: diff is ${#KID_INPUT_DIFF} bytes"
 
+# ---- search-roots for cross-repo grep ----
+# Stages .codex-scratch/search-roots.md with sibling source-checkout
+# paths (one per line: `<repo-slug> <absolute-path>`). The dead-code-search
+# pre-pass and the consumers specialist consume this scratch instead of
+# rediscovering topology from prose — KID_PATHS is not a source locator
+# (e.g. cncorp/plow → plow-kid index, not plow source). Trust-gated:
+# untrusted PR authors can choose probe symbols and the grep results
+# land in the public review, so cross-repo grep is disabled for them
+# (specialists fall back to same-repo only).
+SEARCH_ROOTS=""
+if is_trusted_repo_author "$REPO" "$PR_AUTHOR"; then
+    for sibling_repo in "${REPOS[@]}"; do
+        [ "$sibling_repo" = "$REPO" ] && continue
+        sibling_path="${SOURCE_PATHS[$sibling_repo]:-}"
+        [ -n "$sibling_path" ] && [ -d "$sibling_path" ] && \
+            SEARCH_ROOTS+="$sibling_repo $sibling_path"$'\n'
+    done
+fi
+
 # ---- write scratch files ----
 write_scratch "$REPO_DIR" "diff.patch"         "$KID_INPUT_DIFF"
 write_scratch "$REPO_DIR" "previous-review.md" "$PREV_BODY"
 write_scratch "$REPO_DIR" "test-results.md"    "$TEST_RESULTS"
 write_scratch "$REPO_DIR" "prior-art.md"       "${PRIOR_ART:-}"
 write_scratch "$REPO_DIR" "dead-code-static.md" "${DEAD_CODE_STATIC:-}"
+write_scratch "$REPO_DIR" "search-roots.md"    "${SEARCH_ROOTS:-}"
 write_scratch "$REPO_DIR" "standards.md"       "$STANDARDS"
 [ -n "${FULL_PR_DIFF:-}" ] && \
     write_scratch "$REPO_DIR" "full-diff.patch" "$FULL_PR_DIFF"

@@ -4,7 +4,7 @@
 **Title:** {{PR_TITLE}}
 **URL:** {{PR_URL}}
 
-**Working directory:** You are running inside a fresh checkout of the PR branch. Read any file in this repo, and grep across this repo and the sibling tracked-repo paths under `~/Hacking/` whose paths appear in `~/.pr-reviewer/repos.conf` (`KID_PATHS`) when a public symbol from this repo plausibly has cross-repo consumers.
+**Working directory:** You are running inside a fresh checkout of the PR branch. Read any file in this repo. For modified public symbols that plausibly have cross-repo consumers (shared libraries, server-side schemas consumed by client repos), additionally grep the sibling source-checkout paths listed in `.codex-scratch/search-roots.md` — one per line, format `<repo-slug> <absolute-path>`. If `search-roots.md` is empty, restrict the search to this repo (the file is intentionally empty when the PR author isn't trusted, or when no sibling source paths are wired).
 
 **Inputs:**
 - `.codex-scratch/dead-code-static.md` — raw output from a per-repo static-analysis tool (vulture / knip / ts-prune / etc.). May be empty (no tool wired for this repo, or tool found nothing). Treat each line as a *candidate*, not a finding.
