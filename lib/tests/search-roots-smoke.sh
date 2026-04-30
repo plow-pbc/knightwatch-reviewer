@@ -9,6 +9,8 @@
 #   3. untrusted on every sibling -> same-repo-only with excluded counts
 #   4. one sibling missing on disk -> reported as `missing`, not silently dropped
 #   5. gh api fails for one sibling -> reported as `lookup-error`, not collapsed into excluded
+#   6. untrusted on $REPO -> outer gate short-circuits with NO per-sibling lines
+#   7. gh api fails on $REPO -> reported as base-repo `lookup-error`, NOT collapsed into untrusted
 #
 # Each scenario asserts BOTH the coverage header AND the per-sibling
 # classification lines. That's the whole point of the seam — both prompts
@@ -62,18 +64,7 @@ exit 1
 STUB
 chmod +x "$TMPDIR/bin/gh"
 
-. "$PROJECT_ROOT/lib/auth.sh"
 . "$PROJECT_ROOT/lib/search-roots.sh"
-
-assert_eq() {
-    local label="$1" expected="$2" actual="$3"
-    if [ "$expected" != "$actual" ]; then
-        echo "FAIL: $label"
-        echo "  expected: $(printf '%s' "$expected" | head -c 400)"
-        echo "  got:      $(printf '%s' "$actual" | head -c 400)"
-        exit 1
-    fi
-}
 
 assert_contains() {
     local label="$1" needle="$2" haystack="$3"
