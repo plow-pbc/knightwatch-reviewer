@@ -735,19 +735,22 @@ fi
 log "$PR_ID: diff is ${#KID_INPUT_DIFF} bytes — auto-nits: ${#AUTO_NITS[@]}"
 
 # ---- search-roots for cross-repo grep ----
-# Single worker-owned coverage-state seam: every sibling repo is fully
-# classified into included | excluded | missing | lookup-error and the
-# resulting machine-readable content is consumed by the dead-code-search
-# pre-pass and the consumers specialist as the sole source of truth.
-# Live in lib/search-roots.sh (regression-fenced by lib/tests/
-# search-roots-smoke.sh) so the staging logic can't drift into per-prompt
-# rediscovery again.
+# Single worker-owned coverage-state seam: every whitelisted sibling
+# (SOURCE_PATHS in repos.conf) is classified as `included` (checkout
+# present on disk) or `missing` (operator-config gap, checkout absent),
+# and the resulting machine-readable content is consumed by the
+# dead-code-search pre-pass and the consumers specialist as the sole
+# source of truth. Lives in lib/search-roots.sh (regression-fenced by
+# lib/tests/search-roots-smoke.sh) so the staging logic can't drift
+# into per-prompt rediscovery again.
 SEARCH_ROOTS=$(stage_search_roots "$REPO")
 
 # Materialize sibling-repo symlinks under .siblings/<owner>/<repo>, but
-# ONLY for siblings the auth gate above just classified as `included`.
-# Running before stage_search_roots would expose every configured sibling
-# checkout to the codex agent regardless of trust — bot Finding 2 on PR #28.
+# ONLY for siblings stage_search_roots above just classified as
+# `included` (whitelisted in SOURCE_PATHS AND checkout present on disk).
+# Running before stage_search_roots would symlink siblings whose
+# checkouts are absent — symlinks would dangle and specialists would
+# get confused.
 INCLUDED_SLUGS=()
 while IFS= read -r line; do
     case "$line" in
