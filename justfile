@@ -53,8 +53,8 @@ test:
     bash lib/tests/finalize-meta-smoke.sh
 
     echo ""
-    echo "=== stale-head smoke test ==="
-    bash lib/tests/stale-head-smoke.sh
+    echo "=== review-header smoke test ==="
+    bash lib/tests/review-header-smoke.sh
 
     echo ""
     echo "=== orchestrator skip smoke test ==="
