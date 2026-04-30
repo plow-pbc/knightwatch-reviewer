@@ -1,20 +1,15 @@
 #!/bin/bash
 # Smoke for the deterministic strict-typing checkers under lib/checks/.
-# These run inside REPO_DIR (the PR's working tree) and emit the gap
-# description on stdout when strict mode isn't enforced, empty when it
-# is. The worker (lib/review-one-pr.sh) treats non-empty stdout as a
-# guaranteed [nit] in the posted comment — bypassing the LLM entirely —
-# so a regression in either checker silently mis-classifies real
-# projects, which is exactly the bug class this smoke fences.
+# Helpers run inside REPO_DIR (the PR's working tree) and follow the
+# tri-state contract documented in repos.conf::STRICT_TYPING_CMDS:
 #
-# Helper contract is tri-state:
-#   exit 0 — strict mode enforced.
-#   exit 1 — gap (stdout = gap text → becomes a [nit]).
-#   exit 2 — checker error (stderr = details → worker logs loud, no nit).
+#   exit 0 — strict mode enforced.        stdout: empty.
+#   exit 1 — real gap.                    stdout: gap text → posted as [nit].
+#   exit 2 — checker could not determine. stderr: error details → logged loud, no nit.
 #
-# The smoke fences each leg of the tri-state because collapsing
-# checker errors into "gap" silently publishes wrong review text — see
-# PR #27 round-2 bot review.
+# The smoke fences each leg because collapsing checker errors into
+# "gap" silently publishes wrong review text — see PR #27 round-2 bot
+# review.
 
 set -uo pipefail
 
