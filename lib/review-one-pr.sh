@@ -518,25 +518,33 @@ fi
 # file scope via the tracked-repos.sh loader; the pre-declared empty
 # assoc array makes the lookup safe under `set -u` even in sandboxes
 # without repos.conf.
+#
+# Filenames are PR-controlled — never let them flow through `eval`.
+# TOUCHED_FILES_ARR is a bash array; `bash -c "$cmd" -- "$@"` invokes
+# the per-repo command with files as positional args, which the
+# command references as "$@" (see repos.conf). Filenames containing
+# whitespace or shell metacharacters are quoted correctly.
+#
+# Exit-code policy: keep stdout regardless of exit. Some tools (vulture)
+# exit 1 *because* findings exist. Treat empty-stdout-AND-non-zero-exit
+# as the only degrade signal; non-empty stdout is data.
 DEAD_CODE_STATIC=""
 DEAD_CODE_CMD="${DEAD_CODE_CMDS[$REPO]:-}"
 if [ -n "$DEAD_CODE_CMD" ] && [ -n "$KID_INPUT_DIFF" ]; then
-    # TOUCHED_FILES = paths relative to repo root, extracted from the
-    # diff's `+++ b/<path>` lines. Used by tools that need explicit
-    # file args (vulture, ruff F401); ignored by tools that auto-scan
-    # (knip, ts-prune).
-    TOUCHED_FILES=$(printf '%s' "$KID_INPUT_DIFF" | grep -E '^\+\+\+ b/' | sed 's|^+++ b/||' | tr '\n' ' ')
-    if [ -n "$TOUCHED_FILES" ]; then
+    TOUCHED_FILES_ARR=()
+    while IFS= read -r f; do
+        [ -n "$f" ] && TOUCHED_FILES_ARR+=("$f")
+    done < <(printf '%s' "$KID_INPUT_DIFF" | grep -E '^\+\+\+ b/' | sed 's|^+++ b/||')
+    if [ "${#TOUCHED_FILES_ARR[@]}" -gt 0 ]; then
         DC_STATIC_STDERR=$(mktemp)
-        DEAD_CODE_STATIC=$(cd "$REPO_DIR" && eval "$DEAD_CODE_CMD" 2>"$DC_STATIC_STDERR")
+        DEAD_CODE_STATIC=$(cd "$REPO_DIR" && bash -c "$DEAD_CODE_CMD" -- "${TOUCHED_FILES_ARR[@]}" 2>"$DC_STATIC_STDERR")
         DC_STATIC_EXIT=$?
-        if [ "$DC_STATIC_EXIT" -ne 0 ]; then
-            DC_ERR_SUMMARY=$(tail -n 3 "$DC_STATIC_STDERR" | tr '\n' ' ')
-            log "$PR_ID: dead-code static pre-pass exit $DC_STATIC_EXIT — degrading static-only (LLM grep still runs). stderr tail: $DC_ERR_SUMMARY"
-            DEAD_CODE_STATIC=""
-        elif [ -n "$DEAD_CODE_STATIC" ]; then
+        if [ -n "$DEAD_CODE_STATIC" ]; then
             DC_LINE_COUNT=$(printf '%s\n' "$DEAD_CODE_STATIC" | wc -l)
-            log "$PR_ID: dead-code static pre-pass produced $DC_LINE_COUNT candidate line(s)"
+            log "$PR_ID: dead-code static pre-pass produced $DC_LINE_COUNT candidate line(s) (exit $DC_STATIC_EXIT)"
+        elif [ "$DC_STATIC_EXIT" -ne 0 ]; then
+            DC_ERR_SUMMARY=$(tail -n 3 "$DC_STATIC_STDERR" | tr '\n' ' ')
+            log "$PR_ID: dead-code static pre-pass exit $DC_STATIC_EXIT, no output — degrading. stderr tail: $DC_ERR_SUMMARY"
         fi
         rm -f "$DC_STATIC_STDERR"
     fi
