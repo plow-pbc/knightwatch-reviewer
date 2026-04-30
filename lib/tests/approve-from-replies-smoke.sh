@@ -150,8 +150,9 @@ chmod +x "$HOME/.local/bin/gh"
 # Sandbox lib dir: real auth.sh + state-io.sh.
 export REVIEWER_LIB_DIR="$TMPDIR/lib"
 mkdir -p "$REVIEWER_LIB_DIR"
-cp "$PROJECT_ROOT/lib/auth.sh"     "$REVIEWER_LIB_DIR/auth.sh"
-cp "$PROJECT_ROOT/lib/state-io.sh" "$REVIEWER_LIB_DIR/state-io.sh"
+cp "$PROJECT_ROOT/lib/auth.sh"          "$REVIEWER_LIB_DIR/auth.sh"
+cp "$PROJECT_ROOT/lib/state-io.sh"      "$REVIEWER_LIB_DIR/state-io.sh"
+cp "$PROJECT_ROOT/lib/tracked-repos.sh" "$REVIEWER_LIB_DIR/tracked-repos.sh"
 
 export MOCK_COMMENTS_FILE="$TMPDIR/comments.json"
 export STUB_PR_LIST_LOG="$STATE_DIR/gh-pr-list.log"

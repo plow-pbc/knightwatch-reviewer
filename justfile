@@ -17,6 +17,10 @@ test:
     done < <(git ls-files '*.sh')
 
     echo ""
+    echo "=== repos.conf smoke test ==="
+    bash lib/tests/repos-conf-smoke.sh
+
+    echo ""
     echo "=== state-io smoke test ==="
     bash lib/tests/state-io-smoke.sh
 
@@ -67,6 +71,14 @@ test:
     echo ""
     echo "=== learn-from-replies smoke test ==="
     bash lib/tests/learn-from-replies-smoke.sh
+
+    echo ""
+    echo "=== re-request-poller smoke test ==="
+    bash lib/tests/re-request-poller-smoke.sh
+
+    echo ""
+    echo "=== plow-kid-refresh smoke test ==="
+    bash lib/tests/plow-kid-refresh-smoke.sh
 
     echo ""
     echo "=== install smoke test ==="
