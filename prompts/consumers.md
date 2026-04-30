@@ -14,13 +14,17 @@ FIRST, read `.codex-scratch/dead-code.md`. When populated, it has three sections
 
 THEN walk the diff yourself, regardless of how rich the pre-pass output is:
 - List every public symbol the PR modified, removed, or renamed (functions, classes, routes, schema fields, model fields, env vars, payload keys, exported types, exception class names). Compare against the pre-pass's "Modified public symbols" section — flag any symbol it missed.
-- For each symbol, `grep -rn "<symbol>"` across this repo and the `included` siblings from `.codex-scratch/search-roots.md`. Compare against the pre-pass's caller list — flag any caller it missed (especially callers the pre-pass classified as matching that actually have a shape mismatch on closer read).
+- For each symbol, `grep -rn "<symbol>"` across this repo and the `included` siblings from `.codex-scratch/search-roots.md`. The `included` value is now a workdir-relative path (e.g. `.siblings/cncorp/plow-content`); grep against that. Compare against the pre-pass's caller list — flag any caller it missed (especially callers the pre-pass classified as matching that actually have a shape mismatch on closer read).
 - Sanity-grep `confirmed-dead` static-tool entries; a false negative here is a runtime crash. For `false-positive` dismissals, accept the pre-pass's specific dynamic-dispatch reason — don't redo that analysis.
 - Walk the diff for unreachable conditionals the pre-pass might have missed (removed feature flags, dropped enum cases, narrowed types, constants now always true/false).
 
 ALSO read: `.codex-scratch/diff.patch`, `.codex-scratch/file-history.md`.
 
-**Search-roots coverage.** First line of `.codex-scratch/search-roots.md` is a `# coverage:` marker. Each subsequent line classifies one sibling: `<repo-slug> included <path>` (grep this), `<repo-slug> excluded|missing|lookup-error` (coverage gap, do NOT grep). When ANY sibling has a non-`included` status AND a modified public symbol plausibly has consumers there, downgrade ALL verdict classes (`dead`, `stale-caller`, `clean`) on that symbol to `uncertain` and name the gap in the finding. Same-repo grep can't disprove a stale caller in an excluded sibling, can't confirm a symbol is dead there, and can't confirm a clean verdict either. Be aware of dynamic dispatch — a zero-grep result is a signal, not proof.
+**Search-roots coverage.** First line of `.codex-scratch/search-roots.md` is a `# coverage:` marker. Each subsequent line classifies one whitelisted sibling: `<repo-slug> included .siblings/<repo-slug>` (grep this workdir-relative path) or `<repo-slug> missing` (operator-config gap — checkout absent on this host; treat as a coverage gap for any modified public symbol that plausibly has consumers there). When ANY sibling is `missing` AND a modified public symbol plausibly has consumers in that sibling's domain, downgrade the verdict for that symbol from `dead`/`stale-caller`/`clean` to `uncertain` and name the gap in the finding. Be aware of dynamic dispatch — a zero-grep result is a signal, not proof.
+
+**Citation form (cross-repo).** When you cite a sibling-repo file, write the path as `<owner>/<repo>/<rel-path>:<line>` (e.g. `cncorp/plow-content/plow_content/emit_pr.py:59`). Never include a `.siblings/` prefix or an absolute `/home/...` path in your finding — those leak the operator's filesystem layout into the public PR comment.
+
+**Cross-repo finding framing.** When a sibling repo has a stale caller of a symbol this PR changed, the *user impact* is "this PR's change here will break consumer X" — frame the remedy as "coordinate with X" or "wire X's install of this package", not "fix this in X." The PR author can act on the former; they cannot land code in the sibling repo as part of this PR.
 
 **The failure mode you catch:** PR modifies or removes a public symbol, internal caller no longer matches. Stale-caller → runtime fail (`blocking`); zero callers → dead code (`low`/`medium`).
 

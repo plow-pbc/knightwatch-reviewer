@@ -1,73 +1,49 @@
 #!/bin/bash
-# Coverage-state seam for cross-repo grep.
+# Coverage-state seam for cross-repo grep — whitelist-only.
 #
 # stage_search_roots is the single worker-owned helper that classifies
-# every sibling repo into one of four explicit statuses, builds the
-# .codex-scratch/search-roots.md content, and returns it on stdout. The
-# dead-code-search and consumers prompts read this content as the sole
-# source of truth for "which siblings did we cover, and why?". No
-# silent coverage loss, no per-prompt rediscovery.
+# every sibling repo from the SOURCE_PATHS whitelist into one of two
+# explicit statuses, builds the .codex-scratch/search-roots.md content,
+# and returns it on stdout. The dead-code-search and consumers prompts
+# read this content as the sole source of truth for "which siblings
+# did we cover, and why?". No silent coverage loss, no per-prompt
+# rediscovery.
+#
+# Trust model: SOURCE_PATHS in repos.conf IS the whitelist. If the
+# operator listed cncorp/plow-content there, that's affirmative
+# consent to reference plow-content code in any PR review on a base
+# repo whose entry includes it. No runtime gh-api permission check —
+# the operator decides out-of-band, in repos.conf, with full context.
 #
 # Per-sibling status:
-#   included      — author has push (admin/write/maintain) on the
-#                   sibling repo AND its SOURCE_PATHS checkout exists.
-#   excluded      — author lacks push access on the sibling.
-#   missing       — sibling has a SOURCE_PATHS entry but its checkout
-#                   directory is absent on this host (operator config
-#                   issue, not a security boundary).
-#   lookup-error  — gh api call to check collaborator status failed
-#                   (network, rate limit). Distinct from "excluded"
-#                   because we don't actually know if the author has
-#                   access; the prompts must qualify their verdicts.
+#   included      — slug in SOURCE_PATHS AND its checkout exists on
+#                   disk. The .siblings/<slug> path is the workdir-
+#                   relative symlink materialized by sibling-symlinks.sh
+#                   after this helper runs.
+#   missing       — slug in SOURCE_PATHS BUT its checkout absent on
+#                   this host (operator-config gap, not a security
+#                   boundary).
 #
 # Output format:
 #   # coverage: full | partial | same-repo-only
-#   <repo-slug> <status> [<absolute-path>]    (path only when status=included)
+#   <repo-slug> included .siblings/<repo-slug>
+#   <repo-slug> missing
 #   ...
 #
-# coverage: full        — every sibling that has a SOURCE_PATHS entry is `included`.
-# coverage: same-repo-only — zero siblings with status=included.
-# coverage: partial     — at least one included AND at least one not-included.
-#
-# Callers can stub the `gh` binary to test (the smoke does exactly that).
+# coverage: full           — every sibling with a SOURCE_PATHS entry has its checkout on disk
+# coverage: same-repo-only — zero whitelisted siblings, OR none have their checkouts on disk
+# coverage: partial        — at least one included AND at least one missing
 
 stage_search_roots() {
-    local repo="$1" pr_author="$2"
-    local sibling_repo sibling_path perm perm_exit
+    local repo="$1"
+    local sibling_repo sibling_path
     local body=""
-    local included=0 excluded=0 missing=0 lookup_error=0
-
-    # Outer authorization gate. Even an author who has push on some
-    # sibling X is denied cross-repo data when they are untrusted on
-    # $repo: the review comment lands on $repo's PR, which is publicly
-    # readable, so sibling grep results are exposed to every $repo
-    # reader regardless of whether *they* have access to X. The
-    # per-sibling gate below is necessary but not sufficient.
-    #
-    # Inline the gh api call (same shape as the per-sibling block
-    # below) instead of going through is_trusted_repo_author so we can
-    # distinguish base-repo lookup-error from untrusted — the
-    # coverage marker now carries complete provenance for every repo
-    # in the seam, not just siblings.
-    local repo_perm repo_perm_exit
-    repo_perm=$(gh api "repos/$repo/collaborators/$pr_author/permission" --jq '.permission' 2>/dev/null)
-    repo_perm_exit=$?
-    if [ "$repo_perm_exit" -ne 0 ] || [ -z "$repo_perm" ]; then
-        printf '%s\n' "# coverage: same-repo-only — lookup-error on base repo $repo"
-        return 0
-    fi
-    case "$repo_perm" in
-        admin|write|maintain) ;;  # trusted on base repo, continue
-        *)
-            printf '%s\n' "# coverage: same-repo-only — author untrusted on $repo"
-            return 0
-            ;;
-    esac
+    local included=0 missing=0
 
     for sibling_repo in "${REPOS[@]}"; do
         [ "$sibling_repo" = "$repo" ] && continue
         sibling_path="${SOURCE_PATHS[$sibling_repo]:-}"
-        # No SOURCE_PATHS entry = sibling not in scope at all (not a
+        # No SOURCE_PATHS entry = sibling not whitelisted at all (not a
         # coverage gap, just not configured). Skip silently.
         [ -z "$sibling_path" ] && continue
         if [ ! -d "$sibling_path" ]; then
@@ -75,40 +51,20 @@ stage_search_roots() {
             missing=$((missing + 1))
             continue
         fi
-        # Direct gh api call so we can distinguish lookup-error from
-        # excluded — is_trusted_repo_author collapses both into false,
-        # which loses provenance. perm_exit=0 with empty perm shouldn't
-        # happen on a successful call (gh always emits a permission
-        # value for a 200), but treat it as lookup-error too to be safe.
-        perm=$(gh api "repos/$sibling_repo/collaborators/$pr_author/permission" --jq '.permission' 2>/dev/null)
-        perm_exit=$?
-        if [ "$perm_exit" -ne 0 ] || [ -z "$perm" ]; then
-            body+="$sibling_repo lookup-error"$'\n'
-            lookup_error=$((lookup_error + 1))
-            continue
-        fi
-        case "$perm" in
-            admin|write|maintain)
-                body+="$sibling_repo included $sibling_path"$'\n'
-                included=$((included + 1))
-                ;;
-            *)
-                body+="$sibling_repo excluded"$'\n'
-                excluded=$((excluded + 1))
-                ;;
-        esac
+        body+="$sibling_repo included .siblings/$sibling_repo"$'\n'
+        included=$((included + 1))
     done
 
-    local total=$((included + excluded + missing + lookup_error))
+    local total=$((included + missing))
     local header
     if [ "$total" -eq 0 ]; then
         header="# coverage: same-repo-only — no sibling SOURCE_PATHS in scope"
     elif [ "$included" -eq "$total" ]; then
         header="# coverage: full"
     elif [ "$included" -eq 0 ]; then
-        header="# coverage: same-repo-only — included=0 excluded=$excluded missing=$missing lookup-error=$lookup_error"
+        header="# coverage: same-repo-only — included=0 missing=$missing"
     else
-        header="# coverage: partial — included=$included excluded=$excluded missing=$missing lookup-error=$lookup_error"
+        header="# coverage: partial — included=$included missing=$missing"
     fi
     printf '%s\n%s' "$header" "$body"
 }

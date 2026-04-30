@@ -94,6 +94,15 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # --- search-roots coverage-state helper ---
 . "$_LIB_DIR/search-roots.sh"
 
+# --- diff-build helper (clean-incremental-vs-fallback predicate) ---
+. "$_LIB_DIR/diff-build.sh"
+
+# --- sibling-repo symlinks (cross-repo grep without leaking host paths) ---
+. "$_LIB_DIR/sibling-symlinks.sh"
+
+# --- path-scrub safety net (strip leaked host paths before posting) ---
+. "$_LIB_DIR/path-scrub.sh"
+
 # --- agent-failure + run-dir helpers ---
 . "$_LIB_DIR/agent-fallback.sh"
 . "$_LIB_DIR/run-dir.sh"
@@ -175,13 +184,13 @@ RUN_STATUS="aborted"
 # undercounts a real prior author-visible review. Set to "true" right
 # after the gh pr comment success in the post-aggregator section.
 GH_POSTED=false
-# Tracks whether we silently fell back to the full PR diff because the
-# prior-review SHA isn't in local history (force-push or rebase evicted
-# it). The worker still frames the run as a re-review (REVIEW_TASK names
-# previous-review.md), but specialists see the whole PR — that
-# divergence is hidden from the reader unless we disclose it. Used by
-# REVIEW_SCOPE construction below to pick "fallback:<sha>" vs
-# "incremental:<sha>" so prepend_review_header can call it out.
+# True when we wanted to take a clean incremental diff but couldn't —
+# either the prior reviewed SHA was evicted from the branch's history
+# (rebase/force-push), or the branch merged origin/<default-branch>
+# between then and now (merge-from-main would pollute attribution).
+# When true, REVIEW_SCOPE becomes `fallback:<sha>` and the worker
+# emits a "clean incremental unavailable" disclosure at the top of
+# the posted review.
 USED_FALLBACK=false
 finalize_run() {
     # Thin wrapper around finalize_meta_json (lib/run-dir.sh) that supplies
@@ -260,7 +269,7 @@ flock "$CANONICAL_LOCK_FD" || { log "$PR_ID: canonical flock failed — aborting
 
 if [ ! -d "$CANONICAL_DIR/.git" ]; then
     log "Cloning canonical $REPO..."
-    if ! gh repo clone "$REPO" "$CANONICAL_DIR" -- --depth=50 --no-single-branch; then
+    if ! gh repo clone "$REPO" "$CANONICAL_DIR" -- --depth=500 --no-single-branch; then
         log "$PR_ID: canonical clone failed — aborting"
         exit 1
     fi
@@ -284,11 +293,11 @@ if [ -z "$DEFAULT_BRANCH" ]; then
     log "$PR_ID: could not resolve default branch from gh repo view — aborting"
     exit 1
 fi
-if ! git -C "$CANONICAL_DIR" fetch origin "$DEFAULT_BRANCH" --depth=50 --quiet; then
+if ! git -C "$CANONICAL_DIR" fetch origin "$DEFAULT_BRANCH" --depth=500 --quiet; then
     log "$PR_ID: canonical fetch of $DEFAULT_BRANCH failed — aborting"
     exit 1
 fi
-if ! git -C "$CANONICAL_DIR" fetch origin "+refs/pull/$PR_NUM/head:$PR_BRANCH" --depth=50 --quiet; then
+if ! git -C "$CANONICAL_DIR" fetch origin "+refs/pull/$PR_NUM/head:$PR_BRANCH" --depth=500 --quiet; then
     log "$PR_ID: refs/pull/$PR_NUM/head not fetchable (PR closed?) — skipping"
     exit 0
 fi
@@ -315,6 +324,7 @@ if ! git -C "$REPO_DIR" checkout -B "pr-$PR_NUM" "origin/$PR_BRANCH" --quiet; th
     rm -rf "$REPO_DIR"
     exit 1
 fi
+
 
 # Fetch PR metadata once, here, so PR_AUTHOR is available before the env
 # mirror runs (the trust gate below depends on it). The full PR_DATA blob
@@ -366,37 +376,41 @@ fi
 # without new commits since the prior review) costs seconds instead of
 # burning a full `just test` cycle — including live-API recipes — on a
 # workdir that has nothing to review.
+
+# Single gh pr diff call up front — the canonical "what's in this PR"
+# view, same one humans see on the PR's "Files changed" tab. Used for
+# both KID_INPUT_DIFF (the diff specialists review) by default, and
+# FULL_PR_DIFF (the aggregator's "verify prior findings against
+# current state" reference) always.
+FULL_PR_DIFF=$(gh pr diff "$PR_NUM" --repo "$REPO" 2>/dev/null)
+if [ -z "$FULL_PR_DIFF" ]; then
+    log "$PR_ID: gh pr diff returned empty (auth/network) — aborting before specialists run"
+    rm -rf "$REPO_DIR"
+    exit 1
+fi
+KID_INPUT_DIFF="$FULL_PR_DIFF"
+
 KNOWN_SHA=$(state_get "$PR_ID" "sha")
 PREV_BODY=""
 PREV_APPROVED=""
-if [ -z "$KNOWN_SHA" ] || [ "$FORCE_WHOLE_PR" = "true" ]; then
-    KID_INPUT_DIFF=$(gh pr diff "$PR_NUM" --repo "$REPO" 2>/dev/null)
-else
+
+# Optimization: use a local incremental diff for KID_INPUT_DIFF ONLY
+# when (a) the prior reviewed SHA is still on the branch's history AND
+# (b) no merge commits exist in the incremental range. Any other
+# condition (rebase/force-push, OR branch merged main between then and
+# now) would leak merge-from-main content or misframe an off-branch
+# SHA — leave KID_INPUT_DIFF as the full PR diff and let
+# `prepend_review_header` emit a `fallback:<sha>` scope disclosure at
+# the top of the review (via REVIEW_SCOPE).
+if [ -n "$KNOWN_SHA" ] && [ "$FORCE_WHOLE_PR" != "true" ]; then
     PREV_BODY=$(state_get "$PR_ID" "body")
     PREV_APPROVED=$(state_get "$PR_ID" "approved")
-    if git -C "$REPO_DIR" cat-file -e "${KNOWN_SHA}^{commit}" 2>/dev/null; then
+    if is_clean_incremental_available "$REPO_DIR" "$KNOWN_SHA"; then
         KID_INPUT_DIFF=$(git -C "$REPO_DIR" diff "$KNOWN_SHA..HEAD")
-        # Specialists work the incremental diff; the aggregator separately
-        # gets the full PR diff so it can verify whether prior blocking
-        # findings touch code that's actually changed in this PR vs. has
-        # been left as-is and is still unaddressed.
-        FULL_PR_DIFF=$(gh pr diff "$PR_NUM" --repo "$REPO" 2>/dev/null)
-        if [ -z "$FULL_PR_DIFF" ]; then
-            # Fail loud per CLAUDE.md / feedback_fail_hard: previous code
-            # silently degraded (skipped full-diff.patch, kept going)
-            # while the posted banner still claimed "aggregator verified
-            # prior findings against the current full PR state". Aborting
-            # here lets the orchestrator retry on the next tick instead
-            # of publishing a re-review that lies about what it evaluated.
-            log "$PR_ID: incremental re-review needs full-PR context but \`gh pr diff\` returned empty (auth/network) — aborting to avoid posting a degraded review framed as full"
-            rm -rf "$REPO_DIR"
-            exit 1
-        fi
+        log "$PR_ID: clean incremental diff since ${KNOWN_SHA:0:7}"
     else
-        log "$PR_ID: prior SHA $KNOWN_SHA not in local history; using full PR diff"
-        KID_INPUT_DIFF=$(gh pr diff "$PR_NUM" --repo "$REPO" 2>/dev/null)
-        FULL_PR_DIFF="$KID_INPUT_DIFF"
         USED_FALLBACK=true
+        log "$PR_ID: incremental not clean (rebased or merged-from-main since ${KNOWN_SHA:0:7}); using full PR diff"
     fi
 fi
 
@@ -424,7 +438,7 @@ case "$REVIEW_SCOPE" in
         REVIEW_TASK="Re-review: the author has pushed new commits since your previous review (at ${KNOWN_SHA:0:7}, approved=$PREV_APPROVED). Your prior review is in .codex-scratch/previous-review.md. The incremental diff since that review is in .codex-scratch/diff.patch; the full PR diff is in .codex-scratch/full-diff.patch (consult it when verifying whether prior findings are addressed). Assess whether the new commits address your prior concerns, then produce an updated review."
         ;;
     fallback:*)
-        REVIEW_TASK="Re-review (silent fallback — your prior reviewed SHA ${KNOWN_SHA:0:7} is no longer in local history, likely from a force-push or rebase). Your prior review is in .codex-scratch/previous-review.md. Because the incremental view is unavailable, .codex-scratch/diff.patch contains the FULL PR diff (identical to .codex-scratch/full-diff.patch) — evaluate accordingly. Assess whether the current state addresses your prior concerns, then produce an updated review."
+        REVIEW_TASK="Re-review (clean incremental unavailable for ${KNOWN_SHA:0:7} — either rebase/force-push evicted it from the branch's history, or the branch merged origin/${DEFAULT_BRANCH} between then and now). Your prior review is in .codex-scratch/previous-review.md. Because the incremental view is unavailable, .codex-scratch/diff.patch contains the FULL PR diff (identical to .codex-scratch/full-diff.patch) — evaluate accordingly. Assess whether the current state addresses your prior concerns, then produce an updated review."
         ;;
 esac
 
@@ -660,14 +674,29 @@ fi
 log "$PR_ID: diff is ${#KID_INPUT_DIFF} bytes — auto-nits: ${#AUTO_NITS[@]}"
 
 # ---- search-roots for cross-repo grep ----
-# Single worker-owned coverage-state seam: every sibling repo is fully
-# classified into included | excluded | missing | lookup-error and the
-# resulting machine-readable content is consumed by the dead-code-search
-# pre-pass and the consumers specialist as the sole source of truth.
-# Live in lib/search-roots.sh (regression-fenced by lib/tests/
-# search-roots-smoke.sh) so the staging logic can't drift into per-prompt
-# rediscovery again.
-SEARCH_ROOTS=$(stage_search_roots "$REPO" "$PR_AUTHOR")
+# Single worker-owned coverage-state seam: every whitelisted sibling
+# (SOURCE_PATHS in repos.conf) is classified as `included` (checkout
+# present on disk) or `missing` (operator-config gap, checkout absent),
+# and the resulting machine-readable content is consumed by the
+# dead-code-search pre-pass and the consumers specialist as the sole
+# source of truth. Lives in lib/search-roots.sh (regression-fenced by
+# lib/tests/search-roots-smoke.sh) so the staging logic can't drift
+# into per-prompt rediscovery again.
+SEARCH_ROOTS=$(stage_search_roots "$REPO")
+
+# Materialize sibling-repo symlinks under .siblings/<owner>/<repo>, but
+# ONLY for siblings stage_search_roots above just classified as
+# `included` (whitelisted in SOURCE_PATHS AND checkout present on disk).
+# Running before stage_search_roots would symlink siblings whose
+# checkouts are absent — symlinks would dangle and specialists would
+# get confused.
+INCLUDED_SLUGS=()
+while IFS= read -r line; do
+    case "$line" in
+        *' included '*) INCLUDED_SLUGS+=("${line%% included *}") ;;
+    esac
+done <<< "$SEARCH_ROOTS"
+materialize_sibling_symlinks "$REPO_DIR" SOURCE_PATHS "${INCLUDED_SLUGS[@]}"
 
 # ---- write scratch files ----
 write_scratch "$REPO_DIR" "diff.patch"         "$KID_INPUT_DIFF"
@@ -704,12 +733,20 @@ else
 fi
 
 FILE_HISTORY=""
+# Derive file-history's file list from $KID_INPUT_DIFF directly by
+# parsing `^diff --git a/<path> b/<path>` headers. This is the same
+# scope specialists see in diff.patch — single source of truth for
+# "what files this review covers." Works for both gh pr diff and
+# local git diff outputs (both emit `diff --git a/<path> b/<path>`).
 while IFS= read -r f; do
     [ -z "$f" ] && continue
     FILE_HISTORY+="### $f"$'\n'
     hist=$(git -C "$REPO_DIR" log --oneline -n 5 -- "$f" 2>/dev/null)
     FILE_HISTORY+="${hist:-(no history)}"$'\n\n'
-done < <(git -C "$REPO_DIR" diff --name-only "$DEFAULT_BRANCH"...HEAD 2>/dev/null | head -30)
+done < <(printf '%s' "$KID_INPUT_DIFF" \
+    | grep -E '^diff --git a/' \
+    | sed -E 's|^diff --git a/(.*) b/.*$|\1|' \
+    | sort -u | head -30)
 write_scratch "$REPO_DIR" "file-history.md" "${FILE_HISTORY:-(no touched files)}"
 
 # PR_DATA + PR_AUTHOR were fetched earlier (above the env mirror) so the
@@ -945,6 +982,12 @@ if [ -n "$CURRENT_HEAD" ] && [ "$CURRENT_HEAD" != "$PR_SHA" ]; then
     log "$PR_ID: head moved during review (reviewed=${PR_SHA:0:7}, now=${CURRENT_HEAD:0:7}) — appending stale-head suffix"
 fi
 log "$PR_ID: review scope = $REVIEW_SCOPE"
+# TODO(future): rename SKIPPED_CHECKS -> REVIEW_NOTES — the array
+# carries warnings (e.g. KID/Tests skips) that get formatted at the
+# top of the posted review. The signature of prepend_review_header
+# could also absorb review_scope and stale_head as additional notes
+# in the same array. Mechanical refactor; lands cleaner as its own
+# focused PR.
 # Compose the skipped-checks list for the disclosure header. One line
 # per pre-review check the worker tracks; add a new capability (e.g. a
 # future dead-code analyzer) by appending one line — `[ "$X_RAN" =
@@ -959,6 +1002,13 @@ if ! COMMENT_BODY=$(prepend_review_header "$COMMENT_BODY" "$REVIEW_SCOPE" "$PR_S
     rm -rf "$REPO_DIR"
     exit 1
 fi
+
+# Safety net: scrub any host paths that survived the prompt rules. The
+# specialists are told to cite repo-relative + slug-prefixed paths, but
+# models occasionally leak the workdir abs path or the .siblings/
+# symlink prefix. This is the last hop before the comment becomes
+# public — strip any remaining workdir/<sibling-abs>/.siblings prefixes.
+COMMENT_BODY=$(scrub_review_paths "$COMMENT_BODY" "$REPO_DIR" SOURCE_PATHS)
 
 if ! gh pr comment "$PR_NUM" --repo "$REPO" --body "$COMMENT_BODY"; then
     log "$PR_ID: gh pr comment FAILED — not updating state (next tick will retry)"

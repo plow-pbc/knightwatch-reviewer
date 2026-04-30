@@ -37,6 +37,18 @@ test:
     bash lib/tests/search-roots-smoke.sh
 
     echo ""
+    echo "=== diff-build smoke test ==="
+    bash lib/tests/diff-build-smoke.sh
+
+    echo ""
+    echo "=== sibling-symlinks smoke test ==="
+    bash lib/tests/sibling-symlinks-smoke.sh
+
+    echo ""
+    echo "=== path-scrub smoke test ==="
+    bash lib/tests/path-scrub-smoke.sh
+
+    echo ""
     echo "=== prompt-build smoke test ==="
     bash lib/tests/build-specialist-prompt-smoke.sh
 

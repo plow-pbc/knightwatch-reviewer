@@ -1,0 +1,146 @@
+#!/bin/bash
+# Smoke for lib/sibling-symlinks.sh. Three invariants:
+#
+#   1. Only symlink siblings the caller explicitly classified as
+#      `included` — whitelist-gated upstream by stage_search_roots,
+#      not by this helper's own iteration over SOURCE_PATHS. (Otherwise
+#      we'd materialize symlinks for siblings whose checkouts are
+#      absent — dangling symlinks, confused specialists.)
+#
+#   2. Defeat committed-symlink path-redirect attacks. The PR's
+#      checkout might already contain `.siblings/` (e.g. an attacker
+#      committed `.siblings/cncorp/plow-content` as a symlink to
+#      ~/.ssh/). Wipe whatever's there before materializing.
+#
+#   3. Missing siblings (no SOURCE_PATHS dir on disk) are skipped
+#      silently — the search-roots seam already classifies those.
+
+set -euo pipefail
+
+TMPDIR=$(mktemp -d -t sibling-symlinks-smoke-XXXXXX)
+trap 'rm -rf "$TMPDIR"' EXIT
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../sibling-symlinks.sh
+. "$SCRIPT_DIR/sibling-symlinks.sh"
+
+WORKDIR="$TMPDIR/work"
+mkdir -p "$WORKDIR/.git"  # mimic a real workdir
+mkdir -p "$TMPDIR/foo" "$TMPDIR/bar" "$TMPDIR/baz"
+# acme/qux is intentionally missing on disk.
+
+declare -A SOURCE_PATHS=(
+    ["acme/foo"]="$TMPDIR/foo"
+    ["acme/bar"]="$TMPDIR/bar"
+    ["acme/baz"]="$TMPDIR/baz"   # deliberately NOT included
+    ["acme/qux"]="$TMPDIR/qux"   # deliberately missing on disk
+)
+
+# --- scenario 1: only `included` siblings get symlinked ---------------
+echo "  scenario 1: whitelist-gated to included slugs..."
+materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/foo" "acme/bar"
+
+got_foo=$(readlink "$WORKDIR/.siblings/acme/foo")
+if [ "$got_foo" != "$TMPDIR/foo" ]; then
+    echo "FAIL: foo symlink target wrong (got '$got_foo', want '$TMPDIR/foo')"
+    exit 1
+fi
+got_bar=$(readlink "$WORKDIR/.siblings/acme/bar")
+if [ "$got_bar" != "$TMPDIR/bar" ]; then
+    echo "FAIL: bar symlink target wrong"
+    exit 1
+fi
+# baz is in SOURCE_PATHS but was NOT in the included list — must NOT exist.
+if [ -e "$WORKDIR/.siblings/acme/baz" ]; then
+    echo "FAIL: baz symlink should not exist (not in included list)"
+    exit 1
+fi
+
+# --- scenario 2: missing checkout silently skipped ---------------------
+echo "  scenario 2: missing on-disk checkout silently skipped..."
+materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/foo" "acme/qux"
+if [ -L "$WORKDIR/.siblings/acme/qux" ]; then
+    echo "FAIL: qux symlink should not exist (path missing on disk)"
+    exit 1
+fi
+
+# --- scenario 3: defeat committed-symlink path-redirect attack --------
+# Three sub-scenarios — all stage `.siblings/<owner>` AS THE SYMLINK
+# directly (no intervening mkdir), which is the actual committed-symlink
+# attack shape. The previous version of this test did `mkdir -p
+# .siblings/acme` first, then `ln -sfn TARGET .siblings/acme`, which (per
+# `ln`'s behavior on an existing directory) creates the symlink INSIDE
+# .siblings/acme rather than as it — so the attack vector was never
+# really exercised. Bot finding 2 PR #28 review 2 caught this.
+ATTACK_TARGET="$TMPDIR/SHOULD_NOT_BE_TOUCHED"
+mkdir -p "$ATTACK_TARGET"
+touch "$ATTACK_TARGET/sentinel"
+
+assert_redirect_defeated() {
+    local label="$1"
+    materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/foo"
+    if [ -L "$WORKDIR/.siblings/acme" ]; then
+        echo "FAIL ($label): .siblings/acme is still a symlink — wipe didn't happen"
+        ls -la "$WORKDIR/.siblings/"
+        exit 1
+    fi
+    got_foo=$(readlink "$WORKDIR/.siblings/acme/foo")
+    if [ "$got_foo" != "$TMPDIR/foo" ]; then
+        echo "FAIL ($label): foo symlink not pointing at real source after redirect attack"
+        exit 1
+    fi
+    if [ ! -e "$ATTACK_TARGET/sentinel" ]; then
+        echo "FAIL ($label): attacker target sentinel was modified — write escaped workdir"
+        exit 1
+    fi
+    if [ -e "$ATTACK_TARGET/foo" ] || [ -L "$ATTACK_TARGET/foo" ]; then
+        echo "FAIL ($label): attacker target gained a 'foo' entry — write escaped workdir"
+        ls -la "$ATTACK_TARGET/"
+        exit 1
+    fi
+}
+
+echo "  scenario 3a: .siblings/<owner> is a symlink to attacker dir..."
+rm -rf "$WORKDIR/.siblings"
+mkdir "$WORKDIR/.siblings"
+# acme is itself a symlink, NOT a directory containing one.
+ln -sfn "$ATTACK_TARGET" "$WORKDIR/.siblings/acme"
+[ -L "$WORKDIR/.siblings/acme" ] || { echo "  pre-check: acme should be a symlink"; exit 1; }
+assert_redirect_defeated "3a (intermediate symlink)"
+
+echo "  scenario 3b: .siblings itself is a symlink to attacker dir..."
+rm -rf "$WORKDIR/.siblings"
+ln -sfn "$ATTACK_TARGET" "$WORKDIR/.siblings"
+[ -L "$WORKDIR/.siblings" ] || { echo "  pre-check: .siblings should be a symlink"; exit 1; }
+assert_redirect_defeated "3b (root symlink)"
+
+echo "  scenario 3c: .siblings/<owner>/<repo> is the symlink (leaf)..."
+rm -rf "$WORKDIR/.siblings"
+mkdir -p "$WORKDIR/.siblings/acme"
+# Leaf is a pre-existing symlink to attacker target — gets overwritten
+# by ln -sfn. (Less alarming than 3a/3b because the parent dir is real,
+# but still verify the attack target is untouched.)
+ln -sfn "$ATTACK_TARGET" "$WORKDIR/.siblings/acme/foo"
+[ -L "$WORKDIR/.siblings/acme/foo" ] || { echo "  pre-check: foo should be a symlink"; exit 1; }
+assert_redirect_defeated "3c (leaf symlink)"
+
+# --- scenario 4: re-runs are idempotent --------------------------------
+echo "  scenario 4: idempotent re-run..."
+materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/foo" "acme/bar"
+materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/foo" "acme/bar"
+got_foo2=$(readlink "$WORKDIR/.siblings/acme/foo")
+if [ "$got_foo2" != "$TMPDIR/foo" ]; then
+    echo "FAIL: re-run changed foo symlink target"
+    exit 1
+fi
+
+# --- scenario 5: empty included list = empty .siblings/ ---------------
+echo "  scenario 5: empty included list produces empty .siblings/..."
+materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS
+if [ -d "$WORKDIR/.siblings" ] && [ -n "$(ls -A "$WORKDIR/.siblings" 2>/dev/null)" ]; then
+    echo "FAIL: .siblings/ should be empty when nothing included"
+    ls -la "$WORKDIR/.siblings"
+    exit 1
+fi
+
+echo "  ok: sibling symlinks whitelist-gated, redirect-safe, and idempotent"
