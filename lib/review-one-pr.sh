@@ -627,7 +627,7 @@ fi
 
 log "$PR_ID: intent inference complete: $(head -1 "$INTENT_OUT")"
 
-ANGLES=(security data-integrity architecture simplification tests shape)
+ANGLES=(security data-integrity architecture simplification tests shape performance)
 
 log "$PR_ID: launching ${#ANGLES[@]} specialists in parallel..."
 declare -A AGENT_PIDS=()
