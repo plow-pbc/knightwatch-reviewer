@@ -54,15 +54,24 @@ git -C "$REPO" fetch -q origin main
 git -C "$REPO" checkout -q feature
 git -C "$REPO" merge --no-ff -q -m "Merge main into feature" origin/main
 
+# Feature ALSO edits a.txt — the same file main just edited. This is the
+# same-file case bot finding 1 (PR #28 review 2) caught: a filename-based
+# filter passes a.txt through and `git diff origin/main...HEAD -- a.txt`
+# still leaks main's hunk along with the branch's. Fix has to scope by
+# commit, not by filename.
+echo "branch-edit-of-a" >> "$REPO/a.txt"
+git -C "$REPO" add a.txt
+git -C "$REPO" commit -qm "feature: edit a.txt (branch-authored, same file as main)"
+
 # Feature adds one more file after the merge.
 echo f2 > "$REPO/feature2.txt"
 git -C "$REPO" add feature2.txt
 git -C "$REPO" commit -qm "add feature2.txt"
 
-# Authored files (non-merge, branch-only) should be feature.txt + feature2.txt.
-# main-only.txt and a.txt's mainline edit must NOT appear — those rode in
-# via the merge and were not authored on the branch.
-want=$(printf '%s\n' "feature.txt" "feature2.txt" | sort)
+# Authored files (non-merge, branch-only) should be feature.txt,
+# feature2.txt, AND a.txt (because the branch authored an edit to a.txt
+# even though main also touched it). main-only.txt must NOT appear.
+want=$(printf '%s\n' "feature.txt" "feature2.txt" "a.txt" | sort)
 
 # Compatibility wrapper still works (full-PR case).
 got=$(compute_pr_authored_files "$REPO" "main" | sort)
@@ -89,8 +98,10 @@ fi
 # and bogus findings reappeared from the merged-in commits — verify it
 # now does, with both prior-SHA AND origin/main as exclude refs.
 PRIOR_SHA=$(git -C "$REPO" rev-parse "feature^{/add feature.txt}")
+# After PRIOR_SHA, the branch authored: a.txt edit + feature2.txt.
+# main-only.txt should still be excluded (rode in via the merge).
 got_incr=$(compute_authored_files "$REPO" "HEAD" "$PRIOR_SHA" "origin/main" | sort)
-want_incr="feature2.txt"
+want_incr=$(printf '%s\n' "a.txt" "feature2.txt" | sort)
 if [ "$got_incr" != "$want_incr" ]; then
     echo "FAIL: compute_authored_files(prior + origin/main excludes) wrong"
     echo "  got:"
@@ -99,7 +110,11 @@ if [ "$got_incr" != "$want_incr" ]; then
     exit 1
 fi
 
-# build_authored_diff produces a unified diff restricted to authored files.
+# Full-PR diff: contains branch's edits (feature.txt, branch-edit-of-a,
+# feature2.txt) but NOT main's content (main-only.txt, a2). The full-PR
+# scope passes because three-dot `origin/main...HEAD` naturally advances
+# merge-base past merged-in main commits — the harder case is incremental
+# (below).
 diff_out=$(build_authored_diff "$REPO" "HEAD" "origin/main")
 if ! printf '%s' "$diff_out" | grep -q '^diff --git a/feature.txt'; then
     echo "FAIL: build_authored_diff missing feature.txt hunk"
@@ -107,6 +122,44 @@ if ! printf '%s' "$diff_out" | grep -q '^diff --git a/feature.txt'; then
 fi
 if printf '%s' "$diff_out" | grep -q '^diff --git a/main-only.txt'; then
     echo "FAIL: build_authored_diff leaked main-only.txt (merged-in content)"
+    exit 1
+fi
+if ! printf '%s' "$diff_out" | grep -q 'branch-edit-of-a'; then
+    echo "FAIL: build_authored_diff missing branch's a.txt edit"
+    exit 1
+fi
+if printf '%s' "$diff_out" | grep -E '^\+a2$' >/dev/null; then
+    echo "FAIL: build_authored_diff leaked main's same-file edit (a2 hunk in a.txt)"
+    printf '%s' "$diff_out" | sed 's/^/  /' | head -40
+    exit 1
+fi
+
+# INCREMENTAL same-file case — bot finding 1 PR #28 review 2. The prior
+# implementation's three-dot diff with `prior_sha...HEAD` doesn't advance
+# merge-base past merged-in main commits (prior_sha is on the branch),
+# so any main-side hunk on a file the branch ALSO edited would leak
+# through alongside the branch's own edits. The per-commit walk is
+# structurally immune.
+diff_incr=$(build_authored_diff "$REPO" "HEAD" "$PRIOR_SHA" "origin/main")
+if ! printf '%s' "$diff_incr" | grep -q 'branch-edit-of-a'; then
+    echo "FAIL: incremental build_authored_diff missing branch's a.txt edit"
+    exit 1
+fi
+if printf '%s' "$diff_incr" | grep -E '^\+a2$' >/dev/null; then
+    echo "FAIL: incremental build_authored_diff leaked main's same-file edit (a2)"
+    printf '%s' "$diff_incr" | sed 's/^/  /' | head -40
+    exit 1
+fi
+if printf '%s' "$diff_incr" | grep -q 'main-only'; then
+    echo "FAIL: incremental build_authored_diff leaked main-only.txt"
+    exit 1
+fi
+
+# has_traceable_history: succeeds when refs share an ancestor in local
+# history (callers use this to distinguish "branch genuinely empty" from
+# "shallow clone can't compute"). Should pass for refs in our test repo.
+if ! has_traceable_history "$REPO" "origin/main" "HEAD"; then
+    echo "FAIL: has_traceable_history false-negatived on real shared ancestor"
     exit 1
 fi
 

@@ -389,12 +389,24 @@ fi
 build_pr_diff() {
     local repo_dir="$1" repo="$2" pr_num="$3" default_branch="$4"
     local out
+    # Distinguish "branch genuinely has no authored content" (fail
+    # closed — the abort downstream is the right answer) from "shallow
+    # clone can't compute the range" (legitimate degraded fallback to
+    # gh pr diff). Without this discriminator, an empty result silently
+    # falls back to the unfiltered diff and the merge-from-main
+    # guarantee leaks (bot finding 1 PR #28 review 2).
+    if ! has_traceable_history "$repo_dir" "origin/${default_branch}" "HEAD"; then
+        log "$PR_ID: shallow history — no merge-base for origin/${default_branch}..HEAD — falling back to gh pr diff"
+        gh pr diff "$pr_num" --repo "$repo" 2>/dev/null
+        return
+    fi
     if out=$(build_authored_diff "$repo_dir" "HEAD" "origin/${default_branch}"); then
         printf '%s' "$out"
         return 0
     fi
-    log "$PR_ID: build_authored_diff produced no content (no non-merge commits, shallow history, or empty filter) — falling back to gh pr diff"
-    gh pr diff "$pr_num" --repo "$repo" 2>/dev/null
+    # History is fine; the branch genuinely has zero non-merge content.
+    # Empty stdout — the empty-diff abort downstream catches this.
+    log "$PR_ID: branch has no non-merge content vs origin/${default_branch} — failing closed (no diff to review)"
 }
 
 # build_incremental_diff produces the diff handed to specialists on a
@@ -406,23 +418,38 @@ build_pr_diff() {
 build_incremental_diff() {
     local repo_dir="$1" prior_sha="$2" default_branch="$3"
     local out
+    # Same fail-closed-vs-fallback discriminator as build_pr_diff: only
+    # use the unfiltered raw diff when local history is too shallow to
+    # compute the range. When history is fine, an empty authored set is
+    # a real signal (no new branch-authored content since prior review)
+    # and we let downstream catch it.
+    if ! has_traceable_history "$repo_dir" "origin/${default_branch}" "HEAD"; then
+        log "$PR_ID: shallow history — falling back to unfiltered git diff ${prior_sha:0:7}..HEAD"
+        git -C "$repo_dir" diff "${prior_sha}..HEAD"
+        return
+    fi
     if out=$(build_authored_diff "$repo_dir" "HEAD" "$prior_sha" "origin/${default_branch}"); then
         printf '%s' "$out"
         return 0
     fi
-    log "$PR_ID: incremental authored-diff produced no content — falling back to unfiltered git diff ${prior_sha:0:7}..HEAD"
-    git -C "$repo_dir" diff "${prior_sha}..HEAD"
+    log "$PR_ID: incremental: no new non-merge content since ${prior_sha:0:7} — failing closed"
 }
 
 KNOWN_SHA=$(state_get "$PR_ID" "sha")
 PREV_BODY=""
 PREV_APPROVED=""
+# Track the exclude refs the diff was built against so the file-history
+# scratch reuses the same scope. Without this, file-history.md covers
+# files outside the incremental diff on re-reviews — the prompts then
+# describe context the specialists can't see in their diff.
+DIFF_EXCLUDES=("origin/${DEFAULT_BRANCH}")
 if [ -z "$KNOWN_SHA" ] || [ "$FORCE_WHOLE_PR" = "true" ]; then
     KID_INPUT_DIFF=$(build_pr_diff "$REPO_DIR" "$REPO" "$PR_NUM" "$DEFAULT_BRANCH")
 else
     PREV_BODY=$(state_get "$PR_ID" "body")
     PREV_APPROVED=$(state_get "$PR_ID" "approved")
     if git -C "$REPO_DIR" cat-file -e "${KNOWN_SHA}^{commit}" 2>/dev/null; then
+        DIFF_EXCLUDES+=("$KNOWN_SHA")
         KID_INPUT_DIFF=$(build_incremental_diff "$REPO_DIR" "$KNOWN_SHA" "$DEFAULT_BRANCH")
         # Specialists work the incremental diff; the aggregator separately
         # gets the full PR diff so it can verify whether prior blocking
@@ -764,17 +791,18 @@ else
 fi
 
 FILE_HISTORY=""
-# Reuse the diff-scope authored-files seam so file-history.md tracks the
-# same "files this PR's commits touched" set the specialists' diff was
-# scoped to. The previous code shelled `git diff --name-only $DEFAULT_BRANCH...HEAD`
-# against the bare branch name, which doesn't exist as a local ref in the
-# shared workdir clone — file-history.md was empty in production runs.
+# Reuse DIFF_EXCLUDES so file-history.md tracks the same scope the
+# specialists' diff was built against (incremental review excludes both
+# the prior SHA and origin/<default-branch>; full review excludes only
+# origin/<default-branch>). Without this, file-history covered files
+# outside the incremental diff and the prompts described context
+# specialists couldn't see.
 while IFS= read -r f; do
     [ -z "$f" ] && continue
     FILE_HISTORY+="### $f"$'\n'
     hist=$(git -C "$REPO_DIR" log --oneline -n 5 -- "$f" 2>/dev/null)
     FILE_HISTORY+="${hist:-(no history)}"$'\n\n'
-done < <(compute_pr_authored_files "$REPO_DIR" "$DEFAULT_BRANCH" 2>/dev/null | head -30)
+done < <(compute_authored_files "$REPO_DIR" "HEAD" "${DIFF_EXCLUDES[@]}" 2>/dev/null | head -30)
 write_scratch "$REPO_DIR" "file-history.md" "${FILE_HISTORY:-(no touched files)}"
 
 # PR_DATA + PR_AUTHOR were fetched earlier (above the env mirror) so the

@@ -58,21 +58,55 @@ compute_pr_authored_files() {
 }
 
 # build_authored_diff <repo_dir> <head_ref> <exclude_ref> [<exclude_ref>...]
-#   stdout: unified diff restricted to files compute_authored_files
-#           returns. The diff itself is `git diff <first-exclude>...<head>`
-#           (three-dot, matches GitHub's view) — the file restriction is
-#           what scopes it back down to what the PR actually wrote.
-#   exit:   0 on non-empty diff. 1 if no authored files OR diff was
-#           empty despite some — caller decides fallback (typically
-#           the unfiltered raw diff, or `gh pr diff`).
+#   stdout: concatenated per-commit patches for non-merge commits in
+#           `<head_ref> ^<exclude_ref>...`, in chronological order.
+#   exit:   0 on non-empty diff. 1 if no non-merge commits remain after
+#           exclusions — caller decides fallback (typically `gh pr diff`
+#           when local history is too shallow to trust the empty result,
+#           or fail-closed when history is fine but the branch genuinely
+#           has zero authored content).
+#
+# Per-commit patches, not a refspec range diff. The earlier impl filtered
+# the three-dot range diff by filename; that worked for the full-PR case
+# (`origin/main...HEAD` advances merge-base past the merged-in main
+# commits) but leaked main-side hunks on incremental review when the
+# range was `prior_sha...HEAD`: `prior_sha` is on the branch, so the
+# merge-base doesn't advance, and any same-file edit main contributed
+# between `prior_sha` and `HEAD` would slip through alongside the
+# branch's own edits. Walking commits directly is structurally immune
+# — main's commits are simply not in the walk.
 build_authored_diff() {
-    local repo_dir="$1" head_ref="$2" first_exclude="$3"
-    local authored diff_out
-    authored=$(compute_authored_files "$@") || return 1
-    diff_out=$(printf '%s\n' "$authored" \
-        | (cd "$repo_dir" && xargs -d '\n' git diff "${first_exclude}...${head_ref}" --) \
-        2>/dev/null)
-    [ -z "$diff_out" ] && return 1
-    printf '%s' "$diff_out"
+    local repo_dir="$1" head_ref="$2"
+    shift 2
+    local exclude_args=()
+    local ref
+    for ref in "$@"; do
+        exclude_args+=("^${ref}")
+    done
+    local shas
+    shas=$(git -C "$repo_dir" log --no-merges --reverse --pretty=format:%H \
+        "$head_ref" "${exclude_args[@]}" 2>/dev/null)
+    [ -z "$shas" ] && return 1
+    # --literal-pathspecs is defensive: this code path doesn't pass any
+    # paths to git (per-commit show, no `-- <paths>`), but a future
+    # tweak that adds path filtering would otherwise be vulnerable to
+    # PR-controlled filenames being parsed as pathspec magic.
+    local sha out=""
+    while IFS= read -r sha; do
+        out+="$(git -C "$repo_dir" --literal-pathspecs show \
+            --no-color --pretty=format: "$sha" 2>/dev/null)"
+        out+=$'\n'
+    done <<< "$shas"
+    [ -z "$out" ] && return 1
+    printf '%s' "$out"
     return 0
+}
+
+# has_traceable_history <repo_dir> <ref_a> <ref_b>
+#   Returns 0 if `git merge-base <ref_a> <ref_b>` succeeds, 1 otherwise.
+#   Callers use this to distinguish "branch genuinely has no authored
+#   content" (fail closed) from "shallow clone can't compute the range"
+#   (legitimate fallback to gh pr diff).
+has_traceable_history() {
+    git -C "$1" merge-base "$2" "$3" >/dev/null 2>&1
 }
