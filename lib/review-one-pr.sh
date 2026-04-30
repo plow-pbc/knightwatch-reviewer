@@ -94,6 +94,9 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # --- search-roots coverage-state helper ---
 . "$_LIB_DIR/search-roots.sh"
 
+# --- diff-scope helper (filter merge-from-main out of the PR diff) ---
+. "$_LIB_DIR/diff-scope.sh"
+
 # --- agent-failure + run-dir helpers ---
 . "$_LIB_DIR/agent-fallback.sh"
 . "$_LIB_DIR/run-dir.sh"
@@ -366,11 +369,40 @@ fi
 # without new commits since the prior review) costs seconds instead of
 # burning a full `just test` cycle — including live-API recipes — on a
 # workdir that has nothing to review.
+
+# build_pr_diff produces the full-PR diff handed to specialists/aggregator,
+# filtered to files the PR's non-merge commits actually touched. Today the
+# raw `gh pr diff` view (three-dot) includes everything brought in via
+# `git merge origin/<default-branch>`, so PRs that merge main pull in
+# unrelated commits and specialists file findings against the wrong author
+# (cncorp/plow#552 caught flagging PR #547/#548 changes as plonkus's). The
+# filter restricts the diff to `git log --no-merges origin/main..HEAD`'s
+# touched-files set. Falls back to the raw `gh pr diff` if local history is
+# too shallow for merge-base or the branch has no non-merge content — both
+# rare and either equivalent to today's behavior or trivially degraded.
+build_pr_diff() {
+    local repo_dir="$1" repo="$2" pr_num="$3" default_branch="$4"
+    local authored diff_out
+    if authored=$(compute_pr_authored_files "$repo_dir" "$default_branch"); then
+        diff_out=$(printf '%s\n' "$authored" \
+            | (cd "$repo_dir" && xargs -d '\n' git diff "origin/${default_branch}...HEAD" --) \
+            2>/dev/null)
+        if [ -n "$diff_out" ]; then
+            printf '%s' "$diff_out"
+            return 0
+        fi
+        log "$PR_ID: filtered diff was empty despite $(printf '%s\n' "$authored" | wc -l) authored file(s) — falling back to gh pr diff"
+    else
+        log "$PR_ID: no non-merge commits on branch (or shallow history) — falling back to gh pr diff"
+    fi
+    gh pr diff "$pr_num" --repo "$repo" 2>/dev/null
+}
+
 KNOWN_SHA=$(state_get "$PR_ID" "sha")
 PREV_BODY=""
 PREV_APPROVED=""
 if [ -z "$KNOWN_SHA" ] || [ "$FORCE_WHOLE_PR" = "true" ]; then
-    KID_INPUT_DIFF=$(gh pr diff "$PR_NUM" --repo "$REPO" 2>/dev/null)
+    KID_INPUT_DIFF=$(build_pr_diff "$REPO_DIR" "$REPO" "$PR_NUM" "$DEFAULT_BRANCH")
 else
     PREV_BODY=$(state_get "$PR_ID" "body")
     PREV_APPROVED=$(state_get "$PR_ID" "approved")
@@ -380,7 +412,7 @@ else
         # gets the full PR diff so it can verify whether prior blocking
         # findings touch code that's actually changed in this PR vs. has
         # been left as-is and is still unaddressed.
-        FULL_PR_DIFF=$(gh pr diff "$PR_NUM" --repo "$REPO" 2>/dev/null)
+        FULL_PR_DIFF=$(build_pr_diff "$REPO_DIR" "$REPO" "$PR_NUM" "$DEFAULT_BRANCH")
         if [ -z "$FULL_PR_DIFF" ]; then
             # Fail loud per CLAUDE.md / feedback_fail_hard: previous code
             # silently degraded (skipped full-diff.patch, kept going)
@@ -388,13 +420,13 @@ else
             # prior findings against the current full PR state". Aborting
             # here lets the orchestrator retry on the next tick instead
             # of publishing a re-review that lies about what it evaluated.
-            log "$PR_ID: incremental re-review needs full-PR context but \`gh pr diff\` returned empty (auth/network) — aborting to avoid posting a degraded review framed as full"
+            log "$PR_ID: incremental re-review needs full-PR context but \`build_pr_diff\` returned empty (auth/network) — aborting to avoid posting a degraded review framed as full"
             rm -rf "$REPO_DIR"
             exit 1
         fi
     else
         log "$PR_ID: prior SHA $KNOWN_SHA not in local history; using full PR diff"
-        KID_INPUT_DIFF=$(gh pr diff "$PR_NUM" --repo "$REPO" 2>/dev/null)
+        KID_INPUT_DIFF=$(build_pr_diff "$REPO_DIR" "$REPO" "$PR_NUM" "$DEFAULT_BRANCH")
         FULL_PR_DIFF="$KID_INPUT_DIFF"
         USED_FALLBACK=true
     fi
