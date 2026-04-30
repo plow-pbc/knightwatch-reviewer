@@ -22,10 +22,12 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 ProtectHome=read-only
-# /home/odio/Hacking covers every KID_PATHS value (the manifest's local
-# convention) — broader than per-repo enumeration but means new repo
-# onboarding is a one-line repos.conf edit, not a unit-file edit too.
-ReadWritePaths=/home/odio/.pr-reviewer /home/odio/Hacking /home/odio/.cache /home/odio/.local /home/odio/.config
+# @KID_RW_PATHS@ is rendered at install time by install.sh from
+# repos.conf's KID_PATHS values (deduped, space-separated absolute
+# paths). Keeps the sandbox minimal — adding a repo to repos.conf
+# widens ReadWritePaths by exactly that one path on the next install,
+# never the whole parent. Do not edit @KID_RW_PATHS@ by hand here.
+ReadWritePaths=/home/odio/.pr-reviewer @KID_RW_PATHS@ /home/odio/.cache /home/odio/.local /home/odio/.config
 
 [Install]
 WantedBy=multi-user.target

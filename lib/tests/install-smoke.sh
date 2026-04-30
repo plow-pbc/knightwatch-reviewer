@@ -136,11 +136,43 @@ for d in lib contexts docs prompts; do
     [ -L "$INSTALL_DIR/$d" ] || { echo "FAIL scenario 1: $INSTALL_DIR/$d not a symlink"; exit 1; }
 done
 
+# Render the same @KID_RW_PATHS@ value install.sh derives from
+# $PROJECT_ROOT/repos.conf, so the cmp below compares against what
+# install.sh actually wrote (post-substitution), not the source-with-
+# placeholder. Sources repos.conf in a subshell so the smoke's own
+# REPOS / KID_PATHS state isn't perturbed.
+EXPECTED_KID_RW_PATHS=$(
+    REPOS=( ); declare -A KID_PATHS=( )
+    # shellcheck disable=SC1091
+    . "$PROJECT_ROOT/repos.conf"
+    paths=$(printf '%s\n' "${KID_PATHS[@]}" | sort -u | tr '\n' ' ')
+    printf '%s' "${paths% }"
+)
+
 # Every unit file copied
 for unit in "${PROD_UNITS[@]}"; do
     name="$(basename "$unit")"
     [ -f "$SYSTEMD_DIR/$name" ] || { echo "FAIL scenario 1: $SYSTEMD_DIR/$name missing"; exit 1; }
-    cmp -s "$unit" "$SYSTEMD_DIR/$name" || { echo "FAIL scenario 1: $name content differs from source"; exit 1; }
+    if grep -q "@KID_RW_PATHS@" "$unit"; then
+        # Templated unit — compare against rendered version.
+        rendered_expected="$TMPDIR/${name}.expected"
+        sed "s|@KID_RW_PATHS@|$EXPECTED_KID_RW_PATHS|g" "$unit" > "$rendered_expected"
+        cmp -s "$rendered_expected" "$SYSTEMD_DIR/$name" || { echo "FAIL scenario 1: $name rendered content differs from installed"; diff "$rendered_expected" "$SYSTEMD_DIR/$name"; exit 1; }
+        # Verbose check: the installed unit must contain the dedicated
+        # KID_PATHS values (not the broad parent dir, not the literal
+        # placeholder). Catches a regression where install.sh forgets
+        # the substitution and ships @KID_RW_PATHS@ verbatim, OR widens
+        # back to /home/odio/Hacking.
+        grep -q "@KID_RW_PATHS@" "$SYSTEMD_DIR/$name" && { echo "FAIL scenario 1: installed $name still contains @KID_RW_PATHS@ placeholder (substitution broke)"; exit 1; }
+        # Each KID_PATHS value must appear in the installed unit's
+        # ReadWritePaths line — otherwise the kid-refresh job would lose
+        # write access to that repo's index dir.
+        while IFS= read -r kp; do
+            grep -F "$kp" "$SYSTEMD_DIR/$name" >/dev/null || { echo "FAIL scenario 1: installed $name is missing KID_PATHS entry: $kp"; exit 1; }
+        done < <(printf '%s\n' "$EXPECTED_KID_RW_PATHS" | tr ' ' '\n' | grep -v '^$')
+    else
+        cmp -s "$unit" "$SYSTEMD_DIR/$name" || { echo "FAIL scenario 1: $name content differs from source"; exit 1; }
+    fi
 done
 
 # daemon-reload was called once (units actually changed)
