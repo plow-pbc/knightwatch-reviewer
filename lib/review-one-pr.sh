@@ -584,13 +584,35 @@ fi
 
 # ---- deterministic pre-checks (auto-nits) ----
 # Pre-checks that produce findings the LLM never sees. Each check's
-# stdout (when non-empty) becomes one [nit] in a "Pre-merge auto-checks"
-# section appended to the posted comment — so they cannot be hidden by
-# severity-prioritization or skipped by aggregator judgment. Adding a
-# new deterministic check is one block here:
+# stdout (when non-empty AND the helper exited 1) becomes one [nit] in
+# a "Pre-merge auto-checks" section appended to the posted comment — so
+# they cannot be hidden by severity-prioritization or skipped by
+# aggregator judgment.
 #
-#     CHECK_OUT=$(cd "$REPO_DIR" && bash -c "$NEW_CHECK_CMD" 2>/dev/null)
-#     [ -n "$CHECK_OUT" ] && AUTO_NITS+=("**Check name.** … $CHECK_OUT")
+# Helper contract is TRI-STATE — load-bearing per PR #27 round-2 review.
+# Collapsing checker errors into "gap" silently publishes wrong review
+# text when the helper's inputs are broken (bad PROJECT_DIR, malformed
+# config file, refused symlink), so a new check MUST distinguish:
+#
+#     exit 0 — check passed (no nit).            stdout: empty.
+#     exit 1 — real gap.                         stdout: nit text.
+#     exit 2 — checker could not determine.      stderr: error details.
+#
+# Adding a new deterministic check is one block here. Capture stderr +
+# exit code separately and switch on the rc — never `2>/dev/null` the
+# stderr away or treat any non-empty stdout as a nit:
+#
+#     CHECK_STDERR=$(mktemp)
+#     CHECK_OUT=$(cd "$REPO_DIR" && bash -c "$NEW_CHECK_CMD" 2>"$CHECK_STDERR")
+#     CHECK_RC=$?
+#     case $CHECK_RC in
+#         0) ;;                                              # pass: no nit
+#         1) AUTO_NITS+=("**Check name.** … $CHECK_OUT") ;;  # gap: post nit
+#         *) log "$PR_ID: <check> CHECKER ERROR (rc=$CHECK_RC) — $(cat "$CHECK_STDERR")" ;;
+#     esac
+#     rm -f "$CHECK_STDERR"
+#
+# See the strict-typing block below for the canonical implementation.
 #
 # OPERATOR_NAME is overridable via config.env so a forked install can
 # rename "Sam" without touching the strings below.
