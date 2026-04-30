@@ -325,4 +325,85 @@ echo "  compute_review_scope: no force + sha + fallback=true → 'fallback:<sha>
 # framed as incremental in the banner. Pin against regression.
 assert_scope "$(compute_review_scope false "abc1234567" true)" "fallback:abc1234567" "fallback path — must not be misframed as incremental"
 
-echo "  PASS (12 header combinations + 4 tests-not-run × scope + all-three-signals + ordering + 2 non-'false' tests_ran + unknown-scope fail-fast + 5 worker-seam scenarios)"
+# ===== classify_just_test_outcome (worker seam) =====
+# The disclosure helper alone doesn't pin the worker's decision tree —
+# a future refactor could break the (exit, stderr) → (TESTS_RAN, summary)
+# mapping while the formatter scenarios above still pass. Pin every
+# branch directly with crafted log files. Same regression-fence shape
+# as compute_review_scope's smoke from PR #22.
+TMPLOG=$(mktemp)
+trap 'rm -f "$TMPLOG"' EXIT
+
+assert_classify() {
+    local test_exit="$1" log_content="$2" expected_ran="$3" expected_summary="$4" desc="$5"
+    printf '%s' "$log_content" > "$TMPLOG"
+    local got_ran got_summary
+    IFS=$'\t' read -r got_ran got_summary < <(classify_just_test_outcome "$test_exit" "$TMPLOG" "30m")
+    if [ "$got_ran" != "$expected_ran" ] || [ "$got_summary" != "$expected_summary" ]; then
+        echo "FAIL: classify($test_exit, ...) — $desc"
+        echo "  expected: ($expected_ran, $expected_summary)"
+        echo "  got:      ($got_ran, $got_summary)"
+        exit 1
+    fi
+}
+
+echo "  classify: exit 0 → PASSED..."
+assert_classify 0 "" "true" "PASSED" "tests ran and passed"
+
+echo "  classify: exit 124 → TIMED OUT..."
+assert_classify 124 "" "true" "TIMED OUT (>30m)" "timeout expired"
+
+echo "  classify: exit 127 → recipe broken..."
+# Bot's actual failure mode on cncorp/plow-content#1 before this PR:
+# `pytest` not on PATH, recipe exits 127, was previously a hard abort.
+assert_classify 127 "Recipe \`test\` failed on line 2 with exit code 127" \
+    "false" "not run (recipe failed: command-not-found inside justfile, exit 127)" \
+    "recipe ran but command-not-found inside (e.g. pytest missing)"
+
+echo "  classify: exit 1 + 'No justfile found' → no justfile..."
+# Critical regression-fence for finding 2: this pins behavior without
+# inventing a parallel filename rule. Whatever set of names `just`
+# accepts (justfile, Justfile, .justfile, JUSTFILE, etc.), the helper
+# defers to just's own discovery via the stderr text.
+assert_classify 1 "error: No justfile found" \
+    "false" "not run (no justfile found by \`just\` in repo root)" \
+    "just couldn't discover any justfile — defers to just's own rules"
+
+echo "  classify: exit 1 + 'does not contain recipe' → no test recipe..."
+# Repo has a justfile but it doesn't define `test`. The bot can review
+# the diff anyway; don't abort.
+assert_classify 1 "error: Justfile does not contain recipe \`test\`" \
+    "false" "not run (justfile has no \`test\` recipe)" \
+    "justfile present but missing \`test\` target"
+
+echo "  classify: exit 1 + plain failure (not just-discovery) → FAILED..."
+# Pytest failures, lint failures, etc. — exit 1 from inside the recipe.
+# Distinguished from "exit 1 + No justfile found" by the absence of
+# just's discovery error in stderr.
+assert_classify 1 "FAILED tests/test_foo.py::test_bar - assert 1 == 2" \
+    "true" "FAILED (exit 1)" \
+    "real test failure inside the recipe (no just discovery error in log)"
+
+echo "  classify: exit 2 → FAILED..."
+# pytest collection error etc.
+assert_classify 2 "" "true" "FAILED (exit 2)" "non-special non-zero exit"
+
+# Edge: empty log file (timeout before any output, e.g.) on exit 1
+# must NOT misclassify as the discovery / recipe paths — those rules
+# require specific stderr text. Defaults to FAILED.
+echo "  classify: exit 1 + empty log → FAILED (no discovery match)..."
+assert_classify 1 "" "true" "FAILED (exit 1)" "exit 1 with empty log doesn't trigger no-justfile path"
+
+# Edge: log file missing entirely (the redirect failed, etc) on exit 1
+# must not crash — the [ -f "$test_log" ] guard handles this. Treat as
+# plain FAILED.
+echo "  classify: exit 1 + missing log file → FAILED..."
+GHOST_LOG="$TMPLOG.ghost"
+rm -f "$GHOST_LOG"
+IFS=$'\t' read -r got_ran got_summary < <(classify_just_test_outcome 1 "$GHOST_LOG" "30m")
+if [ "$got_ran" != "true" ] || [ "$got_summary" != "FAILED (exit 1)" ]; then
+    echo "FAIL: classify with missing log file — expected (true, FAILED (exit 1)), got ($got_ran, $got_summary)"
+    exit 1
+fi
+
+echo "  PASS (12 header combinations + 4 tests-not-run × scope + all-three-signals + ordering + 2 non-'false' tests_ran + unknown-scope fail-fast + 5 worker-seam scope scenarios + 9 classify scenarios)"

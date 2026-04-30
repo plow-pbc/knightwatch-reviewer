@@ -432,28 +432,24 @@ if [ -z "$KID_INPUT_DIFF" ]; then
 fi
 
 # ---- just test ----
-# Three outcomes the rest of the worker has to tell apart:
+# Five outcomes the rest of the worker has to tell apart, all classified
+# in classify_just_test_outcome (lib/run-dir.sh) from the (exit code,
+# stderr) pair `just` produced — the worker just runs `just test` and
+# delegates the meaning to the helper. Two key reasons not to pre-check
+# the justfile here:
+#   - `just`'s discovery accepts justfile, Justfile, .justfile, JUSTFILE,
+#     etc. and walks up the dir tree; a parallel `[ -f justfile ]` rule
+#     in this worker would misclassify real justfiles as missing.
+#   - The original "exit 127 == no justfile" assumption was wrong: with
+#     no justfile `just` exits 1 with "No justfile found", not 127. 127
+#     fires when `just` runs the recipe but a command inside it (pytest,
+#     npm, etc.) isn't on PATH — a different failure mode entirely.
 #
-#   1. Tests ran (PASSED / FAILED / TIMED OUT). Specialists get the log
-#      tail in test-results.md; the posted comment carries the verdict
-#      via the existing test-results section. TESTS_RAN=true.
-#   2. Tests skipped because the repo has no justfile (e.g. cncorp/
-#      plow-content was added to repos.conf as a Python project; no
-#      justfile because tests run via uv, not just). TESTS_RAN=false.
-#      Was previously a hard abort that retried indefinitely on every
-#      tick — now we proceed and warn at the top of the comment.
-#   3. Tests skipped because `just test` returned 127 (recipe ran but
-#      a command inside it — pytest, npm, etc. — wasn't on the bot's
-#      PATH). The justfile is broken under the bot's env, but that's a
-#      per-PR-author problem, not a reason to silently never review the
-#      repo. Same handling as #2.
-#
-# Real host misconfig (`just` itself missing from PATH) still aborts —
-# fixing that is install.sh / systemd Environment=PATH, not per-run.
+# Real host misconfig (`just` itself missing from PATH) still aborts
+# pre-run — fixing that is install.sh / systemd Environment=PATH, not
+# something to retry-loop on.
 TEST_LOG="$REPO_DIR/.test-output.log"
 TEST_TIMEOUT=30m
-TESTS_RAN=true
-TEST_LOG_TAIL=""
 
 if ! command -v just >/dev/null 2>&1; then
     log "$PR_ID: \`just\` binary not on PATH — aborting (host misconfig; check systemd Environment=PATH or rerun install.sh)"
@@ -461,27 +457,11 @@ if ! command -v just >/dev/null 2>&1; then
     exit 1
 fi
 
-if [ -f "$REPO_DIR/justfile" ] || [ -f "$REPO_DIR/Justfile" ]; then
-    log "$PR_ID: running \`just test\` (timeout ${TEST_TIMEOUT})..."
-    (cd "$REPO_DIR" && timeout "$TEST_TIMEOUT" just test) > "$TEST_LOG" 2>&1
-    TEST_EXIT=$?
-    if [ "$TEST_EXIT" -eq 127 ]; then
-        log "$PR_ID: \`just test\` exit 127 — recipe command not found inside justfile (likely missing tool in bot env); proceeding without test results"
-        TESTS_RAN=false
-        TEST_SUMMARY="not run (recipe failed: command-not-found inside justfile, exit 127)"
-    else
-        case "$TEST_EXIT" in
-            0)   TEST_SUMMARY="PASSED" ;;
-            124) TEST_SUMMARY="TIMED OUT (>${TEST_TIMEOUT})" ;;
-            *)   TEST_SUMMARY="FAILED (exit ${TEST_EXIT})" ;;
-        esac
-    fi
-    TEST_LOG_TAIL=$(tail -n 500 "$TEST_LOG")
-else
-    log "$PR_ID: no justfile at repo root — proceeding without test results (specialists review the diff alone)"
-    TESTS_RAN=false
-    TEST_SUMMARY="not run (no justfile in repo)"
-fi
+log "$PR_ID: running \`just test\` (timeout ${TEST_TIMEOUT})..."
+(cd "$REPO_DIR" && timeout "$TEST_TIMEOUT" just test) > "$TEST_LOG" 2>&1
+TEST_EXIT=$?
+IFS=$'\t' read -r TESTS_RAN TEST_SUMMARY < <(classify_just_test_outcome "$TEST_EXIT" "$TEST_LOG" "$TEST_TIMEOUT")
+TEST_LOG_TAIL=$(tail -n 500 "$TEST_LOG")
 
 # Env files were only needed for `just test`; delete eagerly so secrets
 # don't sit in the workdir during the long specialist phase. REPO_DIR is
