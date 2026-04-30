@@ -37,6 +37,17 @@ stage_search_roots() {
     local body=""
     local included=0 excluded=0 missing=0 lookup_error=0
 
+    # Outer authorization gate. Even an author who has push on some
+    # sibling X is denied cross-repo data when they are untrusted on
+    # $repo: the review comment lands on $repo's PR, which is publicly
+    # readable, so sibling grep results are exposed to every $repo
+    # reader regardless of whether *they* have access to X. The
+    # per-sibling gate below is necessary but not sufficient.
+    if ! is_trusted_repo_author "$repo" "$pr_author"; then
+        printf '%s\n' "# coverage: same-repo-only — author untrusted on $repo"
+        return 0
+    fi
+
     for sibling_repo in "${REPOS[@]}"; do
         [ "$sibling_repo" = "$repo" ] && continue
         sibling_path="${SOURCE_PATHS[$sibling_repo]:-}"

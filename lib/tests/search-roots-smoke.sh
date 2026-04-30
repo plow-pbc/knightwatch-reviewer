@@ -62,6 +62,7 @@ exit 1
 STUB
 chmod +x "$TMPDIR/bin/gh"
 
+. "$PROJECT_ROOT/lib/auth.sh"
 . "$PROJECT_ROOT/lib/search-roots.sh"
 
 assert_eq() {
@@ -92,7 +93,7 @@ export MOCK_PERMS
 echo "  scenario 1: full coverage..."
 saved_repos=("${REPOS[@]}")
 REPOS=("acme/self" "acme/foo" "acme/bar")
-MOCK_PERMS="acme/foo:write,acme/bar:admin"
+MOCK_PERMS="acme/self:write,acme/foo:write,acme/bar:admin"
 OUT=$(stage_search_roots "acme/self" "alice")
 REPOS=("${saved_repos[@]}")
 assert_contains "scenario 1: header" "# coverage: full" "$OUT"
@@ -103,7 +104,7 @@ assert_contains "scenario 1: bar included" "acme/bar included $TMPDIR/repos/bar"
 echo "  scenario 2: partial coverage..."
 saved_repos=("${REPOS[@]}")
 REPOS=("acme/self" "acme/foo" "acme/bar")
-MOCK_PERMS="acme/foo:write,acme/bar:read"
+MOCK_PERMS="acme/self:write,acme/foo:write,acme/bar:read"
 OUT=$(stage_search_roots "acme/self" "alice")
 REPOS=("${saved_repos[@]}")
 assert_contains "scenario 2: header partial" "# coverage: partial" "$OUT"
@@ -116,7 +117,7 @@ assert_contains "scenario 2: bar excluded" "acme/bar excluded" "$OUT"
 echo "  scenario 3: same-repo-only via excluded..."
 saved_repos=("${REPOS[@]}")
 REPOS=("acme/self" "acme/foo" "acme/bar")
-MOCK_PERMS="acme/foo:read,acme/bar:read"
+MOCK_PERMS="acme/self:write,acme/foo:read,acme/bar:read"
 OUT=$(stage_search_roots "acme/self" "alice")
 REPOS=("${saved_repos[@]}")
 assert_contains "scenario 3: header same-repo-only" "# coverage: same-repo-only" "$OUT"
@@ -126,7 +127,7 @@ assert_contains "scenario 3: bar excluded" "acme/bar excluded" "$OUT"
 
 # --- scenario 4: missing checkout dir reported, not silently skipped ---------
 echo "  scenario 4: missing checkout..."
-MOCK_PERMS="acme/foo:write,acme/bar:write,acme/qux:write"
+MOCK_PERMS="acme/self:write,acme/foo:write,acme/bar:write,acme/qux:write"
 OUT=$(stage_search_roots "acme/self" "alice")
 assert_contains "scenario 4: header partial" "# coverage: partial" "$OUT"
 assert_contains "scenario 4: missing=1" "missing=1" "$OUT"
@@ -142,7 +143,7 @@ echo "  scenario 5: lookup-error..."
 saved_repos=("${REPOS[@]}")
 REPOS=("acme/self" "acme/foo" "acme/bar")
 # foo trusted; bar's gh call exits non-zero (network/rate-limit simulated).
-MOCK_PERMS="acme/foo:write,acme/bar:ERR:network"
+MOCK_PERMS="acme/self:write,acme/foo:write,acme/bar:ERR:network"
 OUT=$(stage_search_roots "acme/self" "alice")
 REPOS=("${saved_repos[@]}")
 assert_contains "scenario 5: header partial" "# coverage: partial" "$OUT"
@@ -155,4 +156,28 @@ if printf '%s' "$OUT" | grep -q "acme/bar excluded"; then
     exit 1
 fi
 
-echo "  PASS (5 scenarios: full, partial-excluded, same-repo-only, missing-checkout, lookup-error)"
+# --- scenario 6: outer trust gate — untrusted on $REPO short-circuits ---------
+# Even when the author has push on every sibling, an untrusted-on-$REPO
+# author must NOT see any sibling listed as `included` — because the
+# review comment lands on $REPO's PR (publicly readable) and would
+# expose sibling data to every $REPO reader. This is the regression
+# class the bot caught in round 4: dropping the outer gate during the
+# stage_search_roots extraction. Lock it down here.
+echo "  scenario 6: outer trust gate (untrusted on \$REPO)..."
+saved_repos=("${REPOS[@]}")
+REPOS=("acme/self" "acme/foo" "acme/bar")
+# Author has push on EVERY sibling, but READ on $REPO itself.
+MOCK_PERMS="acme/self:read,acme/foo:write,acme/bar:admin"
+OUT=$(stage_search_roots "acme/self" "alice")
+REPOS=("${saved_repos[@]}")
+assert_contains "scenario 6: header same-repo-only" "# coverage: same-repo-only" "$OUT"
+assert_contains "scenario 6: cites untrusted on \$REPO" "author untrusted on acme/self" "$OUT"
+# Critically: NO sibling line at all — not even excluded entries —
+# because the outer gate short-circuits before per-sibling classification.
+if printf '%s' "$OUT" | grep -qE "(included|excluded|missing|lookup-error)"; then
+    echo "FAIL: scenario 6: untrusted-on-\$REPO must short-circuit; got per-sibling lines"
+    echo "  output: $OUT"
+    exit 1
+fi
+
+echo "  PASS (6 scenarios: full, partial-excluded, same-repo-only, missing-checkout, lookup-error, outer-gate-short-circuit)"
