@@ -100,6 +100,9 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # --- sibling-repo symlinks (cross-repo grep without leaking host paths) ---
 . "$_LIB_DIR/sibling-symlinks.sh"
 
+# --- path-scrub safety net (strip leaked host paths before posting) ---
+. "$_LIB_DIR/path-scrub.sh"
+
 # --- agent-failure + run-dir helpers ---
 . "$_LIB_DIR/agent-fallback.sh"
 . "$_LIB_DIR/run-dir.sh"
@@ -1002,6 +1005,13 @@ if ! COMMENT_BODY=$(prepend_review_header "$COMMENT_BODY" "$REVIEW_SCOPE" "$PR_S
     rm -rf "$REPO_DIR"
     exit 1
 fi
+
+# Safety net: scrub any host paths that survived the prompt rules. The
+# specialists are told to cite repo-relative + slug-prefixed paths, but
+# models occasionally leak the workdir abs path or the .siblings/
+# symlink prefix. This is the last hop before the comment becomes
+# public — strip any remaining workdir/<sibling-abs>/.siblings prefixes.
+COMMENT_BODY=$(scrub_review_paths "$COMMENT_BODY" "$REPO_DIR" SOURCE_PATHS)
 
 if ! gh pr comment "$PR_NUM" --repo "$REPO" --body "$COMMENT_BODY"; then
     log "$PR_ID: gh pr comment FAILED — not updating state (next tick will retry)"

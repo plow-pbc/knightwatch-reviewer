@@ -45,6 +45,10 @@ test:
     bash lib/tests/sibling-symlinks-smoke.sh
 
     echo ""
+    echo "=== path-scrub smoke test ==="
+    bash lib/tests/path-scrub-smoke.sh
+
+    echo ""
     echo "=== prompt-build smoke test ==="
     bash lib/tests/build-specialist-prompt-smoke.sh
 
