@@ -325,13 +325,6 @@ if ! git -C "$REPO_DIR" checkout -B "pr-$PR_NUM" "origin/$PR_BRANCH" --quiet; th
     exit 1
 fi
 
-# Materialize sibling-repo symlinks under .siblings/<owner>/<repo>. This
-# lets the consumers + dead-code-search specialists grep cross-repo
-# without ever traversing the host filesystem outside the workdir, and
-# gives them a citation form (.siblings/<owner>/<repo>/<rel>) that the
-# path-scrub step normalizes back to <owner>/<repo>/<rel> for the public
-# review comment.
-materialize_sibling_symlinks "$REPO_DIR" "$REPO" SOURCE_PATHS
 
 # Fetch PR metadata once, here, so PR_AUTHOR is available before the env
 # mirror runs (the trust gate below depends on it). The full PR_DATA blob
@@ -723,6 +716,18 @@ log "$PR_ID: diff is ${#KID_INPUT_DIFF} bytes — auto-nits: ${#AUTO_NITS[@]}"
 # search-roots-smoke.sh) so the staging logic can't drift into per-prompt
 # rediscovery again.
 SEARCH_ROOTS=$(stage_search_roots "$REPO" "$PR_AUTHOR")
+
+# Materialize sibling-repo symlinks under .siblings/<owner>/<repo>, but
+# ONLY for siblings the auth gate above just classified as `included`.
+# Running before stage_search_roots would expose every configured sibling
+# checkout to the codex agent regardless of trust — bot Finding 2 on PR #28.
+INCLUDED_SLUGS=()
+while IFS= read -r line; do
+    case "$line" in
+        *' included '*) INCLUDED_SLUGS+=("${line%% included *}") ;;
+    esac
+done <<< "$SEARCH_ROOTS"
+materialize_sibling_symlinks "$REPO_DIR" SOURCE_PATHS "${INCLUDED_SLUGS[@]}"
 
 # ---- write scratch files ----
 write_scratch "$REPO_DIR" "diff.patch"         "$KID_INPUT_DIFF"
