@@ -94,8 +94,8 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # --- search-roots coverage-state helper ---
 . "$_LIB_DIR/search-roots.sh"
 
-# --- diff-scope helper (filter merge-from-main out of the PR diff) ---
-. "$_LIB_DIR/diff-scope.sh"
+# --- diff-build helper (clean-incremental-vs-fallback predicate) ---
+. "$_LIB_DIR/diff-build.sh"
 
 # --- sibling-repo symlinks (cross-repo grep without leaking host paths) ---
 . "$_LIB_DIR/sibling-symlinks.sh"
@@ -377,101 +377,34 @@ fi
 # burning a full `just test` cycle — including live-API recipes — on a
 # workdir that has nothing to review.
 
-# build_pr_diff produces the full-PR diff handed to specialists/aggregator,
-# filtered to files the PR's non-merge commits actually touched. Today the
-# raw `gh pr diff` view (three-dot) includes everything brought in via
-# `git merge origin/<default-branch>`, so PRs that merge main pull in
-# unrelated commits and specialists file findings against the wrong author
-# (cncorp/plow#552 caught flagging PR #547/#548 changes as plonkus's).
-# Falls back to the raw `gh pr diff` if local history is too shallow for
-# merge-base or the branch has no non-merge content — both rare and
-# either equivalent to today's behavior or trivially degraded.
-build_pr_diff() {
-    local repo_dir="$1" repo="$2" pr_num="$3" default_branch="$4"
-    local out
-    # Distinguish "branch genuinely has no authored content" (fail
-    # closed — the abort downstream is the right answer) from "shallow
-    # clone can't compute the range" (legitimate degraded fallback to
-    # gh pr diff). Without this discriminator, an empty result silently
-    # falls back to the unfiltered diff and the merge-from-main
-    # guarantee leaks (bot finding 1 PR #28 review 2).
-    if ! has_traceable_history "$repo_dir" "origin/${default_branch}" "HEAD"; then
-        log "$PR_ID: shallow history — no merge-base for origin/${default_branch}..HEAD — falling back to gh pr diff"
-        gh pr diff "$pr_num" --repo "$repo" 2>/dev/null
-        return
-    fi
-    if out=$(build_authored_diff "$repo_dir" "HEAD" "origin/${default_branch}"); then
-        printf '%s' "$out"
-        return 0
-    fi
-    # History is fine; the branch genuinely has zero non-merge content.
-    # Empty stdout — the empty-diff abort downstream catches this.
-    log "$PR_ID: branch has no non-merge content vs origin/${default_branch} — failing closed (no diff to review)"
-}
-
-# build_incremental_diff produces the diff handed to specialists on a
-# re-review (commits since the prior reviewed SHA), filtered the same way
-# as build_pr_diff. Excludes BOTH the prior SHA AND origin/<default-branch>
-# so any merge-from-main commits pulled in between then and now don't
-# resurface as "new findings against the wrong author" — same class of
-# regression the full-PR filter catches.
-build_incremental_diff() {
-    local repo_dir="$1" prior_sha="$2" default_branch="$3"
-    local out
-    # Same fail-closed-vs-fallback discriminator as build_pr_diff: only
-    # use the unfiltered raw diff when local history is too shallow to
-    # compute the range. When history is fine, an empty authored set is
-    # a real signal (no new branch-authored content since prior review)
-    # and we let downstream catch it.
-    if ! has_traceable_history "$repo_dir" "origin/${default_branch}" "HEAD"; then
-        log "$PR_ID: shallow history — falling back to unfiltered git diff ${prior_sha:0:7}..HEAD"
-        git -C "$repo_dir" diff "${prior_sha}..HEAD"
-        return
-    fi
-    if out=$(build_authored_diff "$repo_dir" "HEAD" "$prior_sha" "origin/${default_branch}"); then
-        printf '%s' "$out"
-        return 0
-    fi
-    log "$PR_ID: incremental: no new non-merge content since ${prior_sha:0:7} — failing closed"
-}
+# Single gh pr diff call up front — the canonical "what's in this PR"
+# view, same one humans see on the PR's "Files changed" tab. Used for
+# both KID_INPUT_DIFF (the diff specialists review) by default, and
+# FULL_PR_DIFF (the aggregator's "verify prior findings against
+# current state" reference) always.
+FULL_PR_DIFF=$(gh pr diff "$PR_NUM" --repo "$REPO" 2>/dev/null)
+KID_INPUT_DIFF="$FULL_PR_DIFF"
 
 KNOWN_SHA=$(state_get "$PR_ID" "sha")
 PREV_BODY=""
 PREV_APPROVED=""
-# Track the exclude refs the diff was built against so the file-history
-# scratch reuses the same scope. Without this, file-history.md covers
-# files outside the incremental diff on re-reviews — the prompts then
-# describe context the specialists can't see in their diff.
-DIFF_EXCLUDES=("origin/${DEFAULT_BRANCH}")
-if [ -z "$KNOWN_SHA" ] || [ "$FORCE_WHOLE_PR" = "true" ]; then
-    KID_INPUT_DIFF=$(build_pr_diff "$REPO_DIR" "$REPO" "$PR_NUM" "$DEFAULT_BRANCH")
-else
+
+# Optimization: use a local incremental diff for KID_INPUT_DIFF ONLY
+# when (a) the prior reviewed SHA is still on the branch's history AND
+# (b) no merge commits exist in the incremental range. Any other
+# condition (rebase/force-push, OR branch merged main between then and
+# now) would leak merge-from-main content or misframe an off-branch
+# SHA — leave KID_INPUT_DIFF as the full PR diff and let SKIPPED_CHECKS
+# emit a deterministic ⚠️ warning at the top of the review.
+if [ -n "$KNOWN_SHA" ] && [ "$FORCE_WHOLE_PR" != "true" ]; then
     PREV_BODY=$(state_get "$PR_ID" "body")
     PREV_APPROVED=$(state_get "$PR_ID" "approved")
-    if git -C "$REPO_DIR" cat-file -e "${KNOWN_SHA}^{commit}" 2>/dev/null; then
-        DIFF_EXCLUDES+=("$KNOWN_SHA")
-        KID_INPUT_DIFF=$(build_incremental_diff "$REPO_DIR" "$KNOWN_SHA" "$DEFAULT_BRANCH")
-        # Specialists work the incremental diff; the aggregator separately
-        # gets the full PR diff so it can verify whether prior blocking
-        # findings touch code that's actually changed in this PR vs. has
-        # been left as-is and is still unaddressed.
-        FULL_PR_DIFF=$(build_pr_diff "$REPO_DIR" "$REPO" "$PR_NUM" "$DEFAULT_BRANCH")
-        if [ -z "$FULL_PR_DIFF" ]; then
-            # Fail loud per CLAUDE.md / feedback_fail_hard: previous code
-            # silently degraded (skipped full-diff.patch, kept going)
-            # while the posted banner still claimed "aggregator verified
-            # prior findings against the current full PR state". Aborting
-            # here lets the orchestrator retry on the next tick instead
-            # of publishing a re-review that lies about what it evaluated.
-            log "$PR_ID: incremental re-review needs full-PR context but \`build_pr_diff\` returned empty (auth/network) — aborting to avoid posting a degraded review framed as full"
-            rm -rf "$REPO_DIR"
-            exit 1
-        fi
+    if is_clean_incremental_available "$REPO_DIR" "$KNOWN_SHA"; then
+        KID_INPUT_DIFF=$(git -C "$REPO_DIR" diff "$KNOWN_SHA..HEAD")
+        log "$PR_ID: clean incremental diff since ${KNOWN_SHA:0:7}"
     else
-        log "$PR_ID: prior SHA $KNOWN_SHA not in local history; using full PR diff"
-        KID_INPUT_DIFF=$(build_pr_diff "$REPO_DIR" "$REPO" "$PR_NUM" "$DEFAULT_BRANCH")
-        FULL_PR_DIFF="$KID_INPUT_DIFF"
         USED_FALLBACK=true
+        log "$PR_ID: incremental not clean (rebased or merged-from-main since ${KNOWN_SHA:0:7}); using full PR diff"
     fi
 fi
 
@@ -794,18 +727,20 @@ else
 fi
 
 FILE_HISTORY=""
-# Reuse DIFF_EXCLUDES so file-history.md tracks the same scope the
-# specialists' diff was built against (incremental review excludes both
-# the prior SHA and origin/<default-branch>; full review excludes only
-# origin/<default-branch>). Without this, file-history covered files
-# outside the incremental diff and the prompts described context
-# specialists couldn't see.
+# Derive file-history's file list from $KID_INPUT_DIFF directly by
+# parsing `^diff --git a/<path> b/<path>` headers. This is the same
+# scope specialists see in diff.patch — single source of truth for
+# "what files this review covers." Works for both gh pr diff and
+# local git diff outputs (both emit `diff --git a/<path> b/<path>`).
 while IFS= read -r f; do
     [ -z "$f" ] && continue
     FILE_HISTORY+="### $f"$'\n'
     hist=$(git -C "$REPO_DIR" log --oneline -n 5 -- "$f" 2>/dev/null)
     FILE_HISTORY+="${hist:-(no history)}"$'\n\n'
-done < <(compute_authored_files "$REPO_DIR" "HEAD" "${DIFF_EXCLUDES[@]}" 2>/dev/null | head -30)
+done < <(printf '%s' "$KID_INPUT_DIFF" \
+    | grep -E '^diff --git a/' \
+    | sed -E 's|^diff --git a/(.*) b/.*$|\1|' \
+    | sort -u | head -30)
 write_scratch "$REPO_DIR" "file-history.md" "${FILE_HISTORY:-(no touched files)}"
 
 # PR_DATA + PR_AUTHOR were fetched earlier (above the env mirror) so the
