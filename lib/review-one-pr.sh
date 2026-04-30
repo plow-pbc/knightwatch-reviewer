@@ -604,19 +604,35 @@ AUTO_NITS=()
 export REVIEWER_LIB_DIR="$_LIB_DIR"
 
 # Strict-typing pre-check. Per-repo cmd from repos.conf delegates to
-# lib/checks/<lang>-strict-typing.sh; the helper outputs the gap text
-# on stdout when strict mode isn't enforced, empty when it is.
+# lib/checks/<lang>-strict-typing.sh. Helper contract is tri-state:
+#   exit 0 — strict mode enforced (no nit).
+#   exit 1 — gap (stdout has gap text → posted as a [nit]).
+#   exit 2 — checker error (stderr has details → logged loud, no nit).
+# The tri-state is load-bearing: collapsing checker errors into "gap"
+# silently publishes wrong review text on broken inputs (bad PROJECT_DIR,
+# malformed config file, refused symlink). Fail-loud here keeps the
+# deterministic section honest.
 STRICT_TYPING_CMD="${STRICT_TYPING_CMDS[$REPO]:-}"
 if [ -n "$STRICT_TYPING_CMD" ]; then
-    STRICT_GAP=$(cd "$REPO_DIR" && bash -c "$STRICT_TYPING_CMD" 2>/dev/null)
-    if [ -n "$STRICT_GAP" ]; then
-        log "$PR_ID: strict-typing gap detected — $STRICT_GAP"
-        # Sassy by design: ${OPERATOR_NAME} carries the responsibility-
-        # deflection so an author who disagrees has someone to argue
-        # with, and the name is a config var so a forked install can
-        # rename without touching this string.
-        AUTO_NITS+=("**Strict typing.** ${OPERATOR_NAME} stubbornly wants strict mode on every typed-language project. ${STRICT_GAP}. (I guess I agree, but blame ${OPERATOR_NAME}.)")
-    fi
+    STRICT_STDERR=$(mktemp)
+    STRICT_GAP=$(cd "$REPO_DIR" && bash -c "$STRICT_TYPING_CMD" 2>"$STRICT_STDERR")
+    STRICT_RC=$?
+    case $STRICT_RC in
+        0) ;;
+        1)
+            log "$PR_ID: strict-typing gap detected — $STRICT_GAP"
+            # Sassy by design: ${OPERATOR_NAME} carries the responsibility-
+            # deflection so an author who disagrees has someone to argue
+            # with, and the name is a config var so a forked install can
+            # rename without touching this string.
+            AUTO_NITS+=("**Strict typing.** ${OPERATOR_NAME} stubbornly wants strict mode on every typed-language project. ${STRICT_GAP}. (I guess I agree, but blame ${OPERATOR_NAME}.)")
+            ;;
+        *)
+            STRICT_ERR=$(cat "$STRICT_STDERR")
+            log "$PR_ID: strict-typing CHECKER ERROR (rc=$STRICT_RC) — ${STRICT_ERR:-no stderr}"
+            ;;
+    esac
+    rm -f "$STRICT_STDERR"
 fi
 
 log "$PR_ID: diff is ${#KID_INPUT_DIFF} bytes — auto-nits: ${#AUTO_NITS[@]}"
