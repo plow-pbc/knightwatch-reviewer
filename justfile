@@ -37,8 +37,8 @@ test:
     bash lib/tests/search-roots-smoke.sh
 
     echo ""
-    echo "=== diff-scope smoke test ==="
-    bash lib/tests/diff-scope-smoke.sh
+    echo "=== diff-build smoke test ==="
+    bash lib/tests/diff-build-smoke.sh
 
     echo ""
     echo "=== sibling-symlinks smoke test ==="
