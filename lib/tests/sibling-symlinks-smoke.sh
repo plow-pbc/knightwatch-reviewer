@@ -65,39 +65,64 @@ if [ -L "$WORKDIR/.siblings/acme/qux" ]; then
 fi
 
 # --- scenario 3: defeat committed-symlink path-redirect attack --------
-echo "  scenario 3: pre-existing malicious .siblings/ wiped..."
+# Three sub-scenarios — all stage `.siblings/<owner>` AS THE SYMLINK
+# directly (no intervening mkdir), which is the actual committed-symlink
+# attack shape. The previous version of this test did `mkdir -p
+# .siblings/acme` first, then `ln -sfn TARGET .siblings/acme`, which (per
+# `ln`'s behavior on an existing directory) creates the symlink INSIDE
+# .siblings/acme rather than as it — so the attack vector was never
+# really exercised. Bot finding 2 PR #28 review 2 caught this.
 ATTACK_TARGET="$TMPDIR/SHOULD_NOT_BE_TOUCHED"
 mkdir -p "$ATTACK_TARGET"
 touch "$ATTACK_TARGET/sentinel"
-# Simulate the PR committing `.siblings/acme` as a symlink to a
-# directory outside the workdir. Without a wipe, mkdir/ln would write
-# through the symlink.
+
+assert_redirect_defeated() {
+    local label="$1"
+    materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/foo"
+    if [ -L "$WORKDIR/.siblings/acme" ]; then
+        echo "FAIL ($label): .siblings/acme is still a symlink — wipe didn't happen"
+        ls -la "$WORKDIR/.siblings/"
+        exit 1
+    fi
+    got_foo=$(readlink "$WORKDIR/.siblings/acme/foo")
+    if [ "$got_foo" != "$TMPDIR/foo" ]; then
+        echo "FAIL ($label): foo symlink not pointing at real source after redirect attack"
+        exit 1
+    fi
+    if [ ! -e "$ATTACK_TARGET/sentinel" ]; then
+        echo "FAIL ($label): attacker target sentinel was modified — write escaped workdir"
+        exit 1
+    fi
+    if [ -e "$ATTACK_TARGET/foo" ] || [ -L "$ATTACK_TARGET/foo" ]; then
+        echo "FAIL ($label): attacker target gained a 'foo' entry — write escaped workdir"
+        ls -la "$ATTACK_TARGET/"
+        exit 1
+    fi
+}
+
+echo "  scenario 3a: .siblings/<owner> is a symlink to attacker dir..."
+rm -rf "$WORKDIR/.siblings"
+mkdir "$WORKDIR/.siblings"
+# acme is itself a symlink, NOT a directory containing one.
+ln -sfn "$ATTACK_TARGET" "$WORKDIR/.siblings/acme"
+[ -L "$WORKDIR/.siblings/acme" ] || { echo "  pre-check: acme should be a symlink"; exit 1; }
+assert_redirect_defeated "3a (intermediate symlink)"
+
+echo "  scenario 3b: .siblings itself is a symlink to attacker dir..."
+rm -rf "$WORKDIR/.siblings"
+ln -sfn "$ATTACK_TARGET" "$WORKDIR/.siblings"
+[ -L "$WORKDIR/.siblings" ] || { echo "  pre-check: .siblings should be a symlink"; exit 1; }
+assert_redirect_defeated "3b (root symlink)"
+
+echo "  scenario 3c: .siblings/<owner>/<repo> is the symlink (leaf)..."
 rm -rf "$WORKDIR/.siblings"
 mkdir -p "$WORKDIR/.siblings/acme"
-ln -sfn "$ATTACK_TARGET" "$WORKDIR/.siblings/acme"   # acme is now a symlink
-
-materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/foo"
-
-# .siblings/acme should now be a real directory, not the attacker's symlink.
-if [ -L "$WORKDIR/.siblings/acme" ]; then
-    echo "FAIL: .siblings/acme is still a symlink — wipe didn't happen"
-    exit 1
-fi
-# foo should resolve to the real source, not under ATTACK_TARGET.
-got_foo=$(readlink "$WORKDIR/.siblings/acme/foo")
-if [ "$got_foo" != "$TMPDIR/foo" ]; then
-    echo "FAIL: foo symlink not pointing at real source after redirect attack"
-    exit 1
-fi
-# Attacker target must be untouched.
-if [ ! -e "$ATTACK_TARGET/sentinel" ]; then
-    echo "FAIL: attacker target sentinel was modified — write escaped workdir"
-    exit 1
-fi
-if [ -e "$ATTACK_TARGET/foo" ] || [ -L "$ATTACK_TARGET/foo" ]; then
-    echo "FAIL: attacker target gained a 'foo' entry — write escaped workdir"
-    exit 1
-fi
+# Leaf is a pre-existing symlink to attacker target — gets overwritten
+# by ln -sfn. (Less alarming than 3a/3b because the parent dir is real,
+# but still verify the attack target is untouched.)
+ln -sfn "$ATTACK_TARGET" "$WORKDIR/.siblings/acme/foo"
+[ -L "$WORKDIR/.siblings/acme/foo" ] || { echo "  pre-check: foo should be a symlink"; exit 1; }
+assert_redirect_defeated "3c (leaf symlink)"
 
 # --- scenario 4: re-runs are idempotent --------------------------------
 echo "  scenario 4: idempotent re-run..."
