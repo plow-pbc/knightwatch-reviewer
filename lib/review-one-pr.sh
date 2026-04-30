@@ -582,7 +582,82 @@ if [ -n "$DEAD_CODE_CMD" ] && [ -n "$KID_INPUT_DIFF" ]; then
     fi
 fi
 
-log "$PR_ID: diff is ${#KID_INPUT_DIFF} bytes"
+# ---- deterministic pre-checks (auto-nits) ----
+# Pre-checks that produce findings the LLM never sees. Each check's
+# stdout (when non-empty AND the helper exited 1) becomes one [nit] in
+# a "Pre-merge auto-checks" section appended to the posted comment — so
+# they cannot be hidden by severity-prioritization or skipped by
+# aggregator judgment.
+#
+# Helper contract is TRI-STATE — load-bearing per PR #27 round-2 review.
+# Collapsing checker errors into "gap" silently publishes wrong review
+# text when the helper's inputs are broken (bad PROJECT_DIR, malformed
+# config file, refused symlink), so a new check MUST distinguish:
+#
+#     exit 0 — check passed (no nit).            stdout: empty.
+#     exit 1 — real gap.                         stdout: nit text.
+#     exit 2 — checker could not determine.      stderr: error details.
+#
+# Adding a new deterministic check is one block here. Capture stderr +
+# exit code separately and switch on the rc — never `2>/dev/null` the
+# stderr away or treat any non-empty stdout as a nit:
+#
+#     CHECK_STDERR=$(mktemp)
+#     CHECK_OUT=$(cd "$REPO_DIR" && bash -c "$NEW_CHECK_CMD" 2>"$CHECK_STDERR")
+#     CHECK_RC=$?
+#     case $CHECK_RC in
+#         0) ;;                                              # pass: no nit
+#         1) AUTO_NITS+=("**Check name.** … $CHECK_OUT") ;;  # gap: post nit
+#         *) log "$PR_ID: <check> CHECKER ERROR (rc=$CHECK_RC) — $(cat "$CHECK_STDERR")" ;;
+#     esac
+#     rm -f "$CHECK_STDERR"
+#
+# See the strict-typing block below for the canonical implementation.
+#
+# OPERATOR_NAME is overridable via config.env so a forked install can
+# rename "Sam" without touching the strings below.
+OPERATOR_NAME="${OPERATOR_NAME:-Sam}"
+OPERATOR_HANDLE="${OPERATOR_HANDLE:-$BOT_USER}"
+AUTO_NITS=()
+
+# REVIEWER_LIB_DIR is referenced by the per-repo cmds in repos.conf
+# (which call $REVIEWER_LIB_DIR/checks/<lang>-strict-typing.sh). Export
+# so it propagates into the `bash -c "$cmd"` subshells below.
+export REVIEWER_LIB_DIR="$_LIB_DIR"
+
+# Strict-typing pre-check. Per-repo cmd from repos.conf delegates to
+# lib/checks/<lang>-strict-typing.sh. Helper contract is tri-state:
+#   exit 0 — strict mode enforced (no nit).
+#   exit 1 — gap (stdout has gap text → posted as a [nit]).
+#   exit 2 — checker error (stderr has details → logged loud, no nit).
+# The tri-state is load-bearing: collapsing checker errors into "gap"
+# silently publishes wrong review text on broken inputs (bad PROJECT_DIR,
+# malformed config file, refused symlink). Fail-loud here keeps the
+# deterministic section honest.
+STRICT_TYPING_CMD="${STRICT_TYPING_CMDS[$REPO]:-}"
+if [ -n "$STRICT_TYPING_CMD" ]; then
+    STRICT_STDERR=$(mktemp)
+    STRICT_GAP=$(cd "$REPO_DIR" && bash -c "$STRICT_TYPING_CMD" 2>"$STRICT_STDERR")
+    STRICT_RC=$?
+    case $STRICT_RC in
+        0) ;;
+        1)
+            log "$PR_ID: strict-typing gap detected — $STRICT_GAP"
+            # Sassy by design: ${OPERATOR_NAME} carries the responsibility-
+            # deflection so an author who disagrees has someone to argue
+            # with, and the name is a config var so a forked install can
+            # rename without touching this string.
+            AUTO_NITS+=("**Strict typing.** ${OPERATOR_NAME} stubbornly wants strict mode on every typed-language project. ${STRICT_GAP}. (I guess I agree, but blame ${OPERATOR_NAME}.)")
+            ;;
+        *)
+            STRICT_ERR=$(cat "$STRICT_STDERR")
+            log "$PR_ID: strict-typing CHECKER ERROR (rc=$STRICT_RC) — ${STRICT_ERR:-no stderr}"
+            ;;
+    esac
+    rm -f "$STRICT_STDERR"
+fi
+
+log "$PR_ID: diff is ${#KID_INPUT_DIFF} bytes — auto-nits: ${#AUTO_NITS[@]}"
 
 # ---- search-roots for cross-repo grep ----
 # Single worker-owned coverage-state seam: every sibling repo is fully
@@ -831,10 +906,24 @@ if [ -z "$COMMENT_BODY" ]; then
     rm -rf "$REPO_DIR"
     exit 1
 fi
+# Render deterministic auto-nits as a "Pre-merge auto-checks" section
+# below the LLM body. Each AUTO_NITS entry is one [nit]; the section is
+# omitted entirely when the array is empty so a clean PR doesn't show
+# the heading on its own. Goes BELOW the LLM-aggregated review so the
+# specialist findings (which are the meat) come first; the auto-checks
+# are nits the reader scans last.
+AUTO_NITS_SECTION=""
+if [ "${#AUTO_NITS[@]}" -gt 0 ]; then
+    AUTO_NITS_SECTION=$'\n\n**Pre-merge auto-checks** — deterministic, never hidden by LLM judgment.\n\n'
+    for nit in "${AUTO_NITS[@]}"; do
+        AUTO_NITS_SECTION+="- [nit] ${nit}"$'\n'
+    done
+fi
+
 # Leading HTML comment is the orchestrator's discriminator for "this is
 # one of our auto-posts" — see the corresponding jq filter in review.sh.
 COMMENT_BODY="$BOT_AUTO_POST_MARKER
-$COMMENT_BODY
+$COMMENT_BODY${AUTO_NITS_SECTION}
 
 ---
 

@@ -65,6 +65,10 @@ test:
     bash lib/tests/review-header-smoke.sh
 
     echo ""
+    echo "=== strict-typing checks smoke test ==="
+    bash lib/tests/strict-typing-checks-smoke.sh
+
+    echo ""
     echo "=== orchestrator skip smoke test ==="
     bash lib/tests/orchestrator-skip-smoke.sh
 

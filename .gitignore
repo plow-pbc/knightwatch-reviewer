@@ -18,6 +18,8 @@ lib/*
 !lib/*.sh
 !lib/tests/
 !lib/tests/*.sh
+!lib/checks/
+!lib/checks/*.sh
 lib64/
 parts/
 sdist/
