@@ -88,6 +88,9 @@ done < <(grep -h "^ExecStart=" "${service_units[@]}" | sort -u)
 [[ ${#SCRIPTS[@]} -ge 1 ]] || fail "no scripts discovered from ExecStart= directives — check systemd/*.service shape"
 
 DIRS=(lib contexts docs prompts)
+# Tracked-repo manifest. Sourced by every script that needs the REPOS
+# array or KID_PATHS map — single source of truth, host-editable.
+CONFIG_FILES=(repos.conf)
 
 mkdir -p "$INSTALL_DIR"
 for script in "${SCRIPTS[@]}"; do
@@ -100,7 +103,12 @@ for d in "${DIRS[@]}"; do
   [[ -d "$src" ]] || fail "missing repo dir: $src"
   ln -snf "$src" "$INSTALL_DIR/$d"
 done
-ok "symlinked ${#SCRIPTS[@]} scripts + ${#DIRS[@]} dirs into $INSTALL_DIR"
+for f in "${CONFIG_FILES[@]}"; do
+  src="$REPO_DIR/$f"
+  [[ -f "$src" ]] || fail "missing repo config file: $src"
+  ln -snf "$src" "$INSTALL_DIR/$f"
+done
+ok "symlinked ${#SCRIPTS[@]} scripts + ${#DIRS[@]} dirs + ${#CONFIG_FILES[@]} config file(s) into $INSTALL_DIR"
 
 # --- 2. systemd units -------------------------------------------------------
 shopt -s nullglob

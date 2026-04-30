@@ -43,20 +43,19 @@ set -o pipefail
 export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
 
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
-# Defaults FIRST, then config.env so an operator override actually wins —
-# matches review.sh's order. The previous order (config.env then
-# REPOS=(...)) silently clobbered any operator override of REPOS, leaving
-# /srosro-approve covering a different repo set than review.sh did.
-REPOS=("cncorp/plow" "srosro/tkmx-client" "srosro/tkmx-server" "srosro/knightwatch-reviewer" "srosro/vibe-engineering")
 APPROVES_SEEN_FILE="${APPROVES_SEEN_FILE:-$STATE_DIR/approves-seen.json}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/approve.log}"
-[ -f "$STATE_DIR/config.env" ] && . "$STATE_DIR/config.env"
+# Tracked-repo manifest (single source of truth in repos.conf). The
+# shared loader at lib/tracked-repos.sh is the ONE seam every consumer
+# goes through.
+REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
+. "$REVIEWER_LIB_DIR/tracked-repos.sh"
+[ ${#REPOS[@]} -ge 1 ] || { echo "FATAL: no tracked repos — populate $STATE_DIR/repos.conf or set REPOS in config.env" >&2; exit 1; }
 BOT_USER="${BOT_USER:-srosro}"
 BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
 
 # is_trusted_repo_author() — push-access trust gate, shared with review.sh.
 # seen_get / seen_set — flock + atomic-rename, shared with learn-from-replies.sh.
-REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 . "$REVIEWER_LIB_DIR/auth.sh"
 . "$REVIEWER_LIB_DIR/state-io.sh"
 

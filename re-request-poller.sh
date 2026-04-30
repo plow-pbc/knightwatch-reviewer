@@ -13,12 +13,15 @@ set -u
 export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
 
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
-[ -f "$STATE_DIR/config.env" ] && . "$STATE_DIR/config.env"
-BOT_USER="${BOT_USER:-srosro}"
-
 LOG_FILE="${LOG_FILE:-$STATE_DIR/re-request.log}"
 SEEN_FILE="${SEEN_FILE:-$STATE_DIR/re-request-seen.json}"
-REPOS=("cncorp/plow" "srosro/tkmx-client" "srosro/tkmx-server" "srosro/knightwatch-reviewer" "srosro/vibe-engineering")
+# Tracked-repo manifest (single source of truth in repos.conf). The
+# shared loader at lib/tracked-repos.sh is the ONE seam every consumer
+# goes through.
+REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
+. "$REVIEWER_LIB_DIR/tracked-repos.sh"
+[ ${#REPOS[@]} -ge 1 ] || { echo "FATAL: no tracked repos — populate $STATE_DIR/repos.conf or set REPOS in config.env" >&2; exit 1; }
+BOT_USER="${BOT_USER:-srosro}"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"; }
 

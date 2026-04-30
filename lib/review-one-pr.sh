@@ -74,7 +74,11 @@ REPOS_DIR="${REPOS_DIR:-$STATE_DIR/repos}"
 # helper doesn't inherit that namespace and fails to find cwds under /tmp.
 WORKDIRS_DIR="${WORKDIRS_DIR:-$STATE_DIR/workdirs}"
 
-[ -f "$STATE_DIR/config.env" ] && . "$STATE_DIR/config.env"
+# Tracked-repo manifest (REPOS array + KID_PATHS assoc array). Bash
+# arrays don't survive the process boundary between review.sh and this
+# worker, so we re-source via the shared loader. Loader also picks up
+# config.env (the legacy override seam).
+. "$_LIB_DIR_EARLY/tracked-repos.sh"
 BOT_USER="${BOT_USER:-srosro}"
 BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
 
@@ -433,14 +437,12 @@ STANDARDS+=$'\n\n'
 # ---- kid prior-art ----
 PRIOR_ART=""
 KID_FLAG="$STATE_DIR/kid-last-failure"
-case "$REPO" in
-    "cncorp/plow")                 KID_PROJECT_PATH="$HOME/Hacking/plow-kid" ;;
-    "srosro/tkmx-client")          KID_PROJECT_PATH="$HOME/Hacking/tkmx-client" ;;
-    "srosro/tkmx-server")          KID_PROJECT_PATH="$HOME/Hacking/tkmx-server" ;;
-    "srosro/knightwatch-reviewer") KID_PROJECT_PATH="$HOME/Hacking/knightwatch-reviewer" ;;
-    "srosro/vibe-engineering")     KID_PROJECT_PATH="$HOME/Hacking/vibe-engineering" ;;
-    *)                             KID_PROJECT_PATH="" ;;
-esac
+# Per-repo kid index path. KID_PATHS was loaded at file scope via the
+# tracked-repos.sh loader (Bash arrays don't survive the process
+# boundary between review.sh and this worker; the loader pre-declares
+# KID_PATHS empty so the lookup is safe under `set -u` even if
+# repos.conf is absent in a test sandbox).
+KID_PROJECT_PATH="${KID_PATHS[$REPO]:-}"
 if [ -n "$KID_PROJECT_PATH" ] && [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -n "$KID_INPUT_DIFF" ]; then
     export KID_PROJECT="$KID_PROJECT_PATH"
     KID_STDERR=$(mktemp)

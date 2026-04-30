@@ -42,6 +42,14 @@ mkdir -p "$STATE_DIR" "$REPOS_DIR" "$WORKDIRS_DIR"
 echo "{}" > "$STATE_FILE"
 export BOT_USER="srosro"
 
+# Sandboxed repos.conf — review.sh fails loud now if no tracked repos
+# are defined. The gh stub below returns a PR for "cncorp/plow" only,
+# so the test must declare exactly that repo as tracked.
+cat > "$STATE_DIR/repos.conf" <<'CONF'
+REPOS=("cncorp/plow")
+declare -A KID_PATHS=()
+CONF
+
 # Sandbox HOME. review.sh's first action is `export PATH="$HOME/.local/bin:
 # $HOME/.npm-global/bin:$PATH"`, so to make our stubbed `gh` actually
 # resolve we have to either (a) put the stub at $HOME/.local/bin/gh under
@@ -62,7 +70,19 @@ mkdir -p "$HOME/.local/bin"
 cat > "$HOME/.local/bin/gh" <<'STUB'
 #!/bin/bash
 if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
-    if [[ "$*" == *"cncorp/plow"* ]]; then
+    # Parse --repo arg by name. Substring matching on $* would
+    # incorrectly fire for both "cncorp/plow" and "cncorp/plow-content"
+    # (or any future cncorp/plow-* tracked repo) and double the
+    # dispatch count under scenarios that expect exactly 1.
+    repo=""
+    for ((i=1; i<=$#; i++)); do
+        if [ "${!i}" = "--repo" ]; then
+            j=$((i+1))
+            repo="${!j}"
+            break
+        fi
+    done
+    if [ "$repo" = "cncorp/plow" ]; then
         echo '[{"number":1,"title":"Test PR","headRefName":"feat/test","headRefOid":"abc123"}]'
     else
         echo '[]'
@@ -100,9 +120,10 @@ chmod +x "$HOME/.local/bin/gh"
 # scenarios can assert presence/absence) instead of running a review.
 export REVIEWER_LIB_DIR="$TMPDIR/lib"
 mkdir -p "$REVIEWER_LIB_DIR"
-cp "$PROJECT_ROOT/lib/state-io.sh" "$REVIEWER_LIB_DIR/state-io.sh"
-cp "$PROJECT_ROOT/lib/auth.sh"     "$REVIEWER_LIB_DIR/auth.sh"
-cp "$PROJECT_ROOT/lib/locking.sh"  "$REVIEWER_LIB_DIR/locking.sh"
+cp "$PROJECT_ROOT/lib/state-io.sh"      "$REVIEWER_LIB_DIR/state-io.sh"
+cp "$PROJECT_ROOT/lib/auth.sh"          "$REVIEWER_LIB_DIR/auth.sh"
+cp "$PROJECT_ROOT/lib/locking.sh"       "$REVIEWER_LIB_DIR/locking.sh"
+cp "$PROJECT_ROOT/lib/tracked-repos.sh" "$REVIEWER_LIB_DIR/tracked-repos.sh"
 cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<'WORKER'
 #!/bin/bash
 # Args from review.sh: REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR

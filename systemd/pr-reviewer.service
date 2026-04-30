@@ -31,7 +31,11 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 ProtectHome=read-only
-ReadWritePaths=/home/odio/.pr-reviewer /home/odio/.codex /home/odio/.cache /home/odio/.local /home/odio/.config /home/odio/.docker /home/odio/Hacking/plow-kid /home/odio/Hacking/tkmx-client /home/odio/Hacking/tkmx-server /home/odio/Hacking/knightwatch-reviewer /home/odio/Hacking/vibe-engineering
+# ReadWritePaths covers ONLY paths the bot writes to. Tracked-repo
+# checkouts under ~/Hacking/<slug>/ are read for kid-prior-art only;
+# reads stay allowed by ProtectHome=read-only without explicit entries.
+# Adding a new tracked repo no longer requires editing this list.
+ReadWritePaths=/home/odio/.pr-reviewer /home/odio/.codex /home/odio/.cache /home/odio/.local /home/odio/.config /home/odio/.docker
 
 [Install]
 WantedBy=multi-user.target

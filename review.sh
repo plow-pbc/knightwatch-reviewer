@@ -8,13 +8,18 @@ export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 STATE_FILE="${STATE_FILE:-$STATE_DIR/state.json}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/orchestrator.log}"
-REPOS=("cncorp/plow" "srosro/tkmx-client" "srosro/tkmx-server" "srosro/knightwatch-reviewer" "srosro/vibe-engineering")
 REPOS_DIR="${REPOS_DIR:-$STATE_DIR/repos}"
 WORKDIRS_DIR="${WORKDIRS_DIR:-$STATE_DIR/workdirs}"
 STABLE_SECS="${STABLE_SECS:-3600}"
 MAX_CONCURRENT="${MAX_CONCURRENT:-8}"
 
-[ -f "$STATE_DIR/config.env" ] && . "$STATE_DIR/config.env"
+# Tracked-repo manifest (REPOS array + KID_PATHS assoc array). Single
+# source of truth at repos.conf — adding a repo only edits one file.
+# config.env can still REPOS=(...) override on top. The shared loader
+# at lib/tracked-repos.sh is the ONE seam every consumer goes through.
+REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
+. "$REVIEWER_LIB_DIR/tracked-repos.sh"
+[ ${#REPOS[@]} -ge 1 ] || { echo "FATAL: no tracked repos — populate $STATE_DIR/repos.conf or set REPOS in config.env" >&2; exit 1; }
 BOT_USER="${BOT_USER:-srosro}"
 # Hidden HTML-comment marker prepended to every auto-post by this repo
 # (review ack, final review, learn-from-replies ack). The orchestrator's
@@ -24,9 +29,9 @@ BOT_USER="${BOT_USER:-srosro}"
 # catches drift.
 BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
 
-# Source helpers. Use $REVIEWER_LIB_DIR if set (for sandboxed smoke tests),
-# else fall back to ~/.pr-reviewer/lib (the production symlink).
-REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
+# Source helpers. $REVIEWER_LIB_DIR is the seam used both for sandboxed
+# smoke tests and the production symlink ($HOME/.pr-reviewer/lib);
+# tracked-repos.sh above already resolved it.
 . "$REVIEWER_LIB_DIR/state-io.sh"
 . "$REVIEWER_LIB_DIR/auth.sh"
 
