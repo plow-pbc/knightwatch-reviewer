@@ -22,8 +22,15 @@
 #
 # Output format:
 #   # coverage: full | partial | same-repo-only
-#   <repo-slug> <status> [<absolute-path>]    (path only when status=included)
+#   <repo-slug> <status> [.siblings/<repo-slug>]    (path only when status=included)
 #   ...
+#
+# `included` lines reference the workdir-relative symlink under
+# .siblings/<repo-slug> rather than the on-host absolute path. This
+# keeps host filesystem paths from leaking into PR comments when a
+# specialist cites a sibling-repo file. The symlinks are materialized
+# by lib/sibling-symlinks.sh, called from review-one-pr.sh after the
+# workdir is checked out.
 #
 # coverage: full        — every sibling that has a SOURCE_PATHS entry is `included`.
 # coverage: same-repo-only — zero siblings with status=included.
@@ -89,7 +96,7 @@ stage_search_roots() {
         fi
         case "$perm" in
             admin|write|maintain)
-                body+="$sibling_repo included $sibling_path"$'\n'
+                body+="$sibling_repo included .siblings/$sibling_repo"$'\n'
                 included=$((included + 1))
                 ;;
             *)

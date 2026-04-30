@@ -88,8 +88,8 @@ MOCK_PERMS="acme/self:write,acme/foo:write,acme/bar:admin"
 OUT=$(stage_search_roots "acme/self" "alice")
 REPOS=("${saved_repos[@]}")
 assert_contains "scenario 1: header" "# coverage: full" "$OUT"
-assert_contains "scenario 1: foo included" "acme/foo included $TMPDIR/repos/foo" "$OUT"
-assert_contains "scenario 1: bar included" "acme/bar included $TMPDIR/repos/bar" "$OUT"
+assert_contains "scenario 1: foo included" "acme/foo included .siblings/acme/foo" "$OUT"
+assert_contains "scenario 1: bar included" "acme/bar included .siblings/acme/bar" "$OUT"
 
 # --- scenario 2: partial — one excluded ---------------------------------------
 echo "  scenario 2: partial coverage..."
@@ -101,7 +101,7 @@ REPOS=("${saved_repos[@]}")
 assert_contains "scenario 2: header partial" "# coverage: partial" "$OUT"
 assert_contains "scenario 2: included=1" "included=1" "$OUT"
 assert_contains "scenario 2: excluded=1" "excluded=1" "$OUT"
-assert_contains "scenario 2: foo included" "acme/foo included $TMPDIR/repos/foo" "$OUT"
+assert_contains "scenario 2: foo included" "acme/foo included .siblings/acme/foo" "$OUT"
 assert_contains "scenario 2: bar excluded" "acme/bar excluded" "$OUT"
 
 # --- scenario 3: untrusted everywhere -> same-repo-only -----------------------
