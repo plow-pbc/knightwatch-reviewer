@@ -10,11 +10,9 @@ Scope:
 - Forks in the road: when the PR commits to an architecture (transport, storage, auth, deployment model), note the tradeoff and whether the choice fits the roadmap.
 - Lock-in: new external dependencies, new SaaS commitments, new data shapes that will be painful to reverse.
 - Layering: violations of existing boundaries (e.g. a handler reaching into a repo layer that was previously isolated).
-- Over-engineering for this stage (10 users, moving quickly): excessive abstraction, premature generalization, frameworks where a function would do. **Note:** "more compute / more latency to delete a class of special cases" is *not* over-engineering — it is the trade we want at this stage. The thing being optimized is engineer-hours, not CPU.
+- Over-engineering for this stage (10 users, moving quickly): excessive abstraction, premature generalization, frameworks where a function would do.
 - Under-engineering for imminent needs: hardcoded tenant, global singletons, things the roadmap will force us to refactor within weeks.
 - **Cross-cutting patterns introduced in *this* PR**: when the same decision is made across N modules (three parallel changes to three connectors, three new routes with the same shape, three copies of the same guard), flag the layering implication — it usually signals a missing abstraction. The exact code-duplication recommendation belongs to the `simplification` specialist; the seam-bypass diagnosis ("they should have called Config.load, not os.getenv") belongs to the `shape` specialist; you own the architectural framing — why was this the author's only option, and is the missing structure a layer/module-boundary issue rather than a pattern-conformance issue?
-
-**You are explicitly allowed to file non-blocking findings of the form: "this is fine to ship today, but file an issue to migrate before X happens."** That is often the most valuable finding this specialist produces — mark those as `low` or `medium`, not `blocking`.
 
 Out of scope: specific security bugs, concurrency bugs, test coverage.
 
