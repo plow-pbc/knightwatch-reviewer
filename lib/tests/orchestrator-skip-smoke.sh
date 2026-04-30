@@ -88,17 +88,27 @@ if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
         echo '[]'
     fi
 elif [ "$1" = "api" ]; then
-    if [[ "$2" == */issues/*/comments* ]]; then
+    # The endpoint URL can land at any positional arg — `gh api URL` and
+    # `gh api --paginate URL` both reach the orchestrator. Walk all args
+    # and match by URL shape rather than position, so adding flags
+    # (--paginate, --jq, --method) doesn't require stub edits.
+    url=""
+    for arg in "$@"; do
+        case "$arg" in
+            repos/*) url="$arg"; break ;;
+        esac
+    done
+    if [[ "$url" == */issues/*/comments* ]]; then
         cat "$MOCK_COMMENTS_FILE"
-    elif [[ "$2" == */pulls/*/commits* ]]; then
+    elif [[ "$url" == */pulls/*/commits* ]]; then
         # Old date so cooldown is bypassed if it ever runs. None of these
         # scenarios should reach the cooldown branch (all are same-SHA;
         # the skip happens before cooldown), but stub it anyway so a
         # regression that leaks through doesn't hang on a missing stub.
         echo "2020-01-01T00:00:00Z"
-    elif [[ "$2" == */collaborators/*/permission ]]; then
+    elif [[ "$url" == */collaborators/*/permission ]]; then
         # Extract the username segment between "collaborators/" and "/permission".
-        user="${2##*/collaborators/}"
+        user="${url##*/collaborators/}"
         user="${user%/permission}"
         for trusted in ${MOCK_TRUSTED_USERS:-}; do
             if [ "$user" = "$trusted" ]; then
@@ -124,6 +134,7 @@ cp "$PROJECT_ROOT/lib/state-io.sh"      "$REVIEWER_LIB_DIR/state-io.sh"
 cp "$PROJECT_ROOT/lib/auth.sh"          "$REVIEWER_LIB_DIR/auth.sh"
 cp "$PROJECT_ROOT/lib/locking.sh"       "$REVIEWER_LIB_DIR/locking.sh"
 cp "$PROJECT_ROOT/lib/tracked-repos.sh" "$REVIEWER_LIB_DIR/tracked-repos.sh"
+cp "$PROJECT_ROOT/lib/gh-comments.sh"   "$REVIEWER_LIB_DIR/gh-comments.sh"
 cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<'WORKER'
 #!/bin/bash
 # Args from review.sh: REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR

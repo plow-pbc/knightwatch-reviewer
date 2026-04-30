@@ -40,6 +40,7 @@ BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-pos
 # seen_get / seen_set + log — flock + atomic-rename, shared with approve-from-replies.sh.
 . "$REVIEWER_LIB_DIR/auth.sh"
 . "$REVIEWER_LIB_DIR/state-io.sh"
+. "$REVIEWER_LIB_DIR/gh-comments.sh"
 
 [ -f "$REPLIES_SEEN_FILE" ] || echo '{}' > "$REPLIES_SEEN_FILE"
 
@@ -66,11 +67,12 @@ for REPO in "${REPOS[@]}"; do
     }
 
     for PR_NUM in $PR_LIST; do
-        # --paginate so /srosro-memorize requests on long PR threads (>30
-        # issue comments) don't silently fall off the end of page 1.
-        # On fetch failure, log loud + skip this PR for this tick rather
-        # than silently treating "API broken" as "no comments".
-        COMMENTS=$(gh api --paginate "repos/$REPO/issues/$PR_NUM/comments" 2>/dev/null | jq -s 'add // []') || {
+        # Pagination correctness lives in lib/gh-comments.sh (shared with
+        # review.sh + approve-from-replies.sh) so any future caller of
+        # this endpoint can't reinvent the bug. On fetch failure, log
+        # loud + skip this PR for this tick rather than silently treating
+        # "API broken" as "no comments".
+        COMMENTS=$(fetch_issue_comments "$REPO" "$PR_NUM") || {
             log "$REPO#$PR_NUM: comments fetch failed — skipping this PR for this tick"
             continue
         }
