@@ -1,21 +1,14 @@
 #!/bin/bash
-# Smoke for lib/search-roots.sh — fences the coverage-state seam that
-# the dead-code-search and consumers prompts read from.
+# Smoke for lib/search-roots.sh — whitelist-only contract.
 #
-# Each scenario stubs `gh api` differently to drive stage_search_roots
-# down a distinct path:
-#   1. trusted on every sibling, every checkout exists -> full
-#   2. trusted on some, untrusted on others -> partial with explicit excluded
-#   3. untrusted on every sibling -> same-repo-only with excluded counts
-#   4. one sibling missing on disk -> reported as `missing`, not silently dropped
-#   5. gh api fails for one sibling -> reported as `lookup-error`, not collapsed into excluded
-#   6. untrusted on $REPO -> outer gate short-circuits with NO per-sibling lines
-#   7. gh api fails on $REPO -> reported as base-repo `lookup-error`, NOT collapsed into untrusted
-#
-# Each scenario asserts BOTH the coverage header AND the per-sibling
-# classification lines. That's the whole point of the seam — both prompts
-# rely on the per-sibling status to qualify their verdicts, so a coverage
-# header alone (or a stripped-down list) is not enough.
+# Whitelist = SOURCE_PATHS in repos.conf. If a sibling slug has an
+# entry there, the operator has affirmed it's safe to reference in
+# this base repo's PR comments. No runtime auth check, no per-sibling
+# permission lookup. Two statuses:
+#   included .siblings/<slug>   — slug in SOURCE_PATHS AND its
+#                                  checkout exists on disk
+#   missing                     — slug in SOURCE_PATHS BUT its
+#                                  checkout absent on disk
 
 set -euo pipefail
 
@@ -37,33 +30,6 @@ declare -A SOURCE_PATHS=(
     ["acme/qux"]="$TMPDIR/repos/qux"
 )
 
-# `gh` stub — table-driven from MOCK_PERMS. Format:
-#   MOCK_PERMS="acme/foo:write,acme/bar:read"
-# missing key -> empty stdout + non-zero exit (lookup-error).
-# Special key prefix `ERR:` forces non-zero exit even when present.
-export PATH="$TMPDIR/bin:$PATH"
-mkdir -p "$TMPDIR/bin"
-cat > "$TMPDIR/bin/gh" <<'STUB'
-#!/bin/bash
-# We only support: gh api repos/<repo>/collaborators/<user>/permission --jq .permission
-if [ "$1" != "api" ] || [[ "$2" != repos/*/collaborators/*/permission ]]; then
-    echo "stub: unexpected gh invocation: $*" >&2; exit 99
-fi
-endpoint="$2"
-repo="${endpoint#repos/}"; repo="${repo%/collaborators/*}"
-IFS=',' read -ra entries <<< "${MOCK_PERMS:-}"
-for e in "${entries[@]}"; do
-    key="${e%%:*}"; val="${e#*:}"
-    if [ "$key" = "$repo" ]; then
-        if [[ "$val" == ERR:* ]]; then exit 1; fi
-        printf '%s\n' "$val"
-        exit 0
-    fi
-done
-exit 1
-STUB
-chmod +x "$TMPDIR/bin/gh"
-
 . "$PROJECT_ROOT/lib/search-roots.sh"
 
 assert_contains() {
@@ -76,129 +42,24 @@ assert_contains() {
     fi
 }
 
-export MOCK_PERMS
-
-# --- scenario 1: trusted on every sibling, all checkouts exist -> full ----------
-# (We narrow REPOS for this scenario so all remaining siblings have
-# checkouts. Easier than maintaining a 4th checkout dir.)
-echo "  scenario 1: full coverage..."
+# --- scenario 1: all whitelisted siblings have checkouts on disk -----
+echo "  scenario 1: all whitelisted siblings present..."
 saved_repos=("${REPOS[@]}")
 REPOS=("acme/self" "acme/foo" "acme/bar")
-MOCK_PERMS="acme/self:write,acme/foo:write,acme/bar:admin"
-OUT=$(stage_search_roots "acme/self" "alice")
+OUT=$(stage_search_roots "acme/self")
 REPOS=("${saved_repos[@]}")
-assert_contains "scenario 1: header" "# coverage: full" "$OUT"
+assert_contains "scenario 1: header full" "# coverage: full" "$OUT"
 assert_contains "scenario 1: foo included" "acme/foo included .siblings/acme/foo" "$OUT"
 assert_contains "scenario 1: bar included" "acme/bar included .siblings/acme/bar" "$OUT"
 
-# --- scenario 2: partial — one excluded ---------------------------------------
-echo "  scenario 2: partial coverage..."
-saved_repos=("${REPOS[@]}")
-REPOS=("acme/self" "acme/foo" "acme/bar")
-MOCK_PERMS="acme/self:write,acme/foo:write,acme/bar:read"
-OUT=$(stage_search_roots "acme/self" "alice")
-REPOS=("${saved_repos[@]}")
+# --- scenario 2: one whitelisted sibling missing on disk -------------
+echo "  scenario 2: one whitelisted sibling missing on disk..."
+OUT=$(stage_search_roots "acme/self")
 assert_contains "scenario 2: header partial" "# coverage: partial" "$OUT"
-assert_contains "scenario 2: included=1" "included=1" "$OUT"
-assert_contains "scenario 2: excluded=1" "excluded=1" "$OUT"
+assert_contains "scenario 2: included=2" "included=2" "$OUT"
+assert_contains "scenario 2: missing=1" "missing=1" "$OUT"
 assert_contains "scenario 2: foo included" "acme/foo included .siblings/acme/foo" "$OUT"
-assert_contains "scenario 2: bar excluded" "acme/bar excluded" "$OUT"
+assert_contains "scenario 2: bar included" "acme/bar included .siblings/acme/bar" "$OUT"
+assert_contains "scenario 2: qux missing" "acme/qux missing" "$OUT"
 
-# --- scenario 3: untrusted everywhere -> same-repo-only -----------------------
-echo "  scenario 3: same-repo-only via excluded..."
-saved_repos=("${REPOS[@]}")
-REPOS=("acme/self" "acme/foo" "acme/bar")
-MOCK_PERMS="acme/self:write,acme/foo:read,acme/bar:read"
-OUT=$(stage_search_roots "acme/self" "alice")
-REPOS=("${saved_repos[@]}")
-assert_contains "scenario 3: header same-repo-only" "# coverage: same-repo-only" "$OUT"
-assert_contains "scenario 3: excluded=2" "excluded=2" "$OUT"
-assert_contains "scenario 3: foo excluded" "acme/foo excluded" "$OUT"
-assert_contains "scenario 3: bar excluded" "acme/bar excluded" "$OUT"
-
-# --- scenario 4: missing checkout dir reported, not silently skipped ---------
-echo "  scenario 4: missing checkout..."
-MOCK_PERMS="acme/self:write,acme/foo:write,acme/bar:write,acme/qux:write"
-OUT=$(stage_search_roots "acme/self" "alice")
-assert_contains "scenario 4: header partial" "# coverage: partial" "$OUT"
-assert_contains "scenario 4: missing=1" "missing=1" "$OUT"
-assert_contains "scenario 4: qux missing" "acme/qux missing" "$OUT"
-# qux must NOT be listed as included (the previous bug).
-if printf '%s' "$OUT" | grep -q "acme/qux included"; then
-    echo "FAIL: scenario 4: qux must not be included when its checkout is absent"
-    exit 1
-fi
-
-# --- scenario 5: lookup-error distinct from excluded --------------------------
-echo "  scenario 5: lookup-error..."
-saved_repos=("${REPOS[@]}")
-REPOS=("acme/self" "acme/foo" "acme/bar")
-# foo trusted; bar's gh call exits non-zero (network/rate-limit simulated).
-MOCK_PERMS="acme/self:write,acme/foo:write,acme/bar:ERR:network"
-OUT=$(stage_search_roots "acme/self" "alice")
-REPOS=("${saved_repos[@]}")
-assert_contains "scenario 5: header partial" "# coverage: partial" "$OUT"
-assert_contains "scenario 5: lookup-error=1" "lookup-error=1" "$OUT"
-assert_contains "scenario 5: bar lookup-error" "acme/bar lookup-error" "$OUT"
-# A lookup-error sibling must NOT be tagged as excluded — that's the
-# whole point of the seam (collapsing those was the bug we just fixed).
-if printf '%s' "$OUT" | grep -q "acme/bar excluded"; then
-    echo "FAIL: scenario 5: lookup-error must not be reported as excluded"
-    exit 1
-fi
-
-# --- scenario 6: outer trust gate — untrusted on $REPO short-circuits ---------
-# Even when the author has push on every sibling, an untrusted-on-$REPO
-# author must NOT see any sibling listed as `included` — because the
-# review comment lands on $REPO's PR (publicly readable) and would
-# expose sibling data to every $REPO reader. This is the regression
-# class the bot caught in round 4: dropping the outer gate during the
-# stage_search_roots extraction. Lock it down here.
-echo "  scenario 6: outer trust gate (untrusted on \$REPO)..."
-saved_repos=("${REPOS[@]}")
-REPOS=("acme/self" "acme/foo" "acme/bar")
-# Author has push on EVERY sibling, but READ on $REPO itself.
-MOCK_PERMS="acme/self:read,acme/foo:write,acme/bar:admin"
-OUT=$(stage_search_roots "acme/self" "alice")
-REPOS=("${saved_repos[@]}")
-assert_contains "scenario 6: header same-repo-only" "# coverage: same-repo-only" "$OUT"
-assert_contains "scenario 6: cites untrusted on \$REPO" "author untrusted on acme/self" "$OUT"
-# Critically: NO sibling line at all — not even excluded entries —
-# because the outer gate short-circuits before per-sibling classification.
-# Per-sibling lines start with a repo slug; marker line starts with `#`.
-if printf '%s' "$OUT" | grep -qE '^[^#].*(included|excluded|missing|lookup-error)'; then
-    echo "FAIL: scenario 6: untrusted-on-\$REPO must short-circuit; got per-sibling lines"
-    echo "  output: $OUT"
-    exit 1
-fi
-
-# --- scenario 7: base-repo lookup-error distinct from untrusted ---------------
-# Symmetric to scenario 5 (sibling lookup-error), but for $REPO itself.
-# When gh api fails on the base-repo permission check, the marker must
-# say "lookup-error on base repo" — NOT "author untrusted" — so prompts
-# can distinguish "we don't know" from "we know the author lacks access".
-echo "  scenario 7: base-repo lookup-error..."
-saved_repos=("${REPOS[@]}")
-REPOS=("acme/self" "acme/foo" "acme/bar")
-# Author is trusted on every sibling, but the base-repo permission
-# call fails (network/rate-limit simulated).
-MOCK_PERMS="acme/self:ERR:network,acme/foo:write,acme/bar:write"
-OUT=$(stage_search_roots "acme/self" "alice")
-REPOS=("${saved_repos[@]}")
-assert_contains "scenario 7: header same-repo-only" "# coverage: same-repo-only" "$OUT"
-assert_contains "scenario 7: lookup-error on base repo" "lookup-error on base repo acme/self" "$OUT"
-# Critically, the message must NOT say "untrusted" — that would collapse
-# lookup-error into untrusted again, the exact regression of round 5.
-if printf '%s' "$OUT" | grep -q "author untrusted on acme/self"; then
-    echo "FAIL: scenario 7: base-repo lookup-error must not be reported as untrusted"
-    exit 1
-fi
-# Still no per-sibling lines (outer gate short-circuits on lookup-error too).
-# Per-sibling lines start with a repo slug; marker line starts with `#`.
-if printf '%s' "$OUT" | grep -qE '^[^#].*(included|excluded|missing|lookup-error)'; then
-    echo "FAIL: scenario 7: base-repo short-circuit must skip per-sibling classification"
-    echo "  output: $OUT"
-    exit 1
-fi
-
-echo "  PASS (7 scenarios: full, partial-excluded, same-repo-only, missing-checkout, sibling-lookup-error, outer-gate-short-circuit, base-repo-lookup-error)"
+echo "  PASS (2 scenarios: full-coverage, missing-on-disk)"
