@@ -97,6 +97,9 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # --- diff-scope helper (filter merge-from-main out of the PR diff) ---
 . "$_LIB_DIR/diff-scope.sh"
 
+# --- sibling-repo symlinks (cross-repo grep without leaking host paths) ---
+. "$_LIB_DIR/sibling-symlinks.sh"
+
 # --- agent-failure + run-dir helpers ---
 . "$_LIB_DIR/agent-fallback.sh"
 . "$_LIB_DIR/run-dir.sh"
@@ -318,6 +321,14 @@ if ! git -C "$REPO_DIR" checkout -B "pr-$PR_NUM" "origin/$PR_BRANCH" --quiet; th
     rm -rf "$REPO_DIR"
     exit 1
 fi
+
+# Materialize sibling-repo symlinks under .siblings/<owner>/<repo>. This
+# lets the consumers + dead-code-search specialists grep cross-repo
+# without ever traversing the host filesystem outside the workdir, and
+# gives them a citation form (.siblings/<owner>/<repo>/<rel>) that the
+# path-scrub step normalizes back to <owner>/<repo>/<rel> for the public
+# review comment.
+materialize_sibling_symlinks "$REPO_DIR" "$REPO" SOURCE_PATHS
 
 # Fetch PR metadata once, here, so PR_AUTHOR is available before the env
 # mirror runs (the trust gate below depends on it). The full PR_DATA blob
