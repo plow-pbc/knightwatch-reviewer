@@ -91,6 +91,9 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # --- prompt-build helpers (sourced from lib/prompt-build.sh) ---
 . "$_LIB_DIR/prompt-build.sh"
 
+# --- search-roots coverage-state helper ---
+. "$_LIB_DIR/search-roots.sh"
+
 # --- agent-failure + run-dir helpers ---
 . "$_LIB_DIR/agent-fallback.sh"
 . "$_LIB_DIR/run-dir.sh"
@@ -511,13 +514,64 @@ elif [ -n "$KID_PROJECT_PATH" ] && [ -n "$KID_INPUT_DIFF" ]; then
     log "$PR_ID: kid index not yet built at $KID_PROJECT_PATH — skipping prior-art lookup"
 fi
 
+# ---- dead-code static-tool pre-pass ----
+# Mirrors the kid block above: per-repo command, graceful degrade on
+# failure, output to a scratch file consumed by ONE downstream step
+# (the dead-code-search LLM pre-pass). DEAD_CODE_CMDS was loaded at
+# file scope via the tracked-repos.sh loader; the pre-declared empty
+# assoc array makes the lookup safe under `set -u` even in sandboxes
+# without repos.conf.
+#
+# Filenames are PR-controlled — never let them flow through `eval`.
+# TOUCHED_FILES_ARR is a bash array; `bash -c "$cmd" -- "$@"` invokes
+# the per-repo command with files as positional args, which the
+# command references as "$@" (see repos.conf). Filenames containing
+# whitespace or shell metacharacters are quoted correctly.
+#
+# Exit-code policy: keep stdout regardless of exit. Some tools (vulture)
+# exit 1 *because* findings exist. Treat empty-stdout-AND-non-zero-exit
+# as the only degrade signal; non-empty stdout is data.
+DEAD_CODE_STATIC=""
+DEAD_CODE_CMD="${DEAD_CODE_CMDS[$REPO]:-}"
+if [ -n "$DEAD_CODE_CMD" ] && [ -n "$KID_INPUT_DIFF" ]; then
+    TOUCHED_FILES_ARR=()
+    while IFS= read -r f; do
+        [ -n "$f" ] && TOUCHED_FILES_ARR+=("$f")
+    done < <(printf '%s' "$KID_INPUT_DIFF" | grep -E '^\+\+\+ b/' | sed 's|^+++ b/||')
+    if [ "${#TOUCHED_FILES_ARR[@]}" -gt 0 ]; then
+        DC_STATIC_STDERR=$(mktemp)
+        DEAD_CODE_STATIC=$(cd "$REPO_DIR" && bash -c "$DEAD_CODE_CMD" -- "${TOUCHED_FILES_ARR[@]}" 2>"$DC_STATIC_STDERR")
+        DC_STATIC_EXIT=$?
+        if [ -n "$DEAD_CODE_STATIC" ]; then
+            DC_LINE_COUNT=$(printf '%s\n' "$DEAD_CODE_STATIC" | wc -l)
+            log "$PR_ID: dead-code static pre-pass produced $DC_LINE_COUNT candidate line(s) (exit $DC_STATIC_EXIT)"
+        elif [ "$DC_STATIC_EXIT" -ne 0 ]; then
+            DC_ERR_SUMMARY=$(tail -n 3 "$DC_STATIC_STDERR" | tr '\n' ' ')
+            log "$PR_ID: dead-code static pre-pass exit $DC_STATIC_EXIT, no output — degrading. stderr tail: $DC_ERR_SUMMARY"
+        fi
+        rm -f "$DC_STATIC_STDERR"
+    fi
+fi
+
 log "$PR_ID: diff is ${#KID_INPUT_DIFF} bytes"
+
+# ---- search-roots for cross-repo grep ----
+# Single worker-owned coverage-state seam: every sibling repo is fully
+# classified into included | excluded | missing | lookup-error and the
+# resulting machine-readable content is consumed by the dead-code-search
+# pre-pass and the consumers specialist as the sole source of truth.
+# Live in lib/search-roots.sh (regression-fenced by lib/tests/
+# search-roots-smoke.sh) so the staging logic can't drift into per-prompt
+# rediscovery again.
+SEARCH_ROOTS=$(stage_search_roots "$REPO" "$PR_AUTHOR")
 
 # ---- write scratch files ----
 write_scratch "$REPO_DIR" "diff.patch"         "$KID_INPUT_DIFF"
 write_scratch "$REPO_DIR" "previous-review.md" "$PREV_BODY"
 write_scratch "$REPO_DIR" "test-results.md"    "$TEST_RESULTS"
 write_scratch "$REPO_DIR" "prior-art.md"       "${PRIOR_ART:-}"
+write_scratch "$REPO_DIR" "dead-code-static.md" "${DEAD_CODE_STATIC:-}"
+write_scratch "$REPO_DIR" "search-roots.md"    "${SEARCH_ROOTS:-}"
 write_scratch "$REPO_DIR" "standards.md"       "$STANDARDS"
 [ -n "${FULL_PR_DIFF:-}" ] && \
     write_scratch "$REPO_DIR" "full-diff.patch" "$FULL_PR_DIFF"
@@ -627,7 +681,29 @@ fi
 
 log "$PR_ID: intent inference complete: $(head -1 "$INTENT_OUT")"
 
-ANGLES=(security data-integrity architecture simplification tests shape)
+# ---- dead-code-search LLM pre-pass ----
+# Reads .codex-scratch/dead-code-static.md (raw static-tool output) +
+# diff.patch and writes structured evidence to .codex-scratch/dead-code.md
+# for the `consumers` specialist to file findings from. Same pattern as
+# the intent pre-pass above: synchronous, sequential, non-fatal on
+# failure (degrades to empty evidence; consumers specialist falls back
+# to its degraded LLM-grep mode).
+log "$PR_ID: dead-code search..."
+DC_PROMPT=$(substitute_placeholders \
+    "$HOME/.pr-reviewer/prompts/dead-code-search.md" \
+    "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR")
+"$_LIB_DIR/run-specialist.sh" "dead-code-search" "$REPO_DIR" "$DC_PROMPT" "$RUN_DIR/agents/dead-code-search"
+DC_EXIT=$?
+DC_OUT="$RUN_DIR/agents/dead-code-search/output.md"
+if [ "$DC_EXIT" -eq 0 ] && [ -s "$DC_OUT" ]; then
+    ln -sfn "$DC_OUT" "$REPO_DIR/.codex-scratch/dead-code.md"
+    log "$PR_ID: dead-code search complete ($(wc -l < "$DC_OUT") line(s) of evidence)"
+else
+    log "$PR_ID: dead-code search failed (exit $DC_EXIT, empty=$([ ! -s "$DC_OUT" ] && echo true || echo false)) — consumers specialist falls back to degraded LLM-grep mode"
+    : > "$REPO_DIR/.codex-scratch/dead-code.md"
+fi
+
+ANGLES=(security data-integrity architecture simplification tests shape performance consumers)
 
 log "$PR_ID: launching ${#ANGLES[@]} specialists in parallel..."
 declare -A AGENT_PIDS=()
