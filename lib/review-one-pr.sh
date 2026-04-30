@@ -172,6 +172,14 @@ RUN_STATUS="aborted"
 # undercounts a real prior author-visible review. Set to "true" right
 # after the gh pr comment success in the post-aggregator section.
 GH_POSTED=false
+# Tracks whether we silently fell back to the full PR diff because the
+# prior-review SHA isn't in local history (force-push or rebase evicted
+# it). The worker still frames the run as a re-review (REVIEW_TASK names
+# previous-review.md), but specialists see the whole PR — that
+# divergence is hidden from the reader unless we disclose it. Used by
+# REVIEW_SCOPE construction below to pick "fallback:<sha>" vs
+# "incremental:<sha>" so prepend_review_header can call it out.
+USED_FALLBACK=false
 finalize_run() {
     # Thin wrapper around finalize_meta_json (lib/run-dir.sh) that supplies
     # the worker's runtime closure (RUN_DIR / RUN_STATUS / GH_POSTED / now).
@@ -360,11 +368,6 @@ PREV_BODY=""
 PREV_APPROVED=""
 if [ -z "$KNOWN_SHA" ] || [ "$FORCE_WHOLE_PR" = "true" ]; then
     KID_INPUT_DIFF=$(gh pr diff "$PR_NUM" --repo "$REPO" 2>/dev/null)
-    if [ "$FORCE_WHOLE_PR" = "true" ]; then
-        REVIEW_TASK="Whole-PR re-review (requested via /review comment). Review the full PR diff at .codex-scratch/diff.patch against the standards in .codex-scratch/standards.md. Any prior review is intentionally NOT provided — evaluate this PR from scratch."
-    else
-        REVIEW_TASK="Review the diff at .codex-scratch/diff.patch against the standards in .codex-scratch/standards.md."
-    fi
 else
     PREV_BODY=$(state_get "$PR_ID" "body")
     PREV_APPROVED=$(state_get "$PR_ID" "approved")
@@ -376,15 +379,51 @@ else
         # been left as-is and is still unaddressed.
         FULL_PR_DIFF=$(gh pr diff "$PR_NUM" --repo "$REPO" 2>/dev/null)
         if [ -z "$FULL_PR_DIFF" ]; then
-            log "$PR_ID: full-PR diff fetch returned empty — re-review will run without full-diff.patch and the aggregator's prior-finding verification is degraded"
+            # Fail loud per CLAUDE.md / feedback_fail_hard: previous code
+            # silently degraded (skipped full-diff.patch, kept going)
+            # while the posted banner still claimed "aggregator verified
+            # prior findings against the current full PR state". Aborting
+            # here lets the orchestrator retry on the next tick instead
+            # of publishing a re-review that lies about what it evaluated.
+            log "$PR_ID: incremental re-review needs full-PR context but \`gh pr diff\` returned empty (auth/network) — aborting to avoid posting a degraded review framed as full"
+            rm -rf "$REPO_DIR"
+            exit 1
         fi
     else
         log "$PR_ID: prior SHA $KNOWN_SHA not in local history; using full PR diff"
         KID_INPUT_DIFF=$(gh pr diff "$PR_NUM" --repo "$REPO" 2>/dev/null)
         FULL_PR_DIFF="$KID_INPUT_DIFF"
+        USED_FALLBACK=true
     fi
-    REVIEW_TASK="Re-review: the author has pushed new commits since your previous review (at ${KNOWN_SHA:0:7}, approved=$PREV_APPROVED). Your prior review is in .codex-scratch/previous-review.md. The incremental diff since that review is in .codex-scratch/diff.patch; the full PR diff is in .codex-scratch/full-diff.patch (consult it when verifying whether prior findings are addressed). Assess whether the new commits address your prior concerns, then produce an updated review."
 fi
+
+# Single source of truth for "what kind of review is this". Computed
+# here so REVIEW_TASK (below) and the post-time scope-note injection
+# (much later, just before gh pr comment) read the same value — without
+# this seam, the prompt could say "incremental" while the banner said
+# "fallback" or vice versa, the BCR class fenced by review-scope-smoke.
+REVIEW_SCOPE=$(compute_review_scope "$FORCE_WHOLE_PR" "$KNOWN_SHA" "$USED_FALLBACK")
+
+# REVIEW_TASK is the opening message the specialists/aggregator see.
+# It must accurately describe what's in .codex-scratch/diff.patch and
+# .codex-scratch/full-diff.patch for THIS run — the static prompt text
+# in prompts/common-header.md and prompts/aggregator.md describes the
+# general case but defers to this message when it differs (e.g. on the
+# fallback path, diff.patch is the full PR, not an incremental subset).
+case "$REVIEW_SCOPE" in
+    whole)
+        REVIEW_TASK="Whole-PR re-review (requested via /srosro-review). Review the full PR diff at .codex-scratch/diff.patch against the standards in .codex-scratch/standards.md. Any prior review is intentionally NOT provided — evaluate this PR from scratch."
+        ;;
+    first)
+        REVIEW_TASK="Review the diff at .codex-scratch/diff.patch against the standards in .codex-scratch/standards.md."
+        ;;
+    incremental:*)
+        REVIEW_TASK="Re-review: the author has pushed new commits since your previous review (at ${KNOWN_SHA:0:7}, approved=$PREV_APPROVED). Your prior review is in .codex-scratch/previous-review.md. The incremental diff since that review is in .codex-scratch/diff.patch; the full PR diff is in .codex-scratch/full-diff.patch (consult it when verifying whether prior findings are addressed). Assess whether the new commits address your prior concerns, then produce an updated review."
+        ;;
+    fallback:*)
+        REVIEW_TASK="Re-review (silent fallback — your prior reviewed SHA ${KNOWN_SHA:0:7} is no longer in local history, likely from a force-push or rebase). Your prior review is in .codex-scratch/previous-review.md. Because the incremental view is unavailable, .codex-scratch/diff.patch contains the FULL PR diff (identical to .codex-scratch/full-diff.patch) — evaluate accordingly. Assess whether the current state addresses your prior concerns, then produce an updated review."
+        ;;
+esac
 
 if [ -z "$KID_INPUT_DIFF" ]; then
     log "$PR_ID: empty diff — gh pr diff / git diff returned nothing (possible auth, network, or rebase issue), aborting"
@@ -698,18 +737,23 @@ _How to use: this bot reviews every new PR and re-reviews new commits after one 
 
 _Generated by [sam's ai review bot](https://github.com/srosro/knightwatch-reviewer)._"
 
-# Stale-head detection — if the PR head moved while this run was in
-# flight (e.g. mid-\`just test\` push, or another commit while specialists
-# fanned out), the review we're about to post is for an older SHA. Fetch
-# the current head and let prepend_stale_head_note() inject a warning
-# right after the auto-post marker if the SHAs differ. Best-effort: if
-# gh pr view fails, CURRENT_HEAD is empty and the helper no-ops, leaving
-# the review unwarned — same behavior as before this change.
+# Top-of-comment disclosure header — one concise blockquote combining
+# (1) the review's scope (first / whole-PR re-review / incremental /
+# silent-fallback) so the reader knows what was actually evaluated, and
+# (2) a stale-head suffix when the PR head moved during this run (e.g.
+# mid-\`just test\` push) and the review is for an older SHA than what's
+# currently on the PR. Best-effort fetch of CURRENT_HEAD: empty on
+# gh-failure, in which case the stale check no-ops (identical to matched).
 CURRENT_HEAD=$(gh pr view "$PR_NUM" --repo "$REPO" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
 if [ -n "$CURRENT_HEAD" ] && [ "$CURRENT_HEAD" != "$PR_SHA" ]; then
-    log "$PR_ID: head moved during review (reviewed=${PR_SHA:0:7}, now=${CURRENT_HEAD:0:7}) — prepending stale-review note"
+    log "$PR_ID: head moved during review (reviewed=${PR_SHA:0:7}, now=${CURRENT_HEAD:0:7}) — appending stale-head suffix"
 fi
-COMMENT_BODY=$(prepend_stale_head_note "$COMMENT_BODY" "$PR_SHA" "$CURRENT_HEAD")
+log "$PR_ID: review scope = $REVIEW_SCOPE"
+if ! COMMENT_BODY=$(prepend_review_header "$COMMENT_BODY" "$REVIEW_SCOPE" "$PR_SHA" "$CURRENT_HEAD"); then
+    log "$PR_ID: prepend_review_header failed for scope=$REVIEW_SCOPE — internal invariant violated, aborting (orchestrator will retry)"
+    rm -rf "$REPO_DIR"
+    exit 1
+fi
 
 if ! gh pr comment "$PR_NUM" --repo "$REPO" --body "$COMMENT_BODY"; then
     log "$PR_ID: gh pr comment FAILED — not updating state (next tick will retry)"

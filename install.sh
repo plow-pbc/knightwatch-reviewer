@@ -116,15 +116,38 @@ units=( systemd/*.service systemd/*.timer )
 shopt -u nullglob
 [[ ${#units[@]} -ge 1 ]] || fail "no systemd unit files in $REPO_DIR/systemd/"
 
+# @KID_RW_PATHS@ in any unit file is rendered from repos.conf's KID_PATHS
+# values (deduped, space-separated absolute paths). Keeps the kid-refresh
+# unit's ReadWritePaths sandbox minimal — adding a repo to repos.conf
+# widens it by exactly that one path on the next install, never the whole
+# parent. The render happens in-loop into a temp file so the cmp-based
+# idempotency check compares the *rendered* unit (what gets installed)
+# against the destination, not the source-with-placeholder.
+[[ -f "$REPO_DIR/repos.conf" ]] || fail "repos.conf missing at $REPO_DIR/repos.conf — needed to render kid-refresh ReadWritePaths"
+# shellcheck disable=SC1091
+. "$REPO_DIR/repos.conf"
+# Dedupe + sort for stable rendering across runs so cmp-based idempotency
+# doesn't trigger spurious copies when bash hashing reorders the assoc
+# array between runs.
+KID_RW_PATHS=$(printf '%s\n' "${KID_PATHS[@]}" | sort -u | tr '\n' ' ')
+KID_RW_PATHS="${KID_RW_PATHS% }"
+
 CHANGED=0
 for unit in "${units[@]}"; do
   name="$(basename "$unit")"
   dst="$SYSTEMD_DIR/$name"
-  if [[ -f "$dst" ]] && cmp -s "$unit" "$dst"; then
+  rendered="$unit"
+  if grep -q "@KID_RW_PATHS@" "$unit"; then
+    rendered="$(mktemp)"
+    sed "s|@KID_RW_PATHS@|$KID_RW_PATHS|g" "$unit" > "$rendered"
+  fi
+  if [[ -f "$dst" ]] && cmp -s "$rendered" "$dst"; then
+    [[ "$rendered" != "$unit" ]] && rm -f "$rendered"
     continue   # already in sync, no sudo needed
   fi
   info "installing $name (sudo cp)"
-  sudo cp "$unit" "$dst" || fail "cp failed for $name"
+  sudo cp "$rendered" "$dst" || fail "cp failed for $name"
+  [[ "$rendered" != "$unit" ]] && rm -f "$rendered"
   CHANGED=$((CHANGED + 1))
 done
 ok "systemd units: ${#units[@]} present, $CHANGED updated"
