@@ -101,12 +101,13 @@ finalize_meta_json() {
 #                           precedence over KNOWN_SHA
 #   "incremental:<sha>"   — KNOWN_SHA in local history; specialists see git diff
 #                           KNOWN_SHA..HEAD, aggregator sees full-diff.patch
-#   "fallback:<sha>"      — KNOWN_SHA NOT in local history (force-push/rebase
-#                           evicted it); specialists silently see the full PR
-#                           via gh pr diff because the incremental view is
-#                           unavailable — the scope name calls this out so
-#                           prepend_review_scope_note + REVIEW_TASK both
-#                           disclose it instead of framing it as incremental
+#   "fallback:<sha>"      — a clean incremental diff couldn't be taken
+#                           (rebase/force-push evicted the prior SHA, OR the
+#                           branch merged origin/<default-branch>) and the
+#                           worker fell back to the full PR diff; the scope
+#                           name calls this out so prepend_review_header +
+#                           REVIEW_TASK both disclose it instead of framing
+#                           it as incremental
 #
 # Single source of truth: REVIEW_TASK construction and the post-time
 # scope-note injection both read from this so the banner ("📋 fallback
@@ -236,7 +237,7 @@ prepend_review_header() {
             ;;
         fallback:*)
             sha="${scope#fallback:}"
-            scope_text="📋 Re-review — prior SHA \`${sha:0:7}\` no longer in local history (force-push/rebase); evaluated full PR."
+            scope_text="📋 Re-review — clean incremental unavailable for \`${sha:0:7}\` (rebase, force-push, or merge-from-main); evaluated full PR."
             ;;
         *)
             # scope is internal — only compute_review_scope produces it.

@@ -184,13 +184,13 @@ RUN_STATUS="aborted"
 # undercounts a real prior author-visible review. Set to "true" right
 # after the gh pr comment success in the post-aggregator section.
 GH_POSTED=false
-# Tracks whether we silently fell back to the full PR diff because the
-# prior-review SHA isn't in local history (force-push or rebase evicted
-# it). The worker still frames the run as a re-review (REVIEW_TASK names
-# previous-review.md), but specialists see the whole PR — that
-# divergence is hidden from the reader unless we disclose it. Used by
-# REVIEW_SCOPE construction below to pick "fallback:<sha>" vs
-# "incremental:<sha>" so prepend_review_header can call it out.
+# True when we wanted to take a clean incremental diff but couldn't —
+# either the prior reviewed SHA was evicted from the branch's history
+# (rebase/force-push), or the branch merged origin/<default-branch>
+# between then and now (merge-from-main would pollute attribution).
+# When true, REVIEW_SCOPE becomes `fallback:<sha>` and the worker
+# emits a "clean incremental unavailable" disclosure at the top of
+# the posted review.
 USED_FALLBACK=false
 finalize_run() {
     # Thin wrapper around finalize_meta_json (lib/run-dir.sh) that supplies
@@ -383,6 +383,11 @@ fi
 # FULL_PR_DIFF (the aggregator's "verify prior findings against
 # current state" reference) always.
 FULL_PR_DIFF=$(gh pr diff "$PR_NUM" --repo "$REPO" 2>/dev/null)
+if [ -z "$FULL_PR_DIFF" ]; then
+    log "$PR_ID: gh pr diff returned empty (auth/network) — aborting before specialists run"
+    rm -rf "$REPO_DIR"
+    exit 1
+fi
 KID_INPUT_DIFF="$FULL_PR_DIFF"
 
 KNOWN_SHA=$(state_get "$PR_ID" "sha")
@@ -394,8 +399,9 @@ PREV_APPROVED=""
 # (b) no merge commits exist in the incremental range. Any other
 # condition (rebase/force-push, OR branch merged main between then and
 # now) would leak merge-from-main content or misframe an off-branch
-# SHA — leave KID_INPUT_DIFF as the full PR diff and let SKIPPED_CHECKS
-# emit a deterministic ⚠️ warning at the top of the review.
+# SHA — leave KID_INPUT_DIFF as the full PR diff and let
+# `prepend_review_header` emit a `fallback:<sha>` scope disclosure at
+# the top of the review (via REVIEW_SCOPE).
 if [ -n "$KNOWN_SHA" ] && [ "$FORCE_WHOLE_PR" != "true" ]; then
     PREV_BODY=$(state_get "$PR_ID" "body")
     PREV_APPROVED=$(state_get "$PR_ID" "approved")
@@ -432,7 +438,7 @@ case "$REVIEW_SCOPE" in
         REVIEW_TASK="Re-review: the author has pushed new commits since your previous review (at ${KNOWN_SHA:0:7}, approved=$PREV_APPROVED). Your prior review is in .codex-scratch/previous-review.md. The incremental diff since that review is in .codex-scratch/diff.patch; the full PR diff is in .codex-scratch/full-diff.patch (consult it when verifying whether prior findings are addressed). Assess whether the new commits address your prior concerns, then produce an updated review."
         ;;
     fallback:*)
-        REVIEW_TASK="Re-review (silent fallback — your prior reviewed SHA ${KNOWN_SHA:0:7} is no longer in local history, likely from a force-push or rebase). Your prior review is in .codex-scratch/previous-review.md. Because the incremental view is unavailable, .codex-scratch/diff.patch contains the FULL PR diff (identical to .codex-scratch/full-diff.patch) — evaluate accordingly. Assess whether the current state addresses your prior concerns, then produce an updated review."
+        REVIEW_TASK="Re-review (clean incremental unavailable for ${KNOWN_SHA:0:7} — either rebase/force-push evicted it from the branch's history, or the branch merged origin/${DEFAULT_BRANCH} between then and now). Your prior review is in .codex-scratch/previous-review.md. Because the incremental view is unavailable, .codex-scratch/diff.patch contains the FULL PR diff (identical to .codex-scratch/full-diff.patch) — evaluate accordingly. Assess whether the current state addresses your prior concerns, then produce an updated review."
         ;;
 esac
 

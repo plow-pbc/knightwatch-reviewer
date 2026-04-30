@@ -148,13 +148,13 @@ assert_one_blockquote "$result" "incremental/matched"
 assert_contains "$result" 'Re-review of changes since `abc1234`' "incremental/matched scope text"
 assert_no_stale_suffix "$result" "incremental/matched"
 
-echo "  scope=fallback:<sha> + matched-shas → header discloses force-push/rebase..."
+echo "  scope=fallback:<sha> + matched-shas → header discloses clean incremental unavailable..."
 result=$(prepend_review_header "$BODY" "fallback:$SHA_OLD" "$SHA_OLD" "$SHA_OLD" "")
 assert_marker_first "$result" "fallback/matched"
 assert_body_preserved "$result" "fallback/matched"
 assert_one_blockquote "$result" "fallback/matched"
 assert_contains "$result" '`abc1234`' "fallback/matched cites prior SHA"
-assert_contains "$result" "force-push/rebase" "fallback/matched names cause"
+assert_contains "$result" "clean incremental unavailable" "fallback/matched names cause"
 assert_contains "$result" "evaluated full PR" "fallback/matched discloses full-PR scope"
 assert_no_stale_suffix "$result" "fallback/matched"
 
@@ -200,7 +200,7 @@ assert_contains "$result" "Stale: head moved" "whole/stale suffix"
 echo "  scope=fallback:<sha> + differing-shas → scope + stale on one line..."
 result=$(prepend_review_header "$BODY" "fallback:$SHA_OLD" "$SHA_OLD" "$SHA_NEW" "")
 assert_one_blockquote "$result" "fallback/stale"
-assert_contains "$result" "force-push/rebase" "fallback/stale scope text"
+assert_contains "$result" "clean incremental unavailable" "fallback/stale scope text"
 assert_contains "$result" "Stale: head moved" "fallback/stale suffix"
 
 # ===== Scope variants × stale=empty CURRENT_HEAD (gh-failure path) =====
@@ -262,7 +262,7 @@ assert_contains "$result" "Tests not run" "whole/no-tests tests suffix"
 echo "  scope=fallback + tests-not-run → both signals..."
 result=$(prepend_review_header "$BODY" "fallback:$SHA_OLD" "$SHA_OLD" "$SHA_OLD" "🧪 Tests")
 assert_one_blockquote "$result" "fallback/no-tests"
-assert_contains "$result" "force-push/rebase" "fallback/no-tests scope text"
+assert_contains "$result" "clean incremental unavailable" "fallback/no-tests scope text"
 assert_contains "$result" "Tests not run" "fallback/no-tests tests suffix"
 
 # All three signals at once: scope + stale + tests-not-run on a single
