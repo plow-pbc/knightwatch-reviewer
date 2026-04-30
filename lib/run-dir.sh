@@ -195,8 +195,10 @@ classify_just_test_outcome() {
 #        "🧪 Tests,🔍 Prior-art (KID)"    → " 🧪 Tests, 🔍 Prior-art (KID) not run — …"
 #      Adding a new capability (e.g. a future dead-code analyzer) is
 #      one line in the worker — `[ "$X_RAN" = "false" ] && SKIPPED+=("🧹 X")`
-#      — with no helper change. Renderer just joins on ", " and appends
-#      a fixed " not run — review based on the diff alone." tail.
+#      — with no helper change. Renderer joins on ", " and appends a
+#      bare " not run." — the icons + labels disclose what skipped, no
+#      generic "diff alone" tail (which overstated degradation when
+#      only one check skipped).
 #
 # Replaces the previous two helpers (prepend_review_scope_note +
 # prepend_stale_head_note) that stacked two separate verbose
@@ -252,8 +254,12 @@ prepend_review_header() {
         stale_suffix=" ⚠️ Stale: head moved from \`${reviewed_sha:0:7}\` to \`${current_head:0:7}\` mid-run — see commands below to re-run."
     fi
     if [ -n "$skipped_checks" ]; then
-        # Comma in input → ", " for human-readable join; tail is fixed.
-        skipped_suffix=" ${skipped_checks//,/, } not run — review based on the diff alone."
+        # Comma in input → ", " for human-readable join. No trailing
+        # generic clause: each label names exactly one degraded surface,
+        # so a blanket "review based on the diff alone" tail overstated
+        # the degradation whenever only one check skipped (e.g. KID-only
+        # skip — tests + specialists + aggregator still ran).
+        skipped_suffix=" ${skipped_checks//,/, } not run."
     fi
     local first_line rest
     first_line=$(printf '%s' "$comment_body" | head -1)

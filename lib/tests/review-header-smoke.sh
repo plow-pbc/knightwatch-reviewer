@@ -237,9 +237,14 @@ assert_body_preserved "$result" "first/no-tests"
 assert_one_blockquote "$result" "first/no-tests"
 assert_contains "$result" "First review" "first/no-tests scope text"
 assert_no_stale_suffix "$result" "first/no-tests"
-assert_contains "$result" "🧪 Tests not run" "first/no-tests tests suffix"
-assert_contains "$result" "diff alone" "first/no-tests names what review is based on"
-assert_contains "$result" "review based on the diff alone" "first/no-tests names what review is based on"
+assert_contains "$result" "🧪 Tests not run." "first/no-tests tests suffix (bare 'not run.' — no overclaiming 'diff alone' tail)"
+# Regression-fence: the bot flagged the trailing "review based on the
+# diff alone" clause as misleading on KID-only skips (tests + specialists
+# still ran). Make sure it doesn't sneak back in.
+if printf '%s' "$result" | grep -q "diff alone"; then
+    echo "FAIL: first/no-tests — re-introduced misleading 'diff alone' tail (PR #24 round 4 finding)"
+    exit 1
+fi
 
 echo "  scope=incremental + tests-not-run → tests suffix on one line with scope..."
 result=$(prepend_review_header "$BODY" "incremental:$SHA_OLD" "$SHA_OLD" "$SHA_OLD" "🧪 Tests")
@@ -297,7 +302,7 @@ echo "  SKIPPED_CHECKS='🔍 Prior-art (KID)' → KID-only suffix..."
 result=$(prepend_review_header "$BODY" "first" "$SHA_OLD" "$SHA_OLD" "🔍 Prior-art (KID)")
 assert_one_blockquote "$result" "kid-only"
 assert_contains "$result" "First review" "kid-only scope text"
-assert_contains "$result" "🔍 Prior-art (KID) not run — review based on the diff alone." "kid-only suffix"
+assert_contains "$result" "🔍 Prior-art (KID) not run." "kid-only suffix"
 # Negative: must NOT include the tests label — helper must not invent labels.
 if printf '%s' "$result" | grep -q "🧪 Tests"; then
     echo "FAIL: kid-only — unexpected '🧪 Tests' in header (helper invented a label)"
@@ -311,7 +316,7 @@ fi
 echo "  SKIPPED_CHECKS='🧪 Tests,🔍 Prior-art (KID)' → both joined with ', '..."
 result=$(prepend_review_header "$BODY" "first" "$SHA_OLD" "$SHA_OLD" "🧪 Tests,🔍 Prior-art (KID)")
 assert_one_blockquote "$result" "tests+kid"
-assert_contains "$result" "🧪 Tests, 🔍 Prior-art (KID) not run — review based on the diff alone." "tests+kid joined output"
+assert_contains "$result" "🧪 Tests, 🔍 Prior-art (KID) not run." "tests+kid joined output"
 
 # Multi-skip stacked with stale + scope → all three signal types on one
 # blockquote. Worst-case header.
