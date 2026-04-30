@@ -37,6 +37,10 @@ test:
     bash lib/tests/search-roots-smoke.sh
 
     echo ""
+    echo "=== diff-scope smoke test ==="
+    bash lib/tests/diff-scope-smoke.sh
+
+    echo ""
     echo "=== prompt-build smoke test ==="
     bash lib/tests/build-specialist-prompt-smoke.sh
 
