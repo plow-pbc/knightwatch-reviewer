@@ -22,12 +22,14 @@
 #                   disk AND the checkout is a git repo (so
 #                   `git ls-files` can enumerate tracked content for
 #                   the materializer). The .siblings/<slug> path is
-#                   the workdir-
-#                   relative symlink materialized by sibling-symlinks.sh
-#                   after this helper runs.
-#   missing       — slug in SOURCE_PATHS BUT its checkout absent on
-#                   this host (operator-config gap, not a security
-#                   boundary).
+#                   the workdir-relative directory of copied tracked
+#                   files materialized by sibling-symlinks.sh after
+#                   this helper runs.
+#   missing       — slug in SOURCE_PATHS BUT either (a) the checkout
+#                   directory is absent on this host or (b) the
+#                   checkout exists but isn't a git repo (so the
+#                   materializer can't enumerate it). All operator-
+#                   config gaps (not a security boundary).
 #
 # Output format:
 #   # coverage: full | partial | same-repo-only

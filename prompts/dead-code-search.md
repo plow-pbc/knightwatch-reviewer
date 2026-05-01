@@ -8,7 +8,7 @@
 
 **`search-roots.md` format.** The first line is a coverage header (`# coverage: full | partial | same-repo-only — ...`). Each subsequent line classifies one sibling repo:
 - `<repo-slug> included .siblings/<repo-slug>` — whitelisted in SOURCE_PATHS AND its checkout exists on this host AND the checkout is a git repo; grep this workdir-relative path. `.siblings/<repo-slug>/` is a tree of copied tracked files from the operator's local checkout (built via `git ls-files`), so gitignored / per-machine artifacts and tracked symlinks don't appear and `grep -r` works as expected.
-- `<repo-slug> missing` — whitelisted in SOURCE_PATHS BUT its checkout is absent on this host (operator-config gap). Treat as a coverage gap for any modified public symbol that plausibly has consumers there.
+- `<repo-slug> missing` — whitelisted in SOURCE_PATHS BUT either the checkout is absent on this host or the checkout isn't a git repo (operator-config gap; either way the materializer can't enumerate tracked content). Treat as a coverage gap for any modified public symbol that plausibly has consumers there.
 
 **Citation form (cross-repo).** When you cite a hit in a sibling repo, write the path as `<owner>/<repo>/<rel-path>:<line>` (e.g. `cncorp/plow-content/plow_content/emit_pr.py:59`) — no `.siblings/` prefix and no host absolute paths. The post-time scrub step rewrites stragglers to that form, so emit it correctly yourself for clean evidence the consumers specialist can read.
 

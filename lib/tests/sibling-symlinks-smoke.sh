@@ -4,8 +4,8 @@
 #   1. Only materialize siblings the caller explicitly classified as
 #      `included` — whitelist-gated upstream by stage_search_roots,
 #      not by this helper's own iteration over SOURCE_PATHS. (Otherwise
-#      we'd materialize symlinks for siblings whose checkouts are
-#      absent — dangling symlinks, confused specialists.)
+#      we'd copy content from siblings whose checkouts are absent —
+#      empty .siblings/<slug>/ trees, confused specialists.)
 #
 #   2. Defeat committed-symlink path-redirect attacks. The PR's
 #      checkout might already contain `.siblings/` (e.g. an attacker
@@ -257,25 +257,28 @@ if ! grep -rn "pkg-src" "$WORKDIR/.siblings/acme/foo/" >/dev/null; then
     exit 1
 fi
 
-# --- scenario 7: non-git source = empty materialization (no leak) ----
-# If a sibling source isn't a git repo (corrupt clone, raw download,
-# operator misconfig), `git ls-files` exits non-zero with no output.
-# The loop yields nothing and the slug ends up with an empty directory
-# rather than re-exposing the raw root via fallback.
-echo "  scenario 7: non-git source produces empty slug (no fallback to raw root)..."
+# --- scenario 7: non-git source returns non-zero (fail-fast) ----------
+# stage_search_roots filters non-git sources to `missing` upstream, so
+# the materializer should never see one for an `included` slug. But if
+# it does (defense in depth, future caller bug), the helper must
+# return non-zero rather than silently produce an empty slug while
+# the review pipeline reports `included` coverage. cncorp/plow#37
+# review 3 finding 1 (BCR — the third instance of silent-coverage-
+# loss class).
+echo "  scenario 7: non-git source → non-zero rc (fail-fast, defense in depth)..."
 mkdir -p "$TMPDIR/not-a-repo"
 echo "would-leak" > "$TMPDIR/not-a-repo/leak.txt"
 SOURCE_PATHS["acme/notgit"]="$TMPDIR/not-a-repo"
-materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/notgit"
-if [ -e "$WORKDIR/.siblings/acme/notgit/leak.txt" ]; then
-    echo "FAIL: non-git source leaked content into materialized tree"
-    ls -la "$WORKDIR/.siblings/acme/notgit/"
+rc=0
+materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/notgit" 2>/dev/null || rc=$?
+if [ "$rc" -eq 0 ]; then
+    echo "FAIL: non-git source should have returned non-zero (got rc=0)"
     exit 1
 fi
-# The slug dir itself should exist (mkdir -p ran before the loop) but
-# be empty. That's the safe-by-default state.
-if [ ! -d "$WORKDIR/.siblings/acme/notgit" ]; then
-    echo "FAIL: non-git slug dir should exist (empty) for downstream stability"
+# Whatever state the slug ended up in, the raw-root content must NOT
+# be reachable through it.
+if [ -e "$WORKDIR/.siblings/acme/notgit/leak.txt" ]; then
+    echo "FAIL: non-git source leaked raw-root content into materialized tree"
     exit 1
 fi
 
@@ -313,4 +316,33 @@ if grep -rn "EXTERNAL_BYTES" "$WORKDIR/.siblings/acme/sym/" >/dev/null 2>&1; the
     exit 1
 fi
 
-echo "  ok: sibling materialization whitelist-gated, redirect-safe, idempotent, tracked-only, symlink-safe"
+# --- scenario 9: cp failure (worktree race) returns non-zero ----------
+# Single-owner gate: if any tracked file fails to copy (worktree race
+# deleted it between `git ls-files` and `cp`, permission, disk full),
+# materialize_sibling_symlinks returns non-zero so the caller can abort
+# the review instead of serving partial sibling content while reporting
+# `included` coverage. cncorp/plow#37 review 3 finding 1 (BCR — third
+# instance of silent-coverage-loss class).
+echo "  scenario 9: cp failure on worktree-deleted tracked file → non-zero rc..."
+mkdir -p "$TMPDIR/raceyrepo"
+git init -q "$TMPDIR/raceyrepo"
+git -C "$TMPDIR/raceyrepo" config user.email t@t
+git -C "$TMPDIR/raceyrepo" config user.name t
+git -C "$TMPDIR/raceyrepo" config commit.gpgsign false
+echo "real" > "$TMPDIR/raceyrepo/keeper.py"
+echo "ghost" > "$TMPDIR/raceyrepo/ghost.py"
+git -C "$TMPDIR/raceyrepo" add keeper.py ghost.py
+git -C "$TMPDIR/raceyrepo" commit -qm "seed"
+# Delete from worktree but leave in index — `git ls-files` still lists
+# it (it's tracked), but `cp` can't read it. Real-world analog: another
+# process deletes the file mid-review.
+rm "$TMPDIR/raceyrepo/ghost.py"
+SOURCE_PATHS["acme/racey"]="$TMPDIR/raceyrepo"
+rc=0
+materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/racey" 2>/dev/null || rc=$?
+if [ "$rc" -eq 0 ]; then
+    echo "FAIL: materialize_sibling_symlinks should have returned non-zero on cp failure"
+    exit 1
+fi
+
+echo "  ok: sibling materialization whitelist-gated, redirect-safe, idempotent, tracked-only, symlink-safe, fail-fast"

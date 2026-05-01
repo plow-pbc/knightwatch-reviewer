@@ -66,7 +66,7 @@ materialize_sibling_symlinks() {
     rm -rf "$workdir/.siblings"
     mkdir -p "$workdir/.siblings"
 
-    local rel
+    local rel list_file
     for slug in "$@"; do
         src="${_src_paths[$slug]:-}"
         [ -z "$src" ] && continue
@@ -76,30 +76,51 @@ materialize_sibling_symlinks() {
         # mkdir-ed inside our freshly-created .siblings/ so there's no
         # symlink to follow.
         mkdir -p "$target"
+
+        # Capture git ls-files via tempfile (NUL-safe AND lets us
+        # check the git command's exit code separately). Process
+        # substitution would silently swallow git's failure and leave
+        # the slug partially / emptily materialized while the caller
+        # claims `included` coverage — the third instance of the
+        # silent-coverage-loss class fixed across PR #37. Single-owner
+        # gate: every tracked file copies successfully or the helper
+        # returns non-zero so review-one-pr.sh aborts before scratch
+        # files and prompts claim coverage.
+        list_file=$(mktemp -t kw-sib-XXXXXX) || return 1
+        if ! (cd "$src" && git ls-files -z) > "$list_file" 2>/dev/null; then
+            rm -f "$list_file"
+            echo "materialize_sibling_symlinks: git ls-files failed for $slug ($src)" >&2
+            return 1
+        fi
+
         # Per-file COPIES of each tracked file. Respects .gitignore —
         # `.git/`, `.venv/`, `node_modules/`, `__pycache__/` etc.
         # cannot leak into specialist greps. Copies (not symlinks)
         # because `grep -r` skips symlinks during recursive traversal;
         # using symlinks here would silently zero out every consumer
-        # and dead-code grep across siblings. If `git ls-files` fails
-        # (caller passed a slug whose source isn't a git repo,
-        # corrupt objects), the loop simply yields no entries and the
-        # slug ends up with an empty .siblings/<slug>/ — but the
-        # caller (stage_search_roots) is supposed to have classified
-        # those as `missing` upstream so they never reach this loop.
+        # and dead-code grep across siblings.
         #
         # Tracked symlinks (mode 120000) are skipped: `cp` follows
         # symlinks by default, so a sibling tracking
-        # `leak -> ~/.ssh/id_rsa` (or any path outside the source tree)
-        # would copy the target bytes into .siblings/<slug>/leak
+        # `leak -> ~/.ssh/id_rsa` (or any path outside the source
+        # tree) would copy the target bytes into .siblings/<slug>/leak
         # where specialists could quote them. Skipping is simpler than
         # materializing-symlink-blobs-as-text and avoids a future
         # consumer assuming the file content is real source code.
         # Caught on PR #37 review 2 finding 1.
+        #
+        # cp failure (worktree race, permission, disk full) returns
+        # non-zero from the helper — same single-owner gate as above.
         while IFS= read -r -d '' rel; do
             [ -L "$src/$rel" ] && continue
             mkdir -p "$target/$(dirname "$rel")"
-            cp -- "$src/$rel" "$target/$rel"
-        done < <(cd "$src" && git ls-files -z 2>/dev/null)
+            if ! cp -- "$src/$rel" "$target/$rel"; then
+                rm -f "$list_file"
+                echo "materialize_sibling_symlinks: cp failed for $slug:$rel" >&2
+                return 1
+            fi
+        done < "$list_file"
+        rm -f "$list_file"
     done
+    return 0
 }
