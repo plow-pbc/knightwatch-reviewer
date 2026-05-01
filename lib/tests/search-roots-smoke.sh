@@ -7,8 +7,9 @@
 #   2. .knightwatch/siblings absent → fall back to "all REPOS minus self"
 #
 # In both cases each sibling is then classified as `included` (slug in
-# SOURCE_PATHS AND its checkout exists on disk) or `missing` (absent on
-# disk).
+# SOURCE_PATHS AND its checkout exists on disk AND it's a git repo —
+# `git ls-files` is what materialize_sibling_symlinks uses to enumerate
+# tracked content) or `missing` (any of those preconditions absent).
 
 set -euo pipefail
 
@@ -19,7 +20,22 @@ TMPDIR=$(mktemp -d -t search-roots-smoke-XXXXXX)
 trap 'rm -rf "$TMPDIR"' EXIT
 
 # Provide checkouts for two of three siblings; the third is intentionally absent.
-mkdir -p "$TMPDIR/repos/foo" "$TMPDIR/repos/bar"
+# Sibling sources must be git repos so the included-classification holds —
+# stage_search_roots checks `git rev-parse --git-dir` to keep the coverage
+# marker in sync with what materialize_sibling_symlinks can actually expose.
+init_sibling_dir() {
+    local d="$1"
+    mkdir -p "$d"
+    git init -q "$d"
+    git -C "$d" config user.email t@t
+    git -C "$d" config user.name t
+    git -C "$d" config commit.gpgsign false
+    echo "src" > "$d/file.py"
+    git -C "$d" add file.py
+    git -C "$d" commit -qm "seed"
+}
+init_sibling_dir "$TMPDIR/repos/foo"
+init_sibling_dir "$TMPDIR/repos/bar"
 # (sibling "qux" has no directory — drives the `missing` path.)
 
 REPOS=("acme/self" "acme/foo" "acme/bar" "acme/qux")
@@ -159,4 +175,31 @@ if stage_search_roots "acme/self" "$SELF_REPO" "nonexistent-branch" >/dev/null 2
 fi
 REPOS=("${saved_repos[@]}")
 
-echo "  PASS (7 scenarios: knightwatch-allowlist, fallback, missing-on-disk, empty-allowlist, comments, declared-but-unconfigured, error-propagation)"
+# --- scenario 8: source dir exists but isn't a git repo → missing -----
+# Single-owner search-roots contract: stage_search_roots can't classify
+# a source as `included` if materialize_sibling_symlinks would yield an
+# empty tree. `git ls-files` returns nothing on a non-git source, so the
+# materialized .siblings/<slug>/ would be empty — but the prior contract
+# said "full" coverage anyway, so specialists searched empty content
+# while the bot reported the sibling as covered. cncorp/plow#37 review 1
+# finding 1 (Bug-Class-Recurrence). Stage it as `missing` instead.
+echo "  scenario 8: non-git source dir → missing (search-roots/materialize agreement)..."
+mkdir -p "$TMPDIR/repos/notgit"
+echo "would-leak" > "$TMPDIR/repos/notgit/file.py"
+SOURCE_PATHS["acme/notgit"]="$TMPDIR/repos/notgit"
+SELF_REPO=$(make_self_repo yes "acme/foo
+acme/notgit")
+saved_repos=("${REPOS[@]}")
+REPOS=("acme/self" "acme/foo" "acme/notgit")
+OUT=$(stage_search_roots "acme/self" "$SELF_REPO" "origin/main")
+REPOS=("${saved_repos[@]}")
+assert_contains "scenario 8: header partial" "# coverage: partial" "$OUT"
+assert_contains "scenario 8: foo included"    "acme/foo included .siblings/acme/foo" "$OUT"
+assert_contains "scenario 8: notgit missing"  "acme/notgit missing" "$OUT"
+# Critically — must NOT mark notgit as included. That's the bug.
+if printf '%s' "$OUT" | grep -q "acme/notgit included"; then
+    echo "FAIL: scenario 8 — non-git source classified as included; coverage will misreport"
+    exit 1
+fi
+
+echo "  PASS (8 scenarios: knightwatch-allowlist, fallback, missing-on-disk, empty-allowlist, comments, declared-but-unconfigured, error-propagation, non-git-source-missing)"

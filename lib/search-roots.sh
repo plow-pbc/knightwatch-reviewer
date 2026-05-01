@@ -83,13 +83,27 @@ stage_search_roots() {
     for sibling_repo in "${siblings[@]}"; do
         [ "$sibling_repo" = "$repo" ] && continue
         sibling_path="${SOURCE_PATHS[$sibling_repo]:-}"
-        # Two ways a declared sibling can be unavailable: (a) operator
-        # has no SOURCE_PATHS entry for the slug — they haven't told us
-        # where to find it on this host; (b) entry exists but the
-        # checkout directory is absent on disk. Both are operator-config
-        # gaps (NOT a security boundary) and both classify as `missing`
-        # so the user sees them in coverage rather than silent drops.
+        # Three ways a declared sibling can be unavailable, all classified
+        # as `missing` so the user sees them in coverage instead of as
+        # silent drops:
+        #   (a) operator has no SOURCE_PATHS entry — they haven't told us
+        #       where to find it on this host
+        #   (b) entry exists but the checkout directory is absent on disk
+        #   (c) entry + dir exist but it isn't a git repo (corrupt clone,
+        #       raw download, operator misconfig) — `materialize_sibling_symlinks`
+        #       would yield an empty .siblings/<slug>/ since `git ls-files`
+        #       can't enumerate, so the coverage marker would say "full"
+        #       while specialists actually search empty content.
+        # Cases (a)+(b) are operator-config gaps (NOT a security boundary).
+        # Case (c) is what cncorp/plow#37 review 1 caught — the second
+        # half of the BCR finding. Single-owner contract: if it can't
+        # be searched, it isn't included.
         if [ -z "$sibling_path" ] || [ ! -d "$sibling_path" ]; then
+            body+="$sibling_repo missing"$'\n'
+            missing=$((missing + 1))
+            continue
+        fi
+        if ! git -C "$sibling_path" rev-parse --git-dir >/dev/null 2>&1; then
             body+="$sibling_repo missing"$'\n'
             missing=$((missing + 1))
             continue

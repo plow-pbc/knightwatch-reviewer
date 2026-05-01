@@ -54,7 +54,13 @@ init_sibling_repo() {
 node_modules/
 __pycache__/
 EOF
-    git -C "$dir" add main.py pkg/util.py .gitignore
+    # Tracked hidden file fixture: covers the user's intentional case
+    # of committing `.knightwatch/` and `.keepitdry/` (per cncorp/plow#37
+    # review 1 finding 2). Tracked dotdir content MUST appear in the
+    # materialized tree — only gitignored content is filtered out.
+    mkdir -p "$dir/.knightwatch"
+    echo "tracked-hidden" > "$dir/.knightwatch/product-context.md"
+    git -C "$dir" add main.py pkg/util.py .gitignore .knightwatch/product-context.md
     git -C "$dir" commit -qm "seed"
     # Plant local-only artifacts AFTER commit. None should appear in
     # the materialized tree.
@@ -75,26 +81,26 @@ declare -A SOURCE_PATHS=(
     ["acme/qux"]="$TMPDIR/qux"   # deliberately missing on disk
 )
 
-# Returns 0 iff the per-file symlink at <slug>/<rel> exists and points
-# at the matching tracked file under the source. Used by scenarios 1
-# and 3 to assert correct materialization shape after the migration
-# from raw-checkout symlinks.
-assert_tracked_file_link() {
-    local label="$1" slug="$2" rel="$3" expected_target="$4"
-    local link="$WORKDIR/.siblings/$slug/$rel"
-    if [ ! -L "$link" ]; then
-        echo "FAIL ($label): expected $link to be a symlink"
+# Returns 0 iff the materialized file at <slug>/<rel> is a REGULAR FILE
+# (not a symlink) with the same content as the tracked source file.
+# Regular files matter: `grep -r` skips symlinks during recursive
+# traversal, so a symlinked materialization would silently zero out
+# every consumer/dead-code grep across siblings while reporting "full"
+# coverage. cncorp/plow#37 review 1 finding 1 (BCR).
+assert_tracked_file_copy() {
+    local label="$1" slug="$2" rel="$3" expected_source="$4"
+    local f="$WORKDIR/.siblings/$slug/$rel"
+    if [ ! -f "$f" ]; then
+        echo "FAIL ($label): expected $f to exist"
         ls -la "$WORKDIR/.siblings/$slug/" 2>/dev/null || true
         exit 1
     fi
-    local got
-    got=$(readlink "$link")
-    if [ "$got" != "$expected_target" ]; then
-        echo "FAIL ($label): $link points at '$got', want '$expected_target'"
+    if [ -L "$f" ]; then
+        echo "FAIL ($label): $f is a symlink — must be a real file so 'grep -r' finds it"
         exit 1
     fi
-    if [ ! -e "$link" ]; then
-        echo "FAIL ($label): $link symlink target doesn't resolve"
+    if ! cmp -s "$f" "$expected_source"; then
+        echo "FAIL ($label): $f content differs from $expected_source"
         exit 1
     fi
 }
@@ -103,9 +109,9 @@ assert_tracked_file_link() {
 echo "  scenario 1: whitelist-gated to included slugs..."
 materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/foo" "acme/bar"
 
-assert_tracked_file_link "scenario 1: foo/main.py" "acme/foo" "main.py"     "$TMPDIR/foo/main.py"
-assert_tracked_file_link "scenario 1: foo/pkg"     "acme/foo" "pkg/util.py" "$TMPDIR/foo/pkg/util.py"
-assert_tracked_file_link "scenario 1: bar/main.py" "acme/bar" "main.py"     "$TMPDIR/bar/main.py"
+assert_tracked_file_copy "scenario 1: foo/main.py" "acme/foo" "main.py"     "$TMPDIR/foo/main.py"
+assert_tracked_file_copy "scenario 1: foo/pkg"     "acme/foo" "pkg/util.py" "$TMPDIR/foo/pkg/util.py"
+assert_tracked_file_copy "scenario 1: bar/main.py" "acme/bar" "main.py"     "$TMPDIR/bar/main.py"
 # baz is in SOURCE_PATHS but was NOT in the included list — must NOT exist.
 if [ -e "$WORKDIR/.siblings/acme/baz" ]; then
     echo "FAIL: baz symlink should not exist (not in included list)"
@@ -140,7 +146,7 @@ assert_redirect_defeated() {
         ls -la "$WORKDIR/.siblings/"
         exit 1
     fi
-    assert_tracked_file_link "$label: post-attack foo/main.py" \
+    assert_tracked_file_copy "$label: post-attack foo/main.py" \
         "acme/foo" "main.py" "$TMPDIR/foo/main.py"
     if [ ! -e "$ATTACK_TARGET/sentinel" ]; then
         echo "FAIL ($label): attacker target sentinel was modified — write escaped workdir"
@@ -180,7 +186,7 @@ assert_redirect_defeated "3c (leaf symlink)"
 echo "  scenario 4: idempotent re-run..."
 materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/foo" "acme/bar"
 materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/foo" "acme/bar"
-assert_tracked_file_link "scenario 4: post-rerun foo/main.py" \
+assert_tracked_file_copy "scenario 4: post-rerun foo/main.py" \
     "acme/foo" "main.py" "$TMPDIR/foo/main.py"
 
 # --- scenario 5: empty included list = empty .siblings/ ---------------
@@ -202,9 +208,13 @@ fi
 echo "  scenario 6: only tracked files — .git / gitignored / untracked excluded..."
 materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/foo" "acme/bar"
 
-# Tracked content present.
-assert_tracked_file_link "scenario 6: tracked main.py"     "acme/foo" "main.py"     "$TMPDIR/foo/main.py"
-assert_tracked_file_link "scenario 6: tracked pkg/util.py" "acme/foo" "pkg/util.py" "$TMPDIR/foo/pkg/util.py"
+# Tracked content present — including tracked HIDDEN content like
+# `.knightwatch/` (the user's per-repo bot config). The "tracked-only"
+# rule must not bleed into a "no dotfiles" rule; only gitignored content
+# gets filtered. cncorp/plow#37 review 1 finding 2 (low).
+assert_tracked_file_copy "scenario 6: tracked main.py"     "acme/foo" "main.py"     "$TMPDIR/foo/main.py"
+assert_tracked_file_copy "scenario 6: tracked pkg/util.py" "acme/foo" "pkg/util.py" "$TMPDIR/foo/pkg/util.py"
+assert_tracked_file_copy "scenario 6: tracked .knightwatch/" "acme/foo" ".knightwatch/product-context.md" "$TMPDIR/foo/.knightwatch/product-context.md"
 
 # Gitignored / untracked content absent. Each path was planted in
 # `init_sibling_repo` AFTER the commit, with `.venv/`, `node_modules/`,
@@ -231,6 +241,19 @@ done
 # secret strings. This is the actual public-output exposure vector.
 if grep -rn "VENV_SECRET\|NODE_LEAK\|CACHE_BYTES" "$WORKDIR/.siblings/acme/foo/" 2>/dev/null; then
     echo "FAIL: specialist-style grep surfaced gitignored secrets"
+    exit 1
+fi
+
+# Load-bearing: `grep -rn` MUST find tracked content. Earlier this PR
+# materialized as per-file symlinks, which `grep -r` skips during
+# recursive traversal — silently zero-ing every consumer/dead-code grep
+# while reporting "full" coverage. The fix uses real files (cp); this
+# assertion is the regression fence so the next "let's go back to
+# symlinks for the disk savings" change can't quietly break the search
+# contract again. cncorp/plow#37 review 1 finding 1 (BCR).
+if ! grep -rn "pkg-src" "$WORKDIR/.siblings/acme/foo/" >/dev/null; then
+    echo "FAIL: 'grep -rn' did not find tracked content — materialized files must be real, not symlinks"
+    ls -la "$WORKDIR/.siblings/acme/foo/pkg/util.py"
     exit 1
 fi
 
