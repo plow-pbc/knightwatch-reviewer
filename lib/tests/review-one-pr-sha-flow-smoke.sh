@@ -510,20 +510,16 @@ if [ "$HEADS_MAIN" != "$ORIGIN_MAIN" ]; then
     exit 1
 fi
 
-# NOTE on the "BEFORE clone" ordering: bot review PR #40 round 1
-# finding 2 asked for a workdir assertion that the clone received the
-# updated ref. In a smoke with a non-shallow canonical (which the
-# worker's --depth=500 fetch produces from any small fixture), this
-# isn't directly fenceable: the workdir is removed during worker
-# cleanup before the test can inspect it, and even if it persisted,
-# the workdir would have access to the post-update-ref SHA via
-# alternates (set up correctly for non-shallow sources) regardless of
-# update-ref timing. The production-relevant failure mode is only
-# visible with a shallow canonical that the worker can't deepen,
-# which the smoke can't reliably construct. The canonical-state
-# assertion above + the full-diff.patch content check below cover
-# the production-relevant failure modes (the diff is empty if the
-# workdir can't reach BASE_REF_SHA for any reason).
+# Note: the "update-ref BEFORE clone --shared" ordering can't be
+# directly fenced here. A smoke fixture's canonical gets deepened by
+# the worker's --depth=500 fetch and ends up non-shallow, so
+# clone --shared sets up alternates and the workdir reaches the
+# post-update-ref SHA via alternates regardless of timing. The
+# production-relevant failure mode requires a deeper-than-500-commit
+# shallow canonical. The canonical-state assertion above + the
+# full-diff.patch content check below cover the production-relevant
+# failure modes — an unreachable BASE_REF_SHA produces an empty diff,
+# tripping the content check.
 
 # Positive consumer: the worker should have produced a non-empty
 # full-diff.patch whose contents include the PR feature.

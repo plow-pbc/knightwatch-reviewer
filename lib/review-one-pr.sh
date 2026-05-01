@@ -300,14 +300,11 @@ if ! git -C "$CANONICAL_DIR" fetch origin "$BASE_REF" --depth=500 --quiet; then
     log "$PR_ID: canonical fetch of $BASE_REF failed — aborting"
     exit 1
 fi
-# Collision guard: if PR_BRANCH (a fork PR's branch name) equals
-# BASE_REF (typically "main"), the next fetch would write the PR head
-# to refs/heads/$BASE_REF — and the subsequent update-ref alignment
-# would then overwrite the PR head with origin/$BASE_REF. The worker
-# would check out the base, not the PR, and hit empty-diff abort.
-# Bot review of PR #40 round 1 finding 1 (fork-from-base case).
-# Fail loud; fork PRs that name their branch the same as the base are
-# uncommon and operator-fixable (rename the fork branch).
+# Collision guard: a PR head named the same as the base branch
+# (fork PR from the fork's main → upstream's main) would otherwise
+# get fetched into refs/heads/$BASE_REF, then overwritten by the
+# subsequent update-ref alignment. Operator-fixable (rename the
+# fork branch); fail loud.
 if [ "$PR_BRANCH" = "$BASE_REF" ]; then
     log "$PR_ID: PR head branch '$PR_BRANCH' collides with base '$BASE_REF' — refusing to fetch into refs/heads/$BASE_REF (would corrupt canonical's base ref)"
     exit 1
