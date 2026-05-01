@@ -43,6 +43,23 @@ read_knightwatch_file() {
         echo "knightwatch-config: base ref $base_ref not found in $repo_dir" >&2
         return 2
     fi
-    git -C "$repo_dir" cat-file -e "$full_ref" 2>/dev/null || return 1
-    git -C "$repo_dir" show "$full_ref" 2>/dev/null
+    # Distinguish "path missing on a healthy base ref" (ABSENT, rc 1)
+    # from any other cat-file failure (ERROR, rc 2). cat-file -e exits
+    # 128 in both cases, so the discriminator is stderr — git's
+    # canonical "path 'X' does not exist in 'REF'" message marks the
+    # legitimate-absent case; anything else is a real failure (corrupt
+    # object store, malformed path, etc.) and must NOT silently revive
+    # legacy fallback policy.
+    local cat_err
+    cat_err=$(git -C "$repo_dir" cat-file -e "$full_ref" 2>&1)
+    case $? in
+        0) git -C "$repo_dir" show "$full_ref" 2>/dev/null ;;
+        *)
+            if printf '%s' "$cat_err" | grep -q "does not exist in"; then
+                return 1
+            fi
+            echo "knightwatch-config: cat-file failed for $full_ref: $cat_err" >&2
+            return 2
+            ;;
+    esac
 }
