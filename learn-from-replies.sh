@@ -189,7 +189,7 @@ $MISTAKES
 New /srosro-memorize requests:
 $REPLIES"
 
-RAW=$(printf '%s' "$PROMPT" | codex exec --skip-git-repo-check "Update the top-48 mistakes list and produce per-reply acknowledgments. Output COMMENT_REVIEW_MISTAKES + ACKS tags only." 2>&1)
+RAW=$(printf '%s' "$PROMPT" | codex exec --skip-git-repo-check -c model="gpt-5.5" "Update the top-48 mistakes list and produce per-reply acknowledgments. Output COMMENT_REVIEW_MISTAKES + ACKS tags only." 2>&1)
 
 OUTPUT=$(echo "$RAW" | awk '
     /^codex$/ { capturing=1; buf=""; next }

@@ -46,6 +46,7 @@ echo "[$(date '+%H:%M:%S')] agent=$NAME starting" >> "$LOG_FILE"
 codex exec \
     -C "$REPO_DIR" \
     --dangerously-bypass-approvals-and-sandbox \
+    -c model="gpt-5.5" \
     -c model_reasoning_effort=high \
     -o "$OUT_FILE" \
     "$PROMPT" \
