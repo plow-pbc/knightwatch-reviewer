@@ -126,6 +126,35 @@ compute_review_scope() {
     fi
 }
 
+# format_review_scope SCOPE
+#
+# Maps the scope token (from compute_review_scope) to the human-readable
+# fragment that goes into REVIEW_NOTES. Pure function. Returns 1 on
+# unknown scope (fail-fast) — silently omitting the scope fragment would
+# ship a header without disclosure of what was actually evaluated. The
+# fallback case is wording-fenced separately from incremental so a
+# regression that misframes fallback as incremental trips a smoke
+# (recurring BCR class — see review-header-smoke.sh).
+format_review_scope() {
+    local scope="$1" sha
+    case "$scope" in
+        first)
+            printf '📋 First review of this PR' ;;
+        whole)
+            printf '📋 Whole-PR re-review (`/srosro-review`) — evaluated from scratch, no prior review consulted' ;;
+        incremental:*)
+            sha="${scope#incremental:}"
+            printf '📋 Re-review of changes since `%s`' "${sha:0:7}" ;;
+        fallback:*)
+            sha="${scope#fallback:}"
+            printf '📋 Re-review — clean incremental unavailable for `%s` (rebase, force-push, or merge-from-main); evaluated full PR' "${sha:0:7}" ;;
+        *)
+            printf 'format_review_scope: unknown scope "%s" — internal invariant violated\n' "$scope" >&2
+            return 1
+            ;;
+    esac
+}
+
 # classify_just_test_outcome TEST_EXIT TEST_LOG TEST_TIMEOUT
 #
 # Pure function. Maps `just test`'s (exit, stderr) to (TESTS_RAN,
@@ -170,102 +199,47 @@ classify_just_test_outcome() {
     fi
 }
 
-# prepend_review_header COMMENT_BODY SCOPE REVIEWED_SHA CURRENT_HEAD SKIPPED_CHECKS
+# prepend_review_header COMMENT_BODY NOTE [NOTE...]
 #
-# Single source of truth for the disclosure header that goes right under
-# the auto-post marker. Combines three signals into one concise blockquote:
+# Renders the unified deterministic registry as one blockquote line right
+# under the auto-post marker. Each NOTE is a fully-formed fragment (icon
+# + text, no trailing punctuation); helper joins with ". " and appends a
+# final ".". Worker-side single source of truth: every deterministic
+# signal lives in REVIEW_NOTES (see review-one-pr.sh, search "REVIEW_NOTES=()")
+# — scope, stale-head, skipped pre-checks (tests, KID), gap findings
+# (strict typing, future). One render target keeps the header from
+# splitting into stacked blockquotes and prevents any signal from being
+# hidden by a downstream filter.
 #
-#   1. Scope (always present): what kind of review this is — first,
-#      whole-PR re-review, incremental re-review, or silent-fallback
-#      re-review. Lets the reader interpret findings in the right
-#      context (e.g. an incremental re-review didn't look at unchanged
-#      code; a fallback evaluated the whole PR despite framing).
-#
-#   2. Stale-head warning (conditional): if CURRENT_HEAD differs from
-#      REVIEWED_SHA, the PR head moved during the run and the review is
-#      for an older SHA — appended as one-sentence suffix to the same
-#      blockquote. Empty CURRENT_HEAD (best-effort gh-fetch failed) is
-#      treated as "no warning" — same as matched.
-#
-#   3. Skipped-checks warning (conditional): SKIPPED_CHECKS is a comma-
-#      separated list of pre-rendered labels (icon + name) for any
-#      pre-review checks the worker couldn't run. Empty → no suffix.
-#      Examples of what the worker passes:
-#        ""                               → no suffix
-#        "🧪 Tests"                       → " 🧪 Tests not run — …"
-#        "🧪 Tests,🔍 Prior-art (KID)"    → " 🧪 Tests, 🔍 Prior-art (KID) not run — …"
-#      Adding a new capability (e.g. a future dead-code analyzer) is
-#      one line in the worker — `[ "$X_RAN" = "false" ] && SKIPPED+=("🧹 X")`
-#      — with no helper change. Renderer joins on ", " and appends a
-#      bare " not run." — the icons + labels disclose what skipped, no
-#      generic "diff alone" tail (which overstated degradation when
-#      only one check skipped).
-#
-# Replaces the previous two helpers (prepend_review_scope_note +
-# prepend_stale_head_note) that stacked two separate verbose
-# blockquotes. One concise line keeps the header from dominating the
-# review and gives the reader all signals at the same vertical glance.
-#
-# SCOPE format:
-#   "first"               — first review of this PR
-#   "whole"               — force_whole_pr=true (e.g. /srosro-review)
-#   "incremental:<sha>"   — KNOWN_SHA in local history; specialists got
-#                           git diff KNOWN_SHA..HEAD
-#   "fallback:<sha>"      — KNOWN_SHA NOT in local history (force-push
-#                           / rebase evicted it); worker silently fell
-#                           back to gh pr diff (the full PR)
-#
-# Unknown SCOPE: fail-fast (return 1, stderr diagnostic) — see the
-# default case in compute_review_scope's contract. Caller must check
-# the exit code and abort the run.
+# Empty notes list → fail-fast (return 1, stderr diagnostic). Worker
+# always pushes at least the scope fragment, so an empty REVIEW_NOTES
+# means an internal invariant violation; silently omitting the disclosure
+# would let a regression ship a header-less review (per CLAUDE.md /
+# feedback_fail_hard — crash loudly).
 #
 # Pure string transform — hermetic. All branches fenced in
 # review-header-smoke.sh.
 prepend_review_header() {
-    local comment_body="$1" scope="$2" reviewed_sha="$3" current_head="$4" skipped_checks="$5"
-    local scope_text stale_suffix="" skipped_suffix="" sha
-    case "$scope" in
-        first)
-            scope_text="📋 First review of this PR."
-            ;;
-        whole)
-            scope_text="📋 Whole-PR re-review (\`/srosro-review\`) — evaluated from scratch, no prior review consulted."
-            ;;
-        incremental:*)
-            sha="${scope#incremental:}"
-            scope_text="📋 Re-review of changes since \`${sha:0:7}\`."
-            ;;
-        fallback:*)
-            sha="${scope#fallback:}"
-            scope_text="📋 Re-review — clean incremental unavailable for \`${sha:0:7}\` (rebase, force-push, or merge-from-main); evaluated full PR."
-            ;;
-        *)
-            # scope is internal — only compute_review_scope produces it.
-            # An unknown value means the worker has violated its own
-            # invariant (e.g. a new scope was added to compute_review_scope
-            # but not wired here). Per CLAUDE.md / feedback_fail_hard,
-            # crash loudly instead of silently omitting the very header
-            # this helper exists to add — that would let a regression
-            # ship as a normal-looking review with no disclosure at all.
-            printf 'prepend_review_header: unknown scope "%s" — internal invariant violated, refusing to silently omit header\n' "$scope" >&2
-            return 1
-            ;;
-    esac
-    if [ -n "$current_head" ] && [ "$current_head" != "$reviewed_sha" ]; then
-        stale_suffix=" ⚠️ Stale: head moved from \`${reviewed_sha:0:7}\` to \`${current_head:0:7}\` mid-run — see commands below to re-run."
+    local comment_body="$1"
+    shift
+    if [ "$#" -eq 0 ]; then
+        printf 'prepend_review_header: empty notes list — internal invariant violated, refusing to silently omit header\n' >&2
+        return 1
     fi
-    if [ -n "$skipped_checks" ]; then
-        # Comma in input → ", " for human-readable join. No trailing
-        # generic clause: each label names exactly one degraded surface,
-        # so a blanket "review based on the diff alone" tail overstated
-        # the degradation whenever only one check skipped (e.g. KID-only
-        # skip — tests + specialists + aggregator still ran).
-        skipped_suffix=" ${skipped_checks//,/, } not run."
-    fi
+    local joined=""
+    local note
+    for note in "$@"; do
+        if [ -z "$joined" ]; then
+            joined="$note"
+        else
+            joined="$joined. $note"
+        fi
+    done
+    joined="$joined."
     local first_line rest
     first_line=$(printf '%s' "$comment_body" | head -1)
     rest=$(printf '%s' "$comment_body" | tail -n +2)
-    printf '%s\n> %s%s%s\n\n%s' "$first_line" "$scope_text" "$stale_suffix" "$skipped_suffix" "$rest"
+    printf '%s\n> %s\n\n%s' "$first_line" "$joined" "$rest"
 }
 
 stage_prior_reviews() {

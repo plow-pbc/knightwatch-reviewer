@@ -596,43 +596,43 @@ if [ -n "$DEAD_CODE_CMD" ] && [ -n "$KID_INPUT_DIFF" ]; then
     fi
 fi
 
-# ---- deterministic pre-checks (auto-nits) ----
-# Pre-checks that produce findings the LLM never sees. Each check's
-# stdout (when non-empty AND the helper exited 1) becomes one [nit] in
-# a "Pre-merge auto-checks" section appended to the posted comment — so
-# they cannot be hidden by severity-prioritization or skipped by
-# aggregator judgment.
+# ---- deterministic pre-checks ----
+# Pre-checks that produce findings the LLM never sees. Each check sets a
+# variable here; the unified REVIEW_NOTES assembly block near the end of
+# this file (search "REVIEW_NOTES=()") joins them — along with scope,
+# stale-head, and skipped-checks disclosures — into one blockquote at the
+# top of the posted comment. Single registry, one render target, no
+# severity-prioritization seam to hide them.
 #
 # Helper contract is TRI-STATE — load-bearing per PR #27 round-2 review.
 # Collapsing checker errors into "gap" silently publishes wrong review
 # text when the helper's inputs are broken (bad PROJECT_DIR, malformed
 # config file, refused symlink), so a new check MUST distinguish:
 #
-#     exit 0 — check passed (no nit).            stdout: empty.
-#     exit 1 — real gap.                         stdout: nit text.
+#     exit 0 — check passed.                     stdout: empty.
+#     exit 1 — real gap.                         stdout: gap detail (logged).
 #     exit 2 — checker could not determine.      stderr: error details.
 #
-# Adding a new deterministic check is one block here. Capture stderr +
-# exit code separately and switch on the rc — never `2>/dev/null` the
-# stderr away or treat any non-empty stdout as a nit:
+# Adding a new deterministic check is two blocks: (1) run the helper here,
+# capture stderr + rc separately, and on rc=1 set a NEW_CHECK_NOTE var to
+# the short fragment that should appear in the header; (2) push that var
+# into REVIEW_NOTES at the assembly block. Never `2>/dev/null` the stderr
+# away or treat any non-empty stdout as a gap:
 #
 #     CHECK_STDERR=$(mktemp)
 #     CHECK_OUT=$(cd "$REPO_DIR" && bash -c "$NEW_CHECK_CMD" 2>"$CHECK_STDERR")
 #     CHECK_RC=$?
 #     case $CHECK_RC in
-#         0) ;;                                              # pass: no nit
-#         1) AUTO_NITS+=("**Check name.** … $CHECK_OUT") ;;  # gap: post nit
+#         0) ;;                                              # pass
+#         1) log "$PR_ID: <check> gap — $CHECK_OUT"
+#            NEW_CHECK_NOTE="❌ <short fragment>" ;;          # gap
 #         *) log "$PR_ID: <check> CHECKER ERROR (rc=$CHECK_RC) — $(cat "$CHECK_STDERR")" ;;
 #     esac
 #     rm -f "$CHECK_STDERR"
 #
-# See the strict-typing block below for the canonical implementation.
-#
-# OPERATOR_NAME is overridable via config.env so a forked install can
-# rename "Sam" without touching the strings below.
-OPERATOR_NAME="${OPERATOR_NAME:-Sam}"
-OPERATOR_HANDLE="${OPERATOR_HANDLE:-$BOT_USER}"
-AUTO_NITS=()
+# Personality (sass, opinion, voice) does NOT belong here — every PR sees
+# the byte-identical string and it gets repetitive fast. Keep fragments
+# bare-fact; voice lives in the LLM body where each PR is novel.
 
 # REVIEWER_LIB_DIR is referenced by the per-repo cmds in repos.conf
 # (which call $REVIEWER_LIB_DIR/checks/<lang>-strict-typing.sh). Export
@@ -641,13 +641,14 @@ export REVIEWER_LIB_DIR="$_LIB_DIR"
 
 # Strict-typing pre-check. Per-repo cmd from repos.conf delegates to
 # lib/checks/<lang>-strict-typing.sh. Helper contract is tri-state:
-#   exit 0 — strict mode enforced (no nit).
-#   exit 1 — gap (stdout has gap text → posted as a [nit]).
-#   exit 2 — checker error (stderr has details → logged loud, no nit).
+#   exit 0 — strict mode enforced.
+#   exit 1 — gap (stdout has verbose detail → logged).
+#   exit 2 — checker error (stderr has details → logged loud, no note).
 # The tri-state is load-bearing: collapsing checker errors into "gap"
 # silently publishes wrong review text on broken inputs (bad PROJECT_DIR,
 # malformed config file, refused symlink). Fail-loud here keeps the
 # deterministic section honest.
+STRICT_TYPING_NOTE=""
 STRICT_TYPING_CMD="${STRICT_TYPING_CMDS[$REPO]:-}"
 if [ -n "$STRICT_TYPING_CMD" ]; then
     STRICT_STDERR=$(mktemp)
@@ -657,11 +658,7 @@ if [ -n "$STRICT_TYPING_CMD" ]; then
         0) ;;
         1)
             log "$PR_ID: strict-typing gap detected — $STRICT_GAP"
-            # Sassy by design: ${OPERATOR_NAME} carries the responsibility-
-            # deflection so an author who disagrees has someone to argue
-            # with, and the name is a config var so a forked install can
-            # rename without touching this string.
-            AUTO_NITS+=("**Strict typing.** ${OPERATOR_NAME} stubbornly wants strict mode on every typed-language project. ${STRICT_GAP}. (I guess I agree, but blame ${OPERATOR_NAME}.)")
+            STRICT_TYPING_NOTE="❌ Strict typing not enforced"
             ;;
         *)
             STRICT_ERR=$(cat "$STRICT_STDERR")
@@ -671,7 +668,7 @@ if [ -n "$STRICT_TYPING_CMD" ]; then
     rm -f "$STRICT_STDERR"
 fi
 
-log "$PR_ID: diff is ${#KID_INPUT_DIFF} bytes — auto-nits: ${#AUTO_NITS[@]}"
+log "$PR_ID: diff is ${#KID_INPUT_DIFF} bytes"
 
 # ---- search-roots for cross-repo grep ----
 # Single worker-owned coverage-state seam: every whitelisted sibling
@@ -943,24 +940,10 @@ if [ -z "$COMMENT_BODY" ]; then
     rm -rf "$REPO_DIR"
     exit 1
 fi
-# Render deterministic auto-nits as a "Pre-merge auto-checks" section
-# below the LLM body. Each AUTO_NITS entry is one [nit]; the section is
-# omitted entirely when the array is empty so a clean PR doesn't show
-# the heading on its own. Goes BELOW the LLM-aggregated review so the
-# specialist findings (which are the meat) come first; the auto-checks
-# are nits the reader scans last.
-AUTO_NITS_SECTION=""
-if [ "${#AUTO_NITS[@]}" -gt 0 ]; then
-    AUTO_NITS_SECTION=$'\n\n**Pre-merge auto-checks** — deterministic, never hidden by LLM judgment.\n\n'
-    for nit in "${AUTO_NITS[@]}"; do
-        AUTO_NITS_SECTION+="- [nit] ${nit}"$'\n'
-    done
-fi
-
 # Leading HTML comment is the orchestrator's discriminator for "this is
 # one of our auto-posts" — see the corresponding jq filter in review.sh.
 COMMENT_BODY="$BOT_AUTO_POST_MARKER
-$COMMENT_BODY${AUTO_NITS_SECTION}
+$COMMENT_BODY
 
 ---
 
@@ -970,35 +953,40 @@ _How to use: auto-reviews every new PR and re-reviews after an hour of inactivit
 
 _Generated by [sam's ai review bot](https://github.com/srosro/knightwatch-reviewer)._"
 
-# Top-of-comment disclosure header — one concise blockquote combining
-# (1) the review's scope (first / whole-PR re-review / incremental /
-# silent-fallback) so the reader knows what was actually evaluated, and
-# (2) a stale-head suffix when the PR head moved during this run (e.g.
-# mid-\`just test\` push) and the review is for an older SHA than what's
-# currently on the PR. Best-effort fetch of CURRENT_HEAD: empty on
-# gh-failure, in which case the stale check no-ops (identical to matched).
+# Best-effort fetch of CURRENT_HEAD: empty on gh-failure, in which case
+# the stale-head check no-ops (identical to matched).
 CURRENT_HEAD=$(gh pr view "$PR_NUM" --repo "$REPO" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
 if [ -n "$CURRENT_HEAD" ] && [ "$CURRENT_HEAD" != "$PR_SHA" ]; then
-    log "$PR_ID: head moved during review (reviewed=${PR_SHA:0:7}, now=${CURRENT_HEAD:0:7}) — appending stale-head suffix"
+    log "$PR_ID: head moved during review (reviewed=${PR_SHA:0:7}, now=${CURRENT_HEAD:0:7})"
 fi
 log "$PR_ID: review scope = $REVIEW_SCOPE"
-# TODO(future): rename SKIPPED_CHECKS -> REVIEW_NOTES — the array
-# carries warnings (e.g. KID/Tests skips) that get formatted at the
-# top of the posted review. The signature of prepend_review_header
-# could also absorb review_scope and stale_head as additional notes
-# in the same array. Mechanical refactor; lands cleaner as its own
-# focused PR.
-# Compose the skipped-checks list for the disclosure header. One line
-# per pre-review check the worker tracks; add a new capability (e.g. a
-# future dead-code analyzer) by appending one line — `[ "$X_RAN" =
-# "false" ] && SKIPPED_CHECKS+=("🧹 X")` — no helper change needed.
-SKIPPED_CHECKS=()
-[ "$TESTS_RAN" = "false" ] && SKIPPED_CHECKS+=("🧪 Tests")
-[ "$KID_RAN" = "false" ] && SKIPPED_CHECKS+=("🔍 Prior-art (KID)")
-SKIPPED_CHECKS_CSV=$(IFS=','; printf '%s' "${SKIPPED_CHECKS[*]}")
-log "$PR_ID: skipped checks = ${SKIPPED_CHECKS_CSV:-none}"
-if ! COMMENT_BODY=$(prepend_review_header "$COMMENT_BODY" "$REVIEW_SCOPE" "$PR_SHA" "$CURRENT_HEAD" "$SKIPPED_CHECKS_CSV"); then
-    log "$PR_ID: prepend_review_header failed for scope=$REVIEW_SCOPE — internal invariant violated, aborting (orchestrator will retry)"
+
+# ---- REVIEW_NOTES — single deterministic registry for the top-of-comment
+# blockquote. Every signal that should appear above the LLM body lives
+# here: review scope, stale-head warning, skipped pre-checks (tests, KID),
+# and deterministic gap findings (strict typing, future checks). One
+# fragment per entry, no trailing punctuation — the helper joins with
+# ". " and emits one blockquote line. Order = render order; push in
+# severity sequence (scope → warnings → skips → gaps).
+#
+# Adding a new entry is one line. See the deterministic-pre-checks block
+# above for the runner pattern that produces gap-fragment vars.
+REVIEW_NOTES=()
+if ! SCOPE_NOTE=$(format_review_scope "$REVIEW_SCOPE"); then
+    log "$PR_ID: format_review_scope failed for '$REVIEW_SCOPE' — internal invariant violated, aborting"
+    rm -rf "$REPO_DIR"
+    exit 1
+fi
+REVIEW_NOTES+=("$SCOPE_NOTE")
+[ -n "$CURRENT_HEAD" ] && [ "$CURRENT_HEAD" != "$PR_SHA" ] && \
+    REVIEW_NOTES+=("⚠️ Stale: head moved from \`${PR_SHA:0:7}\` to \`${CURRENT_HEAD:0:7}\` mid-run — see commands below to re-run")
+[ "$TESTS_RAN" = "false" ] && REVIEW_NOTES+=("🧪 Tests not run")
+[ "$KID_RAN"   = "false" ] && REVIEW_NOTES+=("🔍 Prior-art (KID) not run")
+[ -n "$STRICT_TYPING_NOTE" ] && REVIEW_NOTES+=("$STRICT_TYPING_NOTE")
+log "$PR_ID: review-notes = ${#REVIEW_NOTES[@]} (${REVIEW_NOTES[*]:-none})"
+
+if ! COMMENT_BODY=$(prepend_review_header "$COMMENT_BODY" "${REVIEW_NOTES[@]}"); then
+    log "$PR_ID: prepend_review_header failed (notes=${#REVIEW_NOTES[@]}) — internal invariant violated, aborting (orchestrator will retry)"
     rm -rf "$REPO_DIR"
     exit 1
 fi
