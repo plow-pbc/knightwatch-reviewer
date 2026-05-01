@@ -459,6 +459,18 @@ compute_loc_trend() {
     while IFS= read -r d; do
         local meta="$d/meta.json"
         [ -f "$meta" ] || continue
+        # Same author-visibility predicate as stage_prior_reviews:
+        # only count runs the PR author actually saw on GitHub (gh
+        # comment posted: posted_at set; or legacy preserved run:
+        # status=="completed" — only flips on the success path AFTER
+        # the comment has posted in production). Worker aborts that
+        # wrote meta.json post-checkout but never reached gh-comment
+        # are real runs but DIDN'T contribute a review the author
+        # could see, so they shouldn't pad "reviewed N times" / the
+        # trajectory ratio.
+        local visible
+        visible=$(jq -r 'if ((.posted_at // "") != "") or ((.status // "") == "completed") then "yes" else "no" end' "$meta" 2>/dev/null)
+        [ "$visible" = "yes" ] || continue
         local ts sha
         ts=$(jq -r '.started_at // empty' "$meta")
         sha=$(jq -r '.sha // empty' "$meta")
@@ -474,31 +486,41 @@ compute_loc_trend() {
         return 0
     fi
 
-    # First-round and last-round adds for trajectory classification.
+    # First-round and last-round shortstats for trajectory classification.
+    # `git diff` is allowed to fail (SHA evicted by force-push, repo
+    # corruption, etc.) — but a failure must NOT silently degrade to
+    # 0 insertions and then to "STABLE", which would mimic a converged
+    # trajectory and trip the aggregator's loop-breaker on a false
+    # signal. Track exit status separately and emit explicit UNKNOWN.
     local first_round_adds=0 last_round_adds=0
     local first_shortstat last_shortstat first_ts first_sha last_ts last_sha
+    local first_diff_ok=true last_diff_ok=true
     IFS=$'\t' read -r first_ts first_sha <<<"${rounds[0]}"
     IFS=$'\t' read -r last_ts last_sha <<<"${rounds[-1]}"
-    first_shortstat=$(git -C "$repo_dir" diff --shortstat "$base_tip...$first_sha" 2>/dev/null || echo "")
-    last_shortstat=$(git -C "$repo_dir" diff --shortstat "$base_tip...$last_sha" 2>/dev/null || echo "")
-    first_round_adds=$(echo "$first_shortstat" | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+' || echo 0)
-    last_round_adds=$(echo "$last_shortstat" | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+' || echo 0)
-    first_round_adds=${first_round_adds:-0}
-    last_round_adds=${last_round_adds:-0}
+    first_shortstat=$(git -C "$repo_dir" diff --shortstat "$base_tip...$first_sha" 2>/dev/null) || first_diff_ok=false
+    last_shortstat=$(git -C "$repo_dir" diff --shortstat "$base_tip...$last_sha" 2>/dev/null) || last_diff_ok=false
 
-    # Trajectory.
     local trajectory ratio
-    if [ "$first_round_adds" -eq 0 ]; then
-        trajectory="STABLE"
+    if [ "$first_diff_ok" = "false" ] || [ "$last_diff_ok" = "false" ]; then
+        echo "compute_loc_trend: git diff failed for first (${first_sha:0:7}) or last (${last_sha:0:7}) anchor — SHA likely unreachable in $repo_dir" >&2
+        trajectory="UNKNOWN (anchor SHA unreachable; trend disabled)"
     else
-        # Use awk for float math.
-        ratio=$(awk -v a="$last_round_adds" -v b="$first_round_adds" 'BEGIN{printf "%.2f", a/b}')
-        if awk -v r="$ratio" 'BEGIN{exit !(r >= 1.5)}'; then
-            trajectory="GROWING (${ratio}× from first review)"
-        elif awk -v r="$ratio" 'BEGIN{exit !(r <= 0.66)}'; then
-            trajectory="SHRINKING (${ratio}× from first review)"
-        else
+        first_round_adds=$(echo "$first_shortstat" | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+' || echo 0)
+        last_round_adds=$(echo "$last_shortstat" | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+' || echo 0)
+        first_round_adds=${first_round_adds:-0}
+        last_round_adds=${last_round_adds:-0}
+        if [ "$first_round_adds" -eq 0 ]; then
             trajectory="STABLE"
+        else
+            # Use awk for float math.
+            ratio=$(awk -v a="$last_round_adds" -v b="$first_round_adds" 'BEGIN{printf "%.2f", a/b}')
+            if awk -v r="$ratio" 'BEGIN{exit !(r >= 1.5)}'; then
+                trajectory="GROWING (${ratio}× from first review)"
+            elif awk -v r="$ratio" 'BEGIN{exit !(r <= 0.66)}'; then
+                trajectory="SHRINKING (${ratio}× from first review)"
+            else
+                trajectory="STABLE"
+            fi
         fi
     fi
 

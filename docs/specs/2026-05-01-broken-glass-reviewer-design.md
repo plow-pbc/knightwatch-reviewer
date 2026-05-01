@@ -224,21 +224,20 @@ Example output for `cncorp/plow#534` round 4:
 
 New scratch file written by `lib/review-one-pr.sh` before specialist fan-out. The per-round SHAs come from each run's `meta.json.sha` (the canonical post-checkout `REVIEWED_SHA`); the run-directory listing is just the filter for "which runs belong to this PR".
 
-Format (3-line summary + per-round table):
+Format (one trajectory sentence + per-round table):
 
 ```markdown
 # LOC trend
 
-This PR has been reviewed N times. Across rounds, base...head has gone from
-+START_ADDS / −START_DELS to +END_ADDS / −END_DELS (FILE_DELTA files).
+This PR has been reviewed N times. Trajectory: GROWING (X.X× from first review) | STABLE | SHRINKING | UNKNOWN.
 
-Trajectory: GROWING (X.X× from first review) | STABLE | SHRINKING.
-
-| Round | Timestamp | SHA | base...head | Files |
-|---|---|---|---|---|
-| 1 | <ts> | <sha> | +A / −D | F |
-| 2 | ... | ... | ... | ... |
+| Round | Timestamp | SHA | base...head |
+|---|---|---|---|
+| 1 | <ts> | <sha> | +A / −D (F files) |
+| 2 | ... | ... | ... |
 ```
+
+The `base...head` cell carries `git diff --shortstat` raw output (e.g. `2 files changed, 18 insertions(+), 4 deletions(-)`). Trajectory is `UNKNOWN` when either the first-round or last-round anchor SHA is unreachable (e.g. force-pushed away) — never silently `STABLE`, which would look like a converged signal to the aggregator's loop-breaker.
 
 `base...head` is `git diff --shortstat <base_tip>...<sha>` (three-dot, matches GitHub's "Files changed" view) — the same shape PR review uses for `FULL_PR_DIFF`. The helper lives in `lib/run-dir.sh` next to the existing run-dir helpers (`stage_prior_reviews`, etc.); the orchestrator calls it before specialist fan-out and writes the table.
 
