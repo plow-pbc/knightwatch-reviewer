@@ -325,14 +325,75 @@ stage_prior_reviews() {
 # state_set-failed path: meta.json's posted_at lands BEFORE state_set
 # fires, so this helper still sees the latest review even when state.json
 # never got the PREV_BODY/sha update.
+#
+# Sibling helpers latest_author_visible_review_sha and
+# latest_author_visible_review_approved expose the same selection's
+# reviewed SHA and approval verdict — together they form the "one
+# author-visible round projection" the BCR-class fence demands so the
+# three values (body, sha, approved) can't drift across consumers.
 latest_author_visible_review() {
     local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"
-    local latest=""
-    local prior_run
+    local latest
+    latest=$(_latest_author_visible_run_dir "$state_dir" "$repo_slug" "$pr_num" "$current_run_dir")
+    [ -n "$latest" ] && cat "$latest/agents/aggregator/output.md" 2>/dev/null
+}
+
+# _latest_author_visible_run_dir — internal: returns the path of the
+# most recent author-visible run dir (or empty if none). Single owner
+# of the "last one wins" selection so body/sha/approved helpers can't
+# pick different runs.
+_latest_author_visible_run_dir() {
+    local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"
+    local latest="" prior_run
     while IFS= read -r prior_run; do
         latest="$prior_run"  # last one wins (iterator is sorted ascending)
     done < <(author_visible_runs_iter "$state_dir" "$repo_slug" "$pr_num" "$current_run_dir")
-    [ -n "$latest" ] && cat "$latest/agents/aggregator/output.md" 2>/dev/null
+    printf '%s' "$latest"
+}
+
+# latest_author_visible_review_sha <state_dir> <repo_slug> <pr_num> <current_run_dir>
+#   stdout: reviewed SHA of the most recent author-visible prior review,
+#   or empty if no prior author-visible run exists.
+#
+# SHA preference matches author_visible_rounds: .reviewed_sha (post-
+# checkout HEAD the worker actually evaluated) wins over .sha
+# (orchestrator-enumerated, can drift from HEAD on a fast-cadence race).
+# Companion to latest_author_visible_review (body) and
+# latest_author_visible_review_approved — replaces state.json's
+# `state_get "sha"` read in review-one-pr.sh, closing the same BCR race
+# the body helper closed: gh-post-succeeded + state_set-failed leaves
+# state.json stale, but meta.json was stamped before state_set ran.
+latest_author_visible_review_sha() {
+    local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"
+    local latest
+    latest=$(_latest_author_visible_run_dir "$state_dir" "$repo_slug" "$pr_num" "$current_run_dir")
+    [ -z "$latest" ] && return 0
+    jq -r '.reviewed_sha // .sha // empty' "$latest/meta.json" 2>/dev/null
+}
+
+# latest_author_visible_review_approved <state_dir> <repo_slug> <pr_num> <current_run_dir>
+#   stdout: "true" if the latest author-visible round's aggregator output
+#   ended in a `VERDICT: APPROVE` (or `VERDICT: APPROVE — pending: ...`)
+#   line, "false" if it ended in `VERDICT: COMMENT`, or empty if no prior
+#   author-visible run exists.
+#
+# Parsed from output.md rather than state.json so the body, sha, and
+# approved values all anchor to the same round — same BCR fence as the
+# other two helpers. Aggregator contract (prompts/aggregator.md): final
+# line is `VERDICT: APPROVE`, `VERDICT: APPROVE — pending: ...`, or
+# `VERDICT: COMMENT`. Match anchored at start-of-line on the last 10
+# lines so trailing prose can't false-positive.
+latest_author_visible_review_approved() {
+    local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"
+    local latest
+    latest=$(_latest_author_visible_run_dir "$state_dir" "$repo_slug" "$pr_num" "$current_run_dir")
+    [ -z "$latest" ] && return 0
+    if tail -n 10 "$latest/agents/aggregator/output.md" 2>/dev/null \
+            | grep -qE '^VERDICT: APPROVE'; then
+        printf 'true'
+    else
+        printf 'false'
+    fi
 }
 
 # author_visible_rounds <state_dir> <repo_slug> <pr_num> <current_run_dir>

@@ -116,6 +116,16 @@ assert_grep "aggregator.md should fence the 2+ prior rounds threshold" \
 assert_grep "aggregator.md should fence prior-rounds-only language ('any prior round')" \
     "any prior round" prompts/aggregator.md
 
+# Negative fence: the positive "any prior round" assertion above is
+# satisfied by the bad regression string "this round or any prior round"
+# too (it contains "any prior round" as a substring). Reject the literal
+# bad string so a regression to the Round-5 wording trips this smoke.
+echo "  asserting aggregator.md has no 'this round or any prior round' regression..."
+if grep -qF "this round or any prior round" prompts/aggregator.md; then
+    echo "FAIL: aggregator.md regressed to old 'this round or any prior round' wording"
+    exit 1
+fi
+
 # Pre-PMF lens (critic.md) — same prior-rounds-only fence; catches a
 # regression of the Round-5 spec/critic drift where critic.md said "this
 # round or any prior round" (unreachable, since the critic and Bug-Class-
@@ -123,5 +133,14 @@ assert_grep "aggregator.md should fence prior-rounds-only language ('any prior r
 echo "  asserting Pre-PMF lens trigger phrases in critic.md..."
 assert_grep "critic.md should fence prior-rounds-only language ('any prior round')" \
     "any prior round" prompts/critic.md
+
+# Negative fence (matches the aggregator.md fence above) — same
+# false-positive risk: the positive assertion is satisfied by the bad
+# regression string. Reject the literal bad string here too.
+echo "  asserting critic.md has no 'this round or any prior round' regression..."
+if grep -qF "this round or any prior round" prompts/critic.md; then
+    echo "FAIL: critic.md regressed to old 'this round or any prior round' wording"
+    exit 1
+fi
 
 echo "  PASS"

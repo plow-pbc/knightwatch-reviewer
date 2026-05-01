@@ -475,19 +475,29 @@ case "$(classify_gh_pr_diff_failure "$FULL_PR_DIFF" "$GH_DIFF_ERR")" in
 esac
 KID_INPUT_DIFF="$FULL_PR_DIFF"
 
-KNOWN_SHA=$(state_get "$PR_ID" "sha")
-PREV_APPROVED=""
-
-# PREV_BODY (what the author saw last) is sourced from runs/ — the same
+# All three "what did the author see last?" values (body, sha, approved)
+# source from runs/ via the latest_author_visible_review_* helpers — same
 # source-of-truth that prior-reviews.md and the LOC-trend table read from.
 # Sourcing from state.json instead would drift on the "gh post succeeded
 # but state_set failed" path: meta.json.posted_at is stamped right after
 # the gh comment lands, so runs/ correctly reflects the latest posted
-# review even when the subsequent state_set never persisted PREV_BODY.
+# review even when the subsequent state_set never persisted these fields.
+# All three helpers consume the same author_visible_runs_iter selection,
+# so body/sha/approved can't pick different rounds.
+#
 # Returns empty on first review (no prior author-visible run); empty
 # PREV_BODY then drives previous-review.md to be empty, which the
 # momentum gate uses as its "first review, skip momentum" signal.
+#
+# Note: review.sh (orchestrator) still reads `state_get "sha"` as its
+# "have we already reviewed this SHA?" gate — that's a different
+# question (orchestrator scheduling, not worker scope) and stays on
+# state.json. state_set still stamps these values to state.json below
+# for that orchestrator gate and any other legacy consumers; only the
+# worker's READ path moved to runs/.
 PREV_BODY=$(latest_author_visible_review "$STATE_DIR" "$REPO_SLUG_FOR_RUN" "$PR_NUM" "$RUN_DIR")
+KNOWN_SHA=$(latest_author_visible_review_sha "$STATE_DIR" "$REPO_SLUG_FOR_RUN" "$PR_NUM" "$RUN_DIR")
+PREV_APPROVED=$(latest_author_visible_review_approved "$STATE_DIR" "$REPO_SLUG_FOR_RUN" "$PR_NUM" "$RUN_DIR")
 [ "$FORCE_WHOLE_PR" = "true" ] && PREV_BODY=""
 
 # Optimization: use a local incremental diff for KID_INPUT_DIFF ONLY
@@ -499,7 +509,6 @@ PREV_BODY=$(latest_author_visible_review "$STATE_DIR" "$REPO_SLUG_FOR_RUN" "$PR_
 # `prepend_review_header` emit a `fallback:<sha>` scope disclosure at
 # the top of the review (via REVIEW_SCOPE).
 if [ -n "$KNOWN_SHA" ] && [ "$FORCE_WHOLE_PR" != "true" ]; then
-    PREV_APPROVED=$(state_get "$PR_ID" "approved")
     if is_clean_incremental_available "$REPO_DIR" "$KNOWN_SHA"; then
         KID_INPUT_DIFF=$(git -C "$REPO_DIR" diff "$KNOWN_SHA..HEAD")
         log "$PR_ID: clean incremental diff since ${KNOWN_SHA:0:7}"
