@@ -345,11 +345,24 @@ seq 1 50 > "$REPO/round2.txt"
 git -C "$REPO" add round2.txt && git -C "$REPO" commit -qm "round2"
 SHA2=$(git -C "$REPO" rev-parse HEAD)
 
-# Build a fake STATE_DIR/runs layout.
+# Build a fake STATE_DIR/runs layout. compute_loc_trend reads SHA +
+# started_at from each run's meta.json (the canonical source-of-truth
+# file, written post-checkout with the REVIEWED_SHA), so the fixture
+# writes one per round. The dir name's SHA suffix is what the
+# orchestrator wrote pre-checkout (PR_SHA prefix); the function
+# deliberately ignores it.
 STATE_DIR="$TMPDIR/state"
 mkdir -p "$STATE_DIR/runs"
-mkdir -p "$STATE_DIR/runs/cncorp_plow__999__20260501T000000000Z__${SHA1:0:7}"
-mkdir -p "$STATE_DIR/runs/cncorp_plow__999__20260501T010000000Z__${SHA2:0:7}"
+mk_run_dir() {
+    local dir="$1" started_at="$2" sha="$3"
+    mkdir -p "$dir"
+    jq -n --arg sha "$sha" --arg started_at "$started_at" \
+        '{sha: $sha, started_at: $started_at}' > "$dir/meta.json"
+}
+mk_run_dir "$STATE_DIR/runs/cncorp_plow__999__20260501T000000000Z__${SHA1:0:7}" \
+    "2026-05-01T00:00:00Z" "$SHA1"
+mk_run_dir "$STATE_DIR/runs/cncorp_plow__999__20260501T010000000Z__${SHA2:0:7}" \
+    "2026-05-01T01:00:00Z" "$SHA2"
 
 OUT="$TMPDIR/loc-trend.md"
 
@@ -406,10 +419,19 @@ Add the `compute_loc_trend` function near the other helpers (above the main body
 # PR_ID (which carries a "#N" suffix). The function converts to
 # underscore-form for filesystem matching.
 #
-# Reads $state_dir/runs/<owner>_<repo>__<pr_num>__<ts>__<sha>/ entries,
-# computes git diff --shortstat <merge_base>..<sha> for each, emits a
-# markdown table sorted by timestamp. Handles empty runs/ (first review)
-# without aborting.
+# Iterates $state_dir/runs/<owner>_<repo>__<pr_num>__<ts>__<sha>/ entries
+# (dir-name pattern is the filter — which runs belong to this PR),
+# reads each run's meta.json for the canonical SHA + started_at, and
+# computes git diff --shortstat <merge_base>..<sha> per round. Emits a
+# markdown table sorted by timestamp. Handles empty runs/ (first
+# review) and pre-checkout abort dirs (no meta.json) without aborting.
+#
+# SHA source: meta.json.sha (REVIEWED_SHA, captured post-checkout) —
+# NOT the dir name's SHA suffix, which encodes the orchestrator's
+# enumeration PR_SHA prefix. When a push lands during the worker's
+# fetch window, those two diverge; reading meta.json keeps loc-trend
+# anchored to the SHA the worker actually reviewed (same source-of-
+# truth contract as full-diff.patch / commits.md).
 compute_loc_trend() {
     local repo="$1" pr_num="$2" repo_dir="$3" merge_base="$4" state_dir="$5"
     local owner_repo="${repo//\//_}"
@@ -423,13 +445,15 @@ compute_loc_trend() {
         return 0
     fi
 
-    # Collect round data.
+    # Collect round data. Pre-checkout abort dirs leave no meta.json;
+    # those didn't review anything so they're skipped from the trend.
     local rounds=()
     while IFS= read -r d; do
-        local b ts sha
-        b=$(basename "$d")
-        ts=$(echo "$b" | awk -F'__' '{print $3}')
-        sha=$(echo "$b" | awk -F'__' '{print $4}')
+        local meta="$d/meta.json"
+        [ -f "$meta" ] || continue
+        local ts sha
+        ts=$(jq -r '.started_at // empty' "$meta")
+        sha=$(jq -r '.sha // empty' "$meta")
         [ -z "$ts" ] || [ -z "$sha" ] && continue
         rounds+=("$ts:$sha")
     done < <(find "$runs_dir" -maxdepth 1 -type d -name "${owner_repo}__${pr_num}__*" 2>/dev/null | sort)
