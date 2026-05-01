@@ -41,6 +41,10 @@ test:
     bash lib/tests/diff-build-smoke.sh
 
     echo ""
+    echo "=== knightwatch-config smoke test ==="
+    bash lib/tests/knightwatch-config-smoke.sh
+
+    echo ""
     echo "=== sibling-symlinks smoke test ==="
     bash lib/tests/sibling-symlinks-smoke.sh
 
