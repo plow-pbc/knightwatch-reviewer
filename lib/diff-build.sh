@@ -55,3 +55,44 @@ extract_touched_files_both_sides() {
         | sed 's|^[ab]/||' \
         | LC_ALL=C sort -u
 }
+
+# classify_gh_pr_diff_failure STDOUT STDERR
+#
+# Pure function. Maps `gh pr diff`'s (stdout, stderr) into one of three
+# outcome tokens — caller switches on the token to pick the right next
+# step:
+#
+#   "ok"            — non-empty stdout; no fallback needed.
+#   "cap-exceeded"  — empty stdout + stderr names GitHub's 300-file
+#                     diff cap. Caller should retry locally with
+#                     `git diff origin/<base>...HEAD` (same three-dot
+#                     semantics as `gh pr diff`, no server-side cap).
+#                     The cap is reachable on legitimate-but-large
+#                     PRs (300-650 files); the prior "auth/network"
+#                     abort message was wrong-cause AND lost
+#                     reviewable PRs entirely.
+#   "error"         — empty stdout + stderr names something else
+#                     (auth, network, rate-limit, transient gh
+#                     failure). Caller should abort loudly with the
+#                     stderr text; no local fallback can recover.
+#
+# Pattern matched: GitHub returns HTTP 406 on the diff cap, with
+# stderr wording that varies — observed forms include
+# "exceeded max files (300)" and
+# "exceeded the maximum number of files". Match on multiple
+# alternatives so a wording wobble on either side doesn't regress
+# this back to "auth/network". The HTTP 406 prefix alone is also
+# sufficient: the diff endpoint uses 406 only for this cap, so the
+# status code is a reliable backstop even if both phrasings change.
+classify_gh_pr_diff_failure() {
+    local stdout="$1" stderr="$2"
+    if [ -n "$stdout" ]; then
+        printf 'ok'
+        return
+    fi
+    if printf '%s' "$stderr" | grep -qiE 'HTTP 406|exceeded max files|maximum number of files'; then
+        printf 'cap-exceeded'
+        return
+    fi
+    printf 'error'
+}

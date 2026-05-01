@@ -382,12 +382,35 @@ fi
 # both KID_INPUT_DIFF (the diff specialists review) by default, and
 # FULL_PR_DIFF (the aggregator's "verify prior findings against
 # current state" reference) always.
-FULL_PR_DIFF=$(gh pr diff "$PR_NUM" --repo "$REPO" 2>/dev/null)
-if [ -z "$FULL_PR_DIFF" ]; then
-    log "$PR_ID: gh pr diff returned empty (auth/network) — aborting before specialists run"
-    rm -rf "$REPO_DIR"
-    exit 1
-fi
+#
+# Capture stderr separately and classify the failure mode. GitHub
+# caps `gh pr diff` at 300 files (HTTP 406 with "exceeded max files");
+# the prior code swallowed stderr via `2>/dev/null` and reported every
+# empty-stdout case as "auth/network", which lost reviewable
+# 300-650-file PRs entirely. On the cap, fall back to a local
+# `git diff origin/<base>...HEAD` (same three-dot semantics, no cap).
+GH_DIFF_STDERR=$(mktemp)
+FULL_PR_DIFF=$(gh pr diff "$PR_NUM" --repo "$REPO" 2>"$GH_DIFF_STDERR")
+GH_DIFF_ERR=$(cat "$GH_DIFF_STDERR")
+rm -f "$GH_DIFF_STDERR"
+case "$(classify_gh_pr_diff_failure "$FULL_PR_DIFF" "$GH_DIFF_ERR")" in
+    ok) ;;
+    cap-exceeded)
+        log "$PR_ID: gh pr diff hit GitHub's 300-file cap — falling back to local git diff origin/${DEFAULT_BRANCH}...HEAD"
+        FULL_PR_DIFF=$(git -C "$REPO_DIR" diff "origin/$DEFAULT_BRANCH"...HEAD)
+        if [ -z "$FULL_PR_DIFF" ]; then
+            log "$PR_ID: local git diff fallback also empty (origin/${DEFAULT_BRANCH} missing in workdir?) — aborting"
+            rm -rf "$REPO_DIR"
+            exit 1
+        fi
+        log "$PR_ID: local fallback diff size = ${#FULL_PR_DIFF} bytes"
+        ;;
+    error)
+        log "$PR_ID: gh pr diff failed — aborting before specialists run. stderr: ${GH_DIFF_ERR:-no stderr}"
+        rm -rf "$REPO_DIR"
+        exit 1
+        ;;
+esac
 KID_INPUT_DIFF="$FULL_PR_DIFF"
 
 KNOWN_SHA=$(state_get "$PR_ID" "sha")

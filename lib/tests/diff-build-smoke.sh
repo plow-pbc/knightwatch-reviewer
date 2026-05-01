@@ -232,4 +232,85 @@ index abc..def 100644
  z = 3
 '
 
-echo "  PASS (4 is_clean + 7 extract_touched_files_both_sides scenarios; rename/delete fences for PR #31 Narrow-Fix)"
+# =====================================================================
+# classify_gh_pr_diff_failure — (stdout, stderr) → outcome token
+# =====================================================================
+# Worker switches on the token: "ok" passes through, "cap-exceeded"
+# triggers a local git diff fallback, "error" aborts loudly. The
+# tri-state is load-bearing — collapsing "cap-exceeded" into "error"
+# (the prior worker behavior with `2>/dev/null`) lost reviewable
+# 300-650-file PRs to a wrong-cause "auth/network" abort.
+
+assert_classify_gh() {
+    local stdout="$1" stderr="$2" expected="$3" desc="$4"
+    local got
+    got=$(classify_gh_pr_diff_failure "$stdout" "$stderr")
+    if [ "$got" != "$expected" ]; then
+        echo "FAIL: classify_gh_pr_diff_failure — $desc: expected '$expected', got '$got'"
+        exit 1
+    fi
+}
+
+echo "  classify_gh: non-empty stdout → ok (no fallback needed)..."
+assert_classify_gh \
+    "$(printf 'diff --git a/foo b/foo\nindex abc..def\n--- a/foo\n+++ b/foo\n@@\n-x\n+y\n')" \
+    "" \
+    "ok" \
+    "non-empty stdout passes through"
+
+echo "  classify_gh: empty stdout + HTTP 406 status (the reliable backstop) → cap-exceeded..."
+# HTTP 406 is the underlying status — gh always prefixes API errors
+# with `HTTP NNN`. Match on this even if the textual reason changes.
+assert_classify_gh \
+    "" \
+    "HTTP 406: this diff is too large to render" \
+    "cap-exceeded" \
+    "HTTP 406 status alone fences the cap"
+
+echo "  classify_gh: empty stdout + 'exceeded max files (300)' stderr → cap-exceeded (user-diagnosed wording)..."
+assert_classify_gh \
+    "" \
+    "gh: exceeded max files (300)" \
+    "cap-exceeded" \
+    "user-diagnosed wording from PR #31 follow-up"
+
+echo "  classify_gh: empty stdout + 'maximum number of files' stderr → cap-exceeded (alt phrasing)..."
+assert_classify_gh \
+    "" \
+    "pull request diff exceeded the maximum number of files: 300" \
+    "cap-exceeded" \
+    "GitHub API verbose phrasing"
+
+echo "  classify_gh: empty stdout + auth-failure stderr → error..."
+assert_classify_gh \
+    "" \
+    "gh: To get started with GitHub CLI, please run:  gh auth login" \
+    "error" \
+    "auth failure must NOT be misclassified as cap-exceeded"
+
+echo "  classify_gh: empty stdout + network-failure stderr → error..."
+assert_classify_gh \
+    "" \
+    "gh: error connecting to api.github.com" \
+    "error" \
+    "network failure must NOT be misclassified as cap-exceeded"
+
+echo "  classify_gh: empty stdout + empty stderr → error (no signal at all, abort safely)..."
+assert_classify_gh \
+    "" \
+    "" \
+    "error" \
+    "totally empty failure → error (not ok, not cap-exceeded)"
+
+# Wording-fence: the GitHub error string for the cap mentions both
+# "exceeded" and "300". Match must NOT be tied to the exact "300"
+# constant — GitHub could raise the cap to 500 without changing the
+# helper's behavior. Check that wording-only changes work.
+echo "  classify_gh: empty stdout + cap-stderr with different number → still cap-exceeded..."
+assert_classify_gh \
+    "" \
+    "HTTP 406: pull request diff exceeded the maximum number of files: 500" \
+    "cap-exceeded" \
+    "cap-exceeded match must not pin to a specific file count"
+
+echo "  PASS (4 is_clean + 7 extract_touched_files_both_sides + 8 classify_gh_pr_diff_failure scenarios; rename/delete + 300-file-cap fences for PR #31)"
