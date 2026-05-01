@@ -619,4 +619,36 @@ if grep -q 'force_whole=true' "$LOG_FILE"; then
     cat "$LOG_FILE"; exit 1
 fi
 
-echo "  PASS (13 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence)"
+# Scenario 14: TMPDIR pin survives both inherited TMPDIR and a config.env
+# override. The structural grep at suite setup catches the literal
+# `export TMPDIR="$STATE_DIR/tmp"`, but it can't tell whether the line
+# sits BEFORE or AFTER `tracked-repos.sh` (which sources $STATE_DIR/
+# config.env). Position matters: if a regression moves the pin above
+# tracked-repos.sh, a config.env-set TMPDIR would silently route mktemp
+# back to /tmp — re-introducing the unit-private /tmp failure mode while
+# the source still appears to have the fence. This scenario asserts the
+# pin's effective placement, not just its presence.
+echo "  scenario 14: TMPDIR pin overrides both inherited TMPDIR and config.env (post-load placement fence)..."
+unset MOCK_COMMENTS_PAGE1_FILE MOCK_COMMENTS_PAGE2_FILE
+export MOCK_COMMENTS_FILE="$TMPDIR/comments.json"
+state_set "cncorp/plow#1" "abc123" false "prior review body" "$(($(date +%s) - 3600))"
+rm -f "$STATE_DIR/tmp/pr-review-trigger".*
+echo 'export TMPDIR="/tmp/should-not-be-honored-via-config-env"' > "$STATE_DIR/config.env"
+printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+: > "$LOG_FILE"
+TMPDIR="/tmp/should-not-be-honored-via-inheritance" \
+    bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
+rm -f "$STATE_DIR/config.env"
+n=$(count_dispatches)
+if [ "$n" -ne 1 ]; then
+    echo "FAIL scenario 14: expected 1 dispatch, got $n"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+if ! grep -qF "trigger_file=$STATE_DIR/tmp/pr-review-trigger" "$LOG_FILE"; then
+    echo "FAIL scenario 14 (post-load TMPDIR placement regression): expected trigger_file=\$STATE_DIR/tmp/pr-review-trigger.* but got something else — config.env or inherited TMPDIR shadowed the pin, which means the unconditional export now sits BEFORE tracked-repos.sh in review.sh"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+
+echo "  PASS (14 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence)"
