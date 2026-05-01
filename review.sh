@@ -77,6 +77,8 @@ for REPO in "${REPOS[@]}"; do
         FORCE_REVIEW=false
         FORCE_WHOLE_PR=false
         TRIGGER_FILE=""
+        TRIGGER_USER=""
+        TRIGGER_BODY=""
 
         if [ -n "$KNOWN_SHA" ]; then
             REVIEWED_AT=$(state_get "$PR_ID" "reviewed_at")
@@ -142,9 +144,12 @@ for REPO in "${REPOS[@]}"; do
                     # shape intent inference + aggregator on the
                     # auto-approve path.
                     if is_trusted_repo_author "$REPO" "$TRIGGER_USER"; then
+                        # Capture body now; materialize the file post-skip
+                        # (below) so an unchanged-SHA /srosro-update-review
+                        # never allocates a tempfile only the worker would
+                        # have cleaned up. STATE_DIR/tmp is durable now
+                        # (no PrivateTmp tear-down to mask the leak).
                         TRIGGER_BODY=$(printf '%s' "$TRIGGER_JSON" | jq -r '.body // ""')
-                        TRIGGER_FILE=$(mktemp -t pr-review-trigger.XXXXXX)
-                        printf 'Comment by @%s:\n\n%s\n' "$TRIGGER_USER" "$TRIGGER_BODY" > "$TRIGGER_FILE"
                     else
                         log "$PR_ID: trigger from @$TRIGGER_USER — not staging trigger-comment.md (no push access)"
                     fi
@@ -198,6 +203,15 @@ for REPO in "${REPOS[@]}"; do
                 log "$PR_ID: last commit $(( AGE_SECS / 60 ))m ago — waiting for $(( STABLE_SECS / 3600 ))h stability"
                 continue
             fi
+        fi
+
+        # Materialize the trigger-comment file only now that we know we're
+        # actually dispatching (past every `continue`). Earlier creation
+        # leaked stale files under $STATE_DIR/tmp on the unchanged-SHA
+        # /srosro-update-review skip path, where no worker runs to clean up.
+        if [ -n "$TRIGGER_BODY" ]; then
+            TRIGGER_FILE=$(mktemp -t pr-review-trigger.XXXXXX)
+            printf 'Comment by @%s:\n\n%s\n' "$TRIGGER_USER" "$TRIGGER_BODY" > "$TRIGGER_FILE"
         fi
 
         # Tab-separated spec so titles with spaces survive.

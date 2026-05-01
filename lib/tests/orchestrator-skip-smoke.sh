@@ -186,6 +186,25 @@ grep -q '^KillMode=process$' "$PROJECT_ROOT/systemd/pr-reviewer.service" || {
     exit 1
 }
 
+# --- TMPDIR fence (orchestrator + worker) ---------------------------------
+# pr-reviewer.service combines PrivateTmp=yes (sandbox) with
+# KillMode=process (workers detach). When the orchestrator returns, the
+# unit-private /tmp gets torn down a few seconds later — any detached
+# worker doing `mktemp` in /tmp lands in a dead mount namespace and the
+# call fails with `No such file or directory`. Both review.sh and
+# lib/review-one-pr.sh must redirect tempfiles to $STATE_DIR/tmp, which
+# is durable across the unit's lifecycle. This grep fences a regression
+# that drops the export from either script (in production, the worker
+# inherits TMPDIR from the orchestrator; the worker's own fallback only
+# fires under standalone smoke-test invocation, so the orchestrator path
+# alone is not enough — both must be covered).
+for f in "$PROJECT_ROOT/review.sh" "$PROJECT_ROOT/lib/review-one-pr.sh"; do
+    grep -qF 'export TMPDIR="${TMPDIR:-$STATE_DIR/tmp}"' "$f" || {
+        echo "FAIL setup: $(basename "$f") is missing the \$STATE_DIR/tmp TMPDIR fence — workers will hit unit-private /tmp"
+        exit 1
+    }
+done
+
 export MOCK_COMMENTS_FILE="$TMPDIR/comments.json"
 # Default trust set for the existing scenarios: srosro is the bot operator
 # and "someuser" is the realistic external collaborator shape. Scenarios
@@ -195,7 +214,12 @@ export MOCK_TRUSTED_USERS="srosro someuser"
 
 run_orchestrator() {
     : > "$LOG_FILE"   # reset
-    bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
+    # Strip any inherited TMPDIR so review.sh's
+    # `export TMPDIR="${TMPDIR:-$STATE_DIR/tmp}"` fallback fires
+    # deterministically — otherwise the suite's own TMPDIR shadows the
+    # production fallback and trigger files land outside $STATE_DIR/tmp,
+    # making the fence assertions below moot.
+    env -u TMPDIR bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
 }
 
 count_dispatches() {
@@ -248,8 +272,8 @@ if ! grep -q 'force_whole=true' "$LOG_FILE"; then
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
-if ! grep -qE 'trigger_file=[^ ]*/pr-review-trigger' "$LOG_FILE"; then
-    echo "FAIL scenario 3: expected trigger_file=<path>/pr-review-trigger.* in dispatch (someuser is in MOCK_TRUSTED_USERS)"
+if ! grep -qF "trigger_file=$STATE_DIR/tmp/pr-review-trigger" "$LOG_FILE"; then
+    echo "FAIL scenario 3: expected trigger_file=\$STATE_DIR/tmp/pr-review-trigger.* in dispatch (someuser is in MOCK_TRUSTED_USERS) — anchors the bugfix path so a regression to /tmp fails here"
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
@@ -292,8 +316,8 @@ if ! grep -q 'force_whole=true' "$LOG_FILE"; then
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
-if ! grep -qE 'trigger_file=[^ ]*/pr-review-trigger' "$LOG_FILE"; then
-    echo "FAIL scenario 5: expected trigger_file=<path>/pr-review-trigger.* in dispatch (srosro is in MOCK_TRUSTED_USERS)"
+if ! grep -qF "trigger_file=$STATE_DIR/tmp/pr-review-trigger" "$LOG_FILE"; then
+    echo "FAIL scenario 5: expected trigger_file=\$STATE_DIR/tmp/pr-review-trigger.* in dispatch (srosro is in MOCK_TRUSTED_USERS) — anchors the bugfix path"
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
@@ -321,7 +345,7 @@ if ! grep -q 'force_whole=true' "$LOG_FILE"; then
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
-if grep -qE 'trigger_file=[^ ]*/pr-review-trigger' "$LOG_FILE"; then
+if grep -qE 'trigger_file=[^[:space:]]+' "$LOG_FILE"; then
     echo "FAIL scenario 6 (trust gate regression): expected trigger_file empty for untrusted commenter, but a path was staged"
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
@@ -332,13 +356,27 @@ fi
 # at the orchestrator instead of burning a worker. The trigger stays open
 # until commits land. The longer command must NOT also satisfy the
 # /srosro-review (whole-PR) substring check.
+#
+# Plus: after the skip, no trigger-comment tempfile may remain in
+# $STATE_DIR/tmp. someuser is in MOCK_TRUSTED_USERS, so a regression that
+# materializes the file BEFORE the skip check would leak a stale tempfile
+# the worker never cleans up (no worker runs). PrivateTmp's tear-down
+# used to mask this leak in production; with tempfiles routed to the
+# durable $STATE_DIR/tmp, the leak is real and must be fenced.
 echo "  scenario 7: same SHA + /srosro-update-review (skipped on unchanged SHA)..."
+rm -f "$STATE_DIR/tmp/pr-review-trigger".*  # clear residue from earlier scenarios
 printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-update-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 run_orchestrator
 n=$(count_dispatches)
 if [ "$n" -ne 0 ]; then
     echo "FAIL scenario 7 (incremental same-SHA skip regression): expected 0 dispatches, got $n"
     echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+leaked=$(find "$STATE_DIR/tmp" -maxdepth 1 -name 'pr-review-trigger.*' -type f 2>/dev/null)
+if [ -n "$leaked" ]; then
+    echo "FAIL scenario 7 (skip-path tempfile leak): pre-skip mktemp leaked a trigger file under \$STATE_DIR/tmp:"
+    echo "$leaked"
     exit 1
 fi
 
