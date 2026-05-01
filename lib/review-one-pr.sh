@@ -967,6 +967,50 @@ case $? in
 esac
 write_scratch "$REPO_DIR" "product-context.md" "$PRODUCT_CONTEXT"
 
+# review-priority.md — per-repo operating point + voice posture
+# (Broken-Glass Test in standards.md cites this file by name).
+# Tri-state: PRESENT use file; ABSENT use embedded default; ERROR abort.
+REVIEW_PRIORITY=""
+REVIEW_PRIORITY=$(read_knightwatch_file "$REPO_DIR" "$DEFAULT_BRANCH_SHA" "review-priority.md")
+case $? in
+    0) : ;;  # PRESENT: use as-is
+    1)
+        # ABSENT: use embedded default (matches today's universal operating point)
+        REVIEW_PRIORITY=$(cat <<'PRIORITY_EOF'
+# Review priority
+
+**Stage:** ~10 users, pre-PMF.
+
+**Cultural emphasis:** SIMPLIFY and FAIL LOUDLY to enable rapid iteration.
+
+We are validating product-market fit. The reviewer's job is to:
+- catch real bugs (things that have gone wrong, or will go wrong soon, for a real user),
+- push for elegant code that lets us discover PMF faster.
+
+The reviewer's job is **not** to:
+- add architecture complexity for users, user types, scale, or behaviors we don't have today.
+- ask for defensive code that handles scenarios we haven't observed in production.
+- promote abstractions for one or two call sites "in case we add a third."
+
+## Voice — questions over prescriptions
+
+Default voice on every non-bug finding is inquisitive. State the #1 assumption as a question. The author is choosing between two costs (broken-glass risk vs. complexity), not being told what to do.
+
+Question template: Will [state X]? If yes, [Y]. If not, consider cutting [Y] — adds complexity and makes PMF iteration harder.
+
+Declarative voice is reserved for high-confidence bugs (reproducible failure, broken contract with concrete user impact, security/data-integrity regression with traceable cause).
+
+Dividing line: fix what's actually broken or about to be; don't build defenses for users / scale / behaviors you don't have yet — fail loudly instead.
+
+> "For the entire beta period, people practically had to walk over broken glass to start using shared channels..." — Stewart Butterfield. Validating PMF first; polishing later.
+PRIORITY_EOF
+)
+        log "$PR_ID: review-priority.md ABSENT in $DEFAULT_BRANCH_SHA — using default content"
+        ;;
+    *) log "$PR_ID: knightwatch-config error reading review-priority.md — aborting"; rm -rf "$REPO_DIR"; exit 1 ;;
+esac
+write_scratch "$REPO_DIR" "review-priority.md" "$REVIEW_PRIORITY"
+
 # loc-trend.md — per-round LOC trajectory for the momentum specialist
 # and aggregator's loop-breaker mode (see § Broken-Glass Test).
 LOC_TREND=$(compute_loc_trend "$REPO" "$PR_NUM" "$REPO_DIR" "$DEFAULT_BRANCH_SHA" "$STATE_DIR")
