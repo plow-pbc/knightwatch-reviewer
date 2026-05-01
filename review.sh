@@ -16,7 +16,10 @@ MAX_CONCURRENT="${MAX_CONCURRENT:-8}"
 # Tracked-repo manifest (REPOS array + KID_PATHS assoc array). Single
 # source of truth at repos.conf — adding a repo only edits one file.
 # config.env can still REPOS=(...) override on top. The shared loader
-# at lib/tracked-repos.sh is the ONE seam every consumer goes through.
+# at lib/tracked-repos.sh is the ONE seam every consumer goes through;
+# it also pins $TMPDIR=$STATE_DIR/tmp post-config — keeps mktemp out of
+# the unit-private /tmp that the systemd unit tears down under detached
+# workers (see lib/tracked-repos.sh and PR #33 for the full why).
 REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 . "$REVIEWER_LIB_DIR/tracked-repos.sh"
 . "$REVIEWER_LIB_DIR/gh-comments.sh"
@@ -45,6 +48,17 @@ fi
 [ -f "$STATE_FILE" ] || echo '{}' > "$STATE_FILE"
 mkdir -p "$STATE_DIR" "$REPOS_DIR" "$WORKDIRS_DIR" "$STATE_DIR/locks"
 
+# Fail loud at the dispatcher level if the worker script is missing
+# or not executable. Catches the catastrophic class of dispatch failures
+# (broken install, accidental chmod -x, deleted symlink) before fan-out.
+# Checked HERE — before per-PR enumeration — so a doomed-to-abort run
+# never materializes a trigger-comment tempfile under $STATE_DIR/tmp
+# that no worker would clean up.
+if [[ ! -x "$REVIEWER_LIB_DIR/review-one-pr.sh" ]]; then
+    log "FATAL: $REVIEWER_LIB_DIR/review-one-pr.sh missing or not executable — aborting fan-out"
+    exit 1
+fi
+
 # ---------- enumerate eligible PRs ----------
 declare -a ELIGIBLE=()
 
@@ -66,6 +80,8 @@ for REPO in "${REPOS[@]}"; do
         FORCE_REVIEW=false
         FORCE_WHOLE_PR=false
         TRIGGER_FILE=""
+        TRIGGER_USER=""
+        TRIGGER_BODY=""
 
         if [ -n "$KNOWN_SHA" ]; then
             REVIEWED_AT=$(state_get "$PR_ID" "reviewed_at")
@@ -131,9 +147,12 @@ for REPO in "${REPOS[@]}"; do
                     # shape intent inference + aggregator on the
                     # auto-approve path.
                     if is_trusted_repo_author "$REPO" "$TRIGGER_USER"; then
+                        # Capture body now; materialize the file post-skip
+                        # (below) so an unchanged-SHA /srosro-update-review
+                        # never allocates a tempfile only the worker would
+                        # have cleaned up. STATE_DIR/tmp is durable now
+                        # (no PrivateTmp tear-down to mask the leak).
                         TRIGGER_BODY=$(printf '%s' "$TRIGGER_JSON" | jq -r '.body // ""')
-                        TRIGGER_FILE=$(mktemp /tmp/pr-review-trigger.XXXXXX)
-                        printf 'Comment by @%s:\n\n%s\n' "$TRIGGER_USER" "$TRIGGER_BODY" > "$TRIGGER_FILE"
                     else
                         log "$PR_ID: trigger from @$TRIGGER_USER — not staging trigger-comment.md (no push access)"
                     fi
@@ -189,6 +208,15 @@ for REPO in "${REPOS[@]}"; do
             fi
         fi
 
+        # Materialize the trigger-comment file only now that we know we're
+        # actually dispatching (past every `continue`). Earlier creation
+        # leaked stale files under $STATE_DIR/tmp on the unchanged-SHA
+        # /srosro-update-review skip path, where no worker runs to clean up.
+        if [ -n "$TRIGGER_BODY" ]; then
+            TRIGGER_FILE=$(mktemp -t pr-review-trigger.XXXXXX)
+            printf 'Comment by @%s:\n\n%s\n' "$TRIGGER_USER" "$TRIGGER_BODY" > "$TRIGGER_FILE"
+        fi
+
         # Tab-separated spec so titles with spaces survive.
         ELIGIBLE+=("$REPO"$'\t'"$PR_NUM"$'\t'"$PR_SHA"$'\t'"$PR_BRANCH"$'\t'"$PR_TITLE"$'\t'"$FORCE_WHOLE_PR"$'\t'"$TRIGGER_FILE")
     done < <(echo "$PR_LIST" | jq -c '.[]')
@@ -197,17 +225,6 @@ done
 if [ ${#ELIGIBLE[@]} -eq 0 ]; then
     log "No PRs need review"
     exit 0
-fi
-
-# Fail loud at the dispatcher level if the worker script is missing
-# or not executable. Without this check, the loop below `& backgrounds`
-# the worker and exits 0 even on `exec` failure — the service journal
-# would still report "dispatched N worker(s)" while no review actually
-# ran. Catches the catastrophic class of dispatch failures (broken
-# install, accidental chmod -x, deleted symlink) before fan-out.
-if [[ ! -x "$REVIEWER_LIB_DIR/review-one-pr.sh" ]]; then
-    log "FATAL: $REVIEWER_LIB_DIR/review-one-pr.sh missing or not executable — aborting fan-out"
-    exit 1
 fi
 
 # Per-worker timeout. With detached workers (KillMode=process), the

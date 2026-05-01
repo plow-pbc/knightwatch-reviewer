@@ -186,6 +186,33 @@ grep -q '^KillMode=process$' "$PROJECT_ROOT/systemd/pr-reviewer.service" || {
     exit 1
 }
 
+# --- TMPDIR fence (single-source-of-truth) --------------------------------
+# pr-reviewer.service combines PrivateTmp=yes (sandbox) with
+# KillMode=process (workers detach). When the orchestrator returns, the
+# unit-private /tmp gets torn down a few seconds later — any detached
+# worker doing `mktemp` in /tmp lands in a dead mount namespace and the
+# call fails with `No such file or directory`. The fix lives at a single
+# seam: tracked-repos.sh pins TMPDIR=$STATE_DIR/tmp unconditionally,
+# AFTER it sources config.env. Every entrypoint (review.sh,
+# lib/review-one-pr.sh, the -from-replies / -poller / -refresh siblings)
+# sources tracked-repos.sh and inherits the pin for free, with no
+# order-sensitive copy in each script. This grep fences a regression
+# that drops the pin from the loader OR moves it before config.env's
+# source — either reintroduces the unit-private /tmp failure mode.
+LOADER="$PROJECT_ROOT/lib/tracked-repos.sh"
+grep -qF 'export TMPDIR="$STATE_DIR/tmp"' "$LOADER" || {
+    echo "FAIL setup: lib/tracked-repos.sh is missing the unconditional \$STATE_DIR/tmp TMPDIR pin — fallback chains or per-script copies let an inherited or config.env-set TMPDIR re-route mktemp into the unit-private /tmp"
+    exit 1
+}
+# Ordering check: the pin must follow the config.env source (otherwise
+# config.env's TMPDIR shadows the pin and detached workers regress).
+loader_pin_line=$(grep -nF 'export TMPDIR="$STATE_DIR/tmp"' "$LOADER" | head -1 | cut -d: -f1)
+loader_cfg_line=$(grep -nF '. "${STATE_DIR}/config.env"' "$LOADER" | head -1 | cut -d: -f1)
+if [ -z "$loader_cfg_line" ] || [ -z "$loader_pin_line" ] || [ "$loader_pin_line" -le "$loader_cfg_line" ]; then
+    echo "FAIL setup: lib/tracked-repos.sh — TMPDIR pin must come AFTER the config.env source (got pin@${loader_pin_line:-MISSING}, config.env@${loader_cfg_line:-MISSING})"
+    exit 1
+fi
+
 export MOCK_COMMENTS_FILE="$TMPDIR/comments.json"
 # Default trust set for the existing scenarios: srosro is the bot operator
 # and "someuser" is the realistic external collaborator shape. Scenarios
@@ -248,8 +275,8 @@ if ! grep -q 'force_whole=true' "$LOG_FILE"; then
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
-if ! grep -q 'trigger_file=/tmp/pr-review-trigger' "$LOG_FILE"; then
-    echo "FAIL scenario 3: expected trigger_file=/tmp/... in dispatch (someuser is in MOCK_TRUSTED_USERS)"
+if ! grep -qF "trigger_file=$STATE_DIR/tmp/pr-review-trigger" "$LOG_FILE"; then
+    echo "FAIL scenario 3: expected trigger_file=\$STATE_DIR/tmp/pr-review-trigger.* in dispatch (someuser is in MOCK_TRUSTED_USERS) — anchors the bugfix path so a regression to /tmp fails here"
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
@@ -292,8 +319,8 @@ if ! grep -q 'force_whole=true' "$LOG_FILE"; then
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
-if ! grep -q 'trigger_file=/tmp/pr-review-trigger' "$LOG_FILE"; then
-    echo "FAIL scenario 5: expected trigger_file=/tmp/... in dispatch (srosro is in MOCK_TRUSTED_USERS)"
+if ! grep -qF "trigger_file=$STATE_DIR/tmp/pr-review-trigger" "$LOG_FILE"; then
+    echo "FAIL scenario 5: expected trigger_file=\$STATE_DIR/tmp/pr-review-trigger.* in dispatch (srosro is in MOCK_TRUSTED_USERS) — anchors the bugfix path"
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
@@ -321,8 +348,8 @@ if ! grep -q 'force_whole=true' "$LOG_FILE"; then
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
-if grep -q 'trigger_file=/tmp/pr-review-trigger' "$LOG_FILE"; then
-    echo "FAIL scenario 6 (trust gate regression): expected trigger_file empty for untrusted commenter, but a tmp path was staged"
+if grep -qE 'trigger_file=[^[:space:]]+' "$LOG_FILE"; then
+    echo "FAIL scenario 6 (trust gate regression): expected trigger_file empty for untrusted commenter, but a path was staged"
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
@@ -332,13 +359,27 @@ fi
 # at the orchestrator instead of burning a worker. The trigger stays open
 # until commits land. The longer command must NOT also satisfy the
 # /srosro-review (whole-PR) substring check.
+#
+# Plus: after the skip, no trigger-comment tempfile may remain in
+# $STATE_DIR/tmp. someuser is in MOCK_TRUSTED_USERS, so a regression that
+# materializes the file BEFORE the skip check would leak a stale tempfile
+# the worker never cleans up (no worker runs). PrivateTmp's tear-down
+# used to mask this leak in production; with tempfiles routed to the
+# durable $STATE_DIR/tmp, the leak is real and must be fenced.
 echo "  scenario 7: same SHA + /srosro-update-review (skipped on unchanged SHA)..."
+rm -f "$STATE_DIR/tmp/pr-review-trigger".*  # clear residue from earlier scenarios
 printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-update-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 run_orchestrator
 n=$(count_dispatches)
 if [ "$n" -ne 0 ]; then
     echo "FAIL scenario 7 (incremental same-SHA skip regression): expected 0 dispatches, got $n"
     echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+leaked=$(find "$STATE_DIR/tmp" -maxdepth 1 -name 'pr-review-trigger.*' -type f 2>/dev/null)
+if [ -n "$leaked" ]; then
+    echo "FAIL scenario 7 (skip-path tempfile leak): pre-skip mktemp leaked a trigger file under \$STATE_DIR/tmp:"
+    echo "$leaked"
     exit 1
 fi
 
@@ -589,4 +630,33 @@ if grep -q 'force_whole=true' "$LOG_FILE"; then
     cat "$LOG_FILE"; exit 1
 fi
 
-echo "  PASS (13 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence)"
+# Scenario 14: TMPDIR pin survives both inherited TMPDIR and a config.env
+# override. The structural greps at suite setup check the loader has the
+# pin AND that it follows the config.env source — but those are textual.
+# This scenario verifies the pin is effective end-to-end: dispatched
+# trigger files must land under $STATE_DIR/tmp even when both the
+# environment and config.env try to redirect TMPDIR.
+echo "  scenario 14: TMPDIR pin overrides both inherited TMPDIR and config.env (post-load behavioral fence)..."
+unset MOCK_COMMENTS_PAGE1_FILE MOCK_COMMENTS_PAGE2_FILE
+export MOCK_COMMENTS_FILE="$TMPDIR/comments.json"
+state_set "cncorp/plow#1" "abc123" false "prior review body" "$(($(date +%s) - 3600))"
+rm -f "$STATE_DIR/tmp/pr-review-trigger".*
+echo 'export TMPDIR="/tmp/should-not-be-honored-via-config-env"' > "$STATE_DIR/config.env"
+printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+: > "$LOG_FILE"
+TMPDIR="/tmp/should-not-be-honored-via-inheritance" \
+    bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
+rm -f "$STATE_DIR/config.env"
+n=$(count_dispatches)
+if [ "$n" -ne 1 ]; then
+    echo "FAIL scenario 14: expected 1 dispatch, got $n"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+if ! grep -qF "trigger_file=$STATE_DIR/tmp/pr-review-trigger" "$LOG_FILE"; then
+    echo "FAIL scenario 14 (post-load TMPDIR placement regression): expected trigger_file=\$STATE_DIR/tmp/pr-review-trigger.* but got something else — config.env or inherited TMPDIR shadowed the pin, likely because the pin in lib/tracked-repos.sh now sits BEFORE the config.env source"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+
+echo "  PASS (14 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence)"
