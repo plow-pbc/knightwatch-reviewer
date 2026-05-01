@@ -17,24 +17,32 @@
 # read_knightwatch_file <repo_dir> <default_branch> <relative_path>
 #   stdout: file content from origin/<default_branch>:.knightwatch/<rel>
 #           (may be empty when the file exists but has no content)
-#   exit:   0 if the file exists on the base branch (PRESENT — even if empty)
-#           1 if the file is absent on the base branch (ABSENT — caller falls back)
+#   exit:   0 — PRESENT: file exists on the base branch (content possibly empty)
+#           1 — ABSENT:  file doesn't exist on the base branch (caller falls back to legacy)
+#           2 — ERROR:   git invocation failed for a non-absence reason (caller aborts loud)
 #
-# The PRESENT-vs-ABSENT distinction is load-bearing: a committed empty
-# file means "no value for this concern in this repo" (e.g., empty
-# .knightwatch/dead-code.sh = "no dead-code static check for this repo,
-# please" — NOT "fall back to the legacy DEAD_CODE_CMDS entry"). Callers
-# must NOT collapse the two states with `[ -n "$result" ]` checks; the
-# exit code is the source of truth.
+# Three states, not two. The PRESENT-vs-ABSENT distinction is load-bearing
+# for the "empty file = explicit no value" semantics (an empty
+# .knightwatch/dead-code.sh means "no dead-code static check for this
+# repo," NOT "fall back to legacy DEAD_CODE_CMDS"). The
+# ABSENT-vs-ERROR distinction is the Fail-Fast complement: callers
+# fall back to legacy ONLY for true absence, not for transient git
+# failures (broken origin/<default-branch> ref, corrupt object store,
+# missing remote, etc.) which would otherwise silently revive legacy
+# policy with no signal to the operator.
 #
-# Existence is checked separately from content via `git cat-file -e` to
-# avoid conflating "file absent" with other git-show failures (corrupt
-# repo, missing ref, etc.). Those other failures abort the worker via
-# `set -u` propagation rather than silently degrading — the operator
-# needs to see them.
+# Implementation: rev-parse --verify the base ref first (exit 1 if
+# missing → ERROR rc 2). If the ref is fine, cat-file -e the path
+# (exit non-zero → ABSENT rc 1). Only on both checks succeeding do we
+# read content via git show.
 read_knightwatch_file() {
     local repo_dir="$1" default_branch="$2" rel_path="$3"
-    local ref="origin/${default_branch}:.knightwatch/${rel_path}"
-    git -C "$repo_dir" cat-file -e "$ref" 2>/dev/null || return 1
-    git -C "$repo_dir" show "$ref" 2>/dev/null
+    local base_ref="origin/${default_branch}"
+    local full_ref="${base_ref}:.knightwatch/${rel_path}"
+    if ! git -C "$repo_dir" rev-parse --verify --quiet "$base_ref" >/dev/null 2>&1; then
+        echo "knightwatch-config: base ref $base_ref not found in $repo_dir" >&2
+        return 2
+    fi
+    git -C "$repo_dir" cat-file -e "$full_ref" 2>/dev/null || return 1
+    git -C "$repo_dir" show "$full_ref" 2>/dev/null
 }

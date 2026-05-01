@@ -51,21 +51,32 @@ stage_search_roots() {
     # Once every tracked repo has .knightwatch/siblings committed, the
     # fallback can be removed.
     local siblings=()
-    if sibling_list=$(read_knightwatch_file "$repo_dir" "$default_branch" "siblings"); then
-        # Per-repo allowlist: parse line-by-line, ignore blanks + # comments.
-        while IFS= read -r line; do
-            line="${line%%#*}"           # strip inline comments
-            line="${line//[[:space:]]/}" # strip whitespace
-            [ -z "$line" ] && continue
-            siblings+=("$line")
-        done <<< "$sibling_list"
-    else
-        # Fallback: all REPOS minus self
-        for sibling_repo in "${REPOS[@]}"; do
-            [ "$sibling_repo" = "$repo" ] && continue
-            siblings+=("$sibling_repo")
-        done
-    fi
+    sibling_list=$(read_knightwatch_file "$repo_dir" "$default_branch" "siblings")
+    case $? in
+        0)
+            # PRESENT: per-repo allowlist. Parse line-by-line, ignore blanks + # comments.
+            while IFS= read -r line; do
+                line="${line%%#*}"           # strip inline comments
+                line="${line//[[:space:]]/}" # strip whitespace
+                [ -z "$line" ] && continue
+                siblings+=("$line")
+            done <<< "$sibling_list"
+            ;;
+        1)
+            # ABSENT: legacy fallback to all REPOS minus self
+            for sibling_repo in "${REPOS[@]}"; do
+                [ "$sibling_repo" = "$repo" ] && continue
+                siblings+=("$sibling_repo")
+            done
+            ;;
+        *)
+            # ERROR: knightwatch-config helper had a real failure (missing
+            # base ref, corrupt object store, etc.). Don't silently revive
+            # legacy policy — fail loud so the operator sees it.
+            echo "search-roots: knightwatch-config error reading siblings for $repo" >&2
+            return 2
+            ;;
+    esac
 
     for sibling_repo in "${siblings[@]}"; do
         [ "$sibling_repo" = "$repo" ] && continue

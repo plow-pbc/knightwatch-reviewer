@@ -582,11 +582,12 @@ DEAD_CODE_STATIC=""
 # (per-repo, committed to the base branch), fall back to DEAD_CODE_CMDS[$REPO]
 # from repos.conf (legacy operator-managed).
 DEAD_CODE_CMD=""
-if DEAD_CODE_CMD=$(read_knightwatch_file "$REPO_DIR" "$DEFAULT_BRANCH" "dead-code.sh"); then
-    :  # PRESENT: use as-is (empty content = "no dead-code check for this repo")
-else
-    DEAD_CODE_CMD="${DEAD_CODE_CMDS[$REPO]:-}"  # ABSENT: legacy fallback
-fi
+DEAD_CODE_CMD=$(read_knightwatch_file "$REPO_DIR" "$DEFAULT_BRANCH" "dead-code.sh")
+case $? in
+    0) : ;;  # PRESENT: use as-is (empty content = "no dead-code check for this repo")
+    1) DEAD_CODE_CMD="${DEAD_CODE_CMDS[$REPO]:-}" ;;  # ABSENT: legacy fallback
+    *) log "$PR_ID: knightwatch-config error reading dead-code.sh — aborting"; rm -rf "$REPO_DIR"; exit 1 ;;
+esac
 if [ -n "$DEAD_CODE_CMD" ] && [ -n "$KID_INPUT_DIFF" ]; then
     TOUCHED_FILES_ARR=()
     while IFS= read -r f; do
@@ -663,11 +664,12 @@ export REVIEWER_LIB_DIR="$_LIB_DIR"
 # (per-repo, committed to the base branch), fall back to STRICT_TYPING_CMDS[$REPO]
 # from repos.conf (legacy operator-managed).
 STRICT_TYPING_CMD=""
-if STRICT_TYPING_CMD=$(read_knightwatch_file "$REPO_DIR" "$DEFAULT_BRANCH" "strict-typing.sh"); then
-    :  # PRESENT: use as-is (empty content = "no strict-typing check for this repo")
-else
-    STRICT_TYPING_CMD="${STRICT_TYPING_CMDS[$REPO]:-}"  # ABSENT: legacy fallback
-fi
+STRICT_TYPING_CMD=$(read_knightwatch_file "$REPO_DIR" "$DEFAULT_BRANCH" "strict-typing.sh")
+case $? in
+    0) : ;;  # PRESENT: use as-is (empty content = "no strict-typing check for this repo")
+    1) STRICT_TYPING_CMD="${STRICT_TYPING_CMDS[$REPO]:-}" ;;  # ABSENT: legacy fallback
+    *) log "$PR_ID: knightwatch-config error reading strict-typing.sh — aborting"; rm -rf "$REPO_DIR"; exit 1 ;;
+esac
 if [ -n "$STRICT_TYPING_CMD" ]; then
     STRICT_STDERR=$(mktemp)
     STRICT_GAP=$(cd "$REPO_DIR" && bash -c "$STRICT_TYPING_CMD" 2>"$STRICT_STDERR")
@@ -701,7 +703,11 @@ log "$PR_ID: diff is ${#KID_INPUT_DIFF} bytes — auto-nits: ${#AUTO_NITS[@]}"
 # source of truth. Lives in lib/search-roots.sh (regression-fenced by
 # lib/tests/search-roots-smoke.sh) so the staging logic can't drift
 # into per-prompt rediscovery again.
-SEARCH_ROOTS=$(stage_search_roots "$REPO" "$REPO_DIR" "$DEFAULT_BRANCH")
+if ! SEARCH_ROOTS=$(stage_search_roots "$REPO" "$REPO_DIR" "$DEFAULT_BRANCH"); then
+    log "$PR_ID: stage_search_roots failed (knightwatch-config error) — aborting"
+    rm -rf "$REPO_DIR"
+    exit 1
+fi
 
 # Materialize sibling-repo symlinks under .siblings/<owner>/<repo>, but
 # ONLY for siblings stage_search_roots above just classified as
@@ -749,17 +755,20 @@ fi
 # (legacy operator-managed). Once every tracked repo has its .knightwatch/
 # committed, the fallback can be removed.
 PRODUCT_CONTEXT=""
-if PRODUCT_CONTEXT=$(read_knightwatch_file "$REPO_DIR" "$DEFAULT_BRANCH" "product-context.md"); then
-    :  # PRESENT: use as-is (empty content = "explicitly no product context for this repo")
-else
-    # ABSENT: legacy fallback
-    CONTEXT_FILE="$HOME/.pr-reviewer/contexts/$(echo "$REPO" | tr '/' '_').md"
-    if [ -f "$CONTEXT_FILE" ]; then
-        PRODUCT_CONTEXT=$(cat "$CONTEXT_FILE")
-    else
-        PRODUCT_CONTEXT="(no product context configured for $REPO)"
-    fi
-fi
+PRODUCT_CONTEXT=$(read_knightwatch_file "$REPO_DIR" "$DEFAULT_BRANCH" "product-context.md")
+case $? in
+    0) : ;;  # PRESENT: use as-is (empty content = "explicitly no product context for this repo")
+    1)
+        # ABSENT: legacy fallback
+        CONTEXT_FILE="$HOME/.pr-reviewer/contexts/$(echo "$REPO" | tr '/' '_').md"
+        if [ -f "$CONTEXT_FILE" ]; then
+            PRODUCT_CONTEXT=$(cat "$CONTEXT_FILE")
+        else
+            PRODUCT_CONTEXT="(no product context configured for $REPO)"
+        fi
+        ;;
+    *) log "$PR_ID: knightwatch-config error reading product-context.md — aborting"; rm -rf "$REPO_DIR"; exit 1 ;;
+esac
 write_scratch "$REPO_DIR" "product-context.md" "$PRODUCT_CONTEXT"
 
 FILE_HISTORY=""

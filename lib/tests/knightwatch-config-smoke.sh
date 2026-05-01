@@ -73,12 +73,17 @@ if printf '%s' "$got" | grep -q 'evil/private-repo'; then
     exit 1
 fi
 
-# --- scenario 2: missing file → empty + exit 1 ---------------------
-echo "  scenario 2: missing file → empty + exit 1..."
+# --- scenario 2: missing file → empty + EXACTLY exit 1 (ABSENT) ----
+# Specifically expect rc=1 (ABSENT), not just "non-zero." Distinguishing
+# ABSENT (rc=1) from ERROR (rc=2) is load-bearing: ABSENT triggers
+# legacy fallback in callers, ERROR aborts the worker. A test that
+# accepts any non-zero would let an ERROR-as-ABSENT regression slip
+# through (bot finding 1 PR #29 round 2).
+echo "  scenario 2: missing file → empty + exit 1 (ABSENT)..."
 read_knightwatch_file "$WORK" "main" "does-not-exist.sh" > "$TMPDIR/out.txt" 2>/dev/null
 exit_code=$?
-if [ "$exit_code" -eq 0 ]; then
-    echo "FAIL: expected exit non-zero for missing file, got 0"
+if [ "$exit_code" -ne 1 ]; then
+    echo "FAIL: expected exit 1 (ABSENT) for missing file, got $exit_code"
     exit 1
 fi
 got=$(cat "$TMPDIR/out.txt")
@@ -120,4 +125,18 @@ if [ -n "$got" ]; then
     exit 1
 fi
 
-echo "  PASS (4 scenarios: existing, missing, base-branch-only trust, present-but-empty)"
+# --- scenario 5: bad base ref → exit 2 (ERROR, NOT ABSENT) ---------
+# A non-existent default branch (e.g., the operator forgot to fetch
+# origin/main, or the workdir is corrupt) must NOT collapse onto the
+# ABSENT exit code — that would silently revive legacy fallback policy
+# with no signal. The helper distinguishes via `git rev-parse --verify`
+# on the base ref before reading the path.
+echo "  scenario 5: bad base ref → exit 2 (ERROR)..."
+read_knightwatch_file "$WORK" "nonexistent-branch" "siblings" > "$TMPDIR/out.txt" 2>/dev/null
+exit_code=$?
+if [ "$exit_code" -ne 2 ]; then
+    echo "FAIL: expected exit 2 (ERROR) for bad base ref, got $exit_code"
+    exit 1
+fi
+
+echo "  PASS (5 scenarios: existing, missing-ABSENT, base-branch-only trust, present-but-empty, bad-ref-ERROR)"

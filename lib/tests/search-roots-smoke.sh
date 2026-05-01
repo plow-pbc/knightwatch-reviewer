@@ -144,4 +144,19 @@ assert_contains "scenario 6: header partial" "# coverage: partial" "$OUT"
 assert_contains "scenario 6: foo included" "acme/foo included .siblings/acme/foo" "$OUT"
 assert_contains "scenario 6: never-configured missing" "acme/never-configured missing" "$OUT"
 
-echo "  PASS (6 scenarios: knightwatch-allowlist, fallback, missing-on-disk, empty-allowlist, comments, declared-but-unconfigured)"
+# --- scenario 7: knightwatch-config ERROR propagates as non-zero rc ---
+# When read_knightwatch_file returns ERROR (rc 2 — bad base ref), the
+# caller must NOT silently fall back to legacy REPOS-minus-self —
+# that would silently revive policy with no operator signal. Instead
+# stage_search_roots returns non-zero so its caller can abort loud.
+echo "  scenario 7: ERROR from knightwatch-config propagates → non-zero rc..."
+SELF_REPO=$(make_self_repo no)  # workdir exists, but we'll pass a bad branch name
+saved_repos=("${REPOS[@]}")
+REPOS=("acme/self" "acme/foo")
+if stage_search_roots "acme/self" "$SELF_REPO" "nonexistent-branch" >/dev/null 2>&1; then
+    echo "FAIL: stage_search_roots should return non-zero on knightwatch-config ERROR"
+    exit 1
+fi
+REPOS=("${saved_repos[@]}")
+
+echo "  PASS (7 scenarios: knightwatch-allowlist, fallback, missing-on-disk, empty-allowlist, comments, declared-but-unconfigured, error-propagation)"
