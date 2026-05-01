@@ -558,27 +558,33 @@ elif [ -n "$KID_INPUT_DIFF" ]; then
 fi
 
 # ---- touched-files derivation (shared by dead-code + strict-typing) ----
-# Multiple pre-checks need the PR's touched-files list. Build once and
-# share via two surfaces:
+# Two pre-checks need a touched-files list, but with different scopes:
 #
-#   - TOUCHED_FILES_ARR  : bash array — positional args for the
-#                          per-repo dead-code command (which references
-#                          them as "$@"). PR-controlled filenames must
-#                          never flow through `eval`; the array form
-#                          quotes whitespace and shell metacharacters
-#                          correctly under `bash -c "$cmd" -- "$@"`.
+#   - TOUCHED_FILES_ARR  : POST-IMAGE only (files that exist in HEAD).
+#                          Bash array, positional args for the per-repo
+#                          dead-code command (`bash -c "$cmd" -- "$@"`,
+#                          referenced inside as "$@"). PR-controlled
+#                          filenames never flow through `eval`; the
+#                          array form quotes whitespace and shell
+#                          metacharacters correctly. Excludes deleted
+#                          files because dead-code analysis on a
+#                          missing path would error.
 #
-#   - TOUCHED_FILES_FILE : path to a temp file with the same paths,
-#                          newline-separated, repo-root-relative.
-#                          Exported so language-specific strict-typing
-#                          helpers can do their own diff-scope gate
-#                          (skip the nag when zero touched files match
-#                          the language's extensions). The gate lives
-#                          in each helper because the extension list is
-#                          language-specific knowledge — keeps the
-#                          worker language-agnostic.
+#   - TOUCHED_FILES_FILE : BOTH SIDES of every file change (pre AND
+#                          post image), captured from `diff --git a/X
+#                          b/Y` headers via extract_touched_files_both_sides.
+#                          Newline-separated, repo-root-relative.
+#                          Exported for the strict-typing helpers'
+#                          scope gate. A PR that DELETES `foo.py` or
+#                          RENAMES `foo.ts` → `foo.js` touched typed
+#                          code, but post-image-only would miss both
+#                          (the deletion's post-image is `/dev/null`;
+#                          a similarity-100% pure rename has no +++ b/
+#                          line at all) — silently suppressing the
+#                          strict-typing note (Narrow-Fix flagged in
+#                          PR #31 round 1).
 #
-# Empty diff → empty array → every consumer no-ops correctly.
+# Empty diff → empty array + empty file → every consumer no-ops correctly.
 TOUCHED_FILES_ARR=()
 if [ -n "$KID_INPUT_DIFF" ]; then
     while IFS= read -r f; do
@@ -586,9 +592,11 @@ if [ -n "$KID_INPUT_DIFF" ]; then
     done < <(printf '%s' "$KID_INPUT_DIFF" | grep -E '^\+\+\+ b/' | sed 's|^+++ b/||')
 fi
 TOUCHED_FILES_FILE=$(mktemp)
-printf '%s\n' "${TOUCHED_FILES_ARR[@]}" > "$TOUCHED_FILES_FILE"
+if [ -n "$KID_INPUT_DIFF" ]; then
+    printf '%s' "$KID_INPUT_DIFF" | extract_touched_files_both_sides > "$TOUCHED_FILES_FILE"
+fi
 export TOUCHED_FILES_FILE
-log "$PR_ID: touched-files = ${#TOUCHED_FILES_ARR[@]}"
+log "$PR_ID: touched-files post-image=${#TOUCHED_FILES_ARR[@]} both-sides=$(wc -l < "$TOUCHED_FILES_FILE")"
 
 # ---- dead-code static-tool pre-pass ----
 # Mirrors the kid block above: per-repo command, graceful degrade on

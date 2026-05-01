@@ -1,13 +1,23 @@
 #!/bin/bash
-# Smoke for lib/diff-build.sh::is_clean_incremental_available.
+# Smoke for lib/diff-build.sh.
 #
-# Predicate: returns success (exit 0) iff
-#   (a) prior reviewed SHA is still an ancestor of HEAD (no force-push
-#       evicted it), AND
-#   (b) no merge commits exist in known_sha..HEAD (no merge-from-main
-#       between then and now to pollute attribution).
-# Any other condition → exit 1, caller falls back to full PR diff
-# with a deterministic warning at the top of the review.
+# Covers two helpers:
+#
+# 1. is_clean_incremental_available: returns success (exit 0) iff
+#    (a) prior reviewed SHA is still an ancestor of HEAD (no force-push
+#        evicted it), AND
+#    (b) no merge commits exist in known_sha..HEAD (no merge-from-main
+#        between then and now to pollute attribution).
+#    Any other condition → exit 1, caller falls back to full PR diff
+#    with a deterministic warning at the top of the review.
+#
+# 2. extract_touched_files_both_sides: emits sorted-unique paths from
+#    every `diff --git a/X b/Y` header in a unified diff. Captures BOTH
+#    sides — additions, deletions, and renames (including
+#    similarity-100% pure renames where +++/--- headers are absent).
+#    Used by the worker's strict-typing scope gate; covers the
+#    Narrow-Fix flagged in PR #31 round 1 where post-image-only parse
+#    silently skipped delete/rename PRs of typed files.
 
 set -euo pipefail
 
@@ -83,4 +93,143 @@ if is_clean_incremental_available "$REPO" "0000000000000000000000000000000000000
     exit 1
 fi
 
-echo "  PASS (4 scenarios: clean, merges-in-range, rebased-away, nonexistent)"
+# =====================================================================
+# extract_touched_files_both_sides — diff-text parser
+# =====================================================================
+
+# assert_extract DESC EXPECTED_LINES DIFF_TEXT
+#   EXPECTED_LINES: newline-separated, sorted, what the helper should output
+#   DIFF_TEXT: the unified-diff input
+assert_extract() {
+    local desc="$1" expected="$2" diff_text="$3"
+    local got
+    got=$(printf '%s' "$diff_text" | extract_touched_files_both_sides)
+    if [ "$got" != "$expected" ]; then
+        echo "FAIL: $desc"
+        echo "  expected:"
+        printf '    %s\n' $expected
+        echo "  got:"
+        printf '    %s\n' $got
+        exit 1
+    fi
+}
+
+echo "  extract: addition → post-image only (one diff --git, /dev/null in --- )..."
+assert_extract "addition" "foo.py" \
+'diff --git a/foo.py b/foo.py
+new file mode 100644
+index 0000000..abc1234
+--- /dev/null
++++ b/foo.py
+@@ -0,0 +1,3 @@
++x = 1
++y = 2
++z = 3
+'
+
+# Delete: post-image is /dev/null, but `diff --git a/foo.py b/foo.py`
+# still lists foo.py on both sides. Helper must emit foo.py — the
+# Narrow-Fix that prompted this helper.
+echo "  extract: deletion → captures the deleted typed file (regression-fence: PR #31 round 1)..."
+assert_extract "deletion" "foo.py" \
+'diff --git a/foo.py b/foo.py
+deleted file mode 100644
+index abc1234..0000000
+--- a/foo.py
++++ /dev/null
+@@ -1,3 +0,0 @@
+-x = 1
+-y = 2
+-z = 3
+'
+
+# Rename with content change: similarity < 100, has both --- a/ and +++ b/.
+echo "  extract: rename with content change → both sides..."
+assert_extract "rename-with-content" "$(printf 'new.js\nold.ts')" \
+'diff --git a/old.ts b/new.js
+similarity index 80%
+rename from old.ts
+rename to new.js
+index abc1234..def5678
+--- a/old.ts
++++ b/new.js
+@@ -1,3 +1,3 @@
+-let x = 1;
++const x = 1;
+'
+
+# Pure rename, similarity 100: NO --- a/ or +++ b/ lines at all. Helper
+# must still emit both paths from the diff --git line — this is the
+# rename case the post-image-only parse missed entirely.
+echo "  extract: similarity-100% pure rename → both sides (no +++/--- in input)..."
+assert_extract "rename-pure" "$(printf 'new.js\nold.ts')" \
+'diff --git a/old.ts b/new.js
+similarity index 100%
+rename from old.ts
+rename to new.js
+'
+
+echo "  extract: modification → one path (a and b are the same file)..."
+assert_extract "modification" "foo.py" \
+'diff --git a/foo.py b/foo.py
+index abc1234..def5678 100644
+--- a/foo.py
++++ b/foo.py
+@@ -1,3 +1,3 @@
+ x = 1
+-y = 2
++y = 99
+ z = 3
+'
+
+echo "  extract: multiple files in one diff → sorted-unique union..."
+assert_extract "multi-file" "$(printf 'README.md\npackage-lock.json\nsrc/a.py\nsrc/b.py')" \
+'diff --git a/src/a.py b/src/a.py
+index abc..def 100644
+--- a/src/a.py
++++ b/src/a.py
+@@ -1 +1 @@
+-1
++2
+diff --git a/src/b.py b/src/b.py
+index abc..def 100644
+--- a/src/b.py
++++ b/src/b.py
+@@ -1 +1 @@
+-3
++4
+diff --git a/README.md b/README.md
+index abc..def 100644
+--- a/README.md
++++ b/README.md
+@@ -1 +1 @@
+-old
++new
+diff --git a/package-lock.json b/package-lock.json
+index abc..def 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -1 +1 @@
+-old
++new
+'
+
+echo "  extract: empty diff → empty output (no crash)..."
+assert_extract "empty" "" ""
+
+# Negative: dedup. Same file appears in `diff --git` once but body
+# also has +++/---; only the diff --git fields are read so no dups.
+echo "  extract: same file once in diff --git → emitted exactly once (no dup from +++/--- body)..."
+assert_extract "no-dup" "foo.py" \
+'diff --git a/foo.py b/foo.py
+index abc..def 100644
+--- a/foo.py
++++ b/foo.py
+@@ -1,3 +1,3 @@
+ x = 1
+-y = 2
++y = 3
+ z = 3
+'
+
+echo "  PASS (4 is_clean + 7 extract_touched_files_both_sides scenarios; rename/delete fences for PR #31 Narrow-Fix)"
