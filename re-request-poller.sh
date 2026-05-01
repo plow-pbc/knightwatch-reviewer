@@ -56,15 +56,8 @@ for REPO in "${REPOS[@]}"; do
         fi
 
         log "$PR_KEY: re-request review event at $LATEST — posting /srosro-review trigger"
-        # Body is the bare slash command. The "(triggered by GitHub
-        # re-request-review)" parenthetical that previously rode along
-        # confused the trigger-comment.md prompt contract: prompts treat
-        # any body beyond the bare command as substantive requester
-        # prose, so the synthetic marker was being weighted as framing
-        # by intent inference / aggregator. The auto-vs-manual signal is
-        # already preserved by the log line above (journalctl) — keep
-        # the GitHub comment lean. (PR #34 round-1 bot finding,
-        # Regression Risk + Concise Code.)
+        # Bare command only — extra prose in the comment body would be
+        # treated as requester framing by trigger-comment.md prompts.
         if gh pr comment "$PR_NUM" --repo "$REPO" \
             --body "/srosro-review" >/dev/null 2>&1; then
             seen_set "$PR_KEY" "$LATEST"

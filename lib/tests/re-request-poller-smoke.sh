@@ -130,7 +130,11 @@ echo '{}' > "$SEEN_FILE"
 run_poller
 n=$(count_comments)
 [ "$n" -eq 1 ] || { echo "FAIL scenario 2: expected 1 comment, got $n"; cat "$STUB_COMMENT_LOG"; exit 1; }
-grep -q 'body=/srosro-review' "$STUB_COMMENT_LOG" || { echo "FAIL scenario 2: comment body missing /srosro-review trigger"; cat "$STUB_COMMENT_LOG"; exit 1; }
+# Whole-line exact match — substring would let the pre-fix buggy body
+# `/srosro-review (triggered by GitHub re-request-review)` slip through
+# (PR #34 round-2 regression-fence: the prompt contract treats anything
+# beyond the bare command as substantive requester prose).
+grep -qFx 'COMMENT repo=test-org/probe-repo body=/srosro-review' "$STUB_COMMENT_LOG" || { echo "FAIL scenario 2: comment body must be exactly '/srosro-review' (no parenthetical or other suffix)"; cat "$STUB_COMMENT_LOG"; exit 1; }
 seen=$(jq -r '."test-org/probe-repo#1" // empty' "$SEEN_FILE")
 [ "$seen" = "2026-04-29T10:00:00Z" ] || { echo "FAIL scenario 2: seen timestamp not advanced (got [$seen])"; cat "$SEEN_FILE"; exit 1; }
 
