@@ -115,8 +115,10 @@ You are the aggregator in a multi-specialist PR review. Eight specialists produc
 
 **Path 2 (re-review loop-breaker — NEW).** Fires when `previous-review.md` is non-empty AND any of:
 
-- `.codex-scratch/loc-trend.md` shows GROWING (≥1.5×) AND Bug-Class-Recurrence has fired in this round or any prior round (visible in `prior-reviews.md`), OR
+- `.codex-scratch/loc-trend.md` shows GROWING (≥1.5×) AND Bug-Class-Recurrence has fired in any prior round (visible in `prior-reviews.md`), OR
 - Bug-Class-Recurrence has fired in 2+ prior rounds (regardless of LOC trajectory — catches the dynamic where the author held LOC stable but ignored the structural ask).
+
+(The trigger reads only PRIOR rounds — the momentum specialist runs *before* the critic, so "this round's" Bug-Class-Recurrence finding does not yet exist when momentum is checking the trigger. Naming "this round" here would make the condition unreachable.)
 
 When Path 2 fires:
 

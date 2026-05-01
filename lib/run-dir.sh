@@ -291,3 +291,40 @@ stage_prior_reviews() {
     done < <(find "$state_dir/runs" -maxdepth 1 -type d -name "${repo_slug}__${pr_num}__*" 2>/dev/null | sort)
     printf '%s' "$result"
 }
+
+# author_visible_rounds <state_dir> <repo_slug> <pr_num> <current_run_dir>
+#   stdout: one line per author-visible round, format: <ts>\t<sha>
+#   sorted by timestamp ascending (matches find|sort over the run-dir glob —
+#   names sort by timestamp because they share repo_slug+pr_num prefix).
+#   Skips current_run_dir.
+#
+# Author-visible = posted_at present in meta.json OR status == "completed"
+# (same predicate as is_run_author_visible / stage_prior_reviews — single
+# owner for "which prior review rounds count").
+#
+# Canonical SHA + timestamp sources are meta.json fields (.sha,
+# .started_at). Run-dir-name parsing is the legacy fallback for older
+# runs that pre-date a particular meta field — meta.json wins when
+# present so a truncated run-dir SHA can't override the full SHA the
+# worker stamped.
+#
+# This is the single owner for the "(ts, sha) per round" contract that
+# compute_loc_trend (LOC trajectory) consumes. Bug-Class-Recurrence
+# fence: keep the round-discovery walk + author-visible filter + canonical
+# SHA in one helper so a downstream caller can't drift to a stale local
+# copy (the BCR theme knightwatch flagged across rounds 1+2 of PR #38).
+author_visible_rounds() {
+    local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"
+    local prior_run meta_sha meta_ts
+    while IFS= read -r prior_run; do
+        [ "$prior_run" = "$current_run_dir" ] && continue
+        is_run_author_visible "$prior_run" || continue
+        meta_sha=$(jq -r '.sha // empty' "$prior_run/meta.json" 2>/dev/null)
+        meta_ts=$(jq -r '.started_at // empty' "$prior_run/meta.json" 2>/dev/null)
+        # Fall back to run-dir name parsing only if meta is incomplete.
+        [ -z "$meta_ts" ] && meta_ts=$(basename "$prior_run" | grep -oE 'T[0-9]+Z' | head -1)
+        [ -z "$meta_sha" ] && meta_sha=$(basename "$prior_run" | awk -F'__' '{print $4}')
+        [ -z "$meta_sha" ] && continue
+        printf '%s\t%s\n' "$meta_ts" "$meta_sha"
+    done < <(find "$state_dir/runs" -maxdepth 1 -type d -name "${repo_slug}__${pr_num}__*" 2>/dev/null | sort)
+}

@@ -32,45 +32,65 @@ _LIB_DIR_BOOT="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # PR_ID (which carries a "#N" suffix). The function converts to
 # underscore-form for filesystem matching.
 #
-# Reads $state_dir/runs/<owner>_<repo>__<pr_num>__<ts>__<sha>/ entries,
-# filtering to author-visible runs only (via is_run_author_visible) and
-# excluding $current_run_dir (the in-flight run has no aggregator output
-# yet — not author-visible). Then appends the current round explicitly
-# using $current_sha so the aggregator + momentum specialist see "where
-# we are right now" as the latest row.
+# Round discovery delegates to author_visible_rounds (lib/run-dir.sh) —
+# single owner for the "which rounds count + canonical (ts, sha) per
+# round" contract, alongside stage_prior_reviews. compute_loc_trend
+# adds:
+#   - per-round adds count via `git diff --numstat` (structured: sum
+#     the additions column, not regex on --shortstat human prose)
+#   - per-round display column via `git diff --shortstat`
+#   - both diffs use three-dot syntax (<merge_base>...<sha>) so git
+#     computes the dynamic merge-base for THAT round. Two-dot
+#     (<merge_base>..<sha>) would diff against the current
+#     default-branch SHA captured at orchestrator boot, which
+#     retroactively distorts older rounds when main has advanced
+#     between reviews.
 #
-# Computes git diff --shortstat <merge_base>..<sha> for each round, emits
-# a markdown table sorted by timestamp. Handles empty runs/ (first
-# review) without aborting.
+# Then appends the current round explicitly using $current_sha so the
+# aggregator + momentum specialist see "where we are right now" as the
+# latest row. Empty runs/ (first review) is handled without aborting.
 compute_loc_trend() {
     local repo="$1" pr_num="$2" repo_dir="$3" merge_base="$4" state_dir="$5" current_run_dir="$6" current_sha="$7"
     local owner_repo="${repo//\//_}"
-    local runs_dir="$state_dir/runs"
     local current_ts
-    current_ts=$(date -u +%Y%m%dT%H%M%S%3NZ)
+    current_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
     echo "# LOC trend"
     echo
 
-    # Collect round data (ts:sha tuples sorted by timestamp). Filtered to
-    # author-visible runs (skip in-flight, aborted, unposted).
+    # Collect (ts, sha) tuples for prior author-visible rounds from the
+    # single-owner helper. tab-separated; sorted by timestamp ascending.
     local rounds=()
-    local d b ts sha
-    if [ -d "$runs_dir" ]; then
-        while IFS= read -r d; do
-            [ "$d" = "$current_run_dir" ] && continue
-            is_run_author_visible "$d" || continue
-            b=$(basename "$d")
-            ts=$(echo "$b" | awk -F'__' '{print $3}')
-            sha=$(echo "$b" | awk -F'__' '{print $4}')
-            [ -z "$ts" ] || [ -z "$sha" ] && continue
-            rounds+=("$ts:$sha")
-        done < <(find "$runs_dir" -maxdepth 1 -type d -name "${owner_repo}__${pr_num}__*" 2>/dev/null | sort)
-    fi
+    local line ts sha
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        rounds+=("$line")
+    done < <(author_visible_rounds "$state_dir" "$owner_repo" "$pr_num" "$current_run_dir")
 
     # Always append the current round so the table includes "where we are
     # now" (the SHA the aggregator/momentum specialist are reasoning about).
-    rounds+=("$current_ts:$current_sha")
+    rounds+=("$(printf '%s\t%s' "$current_ts" "$current_sha")")
+
+    # Per-round adds (numstat) + display (shortstat). Cached so the
+    # trajectory ratio and the table rows don't double-shell-out to git.
+    # Three-dot diff: git computes the dynamic merge-base per (base, sha)
+    # pair so each row reflects "what this round looked like at the time"
+    # — not "what this round looks like vs current main."
+    local round_adds=() round_stats=()
+    local round_sha numstat shortstat adds
+    for line in "${rounds[@]}"; do
+        round_sha="${line#*$'\t'}"
+        numstat=$(git -C "$repo_dir" diff --numstat "${merge_base}...${round_sha}" 2>/dev/null)
+        if [ -n "$numstat" ]; then
+            adds=$(printf '%s\n' "$numstat" | awk '{sum += $1} END {print sum+0}')
+        else
+            adds=0
+        fi
+        shortstat=$(git -C "$repo_dir" diff --shortstat "${merge_base}...${round_sha}" 2>/dev/null | sed 's/^ *//' | tr '\n' ' ')
+        [ -z "$shortstat" ] && shortstat="(sha not in local history)"
+        round_adds+=("$adds")
+        round_stats+=("$shortstat")
+    done
 
     if [ ${#rounds[@]} -eq 1 ]; then
         # Only the current round — no prior author-visible reviews.
@@ -78,26 +98,13 @@ compute_loc_trend() {
         echo
         echo "| Round | Timestamp | SHA | base..head |"
         echo "|---|---|---|---|"
-        local stat
-        stat=$(git -C "$repo_dir" diff --shortstat "$merge_base..$current_sha" 2>/dev/null | sed 's/^ *//' | tr '\n' ' ')
-        [ -z "$stat" ] && stat="(sha not in local history)"
-        echo "| 1 | $current_ts | ${current_sha:0:7} | $stat |"
+        echo "| 1 | $current_ts | ${current_sha:0:7} | ${round_stats[0]} |"
         return 0
     fi
 
     # Trajectory: ratio of last-round additions to first-round additions.
-    local first_round="${rounds[0]}"
-    local last_round="${rounds[-1]}"
-    local first_sha="${first_round#*:}"
-    local last_sha="${last_round#*:}"
-    local first_shortstat last_shortstat first_round_adds last_round_adds
-    first_shortstat=$(git -C "$repo_dir" diff --shortstat "$merge_base..$first_sha" 2>/dev/null || echo "")
-    last_shortstat=$(git -C "$repo_dir" diff --shortstat "$merge_base..$last_sha" 2>/dev/null || echo "")
-    first_round_adds=$(echo "$first_shortstat" | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+' || echo 0)
-    last_round_adds=$(echo "$last_shortstat" | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+' || echo 0)
-    first_round_adds=${first_round_adds:-0}
-    last_round_adds=${last_round_adds:-0}
-
+    local first_round_adds="${round_adds[0]}"
+    local last_round_adds="${round_adds[-1]}"
     local trajectory ratio
     if [ "$first_round_adds" -eq 0 ]; then
         trajectory="STABLE"
@@ -116,14 +123,13 @@ compute_loc_trend() {
     echo
     echo "| Round | Timestamp | SHA | base..head |"
     echo "|---|---|---|---|"
-    local i=1 round stat
-    for round in "${rounds[@]}"; do
-        ts="${round%:*}"
-        sha="${round#*:}"
-        stat=$(git -C "$repo_dir" diff --shortstat "$merge_base..$sha" 2>/dev/null | sed 's/^ *//' | tr '\n' ' ')
-        [ -z "$stat" ] && stat="(sha not in local history)"
-        echo "| $i | $ts | ${sha:0:7} | $stat |"
+    local i=1 idx=0
+    for line in "${rounds[@]}"; do
+        ts="${line%$'\t'*}"
+        sha="${line#*$'\t'}"
+        echo "| $i | $ts | ${sha:0:7} | ${round_stats[$idx]} |"
         i=$((i + 1))
+        idx=$((idx + 1))
     done
 }
 
@@ -1205,7 +1211,8 @@ done
 
 # Momentum specialist — runs only on re-reviews. Outputs prose-only
 # trajectory meta-finding for the aggregator's loop-breaker (Path 2).
-# Skipped on first reviews; aggregator handles its absence gracefully.
+# Skipped on first reviews (where the aggregator handles absence by
+# design); on re-reviews failure is fail-loud — see the abort below.
 if [ -s "$RUN_DIR/inputs/previous-review.md" ]; then
     log "$PR_ID: launching momentum specialist (re-review)..."
     MOMENTUM_PROMPT=$(substitute_placeholders \
@@ -1213,12 +1220,19 @@ if [ -s "$RUN_DIR/inputs/previous-review.md" ]; then
         "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR")
     "$_LIB_DIR/run-specialist.sh" "momentum" "$REPO_DIR" "$MOMENTUM_PROMPT" "$RUN_DIR/agents/momentum"
     MOMENTUM_EXIT=$?
-    if [ $MOMENTUM_EXIT -eq 0 ]; then
-        MOMENTUM_OUT="$RUN_DIR/agents/momentum/output.md"
-        ln -sfn "$MOMENTUM_OUT" "$REPO_DIR/.codex-scratch/momentum.md"
-    else
-        log "$PR_ID: momentum specialist failed (exit $MOMENTUM_EXIT) — skipping symlink; aggregator's Path 2 will degrade gracefully (momentum input absent)"
+    if [ $MOMENTUM_EXIT -ne 0 ]; then
+        # Fail-fast > graceful degradation. Path 2 of the aggregator's
+        # loop-breaker depends on this output; an absent momentum.md
+        # silently demotes Path 2 to "no structural callout," which is
+        # wrong output on exactly the re-reviews where the callout
+        # matters most. Mirror the existing fail-loud abort pattern
+        # (see knightwatch-config error arms above).
+        log "$PR_ID: momentum specialist failed (exit $MOMENTUM_EXIT) — aborting review (Path 2 needs this output; silent degrade would produce wrong loop-breaker behavior)"
+        rm -rf "$REPO_DIR"
+        exit 1
     fi
+    MOMENTUM_OUT="$RUN_DIR/agents/momentum/output.md"
+    ln -sfn "$MOMENTUM_OUT" "$REPO_DIR/.codex-scratch/momentum.md"
 else
     log "$PR_ID: skipping momentum specialist (first review)"
 fi
