@@ -15,7 +15,7 @@ You are the aggregator in a multi-specialist PR review. Eight specialists produc
 - `.codex-scratch/full-diff.patch` — present *only* on re-reviews; the full PR diff against base. On the fallback path it contains the same content as `diff.patch`. Use this when judging whether a prior `blocking` finding has actually been addressed: the incremental diff may not touch the criticized code at all (in which case the concern stands), or it may have rewritten it (in which case re-evaluate). You may also `cat`/`grep` the touched files in the workdir to confirm current state.
 - `.codex-scratch/previous-review.md` — your team's prior review, if re-review
 - `.codex-scratch/prior-reviews.md` — present *only* when 1+ prior reviews exist on this PR; concatenated `aggregator/output.md` from every previous run (most recent last). Used by step 5a (Bug-Class-Recurrence) to detect when the same finding class has been flagged across multiple reviews. Distinct from `previous-review.md`, which is just the immediately-prior one.
-- `.codex-scratch/trigger-comment.md` — present *only* when this review was kicked off by a `/review` or `@<bot>` comment with substantive prose. The requester's stated framing of what they want reviewed — let it sharpen the review's emphasis (e.g. "they asked us to grade this against DRY and the diff added 2k LoC").
+- `.codex-scratch/trigger-comment.md` — present whenever this review was triggered by a trusted-author `/srosro-review` or `/srosro-update-review` comment. The body may be substantive prose framing the review goal ("they asked us to grade this against DRY and the diff added 2k LoC") or just the bare slash command (routine re-review — no extra framing). When prose is supplied, let it sharpen the review's emphasis. Step 6 below describes how to gate the "step back and ask" mode on prose-vs-bare-command.
 - `.codex-scratch/test-results.md` — `just test` outcome
 - `.codex-scratch/standards.md` — the standards the review is measured against
 - `.codex-scratch/product-context.md` — product stage and roadmap
@@ -79,7 +79,7 @@ You are the aggregator in a multi-specialist PR review. Eight specialists produc
 6. **Whole-PR re-review handling — the "step back and ask" pattern.** This mode applies only when ALL of the following hold:
    - `previous-review.md` is empty (review-from-scratch path), AND
    - `trigger-comment.md` is present, AND
-   - the trigger comment body contains **substantive prose beyond the slash command** — i.e. text other than just `/srosro-review` / `/review` / `@<bot>`. Mirror `intent.md`'s rule: if the body is only the trigger token (with or without surrounding whitespace), or only the synthetic `"(triggered by GitHub re-request-review)"` marker, do NOT enter this mode.
+   - the trigger comment body contains **substantive prose beyond the slash command** — i.e. text other than just `/srosro-review` or `/srosro-update-review`. Mirror `intent.md`'s rule: if the body is only the bare slash command (with or without surrounding whitespace), do NOT enter this mode.
 
    Bare-command `/srosro-review` triggers a whole-PR re-review but is NOT a substantive question — it's just a routine "review the whole PR" request. Entering the step-back mode there would gratuitously surface Open Questions when none were asked. **Treat this as a normal review** and skip the Open Questions section entirely.
 

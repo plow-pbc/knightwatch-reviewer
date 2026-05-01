@@ -56,8 +56,10 @@ for REPO in "${REPOS[@]}"; do
         fi
 
         log "$PR_KEY: re-request review event at $LATEST — posting /srosro-review trigger"
+        # Bare command only — extra prose in the comment body would be
+        # treated as requester framing by trigger-comment.md prompts.
         if gh pr comment "$PR_NUM" --repo "$REPO" \
-            --body "/srosro-review (triggered by GitHub re-request-review)" >/dev/null 2>&1; then
+            --body "/srosro-review" >/dev/null 2>&1; then
             seen_set "$PR_KEY" "$LATEST"
         else
             log "$PR_KEY: failed to post /srosro-review trigger comment"
