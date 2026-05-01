@@ -192,15 +192,12 @@ grep -q '^KillMode=process$' "$PROJECT_ROOT/systemd/pr-reviewer.service" || {
 # unit-private /tmp gets torn down a few seconds later — any detached
 # worker doing `mktemp` in /tmp lands in a dead mount namespace and the
 # call fails with `No such file or directory`. Both review.sh and
-# lib/review-one-pr.sh must redirect tempfiles to $STATE_DIR/tmp, which
-# is durable across the unit's lifecycle. This grep fences a regression
-# that drops the export from either script (in production, the worker
-# inherits TMPDIR from the orchestrator; the worker's own fallback only
-# fires under standalone smoke-test invocation, so the orchestrator path
-# alone is not enough — both must be covered).
+# lib/review-one-pr.sh must pin TMPDIR to $STATE_DIR/tmp unconditionally
+# (no `${TMPDIR:-...}` fallback chain) so neither an inherited TMPDIR
+# nor a config.env override can silently route mktemp back to /tmp.
 for f in "$PROJECT_ROOT/review.sh" "$PROJECT_ROOT/lib/review-one-pr.sh"; do
-    grep -qF 'export TMPDIR="${TMPDIR:-$STATE_DIR/tmp}"' "$f" || {
-        echo "FAIL setup: $(basename "$f") is missing the \$STATE_DIR/tmp TMPDIR fence — workers will hit unit-private /tmp"
+    grep -qF 'export TMPDIR="$STATE_DIR/tmp"' "$f" || {
+        echo "FAIL setup: $(basename "$f") is missing the unconditional \$STATE_DIR/tmp TMPDIR pin — fallback chains let an inherited or config.env-set TMPDIR re-route mktemp into the unit-private /tmp"
         exit 1
     }
 done
@@ -214,12 +211,7 @@ export MOCK_TRUSTED_USERS="srosro someuser"
 
 run_orchestrator() {
     : > "$LOG_FILE"   # reset
-    # Strip any inherited TMPDIR so review.sh's
-    # `export TMPDIR="${TMPDIR:-$STATE_DIR/tmp}"` fallback fires
-    # deterministically — otherwise the suite's own TMPDIR shadows the
-    # production fallback and trigger files land outside $STATE_DIR/tmp,
-    # making the fence assertions below moot.
-    env -u TMPDIR bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
+    bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
 }
 
 count_dispatches() {

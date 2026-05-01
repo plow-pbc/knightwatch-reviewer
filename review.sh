@@ -13,17 +13,6 @@ WORKDIRS_DIR="${WORKDIRS_DIR:-$STATE_DIR/workdirs}"
 STABLE_SECS="${STABLE_SECS:-3600}"
 MAX_CONCURRENT="${MAX_CONCURRENT:-8}"
 
-# Route mktemp away from /tmp. pr-reviewer.service runs with PrivateTmp=yes
-# AND KillMode=process: workers detach and survive the orchestrator's exit,
-# but the unit-private /tmp gets torn down when the unit deactivates a few
-# seconds later — leaving any worker that does a bare `mktemp` in a dead
-# mount namespace. Symptom: `mktemp: failed to create file via template
-# '/tmp/tmp.XXXXXXXXXX': No such file or directory`, then KID/dead-code/
-# strict-typing pre-checks degrade silently. STATE_DIR is in the unit's
-# ReadWritePaths and outside the private mount, so it survives.
-export TMPDIR="${TMPDIR:-$STATE_DIR/tmp}"
-mkdir -p "$TMPDIR"
-
 # Tracked-repo manifest (REPOS array + KID_PATHS assoc array). Single
 # source of truth at repos.conf — adding a repo only edits one file.
 # config.env can still REPOS=(...) override on top. The shared loader
@@ -31,6 +20,18 @@ mkdir -p "$TMPDIR"
 REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 . "$REVIEWER_LIB_DIR/tracked-repos.sh"
 . "$REVIEWER_LIB_DIR/gh-comments.sh"
+
+# Route mktemp to $STATE_DIR/tmp. pr-reviewer.service runs with
+# PrivateTmp=yes (sandbox) AND KillMode=process (workers survive
+# orchestrator exit); the unit-private /tmp tears down when the unit
+# deactivates a few seconds later, leaving detached workers in a dead
+# mount namespace where `mktemp` fails with `'/tmp/tmp.XXXXXXXXXX': No
+# such file or directory`. STATE_DIR is in ReadWritePaths and outside
+# the private mount, so it survives. Set unconditionally — and AFTER
+# tracked-repos.sh sources config.env — so neither an inherited TMPDIR
+# nor a config.env override can silently route mktemp back to /tmp.
+export TMPDIR="$STATE_DIR/tmp"
+mkdir -p "$TMPDIR"
 [ ${#REPOS[@]} -ge 1 ] || { echo "FATAL: no tracked repos — populate $STATE_DIR/repos.conf or set REPOS in config.env" >&2; exit 1; }
 BOT_USER="${BOT_USER:-srosro}"
 # Hidden HTML-comment marker prepended to every auto-post by this repo

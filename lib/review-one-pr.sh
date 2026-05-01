@@ -53,18 +53,6 @@ REVIEW_START_TS=$(date +%s)
 # LOG_FILE defaulted yet (the per-run dir is set up below). Fall back to
 # $STATE_DIR/orchestrator.log so this skip line still lands somewhere durable.
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
-
-# Route mktemp away from /tmp. With PrivateTmp=yes + KillMode=process on
-# pr-reviewer.service, this worker is detached and outlives the unit; the
-# unit-private /tmp gets torn down when the unit deactivates a few seconds
-# later, leaving any subsequent `mktemp` (KID/dead-code/strict-typing
-# stderr capture below) failing with `'/tmp/tmp.XXXXXXXXXX': No such file
-# or directory`. STATE_DIR is in ReadWritePaths and outside the private
-# namespace, so it survives. review.sh exports the same TMPDIR; this
-# fallback covers standalone invocation (smoke tests, manual reruns).
-export TMPDIR="${TMPDIR:-$STATE_DIR/tmp}"
-mkdir -p "$TMPDIR"
-
 _LIB_DIR_EARLY="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 . "$_LIB_DIR_EARLY/locking.sh"
 PR_LOCK_SLUG="${REPO//\//_}__${PR_NUM}"
@@ -93,6 +81,17 @@ WORKDIRS_DIR="${WORKDIRS_DIR:-$STATE_DIR/workdirs}"
 . "$_LIB_DIR_EARLY/tracked-repos.sh"
 BOT_USER="${BOT_USER:-srosro}"
 BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
+
+# Route mktemp to $STATE_DIR/tmp. With PrivateTmp=yes + KillMode=process
+# on pr-reviewer.service, this worker is detached and outlives the unit;
+# the unit-private /tmp tears down when the unit deactivates and any
+# `mktemp` (KID / dead-code / strict-typing stderr capture below) fails
+# with `'/tmp/tmp.XXXXXXXXXX': No such file or directory`. Set
+# unconditionally — and AFTER tracked-repos.sh sources config.env — so
+# neither an inherited TMPDIR nor a config.env override can silently
+# route mktemp back to /tmp.
+export TMPDIR="$STATE_DIR/tmp"
+mkdir -p "$TMPDIR"
 
 # Source helpers. Prefer REVIEWER_LIB_DIR if caller set it (smoke-test
 # isolation); fall back to the worker's own directory.
