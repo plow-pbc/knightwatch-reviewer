@@ -9,7 +9,8 @@
 #      author-visible run + the current round, sorted by timestamp,
 #      each row carrying base..head shortstat.
 #   3. Trajectory line classifies GROWING / STABLE / SHRINKING based on
-#      ratio between first and last round's additions.
+#      ratio between first and last round's additions, OR UNKNOWN when
+#      a prior round's SHA isn't in local history (rebase/force-push).
 #   4. Runs without `posted_at` AND status != "completed" (in-flight or
 #      aborted) are excluded from the trajectory table — same predicate
 #      stage_prior_reviews uses (single owner via is_run_author_visible).
@@ -17,6 +18,11 @@
 #      regression fence for the BCR class flagged on PR #38 (round-2
 #      review): the function must consume meta.json, not parse the
 #      run-dir name.
+#   6. meta.json `.reviewed_sha` (post-checkout HEAD) wins over `.sha`
+#      (orchestrator-enumerated PR_SHA) when both are present —
+#      regression fence for the BCR class flagged on PR #38 (round-3
+#      review): an enumeration race must not anchor the trajectory to
+#      a SHA the worker never evaluated.
 
 set -uo pipefail
 
@@ -142,6 +148,85 @@ ROUNDS_OUT=$(author_visible_rounds "$STATE_DIR" "cncorp_plow" "999" "$CURRENT_RU
 ROUNDS_SHA=$(printf '%s\n' "$ROUNDS_OUT" | head -1 | awk -F'\t' '{print $2}')
 [ "$ROUNDS_SHA" = "$SHA1" ] || {
     echo "FAIL: author_visible_rounds returned SHA $ROUNDS_SHA, expected $SHA1 (meta.json)"
+    exit 1
+}
+
+# Test 6: STABLE trajectory — first round and last round have similar
+# additions counts (ratio in [0.66, 1.5]). Use SHA1 (10 adds vs base) as
+# the only prior, and SHA1 again as the current round → ratio 1.0 →
+# STABLE.
+rm -rf "$STATE_DIR/runs"
+mkdir -p "$STATE_DIR/runs"
+RUN_STABLE_PRIOR="$STATE_DIR/runs/cncorp_plow__999__20260501T000000000Z__${SHA1:0:7}"
+mkdir -p "$RUN_STABLE_PRIOR"
+jq -n --arg sha "$SHA1" --arg ts "2026-05-01T00:00:00Z" \
+    '{status:"completed", sha:$sha, started_at:$ts}' > "$RUN_STABLE_PRIOR/meta.json"
+compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" "$CURRENT_RUN" "$SHA1" > "$OUT"
+grep -qE 'Trajectory:.*STABLE' "$OUT" || {
+    echo "FAIL: expected STABLE trajectory (round1=10 adds, current=10 adds)"
+    cat "$OUT"
+    exit 1
+}
+
+# Test 7: SHRINKING trajectory — first round large, last round small
+# (ratio ≤ 0.66). Build a "fat" commit on top of round2; the fat round's
+# adds-vs-base = 10 (round1) + 50 (round2) + 100 (fat) = 160 lines.
+# Current = SHA1 (10 adds). Ratio 10/160 ≈ 0.06 → SHRINKING.
+seq 1 100 > "$REPO/round_fat.txt"
+git -C "$REPO" add round_fat.txt && git -C "$REPO" commit -qm "fat-round"
+SHA_FAT=$(git -C "$REPO" rev-parse HEAD)
+rm -rf "$STATE_DIR/runs"
+mkdir -p "$STATE_DIR/runs"
+RUN_FAT_PRIOR="$STATE_DIR/runs/cncorp_plow__999__20260501T000000000Z__${SHA_FAT:0:7}"
+mkdir -p "$RUN_FAT_PRIOR"
+jq -n --arg sha "$SHA_FAT" --arg ts "2026-05-01T00:00:00Z" \
+    '{status:"completed", sha:$sha, started_at:$ts}' > "$RUN_FAT_PRIOR/meta.json"
+compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" "$CURRENT_RUN" "$SHA1" > "$OUT"
+grep -qE 'Trajectory:.*SHRINKING' "$OUT" || {
+    echo "FAIL: expected SHRINKING trajectory (prior=160 adds, current=10 adds)"
+    cat "$OUT"
+    exit 1
+}
+
+# Test 8: UNKNOWN trajectory — a prior round's SHA isn't reachable in
+# local history (rebase / force-push / shallow clone evicted it). Silent
+# fall-through to STABLE here was the BCR class flagged on PR #38 round-3.
+# Use a 40-hex string that's never been an object in the test repo.
+rm -rf "$STATE_DIR/runs"
+mkdir -p "$STATE_DIR/runs"
+PHANTOM_SHA="deadbeef00000000000000000000000000000000"
+RUN_PHANTOM="$STATE_DIR/runs/cncorp_plow__999__20260501T000000000Z__${PHANTOM_SHA:0:7}"
+mkdir -p "$RUN_PHANTOM"
+jq -n --arg sha "$PHANTOM_SHA" --arg ts "2026-05-01T00:00:00Z" \
+    '{status:"completed", sha:$sha, started_at:$ts}' > "$RUN_PHANTOM/meta.json"
+compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" "$CURRENT_RUN" "$SHA1" > "$OUT"
+grep -qE 'Trajectory:.*UNKNOWN' "$OUT" || {
+    echo "FAIL: expected UNKNOWN trajectory (prior round's SHA not in local history)"
+    cat "$OUT"
+    exit 1
+}
+grep -qE 'Trajectory:.*STABLE' "$OUT" && {
+    echo "FAIL: phantom-SHA round silently classified as STABLE — UNKNOWN should supersede"
+    cat "$OUT"
+    exit 1
+}
+
+# Test 9: .reviewed_sha wins over .sha when both are present in meta.json
+# — regression fence for the round-3 BCR finding. The orchestrator stamps
+# .sha at meta-write time (PR_SHA, pre-checkout) and later stamps
+# .reviewed_sha (post-checkout HEAD). Downstream consumers MUST prefer
+# .reviewed_sha so an enumeration race doesn't anchor the trajectory to
+# a SHA the worker never actually evaluated.
+rm -rf "$STATE_DIR/runs"
+mkdir -p "$STATE_DIR/runs"
+RUN_BOTH="$STATE_DIR/runs/cncorp_plow__999__20260501T000000000Z__0000000"
+mkdir -p "$RUN_BOTH"
+jq -n --arg reviewed_sha "$SHA1" --arg sha "$PHANTOM_SHA" --arg ts "2026-05-01T00:00:00Z" \
+    '{status:"completed", sha:$sha, reviewed_sha:$reviewed_sha, started_at:$ts}' > "$RUN_BOTH/meta.json"
+ROUNDS_OUT=$(author_visible_rounds "$STATE_DIR" "cncorp_plow" "999" "$CURRENT_RUN")
+ROUNDS_SHA=$(printf '%s\n' "$ROUNDS_OUT" | head -1 | awk -F'\t' '{print $2}')
+[ "$ROUNDS_SHA" = "$SHA1" ] || {
+    echo "FAIL: author_visible_rounds returned $ROUNDS_SHA, expected $SHA1 (.reviewed_sha) — .sha won over .reviewed_sha"
     exit 1
 }
 

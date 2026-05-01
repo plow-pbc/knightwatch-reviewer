@@ -76,8 +76,20 @@ compute_loc_trend() {
     # Three-dot diff: git computes the dynamic merge-base per (base, sha)
     # pair so each row reflects "what this round looked like at the time"
     # — not "what this round looks like vs current main."
+    #
+    # Per-row availability tracking: when a prior round's SHA isn't in
+    # local history (rebase / force-push / shallow clone evicted it), the
+    # diff returns empty. We MUST NOT silently treat empty as 0 additions
+    # — that would drag the trajectory toward STABLE and misclassify the
+    # PR. Instead set had_unavailable_round=true and switch the
+    # trajectory to UNKNOWN below. Empty stat for the CURRENT round is
+    # legitimate (zero-diff PR); it's only prior rounds with missing
+    # history that taint the trajectory.
     local round_adds=() round_stats=()
     local round_sha numstat shortstat adds
+    local had_unavailable_round=false
+    local last_idx=$((${#rounds[@]} - 1))
+    local i_check=0
     for line in "${rounds[@]}"; do
         round_sha="${line#*$'\t'}"
         numstat=$(git -C "$repo_dir" diff --numstat "${merge_base}...${round_sha}" 2>/dev/null)
@@ -85,11 +97,18 @@ compute_loc_trend() {
             adds=$(printf '%s\n' "$numstat" | awk '{sum += $1} END {print sum+0}')
         else
             adds=0
+            # Confirm the SHA itself is unreachable (vs a legit zero-diff
+            # round). cat-file -e exits non-zero when the object is missing.
+            if ! git -C "$repo_dir" cat-file -e "$round_sha" 2>/dev/null && \
+                    [ "$i_check" -ne "$last_idx" ]; then
+                had_unavailable_round=true
+            fi
         fi
         shortstat=$(git -C "$repo_dir" diff --shortstat "${merge_base}...${round_sha}" 2>/dev/null | sed 's/^ *//' | tr '\n' ' ')
         [ -z "$shortstat" ] && shortstat="(sha not in local history)"
         round_adds+=("$adds")
         round_stats+=("$shortstat")
+        i_check=$((i_check + 1))
     done
 
     if [ ${#rounds[@]} -eq 1 ]; then
@@ -103,10 +122,18 @@ compute_loc_trend() {
     fi
 
     # Trajectory: ratio of last-round additions to first-round additions.
+    # UNKNOWN supersedes every other classification when at least one prior
+    # row's SHA isn't in local history — the additions count for that row
+    # is unrecoverable, so the ratio would be a lie. Silent fall-through
+    # to STABLE here is the BCR class flagged on PR #38 round-3: a PR
+    # whose first reviewed SHA was force-pushed away would always read as
+    # STABLE regardless of actual trajectory.
     local first_round_adds="${round_adds[0]}"
     local last_round_adds="${round_adds[-1]}"
     local trajectory ratio
-    if [ "$first_round_adds" -eq 0 ]; then
+    if [ "$had_unavailable_round" = "true" ]; then
+        trajectory="UNKNOWN (one or more prior reviewed SHAs not in local history — likely rebased or force-pushed)"
+    elif [ "$first_round_adds" -eq 0 ]; then
         trajectory="STABLE"
     else
         ratio=$(awk -v a="$last_round_adds" -v b="$first_round_adds" 'BEGIN{printf "%.2f", a/b}')
@@ -483,6 +510,31 @@ if [ "$REVIEWED_SHA" != "$PR_SHA" ]; then
     log "$PR_ID: orchestrator enumerated ${PR_SHA:0:7}, worker checked out ${REVIEWED_SHA:0:7} — using checked-out SHA for header + state"
 fi
 
+# Redirect-safe staging — a PR checkout could commit .codex-scratch as a
+# symlink to a writable service path (e.g. ~/.pr-reviewer/runs/...) so that
+# write_scratch + the per-specialist symlinks would redirect critic /
+# momentum / dead-code outputs into our own state dir. Wipe + recreate
+# unconditionally before any write so the worker owns the directory.
+# Mirrors lib/sibling-symlinks.sh's .siblings/ wipe-then-recreate pattern.
+rm -rf "$REPO_DIR/.codex-scratch"
+mkdir -p "$REPO_DIR/.codex-scratch"
+
+# Stamp the actually-reviewed SHA into meta.json. The earlier write
+# (line ~268) used PR_SHA — the orchestrator-enumerated SHA before
+# fetch + checkout — but the worker's source of truth for "what was
+# evaluated" is REVIEWED_SHA (post-checkout HEAD). Downstream
+# consumers (compute_loc_trend / author_visible_rounds) prefer
+# .reviewed_sha when present, falling back to .sha for legacy runs
+# pre-dating this field. Atomic jq + mv so a crash mid-write doesn't
+# leave a torn file.
+META_TMP="$RUN_DIR/meta.json.tmp"
+if jq --arg sha "$REVIEWED_SHA" '. + {reviewed_sha: $sha}' \
+        "$RUN_DIR/meta.json" > "$META_TMP" 2>/dev/null; then
+    mv -f "$META_TMP" "$RUN_DIR/meta.json" || rm -f "$META_TMP"
+else
+    rm -f "$META_TMP"
+    log "$PR_ID: meta.json reviewed_sha stamp failed — LOC trajectory may use enumerated SHA for this run"
+fi
 
 # Fetch PR metadata once, here, so PR_AUTHOR is available before the env
 # mirror runs (the trust gate below depends on it). The full PR_DATA blob

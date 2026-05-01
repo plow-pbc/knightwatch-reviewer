@@ -302,11 +302,16 @@ stage_prior_reviews() {
 # (same predicate as is_run_author_visible / stage_prior_reviews — single
 # owner for "which prior review rounds count").
 #
-# Canonical SHA + timestamp sources are meta.json fields (.sha,
-# .started_at). Run-dir-name parsing is the legacy fallback for older
-# runs that pre-date a particular meta field — meta.json wins when
-# present so a truncated run-dir SHA can't override the full SHA the
-# worker stamped.
+# Canonical SHA + timestamp sources are meta.json fields. SHA preference:
+#   1. .reviewed_sha — post-checkout HEAD; what the worker actually evaluated.
+#      Stamped after the checkout in review-one-pr.sh.
+#   2. .sha — pre-checkout, orchestrator-enumerated PR_SHA. Falls behind when
+#      the head moves between enumeration and the worker's fetch (a normal
+#      race in a fast-cadence orchestrator).
+#   3. Run-dir-name suffix — legacy parse for older runs without meta fields.
+# .reviewed_sha winning over .sha keeps the LOC trajectory anchored to the
+# SHA whose diff the worker fed into the round, even when an enumeration
+# race made the two diverge.
 #
 # This is the single owner for the "(ts, sha) per round" contract that
 # compute_loc_trend (LOC trajectory) consumes. Bug-Class-Recurrence
@@ -319,7 +324,7 @@ author_visible_rounds() {
     while IFS= read -r prior_run; do
         [ "$prior_run" = "$current_run_dir" ] && continue
         is_run_author_visible "$prior_run" || continue
-        meta_sha=$(jq -r '.sha // empty' "$prior_run/meta.json" 2>/dev/null)
+        meta_sha=$(jq -r '.reviewed_sha // .sha // empty' "$prior_run/meta.json" 2>/dev/null)
         meta_ts=$(jq -r '.started_at // empty' "$prior_run/meta.json" 2>/dev/null)
         # Fall back to run-dir name parsing only if meta is incomplete.
         [ -z "$meta_ts" ] && meta_ts=$(basename "$prior_run" | grep -oE 'T[0-9]+Z' | head -1)

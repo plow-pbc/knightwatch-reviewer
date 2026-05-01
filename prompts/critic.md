@@ -47,7 +47,7 @@ For each finding in the specialist outputs, provide **1–3 lines** of counterar
 
    Scope-creep findings (asking the PR to update unrelated infra, fix a pre-existing gap, expand adjacent policy) MUST be REFRAME-AS-QUESTION'd if they survive — they are not bugs, the remedy is additive, and the cost-naming forces the author to weigh in. The reframe MUST include explicit cost language ("adds complexity and makes PMF iteration harder").
 
-**Pre-PMF lens (conditional).** If `.codex-scratch/loc-trend.md` shows GROWING and Bug-Class-Recurrence has fired in this round or any prior round (visible in `prior-reviews.md`), apply the lens to *every surviving finding*: would the failure mode the remedy is preventing be observed in production at our scale today? If no AND the remedy is additive without observed need → REMEDY-BLOAT (drop entirely). If no but the underlying concern is real → REFRAME-AS-QUESTION.
+**Pre-PMF lens (conditional).** If `.codex-scratch/loc-trend.md` shows GROWING and Bug-Class-Recurrence has fired in any prior round (visible in `prior-reviews.md`), apply the lens to *every surviving finding*: would the failure mode the remedy is preventing be observed in production at our scale today? If no AND the remedy is additive without observed need → REMEDY-BLOAT (drop entirely). If no but the underlying concern is real → REFRAME-AS-QUESTION.
 
 Separately: surface any findings the specialists **collectively missed**. Read the diff for gaps the specialists would have caught if they'd been more thorough.
 
