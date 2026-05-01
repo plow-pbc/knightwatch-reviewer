@@ -91,6 +91,9 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # --- prompt-build helpers (sourced from lib/prompt-build.sh) ---
 . "$_LIB_DIR/prompt-build.sh"
 
+# --- knightwatch-config helper (per-repo .knightwatch/ reads) ---
+. "$_LIB_DIR/knightwatch-config.sh"
+
 # --- search-roots coverage-state helper ---
 . "$_LIB_DIR/search-roots.sh"
 
@@ -575,7 +578,16 @@ fi
 # exit 1 *because* findings exist. Treat empty-stdout-AND-non-zero-exit
 # as the only degrade signal; non-empty stdout is data.
 DEAD_CODE_STATIC=""
-DEAD_CODE_CMD="${DEAD_CODE_CMDS[$REPO]:-}"
+# Dead-code static-analysis command: try .knightwatch/dead-code.sh first
+# (per-repo, committed to the base branch), fall back to DEAD_CODE_CMDS[$REPO]
+# from repos.conf (legacy operator-managed).
+DEAD_CODE_CMD=""
+if DEAD_CODE_CMD=$(read_knightwatch_file "$REPO_DIR" "$DEFAULT_BRANCH" "dead-code.sh") && \
+   [ -n "$DEAD_CODE_CMD" ]; then
+    :  # got it from .knightwatch/
+else
+    DEAD_CODE_CMD="${DEAD_CODE_CMDS[$REPO]:-}"
+fi
 if [ -n "$DEAD_CODE_CMD" ] && [ -n "$KID_INPUT_DIFF" ]; then
     TOUCHED_FILES_ARR=()
     while IFS= read -r f; do
@@ -648,7 +660,16 @@ export REVIEWER_LIB_DIR="$_LIB_DIR"
 # silently publishes wrong review text on broken inputs (bad PROJECT_DIR,
 # malformed config file, refused symlink). Fail-loud here keeps the
 # deterministic section honest.
-STRICT_TYPING_CMD="${STRICT_TYPING_CMDS[$REPO]:-}"
+# Strict-typing pre-check: try .knightwatch/strict-typing.sh first
+# (per-repo, committed to the base branch), fall back to STRICT_TYPING_CMDS[$REPO]
+# from repos.conf (legacy operator-managed).
+STRICT_TYPING_CMD=""
+if STRICT_TYPING_CMD=$(read_knightwatch_file "$REPO_DIR" "$DEFAULT_BRANCH" "strict-typing.sh") && \
+   [ -n "$STRICT_TYPING_CMD" ]; then
+    :  # got it from .knightwatch/
+else
+    STRICT_TYPING_CMD="${STRICT_TYPING_CMDS[$REPO]:-}"
+fi
 if [ -n "$STRICT_TYPING_CMD" ]; then
     STRICT_STDERR=$(mktemp)
     STRICT_GAP=$(cd "$REPO_DIR" && bash -c "$STRICT_TYPING_CMD" 2>"$STRICT_STDERR")
@@ -725,12 +746,23 @@ if [ -n "$PRIOR_REVIEWS" ]; then
     write_scratch "$REPO_DIR" "prior-reviews.md" "$PRIOR_REVIEWS"
 fi
 
-CONTEXT_FILE="$HOME/.pr-reviewer/contexts/$(echo "$REPO" | tr '/' '_').md"
-if [ -f "$CONTEXT_FILE" ]; then
-    write_scratch "$REPO_DIR" "product-context.md" "$(cat "$CONTEXT_FILE")"
+# Product context: try .knightwatch/product-context.md first (per-repo,
+# committed to the base branch), fall back to ~/.pr-reviewer/contexts/<slug>.md
+# (legacy operator-managed). Once every tracked repo has its .knightwatch/
+# committed, the fallback can be removed.
+PRODUCT_CONTEXT=""
+if PRODUCT_CONTEXT=$(read_knightwatch_file "$REPO_DIR" "$DEFAULT_BRANCH" "product-context.md") && \
+   [ -n "$PRODUCT_CONTEXT" ]; then
+    :  # got it from .knightwatch/
 else
-    write_scratch "$REPO_DIR" "product-context.md" "(no product context configured for $REPO)"
+    CONTEXT_FILE="$HOME/.pr-reviewer/contexts/$(echo "$REPO" | tr '/' '_').md"
+    if [ -f "$CONTEXT_FILE" ]; then
+        PRODUCT_CONTEXT=$(cat "$CONTEXT_FILE")
+    else
+        PRODUCT_CONTEXT="(no product context configured for $REPO)"
+    fi
 fi
+write_scratch "$REPO_DIR" "product-context.md" "$PRODUCT_CONTEXT"
 
 FILE_HISTORY=""
 # Derive file-history's file list from $KID_INPUT_DIFF directly by
