@@ -29,10 +29,16 @@ mkdir -p "$REPO_DIR/.git"
 mkdir -p "$TMPDIR/bin"
 export PATH="$TMPDIR/bin:$PATH"
 
+# Stubs log argv here so we can assert specific flags survive (e.g. the
+# `-c model=gpt-5.5` pin — guards against silent unpin).
+export ARGV_LOG="$TMPDIR/codex-argv.log"
+
 # ---- scenario 1: success path -------------------------------------------
 echo "  scenario 1: success path produces prompt/output/log..."
 cat > "$TMPDIR/bin/codex" <<'STUB'
 #!/bin/bash
+# Log argv so the smoke can assert which flags reached codex.
+printf '%s\n' "$@" > "$ARGV_LOG"
 # Find -o argument and write a deterministic line into it; emit a stderr
 # marker so we can assert it lands in log.txt.
 while [ "$#" -gt 0 ]; do
@@ -80,6 +86,13 @@ if ! grep -q 'agent=security exit=0' "$AGENT_DIR/log.txt"; then
 fi
 if ! grep -q '^stub-stderr-marker$' "$AGENT_DIR/log.txt"; then
     echo "FAIL: codex stderr not captured into log.txt"
+    exit 1
+fi
+# Pin assertion: the run-specialist wrapper must call codex with the
+# explicit model so we don't silently ride the CLI's rolling default.
+if ! grep -q '^model=gpt-5.5$' "$ARGV_LOG"; then
+    echo "FAIL: codex argv missing 'model=gpt-5.5' pin (silent unpin?)"
+    cat "$ARGV_LOG"
     exit 1
 fi
 
