@@ -54,7 +54,7 @@ REPOS=(
 )
 ```
 
-The next 2-minute timer tick picks it up. Per-repo overrides — custom dead-code detector, strict-typing rules, sibling-repo allowlist — live under `.knightwatch/*.sh` on the repo's default branch (see `lib/review-one-pr.sh` for the contract).
+The next 2-minute timer tick picks it up. `repos.conf` also holds three associative arrays — `KID_PATHS` (per-repo path to a kid-prior-art index), `SOURCE_PATHS` (per-repo local checkout that drives the sibling-grep/search-roots surface for the dead-code and consumers specialists), and `DEAD_CODE_CMDS` (per-repo static dead-code prepass command — empty string disables it). Each keyed by `owner/repo`; loader is `lib/tracked-repos.sh`.
 
 ## Use on a PR
 
