@@ -248,8 +248,8 @@ if ! grep -q 'force_whole=true' "$LOG_FILE"; then
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
-if ! grep -q 'trigger_file=/tmp/pr-review-trigger' "$LOG_FILE"; then
-    echo "FAIL scenario 3: expected trigger_file=/tmp/... in dispatch (someuser is in MOCK_TRUSTED_USERS)"
+if ! grep -qE 'trigger_file=[^ ]*/pr-review-trigger' "$LOG_FILE"; then
+    echo "FAIL scenario 3: expected trigger_file=<path>/pr-review-trigger.* in dispatch (someuser is in MOCK_TRUSTED_USERS)"
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
@@ -292,8 +292,8 @@ if ! grep -q 'force_whole=true' "$LOG_FILE"; then
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
-if ! grep -q 'trigger_file=/tmp/pr-review-trigger' "$LOG_FILE"; then
-    echo "FAIL scenario 5: expected trigger_file=/tmp/... in dispatch (srosro is in MOCK_TRUSTED_USERS)"
+if ! grep -qE 'trigger_file=[^ ]*/pr-review-trigger' "$LOG_FILE"; then
+    echo "FAIL scenario 5: expected trigger_file=<path>/pr-review-trigger.* in dispatch (srosro is in MOCK_TRUSTED_USERS)"
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
@@ -321,8 +321,8 @@ if ! grep -q 'force_whole=true' "$LOG_FILE"; then
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
-if grep -q 'trigger_file=/tmp/pr-review-trigger' "$LOG_FILE"; then
-    echo "FAIL scenario 6 (trust gate regression): expected trigger_file empty for untrusted commenter, but a tmp path was staged"
+if grep -qE 'trigger_file=[^ ]*/pr-review-trigger' "$LOG_FILE"; then
+    echo "FAIL scenario 6 (trust gate regression): expected trigger_file empty for untrusted commenter, but a path was staged"
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi

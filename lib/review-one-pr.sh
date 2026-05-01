@@ -53,6 +53,18 @@ REVIEW_START_TS=$(date +%s)
 # LOG_FILE defaulted yet (the per-run dir is set up below). Fall back to
 # $STATE_DIR/orchestrator.log so this skip line still lands somewhere durable.
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
+
+# Route mktemp away from /tmp. With PrivateTmp=yes + KillMode=process on
+# pr-reviewer.service, this worker is detached and outlives the unit; the
+# unit-private /tmp gets torn down when the unit deactivates a few seconds
+# later, leaving any subsequent `mktemp` (KID/dead-code/strict-typing
+# stderr capture below) failing with `'/tmp/tmp.XXXXXXXXXX': No such file
+# or directory`. STATE_DIR is in ReadWritePaths and outside the private
+# namespace, so it survives. review.sh exports the same TMPDIR; this
+# fallback covers standalone invocation (smoke tests, manual reruns).
+export TMPDIR="${TMPDIR:-$STATE_DIR/tmp}"
+mkdir -p "$TMPDIR"
+
 _LIB_DIR_EARLY="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 . "$_LIB_DIR_EARLY/locking.sh"
 PR_LOCK_SLUG="${REPO//\//_}__${PR_NUM}"
