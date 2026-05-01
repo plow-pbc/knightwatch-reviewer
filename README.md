@@ -8,7 +8,7 @@ Most AI reviewers do single-file pattern matching. Useful, but they miss bugs th
 
 Here's a real PR that switched the production database from password auth to RDS IAM tokens. GitHub Copilot's reviewer commented on three single-file patterns. The most substantive of the three:
 
-> **Copilot**, inline on `api/plow/db/session.py`:
+> **Copilot**, inline on `api/svc/db/session.py`:
 > > `sslmode=require` encrypts the connection but does not verify the server certificate/hostname in Postgres, so it's vulnerable to MITM within the network. Consider `sslmode=verify-full`…
 
 Reasonable. But that's a hardening note, not a finding that would stop the merge.
@@ -16,7 +16,7 @@ Reasonable. But that's a hardening note, not a finding that would stop the merge
 Knightwatch's review on the same PR:
 
 > **Knightwatch**:
-> > **[blocking]** IAM rollout would crash the API at startup. `start.sh` runs `alembic upgrade head` before Uvicorn, but `alembic/env.py` builds a plain `create_engine(get_url())` without the IAM hook (which is only wired into `build_async_engine`). Since `terraform/locals.tf` removes `DB_PASSWORD`, the migration step would attempt passwordless auth as `plow_app` and the API would never boot. Reuse `get_sync_connection()` so Alembic and runtime obtain credentials the same way.
+> > **[blocking]** IAM rollout would crash the API at startup. `start.sh` runs `alembic upgrade head` before Uvicorn, but `alembic/env.py` builds a plain `create_engine(get_url())` without the IAM hook (which is only wired into `build_async_engine`). Since `terraform/locals.tf` removes `DB_PASSWORD`, the migration step would attempt passwordless auth as `svc_app` and the API would never boot. Reuse `get_sync_connection()` so Alembic and runtime obtain credentials the same way.
 
 The bug isn't visible in any single file. It only shows up when you stitch shell startup + Alembic engine builder + Terraform env + the location of the IAM hook. That's the kind of catch knightwatch is designed for.
 
