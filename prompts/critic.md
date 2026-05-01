@@ -16,7 +16,7 @@ Then read:
 - `.codex-scratch/commits.md` — commit subjects on this branch, one per line
 - `.codex-scratch/inferred-intent.md` — the pre-fan-out inferred end-user-facing intent. Specialists were told to grade implementation against this; you should too when stress-testing their findings.
 - `.codex-scratch/author-intent.md` — the PR's own description + linked issues (READ THIS — it often explains WHY the author did something a specialist is about to criticize)
-- `.codex-scratch/trigger-comment.md` — present *only* when the review was kicked off by a `/review` or `@<bot>` comment. The requester's stated framing of what they want reviewed; specialists were told to weight it. If a specialist finding is in tension with this framing, decide whether the finding still stands or the specialist over-called.
+- `.codex-scratch/trigger-comment.md` — present whenever the review was triggered by a trusted-author `/srosro-review` or `/srosro-update-review` comment. Contains the commenter's GitHub login + body. When the body has substantive prose, it's the requester's stated framing of what they want reviewed; specialists were told to weight it, and if a specialist finding is in tension with this framing, decide whether the finding still stands or the specialist over-called. When the body is only the bare slash command, ignore it — no extra framing.
 - `.codex-scratch/product-context.md` — product stage and roadmap
 
 **Your job:**
