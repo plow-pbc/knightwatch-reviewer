@@ -39,13 +39,17 @@ mkdir -p "$WORKDIR/.git"  # mimic a real workdir
 # and a gitignored secret in the kind of subdirs that commonly hold
 # local artifacts (`.venv/`, `node_modules/`, `__pycache__/`).
 # Scenario 6 below asserts none of the gitignored secrets leak through.
-init_sibling_repo() {
+init_git_repo() {
     local dir="$1"
     mkdir -p "$dir"
     git init -q "$dir"
     git -C "$dir" config user.email t@t
     git -C "$dir" config user.name t
     git -C "$dir" config commit.gpgsign false
+}
+init_sibling_repo() {
+    local dir="$1"
+    init_git_repo "$dir"
     echo "src" > "$dir/main.py"
     mkdir -p "$dir/pkg"
     echo "pkg-src" > "$dir/pkg/util.py"
@@ -118,11 +122,16 @@ if [ -e "$WORKDIR/.siblings/acme/baz" ]; then
     exit 1
 fi
 
-# --- scenario 2: missing checkout silently skipped ---------------------
-echo "  scenario 2: missing on-disk checkout silently skipped..."
-materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/foo" "acme/qux"
-if [ -e "$WORKDIR/.siblings/acme/qux" ]; then
-    echo "FAIL: qux symlink should not exist (path missing on disk)"
+# --- scenario 2: missing checkout → fail-loud (no silent skip) --------
+# The materializer used to silently `continue` past missing-dir slugs.
+# Now it fails loud — by the time we get here, stage_search_roots has
+# already filtered missing slugs to `missing` upstream, so a missing
+# dir means a race between classification and materialization.
+echo "  scenario 2: missing on-disk checkout → non-zero rc..."
+rc=0
+materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/foo" "acme/qux" 2>/dev/null || rc=$?
+if [ "$rc" -eq 0 ]; then
+    echo "FAIL: missing on-disk checkout should have returned non-zero"
     exit 1
 fi
 
@@ -292,11 +301,7 @@ fi
 echo "  scenario 8: tracked symlink excluded (no deref leak)..."
 SECRET_FILE="$TMPDIR/EXTERNAL_SECRET"
 echo "EXTERNAL_BYTES" > "$SECRET_FILE"
-mkdir -p "$TMPDIR/symrepo"
-git init -q "$TMPDIR/symrepo"
-git -C "$TMPDIR/symrepo" config user.email t@t
-git -C "$TMPDIR/symrepo" config user.name t
-git -C "$TMPDIR/symrepo" config commit.gpgsign false
+init_git_repo "$TMPDIR/symrepo"
 echo "real" > "$TMPDIR/symrepo/real.py"
 ln -s "$SECRET_FILE" "$TMPDIR/symrepo/leak"
 git -C "$TMPDIR/symrepo" add real.py leak
@@ -323,26 +328,82 @@ fi
 # the review instead of serving partial sibling content while reporting
 # `included` coverage. cncorp/plow#37 review 3 finding 1 (BCR — third
 # instance of silent-coverage-loss class).
-echo "  scenario 9: cp failure on worktree-deleted tracked file → non-zero rc..."
-mkdir -p "$TMPDIR/raceyrepo"
-git init -q "$TMPDIR/raceyrepo"
-git -C "$TMPDIR/raceyrepo" config user.email t@t
-git -C "$TMPDIR/raceyrepo" config user.name t
-git -C "$TMPDIR/raceyrepo" config commit.gpgsign false
-echo "real" > "$TMPDIR/raceyrepo/keeper.py"
-echo "ghost" > "$TMPDIR/raceyrepo/ghost.py"
-git -C "$TMPDIR/raceyrepo" add keeper.py ghost.py
-git -C "$TMPDIR/raceyrepo" commit -qm "seed"
-# Delete from worktree but leave in index — `git ls-files` still lists
-# it (it's tracked), but `cp` can't read it. Real-world analog: another
-# process deletes the file mid-review.
-rm "$TMPDIR/raceyrepo/ghost.py"
-SOURCE_PATHS["acme/racey"]="$TMPDIR/raceyrepo"
+echo "  scenario 9: corrupt git object → non-zero rc..."
+# Real-world analog: object DB corruption between classification and
+# materialize. With ls-tree+cat-file (HEAD reads), a deleted-from-
+# worktree file is no longer relevant — `git show HEAD:<path>` reads
+# from the object DB, not from disk. So the failure shape we need to
+# test is git itself failing to read its own object: corrupt the loose
+# object for our tracked blob. The helper must return non-zero rather
+# than serve a partially-materialized slug while reporting `included`.
+init_git_repo "$TMPDIR/corruptrepo"
+echo "real" > "$TMPDIR/corruptrepo/keeper.py"
+echo "doomed" > "$TMPDIR/corruptrepo/doomed.py"
+git -C "$TMPDIR/corruptrepo" add keeper.py doomed.py
+git -C "$TMPDIR/corruptrepo" commit -qm "seed"
+# Find the blob SHA for doomed.py and clobber the loose object so
+# `git show HEAD:doomed.py` fails. Works for a fresh repo where the
+# blob is loose (not yet packed). Loose objects are written 0444, so
+# chmod first.
+DOOMED_SHA=$(git -C "$TMPDIR/corruptrepo" ls-tree HEAD doomed.py | awk '{print $3}')
+DOOMED_PATH="$TMPDIR/corruptrepo/.git/objects/${DOOMED_SHA:0:2}/${DOOMED_SHA:2}"
+chmod u+w "$DOOMED_PATH"
+echo "garbage" > "$DOOMED_PATH"
+SOURCE_PATHS["acme/corrupt"]="$TMPDIR/corruptrepo"
 rc=0
-materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/racey" 2>/dev/null || rc=$?
+materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/corrupt" 2>/dev/null || rc=$?
 if [ "$rc" -eq 0 ]; then
-    echo "FAIL: materialize_sibling_symlinks should have returned non-zero on cp failure"
+    echo "FAIL: materialize_sibling_symlinks should have returned non-zero on git show failure"
     exit 1
 fi
 
-echo "  ok: sibling materialization whitelist-gated, redirect-safe, idempotent, tracked-only, symlink-safe, fail-fast"
+# --- scenario 10: uncommitted worktree edits don't leak --------------
+# Bot review 4 finding 1 (BCR — 2nd instance of local-bytes-escape):
+# previously the helper read worktree bytes, so a sibling with an
+# uncommitted edit to a tracked file would surface the dirty version
+# (potentially containing secrets in progress, debug prints,
+# work-in-progress comments) to specialists. The fix reads committed
+# blobs from HEAD via `git show`, which is invariant to worktree state.
+echo "  scenario 10: uncommitted worktree edits don't leak..."
+init_git_repo "$TMPDIR/dirtyrepo"
+echo "committed-source" > "$TMPDIR/dirtyrepo/file.py"
+git -C "$TMPDIR/dirtyrepo" add file.py
+git -C "$TMPDIR/dirtyrepo" commit -qm "seed"
+# Edit the worktree AFTER commit. The materialize must NOT pick this up.
+echo "DIRTY_SECRET" > "$TMPDIR/dirtyrepo/file.py"
+SOURCE_PATHS["acme/dirty"]="$TMPDIR/dirtyrepo"
+materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/dirty"
+got=$(cat "$WORKDIR/.siblings/acme/dirty/file.py" 2>/dev/null)
+if [ "$got" != "committed-source" ]; then
+    echo "FAIL: expected committed content 'committed-source', got '$got'"
+    exit 1
+fi
+if grep -rn "DIRTY_SECRET" "$WORKDIR/.siblings/acme/dirty/" >/dev/null 2>&1; then
+    echo "FAIL: uncommitted worktree bytes leaked into materialized tree"
+    exit 1
+fi
+
+# --- scenario 11: missing src → fail-loud (no silent skip) -----------
+# The materializer used to `continue` past empty-src or non-dir-src
+# slugs, leaving an empty .siblings/<slug>/ while the caller still
+# reported `included` coverage. Bot review 4 finding 2 (BCR — 4th
+# instance of silent-coverage-loss). Now it returns non-zero so the
+# review aborts.
+echo "  scenario 11: empty src in SOURCE_PATHS → fail-loud..."
+SOURCE_PATHS["acme/emptyentry"]=""
+rc=0
+materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/emptyentry" 2>/dev/null || rc=$?
+if [ "$rc" -eq 0 ]; then
+    echo "FAIL: empty src should have returned non-zero"
+    exit 1
+fi
+echo "  scenario 11: src dir vanished after classification → fail-loud..."
+SOURCE_PATHS["acme/vanished"]="$TMPDIR/vanished-no-such-dir"
+rc=0
+materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/vanished" 2>/dev/null || rc=$?
+if [ "$rc" -eq 0 ]; then
+    echo "FAIL: missing src dir should have returned non-zero"
+    exit 1
+fi
+
+echo "  ok: sibling materialization whitelist-gated, redirect-safe, idempotent, committed-blobs-only, symlink-safe, fail-fast"
