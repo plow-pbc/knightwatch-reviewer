@@ -395,6 +395,50 @@ echo "  Python gate (PROJECT_DIR=api): api/foo.py → gate passes..."
     'api/foo.py' \
     api)
 
+# Config-only diff: a PR that flips strict mode in pyproject.toml /
+# mypy.ini / pyrightconfig.json / setup.cfg without touching any *.py
+# source must NOT scope-skip — the helper reads exactly those files,
+# and silently suppressing the gap note on a real strict-mode
+# regression is the round-6 Narrow-Fix class.
+echo "  Python gate: config-only diff (pyproject.toml) → gate passes (regression-fence: PR #31 round 6)..."
+W="$TMPDIR/py-gate-config"; mkdir -p "$W"
+cat > "$W/pyproject.toml" <<'EOF'
+[project]
+name = "x"
+EOF
+(cd "$W" && assert_runs_with_scope "$PY_CHECK" "py-gate-pyproject-only" 1 \
+    'pyproject.toml')
+
+echo "  Python gate: config-only diff (mypy.ini) → gate passes..."
+(cd "$W" && assert_runs_with_scope "$PY_CHECK" "py-gate-mypy-ini-only" 1 \
+    'mypy.ini')
+
+echo "  Python gate: config-only diff (pyrightconfig.json) → gate passes..."
+(cd "$W" && assert_runs_with_scope "$PY_CHECK" "py-gate-pyright-only" 1 \
+    'pyrightconfig.json')
+
+echo "  Python gate: config-only diff (setup.cfg) → gate passes..."
+(cd "$W" && assert_runs_with_scope "$PY_CHECK" "py-gate-setupcfg-only" 1 \
+    'setup.cfg')
+
+# Subdir gate: config-file under PROJECT_DIR matches; same file at
+# repo root does NOT (helper reads from PROJECT_DIR only).
+echo "  Python gate (PROJECT_DIR=api): api/pyproject.toml → gate passes..."
+W="$TMPDIR/py-gate-subdir-config"; mkdir -p "$W/api"
+cat > "$W/api/pyproject.toml" <<'EOF'
+[project]
+name = "x"
+EOF
+(cd "$W" && assert_runs_with_scope "$PY_CHECK" "py-gate-subdir-config" 1 \
+    'api/pyproject.toml' \
+    api)
+
+echo "  Python gate (PROJECT_DIR=api): root pyproject.toml only → scope-skip (helper reads from api/, not root)..."
+(cd "$W" && assert_scope_skip "$PY_CHECK" "py-gate-rootcfg-vs-subdir" \
+    'pyproject.toml
+README.md' \
+    api)
+
 # Manual invocation without TOUCHED_FILES_FILE (smoke + ad-hoc) must
 # still run unconditionally — the gate is opt-in by the worker.
 echo "  Python gate: TOUCHED_FILES_FILE unset → helper runs unconditionally..."
@@ -440,4 +484,26 @@ echo "  TS gate (PROJECT_DIR=web): web/foo.ts → gate passes..."
     'web/foo.ts' \
     web)
 
-echo "  PASS (15 Python + 9 TS config scenarios + 13 diff-scope-gate scenarios; tri-state contract + schema-fidelity + symlink-refusal + pyright-precedence + diff-scope-gate fences)"
+# Config-only diff: same regression-fence as Python — a PR flipping
+# tsconfig.json's strict flag without touching any *.ts must NOT
+# scope-skip.
+echo "  TS gate: config-only diff (tsconfig.json) → gate passes (regression-fence: PR #31 round 6)..."
+W="$TMPDIR/ts-gate-config"; mkdir -p "$W"
+echo '{"compilerOptions": {"strict": false}}' > "$W/tsconfig.json"
+(cd "$W" && assert_runs_with_scope "$TS_CHECK" "ts-gate-tsconfig-only" 1 \
+    'tsconfig.json')
+
+echo "  TS gate (PROJECT_DIR=web): web/tsconfig.json → gate passes..."
+W="$TMPDIR/ts-gate-subdir-config"; mkdir -p "$W/web"
+echo '{"compilerOptions": {"strict": false}}' > "$W/web/tsconfig.json"
+(cd "$W" && assert_runs_with_scope "$TS_CHECK" "ts-gate-subdir-config" 1 \
+    'web/tsconfig.json' \
+    web)
+
+echo "  TS gate (PROJECT_DIR=web): root tsconfig.json only → scope-skip (helper reads from web/, not root)..."
+(cd "$W" && assert_scope_skip "$TS_CHECK" "ts-gate-rootcfg-vs-subdir" \
+    'tsconfig.json
+package.json' \
+    web)
+
+echo "  PASS (15 Python + 9 TS config scenarios + 22 diff-scope-gate scenarios; tri-state contract + schema-fidelity + symlink-refusal + pyright-precedence + diff-scope-gate + config-only fences)"

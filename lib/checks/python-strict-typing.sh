@@ -69,13 +69,20 @@ if [ ! -d "$PROJECT_DIR" ]; then
 fi
 
 if [ -n "${TOUCHED_FILES_FILE:-}" ] && [ -f "$TOUCHED_FILES_FILE" ]; then
+    # Scope match: either a touched Python source/stub, OR a touched
+    # config file the helper itself reads. The config-file branch is
+    # load-bearing — without it, a PR that disables strict typing by
+    # editing only `pyproject.toml` / `mypy.ini` / `pyrightconfig.json`
+    # / `setup.cfg` (no `*.py` source touched) would scope-skip and
+    # the deterministic gap note would be silently suppressed on a
+    # real regression. Same Narrow-Fix class flagged on round 6.
     if [ "$PROJECT_DIR" = "." ]; then
-        SCOPE_RE='\.pyi?$'
+        SCOPE_RE='\.pyi?$|^(pyproject\.toml|mypy\.ini|pyrightconfig\.json|setup\.cfg)$'
     else
-        SCOPE_RE="^${PROJECT_DIR}/.*\.pyi?$"
+        SCOPE_RE="^${PROJECT_DIR}/(.*\.pyi?|pyproject\.toml|mypy\.ini|pyrightconfig\.json|setup\.cfg)$"
     fi
     if ! grep -E "$SCOPE_RE" "$TOUCHED_FILES_FILE" >/dev/null; then
-        echo "scope-skip: no Python files (*.py, *.pyi) touched under '$PROJECT_DIR'" >&2
+        echo "scope-skip: no Python files (*.py, *.pyi) or strict-typing config (pyproject.toml, mypy.ini, pyrightconfig.json, setup.cfg) touched under '$PROJECT_DIR'" >&2
         exit 0
     fi
 fi

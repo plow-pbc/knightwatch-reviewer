@@ -39,13 +39,19 @@ if [ ! -d "$PROJECT_DIR" ]; then
 fi
 
 if [ -n "${TOUCHED_FILES_FILE:-}" ] && [ -f "$TOUCHED_FILES_FILE" ]; then
+    # Scope match: either a touched TS source, OR a touched tsconfig.json
+    # (the config the helper itself reads). Without the config branch, a
+    # PR that disables strict typing by editing only `tsconfig.json` (no
+    # `*.ts` / `*.tsx` source touched) would scope-skip and the
+    # deterministic gap note would be silently suppressed on a real
+    # regression. Same Narrow-Fix class flagged on round 6.
     if [ "$PROJECT_DIR" = "." ]; then
-        SCOPE_RE='\.tsx?$'
+        SCOPE_RE='\.tsx?$|^tsconfig\.json$'
     else
-        SCOPE_RE="^${PROJECT_DIR}/.*\.tsx?$"
+        SCOPE_RE="^${PROJECT_DIR}/(.*\.tsx?|tsconfig\.json)$"
     fi
     if ! grep -E "$SCOPE_RE" "$TOUCHED_FILES_FILE" >/dev/null; then
-        echo "scope-skip: no TypeScript files (*.ts, *.tsx) touched under '$PROJECT_DIR'" >&2
+        echo "scope-skip: no TypeScript files (*.ts, *.tsx) or tsconfig.json touched under '$PROJECT_DIR'" >&2
         exit 0
     fi
 fi
