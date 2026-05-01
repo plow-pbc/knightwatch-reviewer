@@ -33,6 +33,50 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TMPDIR=$(mktemp -d -t review-one-pr-sha-flow-XXXXXX)
 trap 'rm -rf "$TMPDIR"' EXIT
 
+# ---- shared helpers (deduplicate scenario setup) ----
+
+# write_gh_stub <stub_path> <base_ref> <head_oid>
+#   gh pr view <N> --json baseRefName,... → returns the supplied base_ref.
+#   gh pr view <N> --json headRefOid       → returns head_oid.
+#   Anything else (gh pr comment, etc.)    → no-op success.
+write_gh_stub() {
+    local stub_path="$1" base_ref="$2" head_oid="$3"
+    cat > "$stub_path" <<STUB
+#!/bin/bash
+fields=""
+for ((i=1; i<=\$#; i++)); do
+    if [ "\${!i}" = "--json" ]; then
+        j=\$((i+1))
+        fields="\${!j}"
+        break
+    fi
+done
+case "\$fields" in
+    *baseRefName*)
+        printf '{"baseRefName":"$base_ref","title":"Test PR","body":"","author":{"login":"test-user"},"closingIssuesReferences":{"nodes":[]}}\n'
+        ;;
+    *headRefOid*)
+        printf '{"headRefOid":"$head_oid"}\n'
+        ;;
+    *)
+        :
+        ;;
+esac
+STUB
+    chmod +x "$stub_path"
+}
+
+# write_probe_repos_conf <conf_path>
+write_probe_repos_conf() {
+    cat > "$1" <<'CONF'
+REPOS=("test-org/probe-repo")
+declare -A KID_PATHS=()
+declare -A SOURCE_PATHS=()
+declare -A DEAD_CODE_CMDS=()
+declare -A STRICT_TYPING_CMDS=()
+CONF
+}
+
 # ---- sandbox env ----
 export STATE_DIR="$TMPDIR/state"
 export STATE_FILE="$STATE_DIR/state.json"
@@ -90,48 +134,16 @@ git clone -q "$GITHUB_BARE" "$CANONICAL"
 
 # ---- gh stub via PATH ----
 # Worker calls (in order):
-#   gh pr view <N> --repo <repo> --json baseRefName,title,body,author,commits,closingIssuesReferences
+#   gh pr view <N> --repo <repo> --json baseRefName,title,body,author,closingIssuesReferences
 #   gh pr view <N> --repo <repo> --json headRefOid (later, for stale-head check)
 # Stub returns baseRefName=main, author=test-user (matches BOT_USER).
 export HOME="$TMPDIR/home"
 mkdir -p "$HOME/.local/bin"
 export PATH="$HOME/.local/bin:$PATH"
-cat > "$HOME/.local/bin/gh" <<STUB
-#!/bin/bash
-# Walk args to find --json (the only thing we case on).
-fields=""
-for ((i=1; i<=\$#; i++)); do
-    if [ "\${!i}" = "--json" ]; then
-        j=\$((i+1))
-        fields="\${!j}"
-        break
-    fi
-done
-case "\$fields" in
-    *baseRefName*)
-        # Full PR_DATA blob. headRefOid not requested in this call shape.
-        printf '{"baseRefName":"main","title":"Test PR","body":"","author":{"login":"test-user"},"commits":{"nodes":[]},"closingIssuesReferences":{"nodes":[]}}\n'
-        ;;
-    *headRefOid*)
-        # Stale-head probe — return NEW_PR_SHA so no stale warning fires.
-        printf '{"headRefOid":"$NEW_PR_SHA"}\n'
-        ;;
-    *)
-        # Anything else (gh pr comment, etc.): no-op success.
-        :
-        ;;
-esac
-STUB
-chmod +x "$HOME/.local/bin/gh"
+write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"
 
 # ---- repos.conf with this repo declared (worker reads it) ----
-cat > "$STATE_DIR/repos.conf" <<'CONF'
-REPOS=("test-org/probe-repo")
-declare -A KID_PATHS=()
-declare -A SOURCE_PATHS=()
-declare -A DEAD_CODE_CMDS=()
-declare -A STRICT_TYPING_CMDS=()
-CONF
+write_probe_repos_conf "$STATE_DIR/repos.conf"
 
 # ---- run the worker ----
 # Pass OLD_PR_SHA as PR_SHA — simulating "this is what the orchestrator
@@ -196,6 +208,19 @@ fi
 # from canonical (immutable SHA, reachable in the workdir via shared
 # objects) before the clone is the fix; the smoke proves it works on a
 # release-base fixture.
+#
+# Fixture topology:
+#   M1 (main: main-init.txt)
+#   ├── R1 (release-1.0: release-base.txt)            ← PR's actual base
+#   │    └── P1 (PR head: feature.txt)
+#   └── M2 (main: main-only.txt — added AFTER fork)   ← repo default branch
+#
+# A buggy worker that uses the repo default (main) instead of
+# baseRefName (release-1.0) as the diff base would produce
+# `main...HEAD` whose merge-base with HEAD is M1 — diff includes
+# release-base.txt (which the correct release-1.0...HEAD diff
+# excludes). The decisive assertion is therefore: the worker's
+# full-diff.patch artifact MUST NOT contain "release base content".
 
 echo "  scenario: non-default-base PR (base=release-1.0, canonical default=main)..."
 
@@ -209,18 +234,18 @@ git clone -q "$GITHUB_BARE2" "$WORKING2"
     git config user.email t@t
     git config user.name t
     git config commit.gpgsign false
-    # main: has main-only content (must NOT leak into the PR diff).
-    echo "main-only content" > main-only.txt
-    git add main-only.txt
+    # M1: main's initial state, shared base for both branches.
+    echo "main init" > main-init.txt
+    git add main-init.txt
     git commit -qm "main: init"
     git push -q origin main
-    # release-1.0: branched from main but evolved separately.
+    # R1: release-1.0 forks from M1.
     git checkout -qb release-1.0
     echo "release base content" > release-base.txt
     git add release-base.txt
     git commit -qm "release-1.0: base"
     git push -q origin release-1.0
-    # PR branch: forks from release-1.0.
+    # P1: PR forks from release-1.0.
     git checkout -qb feat/test
     echo "PR feature" > feature.txt
     git add feature.txt
@@ -229,6 +254,19 @@ git clone -q "$GITHUB_BARE2" "$WORKING2"
 PR_SHA2=$(git -C "$WORKING2" rev-parse HEAD)
 RELEASE_BASE_SHA=$(git -C "$WORKING2" rev-parse release-1.0)
 git -C "$WORKING2" push -q origin feat/test:refs/pull/2/head
+# M2: advance main with content NOT on release-1.0 — strengthens the
+# regression fence. With main advanced post-fork, a buggy main-as-base
+# diff would still leak release-base.txt; the assertion is unchanged
+# but the fixture matches the production topology where main moves
+# while a release line is in flight.
+(
+    cd "$WORKING2"
+    git checkout -q main
+    echo "main only content" > main-only.txt
+    git add main-only.txt
+    git commit -qm "main: drift after release fork"
+    git push -q origin main
+)
 
 # Fresh sandbox — separate STATE_DIR so the runs from scenario 1 don't
 # confuse the run-dir search.
@@ -241,28 +279,7 @@ mkdir -p "$(dirname "$CANONICAL2")"
 git clone -q "$GITHUB_BARE2" "$CANONICAL2"
 
 # Stub gh — same shape, but baseRefName is "release-1.0" not "main".
-cat > "$HOME/.local/bin/gh" <<STUB
-#!/bin/bash
-fields=""
-for ((i=1; i<=\$#; i++)); do
-    if [ "\${!i}" = "--json" ]; then
-        j=\$((i+1))
-        fields="\${!j}"
-        break
-    fi
-done
-case "\$fields" in
-    *baseRefName*)
-        printf '{"baseRefName":"release-1.0","title":"Release-base PR","body":"","author":{"login":"test-user"},"commits":{"nodes":[]},"closingIssuesReferences":{"nodes":[]}}\n'
-        ;;
-    *headRefOid*)
-        printf '{"headRefOid":"$PR_SHA2"}\n'
-        ;;
-    *)
-        :
-        ;;
-esac
-STUB
+write_gh_stub "$HOME/.local/bin/gh" "release-1.0" "$PR_SHA2"
 
 (
     export STATE_DIR="$STATE2"
@@ -271,13 +288,7 @@ STUB
     export WORKDIRS_DIR="$STATE2/workdirs"
     export CANONICAL_LOCKS_DIR="$STATE2/canonical-locks"
     export PR_REVIEW_LOCK_DIR="$STATE2/locks"
-    cat > "$STATE2/repos.conf" <<'CONF'
-REPOS=("test-org/probe-repo")
-declare -A KID_PATHS=()
-declare -A SOURCE_PATHS=()
-declare -A DEAD_CODE_CMDS=()
-declare -A STRICT_TYPING_CMDS=()
-CONF
+    write_probe_repos_conf "$STATE2/repos.conf"
     TRIGGER_COMMENT_FILE="" \
         bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
         "test-org/probe-repo" "2" "$PR_SHA2" "feat/test" "Release-base PR" "false" \
@@ -304,26 +315,30 @@ if [ "$meta_base2" != "release-1.0" ]; then
     exit 1
 fi
 
-# The decisive assertion: BASE_REF_SHA (captured from canonical after
-# fetch, used as the diff base) must equal the SHA of release-1.0 in
-# the bare repo — proving the worker resolved the non-default base
-# correctly across the canonical→workdir boundary.
-WORKDIR2="$STATE2/workdirs/test-org_probe-repo__2"
-if [ -d "$WORKDIR2" ]; then
-    workdir_diff=$(git -C "$WORKDIR2" diff "$RELEASE_BASE_SHA"...HEAD 2>/dev/null)
-    if printf '%s' "$workdir_diff" | grep -q "main-only"; then
-        echo "FAIL: scenario 2 — FULL_PR_DIFF range includes main-only content (should be release-1.0...HEAD)"
-        exit 1
-    fi
-    if ! printf '%s' "$workdir_diff" | grep -q "PR feature"; then
-        echo "FAIL: scenario 2 — FULL_PR_DIFF range missing PR-feature content"
-        exit 1
-    fi
+# Decisive assertion: the worker's full-diff.patch artifact (written
+# pre-specialist, so the missing-codex abort doesn't suppress it) must
+# reflect $BASE_REF_SHA...$REVIEWED_SHA — release-base content
+# excluded, PR feature included. Asserting against the workdir's own
+# diff would be tautological (we'd be reproving git's own semantics);
+# asserting against the worker artifact is the regression fence.
+FULL_DIFF_PATCH="$RUN_DIR2/inputs/full-diff.patch"
+if [ ! -f "$FULL_DIFF_PATCH" ]; then
+    echo "FAIL: scenario 2 — worker did not write $FULL_DIFF_PATCH (expected pre-specialist artifact)"
+    [ -f "$LOG2" ] && { echo "--- run.log ---"; cat "$LOG2"; }
+    exit 1
+fi
+if grep -q "release base content" "$FULL_DIFF_PATCH"; then
+    echo "FAIL: scenario 2 — full-diff.patch contains release-1.0 base content (worker used wrong base — main instead of release-1.0)"
+    exit 1
+fi
+if ! grep -q "PR feature" "$FULL_DIFF_PATCH"; then
+    echo "FAIL: scenario 2 — full-diff.patch missing PR-feature content"
+    exit 1
 fi
 
-# Log line should NOT contain a "could not resolve" abort (the round-1
-# finding's failure mode for non-default-base PRs).
-if grep -qF "could not resolve canonical's release-1.0 SHA" "$LOG2"; then
+# Log line should NOT contain a "missing after canonical fetch" abort
+# (the round-1 finding's failure mode for non-default-base PRs).
+if grep -qF "refs/remotes/origin/release-1.0 missing after canonical fetch" "$LOG2"; then
     echo "FAIL: scenario 2 — worker hit the BASE_REF_SHA-not-found abort path"
     cat "$LOG2"
     exit 1

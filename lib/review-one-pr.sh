@@ -270,10 +270,12 @@ fi
 # (was `defaultBranchRef`, which silently mis-fetched repo-default for
 # non-default-base PRs). Combined with the rest of the PR_DATA blob
 # the worker uses later (PR_AUTHOR for the env-mirror trust gate +
-# title/body/commits/linked-issues for AUTHOR_INTENT) so a single gh
+# title/body/linked-issues for AUTHOR_INTENT — commits are sourced
+# from local git later, post-checkout, to stay in sync with REVIEWED_SHA)
+# so a single gh
 # call covers all consumers — fewer API hits, no partial state if a
 # later resolve raced a closed PR.
-PR_DATA=$(gh pr view "$PR_NUM" --repo "$REPO" --json baseRefName,title,body,author,commits,closingIssuesReferences 2>/dev/null)
+PR_DATA=$(gh pr view "$PR_NUM" --repo "$REPO" --json baseRefName,title,body,author,closingIssuesReferences 2>/dev/null)
 BASE_REF=$(printf '%s' "$PR_DATA" | jq -r '.baseRefName // empty')
 PR_AUTHOR=$(printf '%s' "$PR_DATA" | jq -r '.author.login // empty')
 if [ -z "$BASE_REF" ] || [ -z "$PR_AUTHOR" ]; then
@@ -303,8 +305,8 @@ if ! git -C "$CANONICAL_DIR" fetch origin "+refs/pull/$PR_NUM/head:$PR_BRANCH" -
     exit 0
 fi
 
-# Resolve BASE_REF_SHA from canonical's just-fetched ref BEFORE the
-# `git clone --shared` to the per-PR workdir. The clone's
+# Resolve BASE_REF_SHA from canonical's just-fetched remote-tracking ref
+# BEFORE the `git clone --shared` to the per-PR workdir. The clone's
 # `refs/remotes/origin/*` mirrors canonical's `refs/heads/*`, NOT
 # canonical's `refs/remotes/origin/*` — so canonical's freshly-fetched
 # `refs/remotes/origin/$BASE_REF` does not propagate as an `origin/`
@@ -314,15 +316,14 @@ fi
 # The SHA is reachable in the workdir through `git clone --shared`'s
 # hardlinked object store, so we use the immutable SHA everywhere
 # downstream instead of relying on the `origin/$BASE_REF` symbolic ref.
+#
+# `git fetch origin "$BASE_REF"` always updates the remote-tracking ref;
+# if it's missing here the fetch must have silently no-op'd (corrupt
+# canonical, partial fetch, etc.). Falling back to `refs/heads/$BASE_REF`
+# would silently diff against a stale local branch — fail loud instead.
 BASE_REF_SHA=$(git -C "$CANONICAL_DIR" rev-parse --verify --quiet "refs/remotes/origin/$BASE_REF")
 if [ -z "$BASE_REF_SHA" ]; then
-    # Fallback: $BASE_REF may be canonical's checked-out branch, in which
-    # case the fetch updated `refs/heads/$BASE_REF` instead of the
-    # remote-tracking ref. Try that path too.
-    BASE_REF_SHA=$(git -C "$CANONICAL_DIR" rev-parse --verify --quiet "refs/heads/$BASE_REF")
-fi
-if [ -z "$BASE_REF_SHA" ]; then
-    log "$PR_ID: could not resolve canonical's $BASE_REF SHA after fetch — aborting"
+    log "$PR_ID: refs/remotes/origin/$BASE_REF missing after canonical fetch — aborting"
     exit 1
 fi
 
@@ -924,9 +925,17 @@ $IS_BODY
 done < <(printf '%s' "$PR_DATA" | jq -r '.closingIssuesReferences[]? | [.owner.login, .repo.name, (.number|tostring)] | @tsv' 2>/dev/null)
 write_scratch "$REPO_DIR" "author-intent.md" "$AUTHOR_INTENT"
 
-COMMITS=$(printf '%s' "$PR_DATA" | jq -r '.commits[]? | "\(.oid[0:7]) \(.messageHeadline)"')
+# Commits narrative for AUTHOR_INTENT — sourced from the local
+# checkout (BASE_REF_SHA..REVIEWED_SHA) rather than PR_DATA.commits.
+# PR_DATA was captured before the canonical fetch + checkout, so a
+# push that landed in the race window between `gh pr view` and the
+# `refs/pull/N/head` fetch would leave PR_DATA's commit list one
+# behind REVIEWED_SHA — and specialists would see a commit narrative
+# that doesn't match diff.patch / full-diff.patch (round-2 finding
+# on PR #36 — same source-of-truth class as the diff itself).
+COMMITS=$(git -C "$REPO_DIR" log --pretty=format:'%h %s' "$BASE_REF_SHA..$REVIEWED_SHA")
 if [ -z "$COMMITS" ]; then
-    log "$PR_ID: gh pr view returned no commits — aborting"
+    log "$PR_ID: git log $BASE_REF_SHA..$REVIEWED_SHA returned no commits — aborting"
     rm -rf "$REPO_DIR"
     exit 1
 fi
