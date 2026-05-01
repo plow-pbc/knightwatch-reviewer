@@ -925,34 +925,21 @@ REVIEW_PRIORITY=$(read_knightwatch_file "$REPO_DIR" "$DEFAULT_BRANCH_SHA" "revie
 case $? in
     0) : ;;  # PRESENT: use as-is
     1)
-        # ABSENT: use embedded default (matches today's universal operating point)
+        # ABSENT: emit a short pointer at the canonical universal policy
+        # in standards.md instead of carrying a second policy source
+        # here (drift hazard with the per-repo .knightwatch/review-priority.md).
+        # The universal Broken-Glass posture lives in standards.md
+        # § Broken-Glass Test; cold-start operators get reasonable
+        # behavior without us shadowing the canonical text.
         REVIEW_PRIORITY=$(cat <<'PRIORITY_EOF'
-# Review priority
+# Review priority (default — no per-repo file configured)
 
-**Stage:** ~10 users, pre-PMF.
+This repo has no `.knightwatch/review-priority.md` committed. Default behavior:
+- Apply `standards.md` § Broken-Glass Test on all findings (universal Broken-Glass policy).
+- Treat the repo's `.knightwatch/product-context.md` (if present) as the operating-point source.
+- No repo-specific contrast pairs. The universal contrast pairs in `standards.md` apply.
 
-**Cultural emphasis:** SIMPLIFY and FAIL LOUDLY to enable rapid iteration.
-
-We are validating product-market fit. The reviewer's job is to:
-- catch real bugs (things that have gone wrong, or will go wrong soon, for a real user),
-- push for elegant code that lets us discover PMF faster.
-
-The reviewer's job is **not** to:
-- add architecture complexity for users, user types, scale, or behaviors we don't have today.
-- ask for defensive code that handles scenarios we haven't observed in production.
-- promote abstractions for one or two call sites "in case we add a third."
-
-## Voice — questions over prescriptions
-
-Default voice on every non-bug finding is inquisitive. State the #1 assumption as a question. The author is choosing between two costs (broken-glass risk vs. complexity), not being told what to do.
-
-Question template: Will [state X]? If yes, [Y]. If not, consider cutting [Y] — adds complexity and makes PMF iteration harder.
-
-Declarative voice is reserved for high-confidence bugs (reproducible failure, broken contract with concrete user impact, security/data-integrity regression with traceable cause).
-
-Dividing line: fix what's actually broken or about to be; don't build defenses for users / scale / behaviors you don't have yet — fail loudly instead.
-
-> "For the entire beta period, people practically had to walk over broken glass to start using shared channels..." — Stewart Butterfield. Validating PMF first; polishing later.
+If this repo needs a different operating point, commit `.knightwatch/review-priority.md` to the base branch.
 PRIORITY_EOF
 )
         log "$PR_ID: review-priority.md ABSENT in $DEFAULT_BRANCH_SHA — using default content"
@@ -967,20 +954,19 @@ LOC_TREND=$(compute_loc_trend "$REPO" "$PR_NUM" "$REPO_DIR" "$DEFAULT_BRANCH_SHA
 write_scratch "$REPO_DIR" "loc-trend.md" "$LOC_TREND"
 
 FILE_HISTORY=""
-# Derive file-history's file list from $KID_INPUT_DIFF directly by
-# parsing `^diff --git a/<path> b/<path>` headers. This is the same
-# scope specialists see in diff.patch — single source of truth for
-# "what files this review covers." Works for both gh pr diff and
-# local git diff outputs (both emit `diff --git a/<path> b/<path>`).
+# Derive file-history's file list from $KID_INPUT_DIFF via the shared
+# extract_touched_files_both_sides helper (lib/diff-build.sh) — single
+# source of truth for "paths touched by this diff." The previous inline
+# `^diff --git a/(.*) b/.*` parse only emitted the a/ side, which
+# silently dropped rename targets and any path that only appears on
+# the b/ side (the same Narrow-Fix gap the strict-typing scope gate
+# already routes around by reusing this helper).
 while IFS= read -r f; do
     [ -z "$f" ] && continue
     FILE_HISTORY+="### $f"$'\n'
     hist=$(git -C "$REPO_DIR" log --oneline -n 5 -- "$f" 2>/dev/null)
     FILE_HISTORY+="${hist:-(no history)}"$'\n\n'
-done < <(printf '%s' "$KID_INPUT_DIFF" \
-    | grep -E '^diff --git a/' \
-    | sed -E 's|^diff --git a/(.*) b/.*$|\1|' \
-    | sort -u | head -30)
+done < <(printf '%s' "$KID_INPUT_DIFF" | extract_touched_files_both_sides | head -30)
 write_scratch "$REPO_DIR" "file-history.md" "${FILE_HISTORY:-(no touched files)}"
 
 # PR_DATA + PR_AUTHOR were fetched earlier (above the env mirror) so the

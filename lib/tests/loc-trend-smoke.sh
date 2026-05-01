@@ -303,4 +303,103 @@ grep -qF '(sha not in local history)' "$OUT" && {
     exit 1
 }
 
+# Test 13: deletion-only round (adds=0, dels>0) classifies as
+# deletion_only, NOT reachable_zero. Display renders "(0 adds, N dels)";
+# trajectory math still treats the row as 0 adds (the loop-breaker
+# cares about additions; deletions are good). Closes round-6 BCR(F1.b).
+#
+# Build a branch where the only diff vs base is a `git rm` of seed.txt.
+# Use a fresh branch so we don't perturb main. seed.txt has 1 line so
+# dels=1 vs base.
+git -C "$REPO" checkout -q -b deletion-only-branch "$BASE_SHA"
+git -C "$REPO" rm -q seed.txt
+git -C "$REPO" commit -qm "delete-only round"
+SHA_DEL=$(git -C "$REPO" rev-parse HEAD)
+git -C "$REPO" checkout -q main
+rm -rf "$STATE_DIR/runs"
+mkdir -p "$STATE_DIR/runs"
+RUN_DEL="$STATE_DIR/runs/cncorp_plow__999__20260501T000000000Z__${SHA_DEL:0:7}"
+mkdir -p "$RUN_DEL"
+jq -n --arg sha "$SHA_DEL" --arg ts "2026-05-01T00:00:00Z" \
+    '{status:"completed", sha:$sha, started_at:$ts}' > "$RUN_DEL/meta.json"
+# Current = SHA_DEL too — last_state=deletion_only, classifier folds it
+# to reachable_zero → STABLE. The display assertion below is the load-
+# bearing check.
+compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" "$CURRENT_RUN" "$SHA_DEL" > "$OUT"
+grep -qF '(0 adds, 1 dels)' "$OUT" || {
+    echo "FAIL: expected display '(0 adds, 1 dels)' for deletion-only round"
+    cat "$OUT"
+    exit 1
+}
+grep -qF '(zero diff)' "$OUT" && {
+    echo "FAIL: deletion-only round rendered as '(zero diff)' — F1.b display conflation regressed"
+    cat "$OUT"
+    exit 1
+}
+# Trajectory math: deletion_only row counts as 0 adds for ratio
+# purposes. With first=last=deletion_only, classifier resolves to STABLE.
+grep -qE 'Trajectory:.*STABLE' "$OUT" || {
+    echo "FAIL: deletion-only first AND last round should resolve to STABLE (deletion_only folds to 0-adds for trajectory)"
+    cat "$OUT"
+    exit 1
+}
+
+# Trajectory: GROWING from a deletion-only baseline → numeric current
+# round. First round dels everything; current round adds code. Closes
+# the symmetric case to Test 10 (zero-diff baseline → GROWING).
+compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" "$CURRENT_RUN" "$SHA2" > "$OUT"
+grep -qE 'Trajectory:.*GROWING' "$OUT" || {
+    echo "FAIL: deletion-only baseline + numeric current should resolve to GROWING"
+    cat "$OUT"
+    exit 1
+}
+
+# Test 14: failed `git diff --numstat` exit code on a reachable SHA
+# classifies as unavailable, NOT reachable_zero. Closes round-6 BCR(F1.a).
+# Stub `git` on PATH so cat-file -e still succeeds (delegating to real
+# git) but `diff --numstat` exits non-zero with empty stdout — the
+# realistic failure mode for corrupted history / partial fetch.
+STUB_DIR="$TMPDIR/stub-bin"
+mkdir -p "$STUB_DIR"
+REAL_GIT=$(command -v git)
+cat > "$STUB_DIR/git" <<STUB_EOF
+#!/bin/bash
+# Test stub: pass through to real git, except diff --numstat exits 1
+# with empty stdout. Mimics a corrupted-history / partial-fetch
+# failure where cat-file -e still succeeds.
+REAL_GIT='$REAL_GIT'
+STUB_EOF
+cat >> "$STUB_DIR/git" <<'STUB_EOF'
+for arg in "$@"; do
+    if [ "$arg" = "--numstat" ]; then
+        exit 1
+    fi
+done
+exec "$REAL_GIT" "$@"
+STUB_EOF
+chmod +x "$STUB_DIR/git"
+rm -rf "$STATE_DIR/runs"
+mkdir -p "$STATE_DIR/runs"
+RUN_FAIL="$STATE_DIR/runs/cncorp_plow__999__20260501T000000000Z__${SHA1:0:7}"
+mkdir -p "$RUN_FAIL"
+jq -n --arg sha "$SHA1" --arg ts "2026-05-01T00:00:00Z" \
+    '{status:"completed", sha:$sha, started_at:$ts}' > "$RUN_FAIL/meta.json"
+PATH="$STUB_DIR:$PATH" compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" "$CURRENT_RUN" "$SHA1" > "$OUT"
+# UNKNOWN supersedes — prior round's diff failed; we cannot trust the row.
+grep -qE 'Trajectory:.*UNKNOWN' "$OUT" || {
+    echo "FAIL: failed 'git diff --numstat' on reachable SHA should classify as unavailable -> UNKNOWN trajectory"
+    cat "$OUT"
+    exit 1
+}
+grep -qF '(sha not in local history)' "$OUT" || {
+    echo "FAIL: failed-numstat row should display '(sha not in local history)' (folded into unavailable)"
+    cat "$OUT"
+    exit 1
+}
+grep -qF '(zero diff)' "$OUT" && {
+    echo "FAIL: failed-numstat row silently rendered as '(zero diff)' — F1.a regressed"
+    cat "$OUT"
+    exit 1
+}
+
 echo "  PASS"
