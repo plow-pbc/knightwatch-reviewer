@@ -8,7 +8,7 @@
 #      back. Trust model: base branch is the source of truth; PR head
 #      edits don't take effect until merged.
 
-set -uo pipefail
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -55,8 +55,8 @@ git -C "$WORK" checkout -q -B feature origin/feature
 
 # --- scenario 1: file exists on main → returns content -------------
 echo "  scenario 1: existing file → content + exit 0..."
-read_knightwatch_file "$WORK" "origin/main" "siblings" > "$TMPDIR/out.txt" 2>/dev/null
-exit_code=$?
+exit_code=0
+read_knightwatch_file "$WORK" "origin/main" "siblings" > "$TMPDIR/out.txt" 2>/dev/null || exit_code=$?
 if [ "$exit_code" -ne 0 ]; then
     echo "FAIL: expected exit 0, got $exit_code"
     exit 1
@@ -80,8 +80,8 @@ fi
 # accepts any non-zero would let an ERROR-as-ABSENT regression slip
 # through (bot finding 1 PR #29 round 2).
 echo "  scenario 2: missing file → empty + exit 1 (ABSENT)..."
-read_knightwatch_file "$WORK" "origin/main" "does-not-exist.sh" > "$TMPDIR/out.txt" 2>/dev/null
-exit_code=$?
+exit_code=0
+read_knightwatch_file "$WORK" "origin/main" "does-not-exist.sh" > "$TMPDIR/out.txt" 2>/dev/null || exit_code=$?
 if [ "$exit_code" -ne 1 ]; then
     echo "FAIL: expected exit 1 (ABSENT) for missing file, got $exit_code"
     exit 1
@@ -114,8 +114,8 @@ git -C "$SOURCE" add .knightwatch/empty-file.sh
 git -C "$SOURCE" commit -qm "main: add empty .knightwatch/empty-file.sh"
 git -C "$WORK" fetch -q origin main
 git -C "$WORK" checkout -q -B main origin/main
-got=$(read_knightwatch_file "$WORK" "origin/main" "empty-file.sh")
-exit_code=$?
+exit_code=0
+got=$(read_knightwatch_file "$WORK" "origin/main" "empty-file.sh") || exit_code=$?
 if [ "$exit_code" -ne 0 ]; then
     echo "FAIL: expected exit 0 for present-but-empty file, got $exit_code"
     exit 1
@@ -132,8 +132,8 @@ fi
 # with no signal. The helper distinguishes via `git rev-parse --verify`
 # on the base ref before reading the path.
 echo "  scenario 5: bad base ref → exit 2 (ERROR)..."
-read_knightwatch_file "$WORK" "nonexistent-branch" "siblings" > "$TMPDIR/out.txt" 2>/dev/null
-exit_code=$?
+exit_code=0
+read_knightwatch_file "$WORK" "nonexistent-branch" "siblings" > "$TMPDIR/out.txt" 2>/dev/null || exit_code=$?
 if [ "$exit_code" -ne 2 ]; then
     echo "FAIL: expected exit 2 (ERROR) for bad base ref, got $exit_code"
     exit 1
@@ -190,8 +190,8 @@ git -C "$WORK" checkout -q -B feature origin/feature
 # .knightwatch/pr-only-file.sh exists in workdir + on origin/feature,
 # but NOT on origin/main. Helper called against origin/main must
 # return ABSENT (rc 1), not ERROR (rc 2).
-read_knightwatch_file "$WORK" "origin/main" "pr-only-file.sh" > "$TMPDIR/out.txt" 2>/dev/null
-exit_code=$?
+exit_code=0
+read_knightwatch_file "$WORK" "origin/main" "pr-only-file.sh" > "$TMPDIR/out.txt" 2>/dev/null || exit_code=$?
 if [ "$exit_code" -ne 1 ]; then
     echo "FAIL: expected rc 1 (ABSENT) for onboarding case, got $exit_code"
     exit 1
