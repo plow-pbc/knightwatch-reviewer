@@ -25,8 +25,6 @@ Two more, from the public [`tkmx-client`](https://github.com/srosro/tkmx-client)
 - **[#19 — legacy daemons would silently stop after `git pull`](https://github.com/srosro/tkmx-client/pull/19#issuecomment-4357873121)**. Deleting `reporter/report.js` and pointing new installs at `dist/reporter/report.js` would leave already-installed launchd/systemd units calling the removed path, because the documented update path is `git pull && npm install` and that doesn't rerun `install-service`. Caught by stitching the diff against the install script, the README's update instructions, and the systemd/launchd unit `ExecStart=` that reaches into the source tree.
 - **[#19 — recurring schema-ownership drift](https://github.com/srosro/tkmx-client/pull/19#issuecomment-4358179972)**. Flagged the third instance of the same DTO-ownership class — each new consumer re-deriving usage shapes from `agentsview` rather than one neutral seam — and asked for a refactor at the right level instead of another local patch. Fixed by extracting `reporter/usage.ts` as the single owner.
 
-More in [`docs/EXAMPLES.md`](docs/EXAMPLES.md).
-
 ## How it works
 
 A timer polls tracked repos for new or updated PRs. For each, it spawns a set of specialists — `performance`, `dead-code-search`, `security`, `data-integrity`, `architecture`, `consumers`, `shape`, `simplification`, `tests` — each looking at one angle of the diff against the rest of the repo. A `critic` round prunes weak findings, an `aggregator` produces the posted review with a verdict (`APPROVE` or one or more blocking findings), and a marker (`<!-- knightwatch-reviewer:auto-post -->`) tags every post so reply automation and human babysitting can filter cleanly.
@@ -75,4 +73,3 @@ Reviews fire on PR open and again after one hour of idle. To force a fresh revie
 - `prompts/` — specialist + critic + aggregator prompts
 - `systemd/` — polling timer + service units
 - `repos.conf` — tracked-repo manifest
-- `docs/EXAMPLES.md` — gallery of impressive catches
