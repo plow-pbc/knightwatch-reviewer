@@ -2,8 +2,9 @@
 # Smoke test for lib/prompt-build.sh.
 #
 # Verifies:
-#   - All five placeholders ({{PR_ID}}, {{PR_TITLE}}, {{PR_URL}},
-#     {{SPECIALIST_NAME}}, {{PR_AUTHOR}}) substitute correctly.
+#   - All six placeholders ({{PR_ID}}, {{PR_TITLE}}, {{PR_URL}},
+#     {{SPECIALIST_NAME}}, {{PR_AUTHOR}}, {{OPERATOR_NAME}}) substitute
+#     correctly.
 #   - No unsubstituted {{...}} markers remain in build_specialist_prompt output.
 #   - sed-special chars in inputs are escaped, not interpreted.
 #   - Placeholders inside the ANGLE FILE (not just common-header) are
@@ -12,6 +13,9 @@
 #     (e.g. prompts/intent.md uses {{PR_AUTHOR}} in its template line).
 #   - substitute_placeholders works standalone (used by the intent step,
 #     which deliberately bypasses common-header).
+#   - {{OPERATOR_NAME}} reads from the OPERATOR_NAME env var (default
+#     "Sam"); a forked install can re-skin the bot's voice by exporting
+#     a different value before invoking the worker.
 
 set -euo pipefail
 
@@ -28,6 +32,7 @@ Title: {{PR_TITLE}}
 URL: {{PR_URL}}
 Specialist: {{SPECIALIST_NAME}}
 Author: {{PR_AUTHOR}}
+Operator: {{OPERATOR_NAME}}
 EOF
 
 ANGLE_FILE="$TMPDIR/angle.md"
@@ -35,6 +40,7 @@ cat > "$ANGLE_FILE" <<'EOF'
 Angle: focus on X
 Author handle in angle: @{{PR_AUTHOR}}
 PR id in angle: {{PR_ID}}
+Operator handle in angle: {{OPERATOR_NAME}}
 EOF
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -48,10 +54,10 @@ OUTPUT=$(build_specialist_prompt \
     "https://github.com/owner/repo/pull/42" \
     "plucas")
 
-echo "  asserting all five placeholders substituted in common-header..."
+echo "  asserting all six placeholders substituted in common-header (default OPERATOR_NAME=Sam)..."
 for pair in "PR: owner/repo#42" "Title: Add caching to /api/foo" \
             "URL: https://github.com/owner/repo/pull/42" \
-            "Specialist: security" "Author: plucas" \
+            "Specialist: security" "Author: plucas" "Operator: Sam" \
             "Angle: focus on X"; do
     if ! echo "$OUTPUT" | grep -qF "$pair"; then
         echo "FAIL: expected '$pair' in output"
@@ -62,7 +68,9 @@ for pair in "PR: owner/repo#42" "Title: Add caching to /api/foo" \
 done
 
 echo "  asserting placeholders in the ANGLE file are also substituted..."
-for pair in "Author handle in angle: @plucas" "PR id in angle: owner/repo#42"; do
+for pair in "Author handle in angle: @plucas" \
+            "PR id in angle: owner/repo#42" \
+            "Operator handle in angle: Sam"; do
     if ! echo "$OUTPUT" | grep -qF "$pair"; then
         echo "FAIL: angle-file placeholder not substituted: '$pair'"
         echo "--- output ---"
@@ -118,6 +126,25 @@ fi
 if echo "$STANDALONE_OUTPUT" | grep -q "Specialist:"; then
     echo "FAIL: substitute_placeholders unexpectedly included common-header content"
     echo "$STANDALONE_OUTPUT"
+    exit 1
+fi
+
+echo "  asserting OPERATOR_NAME env override flows through (forked-install voice re-skin)..."
+OVERRIDE_PROMPT="$TMPDIR/override.md"
+cat > "$OVERRIDE_PROMPT" <<'EOF'
+Operator: {{OPERATOR_NAME}}
+EOF
+OVERRIDE_OUTPUT=$(OPERATOR_NAME="Frankie" substitute_placeholders \
+    "$OVERRIDE_PROMPT" \
+    "owner/repo#9" "Override title" "https://example.com/9" "bob")
+if ! echo "$OVERRIDE_OUTPUT" | grep -qF "Operator: Frankie"; then
+    echo "FAIL: OPERATOR_NAME=Frankie did not override the default 'Sam'"
+    echo "--- output ---"
+    echo "$OVERRIDE_OUTPUT"
+    exit 1
+fi
+if echo "$OVERRIDE_OUTPUT" | grep -qF "Operator: Sam"; then
+    echo "FAIL: default 'Sam' leaked through despite OPERATOR_NAME=Frankie"
     exit 1
 fi
 
