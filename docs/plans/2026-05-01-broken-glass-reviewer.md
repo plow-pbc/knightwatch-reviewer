@@ -316,8 +316,11 @@ Create `~/Hacking/knightwatch-reviewer/lib/tests/loc-trend-smoke.sh`:
 #      noting it's the first review, no table rows.
 #   2. N>1 prior runs → emits a table with one row per run, sorted by
 #      timestamp, each row carrying base..head shortstat.
-#   3. Trajectory line classifies GROWING / STABLE / SHRINKING based on
-#      ratio between first and last round's additions.
+#   3. Trajectory line classifies GROWING / STABLE / SHRINKING / UNKNOWN
+#      based on the ratio between first and last round's additions
+#      (UNKNOWN when an anchor SHA is unreachable in the local repo).
+#   4. Aborted-mid-flight runs (no posted_at, status != completed) are
+#      filtered out by iterate_visible_runs and don't pad the trend.
 
 set -uo pipefail
 
@@ -346,26 +349,41 @@ seq 1 50 > "$REPO/round2.txt"
 git -C "$REPO" add round2.txt && git -C "$REPO" commit -qm "round2"
 SHA2=$(git -C "$REPO" rev-parse HEAD)
 
-# Build a fake STATE_DIR/runs layout. compute_loc_trend reads SHA +
-# started_at from each run's meta.json (the canonical source-of-truth
-# file, written post-checkout with the REVIEWED_SHA), so the fixture
-# writes one per round. Dir-name SHA suffixes are deliberately set to
-# 7-char strings that do NOT match the meta.json SHA — this fences the
-# function: if a future regression rewires it back to parsing the dir
-# name, `git diff` would receive a non-existent SHA and the smoke
-# would fail.
+# Build a fake STATE_DIR/runs layout. compute_loc_trend filters via
+# iterate_visible_runs, so meta.json must satisfy the author-visibility
+# predicate (`posted_at` set, or legacy `status==completed`) for the
+# row to count. SHA + started_at come from meta.json — dir-name SHA
+# suffixes are deliberately set to 7-char strings that do NOT match
+# the meta.json SHA (fences a regression that rewires loc-trend back
+# to parsing the dir name; `git diff` would receive a non-existent
+# SHA and the smoke would fail).
 STATE_DIR="$TMPDIR/state"
 mkdir -p "$STATE_DIR/runs"
-mk_run_dir() {
+mk_visible_run() {
+    local dir="$1" started_at="$2" sha="$3"
+    mkdir -p "$dir"
+    jq -n --arg sha "$sha" --arg started_at "$started_at" --arg posted_at "$started_at" \
+        '{sha: $sha, started_at: $started_at, posted_at: $posted_at, status: "completed"}' \
+        > "$dir/meta.json"
+}
+mk_aborted_run() {
+    # No posted_at, status != completed — should be skipped by
+    # iterate_visible_runs and excluded from the trajectory.
     local dir="$1" started_at="$2" sha="$3"
     mkdir -p "$dir"
     jq -n --arg sha "$sha" --arg started_at "$started_at" \
-        '{sha: $sha, started_at: $started_at}' > "$dir/meta.json"
+        '{sha: $sha, started_at: $started_at, status: "aborted"}' \
+        > "$dir/meta.json"
 }
-mk_run_dir "$STATE_DIR/runs/cncorp_plow__999__20260501T000000000Z__deadbe1" \
+mk_visible_run "$STATE_DIR/runs/cncorp_plow__999__20260501T000000000Z__deadbe1" \
     "2026-05-01T00:00:00Z" "$SHA1"
-mk_run_dir "$STATE_DIR/runs/cncorp_plow__999__20260501T010000000Z__deadbe2" \
+mk_visible_run "$STATE_DIR/runs/cncorp_plow__999__20260501T010000000Z__deadbe2" \
     "2026-05-01T01:00:00Z" "$SHA2"
+# Aborted run that wrote meta.json post-checkout but never posted —
+# author never saw it, so it must NOT pad "reviewed N times". The
+# smoke's row-count assertion below would fail (3 rows) if this leaked.
+mk_aborted_run "$STATE_DIR/runs/cncorp_plow__999__20260501T020000000Z__deadbe3" \
+    "2026-05-01T02:00:00Z" "0000000000000000000000000000000000000000"
 
 OUT="$TMPDIR/loc-trend.md"
 
@@ -375,11 +393,16 @@ OUT="$TMPDIR/loc-trend.md"
 # function (no copy, no --source-only guard on the 1200-line worker).
 . "$PROJECT_ROOT/lib/run-dir.sh"
 
-# Test 1: 2 prior runs → table with 2 rows + GROWING trajectory
+# Test 1: 2 visible + 1 aborted prior runs → table with 2 rows + GROWING trajectory
+# (the aborted row must NOT count — proves iterate_visible_runs filtering)
 compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" > "$OUT"
 grep -q '^# LOC trend' "$OUT" || { echo "FAIL: missing header"; exit 1; }
 grep -qE 'Trajectory:.*GROWING' "$OUT" || { echo "FAIL: missing/wrong trajectory"; exit 1; }
-grep -cE '^\| [0-9]+ \|' "$OUT" | grep -q '^2$' || { echo "FAIL: expected 2 table rows"; exit 1; }
+grep -cE '^\| [0-9]+ \|' "$OUT" | grep -q '^2$' || {
+    echo "FAIL: expected 2 table rows (aborted run leaked into the trend if you see 3)"
+    cat "$OUT"
+    exit 1
+}
 
 # Test 2: empty runs/ dir → first-review header, no table rows
 rm -rf "$STATE_DIR/runs"
@@ -387,6 +410,25 @@ mkdir -p "$STATE_DIR/runs"
 compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" > "$OUT"
 grep -qE 'first review|no prior rounds' "$OUT" || { echo "FAIL: missing first-review header"; exit 1; }
 grep -cE '^\| [0-9]+ \|' "$OUT" | grep -q '^0$' || { echo "FAIL: expected 0 table rows"; exit 1; }
+
+# Test 3: visible run with an unreachable SHA → trajectory is UNKNOWN, not STABLE
+# (fences finding-2 of round-6: silent degradation to STABLE on unreachable
+# anchor would trip the aggregator's loop-breaker on a false signal)
+mk_visible_run "$STATE_DIR/runs/cncorp_plow__999__20260501T030000000Z__deadbe4" \
+    "2026-05-01T03:00:00Z" "0000000000000000000000000000000000000000"
+mk_visible_run "$STATE_DIR/runs/cncorp_plow__999__20260501T040000000Z__deadbe5" \
+    "2026-05-01T04:00:00Z" "$SHA1"
+compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" > "$OUT" 2>/dev/null
+grep -qE 'Trajectory:.*UNKNOWN' "$OUT" || {
+    echo "FAIL: expected UNKNOWN trajectory when an anchor SHA is unreachable"
+    cat "$OUT"
+    exit 1
+}
+grep -qE 'Trajectory:.*STABLE' "$OUT" && {
+    echo "FAIL: trajectory silently degraded to STABLE on unreachable SHA"
+    cat "$OUT"
+    exit 1
+}
 
 echo "  PASS"
 ```
@@ -455,65 +497,71 @@ compute_loc_trend() {
     # Round entries are tab-delimited "ts<TAB>sha". ISO timestamps
     # contain colons, so a colon-delimited form would split wrong on
     # readback.
+    # iterate_visible_runs (lib/run-dir.sh) is the shared source of truth
+    # for "which preserved runs represent reviews the PR author actually
+    # saw on GitHub" — same predicate stage_prior_reviews already uses.
+    # Aborted-after-meta-but-before-post runs (real runs that DIDN'T
+    # contribute a review the author could see) are filtered out, so they
+    # don't pad "reviewed N times" or skew the trajectory ratio.
+    #
+    # The iterator is permissive on field completeness — it yields legacy
+    # runs without sha/started_at as empty cells. compute_loc_trend
+    # REQUIRES both fields for its diff math, so missing-on-visible-row
+    # is corruption that should fail loud rather than silently dropping
+    # the round (would mask a regression rewiring the SHA source).
     local rounds=()
-    while IFS= read -r d; do
-        local meta="$d/meta.json"
-        [ -f "$meta" ] || continue
-        # Same author-visibility predicate as stage_prior_reviews:
-        # only count runs the PR author actually saw on GitHub (gh
-        # comment posted: posted_at set; or legacy preserved run:
-        # status=="completed" — only flips on the success path AFTER
-        # the comment has posted in production). Worker aborts that
-        # wrote meta.json post-checkout but never reached gh-comment
-        # are real runs but DIDN'T contribute a review the author
-        # could see, so they shouldn't pad "reviewed N times" / the
-        # trajectory ratio.
-        local visible
-        visible=$(jq -r 'if ((.posted_at // "") != "") or ((.status // "") == "completed") then "yes" else "no" end' "$meta" 2>/dev/null)
-        [ "$visible" = "yes" ] || continue
-        local ts sha
-        ts=$(jq -r '.started_at // empty' "$meta")
-        sha=$(jq -r '.sha // empty' "$meta")
-        if [ -z "$ts" ] || [ -z "$sha" ]; then
-            echo "compute_loc_trend: $meta missing .sha or .started_at — corruption, refusing to silently drop round" >&2
+    local d started_at sha
+    while IFS=$'\t' read -r d started_at sha; do
+        if [ -z "$started_at" ] || [ -z "$sha" ]; then
+            echo "compute_loc_trend: $d/meta.json missing .sha or .started_at — corruption (visible run with no SHA/timestamp)" >&2
             return 1
         fi
-        rounds+=("$(printf '%s\t%s' "$ts" "$sha")")
-    done < <(find "$runs_dir" -maxdepth 1 -type d -name "${owner_repo}__${pr_num}__*" 2>/dev/null | sort)
+        rounds+=("$(printf '%s\t%s' "$started_at" "$sha")")
+    done < <(iterate_visible_runs "$state_dir" "$owner_repo" "$pr_num")
 
     if [ ${#rounds[@]} -eq 0 ]; then
         echo "(no prior rounds — first review)"
         return 0
     fi
 
-    # First-round and last-round shortstats for trajectory classification.
+    # First/last anchor diffs for the trajectory ratio.
+    #
+    # Insertion totals come from `git diff --numstat` (structured
+    # `<adds>\t<dels>\t<file>` per file), summed via awk — NOT from
+    # parsing `--shortstat` prose. The shortstat form is human-targeted
+    # output ("18 insertions(+)"); a wording variant or empty diff
+    # would silently produce 0 insertions and degrade the trajectory
+    # to "STABLE". The table cell below still uses shortstat for
+    # display (more compact), but the ratio source is structured.
+    #
     # `git diff` is allowed to fail (SHA evicted by force-push, repo
     # corruption, etc.) — but a failure must NOT silently degrade to
-    # 0 insertions and then to "STABLE", which would mimic a converged
-    # trajectory and trip the aggregator's loop-breaker on a false
-    # signal. Track exit status separately and emit explicit UNKNOWN.
-    local first_round_adds=0 last_round_adds=0
-    local first_shortstat last_shortstat first_ts first_sha last_ts last_sha
+    # 0 insertions, which mimics a converged trajectory and would trip
+    # the aggregator's loop-breaker on a false signal. Track exit
+    # status separately and emit explicit UNKNOWN.
+    local first_adds=0 last_adds=0
+    local first_numstat last_numstat first_ts first_sha last_ts last_sha
     local first_diff_ok=true last_diff_ok=true
     IFS=$'\t' read -r first_ts first_sha <<<"${rounds[0]}"
     IFS=$'\t' read -r last_ts last_sha <<<"${rounds[-1]}"
-    first_shortstat=$(git -C "$repo_dir" diff --shortstat "$base_tip...$first_sha" 2>/dev/null) || first_diff_ok=false
-    last_shortstat=$(git -C "$repo_dir" diff --shortstat "$base_tip...$last_sha" 2>/dev/null) || last_diff_ok=false
+    first_numstat=$(git -C "$repo_dir" diff --numstat "$base_tip...$first_sha" 2>/dev/null) || first_diff_ok=false
+    last_numstat=$(git -C "$repo_dir" diff --numstat "$base_tip...$last_sha" 2>/dev/null) || last_diff_ok=false
 
     local trajectory ratio
     if [ "$first_diff_ok" = "false" ] || [ "$last_diff_ok" = "false" ]; then
         echo "compute_loc_trend: git diff failed for first (${first_sha:0:7}) or last (${last_sha:0:7}) anchor — SHA likely unreachable in $repo_dir" >&2
         trajectory="UNKNOWN (anchor SHA unreachable; trend disabled)"
     else
-        first_round_adds=$(echo "$first_shortstat" | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+' || echo 0)
-        last_round_adds=$(echo "$last_shortstat" | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+' || echo 0)
-        first_round_adds=${first_round_adds:-0}
-        last_round_adds=${last_round_adds:-0}
-        if [ "$first_round_adds" -eq 0 ]; then
+        # numstat sums: column 1 is added lines per file. Binary diffs
+        # show "-" instead of a number; awk's arithmetic coerces "-" to
+        # 0, which matches "binary edits don't count as LOC growth".
+        first_adds=$(printf '%s\n' "$first_numstat" | awk '{s+=$1} END{print s+0}')
+        last_adds=$(printf '%s\n' "$last_numstat" | awk '{s+=$1} END{print s+0}')
+        if [ "$first_adds" -eq 0 ]; then
             trajectory="STABLE"
         else
             # Use awk for float math.
-            ratio=$(awk -v a="$last_round_adds" -v b="$first_round_adds" 'BEGIN{printf "%.2f", a/b}')
+            ratio=$(awk -v a="$last_adds" -v b="$first_adds" 'BEGIN{printf "%.2f", a/b}')
             if awk -v r="$ratio" 'BEGIN{exit !(r >= 1.5)}'; then
                 trajectory="GROWING (${ratio}× from first review)"
             elif awk -v r="$ratio" 'BEGIN{exit !(r <= 0.66)}'; then
@@ -592,7 +640,7 @@ Reads ~/.pr-reviewer/runs/<repo>__<pr>__* listing, takes each run's
 canonical SHA from meta.json.sha (REVIEWED_SHA), runs git diff
 --shortstat with three-dot semantics against the base tip for each
 prior SHA, emits a markdown table + trajectory classification
-(GROWING / STABLE / SHRINKING).
+(GROWING / STABLE / SHRINKING / UNKNOWN).
 
 Lives in lib/run-dir.sh next to the existing run-dir helpers
 (allocate_run_dir, stage_prior_reviews, etc.) — production and the
@@ -958,7 +1006,7 @@ Find the inputs list in aggregator.md (the `**Inputs:**` block). Add:
 
 ```markdown
 - `.codex-scratch/agents/momentum/output.md` — present *only* on re-reviews; prose-only meta-finding from the momentum specialist. Read this before drafting findings; if Path 2 of the step-back signal fires, this output becomes the structural callout verbatim.
-- `.codex-scratch/loc-trend.md` — per-round LOC trajectory + GROWING/STABLE/SHRINKING classification. Used by Path 2 trigger.
+- `.codex-scratch/loc-trend.md` — per-round LOC trajectory + GROWING/STABLE/SHRINKING/UNKNOWN classification. Used by Path 2 trigger.
 ```
 
 - [ ] **Step 8.6: Extend smoke**
@@ -1029,7 +1077,7 @@ You are the momentum specialist in a multi-specialist PR review. You run **only 
 - `.codex-scratch/review-priority.md` — operating point (read first; cite Broken-Glass Test).
 - `.codex-scratch/prior-reviews.md` — concatenated prior aggregator outputs (most recent last). Read all of them.
 - `.codex-scratch/commits.md` — commit subjects on this branch since the PR was opened.
-- `.codex-scratch/loc-trend.md` — per-round LOC trajectory + GROWING/STABLE/SHRINKING classification.
+- `.codex-scratch/loc-trend.md` — per-round LOC trajectory + GROWING/STABLE/SHRINKING/UNKNOWN classification.
 - `.codex-scratch/inferred-intent.md` — pre-fan-out inferred end-user-facing intent.
 - `.codex-scratch/diff.patch` — the current diff under review.
 
