@@ -89,4 +89,16 @@ echo "  asserting common-header documents dead-code.md scratch..."
 assert_grep "common-header.md should document dead-code.md" \
     "dead-code.md" prompts/common-header.md
 
+echo "  asserting voice-posture pointer in aggregator.md..."
+assert_grep "aggregator.md should cite Broken-Glass Test" \
+    "Broken-Glass Test" prompts/aggregator.md
+echo "  asserting Open Questions Q: format in aggregator.md..."
+assert_grep "aggregator.md should describe Q: question template" \
+    "**Q:" prompts/aggregator.md
+echo "  asserting re-review loop-breaker (Path 2) in aggregator.md..."
+assert_grep "aggregator.md should reference loc-trend.md trigger" \
+    "loc-trend.md" prompts/aggregator.md
+assert_grep "aggregator.md should reference momentum specialist output" \
+    "agents/momentum" prompts/aggregator.md
+
 echo "  PASS"
