@@ -20,6 +20,9 @@ Then read:
 - `.codex-scratch/author-intent.md` — the PR's own description + linked issues (READ THIS — it often explains WHY the author did something a specialist is about to criticize)
 - `.codex-scratch/trigger-comment.md` — present whenever the review was triggered by a trusted-author `/srosro-review` or `/srosro-update-review` comment. Contains the commenter's GitHub login + body. When the body has substantive prose, it's the requester's stated framing of what they want reviewed; specialists were told to weight it, and if a specialist finding is in tension with this framing, decide whether the finding still stands or the specialist over-called. When the body is only the bare slash command, ignore it — no extra framing.
 - `.codex-scratch/product-context.md` — product stage and roadmap
+- `.codex-scratch/review-priority.md` — per-repo operating point + voice posture.
+- `.codex-scratch/loc-trend.md` — per-round LOC trajectory; consulted by the Pre-PMF lens.
+- `.codex-scratch/prior-reviews.md` — concatenated prior aggregator outputs; consulted by the Pre-PMF lens for Bug-Class-Recurrence detection.
 
 **Your job:**
 

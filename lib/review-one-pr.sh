@@ -18,7 +18,14 @@ else
     SOURCE_ONLY=false
 fi
 
-# compute_loc_trend <repo_slash> <pr_num> <repo_dir> <merge_base_sha> <state_dir>
+# Source run-dir.sh up front so compute_loc_trend can reuse the
+# is_run_author_visible predicate (single owner with stage_prior_reviews —
+# can't drift). _LIB_DIR is set normally further down for the main body;
+# we hoist a local copy here so source-only smokes also get the helper.
+_LIB_DIR_BOOT="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
+. "$_LIB_DIR_BOOT/run-dir.sh"
+
+# compute_loc_trend <repo_slash> <pr_num> <repo_dir> <merge_base_sha> <state_dir> <current_run_dir> <current_sha>
 #   stdout: markdown loc-trend.md content
 #
 # repo_slash is the GitHub slash-form (e.g. "cncorp/plow"), NOT the
@@ -26,35 +33,55 @@ fi
 # underscore-form for filesystem matching.
 #
 # Reads $state_dir/runs/<owner>_<repo>__<pr_num>__<ts>__<sha>/ entries,
-# computes git diff --shortstat <merge_base>..<sha> for each, emits a
-# markdown table sorted by timestamp. Handles empty runs/ (first review)
-# without aborting.
+# filtering to author-visible runs only (via is_run_author_visible) and
+# excluding $current_run_dir (the in-flight run has no aggregator output
+# yet — not author-visible). Then appends the current round explicitly
+# using $current_sha so the aggregator + momentum specialist see "where
+# we are right now" as the latest row.
+#
+# Computes git diff --shortstat <merge_base>..<sha> for each round, emits
+# a markdown table sorted by timestamp. Handles empty runs/ (first
+# review) without aborting.
 compute_loc_trend() {
-    local repo="$1" pr_num="$2" repo_dir="$3" merge_base="$4" state_dir="$5"
+    local repo="$1" pr_num="$2" repo_dir="$3" merge_base="$4" state_dir="$5" current_run_dir="$6" current_sha="$7"
     local owner_repo="${repo//\//_}"
     local runs_dir="$state_dir/runs"
+    local current_ts
+    current_ts=$(date -u +%Y%m%dT%H%M%S%3NZ)
 
     echo "# LOC trend"
     echo
 
-    if [ ! -d "$runs_dir" ]; then
-        echo "(no prior rounds — first review)"
-        return 0
-    fi
-
-    # Collect round data (ts:sha tuples sorted by timestamp).
+    # Collect round data (ts:sha tuples sorted by timestamp). Filtered to
+    # author-visible runs (skip in-flight, aborted, unposted).
     local rounds=()
     local d b ts sha
-    while IFS= read -r d; do
-        b=$(basename "$d")
-        ts=$(echo "$b" | awk -F'__' '{print $3}')
-        sha=$(echo "$b" | awk -F'__' '{print $4}')
-        [ -z "$ts" ] || [ -z "$sha" ] && continue
-        rounds+=("$ts:$sha")
-    done < <(find "$runs_dir" -maxdepth 1 -type d -name "${owner_repo}__${pr_num}__*" 2>/dev/null | sort)
+    if [ -d "$runs_dir" ]; then
+        while IFS= read -r d; do
+            [ "$d" = "$current_run_dir" ] && continue
+            is_run_author_visible "$d" || continue
+            b=$(basename "$d")
+            ts=$(echo "$b" | awk -F'__' '{print $3}')
+            sha=$(echo "$b" | awk -F'__' '{print $4}')
+            [ -z "$ts" ] || [ -z "$sha" ] && continue
+            rounds+=("$ts:$sha")
+        done < <(find "$runs_dir" -maxdepth 1 -type d -name "${owner_repo}__${pr_num}__*" 2>/dev/null | sort)
+    fi
 
-    if [ ${#rounds[@]} -eq 0 ]; then
+    # Always append the current round so the table includes "where we are
+    # now" (the SHA the aggregator/momentum specialist are reasoning about).
+    rounds+=("$current_ts:$current_sha")
+
+    if [ ${#rounds[@]} -eq 1 ]; then
+        # Only the current round — no prior author-visible reviews.
         echo "(no prior rounds — first review)"
+        echo
+        echo "| Round | Timestamp | SHA | base..head |"
+        echo "|---|---|---|---|"
+        local stat
+        stat=$(git -C "$repo_dir" diff --shortstat "$merge_base..$current_sha" 2>/dev/null | sed 's/^ *//' | tr '\n' ' ')
+        [ -z "$stat" ] && stat="(sha not in local history)"
+        echo "| 1 | $current_ts | ${current_sha:0:7} | $stat |"
         return 0
     fi
 
@@ -1013,7 +1040,7 @@ write_scratch "$REPO_DIR" "review-priority.md" "$REVIEW_PRIORITY"
 
 # loc-trend.md — per-round LOC trajectory for the momentum specialist
 # and aggregator's loop-breaker mode (see § Broken-Glass Test).
-LOC_TREND=$(compute_loc_trend "$REPO" "$PR_NUM" "$REPO_DIR" "$DEFAULT_BRANCH_SHA" "$STATE_DIR")
+LOC_TREND=$(compute_loc_trend "$REPO" "$PR_NUM" "$REPO_DIR" "$DEFAULT_BRANCH_SHA" "$STATE_DIR" "$RUN_DIR" "$REVIEWED_SHA")
 write_scratch "$REPO_DIR" "loc-trend.md" "$LOC_TREND"
 
 FILE_HISTORY=""
@@ -1185,8 +1212,13 @@ if [ -s "$RUN_DIR/inputs/previous-review.md" ]; then
         "$HOME/.pr-reviewer/prompts/momentum.md" \
         "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR")
     "$_LIB_DIR/run-specialist.sh" "momentum" "$REPO_DIR" "$MOMENTUM_PROMPT" "$RUN_DIR/agents/momentum"
-    MOMENTUM_OUT="$RUN_DIR/agents/momentum/output.md"
-    ln -sfn "$MOMENTUM_OUT" "$REPO_DIR/.codex-scratch/momentum.md"
+    MOMENTUM_EXIT=$?
+    if [ $MOMENTUM_EXIT -eq 0 ]; then
+        MOMENTUM_OUT="$RUN_DIR/agents/momentum/output.md"
+        ln -sfn "$MOMENTUM_OUT" "$REPO_DIR/.codex-scratch/momentum.md"
+    else
+        log "$PR_ID: momentum specialist failed (exit $MOMENTUM_EXIT) — skipping symlink; aggregator's Path 2 will degrade gracefully (momentum input absent)"
+    fi
 else
     log "$PR_ID: skipping momentum specialist (first review)"
 fi

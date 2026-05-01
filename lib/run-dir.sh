@@ -257,28 +257,33 @@ prepend_review_header() {
     printf '%s\n> %s\n\n%s' "$first_line" "$joined" "$rest"
 }
 
+# is_run_author_visible <run_dir>
+#   Returns 0 (author-visible — review was posted) or 1 (not author-visible —
+#   aborted, in-flight, or otherwise unposted).
+#
+# Two signals indicate "the author saw this review on GitHub":
+#   1. posted_at present — primary signal, stamped immediately after
+#      `gh pr comment` succeeds.
+#   2. status == "completed" — fallback for legacy runs created before
+#      posted_at existed.
+#
+# Single owner for "which prior review rounds count" — both
+# stage_prior_reviews (Bug-Class-Recurrence) and compute_loc_trend
+# (LOC trajectory table) call this so they can't drift.
+is_run_author_visible() {
+    local run_dir="$1"
+    local included
+    included=$(jq -r 'if ((.posted_at // "") != "") or ((.status // "") == "completed") then "yes" else "no" end' \
+        "$run_dir/meta.json" 2>/dev/null)
+    [ "$included" = "yes" ]
+}
+
 stage_prior_reviews() {
     local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"
-    local prior_run prior_ts included result=""
+    local prior_run prior_ts result=""
     while IFS= read -r prior_run; do
         [ "$prior_run" = "$current_run_dir" ] && continue
-        # Two signals say "the author saw this review on GitHub":
-        #   1. posted_at present — primary signal, stamped immediately after
-        #      `gh pr comment` succeeds in review-one-pr.sh. Set BEFORE
-        #      state_set runs, so it correctly includes the rare case where
-        #      gh succeeded but state_set or finalize failed afterward.
-        #   2. status == "completed" — fallback for legacy runs created
-        #      before this PR added the posted_at field. status only flips
-        #      to "completed" after state_set succeeds, which in the
-        #      production worker flow only runs after gh has posted, so
-        #      "status == completed" reliably implies "gh post succeeded"
-        #      for any preserved run.
-        # Either signal is sufficient — the union captures all
-        # author-visible reviews including legacy history, while excluding
-        # aborted runs where the author never received the review.
-        included=$(jq -r 'if ((.posted_at // "") != "") or ((.status // "") == "completed") then "yes" else "no" end' \
-            "$prior_run/meta.json" 2>/dev/null)
-        [ "$included" = "yes" ] || continue
+        is_run_author_visible "$prior_run" || continue
         prior_ts=$(basename "$prior_run" | grep -oE 'T[0-9]+Z' | head -1)
         result+=$'\n--- review at '"${prior_ts:-unknown}"$' ---\n'
         result+=$(cat "$prior_run/agents/aggregator/output.md")
