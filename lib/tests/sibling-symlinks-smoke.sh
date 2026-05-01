@@ -1,7 +1,7 @@
 #!/bin/bash
 # Smoke for lib/sibling-symlinks.sh. Four invariants:
 #
-#   1. Only symlink siblings the caller explicitly classified as
+#   1. Only materialize siblings the caller explicitly classified as
 #      `included` — whitelist-gated upstream by stage_search_roots,
 #      not by this helper's own iteration over SOURCE_PATHS. (Otherwise
 #      we'd materialize symlinks for siblings whose checkouts are
@@ -279,4 +279,38 @@ if [ ! -d "$WORKDIR/.siblings/acme/notgit" ]; then
     exit 1
 fi
 
-echo "  ok: sibling symlinks whitelist-gated, redirect-safe, idempotent, tracked-only"
+# --- scenario 8: tracked symlink in source = excluded (no deref leak) -
+# Load-bearing: `cp` follows symlinks by default, so a sibling tracking
+# `leak -> ~/.ssh/id_rsa` (or any path outside the source tree) would
+# copy the *target bytes* into .siblings/<slug>/leak where specialists
+# could quote them as if they were tracked source. Tracked symlinks
+# must be skipped at the materialize step. cncorp/plow#37 review 2
+# finding 1 (blocking).
+echo "  scenario 8: tracked symlink excluded (no deref leak)..."
+SECRET_FILE="$TMPDIR/EXTERNAL_SECRET"
+echo "EXTERNAL_BYTES" > "$SECRET_FILE"
+mkdir -p "$TMPDIR/symrepo"
+git init -q "$TMPDIR/symrepo"
+git -C "$TMPDIR/symrepo" config user.email t@t
+git -C "$TMPDIR/symrepo" config user.name t
+git -C "$TMPDIR/symrepo" config commit.gpgsign false
+echo "real" > "$TMPDIR/symrepo/real.py"
+ln -s "$SECRET_FILE" "$TMPDIR/symrepo/leak"
+git -C "$TMPDIR/symrepo" add real.py leak
+git -C "$TMPDIR/symrepo" commit -qm "seed with a tracked symlink to external file"
+SOURCE_PATHS["acme/sym"]="$TMPDIR/symrepo"
+materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/sym"
+# Tracked regular file survives.
+assert_tracked_file_copy "scenario 8: tracked real.py" "acme/sym" "real.py" "$TMPDIR/symrepo/real.py"
+# Tracked symlink and its dereferenced target must NOT appear.
+if [ -e "$WORKDIR/.siblings/acme/sym/leak" ] || [ -L "$WORKDIR/.siblings/acme/sym/leak" ]; then
+    echo "FAIL: tracked symlink 'leak' was materialized — would dereference to external bytes"
+    ls -la "$WORKDIR/.siblings/acme/sym/"
+    exit 1
+fi
+if grep -rn "EXTERNAL_BYTES" "$WORKDIR/.siblings/acme/sym/" >/dev/null 2>&1; then
+    echo "FAIL: external symlink target bytes leaked into materialized tree"
+    exit 1
+fi
+
+echo "  ok: sibling materialization whitelist-gated, redirect-safe, idempotent, tracked-only, symlink-safe"

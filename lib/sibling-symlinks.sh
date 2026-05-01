@@ -47,9 +47,9 @@
 #                      (passed by name; bash declare -n)
 #   included_slug...   variadic list of "<owner>/<repo>" entries that
 #                      stage_search_roots classified as `included`
-#                      (whitelisted + checkout-present). NOTHING
-#                      outside this list gets symlinked. Empty list =
-#                      empty .siblings/.
+#                      (whitelisted + checkout-present + git repo).
+#                      NOTHING outside this list gets materialized.
+#                      Empty list = empty .siblings/.
 #
 # Idempotent: safe to call multiple times in the same workdir.
 materialize_sibling_symlinks() {
@@ -87,7 +87,17 @@ materialize_sibling_symlinks() {
         # slug ends up with an empty .siblings/<slug>/ — but the
         # caller (stage_search_roots) is supposed to have classified
         # those as `missing` upstream so they never reach this loop.
+        #
+        # Tracked symlinks (mode 120000) are skipped: `cp` follows
+        # symlinks by default, so a sibling tracking
+        # `leak -> ~/.ssh/id_rsa` (or any path outside the source tree)
+        # would copy the target bytes into .siblings/<slug>/leak
+        # where specialists could quote them. Skipping is simpler than
+        # materializing-symlink-blobs-as-text and avoids a future
+        # consumer assuming the file content is real source code.
+        # Caught on PR #37 review 2 finding 1.
         while IFS= read -r -d '' rel; do
+            [ -L "$src/$rel" ] && continue
             mkdir -p "$target/$(dirname "$rel")"
             cp -- "$src/$rel" "$target/$rel"
         done < <(cd "$src" && git ls-files -z 2>/dev/null)
