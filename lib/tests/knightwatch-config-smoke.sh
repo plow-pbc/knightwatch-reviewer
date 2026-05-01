@@ -172,4 +172,29 @@ if ! printf '%s' "$got_ref" | grep -q 'evil/private-repo'; then
     exit 1
 fi
 
-echo "  PASS (6 scenarios: existing, missing-ABSENT, base-branch-only trust, present-but-empty, bad-ref-ERROR, SHA-pin-bypass-resistance)"
+# --- scenario 7: onboarding case — file exists ONLY on PR branch ---
+# An un-onboarded repo's first .knightwatch/* PR has the file on the
+# PR branch but NOT on the base branch yet. The helper must classify
+# this as ABSENT (rc 1, falls back to legacy) rather than ERROR (rc 2,
+# aborts the review). The prior stderr-parse implementation got this
+# wrong because git's "exists on disk, but not in" message for a
+# working-tree path missing from the ref doesn't match the canonical
+# "does not exist in" pattern. ls-tree avoids the ambiguity entirely.
+echo "  scenario 7: onboarding — file on PR branch only → ABSENT..."
+git -C "$SOURCE" checkout -q feature
+echo "pr-only" > "$SOURCE/.knightwatch/pr-only-file.sh"
+git -C "$SOURCE" add .knightwatch/pr-only-file.sh
+git -C "$SOURCE" commit -qm "feature: add pr-only-file"
+git -C "$WORK" fetch -q origin feature
+git -C "$WORK" checkout -q -B feature origin/feature
+# .knightwatch/pr-only-file.sh exists in workdir + on origin/feature,
+# but NOT on origin/main. Helper called against origin/main must
+# return ABSENT (rc 1), not ERROR (rc 2).
+read_knightwatch_file "$WORK" "origin/main" "pr-only-file.sh" > "$TMPDIR/out.txt" 2>/dev/null
+exit_code=$?
+if [ "$exit_code" -ne 1 ]; then
+    echo "FAIL: expected rc 1 (ABSENT) for onboarding case, got $exit_code"
+    exit 1
+fi
+
+echo "  PASS (7 scenarios: existing, missing-ABSENT, base-branch-only trust, present-but-empty, bad-ref-ERROR, SHA-pin-bypass-resistance, onboarding-ABSENT)"

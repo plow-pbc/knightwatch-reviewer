@@ -38,33 +38,27 @@
 # captured. The caller in review-one-pr.sh snapshots
 # `git rev-parse origin/$DEFAULT_BRANCH` once, before tests run.
 #
-# Implementation: rev-parse --verify the base ref first (exit 1 if
-# missing → ERROR rc 2). If the ref is fine, cat-file -e the path
-# (exit non-zero → distinguish ABSENT from ERROR via stderr message).
+# Implementation: `git ls-tree <base_ref> -- <path>` gives a clean
+# tri-state via stdout + exit-code, no stderr-message parsing:
+#   exit 0 + non-empty stdout → path exists at base ref → PRESENT
+#   exit 0 + empty stdout     → path doesn't exist at base ref → ABSENT
+#   exit non-zero             → ref/tree problem → ERROR
+# This handles every "file absent from base ref" case identically —
+# including the onboarding scenario where `.knightwatch/<file>` exists
+# on the PR branch only (the working tree). cat-file's stderr-message
+# discriminator failed there because git emits a different message
+# ("exists on disk, but not in 'REF'") rather than the canonical
+# "does not exist in 'REF'", so the prior implementation classified
+# onboarding PRs as ERROR and aborted reviews. ls-tree only inspects
+# the ref's tree and never produces that confusion.
 read_knightwatch_file() {
     local repo_dir="$1" base_ref="$2" rel_path="$3"
-    local full_ref="${base_ref}:.knightwatch/${rel_path}"
-    if ! git -C "$repo_dir" rev-parse --verify --quiet "$base_ref" >/dev/null 2>&1; then
-        echo "knightwatch-config: base ref $base_ref not found in $repo_dir" >&2
+    local target=".knightwatch/${rel_path}"
+    local listing
+    if ! listing=$(git -C "$repo_dir" ls-tree "$base_ref" -- "$target" 2>/dev/null); then
+        echo "knightwatch-config: ls-tree failed for $base_ref ($target)" >&2
         return 2
     fi
-    # Distinguish "path missing on a healthy base ref" (ABSENT, rc 1)
-    # from any other cat-file failure (ERROR, rc 2). cat-file -e exits
-    # 128 in both cases, so the discriminator is stderr — git's
-    # canonical "path 'X' does not exist in 'REF'" message marks the
-    # legitimate-absent case; anything else is a real failure (corrupt
-    # object store, malformed path, etc.) and must NOT silently revive
-    # legacy fallback policy.
-    local cat_err
-    cat_err=$(git -C "$repo_dir" cat-file -e "$full_ref" 2>&1)
-    case $? in
-        0) git -C "$repo_dir" show "$full_ref" 2>/dev/null ;;
-        *)
-            if printf '%s' "$cat_err" | grep -q "does not exist in"; then
-                return 1
-            fi
-            echo "knightwatch-config: cat-file failed for $full_ref: $cat_err" >&2
-            return 2
-            ;;
-    esac
+    [ -z "$listing" ] && return 1
+    git -C "$repo_dir" show "${base_ref}:${target}" 2>/dev/null
 }
