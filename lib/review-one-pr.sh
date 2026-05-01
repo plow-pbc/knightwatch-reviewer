@@ -1023,14 +1023,16 @@ critic_fallback "$CRITIC_EXIT" "$CRITIC_OUT"
 ln -sfn "$CRITIC_OUT" "$REPO_DIR/.codex-scratch/critic.md"
 
 log "$PR_ID: aggregator (with critic input)..."
-# Substitute placeholders directly — the aggregator is NOT a specialist
-# and must not get the specialist common-header (which would tell it
-# "you are one specialist" and demand the Surveyed/Finding-N output
-# shape, conflicting with the aggregator's own contract). Same pattern
-# as intent above.
-AGG_PROMPT=$(substitute_placeholders \
-    "$HOME/.pr-reviewer/prompts/aggregator.md" \
-    "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR")
+# build_aggregator_prompt stitches in prompts/voice.md (operator-tunable
+# voice + tone) at aggregator.md's INSERT_VOICE_HERE marker, then
+# substitutes placeholders. The aggregator is NOT a specialist — must
+# not inherit the specialist common-header which would demand the
+# Surveyed/Finding-N output shape — so it gets its own build path.
+if ! AGG_PROMPT=$(build_aggregator_prompt "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR"); then
+    log "$PR_ID: build_aggregator_prompt failed — aborting (incomplete install or stitch-contract regression)"
+    rm -rf "$REPO_DIR"
+    exit 1
+fi
 "$_LIB_DIR/run-specialist.sh" "aggregator" "$REPO_DIR" "$AGG_PROMPT" "$RUN_DIR/agents/aggregator"
 AGG_EXIT=$?
 AGG_OUT="$RUN_DIR/agents/aggregator/output.md"

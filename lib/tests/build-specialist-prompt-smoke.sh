@@ -148,4 +148,93 @@ if echo "$OVERRIDE_OUTPUT" | grep -qF "Operator: Sam"; then
     exit 1
 fi
 
+# =====================================================================
+# build_aggregator_prompt — stitches voice.md into aggregator.md
+# =====================================================================
+# Operator-tunable voice + tone live in prompts/voice.md and get
+# inserted at aggregator.md's INSERT_VOICE_HERE marker. Lets a forked
+# install reshape the bot's voice without touching aggregator.md (which
+# carries load-bearing review-production logic).
+mkdir -p "$HOME/.pr-reviewer/prompts"
+cat > "$HOME/.pr-reviewer/prompts/aggregator.md" <<'EOF'
+You are the aggregator. PR: {{PR_ID}}.
+
+Step 5: rank findings.
+
+<!-- INSERT_VOICE_HERE -->
+
+Step 7: produce the final review.
+EOF
+cat > "$HOME/.pr-reviewer/prompts/voice.md" <<'EOF'
+**Voice — opinionated nudges.** Phrase as "blame {{OPERATOR_NAME}}, but…".
+
+**Tone — self-aware ribbing.** Sparingly. Author: @{{PR_AUTHOR}}.
+EOF
+
+echo "  build_aggregator_prompt: voice.md content stitched at marker, placeholders substituted..."
+AGG_OUTPUT=$(build_aggregator_prompt "owner/repo#42" "Test PR" "https://github.com/owner/repo/pull/42" "plucas")
+for needle in "PR: owner/repo#42" \
+              "Step 5: rank findings." \
+              "blame Sam, but" \
+              "Author: @plucas" \
+              "Step 7: produce the final review."; do
+    if ! echo "$AGG_OUTPUT" | grep -qF "$needle"; then
+        echo "FAIL: build_aggregator_prompt missing '$needle'"
+        echo "--- output ---"
+        echo "$AGG_OUTPUT"
+        exit 1
+    fi
+done
+# The marker itself must NOT survive — voice.md replaced it.
+if echo "$AGG_OUTPUT" | grep -qF "INSERT_VOICE_HERE"; then
+    echo "FAIL: build_aggregator_prompt left INSERT_VOICE_HERE marker in output"
+    exit 1
+fi
+# Order fence: voice block lands BETWEEN step 5 and step 7.
+step5_pos=$(echo "$AGG_OUTPUT" | grep -bo "Step 5:" | head -1 | cut -d: -f1)
+voice_pos=$(echo "$AGG_OUTPUT" | grep -bo "Voice —" | head -1 | cut -d: -f1)
+step7_pos=$(echo "$AGG_OUTPUT" | grep -bo "Step 7:" | head -1 | cut -d: -f1)
+if ! { [ "$step5_pos" -lt "$voice_pos" ] && [ "$voice_pos" -lt "$step7_pos" ]; }; then
+    echo "FAIL: voice insertion order regressed (step5=$step5_pos, voice=$voice_pos, step7=$step7_pos)"
+    exit 1
+fi
+
+echo "  build_aggregator_prompt: OPERATOR_NAME=Frankie reskins voice without touching aggregator.md..."
+RESKINNED=$(OPERATOR_NAME="Frankie" build_aggregator_prompt "owner/repo#43" "Reskin" "https://x" "alice")
+if ! echo "$RESKINNED" | grep -qF "blame Frankie, but"; then
+    echo "FAIL: build_aggregator_prompt did not honor OPERATOR_NAME=Frankie in voice block"
+    exit 1
+fi
+
+echo "  build_aggregator_prompt: voice.md missing → fail-fast (rc=1, stderr diagnostic)..."
+rm -f "$HOME/.pr-reviewer/prompts/voice.md"
+# Wrap in `if … ; then FAIL; fi` so the deliberate non-zero exit is
+# caught by the conditional rather than tripping set -e. ERR captures
+# stderr-only via the `2>&1 >/dev/null` order.
+if ERR=$(build_aggregator_prompt "owner/repo#44" "x" "https://x" "alice" 2>&1 >/dev/null); then
+    echo "FAIL: missing voice.md should fail-fast (incomplete install)"
+    exit 1
+fi
+if ! echo "$ERR" | grep -qF "voice.md missing"; then
+    echo "FAIL: missing voice.md stderr should name the file; got: $ERR"
+    exit 1
+fi
+
+echo "  build_aggregator_prompt: aggregator.md without INSERT_VOICE_HERE marker → fail-fast..."
+cat > "$HOME/.pr-reviewer/prompts/voice.md" <<'EOF'
+**Voice.** test
+EOF
+cat > "$HOME/.pr-reviewer/prompts/aggregator.md" <<'EOF'
+You are the aggregator. PR: {{PR_ID}}.
+No marker here.
+EOF
+if ERR=$(build_aggregator_prompt "owner/repo#45" "x" "https://x" "alice" 2>&1 >/dev/null); then
+    echo "FAIL: missing INSERT_VOICE_HERE marker should fail-fast (stitch contract violated)"
+    exit 1
+fi
+if ! echo "$ERR" | grep -qF "INSERT_VOICE_HERE"; then
+    echo "FAIL: marker-missing stderr should name the marker; got: $ERR"
+    exit 1
+fi
+
 echo "  PASS"

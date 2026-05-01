@@ -45,3 +45,46 @@ build_specialist_prompt() {
         substitute_placeholders "$specialist_file" "$pr_id" "$pr_title" "$pr_url" "$pr_author" "$specialist_name"
     }
 }
+
+# build_aggregator_prompt PR_ID PR_TITLE PR_URL PR_AUTHOR
+#
+# Same shape as substitute_placeholders on aggregator.md, but stitches
+# in prompts/voice.md (the operator-tunable voice + tone instructions)
+# at the `<!-- INSERT_VOICE_HERE -->` marker before substituting
+# placeholders. Lets operators reshape the bot's voice without touching
+# aggregator.md, which carries the load-bearing review-production logic
+# (severity calibration, ranking rules, output structure).
+#
+# Marker-not-found is a fail-fast condition — silently posting a review
+# with no voice block when the operator wired a marker would mean the
+# stitch logic regressed and the operator hasn't noticed. voice.md
+# missing on disk is also fail-fast: voice.md is part of the install
+# (install.sh symlinks the whole prompts/ dir), and a missing one means
+# an incomplete deploy, not "operator opted out."
+build_aggregator_prompt() {
+    local pr_id="$1" pr_title="$2" pr_url="$3" pr_author="$4"
+    local aggregator="$HOME/.pr-reviewer/prompts/aggregator.md"
+    local voice="$HOME/.pr-reviewer/prompts/voice.md"
+    if [ ! -f "$voice" ]; then
+        printf 'build_aggregator_prompt: voice.md missing at %s — incomplete install\n' "$voice" >&2
+        return 1
+    fi
+    if ! grep -qF '<!-- INSERT_VOICE_HERE -->' "$aggregator"; then
+        printf 'build_aggregator_prompt: aggregator.md missing INSERT_VOICE_HERE marker — stitch contract violated\n' >&2
+        return 1
+    fi
+    # awk stitches voice.md content in place of the marker line. voice.md
+    # is the operator's surface — read it as data; awk does no expansion.
+    # Substitution of placeholders (including {{OPERATOR_NAME}} which
+    # voice.md uses) runs on the combined text afterwards.
+    local stitched
+    stitched=$(awk -v voice_file="$voice" '
+        /<!-- INSERT_VOICE_HERE -->/ {
+            while ((getline line < voice_file) > 0) print line
+            close(voice_file)
+            next
+        }
+        { print }
+    ' "$aggregator")
+    substitute_placeholders <(printf '%s' "$stitched") "$pr_id" "$pr_title" "$pr_url" "$pr_author"
+}
