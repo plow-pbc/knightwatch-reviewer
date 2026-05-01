@@ -237,4 +237,36 @@ if ! echo "$ERR" | grep -qF "INSERT_VOICE_HERE"; then
     exit 1
 fi
 
+# Real-prompts scenario: catches marker-format drift between the helper
+# and the actual checked-in prompts/aggregator.md + prompts/voice.md.
+# The synthetic scenarios above use a controlled bare marker; this one
+# uses the real production files so a marker rename (or annotation
+# edit) in either file without a corresponding helper update trips
+# here. Regression-fence for PR #31 round-5 bot finding 2: an annotated
+# `<!-- INSERT_VOICE_HERE — stitched in… -->` marker broke the prior
+# exact-match grep gate and would have aborted the worker.
+echo "  build_aggregator_prompt: real prompts/aggregator.md + voice.md compose end-to-end..."
+cp "$SCRIPT_DIR/../prompts/aggregator.md" "$HOME/.pr-reviewer/prompts/aggregator.md"
+cp "$SCRIPT_DIR/../prompts/voice.md" "$HOME/.pr-reviewer/prompts/voice.md"
+REAL_OUTPUT=$(build_aggregator_prompt "owner/repo#99" "Real prompts" "https://github.com/owner/repo/pull/99" "alice")
+if ! echo "$REAL_OUTPUT" | grep -qF "Voice — opinionated nudges"; then
+    echo "FAIL: real-prompts compose missing voice.md content (marker contract drift between helper and production prompts?)"
+    echo "--- output ---"
+    echo "$REAL_OUTPUT" | head -30
+    exit 1
+fi
+if ! echo "$REAL_OUTPUT" | grep -qF "Tone — self-aware ribbing"; then
+    echo "FAIL: real-prompts compose missing voice.md tone block"
+    exit 1
+fi
+if echo "$REAL_OUTPUT" | grep -qF "INSERT_VOICE_HERE"; then
+    echo "FAIL: real-prompts compose left INSERT_VOICE_HERE marker in output (stitch failed but no error?)"
+    exit 1
+fi
+# Verify {{OPERATOR_NAME}} flowed through voice.md → output.
+if ! echo "$REAL_OUTPUT" | grep -qF "blame Sam"; then
+    echo "FAIL: real-prompts compose did not substitute {{OPERATOR_NAME}} inside voice block"
+    exit 1
+fi
+
 echo "  PASS"

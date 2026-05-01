@@ -69,19 +69,41 @@ build_aggregator_prompt() {
         printf 'build_aggregator_prompt: voice.md missing at %s — incomplete install\n' "$voice" >&2
         return 1
     fi
-    if ! grep -qF '<!-- INSERT_VOICE_HERE -->' "$aggregator"; then
+    # Permissive marker match: any line containing `INSERT_VOICE_HERE`
+    # (e.g. annotated `<!-- INSERT_VOICE_HERE — stitched in from … -->`)
+    # is the stitch point. Pinning to the exact close-comment form
+    # `<!-- INSERT_VOICE_HERE -->` was brittle — a regression noted by
+    # the round-5 bot review where a one-line annotated marker passed
+    # human eyes but failed the grep gate, aborting the worker before
+    # posting. Single contract: `INSERT_VOICE_HERE` substring marks the
+    # spot, no fallback parsing.
+    if ! grep -qF 'INSERT_VOICE_HERE' "$aggregator"; then
         printf 'build_aggregator_prompt: aggregator.md missing INSERT_VOICE_HERE marker — stitch contract violated\n' >&2
         return 1
     fi
-    # awk stitches voice.md content in place of the marker line. voice.md
-    # is the operator's surface — read it as data; awk does no expansion.
+    # voice.md may begin with an HTML-comment block of operator docs
+    # (how to customize, what placeholders are available). Those notes
+    # are useful for humans editing the file but are noise for the LLM
+    # — strip a leading <!-- … --> block before stitching. Operators
+    # who want their docs visible to the LLM can place them after the
+    # first markdown content. Conservative: only the FIRST line opening
+    # with `<!--` triggers strip mode; the rest of the file flows
+    # through verbatim.
+    local voice_body
+    voice_body=$(awk '
+        NR == 1 && /^<!--/ { in_doc = 1 }
+        in_doc && /-->/    { in_doc = 0; next }
+        in_doc             { next }
+                           { print }
+    ' "$voice")
+    # awk stitches voice_body in place of the marker line. voice.md is
+    # the operator's surface — read it as data; awk does no expansion.
     # Substitution of placeholders (including {{OPERATOR_NAME}} which
     # voice.md uses) runs on the combined text afterwards.
     local stitched
-    stitched=$(awk -v voice_file="$voice" '
-        /<!-- INSERT_VOICE_HERE -->/ {
-            while ((getline line < voice_file) > 0) print line
-            close(voice_file)
+    stitched=$(awk -v voice_body="$voice_body" '
+        /INSERT_VOICE_HERE/ {
+            print voice_body
             next
         }
         { print }
