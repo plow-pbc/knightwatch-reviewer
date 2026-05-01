@@ -819,19 +819,28 @@ if ! SEARCH_ROOTS=$(stage_search_roots "$REPO" "$REPO_DIR" "$BASE_REF_SHA"); the
     exit 1
 fi
 
-# Materialize sibling-repo symlinks under .siblings/<owner>/<repo>, but
+# Materialize sibling-repo content under .siblings/<owner>/<repo>, but
 # ONLY for siblings stage_search_roots above just classified as
-# `included` (whitelisted in SOURCE_PATHS AND checkout present on disk).
-# Running before stage_search_roots would symlink siblings whose
-# checkouts are absent — symlinks would dangle and specialists would
-# get confused.
+# `included` (whitelisted in SOURCE_PATHS AND checkout present on disk
+# AND a git repo). Running before stage_search_roots would copy content
+# from siblings whose checkouts are absent. If materialization fails
+# (corrupt git objects, source disappeared after classification,
+# disk full, permission), abort the review — better to fail loud
+# than serve specialists partial sibling content while claiming
+# `included` coverage. Materializer details (HEAD-snapshot pinning,
+# blob reads via `git show`, mode filtering) live in
+# lib/sibling-symlinks.sh and shouldn't be duplicated here.
 INCLUDED_SLUGS=()
 while IFS= read -r line; do
     case "$line" in
         *' included '*) INCLUDED_SLUGS+=("${line%% included *}") ;;
     esac
 done <<< "$SEARCH_ROOTS"
-materialize_sibling_symlinks "$REPO_DIR" SOURCE_PATHS "${INCLUDED_SLUGS[@]}"
+if ! materialize_sibling_symlinks "$REPO_DIR" SOURCE_PATHS "${INCLUDED_SLUGS[@]}"; then
+    log "$PR_ID: materialize_sibling_symlinks failed — aborting (would otherwise serve partial sibling content while claiming full coverage)"
+    rm -rf "$REPO_DIR"
+    exit 1
+fi
 
 # ---- write scratch files ----
 write_scratch "$REPO_DIR" "diff.patch"         "$KID_INPUT_DIFF"
