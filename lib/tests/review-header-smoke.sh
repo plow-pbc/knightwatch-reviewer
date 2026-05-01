@@ -153,14 +153,14 @@ fi
 # must preserve that order, not sort.
 echo "  push order = render order (worst-case header)..."
 result=$(prepend_review_header "$BODY" \
-    "$(format_review_scope "incremental:$SHA_OLD")" \
+    "$(format_review_scope "incremental:$SHA_OLD" "$SHA_NEW")" \
     "⚠️ Stale: head moved from \`${SHA_OLD:0:7}\` to \`${SHA_NEW:0:7}\` mid-run — see commands below to re-run" \
     "🧪 Tests not run" \
     "🔍 Prior-art (KID) not run" \
     "❌ Strict typing not enforced")
 assert_one_blockquote "$result" "worst-case"
 result_line=$(printf '%s\n' "$result" | grep '^> ')
-scope_pos=$(printf '%s' "$result_line" | grep -bo "Re-review of changes since" | head -1 | cut -d: -f1)
+scope_pos=$(printf '%s' "$result_line" | grep -bo "Re-review of changes from" | head -1 | cut -d: -f1)
 stale_pos=$(printf '%s' "$result_line" | grep -bo "Stale: head moved" | head -1 | cut -d: -f1)
 tests_pos=$(printf '%s' "$result_line" | grep -bo "Tests not run" | head -1 | cut -d: -f1)
 kid_pos=$(printf '%s' "$result_line" | grep -bo "Prior-art" | head -1 | cut -d: -f1)
@@ -210,20 +210,32 @@ assert_contains "$result" "Whole-PR re-review" "whole keyword"
 assert_contains "$result" '`/srosro-review`' "whole cites trigger"
 assert_contains "$result" "from scratch" "whole discloses no-prior-review"
 
-echo "  format_review_scope: incremental:<sha> → cites short SHA..."
-result=$(format_review_scope "incremental:$SHA_OLD")
-assert_scope_text "$result" "📋 Re-review of changes since \`abc1234\`" "incremental"
+echo "  format_review_scope: incremental:<from> <to> → cites both SHAs and the git diff command..."
+result=$(format_review_scope "incremental:$SHA_OLD" "$SHA_NEW")
+assert_scope_text "$result" "📋 Re-review of changes from \`abc1234\` to \`def9876\` (\`git diff abc1234..def9876\`)" "incremental"
+
+echo "  format_review_scope: incremental without head_sha → fail-fast (rc=1 + stderr diagnostic)..."
+format_review_scope "incremental:$SHA_OLD" 2>/dev/null
+if [ "$?" -eq 0 ]; then
+    echo "FAIL: incremental w/o head_sha — returned 0 (silent degrade); should fail-fast per CLAUDE.md"
+    exit 1
+fi
+err=$(format_review_scope "incremental:$SHA_OLD" 2>&1 >/dev/null)
+if ! printf '%s' "$err" | grep -q "incremental scope requires head_sha"; then
+    echo "FAIL: incremental w/o head_sha — stderr diagnostic missing 'incremental scope requires head_sha'; got: $err"
+    exit 1
+fi
 
 # Wording-fence — fallback MUST NOT be misframed as incremental. A bug
 # class flagged in PR #22 bot review (USED_FALLBACK=true previously got
 # rendered as incremental; pin it here so a regression trips the smoke).
-echo "  format_review_scope: fallback:<sha> → 'clean incremental unavailable' (must NOT match 'Re-review of changes')..."
+echo "  format_review_scope: fallback:<sha> → 'clean incremental unavailable' (must NOT match 'Re-review of changes from')..."
 result=$(format_review_scope "fallback:$SHA_OLD")
 assert_contains "$result" "clean incremental unavailable" "fallback names cause"
 assert_contains "$result" "evaluated full PR" "fallback discloses full-PR scope"
 assert_contains "$result" '`abc1234`' "fallback cites short SHA"
-if printf '%s' "$result" | grep -q "Re-review of changes since"; then
-    echo "FAIL: fallback wording — fragment matches incremental wording 'Re-review of changes since' (regression)"
+if printf '%s' "$result" | grep -q "Re-review of changes from"; then
+    echo "FAIL: fallback wording — fragment matches incremental wording 'Re-review of changes from' (regression)"
     echo "  got: $result"
     exit 1
 fi

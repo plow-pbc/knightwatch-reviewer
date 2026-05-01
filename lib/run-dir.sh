@@ -126,7 +126,7 @@ compute_review_scope() {
     fi
 }
 
-# format_review_scope SCOPE
+# format_review_scope SCOPE [HEAD_SHA]
 #
 # Maps the scope token (from compute_review_scope) to the human-readable
 # fragment that goes into REVIEW_NOTES. Pure function. Returns 1 on
@@ -135,8 +135,17 @@ compute_review_scope() {
 # fallback case is wording-fenced separately from incremental so a
 # regression that misframes fallback as incremental trips a smoke
 # (recurring BCR class — see review-header-smoke.sh).
+#
+# HEAD_SHA is required on `incremental:<sha>` and ignored on every other
+# scope. The incremental fragment cites both endpoints AND the exact
+# git command that produced the diff — `git diff <from>..<to>` (two-dot,
+# matching the worker's KID_INPUT_DIFF derivation) — so a reader can
+# reproduce the review's diff locally with copy-paste, without having
+# to guess which range the bot evaluated. Missing HEAD_SHA on the
+# incremental path is fail-fast (return 1, stderr diagnostic) — the
+# fragment would otherwise silently omit the to-SHA and the command.
 format_review_scope() {
-    local scope="$1" sha
+    local scope="$1" head_sha="${2:-}" sha from to
     case "$scope" in
         first)
             printf '📋 First review of this PR' ;;
@@ -144,7 +153,13 @@ format_review_scope() {
             printf '📋 Whole-PR re-review (`/srosro-review`) — evaluated from scratch, no prior review consulted' ;;
         incremental:*)
             sha="${scope#incremental:}"
-            printf '📋 Re-review of changes since `%s`' "${sha:0:7}" ;;
+            if [ -z "$head_sha" ]; then
+                printf 'format_review_scope: incremental scope requires head_sha — internal invariant violated\n' >&2
+                return 1
+            fi
+            from="${sha:0:7}"
+            to="${head_sha:0:7}"
+            printf '📋 Re-review of changes from `%s` to `%s` (`git diff %s..%s`)' "$from" "$to" "$from" "$to" ;;
         fallback:*)
             sha="${scope#fallback:}"
             printf '📋 Re-review — clean incremental unavailable for `%s` (rebase, force-push, or merge-from-main); evaluated full PR' "${sha:0:7}" ;;

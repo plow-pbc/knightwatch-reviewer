@@ -1094,8 +1094,8 @@ log "$PR_ID: review scope = $REVIEW_SCOPE"
 # Adding a new entry is one line. See the deterministic-pre-checks block
 # above for the runner pattern that produces gap-fragment vars.
 REVIEW_NOTES=()
-if ! SCOPE_NOTE=$(format_review_scope "$REVIEW_SCOPE"); then
-    log "$PR_ID: format_review_scope failed for '$REVIEW_SCOPE' — internal invariant violated, aborting"
+if ! SCOPE_NOTE=$(format_review_scope "$REVIEW_SCOPE" "$PR_SHA"); then
+    log "$PR_ID: format_review_scope failed for '$REVIEW_SCOPE' (head=${PR_SHA:0:7}) — internal invariant violated, aborting"
     rm -rf "$REPO_DIR"
     exit 1
 fi
