@@ -162,7 +162,7 @@ format_review_scope() {
             printf '📋 Re-review of changes from `%s` to `%s` (`git diff %s..%s`)' "$from" "$to" "$from" "$to" ;;
         fallback:*)
             sha="${scope#fallback:}"
-            printf '📋 Re-review — clean incremental unavailable for `%s` (rebase, force-push, or merge-from-main); evaluated full PR' "${sha:0:7}" ;;
+            printf '📋 Re-review — clean incremental unavailable for `%s` (rebase, force-push, or merge from base branch); evaluated full PR' "${sha:0:7}" ;;
         *)
             printf 'format_review_scope: unknown scope "%s" — internal invariant violated\n' "$scope" >&2
             return 1
@@ -257,32 +257,67 @@ prepend_review_header() {
     printf '%s\n> %s\n\n%s' "$first_line" "$joined" "$rest"
 }
 
+# iterate_visible_runs <state_dir> <repo_slug> <pr_num>
+#   stdout: one line per author-visible reviewed run, sorted by run-dir
+#           name (which already encodes the run timestamp). Each line is
+#           tab-separated `<run_dir>\t<started_at>\t<sha>` so callers can
+#           pipe through `while IFS=$'\t' read -r dir started_at sha`.
+#
+#   Single source of truth for "which preserved run dirs represent
+#   reviews the PR author actually saw on GitHub". Two visibility
+#   signals:
+#     1. `posted_at` non-empty — primary, stamped right after
+#        `gh pr comment` succeeds in review-one-pr.sh. Set BEFORE
+#        state_set runs, so it correctly includes the rare case where
+#        gh posted but state_set / finalize failed.
+#     2. `status == "completed"` — fallback for legacy runs created
+#        before posted_at existed. status only flips to "completed"
+#        after state_set succeeds, which in production runs only after
+#        gh has posted, so "status == completed" reliably implies "gh
+#        post succeeded" for any preserved run.
+#
+#   Skips:
+#     - dirs without meta.json (pre-checkout aborts — never reviewed)
+#     - dirs that fail the visibility predicate (mid-flight aborts —
+#       wrote meta.json post-checkout but never posted)
+#
+#   Permissive on fields: emits a row even when started_at / sha are
+#   missing (legacy pre-#36 meta.json, partial fields, etc.) — the
+#   started_at and sha cells are just empty in that case. Consumers
+#   that REQUIRE those fields (e.g., compute_loc_trend's diff range)
+#   should validate inline and fail-loud if missing for their use
+#   case. stage_prior_reviews doesn't read sha/started_at from this
+#   iterator (it derives the display ts from the dir name) so legacy
+#   runs without those fields stay visible — preserving the
+#   pre-refactor inclusion behavior.
+iterate_visible_runs() {
+    local state_dir="$1" repo_slug="$2" pr_num="$3"
+    while IFS= read -r d; do
+        local meta="$d/meta.json"
+        [ -f "$meta" ] || continue
+        local visible
+        visible=$(jq -r 'if ((.posted_at // "") != "") or ((.status // "") == "completed") then "yes" else "no" end' "$meta" 2>/dev/null)
+        [ "$visible" = "yes" ] || continue
+        local started_at sha
+        started_at=$(jq -r '.started_at // empty' "$meta")
+        sha=$(jq -r '.sha // empty' "$meta")
+        printf '%s\t%s\t%s\n' "$d" "$started_at" "$sha"
+    done < <(find "$state_dir/runs" -maxdepth 1 -type d -name "${repo_slug}__${pr_num}__*" 2>/dev/null | sort)
+}
+
 stage_prior_reviews() {
     local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"
-    local prior_run prior_ts included result=""
-    while IFS= read -r prior_run; do
+    local prior_run prior_ts result=""
+    while IFS=$'\t' read -r prior_run _started_at _sha; do
         [ "$prior_run" = "$current_run_dir" ] && continue
-        # Two signals say "the author saw this review on GitHub":
-        #   1. posted_at present — primary signal, stamped immediately after
-        #      `gh pr comment` succeeds in review-one-pr.sh. Set BEFORE
-        #      state_set runs, so it correctly includes the rare case where
-        #      gh succeeded but state_set or finalize failed afterward.
-        #   2. status == "completed" — fallback for legacy runs created
-        #      before this PR added the posted_at field. status only flips
-        #      to "completed" after state_set succeeds, which in the
-        #      production worker flow only runs after gh has posted, so
-        #      "status == completed" reliably implies "gh post succeeded"
-        #      for any preserved run.
-        # Either signal is sufficient — the union captures all
-        # author-visible reviews including legacy history, while excluding
-        # aborted runs where the author never received the review.
-        included=$(jq -r 'if ((.posted_at // "") != "") or ((.status // "") == "completed") then "yes" else "no" end' \
-            "$prior_run/meta.json" 2>/dev/null)
-        [ "$included" = "yes" ] || continue
+        # Display timestamp comes from the run-dir name (compact
+        # `T161337Z` form already familiar in prior-reviews specialist
+        # prompts). Iterator's started_at is the canonical post-checkout
+        # ISO form; not used here to avoid changing the rendered shape.
         prior_ts=$(basename "$prior_run" | grep -oE 'T[0-9]+Z' | head -1)
         result+=$'\n--- review at '"${prior_ts:-unknown}"$' ---\n'
         result+=$(cat "$prior_run/agents/aggregator/output.md")
         result+=$'\n'
-    done < <(find "$state_dir/runs" -maxdepth 1 -type d -name "${repo_slug}__${pr_num}__*" 2>/dev/null | sort)
+    done < <(iterate_visible_runs "$state_dir" "$repo_slug" "$pr_num")
     printf '%s' "$result"
 }
