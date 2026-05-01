@@ -1,5 +1,5 @@
 #!/bin/bash
-# Smoke for lib/sibling-symlinks.sh. Three invariants:
+# Smoke for lib/sibling-symlinks.sh. Four invariants:
 #
 #   1. Only symlink siblings the caller explicitly classified as
 #      `included` — whitelist-gated upstream by stage_search_roots,
@@ -14,6 +14,13 @@
 #
 #   3. Missing siblings (no SOURCE_PATHS dir on disk) are skipped
 #      silently — the search-roots seam already classifies those.
+#
+#   4. ONLY tracked files appear in the materialized tree. Untracked /
+#      gitignored content (`.git/`, `.venv/`, `node_modules/`, etc.)
+#      stays out so a specialist grep cannot pull bytes from it and
+#      quote them in public review output. Caught on cncorp/plow#567
+#      review rounds 1-4 (the bot kept re-flagging the raw-checkout
+#      symlink shape until the worker layer was fixed).
 
 set -euo pipefail
 
@@ -26,7 +33,39 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 WORKDIR="$TMPDIR/work"
 mkdir -p "$WORKDIR/.git"  # mimic a real workdir
-mkdir -p "$TMPDIR/foo" "$TMPDIR/bar" "$TMPDIR/baz"
+
+# Build sibling sources as REAL git repos so `git ls-files` enumerates
+# tracked content. Each gets a tracked file (`main.py`, `pkg/util.py`)
+# and a gitignored secret in the kind of subdirs that commonly hold
+# local artifacts (`.venv/`, `node_modules/`, `__pycache__/`).
+# Scenario 6 below asserts none of the gitignored secrets leak through.
+init_sibling_repo() {
+    local dir="$1"
+    mkdir -p "$dir"
+    git init -q "$dir"
+    git -C "$dir" config user.email t@t
+    git -C "$dir" config user.name t
+    git -C "$dir" config commit.gpgsign false
+    echo "src" > "$dir/main.py"
+    mkdir -p "$dir/pkg"
+    echo "pkg-src" > "$dir/pkg/util.py"
+    cat > "$dir/.gitignore" <<'EOF'
+.venv/
+node_modules/
+__pycache__/
+EOF
+    git -C "$dir" add main.py pkg/util.py .gitignore
+    git -C "$dir" commit -qm "seed"
+    # Plant local-only artifacts AFTER commit. None should appear in
+    # the materialized tree.
+    mkdir -p "$dir/.venv" "$dir/node_modules" "$dir/pkg/__pycache__"
+    echo "VENV_SECRET" > "$dir/.venv/secret"
+    echo "NODE_LEAK"   > "$dir/node_modules/leaked.json"
+    echo "CACHE_BYTES" > "$dir/pkg/__pycache__/util.cpython-312.pyc"
+}
+init_sibling_repo "$TMPDIR/foo"
+init_sibling_repo "$TMPDIR/bar"
+init_sibling_repo "$TMPDIR/baz"
 # acme/qux is intentionally missing on disk.
 
 declare -A SOURCE_PATHS=(
@@ -36,20 +75,37 @@ declare -A SOURCE_PATHS=(
     ["acme/qux"]="$TMPDIR/qux"   # deliberately missing on disk
 )
 
-# --- scenario 1: only `included` siblings get symlinked ---------------
+# Returns 0 iff the per-file symlink at <slug>/<rel> exists and points
+# at the matching tracked file under the source. Used by scenarios 1
+# and 3 to assert correct materialization shape after the migration
+# from raw-checkout symlinks.
+assert_tracked_file_link() {
+    local label="$1" slug="$2" rel="$3" expected_target="$4"
+    local link="$WORKDIR/.siblings/$slug/$rel"
+    if [ ! -L "$link" ]; then
+        echo "FAIL ($label): expected $link to be a symlink"
+        ls -la "$WORKDIR/.siblings/$slug/" 2>/dev/null || true
+        exit 1
+    fi
+    local got
+    got=$(readlink "$link")
+    if [ "$got" != "$expected_target" ]; then
+        echo "FAIL ($label): $link points at '$got', want '$expected_target'"
+        exit 1
+    fi
+    if [ ! -e "$link" ]; then
+        echo "FAIL ($label): $link symlink target doesn't resolve"
+        exit 1
+    fi
+}
+
+# --- scenario 1: only `included` siblings get materialized ------------
 echo "  scenario 1: whitelist-gated to included slugs..."
 materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/foo" "acme/bar"
 
-got_foo=$(readlink "$WORKDIR/.siblings/acme/foo")
-if [ "$got_foo" != "$TMPDIR/foo" ]; then
-    echo "FAIL: foo symlink target wrong (got '$got_foo', want '$TMPDIR/foo')"
-    exit 1
-fi
-got_bar=$(readlink "$WORKDIR/.siblings/acme/bar")
-if [ "$got_bar" != "$TMPDIR/bar" ]; then
-    echo "FAIL: bar symlink target wrong"
-    exit 1
-fi
+assert_tracked_file_link "scenario 1: foo/main.py" "acme/foo" "main.py"     "$TMPDIR/foo/main.py"
+assert_tracked_file_link "scenario 1: foo/pkg"     "acme/foo" "pkg/util.py" "$TMPDIR/foo/pkg/util.py"
+assert_tracked_file_link "scenario 1: bar/main.py" "acme/bar" "main.py"     "$TMPDIR/bar/main.py"
 # baz is in SOURCE_PATHS but was NOT in the included list — must NOT exist.
 if [ -e "$WORKDIR/.siblings/acme/baz" ]; then
     echo "FAIL: baz symlink should not exist (not in included list)"
@@ -59,7 +115,7 @@ fi
 # --- scenario 2: missing checkout silently skipped ---------------------
 echo "  scenario 2: missing on-disk checkout silently skipped..."
 materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/foo" "acme/qux"
-if [ -L "$WORKDIR/.siblings/acme/qux" ]; then
+if [ -e "$WORKDIR/.siblings/acme/qux" ]; then
     echo "FAIL: qux symlink should not exist (path missing on disk)"
     exit 1
 fi
@@ -84,11 +140,8 @@ assert_redirect_defeated() {
         ls -la "$WORKDIR/.siblings/"
         exit 1
     fi
-    got_foo=$(readlink "$WORKDIR/.siblings/acme/foo")
-    if [ "$got_foo" != "$TMPDIR/foo" ]; then
-        echo "FAIL ($label): foo symlink not pointing at real source after redirect attack"
-        exit 1
-    fi
+    assert_tracked_file_link "$label: post-attack foo/main.py" \
+        "acme/foo" "main.py" "$TMPDIR/foo/main.py"
     if [ ! -e "$ATTACK_TARGET/sentinel" ]; then
         echo "FAIL ($label): attacker target sentinel was modified — write escaped workdir"
         exit 1
@@ -118,8 +171,7 @@ echo "  scenario 3c: .siblings/<owner>/<repo> is the symlink (leaf)..."
 rm -rf "$WORKDIR/.siblings"
 mkdir -p "$WORKDIR/.siblings/acme"
 # Leaf is a pre-existing symlink to attacker target — gets overwritten
-# by ln -sfn. (Less alarming than 3a/3b because the parent dir is real,
-# but still verify the attack target is untouched.)
+# when materialize wipes .siblings/.
 ln -sfn "$ATTACK_TARGET" "$WORKDIR/.siblings/acme/foo"
 [ -L "$WORKDIR/.siblings/acme/foo" ] || { echo "  pre-check: foo should be a symlink"; exit 1; }
 assert_redirect_defeated "3c (leaf symlink)"
@@ -128,11 +180,8 @@ assert_redirect_defeated "3c (leaf symlink)"
 echo "  scenario 4: idempotent re-run..."
 materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/foo" "acme/bar"
 materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/foo" "acme/bar"
-got_foo2=$(readlink "$WORKDIR/.siblings/acme/foo")
-if [ "$got_foo2" != "$TMPDIR/foo" ]; then
-    echo "FAIL: re-run changed foo symlink target"
-    exit 1
-fi
+assert_tracked_file_link "scenario 4: post-rerun foo/main.py" \
+    "acme/foo" "main.py" "$TMPDIR/foo/main.py"
 
 # --- scenario 5: empty included list = empty .siblings/ ---------------
 echo "  scenario 5: empty included list produces empty .siblings/..."
@@ -143,4 +192,68 @@ if [ -d "$WORKDIR/.siblings" ] && [ -n "$(ls -A "$WORKDIR/.siblings" 2>/dev/null
     exit 1
 fi
 
-echo "  ok: sibling symlinks whitelist-gated, redirect-safe, and idempotent"
+# --- scenario 6: tracked-only — gitignored / .git / untracked excluded -
+# Load-bearing: the prior raw-checkout `ln -sfn "$src" "$target"` shape
+# exposed the entire sibling tree (.git/, .venv/, node_modules/, etc.)
+# to specialist greps. cncorp/plow#567 review rounds 1-4 kept flagging
+# this. The fix is to materialize ONLY tracked files via `git ls-files`
+# so the worker mirrors the sibling's source contract, not whatever
+# happens to be on disk.
+echo "  scenario 6: only tracked files — .git / gitignored / untracked excluded..."
+materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/foo" "acme/bar"
+
+# Tracked content present.
+assert_tracked_file_link "scenario 6: tracked main.py"     "acme/foo" "main.py"     "$TMPDIR/foo/main.py"
+assert_tracked_file_link "scenario 6: tracked pkg/util.py" "acme/foo" "pkg/util.py" "$TMPDIR/foo/pkg/util.py"
+
+# Gitignored / untracked content absent. Each path was planted in
+# `init_sibling_repo` AFTER the commit, with `.venv/`, `node_modules/`,
+# `__pycache__/` matching the .gitignore. None should be reachable via
+# the materialized tree.
+for forbidden in \
+    .git \
+    .git/HEAD \
+    .git/config \
+    .venv \
+    .venv/secret \
+    node_modules \
+    node_modules/leaked.json \
+    pkg/__pycache__ \
+    pkg/__pycache__/util.cpython-312.pyc; do
+    if [ -e "$WORKDIR/.siblings/acme/foo/$forbidden" ] || [ -L "$WORKDIR/.siblings/acme/foo/$forbidden" ]; then
+        echo "FAIL: $forbidden leaked into materialized tree"
+        ls -laR "$WORKDIR/.siblings/acme/foo/" | head -40
+        exit 1
+    fi
+done
+
+# Bonus: a `grep -rn` over the materialized slug must not surface the
+# secret strings. This is the actual public-output exposure vector.
+if grep -rn "VENV_SECRET\|NODE_LEAK\|CACHE_BYTES" "$WORKDIR/.siblings/acme/foo/" 2>/dev/null; then
+    echo "FAIL: specialist-style grep surfaced gitignored secrets"
+    exit 1
+fi
+
+# --- scenario 7: non-git source = empty materialization (no leak) ----
+# If a sibling source isn't a git repo (corrupt clone, raw download,
+# operator misconfig), `git ls-files` exits non-zero with no output.
+# The loop yields nothing and the slug ends up with an empty directory
+# rather than re-exposing the raw root via fallback.
+echo "  scenario 7: non-git source produces empty slug (no fallback to raw root)..."
+mkdir -p "$TMPDIR/not-a-repo"
+echo "would-leak" > "$TMPDIR/not-a-repo/leak.txt"
+SOURCE_PATHS["acme/notgit"]="$TMPDIR/not-a-repo"
+materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/notgit"
+if [ -e "$WORKDIR/.siblings/acme/notgit/leak.txt" ]; then
+    echo "FAIL: non-git source leaked content into materialized tree"
+    ls -la "$WORKDIR/.siblings/acme/notgit/"
+    exit 1
+fi
+# The slug dir itself should exist (mkdir -p ran before the loop) but
+# be empty. That's the safe-by-default state.
+if [ ! -d "$WORKDIR/.siblings/acme/notgit" ]; then
+    echo "FAIL: non-git slug dir should exist (empty) for downstream stability"
+    exit 1
+fi
+
+echo "  ok: sibling symlinks whitelist-gated, redirect-safe, idempotent, tracked-only"
