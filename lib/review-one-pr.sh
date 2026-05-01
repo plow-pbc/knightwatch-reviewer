@@ -582,11 +582,10 @@ DEAD_CODE_STATIC=""
 # (per-repo, committed to the base branch), fall back to DEAD_CODE_CMDS[$REPO]
 # from repos.conf (legacy operator-managed).
 DEAD_CODE_CMD=""
-if DEAD_CODE_CMD=$(read_knightwatch_file "$REPO_DIR" "$DEFAULT_BRANCH" "dead-code.sh") && \
-   [ -n "$DEAD_CODE_CMD" ]; then
-    :  # got it from .knightwatch/
+if DEAD_CODE_CMD=$(read_knightwatch_file "$REPO_DIR" "$DEFAULT_BRANCH" "dead-code.sh"); then
+    :  # PRESENT: use as-is (empty content = "no dead-code check for this repo")
 else
-    DEAD_CODE_CMD="${DEAD_CODE_CMDS[$REPO]:-}"
+    DEAD_CODE_CMD="${DEAD_CODE_CMDS[$REPO]:-}"  # ABSENT: legacy fallback
 fi
 if [ -n "$DEAD_CODE_CMD" ] && [ -n "$KID_INPUT_DIFF" ]; then
     TOUCHED_FILES_ARR=()
@@ -664,11 +663,10 @@ export REVIEWER_LIB_DIR="$_LIB_DIR"
 # (per-repo, committed to the base branch), fall back to STRICT_TYPING_CMDS[$REPO]
 # from repos.conf (legacy operator-managed).
 STRICT_TYPING_CMD=""
-if STRICT_TYPING_CMD=$(read_knightwatch_file "$REPO_DIR" "$DEFAULT_BRANCH" "strict-typing.sh") && \
-   [ -n "$STRICT_TYPING_CMD" ]; then
-    :  # got it from .knightwatch/
+if STRICT_TYPING_CMD=$(read_knightwatch_file "$REPO_DIR" "$DEFAULT_BRANCH" "strict-typing.sh"); then
+    :  # PRESENT: use as-is (empty content = "no strict-typing check for this repo")
 else
-    STRICT_TYPING_CMD="${STRICT_TYPING_CMDS[$REPO]:-}"
+    STRICT_TYPING_CMD="${STRICT_TYPING_CMDS[$REPO]:-}"  # ABSENT: legacy fallback
 fi
 if [ -n "$STRICT_TYPING_CMD" ]; then
     STRICT_STDERR=$(mktemp)
@@ -751,10 +749,10 @@ fi
 # (legacy operator-managed). Once every tracked repo has its .knightwatch/
 # committed, the fallback can be removed.
 PRODUCT_CONTEXT=""
-if PRODUCT_CONTEXT=$(read_knightwatch_file "$REPO_DIR" "$DEFAULT_BRANCH" "product-context.md") && \
-   [ -n "$PRODUCT_CONTEXT" ]; then
-    :  # got it from .knightwatch/
+if PRODUCT_CONTEXT=$(read_knightwatch_file "$REPO_DIR" "$DEFAULT_BRANCH" "product-context.md"); then
+    :  # PRESENT: use as-is (empty content = "explicitly no product context for this repo")
 else
+    # ABSENT: legacy fallback
     CONTEXT_FILE="$HOME/.pr-reviewer/contexts/$(echo "$REPO" | tr '/' '_').md"
     if [ -f "$CONTEXT_FILE" ]; then
         PRODUCT_CONTEXT=$(cat "$CONTEXT_FILE")

@@ -131,4 +131,17 @@ OUT=$(stage_search_roots "acme/self" "$SELF_REPO" "main")
 assert_contains "scenario 5: foo included" "acme/foo included .siblings/acme/foo" "$OUT"
 assert_not_contains "scenario 5: bar not included" "acme/bar" "$OUT"
 
-echo "  PASS (5 scenarios: knightwatch-allowlist, fallback, missing-on-disk, empty-allowlist, comments)"
+# --- scenario 6: declared sibling without SOURCE_PATHS entry ----------
+# Bot Finding 1 PR #29: a declared sibling that the operator hasn't
+# wired into SOURCE_PATHS used to be silently dropped (continue), so
+# the user couldn't tell the worker had ignored their declaration.
+# Now classifies as `missing` so it surfaces in coverage.
+echo "  scenario 6: declared sibling without SOURCE_PATHS entry → missing..."
+SELF_REPO=$(make_self_repo yes "acme/foo
+acme/never-configured")
+OUT=$(stage_search_roots "acme/self" "$SELF_REPO" "main")
+assert_contains "scenario 6: header partial" "# coverage: partial" "$OUT"
+assert_contains "scenario 6: foo included" "acme/foo included .siblings/acme/foo" "$OUT"
+assert_contains "scenario 6: never-configured missing" "acme/never-configured missing" "$OUT"
+
+echo "  PASS (6 scenarios: knightwatch-allowlist, fallback, missing-on-disk, empty-allowlist, comments, declared-but-unconfigured)"

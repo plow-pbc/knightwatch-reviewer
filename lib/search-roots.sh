@@ -70,10 +70,13 @@ stage_search_roots() {
     for sibling_repo in "${siblings[@]}"; do
         [ "$sibling_repo" = "$repo" ] && continue
         sibling_path="${SOURCE_PATHS[$sibling_repo]:-}"
-        # No SOURCE_PATHS entry = sibling not configured by operator at all
-        # (not a coverage gap, just unconfigured). Skip silently.
-        [ -z "$sibling_path" ] && continue
-        if [ ! -d "$sibling_path" ]; then
+        # Two ways a declared sibling can be unavailable: (a) operator
+        # has no SOURCE_PATHS entry for the slug — they haven't told us
+        # where to find it on this host; (b) entry exists but the
+        # checkout directory is absent on disk. Both are operator-config
+        # gaps (NOT a security boundary) and both classify as `missing`
+        # so the user sees them in coverage rather than silent drops.
+        if [ -z "$sibling_path" ] || [ ! -d "$sibling_path" ]; then
             body+="$sibling_repo missing"$'\n'
             missing=$((missing + 1))
             continue

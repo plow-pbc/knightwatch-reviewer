@@ -96,4 +96,28 @@ if ! printf '%s' "$got" | grep -q '^# Product context$'; then
     exit 1
 fi
 
-echo "  PASS (3 scenarios: existing, missing, base-branch-only trust)"
+# --- scenario 4: PRESENT but empty → exit 0 + empty content ---------
+# Load-bearing: a committed empty file means "no value for this concern
+# in this repo" (e.g., empty .knightwatch/dead-code.sh = "no dead-code
+# check, please"). The PRESENT exit code MUST distinguish this from
+# ABSENT — callers that collapse the two states would re-enable the
+# legacy fallback for an explicitly-disabled concern.
+echo "  scenario 4: present but empty → exit 0 + empty content..."
+git -C "$SOURCE" checkout -q main
+echo > "$SOURCE/.knightwatch/empty-file.sh"
+git -C "$SOURCE" add .knightwatch/empty-file.sh
+git -C "$SOURCE" commit -qm "main: add empty .knightwatch/empty-file.sh"
+git -C "$WORK" fetch -q origin main
+git -C "$WORK" checkout -q -B main origin/main
+got=$(read_knightwatch_file "$WORK" "main" "empty-file.sh")
+exit_code=$?
+if [ "$exit_code" -ne 0 ]; then
+    echo "FAIL: expected exit 0 for present-but-empty file, got $exit_code"
+    exit 1
+fi
+if [ -n "$got" ]; then
+    echo "FAIL: expected empty stdout for present-but-empty file, got: $got"
+    exit 1
+fi
+
+echo "  PASS (4 scenarios: existing, missing, base-branch-only trust, present-but-empty)"
