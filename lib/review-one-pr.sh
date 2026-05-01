@@ -389,12 +389,35 @@ fi
 # both KID_INPUT_DIFF (the diff specialists review) by default, and
 # FULL_PR_DIFF (the aggregator's "verify prior findings against
 # current state" reference) always.
-FULL_PR_DIFF=$(gh pr diff "$PR_NUM" --repo "$REPO" 2>/dev/null)
-if [ -z "$FULL_PR_DIFF" ]; then
-    log "$PR_ID: gh pr diff returned empty (auth/network) — aborting before specialists run"
-    rm -rf "$REPO_DIR"
-    exit 1
-fi
+#
+# Capture stderr separately and classify the failure mode. GitHub
+# caps `gh pr diff` at 300 files (HTTP 406 with "exceeded max files");
+# the prior code swallowed stderr via `2>/dev/null` and reported every
+# empty-stdout case as "auth/network", which lost reviewable
+# 300-650-file PRs entirely. On the cap, fall back to a local
+# `git diff origin/<base>...HEAD` (same three-dot semantics, no cap).
+GH_DIFF_STDERR=$(mktemp)
+FULL_PR_DIFF=$(gh pr diff "$PR_NUM" --repo "$REPO" 2>"$GH_DIFF_STDERR")
+GH_DIFF_ERR=$(cat "$GH_DIFF_STDERR")
+rm -f "$GH_DIFF_STDERR"
+case "$(classify_gh_pr_diff_failure "$FULL_PR_DIFF" "$GH_DIFF_ERR")" in
+    ok) ;;
+    cap-exceeded)
+        log "$PR_ID: gh pr diff hit GitHub's 300-file cap — falling back to local git diff origin/${DEFAULT_BRANCH}...HEAD"
+        FULL_PR_DIFF=$(git -C "$REPO_DIR" diff "origin/$DEFAULT_BRANCH"...HEAD)
+        if [ -z "$FULL_PR_DIFF" ]; then
+            log "$PR_ID: local git diff fallback also empty (origin/${DEFAULT_BRANCH} missing in workdir?) — aborting"
+            rm -rf "$REPO_DIR"
+            exit 1
+        fi
+        log "$PR_ID: local fallback diff size = ${#FULL_PR_DIFF} bytes"
+        ;;
+    error)
+        log "$PR_ID: gh pr diff failed — aborting before specialists run. stderr: ${GH_DIFF_ERR:-no stderr}"
+        rm -rf "$REPO_DIR"
+        exit 1
+        ;;
+esac
 KID_INPUT_DIFF="$FULL_PR_DIFF"
 
 KNOWN_SHA=$(state_get "$PR_ID" "sha")
@@ -580,6 +603,47 @@ elif [ -n "$KID_INPUT_DIFF" ]; then
     log "$PR_ID: kid index not yet built at $KID_PROJECT_PATH — skipping prior-art lookup"
 fi
 
+# ---- touched-files derivation (shared by dead-code + strict-typing) ----
+# Two pre-checks need a touched-files list, but with different scopes:
+#
+#   - TOUCHED_FILES_ARR  : POST-IMAGE only (files that exist in HEAD).
+#                          Bash array, positional args for the per-repo
+#                          dead-code command (`bash -c "$cmd" -- "$@"`,
+#                          referenced inside as "$@"). PR-controlled
+#                          filenames never flow through `eval`; the
+#                          array form quotes whitespace and shell
+#                          metacharacters correctly. Excludes deleted
+#                          files because dead-code analysis on a
+#                          missing path would error.
+#
+#   - TOUCHED_FILES_FILE : BOTH SIDES of every file change (pre AND
+#                          post image), captured from `diff --git a/X
+#                          b/Y` headers via extract_touched_files_both_sides.
+#                          Newline-separated, repo-root-relative.
+#                          Exported for the strict-typing helpers'
+#                          scope gate. A PR that DELETES `foo.py` or
+#                          RENAMES `foo.ts` → `foo.js` touched typed
+#                          code, but post-image-only would miss both
+#                          (the deletion's post-image is `/dev/null`;
+#                          a similarity-100% pure rename has no +++ b/
+#                          line at all) — silently suppressing the
+#                          strict-typing note (Narrow-Fix flagged in
+#                          PR #31 round 1).
+#
+# Empty diff → empty array + empty file → every consumer no-ops correctly.
+TOUCHED_FILES_ARR=()
+if [ -n "$KID_INPUT_DIFF" ]; then
+    while IFS= read -r f; do
+        [ -n "$f" ] && TOUCHED_FILES_ARR+=("$f")
+    done < <(printf '%s' "$KID_INPUT_DIFF" | grep -E '^\+\+\+ b/' | sed 's|^+++ b/||')
+fi
+TOUCHED_FILES_FILE=$(mktemp)
+if [ -n "$KID_INPUT_DIFF" ]; then
+    printf '%s' "$KID_INPUT_DIFF" | extract_touched_files_both_sides > "$TOUCHED_FILES_FILE"
+fi
+export TOUCHED_FILES_FILE
+log "$PR_ID: touched-files post-image=${#TOUCHED_FILES_ARR[@]} both-sides=$(wc -l < "$TOUCHED_FILES_FILE")"
+
 # ---- dead-code static-tool pre-pass ----
 # Mirrors the kid block above: per-repo command, graceful degrade on
 # failure, output to a scratch file consumed by ONE downstream step
@@ -587,12 +651,6 @@ fi
 # file scope via the tracked-repos.sh loader; the pre-declared empty
 # assoc array makes the lookup safe under `set -u` even in sandboxes
 # without repos.conf.
-#
-# Filenames are PR-controlled — never let them flow through `eval`.
-# TOUCHED_FILES_ARR is a bash array; `bash -c "$cmd" -- "$@"` invokes
-# the per-repo command with files as positional args, which the
-# command references as "$@" (see repos.conf). Filenames containing
-# whitespace or shell metacharacters are quoted correctly.
 #
 # Exit-code policy: keep stdout regardless of exit. Some tools (vulture)
 # exit 1 *because* findings exist. Treat empty-stdout-AND-non-zero-exit
@@ -608,63 +666,59 @@ case $? in
     1) DEAD_CODE_CMD="${DEAD_CODE_CMDS[$REPO]:-}" ;;  # ABSENT: legacy fallback
     *) log "$PR_ID: knightwatch-config error reading dead-code.sh — aborting"; rm -rf "$REPO_DIR"; exit 1 ;;
 esac
-if [ -n "$DEAD_CODE_CMD" ] && [ -n "$KID_INPUT_DIFF" ]; then
-    TOUCHED_FILES_ARR=()
-    while IFS= read -r f; do
-        [ -n "$f" ] && TOUCHED_FILES_ARR+=("$f")
-    done < <(printf '%s' "$KID_INPUT_DIFF" | grep -E '^\+\+\+ b/' | sed 's|^+++ b/||')
-    if [ "${#TOUCHED_FILES_ARR[@]}" -gt 0 ]; then
-        DC_STATIC_STDERR=$(mktemp)
-        DEAD_CODE_STATIC=$(cd "$REPO_DIR" && bash -c "$DEAD_CODE_CMD" -- "${TOUCHED_FILES_ARR[@]}" 2>"$DC_STATIC_STDERR")
-        DC_STATIC_EXIT=$?
-        if [ -n "$DEAD_CODE_STATIC" ]; then
-            DC_LINE_COUNT=$(printf '%s\n' "$DEAD_CODE_STATIC" | wc -l)
-            log "$PR_ID: dead-code static pre-pass produced $DC_LINE_COUNT candidate line(s) (exit $DC_STATIC_EXIT)"
-        elif [ "$DC_STATIC_EXIT" -ne 0 ]; then
-            DC_ERR_SUMMARY=$(tail -n 3 "$DC_STATIC_STDERR" | tr '\n' ' ')
-            log "$PR_ID: dead-code static pre-pass exit $DC_STATIC_EXIT, no output — degrading. stderr tail: $DC_ERR_SUMMARY"
-        fi
-        rm -f "$DC_STATIC_STDERR"
+# TOUCHED_FILES_ARR is hoisted earlier (post-image side, shared with the
+# strict-typing scope gate) so no inline rebuild here. Empty array → skip.
+if [ -n "$DEAD_CODE_CMD" ] && [ "${#TOUCHED_FILES_ARR[@]}" -gt 0 ]; then
+    DC_STATIC_STDERR=$(mktemp)
+    DEAD_CODE_STATIC=$(cd "$REPO_DIR" && bash -c "$DEAD_CODE_CMD" -- "${TOUCHED_FILES_ARR[@]}" 2>"$DC_STATIC_STDERR")
+    DC_STATIC_EXIT=$?
+    if [ -n "$DEAD_CODE_STATIC" ]; then
+        DC_LINE_COUNT=$(printf '%s\n' "$DEAD_CODE_STATIC" | wc -l)
+        log "$PR_ID: dead-code static pre-pass produced $DC_LINE_COUNT candidate line(s) (exit $DC_STATIC_EXIT)"
+    elif [ "$DC_STATIC_EXIT" -ne 0 ]; then
+        DC_ERR_SUMMARY=$(tail -n 3 "$DC_STATIC_STDERR" | tr '\n' ' ')
+        log "$PR_ID: dead-code static pre-pass exit $DC_STATIC_EXIT, no output — degrading. stderr tail: $DC_ERR_SUMMARY"
     fi
+    rm -f "$DC_STATIC_STDERR"
 fi
 
-# ---- deterministic pre-checks (auto-nits) ----
-# Pre-checks that produce findings the LLM never sees. Each check's
-# stdout (when non-empty AND the helper exited 1) becomes one [nit] in
-# a "Pre-merge auto-checks" section appended to the posted comment — so
-# they cannot be hidden by severity-prioritization or skipped by
-# aggregator judgment.
+# ---- deterministic pre-checks ----
+# Pre-checks that produce findings the LLM never sees. Each check sets a
+# variable here; the unified REVIEW_NOTES assembly block near the end of
+# this file (search "REVIEW_NOTES=()") joins them — along with scope,
+# stale-head, and skipped-checks disclosures — into one blockquote at the
+# top of the posted comment. Single registry, one render target, no
+# severity-prioritization seam to hide them.
 #
 # Helper contract is TRI-STATE — load-bearing per PR #27 round-2 review.
 # Collapsing checker errors into "gap" silently publishes wrong review
 # text when the helper's inputs are broken (bad PROJECT_DIR, malformed
 # config file, refused symlink), so a new check MUST distinguish:
 #
-#     exit 0 — check passed (no nit).            stdout: empty.
-#     exit 1 — real gap.                         stdout: nit text.
+#     exit 0 — check passed.                     stdout: empty.
+#     exit 1 — real gap.                         stdout: gap detail (logged).
 #     exit 2 — checker could not determine.      stderr: error details.
 #
-# Adding a new deterministic check is one block here. Capture stderr +
-# exit code separately and switch on the rc — never `2>/dev/null` the
-# stderr away or treat any non-empty stdout as a nit:
+# Adding a new deterministic check is two blocks: (1) run the helper here,
+# capture stderr + rc separately, and on rc=1 set a NEW_CHECK_NOTE var to
+# the short fragment that should appear in the header; (2) push that var
+# into REVIEW_NOTES at the assembly block. Never `2>/dev/null` the stderr
+# away or treat any non-empty stdout as a gap:
 #
 #     CHECK_STDERR=$(mktemp)
 #     CHECK_OUT=$(cd "$REPO_DIR" && bash -c "$NEW_CHECK_CMD" 2>"$CHECK_STDERR")
 #     CHECK_RC=$?
 #     case $CHECK_RC in
-#         0) ;;                                              # pass: no nit
-#         1) AUTO_NITS+=("**Check name.** … $CHECK_OUT") ;;  # gap: post nit
+#         0) ;;                                              # pass
+#         1) log "$PR_ID: <check> gap — $CHECK_OUT"
+#            NEW_CHECK_NOTE="❌ <short fragment>" ;;          # gap
 #         *) log "$PR_ID: <check> CHECKER ERROR (rc=$CHECK_RC) — $(cat "$CHECK_STDERR")" ;;
 #     esac
 #     rm -f "$CHECK_STDERR"
 #
-# See the strict-typing block below for the canonical implementation.
-#
-# OPERATOR_NAME is overridable via config.env so a forked install can
-# rename "Sam" without touching the strings below.
-OPERATOR_NAME="${OPERATOR_NAME:-Sam}"
-OPERATOR_HANDLE="${OPERATOR_HANDLE:-$BOT_USER}"
-AUTO_NITS=()
+# Personality (sass, opinion, voice) does NOT belong here — every PR sees
+# the byte-identical string and it gets repetitive fast. Keep fragments
+# bare-fact; voice lives in the LLM body where each PR is novel.
 
 # REVIEWER_LIB_DIR is referenced by the per-repo cmds in repos.conf
 # (which call $REVIEWER_LIB_DIR/checks/<lang>-strict-typing.sh). Export
@@ -673,13 +727,14 @@ export REVIEWER_LIB_DIR="$_LIB_DIR"
 
 # Strict-typing pre-check. Per-repo cmd from repos.conf delegates to
 # lib/checks/<lang>-strict-typing.sh. Helper contract is tri-state:
-#   exit 0 — strict mode enforced (no nit).
-#   exit 1 — gap (stdout has gap text → posted as a [nit]).
-#   exit 2 — checker error (stderr has details → logged loud, no nit).
+#   exit 0 — strict mode enforced.
+#   exit 1 — gap (stdout has verbose detail → logged).
+#   exit 2 — checker error (stderr has details → logged loud, no note).
 # The tri-state is load-bearing: collapsing checker errors into "gap"
 # silently publishes wrong review text on broken inputs (bad PROJECT_DIR,
 # malformed config file, refused symlink). Fail-loud here keeps the
 # deterministic section honest.
+STRICT_TYPING_NOTE=""
 # Strict-typing pre-check: try .knightwatch/strict-typing.sh first
 # (per-repo, committed to the base branch), fall back to STRICT_TYPING_CMDS[$REPO]
 # from repos.conf (legacy operator-managed).
@@ -698,11 +753,7 @@ if [ -n "$STRICT_TYPING_CMD" ]; then
         0) ;;
         1)
             log "$PR_ID: strict-typing gap detected — $STRICT_GAP"
-            # Sassy by design: ${OPERATOR_NAME} carries the responsibility-
-            # deflection so an author who disagrees has someone to argue
-            # with, and the name is a config var so a forked install can
-            # rename without touching this string.
-            AUTO_NITS+=("**Strict typing.** ${OPERATOR_NAME} stubbornly wants strict mode on every typed-language project. ${STRICT_GAP}. (I guess I agree, but blame ${OPERATOR_NAME}.)")
+            STRICT_TYPING_NOTE="❌ Strict typing not enforced"
             ;;
         *)
             STRICT_ERR=$(cat "$STRICT_STDERR")
@@ -712,7 +763,14 @@ if [ -n "$STRICT_TYPING_CMD" ]; then
     rm -f "$STRICT_STDERR"
 fi
 
-log "$PR_ID: diff is ${#KID_INPUT_DIFF} bytes — auto-nits: ${#AUTO_NITS[@]}"
+# TOUCHED_FILES_FILE was only needed by the deterministic pre-checks
+# (dead-code, strict-typing). Clean up before the LLM specialists run —
+# they read the diff directly from the staged scratch files, not the
+# touched-files list.
+rm -f "$TOUCHED_FILES_FILE"
+unset TOUCHED_FILES_FILE
+
+log "$PR_ID: diff is ${#KID_INPUT_DIFF} bytes"
 
 # ---- search-roots for cross-repo grep ----
 # Single worker-owned coverage-state seam: every whitelisted sibling
@@ -969,14 +1027,16 @@ critic_fallback "$CRITIC_EXIT" "$CRITIC_OUT"
 ln -sfn "$CRITIC_OUT" "$REPO_DIR/.codex-scratch/critic.md"
 
 log "$PR_ID: aggregator (with critic input)..."
-# Substitute placeholders directly — the aggregator is NOT a specialist
-# and must not get the specialist common-header (which would tell it
-# "you are one specialist" and demand the Surveyed/Finding-N output
-# shape, conflicting with the aggregator's own contract). Same pattern
-# as intent above.
-AGG_PROMPT=$(substitute_placeholders \
-    "$HOME/.pr-reviewer/prompts/aggregator.md" \
-    "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR")
+# build_aggregator_prompt stitches in prompts/voice.md (operator-tunable
+# voice + tone) at aggregator.md's INSERT_VOICE_HERE marker, then
+# substitutes placeholders. The aggregator is NOT a specialist — must
+# not inherit the specialist common-header which would demand the
+# Surveyed/Finding-N output shape — so it gets its own build path.
+if ! AGG_PROMPT=$(build_aggregator_prompt "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR"); then
+    log "$PR_ID: build_aggregator_prompt failed — aborting (incomplete install or stitch-contract regression)"
+    rm -rf "$REPO_DIR"
+    exit 1
+fi
 "$_LIB_DIR/run-specialist.sh" "aggregator" "$REPO_DIR" "$AGG_PROMPT" "$RUN_DIR/agents/aggregator"
 AGG_EXIT=$?
 AGG_OUT="$RUN_DIR/agents/aggregator/output.md"
@@ -1002,24 +1062,10 @@ if [ -z "$COMMENT_BODY" ]; then
     rm -rf "$REPO_DIR"
     exit 1
 fi
-# Render deterministic auto-nits as a "Pre-merge auto-checks" section
-# below the LLM body. Each AUTO_NITS entry is one [nit]; the section is
-# omitted entirely when the array is empty so a clean PR doesn't show
-# the heading on its own. Goes BELOW the LLM-aggregated review so the
-# specialist findings (which are the meat) come first; the auto-checks
-# are nits the reader scans last.
-AUTO_NITS_SECTION=""
-if [ "${#AUTO_NITS[@]}" -gt 0 ]; then
-    AUTO_NITS_SECTION=$'\n\n**Pre-merge auto-checks** — deterministic, never hidden by LLM judgment.\n\n'
-    for nit in "${AUTO_NITS[@]}"; do
-        AUTO_NITS_SECTION+="- [nit] ${nit}"$'\n'
-    done
-fi
-
 # Leading HTML comment is the orchestrator's discriminator for "this is
 # one of our auto-posts" — see the corresponding jq filter in review.sh.
 COMMENT_BODY="$BOT_AUTO_POST_MARKER
-$COMMENT_BODY${AUTO_NITS_SECTION}
+$COMMENT_BODY
 
 ---
 
@@ -1029,35 +1075,40 @@ _How to use: auto-reviews every new PR and re-reviews after an hour of inactivit
 
 _Generated by [sam's ai review bot](https://github.com/srosro/knightwatch-reviewer)._"
 
-# Top-of-comment disclosure header — one concise blockquote combining
-# (1) the review's scope (first / whole-PR re-review / incremental /
-# silent-fallback) so the reader knows what was actually evaluated, and
-# (2) a stale-head suffix when the PR head moved during this run (e.g.
-# mid-\`just test\` push) and the review is for an older SHA than what's
-# currently on the PR. Best-effort fetch of CURRENT_HEAD: empty on
-# gh-failure, in which case the stale check no-ops (identical to matched).
+# Best-effort fetch of CURRENT_HEAD: empty on gh-failure, in which case
+# the stale-head check no-ops (identical to matched).
 CURRENT_HEAD=$(gh pr view "$PR_NUM" --repo "$REPO" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
 if [ -n "$CURRENT_HEAD" ] && [ "$CURRENT_HEAD" != "$PR_SHA" ]; then
-    log "$PR_ID: head moved during review (reviewed=${PR_SHA:0:7}, now=${CURRENT_HEAD:0:7}) — appending stale-head suffix"
+    log "$PR_ID: head moved during review (reviewed=${PR_SHA:0:7}, now=${CURRENT_HEAD:0:7})"
 fi
 log "$PR_ID: review scope = $REVIEW_SCOPE"
-# TODO(future): rename SKIPPED_CHECKS -> REVIEW_NOTES — the array
-# carries warnings (e.g. KID/Tests skips) that get formatted at the
-# top of the posted review. The signature of prepend_review_header
-# could also absorb review_scope and stale_head as additional notes
-# in the same array. Mechanical refactor; lands cleaner as its own
-# focused PR.
-# Compose the skipped-checks list for the disclosure header. One line
-# per pre-review check the worker tracks; add a new capability (e.g. a
-# future dead-code analyzer) by appending one line — `[ "$X_RAN" =
-# "false" ] && SKIPPED_CHECKS+=("🧹 X")` — no helper change needed.
-SKIPPED_CHECKS=()
-[ "$TESTS_RAN" = "false" ] && SKIPPED_CHECKS+=("🧪 Tests")
-[ "$KID_RAN" = "false" ] && SKIPPED_CHECKS+=("🔍 Prior-art (KID)")
-SKIPPED_CHECKS_CSV=$(IFS=','; printf '%s' "${SKIPPED_CHECKS[*]}")
-log "$PR_ID: skipped checks = ${SKIPPED_CHECKS_CSV:-none}"
-if ! COMMENT_BODY=$(prepend_review_header "$COMMENT_BODY" "$REVIEW_SCOPE" "$PR_SHA" "$CURRENT_HEAD" "$SKIPPED_CHECKS_CSV"); then
-    log "$PR_ID: prepend_review_header failed for scope=$REVIEW_SCOPE — internal invariant violated, aborting (orchestrator will retry)"
+
+# ---- REVIEW_NOTES — single deterministic registry for the top-of-comment
+# blockquote. Every signal that should appear above the LLM body lives
+# here: review scope, stale-head warning, skipped pre-checks (tests, KID),
+# and deterministic gap findings (strict typing, future checks). One
+# fragment per entry, no trailing punctuation — the helper joins with
+# ". " and emits one blockquote line. Order = render order; push in
+# severity sequence (scope → warnings → skips → gaps).
+#
+# Adding a new entry is one line. See the deterministic-pre-checks block
+# above for the runner pattern that produces gap-fragment vars.
+REVIEW_NOTES=()
+if ! SCOPE_NOTE=$(format_review_scope "$REVIEW_SCOPE"); then
+    log "$PR_ID: format_review_scope failed for '$REVIEW_SCOPE' — internal invariant violated, aborting"
+    rm -rf "$REPO_DIR"
+    exit 1
+fi
+REVIEW_NOTES+=("$SCOPE_NOTE")
+[ -n "$CURRENT_HEAD" ] && [ "$CURRENT_HEAD" != "$PR_SHA" ] && \
+    REVIEW_NOTES+=("⚠️ Stale: head moved from \`${PR_SHA:0:7}\` to \`${CURRENT_HEAD:0:7}\` mid-run — see commands below to re-run")
+[ "$TESTS_RAN" = "false" ] && REVIEW_NOTES+=("🧪 Tests not run")
+[ "$KID_RAN"   = "false" ] && REVIEW_NOTES+=("🔍 Prior-art (KID) not run")
+[ -n "$STRICT_TYPING_NOTE" ] && REVIEW_NOTES+=("$STRICT_TYPING_NOTE")
+log "$PR_ID: review-notes = ${#REVIEW_NOTES[@]} (${REVIEW_NOTES[*]:-none})"
+
+if ! COMMENT_BODY=$(prepend_review_header "$COMMENT_BODY" "${REVIEW_NOTES[@]}"); then
+    log "$PR_ID: prepend_review_header failed (notes=${#REVIEW_NOTES[@]}) — internal invariant violated, aborting (orchestrator will retry)"
     rm -rf "$REPO_DIR"
     exit 1
 fi
