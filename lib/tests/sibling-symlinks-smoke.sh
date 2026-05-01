@@ -420,59 +420,64 @@ if [ "$rc" -eq 0 ]; then
     exit 1
 fi
 
-# --- scenario 12: snap_sha pinning regression fence ------------------
-# The materializer must use a pinned SHA (resolved once via
-# `git rev-parse HEAD`) for both `git ls-tree` and `git show`.
-# Reverting either to literal "HEAD" reopens the TOCTOU race that
-# round 5 caught: `plow-kid-refresh.sh` advancing the sibling between
-# the two git calls produces a mixed snapshot. The earlier scenarios
-# all happen to pass even if you rewrite both calls back to "HEAD"
-# (their fixtures don't move HEAD mid-materialize), so this fence
-# exists specifically to catch the regression directly. PR #37
-# review 6 finding 3.
-#
-# Approach: shim `git` via PATH and log every invocation. Run the
-# helper. Assert that ls-tree / show are called with a 40-char SHA,
-# not the string "HEAD", and that the SHA matches across the calls.
-echo "  scenario 12: snap_sha pinning regression fence..."
-SHIM_DIR=$(mktemp -d -t kw-git-shim-XXXXXX)
-GIT_LOG=$(mktemp -t kw-git-log-XXXXXX)
+# --- scenario 12: snap_sha pinning behavioral fence ------------------
+# Directly exercises the race the SHA-pin fix prevents:
+# `plow-kid-refresh.sh` advancing the sibling between the helper's
+# git calls. The shim advances HEAD inside the first `ls-tree` call,
+# so any code path that re-resolves HEAD (literal `HEAD:` or a
+# second `rev-parse HEAD`) would see the new content. With proper
+# pinning, ls-tree and show both use the SHA captured before the
+# advance — materialized content is `v1-content`, never `v2-content`.
+# PR #37 review 7 finding 3 (the prior log-only fence missed the
+# "two separate rev-parses" regression class).
+echo "  scenario 12: snap_sha pinning behavioral fence (HEAD advance during materialize)..."
+RACE_SHIM=$(mktemp -d -t kw-race-shim-XXXXXX)
+RACE_MARKER=$(mktemp -t kw-race-marker-XXXXXX)
+rm -f "$RACE_MARKER"  # flag-by-existence; helper creates it once
 REAL_GIT=$(command -v git)
-cat > "$SHIM_DIR/git" <<EOF
+init_git_repo "$TMPDIR/racerepo"
+echo "v1-content" > "$TMPDIR/racerepo/file.py"
+git -C "$TMPDIR/racerepo" add file.py
+git -C "$TMPDIR/racerepo" commit -qm "v1"
+# Shim: pass through, but advance the source repo's HEAD before
+# the first `ls-tree` runs. The advance both modifies file.py AND
+# adds new_file.py — needed to fence both regression directions:
+#   - show using literal HEAD: caught by file.py content == 'v2-content'
+#   - ls-tree using literal HEAD: caught by helper returning non-zero
+#     because `git show $snap_sha:new_file.py` fails (new_file.py
+#     doesn't exist at the pinned SHA)
+# One-shot via the marker file so subsequent ls-tree calls don't
+# re-fire and corrupt the test repo state.
+cat > "$RACE_SHIM/git" <<EOF
 #!/bin/bash
-echo "\$@" >> "$GIT_LOG"
+if [[ "\$*" == *"ls-tree -r -z"* ]] && [ ! -e "$RACE_MARKER" ]; then
+    touch "$RACE_MARKER"
+    echo "v2-content" > "$TMPDIR/racerepo/file.py"
+    echo "v2-new-file" > "$TMPDIR/racerepo/new_file.py"
+    "$REAL_GIT" -C "$TMPDIR/racerepo" add file.py new_file.py >/dev/null 2>&1
+    "$REAL_GIT" -C "$TMPDIR/racerepo" commit -qm "v2 advance" >/dev/null 2>&1
+fi
 exec "$REAL_GIT" "\$@"
 EOF
-chmod +x "$SHIM_DIR/git"
-init_git_repo "$TMPDIR/pinrepo"
-echo "v1" > "$TMPDIR/pinrepo/file.py"
-git -C "$TMPDIR/pinrepo" add file.py
-git -C "$TMPDIR/pinrepo" commit -qm "v1"
-SOURCE_PATHS["acme/pin"]="$TMPDIR/pinrepo"
-PATH="$SHIM_DIR:$PATH" materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/pin" >/dev/null 2>&1
-# Extract the SHA argument from the ls-tree call (positional arg
-# after `-r -z`) and the show call (the part before `:`). Both must
-# be 40-char SHAs (not the literal string "HEAD"), and they must
-# match — that's the snapshot-coherence invariant.
-# `|| true` so a no-match grep doesn't trip set -e + pipefail and
-# silently abort before we can emit a useful FAIL message.
-ls_tree_sha=$(grep -oE 'ls-tree -r -z [0-9a-f]{40}' "$GIT_LOG" | awk '{print $NF}' | head -1 || true)
-show_sha=$(grep -oE 'show [0-9a-f]{40}:[^ ]+' "$GIT_LOG" | awk '{print $NF}' | head -1 | cut -d: -f1 || true)
-if [ -z "$ls_tree_sha" ] || [ "$ls_tree_sha" = "HEAD" ]; then
-    echo "FAIL: ls-tree was called with literal HEAD instead of a pinned SHA (race regression)"
-    cat "$GIT_LOG"
+chmod +x "$RACE_SHIM/git"
+SOURCE_PATHS["acme/race"]="$TMPDIR/racerepo"
+rc=0
+PATH="$RACE_SHIM:$PATH" materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/race" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -ne 0 ]; then
+    echo "FAIL: helper returned $rc — ls-tree picked up post-advance paths (including new_file.py) and show couldn't find them at the pinned SHA"
     exit 1
 fi
-if [ -z "$show_sha" ] || [ "$show_sha" = "HEAD" ]; then
-    echo "FAIL: git show was called with literal HEAD: instead of a pinned SHA (race regression)"
-    cat "$GIT_LOG"
+got=$(cat "$WORKDIR/.siblings/acme/race/file.py" 2>/dev/null || true)
+if [ "$got" != "v1-content" ]; then
+    echo "FAIL: file.py content '$got' (want 'v1-content') — show used HEAD instead of pinned SHA, picked up post-advance bytes"
     exit 1
 fi
-if [ "$ls_tree_sha" != "$show_sha" ]; then
-    echo "FAIL: ls-tree and show used different SHAs ($ls_tree_sha vs $show_sha) — mixed snapshot"
+# Defense: new_file.py must NOT appear (it didn't exist at snap_sha)
+if [ -e "$WORKDIR/.siblings/acme/race/new_file.py" ]; then
+    echo "FAIL: new_file.py from post-advance commit leaked into materialized tree"
     exit 1
 fi
-rm -rf "$SHIM_DIR" "$GIT_LOG"
+rm -rf "$RACE_SHIM" "$RACE_MARKER"
 
 # --- scenario 13: unsafe tree path (../escape) → fail-loud -----------
 # Git tree paths *can* contain `..` (older git versions, custom
@@ -493,16 +498,18 @@ git -C "$TMPDIR/escaperepo" commit -qm "seed"
 PIN_SHA=$(git -C "$TMPDIR/escaperepo" rev-parse HEAD)
 NORMAL_BLOB=$(git -C "$TMPDIR/escaperepo" rev-parse HEAD:normal.py)
 # Shim: rev-parse + show pass through, but ls-tree returns one entry
-# with path `../../escape.txt`. The materializer's case statement
-# should reject the path BEFORE any mkdir / redirect. We use two `..`
-# segments because the materializer wipes .siblings/ at the start of
-# each call, so the sentinel must live OUTSIDE .siblings/ — one up
-# from $target/ would still be inside the wiped tree.
+# with path `../../../escape.txt`. The path needs THREE `..` to
+# actually escape `.siblings/` — `$target` is `<workdir>/.siblings/
+# acme/escape`, so two-up lands inside `.siblings/` (which the
+# materializer wipes at start, so any clobber would be invisible to
+# the sentinel-check). Three-up lands at `<workdir>/escape.txt`,
+# outside `.siblings/`, where the sentinel can survive the wipe and
+# prove the redirect was prevented. PR #37 review 7 finding 2.
 cat > "$ESCAPE_SHIM/git" <<EOF
 #!/bin/bash
 case "\$*" in
     *"ls-tree -r -z"*)
-        printf '100644 blob %s\t../../escape.txt\0' "$NORMAL_BLOB"
+        printf '100644 blob %s\t../../../escape.txt\0' "$NORMAL_BLOB"
         exit 0
         ;;
     *)
@@ -511,16 +518,17 @@ case "\$*" in
 esac
 EOF
 chmod +x "$ESCAPE_SHIM/git"
-# Sentinel two levels above $target — outside .siblings/ entirely,
-# so the start-of-call wipe doesn't touch it. If path traversal
-# isn't caught, the redirect would clobber it.
+# Sentinel at `<workdir>/escape.txt` — outside `.siblings/` entirely,
+# so the start-of-call wipe doesn't touch it. If path traversal isn't
+# caught, the redirect `> $target/../../../escape.txt` resolves to
+# `<workdir>/escape.txt` and clobbers it.
 SENTINEL_TARGET="$WORKDIR/escape.txt"
 echo "PRE_EXISTING_SENTINEL" > "$SENTINEL_TARGET"
 SOURCE_PATHS["acme/escape"]="$TMPDIR/escaperepo"
 rc=0
 PATH="$ESCAPE_SHIM:$PATH" materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/escape" 2>/dev/null || rc=$?
 if [ "$rc" -eq 0 ]; then
-    echo "FAIL: unsafe tree path '../../escape.txt' should have returned non-zero"
+    echo "FAIL: unsafe tree path '../../../escape.txt' should have returned non-zero"
     exit 1
 fi
 got=$(cat "$SENTINEL_TARGET" 2>/dev/null)

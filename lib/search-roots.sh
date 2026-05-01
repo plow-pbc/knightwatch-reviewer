@@ -94,10 +94,13 @@ stage_search_roots() {
         #       where to find it on this host
         #   (b) entry exists but the checkout directory is absent on disk
         #   (c) entry + dir exist but it isn't a git repo (corrupt clone,
-        #       raw download, operator misconfig) — `materialize_sibling_symlinks`
-        #       would yield an empty .siblings/<slug>/ since `git ls-files`
-        #       can't enumerate, so the coverage marker would say "full"
-        #       while specialists actually search empty content.
+        #       raw download, operator misconfig) — the materializer
+        #       requires a git repo to pin a HEAD snapshot, so without
+        #       this gate the coverage marker would say "full" while
+        #       specialists searched a tree the materializer couldn't
+        #       even enumerate. (Mechanism details belong in
+        #       lib/sibling-symlinks.sh; this comment just notes what
+        #       this gate is preventing.)
         # Cases (a)+(b) are operator-config gaps (NOT a security boundary).
         # Case (c) is what cncorp/plow#37 review 1 caught — the second
         # half of the BCR finding. Single-owner contract: if it can't
