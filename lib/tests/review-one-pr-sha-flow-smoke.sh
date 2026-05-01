@@ -337,7 +337,8 @@ fi
 
 # Log line should NOT contain a "missing after canonical fetch" abort
 # (the round-1 finding's failure mode for non-default-base PRs).
-if grep -qF "refs/remotes/origin/release-1.0 missing after canonical fetch" "$LOG2"; then
+# Also covers the post-update-ref variant of the same abort message.
+if grep -qE "refs/(remotes/origin|heads)/release-1.0 missing after canonical fetch" "$LOG2"; then
     echo "FAIL: scenario 2 — worker hit the BASE_REF_SHA-not-found abort path"
     cat "$LOG2"
     exit 1
@@ -373,4 +374,165 @@ if grep -q "release-1.0: base" "$COMMITS_MD"; then
     exit 1
 fi
 
-echo "  PASS (2 scenarios: orchestrator/worker SHA race + non-default-base canonical→workdir ref propagation; both diff and commits consumers fenced)"
+# ===== Scenario 3: align canonical refs/heads/$BASE_REF with refs/remotes =====
+# Reproduces the production bug from cncorp/plow#568 (post-PR #36 deploy).
+#
+# The bug: PR #36 captures BASE_REF_SHA from canonical's
+# `refs/remotes/origin/$BASE_REF` (advanced by the just-completed
+# `git fetch origin $BASE_REF`). For SHALLOW canonical clones (cncorp/plow
+# uses --depth=500), `git clone --shared` does NOT set up
+# `objects/info/alternates` in the workdir — git silently falls back to a
+# non-local clone path with `warning: source repository is shallow,
+# ignoring --local`. The workdir can only reach objects via refs propagated
+# from canonical's `refs/heads/*` → workdir's `refs/remotes/origin/*`.
+# Anything reachable only from canonical's `refs/remotes/origin/*` is NOT
+# in the workdir's object set. So `git diff $BASE_REF_SHA...$REVIEWED_SHA`
+# errors with "Invalid symmetric difference expression" but bash captures
+# the empty stdout and the bot reads "empty diff" → aborts. Every
+# cncorp/plow PR review aborted at the diff stage post-deploy.
+#
+# Fix: align canonical's `refs/heads/$BASE_REF` with `refs/remotes/origin/
+# $BASE_REF` via `update-ref` BEFORE the clone. Then the workdir's
+# `refs/remotes/origin/$BASE_REF` (mirrored from canonical's heads)
+# holds the fresh SHA — and its objects are now reachable in the workdir.
+#
+# Assertion strategy: a smoke fixture can't faithfully reproduce the
+# empty-diff abort (the worker's --depth=500 fetch deepens the test's
+# tiny canonical past its shallow boundary, undoing shallow-ness — which
+# doesn't happen in production where the real history is much deeper than
+# 500). What we CAN reliably assert is the invariant the fix establishes:
+# after the worker runs, canonical's refs/heads/$BASE_REF MUST equal
+# refs/remotes/origin/$BASE_REF. Without the fix, a default `git fetch`
+# only updates the remote-tracking ref; refs/heads/main would stay at
+# whatever it was when canonical was first cloned. With the fix, the
+# update-ref propagates the fresh SHA so clone --shared (which mirrors
+# canonical's heads to workdir's remotes) gives the workdir a usable
+# base ref regardless of shallow state.
+
+echo "  scenario: canonical refs/heads/main aligned with refs/remotes/origin/main..."
+
+GITHUB_BARE3="$TMPDIR/github-side-3.git"
+git init -q --bare -b main "$GITHUB_BARE3"
+
+WORKING3="$TMPDIR/working-3"
+git clone -q "$GITHUB_BARE3" "$WORKING3"
+(
+    cd "$WORKING3"
+    git config user.email t@t
+    git config user.name t
+    git config commit.gpgsign false
+    # M1: initial main (what canonical's refs/heads/main lands at on
+    # first clone). The PR forks from here.
+    echo "main v1" > main-content.txt
+    git add main-content.txt
+    git commit -qm "main v1"
+    git push -q origin main
+    # PR branch off M1.
+    git checkout -qb feat/test
+    echo "PR feature content" > feature.txt
+    git add feature.txt
+    git commit -qm "PR feature on M1 main"
+    git push -q origin feat/test
+    git push -q origin "+refs/heads/feat/test:refs/pull/3/head"
+)
+PR_SHA3=$(git -C "$WORKING3" rev-parse refs/heads/feat/test)
+
+STATE3="$TMPDIR/state-3"
+mkdir -p "$STATE3/runs" "$STATE3/canonical-locks" "$STATE3/locks" "$STATE3/repos" "$STATE3/workdirs"
+echo "{}" > "$STATE3/state.json"
+
+CANONICAL3="$STATE3/repos/test-org_probe-repo"
+mkdir -p "$(dirname "$CANONICAL3")"
+git clone -q "$GITHUB_BARE3" "$CANONICAL3"
+# Move HEAD off main onto a synthetic pr-2 branch so the worker's
+# update-ref of refs/heads/main has the same shape as production
+# (where canonical's HEAD is on a leftover pr-N branch from a prior
+# review, not on main). This isn't strictly required for the
+# invariant assertion, but matches the production topology.
+git -C "$CANONICAL3" checkout -qb pr-leftover
+
+# M2: main lands on GITHUB-side AFTER canonical clone — drives the
+# refs/heads vs refs/remotes/origin staleness in canonical post-fetch.
+(
+    cd "$WORKING3"
+    git checkout -q main
+    echo "main v2" >> main-content.txt
+    git add main-content.txt
+    git commit -qm "main v2 (lands after canonical clone — drives staleness)"
+    git push -q origin main
+)
+
+# Stub gh — base is "main", PR head is the feat/test SHA.
+write_gh_stub "$HOME/.local/bin/gh" "main" "$PR_SHA3"
+
+(
+    export STATE_DIR="$STATE3"
+    export STATE_FILE="$STATE3/state.json"
+    export REPOS_DIR="$STATE3/repos"
+    export WORKDIRS_DIR="$STATE3/workdirs"
+    export CANONICAL_LOCKS_DIR="$STATE3/canonical-locks"
+    export PR_REVIEW_LOCK_DIR="$STATE3/locks"
+    write_probe_repos_conf "$STATE3/repos.conf"
+    TRIGGER_COMMENT_FILE="" \
+        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
+        "test-org/probe-repo" "3" "$PR_SHA3" "feat/test" "Shallow base PR" "false" \
+        >/dev/null 2>&1 || true
+)
+
+RUN_DIR3=$(find "$STATE3/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
+if [ -z "$RUN_DIR3" ]; then
+    echo "FAIL: scenario 3 — worker produced no run dir under $STATE3/runs"
+    exit 1
+fi
+LOG3="$RUN_DIR3/run.log"
+
+# Worker MUST NOT abort with the empty-diff message — that's the
+# production failure mode (cncorp/plow#568). Belt-and-suspenders check;
+# unlikely to trip in a non-shallow fixture but loud-fail if it does.
+if grep -qE "local git diff origin/main\.{3}.* returned empty" "$LOG3"; then
+    echo "FAIL: scenario 3 — worker hit empty-diff abort (the cncorp/plow#568 bug not fixed)"
+    cat "$LOG3"
+    exit 1
+fi
+
+# Decisive assertion: after the worker runs, canonical's
+# refs/heads/$BASE_REF MUST equal refs/remotes/origin/$BASE_REF.
+# That's the invariant the fix establishes via update-ref. Without the
+# fix, `git fetch origin main` only updates the remote-tracking ref;
+# refs/heads/main stays at whatever it was when canonical was first
+# cloned. With the fix, update-ref propagates the fresh SHA.
+HEADS_MAIN=$(git -C "$CANONICAL3" rev-parse refs/heads/main 2>/dev/null)
+ORIGIN_MAIN=$(git -C "$CANONICAL3" rev-parse refs/remotes/origin/main 2>/dev/null)
+if [ "$HEADS_MAIN" != "$ORIGIN_MAIN" ]; then
+    echo "FAIL: scenario 3 — canonical refs/heads/main ($HEADS_MAIN) != refs/remotes/origin/main ($ORIGIN_MAIN)"
+    echo "  the update-ref alignment didn't run; clone --shared from this canonical would"
+    echo "  serve a stale base SHA to the workdir, breaking the diff for shallow canonicals"
+    exit 1
+fi
+
+# Note: the "update-ref BEFORE clone --shared" ordering can't be
+# directly fenced here. A smoke fixture's canonical gets deepened by
+# the worker's --depth=500 fetch and ends up non-shallow, so
+# clone --shared sets up alternates and the workdir reaches the
+# post-update-ref SHA via alternates regardless of timing. The
+# production-relevant failure mode requires a deeper-than-500-commit
+# shallow canonical. The canonical-state assertion above + the
+# full-diff.patch content check below cover the production-relevant
+# failure modes — an unreachable BASE_REF_SHA produces an empty diff,
+# tripping the content check.
+
+# Positive consumer: the worker should have produced a non-empty
+# full-diff.patch whose contents include the PR feature.
+FULL_DIFF3="$RUN_DIR3/inputs/full-diff.patch"
+if [ ! -f "$FULL_DIFF3" ]; then
+    echo "FAIL: scenario 3 — worker did not write $FULL_DIFF3 (likely aborted before diff stage)"
+    cat "$LOG3"
+    exit 1
+fi
+if ! grep -q "PR feature content" "$FULL_DIFF3"; then
+    echo "FAIL: scenario 3 — full-diff.patch missing PR-feature content"
+    cat "$FULL_DIFF3"
+    exit 1
+fi
+
+echo "  PASS (3 scenarios: orchestrator/worker SHA race + non-default-base canonical→workdir ref propagation + canonical heads/main aligned with origin/main; both diff and commits consumers fenced)"

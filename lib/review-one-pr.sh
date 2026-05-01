@@ -300,30 +300,65 @@ if ! git -C "$CANONICAL_DIR" fetch origin "$BASE_REF" --depth=500 --quiet; then
     log "$PR_ID: canonical fetch of $BASE_REF failed — aborting"
     exit 1
 fi
+# Collision guard: a PR head named the same as the base branch
+# (fork PR from the fork's main → upstream's main) would otherwise
+# get fetched into refs/heads/$BASE_REF, then overwritten by the
+# subsequent update-ref alignment. Operator-fixable (rename the
+# fork branch); fail loud.
+if [ "$PR_BRANCH" = "$BASE_REF" ]; then
+    log "$PR_ID: PR head branch '$PR_BRANCH' collides with base '$BASE_REF' — refusing to fetch into refs/heads/$BASE_REF (would corrupt canonical's base ref)"
+    exit 1
+fi
 if ! git -C "$CANONICAL_DIR" fetch origin "+refs/pull/$PR_NUM/head:$PR_BRANCH" --depth=500 --quiet; then
     log "$PR_ID: refs/pull/$PR_NUM/head not fetchable (PR closed?) — skipping"
     exit 0
 fi
 
-# Resolve BASE_REF_SHA from canonical's just-fetched remote-tracking ref
-# BEFORE the `git clone --shared` to the per-PR workdir. The clone's
-# `refs/remotes/origin/*` mirrors canonical's `refs/heads/*`, NOT
-# canonical's `refs/remotes/origin/*` — so canonical's freshly-fetched
-# `refs/remotes/origin/$BASE_REF` does not propagate as an `origin/`
-# ref in the workdir, and a later `git diff "origin/$BASE_REF...HEAD"`
-# in the workdir would fail or silently diff against a stale local
-# branch (round-1 [blocking] finding on PR #36 — non-default-base PRs).
-# The SHA is reachable in the workdir through `git clone --shared`'s
-# hardlinked object store, so we use the immutable SHA everywhere
-# downstream instead of relying on the `origin/$BASE_REF` symbolic ref.
+# Align canonical's `refs/heads/$BASE_REF` with the just-fetched
+# `refs/remotes/origin/$BASE_REF` BEFORE the `git clone --shared`.
+# This is load-bearing for two coupled reasons:
 #
-# `git fetch origin "$BASE_REF"` always updates the remote-tracking ref;
-# if it's missing here the fetch must have silently no-op'd (corrupt
-# canonical, partial fetch, etc.). Falling back to `refs/heads/$BASE_REF`
-# would silently diff against a stale local branch — fail loud instead.
-BASE_REF_SHA=$(git -C "$CANONICAL_DIR" rev-parse --verify --quiet "refs/remotes/origin/$BASE_REF")
+# 1. The clone's `refs/remotes/origin/*` mirrors canonical's
+#    `refs/heads/*`, NOT canonical's `refs/remotes/origin/*`. So if
+#    canonical's `refs/heads/$BASE_REF` is stale (the typical state —
+#    `git fetch origin BASE_REF` only updates the remote-tracking
+#    ref, never the local head), the workdir's `origin/$BASE_REF`
+#    points at a stale SHA that doesn't include the latest base
+#    commits.
+#
+# 2. For SHALLOW canonical clones (cncorp/plow uses --depth=500),
+#    `git clone --shared` from a shallow source does NOT set up
+#    `objects/info/alternates` in the new clone. So the workdir has
+#    ONLY the objects reachable from refs propagated by the clone
+#    (canonical's `refs/heads/*` → workdir's `refs/remotes/origin/*`).
+#    If BASE_REF_SHA is canonical's `refs/remotes/origin/$BASE_REF`
+#    but `refs/heads/$BASE_REF` is stale, that SHA is not in the
+#    workdir's reachable object set — and `git diff $BASE_REF_SHA...
+#    $REVIEWED_SHA` errors with "Invalid symmetric difference" but
+#    bash captures the empty stdout and the bot reads it as an
+#    empty diff, then aborts with `local git diff origin/<base>...
+#    <reviewed-sha> returned empty — aborting`.
+#
+# Both fail-modes were observed on cncorp/plow#568 after PR #36
+# deployed: every cncorp/plow review aborted at the diff stage
+# because the shallow canonical's `refs/heads/main` was at an old
+# SHA while `refs/remotes/origin/main` had been advanced by recent
+# fetches. The `update-ref` here makes both refs point at the same
+# SHA so the workdir gets a usable base via either path.
+#
+# Safe to run unconditionally: canonical's HEAD is on a per-PR
+# `pr-N` branch from a previous review, not on `$BASE_REF`, so
+# updating `refs/heads/$BASE_REF` doesn't move HEAD or touch the
+# working tree. The .env-mirror step that reads `$CANONICAL_DIR`'s
+# working tree is unaffected (working tree files persist across
+# ref updates).
+if ! git -C "$CANONICAL_DIR" update-ref "refs/heads/$BASE_REF" "refs/remotes/origin/$BASE_REF"; then
+    log "$PR_ID: failed to align refs/heads/$BASE_REF with refs/remotes/origin/$BASE_REF in canonical — aborting"
+    exit 1
+fi
+BASE_REF_SHA=$(git -C "$CANONICAL_DIR" rev-parse --verify --quiet "refs/heads/$BASE_REF")
 if [ -z "$BASE_REF_SHA" ]; then
-    log "$PR_ID: refs/remotes/origin/$BASE_REF missing after canonical fetch — aborting"
+    log "$PR_ID: refs/heads/$BASE_REF missing after canonical fetch + update-ref — aborting"
     exit 1
 fi
 
