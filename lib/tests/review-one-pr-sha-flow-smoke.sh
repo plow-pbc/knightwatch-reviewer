@@ -187,4 +187,146 @@ if ! grep -qF "$expected_log" "$LOG"; then
     exit 1
 fi
 
-echo "  PASS (1 scenario: orchestrator-enumerated SHA != checked-out SHA → meta.json + log use REVIEWED_SHA)"
+# ===== Scenario 2: non-default-base PR =====
+# Closes the round-1 [blocking] finding: when the PR's base is NOT the
+# canonical's checked-out default branch, `git fetch origin "$BASE_REF"`
+# updates canonical's `refs/remotes/origin/$BASE_REF` (a remote-tracking
+# ref). `git clone --shared` does NOT propagate that as `origin/<ref>`
+# in the workdir — only `refs/heads/*` does. Capturing BASE_REF_SHA
+# from canonical (immutable SHA, reachable in the workdir via shared
+# objects) before the clone is the fix; the smoke proves it works on a
+# release-base fixture.
+
+echo "  scenario: non-default-base PR (base=release-1.0, canonical default=main)..."
+
+GITHUB_BARE2="$TMPDIR/github-side-2.git"
+git init -q --bare -b main "$GITHUB_BARE2"
+
+WORKING2="$TMPDIR/working-2"
+git clone -q "$GITHUB_BARE2" "$WORKING2"
+(
+    cd "$WORKING2"
+    git config user.email t@t
+    git config user.name t
+    git config commit.gpgsign false
+    # main: has main-only content (must NOT leak into the PR diff).
+    echo "main-only content" > main-only.txt
+    git add main-only.txt
+    git commit -qm "main: init"
+    git push -q origin main
+    # release-1.0: branched from main but evolved separately.
+    git checkout -qb release-1.0
+    echo "release base content" > release-base.txt
+    git add release-base.txt
+    git commit -qm "release-1.0: base"
+    git push -q origin release-1.0
+    # PR branch: forks from release-1.0.
+    git checkout -qb feat/test
+    echo "PR feature" > feature.txt
+    git add feature.txt
+    git commit -qm "PR feature"
+)
+PR_SHA2=$(git -C "$WORKING2" rev-parse HEAD)
+RELEASE_BASE_SHA=$(git -C "$WORKING2" rev-parse release-1.0)
+git -C "$WORKING2" push -q origin feat/test:refs/pull/2/head
+
+# Fresh sandbox — separate STATE_DIR so the runs from scenario 1 don't
+# confuse the run-dir search.
+STATE2="$TMPDIR/state-2"
+mkdir -p "$STATE2/runs" "$STATE2/canonical-locks" "$STATE2/locks" "$STATE2/repos" "$STATE2/workdirs"
+echo "{}" > "$STATE2/state.json"
+
+CANONICAL2="$STATE2/repos/test-org_probe-repo"
+mkdir -p "$(dirname "$CANONICAL2")"
+git clone -q "$GITHUB_BARE2" "$CANONICAL2"
+
+# Stub gh — same shape, but baseRefName is "release-1.0" not "main".
+cat > "$HOME/.local/bin/gh" <<STUB
+#!/bin/bash
+fields=""
+for ((i=1; i<=\$#; i++)); do
+    if [ "\${!i}" = "--json" ]; then
+        j=\$((i+1))
+        fields="\${!j}"
+        break
+    fi
+done
+case "\$fields" in
+    *baseRefName*)
+        printf '{"baseRefName":"release-1.0","title":"Release-base PR","body":"","author":{"login":"test-user"},"commits":{"nodes":[]},"closingIssuesReferences":{"nodes":[]}}\n'
+        ;;
+    *headRefOid*)
+        printf '{"headRefOid":"$PR_SHA2"}\n'
+        ;;
+    *)
+        :
+        ;;
+esac
+STUB
+
+(
+    export STATE_DIR="$STATE2"
+    export STATE_FILE="$STATE2/state.json"
+    export REPOS_DIR="$STATE2/repos"
+    export WORKDIRS_DIR="$STATE2/workdirs"
+    export CANONICAL_LOCKS_DIR="$STATE2/canonical-locks"
+    export PR_REVIEW_LOCK_DIR="$STATE2/locks"
+    cat > "$STATE2/repos.conf" <<'CONF'
+REPOS=("test-org/probe-repo")
+declare -A KID_PATHS=()
+declare -A SOURCE_PATHS=()
+declare -A DEAD_CODE_CMDS=()
+declare -A STRICT_TYPING_CMDS=()
+CONF
+    TRIGGER_COMMENT_FILE="" \
+        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
+        "test-org/probe-repo" "2" "$PR_SHA2" "feat/test" "Release-base PR" "false" \
+        >/dev/null 2>&1 || true
+)
+
+RUN_DIR2=$(find "$STATE2/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
+if [ -z "$RUN_DIR2" ]; then
+    echo "FAIL: scenario 2 — worker produced no run dir under $STATE2/runs"
+    exit 1
+fi
+META2="$RUN_DIR2/meta.json"
+LOG2="$RUN_DIR2/run.log"
+
+if [ ! -f "$META2" ]; then
+    echo "FAIL: scenario 2 — $META2 not written; worker aborted before BASE_REF_SHA capture"
+    [ -f "$LOG2" ] && { echo "--- run.log ---"; cat "$LOG2"; }
+    exit 1
+fi
+
+meta_base2=$(jq -r '.base_ref' "$META2")
+if [ "$meta_base2" != "release-1.0" ]; then
+    echo "FAIL: scenario 2 — meta.json.base_ref = $meta_base2 (expected 'release-1.0')"
+    exit 1
+fi
+
+# The decisive assertion: BASE_REF_SHA (captured from canonical after
+# fetch, used as the diff base) must equal the SHA of release-1.0 in
+# the bare repo — proving the worker resolved the non-default base
+# correctly across the canonical→workdir boundary.
+WORKDIR2="$STATE2/workdirs/test-org_probe-repo__2"
+if [ -d "$WORKDIR2" ]; then
+    workdir_diff=$(git -C "$WORKDIR2" diff "$RELEASE_BASE_SHA"...HEAD 2>/dev/null)
+    if printf '%s' "$workdir_diff" | grep -q "main-only"; then
+        echo "FAIL: scenario 2 — FULL_PR_DIFF range includes main-only content (should be release-1.0...HEAD)"
+        exit 1
+    fi
+    if ! printf '%s' "$workdir_diff" | grep -q "PR feature"; then
+        echo "FAIL: scenario 2 — FULL_PR_DIFF range missing PR-feature content"
+        exit 1
+    fi
+fi
+
+# Log line should NOT contain a "could not resolve" abort (the round-1
+# finding's failure mode for non-default-base PRs).
+if grep -qF "could not resolve canonical's release-1.0 SHA" "$LOG2"; then
+    echo "FAIL: scenario 2 — worker hit the BASE_REF_SHA-not-found abort path"
+    cat "$LOG2"
+    exit 1
+fi
+
+echo "  PASS (2 scenarios: orchestrator/worker SHA race + non-default-base canonical→workdir ref propagation)"

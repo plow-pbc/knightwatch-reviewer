@@ -303,6 +303,29 @@ if ! git -C "$CANONICAL_DIR" fetch origin "+refs/pull/$PR_NUM/head:$PR_BRANCH" -
     exit 0
 fi
 
+# Resolve BASE_REF_SHA from canonical's just-fetched ref BEFORE the
+# `git clone --shared` to the per-PR workdir. The clone's
+# `refs/remotes/origin/*` mirrors canonical's `refs/heads/*`, NOT
+# canonical's `refs/remotes/origin/*` — so canonical's freshly-fetched
+# `refs/remotes/origin/$BASE_REF` does not propagate as an `origin/`
+# ref in the workdir, and a later `git diff "origin/$BASE_REF...HEAD"`
+# in the workdir would fail or silently diff against a stale local
+# branch (round-1 [blocking] finding on PR #36 — non-default-base PRs).
+# The SHA is reachable in the workdir through `git clone --shared`'s
+# hardlinked object store, so we use the immutable SHA everywhere
+# downstream instead of relying on the `origin/$BASE_REF` symbolic ref.
+BASE_REF_SHA=$(git -C "$CANONICAL_DIR" rev-parse --verify --quiet "refs/remotes/origin/$BASE_REF")
+if [ -z "$BASE_REF_SHA" ]; then
+    # Fallback: $BASE_REF may be canonical's checked-out branch, in which
+    # case the fetch updated `refs/heads/$BASE_REF` instead of the
+    # remote-tracking ref. Try that path too.
+    BASE_REF_SHA=$(git -C "$CANONICAL_DIR" rev-parse --verify --quiet "refs/heads/$BASE_REF")
+fi
+if [ -z "$BASE_REF_SHA" ]; then
+    log "$PR_ID: could not resolve canonical's $BASE_REF SHA after fetch — aborting"
+    exit 1
+fi
+
 # Tear down any stale per-PR workdir and create a fresh shared clone.
 # --shared gives us hardlinked objects from canonical, so this is cheap.
 # Canonical's refs/heads/$PR_BRANCH shows up here as origin/$PR_BRANCH.
@@ -427,7 +450,7 @@ fi
 # class flagged across PR #31 and PR #35 reviews — single source of
 # truth: the worktree). Also collapses the prior cap-exceeded fallback
 # into the primary path, since `git diff` has no server-side file cap.
-FULL_PR_DIFF=$(git -C "$REPO_DIR" diff "origin/$BASE_REF...$REVIEWED_SHA")
+FULL_PR_DIFF=$(git -C "$REPO_DIR" diff "$BASE_REF_SHA...$REVIEWED_SHA")
 if [ -z "$FULL_PR_DIFF" ]; then
     log "$PR_ID: local git diff origin/${BASE_REF}...${REVIEWED_SHA:0:7} returned empty — aborting"
     rm -rf "$REPO_DIR"
@@ -512,21 +535,13 @@ if ! command -v just >/dev/null 2>&1; then
     exit 1
 fi
 
-# Snapshot the base-branch SHA BEFORE running `just test`. Trust model
-# for .knightwatch/<file> reads: the worker treats the base branch as
-# the source of truth (PR-head edits don't take effect until merged).
-# But `just test` runs PR-controlled code in the same workdir AND can
-# rewrite local refs (e.g., `git update-ref refs/remotes/origin/main HEAD`).
-# After tests, every read of `origin/<default-branch>:.knightwatch/...`
-# would silently pick up PR-head policy. Snapshotting the base SHA
-# upfront and passing the SHA (immutable) — not the ref — to all
-# downstream .knightwatch reads closes that bypass.
-BASE_REF_SHA=$(git -C "$REPO_DIR" rev-parse --verify --quiet "origin/$BASE_REF")
-if [ -z "$BASE_REF_SHA" ]; then
-    log "$PR_ID: failed to resolve origin/$BASE_REF SHA — aborting"
-    rm -rf "$REPO_DIR"
-    exit 1
-fi
+# BASE_REF_SHA was captured from canonical right after the fetch (well
+# before the per-PR clone, the env-mirror, and `just test` — all of
+# which run PR-controlled code that could rewrite local refs). The
+# downstream `.knightwatch/<file>` reads consume the immutable SHA
+# (not the symbolic ref), so a PR that runs
+# `git update-ref refs/remotes/origin/main HEAD` during `just test`
+# can't redirect the next config read to PR-head policy.
 
 JUST_FILE=""
 for n in justfile Justfile JUSTFILE .justfile .Justfile .JUSTFILE; do

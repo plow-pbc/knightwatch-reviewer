@@ -8,14 +8,8 @@
 # No live `gh pr diff` calls during review production — those raced
 # with mid-run pushes and contradicted the SHA the worker had just
 # checked out (the BCR class flagged across PR #31 and PR #35 reviews).
-#
-# resolve_pr_base_ref REPO PR_NUM
-#   Returns the PR's actual base branch name (e.g. "main",
-#   "release-2.0") via `gh pr view --json baseRefName`. Required
-#   because the prior worker resolved only `defaultBranchRef` (the
-#   *repo's* default), so non-default-base PRs fetched the wrong
-#   ref into canonical and diffed against the wrong upstream. Empty
-#   stdout on gh failure — caller fail-fast.
+# BASE_REF itself is resolved inline by the worker via the consolidated
+# `gh pr view --json baseRefName` call up front; no helper needed.
 #
 # is_clean_incremental_available <repo_dir> <known_sha>
 #   exit 0 if a local incremental diff (`git diff $known_sha..HEAD`)
@@ -28,12 +22,6 @@
 #         round 2 same-file leak finding)
 #   exit 1 otherwise — caller falls back to the full PR diff with a
 #   deterministic warning at the top of the review.
-
-resolve_pr_base_ref() {
-    local repo="$1" pr_num="$2"
-    gh pr view "$pr_num" --repo "$repo" --json baseRefName --jq '.baseRefName' 2>/dev/null
-}
-
 is_clean_incremental_available() {
     local repo_dir="$1" known_sha="$2"
     git -C "$repo_dir" merge-base --is-ancestor "$known_sha" HEAD 2>/dev/null \

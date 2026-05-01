@@ -162,7 +162,7 @@ format_review_scope() {
             printf '📋 Re-review of changes from `%s` to `%s` (`git diff %s..%s`)' "$from" "$to" "$from" "$to" ;;
         fallback:*)
             sha="${scope#fallback:}"
-            printf '📋 Re-review — clean incremental unavailable for `%s` (rebase, force-push, or merge-from-main); evaluated full PR' "${sha:0:7}" ;;
+            printf '📋 Re-review — clean incremental unavailable for `%s` (rebase, force-push, or merge from base branch); evaluated full PR' "${sha:0:7}" ;;
         *)
             printf 'format_review_scope: unknown scope "%s" — internal invariant violated\n' "$scope" >&2
             return 1
