@@ -1176,6 +1176,19 @@ for angle in "${ANGLES[@]}"; do
     log "$PR_ID: specialist=$angle lines=$LINES$NO_FINDINGS"
 done
 
+# Momentum specialist — runs only on re-reviews. Outputs prose-only
+# trajectory meta-finding for the aggregator's loop-breaker (Path 2).
+# Skipped on first reviews; aggregator handles its absence gracefully.
+if [ -s "$RUN_DIR/inputs/previous-review.md" ]; then
+    log "$PR_ID: launching momentum specialist (re-review)..."
+    MOMENTUM_PROMPT=$(substitute_placeholders \
+        "$HOME/.pr-reviewer/prompts/momentum.md" \
+        "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR")
+    "$_LIB_DIR/run-specialist.sh" "momentum" "$REPO_DIR" "$MOMENTUM_PROMPT" "$RUN_DIR/agents/momentum"
+else
+    log "$PR_ID: skipping momentum specialist (first review)"
+fi
+
 log "$PR_ID: critic pass..."
 CRITIC_PROMPT=$(cat "$HOME/.pr-reviewer/prompts/critic.md")
 "$_LIB_DIR/run-specialist.sh" "critic" "$REPO_DIR" "$CRITIC_PROMPT" "$RUN_DIR/agents/critic"

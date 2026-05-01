@@ -65,6 +65,10 @@ test:
     bash lib/tests/loc-trend-smoke.sh
 
     echo ""
+    echo "=== momentum-wire smoke ==="
+    bash lib/tests/momentum-wire-smoke.sh
+
+    echo ""
     echo "=== run-specialist smoke test ==="
     bash lib/tests/run-specialist-smoke.sh
 
