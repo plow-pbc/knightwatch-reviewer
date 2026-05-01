@@ -181,4 +181,47 @@ if echo "$result" | grep -q "OTHER REPO review"; then
     exit 1
 fi
 
-echo "  PASS (8 scenarios: no-runs, self-excluded, chronological-prior, aborted-skipped, no-meta-skipped, posted-but-aborted-INCLUDED, legacy-completed-no-posted-at-INCLUDED, foreign-pr-filtered)"
+# ---- scenario 6: latest_author_visible_review returns latest body ----
+# Single-seam regression fence for the round-7 BCR fix: PREV_BODY now
+# sources from runs/ via this helper instead of state.json. The helper
+# must return the LATEST author-visible review's body (last by timestamp),
+# skip the current run, and skip non-author-visible runs.
+#
+# Layout reuses scenarios 3 + 4c's runs (already in $TMPDIR/state/runs):
+#   T060000000Z (visible: legacy completed)        — review four body
+#   T070000000Z (visible: posted+aborted)          — review three body  ← latest visible
+#   T080000000Z (skip: no meta.json)
+#   T090000000Z (skip: aborted, no posted_at)
+#   T100000000Z (visible)                          — review one body
+#   T110000000Z (visible)                          — review two body
+#   T120000000Z (current, self-excluded)
+#
+# Wait — scenario 3 made T100000000Z and T110000000Z, both completed. So
+# the LATEST visible is T110000000Z = "review two body". Verify that.
+echo "  scenario 6: latest_author_visible_review returns the most recent author-visible body..."
+result=$(latest_author_visible_review "$TMPDIR/state" "$REPO_SLUG" "$PR" "$current")
+if ! echo "$result" | grep -q "review two body"; then
+    echo "FAIL: scenario 6 — latest body should be 'review two body' (T110000000Z), got:"
+    echo "$result"
+    exit 1
+fi
+# Must not include earlier rounds' bodies (only the LATEST is returned —
+# unlike stage_prior_reviews which concatenates all).
+if echo "$result" | grep -q "review one body"; then
+    echo "FAIL: scenario 6 — earlier round leaked through; helper should return ONLY the latest"
+    echo "$result"
+    exit 1
+fi
+
+# ---- scenario 7: no prior author-visible runs → empty output ----
+# First review on the PR. previous-review.md staging keys off [ -s file ],
+# so empty output here flows through as "no previous-review.md content"
+# and the momentum gate correctly skips.
+echo "  scenario 7: latest_author_visible_review with no prior runs → empty..."
+result=$(latest_author_visible_review "$TMPDIR/state" "$REPO_SLUG" "999999" "$current")
+if [ -n "$result" ]; then
+    echo "FAIL: scenario 7 — expected empty for PR with no prior runs, got: $result"
+    exit 1
+fi
+
+echo "  PASS (10 scenarios: no-runs, self-excluded, chronological-prior, aborted-skipped, no-meta-skipped, posted-but-aborted-INCLUDED, legacy-completed-no-posted-at-INCLUDED, foreign-pr-filtered, latest-author-visible-review, latest-empty-on-first-review)"

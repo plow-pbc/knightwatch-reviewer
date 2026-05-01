@@ -278,29 +278,66 @@ is_run_author_visible() {
     [ "$included" = "yes" ]
 }
 
+# author_visible_runs_iter <state_dir> <repo_slug> <pr_num> <current_run_dir>
+#   stdout: one line per author-visible run dir for this PR, sorted by
+#   timestamp ascending (run-dir names share repo_slug+pr_num prefix, so
+#   `find | sort` is equivalent to "sort by RUN_TS"). Skips current_run_dir
+#   and any run dir that fails the author-visible predicate.
+#
+# Single source-of-truth walker for "which prior posted reviews exist for
+# this PR." Every consumer that asks "what has the author seen?" reads
+# from this iterator instead of re-implementing the run-dir glob +
+# self-exclusion + author-visible filter — the BCR class flagged across
+# multiple rounds of PR #38 was exactly this kind of split-across-consumers
+# divergence (state.json's PREV_BODY vs runs/ metadata vs LOC-trend).
+#
+# Pure read-only walk; no side effects. Callers project whatever they
+# need (body, ts, sha) from the yielded run-dir paths.
+author_visible_runs_iter() {
+    local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"
+    local prior_run
+    while IFS= read -r prior_run; do
+        [ "$prior_run" = "$current_run_dir" ] && continue
+        is_run_author_visible "$prior_run" || continue
+        printf '%s\n' "$prior_run"
+    done < <(find "$state_dir/runs" -maxdepth 1 -type d -name "${repo_slug}__${pr_num}__*" 2>/dev/null | sort)
+}
+
 stage_prior_reviews() {
     local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"
     local prior_run prior_ts result=""
     while IFS= read -r prior_run; do
-        [ "$prior_run" = "$current_run_dir" ] && continue
-        is_run_author_visible "$prior_run" || continue
         prior_ts=$(basename "$prior_run" | grep -oE 'T[0-9]+Z' | head -1)
         result+=$'\n--- review at '"${prior_ts:-unknown}"$' ---\n'
         result+=$(cat "$prior_run/agents/aggregator/output.md")
         result+=$'\n'
-    done < <(find "$state_dir/runs" -maxdepth 1 -type d -name "${repo_slug}__${pr_num}__*" 2>/dev/null | sort)
+    done < <(author_visible_runs_iter "$state_dir" "$repo_slug" "$pr_num" "$current_run_dir")
     printf '%s' "$result"
+}
+
+# latest_author_visible_review <state_dir> <repo_slug> <pr_num> <current_run_dir>
+#   stdout: aggregator output of the most recent author-visible prior review
+#   (last by timestamp), or empty if no prior author-visible run exists.
+#
+# Single seam for "what did the author see last?" — replaces state.json's
+# PREV_BODY as the source for previous-review.md staging + the momentum
+# gate. Sourcing from runs/ closes the BCR drift on the gh-post-succeeded /
+# state_set-failed path: meta.json's posted_at lands BEFORE state_set
+# fires, so this helper still sees the latest review even when state.json
+# never got the PREV_BODY/sha update.
+latest_author_visible_review() {
+    local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"
+    local latest=""
+    local prior_run
+    while IFS= read -r prior_run; do
+        latest="$prior_run"  # last one wins (iterator is sorted ascending)
+    done < <(author_visible_runs_iter "$state_dir" "$repo_slug" "$pr_num" "$current_run_dir")
+    [ -n "$latest" ] && cat "$latest/agents/aggregator/output.md" 2>/dev/null
 }
 
 # author_visible_rounds <state_dir> <repo_slug> <pr_num> <current_run_dir>
 #   stdout: one line per author-visible round, format: <ts>\t<sha>
-#   sorted by timestamp ascending (matches find|sort over the run-dir glob —
-#   names sort by timestamp because they share repo_slug+pr_num prefix).
-#   Skips current_run_dir.
-#
-# Author-visible = posted_at present in meta.json OR status == "completed"
-# (same predicate as is_run_author_visible / stage_prior_reviews — single
-# owner for "which prior review rounds count").
+#   sorted by timestamp ascending (matches author_visible_runs_iter).
 #
 # Canonical SHA + timestamp sources are meta.json fields. SHA preference:
 #   1. .reviewed_sha — post-checkout HEAD; what the worker actually evaluated.
@@ -315,15 +352,12 @@ stage_prior_reviews() {
 #
 # This is the single owner for the "(ts, sha) per round" contract that
 # compute_loc_trend (LOC trajectory) consumes. Bug-Class-Recurrence
-# fence: keep the round-discovery walk + author-visible filter + canonical
-# SHA in one helper so a downstream caller can't drift to a stale local
-# copy (the BCR theme knightwatch flagged across rounds 1+2 of PR #38).
+# fence: keep the canonical-SHA projection in one helper so a downstream
+# caller can't drift to a stale local copy.
 author_visible_rounds() {
     local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"
     local prior_run meta_sha meta_ts
     while IFS= read -r prior_run; do
-        [ "$prior_run" = "$current_run_dir" ] && continue
-        is_run_author_visible "$prior_run" || continue
         meta_sha=$(jq -r '.reviewed_sha // .sha // empty' "$prior_run/meta.json" 2>/dev/null)
         meta_ts=$(jq -r '.started_at // empty' "$prior_run/meta.json" 2>/dev/null)
         # Fall back to run-dir name parsing only if meta is incomplete.
@@ -331,5 +365,5 @@ author_visible_rounds() {
         [ -z "$meta_sha" ] && meta_sha=$(basename "$prior_run" | awk -F'__' '{print $4}')
         [ -z "$meta_sha" ] && continue
         printf '%s\t%s\n' "$meta_ts" "$meta_sha"
-    done < <(find "$state_dir/runs" -maxdepth 1 -type d -name "${repo_slug}__${pr_num}__*" 2>/dev/null | sort)
+    done < <(author_visible_runs_iter "$state_dir" "$repo_slug" "$pr_num" "$current_run_dir")
 }

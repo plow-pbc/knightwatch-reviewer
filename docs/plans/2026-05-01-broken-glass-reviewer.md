@@ -300,7 +300,7 @@ EOF
 - Modify: `~/Hacking/knightwatch-reviewer/lib/review-one-pr.sh` (add `compute_loc_trend()` function + call site before specialist fan-out)
 - Create: `~/Hacking/knightwatch-reviewer/lib/tests/loc-trend-smoke.sh`
 
-The function reads `~/.pr-reviewer/runs/<repo>__<pr>__*` directories, computes `git diff --shortstat <merge-base>..<sha>` per round, and writes a markdown table to `.codex-scratch/loc-trend.md`.
+The function reads `~/.pr-reviewer/runs/<repo>__<pr>__*` directories, computes `git diff --numstat <merge-base>...<sha>` (three-dot, additions-only — sums column 1) per round, classifies each row into one of four typed states (`unavailable` / `reachable_zero` / `deletion_only` / `numeric`), and writes a markdown table to `.codex-scratch/loc-trend.md`. UNKNOWN trajectory wins when any prior row is `unavailable` (the row's additions count is unrecoverable, so a ratio against it would be a lie). Three-dot uses the dynamic per-pair merge-base so older rounds don't get retroactively distorted when main advances between reviews. Code lives in `lib/loc-trend.sh` (sourceable so the smoke test exercises the same function the worker calls).
 
 - [ ] **Step 4.1: Write the smoke test first (TDD — token-level + behavior contract)**
 
@@ -314,9 +314,12 @@ Create `~/Hacking/knightwatch-reviewer/lib/tests/loc-trend-smoke.sh`:
 #   1. Empty runs/ dir (first review, no prior rounds) → emits header
 #      noting it's the first review, no table rows.
 #   2. N>1 prior runs → emits a table with one row per run, sorted by
-#      timestamp, each row carrying base..head shortstat.
-#   3. Trajectory line classifies GROWING / STABLE / SHRINKING based on
-#      ratio between first and last round's additions.
+#      timestamp, each row carrying merge-base..head (additions only)
+#      from `git diff --numstat <merge-base>...<sha>` (three-dot).
+#   3. Trajectory line classifies GROWING / STABLE / SHRINKING / UNKNOWN
+#      based on ratio between first and last round's additions, plus
+#      typed-state dispatch (unavailable / reachable_zero / deletion_only
+#      / numeric — UNKNOWN supersedes when any prior row is unavailable).
 
 set -uo pipefail
 
@@ -325,7 +328,7 @@ trap 'rm -rf "$TMPDIR"' EXIT
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-# Build a fake repo with two commits the function can shortstat against.
+# Build a fake repo with two commits the function can numstat against.
 REPO="$TMPDIR/repo"
 git init -q -b main "$REPO"
 git -C "$REPO" config user.email t@t
@@ -396,7 +399,7 @@ SOURCE_ONLY=false
 
 Then wrap the existing main body (everything after the existing helper definitions, starting where `REPO="$1"` / `PR_NUM="$2"` are read) in `if ! $SOURCE_ONLY; then ... fi`.
 
-Add the `compute_loc_trend` function near the other helpers (above the main body):
+Add the `compute_loc_trend` function near the other helpers (above the main body). NOTE — the reference implementation below is the round-1 contract; subsequent review rounds (PR #38) evolved it into `lib/loc-trend.sh` with `git diff --numstat` (numeric data instead of regex on `--shortstat` prose), three-dot `<merge-base>...<sha>` (dynamic per-pair merge-base instead of two-dot against current main), typed per-row states (`unavailable` / `reachable_zero` / `deletion_only` / `numeric`), and UNKNOWN trajectory when any prior row is unavailable. Treat the block below as the design intent; consult `lib/loc-trend.sh` for the canonical implementation.
 
 ```bash
 # compute_loc_trend <repo_slash> <pr_num> <repo_dir> <merge_base_sha> <state_dir>
@@ -407,9 +410,14 @@ Add the `compute_loc_trend` function near the other helpers (above the main body
 # underscore-form for filesystem matching.
 #
 # Reads $state_dir/runs/<owner>_<repo>__<pr_num>__<ts>__<sha>/ entries,
-# computes git diff --shortstat <merge_base>..<sha> for each, emits a
-# markdown table sorted by timestamp. Handles empty runs/ (first review)
-# without aborting.
+# computes git diff --numstat <merge_base>...<sha> (three-dot,
+# additions-only — sums the additions column) for each author-visible
+# round's reviewed_sha, classifies each row into one of four typed states
+# (unavailable / reachable_zero / deletion_only / numeric), emits a
+# markdown table sorted by timestamp. UNKNOWN trajectory wins when any
+# prior row is unavailable. Handles empty runs/ (first review) without
+# aborting. Lives in lib/loc-trend.sh (sourceable; the smoke exercises
+# the same function the worker calls).
 compute_loc_trend() {
     local repo="$1" pr_num="$2" repo_dir="$3" merge_base="$4" state_dir="$5"
     local owner_repo="${repo//\//_}"

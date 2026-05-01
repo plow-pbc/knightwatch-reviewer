@@ -476,8 +476,19 @@ esac
 KID_INPUT_DIFF="$FULL_PR_DIFF"
 
 KNOWN_SHA=$(state_get "$PR_ID" "sha")
-PREV_BODY=""
 PREV_APPROVED=""
+
+# PREV_BODY (what the author saw last) is sourced from runs/ — the same
+# source-of-truth that prior-reviews.md and the LOC-trend table read from.
+# Sourcing from state.json instead would drift on the "gh post succeeded
+# but state_set failed" path: meta.json.posted_at is stamped right after
+# the gh comment lands, so runs/ correctly reflects the latest posted
+# review even when the subsequent state_set never persisted PREV_BODY.
+# Returns empty on first review (no prior author-visible run); empty
+# PREV_BODY then drives previous-review.md to be empty, which the
+# momentum gate uses as its "first review, skip momentum" signal.
+PREV_BODY=$(latest_author_visible_review "$STATE_DIR" "$REPO_SLUG_FOR_RUN" "$PR_NUM" "$RUN_DIR")
+[ "$FORCE_WHOLE_PR" = "true" ] && PREV_BODY=""
 
 # Optimization: use a local incremental diff for KID_INPUT_DIFF ONLY
 # when (a) the prior reviewed SHA is still on the branch's history AND
@@ -488,7 +499,6 @@ PREV_APPROVED=""
 # `prepend_review_header` emit a `fallback:<sha>` scope disclosure at
 # the top of the review (via REVIEW_SCOPE).
 if [ -n "$KNOWN_SHA" ] && [ "$FORCE_WHOLE_PR" != "true" ]; then
-    PREV_BODY=$(state_get "$PR_ID" "body")
     PREV_APPROVED=$(state_get "$PR_ID" "approved")
     if is_clean_incremental_available "$REPO_DIR" "$KNOWN_SHA"; then
         KID_INPUT_DIFF=$(git -C "$REPO_DIR" diff "$KNOWN_SHA..HEAD")

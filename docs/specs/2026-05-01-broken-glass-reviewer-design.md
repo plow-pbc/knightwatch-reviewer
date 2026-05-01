@@ -229,18 +229,17 @@ Format (3-line summary + per-round table):
 ```markdown
 # LOC trend
 
-This PR has been reviewed N times. Across rounds, base..head has gone from
-+START_ADDS / −START_DELS to +END_ADDS / −END_DELS (FILE_DELTA files).
+This PR has been reviewed N times. Trajectory: GROWING (X.X× from first review) | STABLE | SHRINKING | UNKNOWN (one or more prior reviewed SHAs not in local history — likely rebased or force-pushed).
 
-Trajectory: GROWING (X.X× from first review) | STABLE | SHRINKING.
-
-| Round | Timestamp | SHA | base..head | Files |
-|---|---|---|---|---|
-| 1 | <ts> | <sha> | +A / −D | F |
-| 2 | ... | ... | ... | ... |
+| Round | Timestamp | SHA | merge-base..head (additions only) |
+|---|---|---|---|
+| 1 | <ts> | <sha> | +A / −D | (numeric row)
+| 2 | <ts> | <sha> | (zero diff) | (reachable_zero — no files in three-dot diff)
+| 3 | <ts> | <sha> | (0 adds, N dels) | (deletion_only)
+| 4 | <ts> | <sha> | (sha not in local history) | (unavailable)
 ```
 
-`base..head` is the same `git diff --shortstat <merge-base>..<head>` we used in the spot-check. The orchestrator script reads `~/.pr-reviewer/runs/` listing, computes the diff for each prior SHA, and writes the table.
+Per-round adds count comes from `git diff --numstat <merge-base>...<sha>` (three-dot, additions-only — sum of column 1). Two-dot would diff against the current default-branch SHA and retroactively distort older rounds when main advances between reviews; three-dot uses the dynamic per-pair merge-base. Display column also uses three-dot. Each row carries one of four typed states (`unavailable` / `reachable_zero` / `deletion_only` / `numeric`); the trajectory classifier routes on the typed states (UNKNOWN supersedes any other classification when at least one prior row is `unavailable`). The orchestrator script reads `~/.pr-reviewer/runs/` listing, computes the diff for each prior SHA's reviewed_sha (post-checkout HEAD), and writes the table.
 
 This file is consumed by the momentum specialist (Change D) and the aggregator's loop-breaker (Change G). Specialists already loaded today don't need it.
 
@@ -350,7 +349,7 @@ Three wire-ins in `lib/review-one-pr.sh`:
 
 1. **Momentum specialist.** Run alongside the critic, after specialists fan out. Output written to `.codex-scratch/agents/momentum/output.md`. The aggregator reads it as a new input. Skip when `previous-review.md` is empty (first review — no momentum to evaluate).
 2. **`review-priority.md` load path.** Read via `read_knightwatch_file` from the merge-base SHA (same pattern as `product-context.md`). Tri-state: PRESENT → use file content; ABSENT → use the default content embedded in the script; ERROR → abort the review (Fail-Fast — don't silently fall through to default if git itself failed).
-3. **`loc-trend.md` computation.** Read `~/.pr-reviewer/runs/<repo>__<pr>__*` listing, compute `git diff --shortstat <merge-base>..<head>` for each prior SHA, write the table format from Change E to `.codex-scratch/loc-trend.md`. Handle 1-round (no trend yet — emit a header noting it's the first review), N-round, and missing-`runs/` cases without aborting.
+3. **`loc-trend.md` computation.** Read `~/.pr-reviewer/runs/<repo>__<pr>__*` listing, compute `git diff --numstat <merge-base>...<sha>` (three-dot, additions-only — sum of the additions column) for each prior author-visible round's reviewed_sha, classify each row into one of four typed states (`unavailable` / `reachable_zero` / `deletion_only` / `numeric`), and emit the trajectory plus table from Change E to `.codex-scratch/loc-trend.md`. UNKNOWN trajectory wins when any prior row is `unavailable` (rebase / force-push evicted the SHA, or `--numstat` exited non-zero on a reachable SHA). Handle 1-round (no trend yet — emit a header noting it's the first review), N-round, and missing-`runs/` cases without aborting.
 
 Plus prompt-side wire-ins:
 
