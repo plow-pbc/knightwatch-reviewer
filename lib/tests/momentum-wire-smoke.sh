@@ -19,8 +19,13 @@ assert_grep "review-one-pr.sh missing momentum.md reference" \
     "momentum.md" "$PROJECT_ROOT/lib/review-one-pr.sh"
 
 echo "  asserting momentum gate on previous-review.md..."
-assert_grep "review-one-pr.sh missing previous-review.md gate around momentum" \
-    "previous-review.md" "$PROJECT_ROOT/lib/review-one-pr.sh"
+# Fence the EXACT guard pattern, not the bare substring "previous-review.md"
+# (which appears in unrelated write_scratch calls + comments and would PASS
+# even if the re-review-only gate around the momentum specialist disappeared).
+# A future refactor that drops the `if [ -s ... ]; then` around the momentum
+# block now fails here instead of silently regressing.
+assert_grep "review-one-pr.sh missing momentum gate (\$RUN_DIR/inputs/previous-review.md)" \
+    'if [ -s "$RUN_DIR/inputs/previous-review.md" ]' "$PROJECT_ROOT/lib/review-one-pr.sh"
 
 echo "  asserting momentum dispatch via run-specialist.sh..."
 assert_grep "review-one-pr.sh missing run-specialist.sh dispatch for momentum" \

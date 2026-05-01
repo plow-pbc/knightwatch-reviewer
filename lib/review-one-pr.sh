@@ -71,44 +71,48 @@ compute_loc_trend() {
     # now" (the SHA the aggregator/momentum specialist are reasoning about).
     rounds+=("$(printf '%s\t%s' "$current_ts" "$current_sha")")
 
-    # Per-round adds (numstat) + display (shortstat). Cached so the
-    # trajectory ratio and the table rows don't double-shell-out to git.
-    # Three-dot diff: git computes the dynamic merge-base per (base, sha)
-    # pair so each row reflects "what this round looked like at the time"
-    # — not "what this round looks like vs current main."
+    # Per-round typed state model. Three states drive both the trajectory
+    # classifier and the display column — single source of truth instead
+    # of overloading "shortstat is empty" to mean both "SHA missing from
+    # local history" AND "SHA exists but legitimately zero-diff."
     #
-    # Per-row availability tracking: when a prior round's SHA isn't in
-    # local history (rebase / force-push / shallow clone evicted it), the
-    # diff returns empty. We MUST NOT silently treat empty as 0 additions
-    # — that would drag the trajectory toward STABLE and misclassify the
-    # PR. Instead set had_unavailable_round=true and switch the
-    # trajectory to UNKNOWN below. Empty stat for the CURRENT round is
-    # legitimate (zero-diff PR); it's only prior rounds with missing
-    # history that taint the trajectory.
-    local round_adds=() round_stats=()
-    local round_sha numstat shortstat adds
-    local had_unavailable_round=false
-    local last_idx=$((${#rounds[@]} - 1))
-    local i_check=0
+    #   unavailable    — git cat-file -e rejects the SHA (rebase /
+    #                    force-push / shallow clone evicted it). adds=0
+    #                    but the value is meaningless; trajectory must
+    #                    bail to UNKNOWN.
+    #   reachable_zero — SHA exists, three-dot diff returns empty/zero
+    #                    adds. Legitimate zero-diff round (chore: bump
+    #                    deps that's already merged, force-push that
+    #                    didn't change content). adds=0 is real data.
+    #   numeric        — SHA exists, diff has at least one file with
+    #                    adds > 0. adds carries the count.
+    #
+    # Three-dot diff (<merge_base>...<sha>) so git computes the dynamic
+    # merge-base per (base, sha) pair — each row reflects "what this
+    # round looked like at the time," not "what this round looks like vs
+    # current main."
+    local round_adds=() round_states=()
+    local round_sha numstat adds state
     for line in "${rounds[@]}"; do
         round_sha="${line#*$'\t'}"
-        numstat=$(git -C "$repo_dir" diff --numstat "${merge_base}...${round_sha}" 2>/dev/null)
-        if [ -n "$numstat" ]; then
-            adds=$(printf '%s\n' "$numstat" | awk '{sum += $1} END {print sum+0}')
-        else
+        if ! git -C "$repo_dir" cat-file -e "$round_sha" 2>/dev/null; then
+            state="unavailable"
             adds=0
-            # Confirm the SHA itself is unreachable (vs a legit zero-diff
-            # round). cat-file -e exits non-zero when the object is missing.
-            if ! git -C "$repo_dir" cat-file -e "$round_sha" 2>/dev/null && \
-                    [ "$i_check" -ne "$last_idx" ]; then
-                had_unavailable_round=true
+        else
+            numstat=$(git -C "$repo_dir" diff --numstat "${merge_base}...${round_sha}" 2>/dev/null)
+            if [ -n "$numstat" ]; then
+                adds=$(printf '%s\n' "$numstat" | awk '{sum += $1} END {print sum+0}')
+            else
+                adds=0
+            fi
+            if [ "$adds" -gt 0 ]; then
+                state="numeric"
+            else
+                state="reachable_zero"
             fi
         fi
-        shortstat=$(git -C "$repo_dir" diff --shortstat "${merge_base}...${round_sha}" 2>/dev/null | sed 's/^ *//' | tr '\n' ' ')
-        [ -z "$shortstat" ] && shortstat="(sha not in local history)"
         round_adds+=("$adds")
-        round_stats+=("$shortstat")
-        i_check=$((i_check + 1))
+        round_states+=("$state")
     done
 
     if [ ${#rounds[@]} -eq 1 ]; then
@@ -117,25 +121,41 @@ compute_loc_trend() {
         echo
         echo "| Round | Timestamp | SHA | base..head |"
         echo "|---|---|---|---|"
-        echo "| 1 | $current_ts | ${current_sha:0:7} | ${round_stats[0]} |"
+        echo "| 1 | $current_ts | ${current_sha:0:7} | $(_loc_trend_display "$repo_dir" "$merge_base" "$current_sha" "${round_states[0]}") |"
         return 0
     fi
 
-    # Trajectory: ratio of last-round additions to first-round additions.
-    # UNKNOWN supersedes every other classification when at least one prior
-    # row's SHA isn't in local history — the additions count for that row
-    # is unrecoverable, so the ratio would be a lie. Silent fall-through
-    # to STABLE here is the BCR class flagged on PR #38 round-3: a PR
-    # whose first reviewed SHA was force-pushed away would always read as
-    # STABLE regardless of actual trajectory.
+    # Trajectory dispatch on the typed states. UNKNOWN supersedes every
+    # other classification when at least one PRIOR row is unavailable —
+    # the additions count for that row is unrecoverable, so a ratio
+    # against it would be a lie. The current round being unavailable is
+    # impossible (we just resolved it) so we don't have to special-case it.
+    local first_state="${round_states[0]}"
+    local last_state="${round_states[-1]}"
     local first_round_adds="${round_adds[0]}"
     local last_round_adds="${round_adds[-1]}"
     local trajectory ratio
-    if [ "$had_unavailable_round" = "true" ]; then
+    local had_unavailable_prior=false
+    local s
+    local last_idx=$((${#round_states[@]} - 1))
+    local i_state=0
+    for s in "${round_states[@]}"; do
+        if [ "$s" = "unavailable" ] && [ "$i_state" -ne "$last_idx" ]; then
+            had_unavailable_prior=true
+            break
+        fi
+        i_state=$((i_state + 1))
+    done
+
+    if [ "$had_unavailable_prior" = "true" ]; then
         trajectory="UNKNOWN (one or more prior reviewed SHAs not in local history — likely rebased or force-pushed)"
-    elif [ "$first_round_adds" -eq 0 ]; then
-        trajectory="STABLE"
-    else
+    elif [ "$first_state" = "reachable_zero" ] && [ "$last_state" = "numeric" ]; then
+        # First round was a legitimately zero-diff baseline (e.g. rebase-only
+        # or chore: bump deps round); later rounds added real code. STABLE
+        # would be misleading — there's clearly growth, just no first-round
+        # baseline to compute a ratio against. Closes round-4 BCR(a).
+        trajectory="GROWING (from zero baseline → ${last_round_adds} adds)"
+    elif [ "$first_state" = "numeric" ] && [ "$last_state" = "numeric" ]; then
         ratio=$(awk -v a="$last_round_adds" -v b="$first_round_adds" 'BEGIN{printf "%.2f", a/b}')
         if awk -v r="$ratio" 'BEGIN{exit !(r >= 1.5)}'; then
             trajectory="GROWING (${ratio}× from first review)"
@@ -144,6 +164,11 @@ compute_loc_trend() {
         else
             trajectory="STABLE"
         fi
+    else
+        # Remaining cases: first=numeric/last=reachable_zero (everything
+        # reverted), or all rows reachable_zero. Both read as STABLE — no
+        # meaningful trajectory because the latest round has no adds.
+        trajectory="STABLE"
     fi
 
     echo "This PR has been reviewed ${#rounds[@]} times. Trajectory: $trajectory."
@@ -154,10 +179,32 @@ compute_loc_trend() {
     for line in "${rounds[@]}"; do
         ts="${line%$'\t'*}"
         sha="${line#*$'\t'}"
-        echo "| $i | $ts | ${sha:0:7} | ${round_stats[$idx]} |"
+        echo "| $i | $ts | ${sha:0:7} | $(_loc_trend_display "$repo_dir" "$merge_base" "$sha" "${round_states[$idx]}") |"
         i=$((i + 1))
         idx=$((idx + 1))
     done
+}
+
+# _loc_trend_display <repo_dir> <merge_base> <sha> <state>
+#   stdout: one-line "base..head" cell content for the trajectory table.
+#
+# Routes on the typed state, not on shortstat output — that conflation
+# was the round-4 BCR(b): a force-push that didn't change content
+# returned an empty shortstat and rendered as "(sha not in local
+# history)" alongside truly-evicted SHAs.
+_loc_trend_display() {
+    local repo_dir="$1" merge_base="$2" sha="$3" state="$4"
+    case "$state" in
+        unavailable)
+            printf '%s' "(sha not in local history)"
+            ;;
+        reachable_zero)
+            printf '%s' "(zero diff)"
+            ;;
+        numeric)
+            git -C "$repo_dir" diff --shortstat "${merge_base}...${sha}" 2>/dev/null | sed 's/^ *//' | tr '\n' ' '
+            ;;
+    esac
 }
 
 # Source-only mode: helpers defined; bail before main body.

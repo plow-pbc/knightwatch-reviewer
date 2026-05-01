@@ -230,4 +230,75 @@ ROUNDS_SHA=$(printf '%s\n' "$ROUNDS_OUT" | head -1 | awk -F'\t' '{print $2}')
     exit 1
 }
 
+# Test 10: GROWING from a reachable_zero baseline. First round's diff
+# vs base is empty (e.g. round was rebase-only or already-merged work);
+# later round adds real code. The pre-typed-states classifier silently
+# called this STABLE because first_round_adds==0 short-circuited the
+# ratio. With explicit per-row states the trajectory must be GROWING.
+# Closes the round-4 BCR(a) bug.
+rm -rf "$STATE_DIR/runs"
+mkdir -p "$STATE_DIR/runs"
+# Use BASE_SHA itself as the first reviewed round → reachable_zero
+# (cat-file -e succeeds, BASE...BASE diff is empty).
+RUN_ZERO_BASELINE="$STATE_DIR/runs/cncorp_plow__999__20260501T000000000Z__${BASE_SHA:0:7}"
+mkdir -p "$RUN_ZERO_BASELINE"
+jq -n --arg sha "$BASE_SHA" --arg ts "2026-05-01T00:00:00Z" \
+    '{status:"completed", sha:$sha, started_at:$ts}' > "$RUN_ZERO_BASELINE/meta.json"
+# Current = SHA2 (50 adds vs base) → first=reachable_zero, last=numeric.
+compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" "$CURRENT_RUN" "$SHA2" > "$OUT"
+grep -qE 'Trajectory:.*GROWING' "$OUT" || {
+    echo "FAIL: expected GROWING from zero baseline (first=reachable_zero, last=numeric)"
+    cat "$OUT"
+    exit 1
+}
+grep -qE 'Trajectory:.*STABLE' "$OUT" && {
+    echo "FAIL: zero-baseline + later adds silently classified as STABLE — BCR(a) regressed"
+    cat "$OUT"
+    exit 1
+}
+
+# Test 11: all rounds reachable_zero → STABLE (legitimately stable at
+# zero). Distinct from UNKNOWN — every SHA is reachable, the diff just
+# happens to be empty (e.g. nothing added relative to base).
+rm -rf "$STATE_DIR/runs"
+mkdir -p "$STATE_DIR/runs"
+RUN_ALL_ZERO="$STATE_DIR/runs/cncorp_plow__999__20260501T000000000Z__${BASE_SHA:0:7}"
+mkdir -p "$RUN_ALL_ZERO"
+jq -n --arg sha "$BASE_SHA" --arg ts "2026-05-01T00:00:00Z" \
+    '{status:"completed", sha:$sha, started_at:$ts}' > "$RUN_ALL_ZERO/meta.json"
+compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" "$CURRENT_RUN" "$BASE_SHA" > "$OUT"
+grep -qE 'Trajectory:.*STABLE' "$OUT" || {
+    echo "FAIL: expected STABLE for all-reachable-zero rounds"
+    cat "$OUT"
+    exit 1
+}
+grep -qE 'Trajectory:.*UNKNOWN' "$OUT" && {
+    echo "FAIL: all-reachable-zero misclassified as UNKNOWN — typed state collapsed unavailable + reachable_zero"
+    cat "$OUT"
+    exit 1
+}
+
+# Test 12: display column renders "(zero diff)" for reachable_zero
+# rounds, NOT "(sha not in local history)". Closes the round-4 BCR(b)
+# display bug — the prior implementation rendered any empty shortstat
+# as "(sha not in local history)" regardless of whether the SHA was
+# evicted or just had a legitimate zero-diff.
+rm -rf "$STATE_DIR/runs"
+mkdir -p "$STATE_DIR/runs"
+RUN_DISPLAY="$STATE_DIR/runs/cncorp_plow__999__20260501T000000000Z__${BASE_SHA:0:7}"
+mkdir -p "$RUN_DISPLAY"
+jq -n --arg sha "$BASE_SHA" --arg ts "2026-05-01T00:00:00Z" \
+    '{status:"completed", sha:$sha, started_at:$ts}' > "$RUN_DISPLAY/meta.json"
+compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" "$CURRENT_RUN" "$BASE_SHA" > "$OUT"
+grep -qF '(zero diff)' "$OUT" || {
+    echo "FAIL: expected display '(zero diff)' for reachable_zero round"
+    cat "$OUT"
+    exit 1
+}
+grep -qF '(sha not in local history)' "$OUT" && {
+    echo "FAIL: reachable_zero round rendered as '(sha not in local history)' — BCR(b) display conflation regressed"
+    cat "$OUT"
+    exit 1
+}
+
 echo "  PASS"
