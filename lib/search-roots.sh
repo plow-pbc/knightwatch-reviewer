@@ -9,11 +9,13 @@
 # did we cover, and why?". No silent coverage loss, no per-prompt
 # rediscovery.
 #
-# Trust model: SOURCE_PATHS in repos.conf IS the whitelist. If the
-# operator listed cncorp/plow-content there, that's affirmative
-# consent to reference plow-content code in any PR review on a base
-# repo whose entry includes it. No runtime gh-api permission check —
-# the operator decides out-of-band, in repos.conf, with full context.
+# Trust model: SOURCE_PATHS in repos.conf is the operator's checkout
+# layout (which slugs map to which on-disk paths). The PER-REPO sibling
+# allowlist now lives in each repo's .knightwatch/siblings file, read
+# from the base branch only via lib/knightwatch-config.sh. PR-head
+# edits to .knightwatch/siblings don't take effect until merged. When
+# the file is absent, falls back to "all REPOS slugs minus self" — the
+# legacy behavior — so un-onboarded repos keep working.
 #
 # Per-sibling status:
 #   included      — slug in SOURCE_PATHS AND its checkout exists on
@@ -35,18 +37,59 @@
 # coverage: partial        — at least one included AND at least one missing
 
 stage_search_roots() {
-    local repo="$1"
+    local repo="$1" repo_dir="$2" base_ref="$3"
     local sibling_repo sibling_path
     local body=""
     local included=0 missing=0
+    local sibling_list
 
-    for sibling_repo in "${REPOS[@]}"; do
+    # Source of truth for the sibling allowlist:
+    #   1. .knightwatch/siblings at <base_ref> (per-repo, future)
+    #   2. "all REPOS slugs except self" (legacy fallback)
+    #
+    # <base_ref> is normally a SHA pinned upstream BEFORE `just test`
+    # ran (so PR-controlled mid-test ref-rewrites can't redirect this
+    # read). The fallback path preserves un-onboarded repos' current
+    # behavior. Once every tracked repo has .knightwatch/siblings
+    # committed, the fallback can be removed.
+    local siblings=()
+    sibling_list=$(read_knightwatch_file "$repo_dir" "$base_ref" "siblings")
+    case $? in
+        0)
+            # PRESENT: per-repo allowlist. Parse line-by-line, ignore blanks + # comments.
+            while IFS= read -r line; do
+                line="${line%%#*}"           # strip inline comments
+                line="${line//[[:space:]]/}" # strip whitespace
+                [ -z "$line" ] && continue
+                siblings+=("$line")
+            done <<< "$sibling_list"
+            ;;
+        1)
+            # ABSENT: legacy fallback to all REPOS minus self
+            for sibling_repo in "${REPOS[@]}"; do
+                [ "$sibling_repo" = "$repo" ] && continue
+                siblings+=("$sibling_repo")
+            done
+            ;;
+        *)
+            # ERROR: knightwatch-config helper had a real failure (missing
+            # base ref, corrupt object store, etc.). Don't silently revive
+            # legacy policy — fail loud so the operator sees it.
+            echo "search-roots: knightwatch-config error reading siblings for $repo" >&2
+            return 2
+            ;;
+    esac
+
+    for sibling_repo in "${siblings[@]}"; do
         [ "$sibling_repo" = "$repo" ] && continue
         sibling_path="${SOURCE_PATHS[$sibling_repo]:-}"
-        # No SOURCE_PATHS entry = sibling not whitelisted at all (not a
-        # coverage gap, just not configured). Skip silently.
-        [ -z "$sibling_path" ] && continue
-        if [ ! -d "$sibling_path" ]; then
+        # Two ways a declared sibling can be unavailable: (a) operator
+        # has no SOURCE_PATHS entry for the slug — they haven't told us
+        # where to find it on this host; (b) entry exists but the
+        # checkout directory is absent on disk. Both are operator-config
+        # gaps (NOT a security boundary) and both classify as `missing`
+        # so the user sees them in coverage rather than silent drops.
+        if [ -z "$sibling_path" ] || [ ! -d "$sibling_path" ]; then
             body+="$sibling_repo missing"$'\n'
             missing=$((missing + 1))
             continue
@@ -58,7 +101,7 @@ stage_search_roots() {
     local total=$((included + missing))
     local header
     if [ "$total" -eq 0 ]; then
-        header="# coverage: same-repo-only — no sibling SOURCE_PATHS in scope"
+        header="# coverage: same-repo-only — no siblings in scope"
     elif [ "$included" -eq "$total" ]; then
         header="# coverage: full"
     elif [ "$included" -eq 0 ]; then

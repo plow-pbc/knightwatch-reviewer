@@ -91,6 +91,9 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # --- prompt-build helpers (sourced from lib/prompt-build.sh) ---
 . "$_LIB_DIR/prompt-build.sh"
 
+# --- knightwatch-config helper (per-repo .knightwatch/ reads) ---
+. "$_LIB_DIR/knightwatch-config.sh"
+
 # --- search-roots coverage-state helper ---
 . "$_LIB_DIR/search-roots.sh"
 
@@ -466,6 +469,22 @@ if ! command -v just >/dev/null 2>&1; then
     exit 1
 fi
 
+# Snapshot the base-branch SHA BEFORE running `just test`. Trust model
+# for .knightwatch/<file> reads: the worker treats the base branch as
+# the source of truth (PR-head edits don't take effect until merged).
+# But `just test` runs PR-controlled code in the same workdir AND can
+# rewrite local refs (e.g., `git update-ref refs/remotes/origin/main HEAD`).
+# After tests, every read of `origin/<default-branch>:.knightwatch/...`
+# would silently pick up PR-head policy. Snapshotting the base SHA
+# upfront and passing the SHA (immutable) — not the ref — to all
+# downstream .knightwatch reads closes that bypass.
+DEFAULT_BRANCH_SHA=$(git -C "$REPO_DIR" rev-parse --verify --quiet "origin/$DEFAULT_BRANCH")
+if [ -z "$DEFAULT_BRANCH_SHA" ]; then
+    log "$PR_ID: failed to resolve origin/$DEFAULT_BRANCH SHA — aborting"
+    rm -rf "$REPO_DIR"
+    exit 1
+fi
+
 JUST_FILE=""
 for n in justfile Justfile JUSTFILE .justfile .Justfile .JUSTFILE; do
     [ -f "$REPO_DIR/$n" ] && { JUST_FILE="$REPO_DIR/$n"; break; }
@@ -575,7 +594,16 @@ fi
 # exit 1 *because* findings exist. Treat empty-stdout-AND-non-zero-exit
 # as the only degrade signal; non-empty stdout is data.
 DEAD_CODE_STATIC=""
-DEAD_CODE_CMD="${DEAD_CODE_CMDS[$REPO]:-}"
+# Dead-code static-analysis command: try .knightwatch/dead-code.sh first
+# (per-repo, committed to the base branch), fall back to DEAD_CODE_CMDS[$REPO]
+# from repos.conf (legacy operator-managed).
+DEAD_CODE_CMD=""
+DEAD_CODE_CMD=$(read_knightwatch_file "$REPO_DIR" "$DEFAULT_BRANCH_SHA" "dead-code.sh")
+case $? in
+    0) : ;;  # PRESENT: use as-is (empty content = "no dead-code check for this repo")
+    1) DEAD_CODE_CMD="${DEAD_CODE_CMDS[$REPO]:-}" ;;  # ABSENT: legacy fallback
+    *) log "$PR_ID: knightwatch-config error reading dead-code.sh — aborting"; rm -rf "$REPO_DIR"; exit 1 ;;
+esac
 if [ -n "$DEAD_CODE_CMD" ] && [ -n "$KID_INPUT_DIFF" ]; then
     TOUCHED_FILES_ARR=()
     while IFS= read -r f; do
@@ -648,7 +676,16 @@ export REVIEWER_LIB_DIR="$_LIB_DIR"
 # silently publishes wrong review text on broken inputs (bad PROJECT_DIR,
 # malformed config file, refused symlink). Fail-loud here keeps the
 # deterministic section honest.
-STRICT_TYPING_CMD="${STRICT_TYPING_CMDS[$REPO]:-}"
+# Strict-typing pre-check: try .knightwatch/strict-typing.sh first
+# (per-repo, committed to the base branch), fall back to STRICT_TYPING_CMDS[$REPO]
+# from repos.conf (legacy operator-managed).
+STRICT_TYPING_CMD=""
+STRICT_TYPING_CMD=$(read_knightwatch_file "$REPO_DIR" "$DEFAULT_BRANCH_SHA" "strict-typing.sh")
+case $? in
+    0) : ;;  # PRESENT: use as-is (empty content = "no strict-typing check for this repo")
+    1) STRICT_TYPING_CMD="${STRICT_TYPING_CMDS[$REPO]:-}" ;;  # ABSENT: legacy fallback
+    *) log "$PR_ID: knightwatch-config error reading strict-typing.sh — aborting"; rm -rf "$REPO_DIR"; exit 1 ;;
+esac
 if [ -n "$STRICT_TYPING_CMD" ]; then
     STRICT_STDERR=$(mktemp)
     STRICT_GAP=$(cd "$REPO_DIR" && bash -c "$STRICT_TYPING_CMD" 2>"$STRICT_STDERR")
@@ -682,7 +719,11 @@ log "$PR_ID: diff is ${#KID_INPUT_DIFF} bytes — auto-nits: ${#AUTO_NITS[@]}"
 # source of truth. Lives in lib/search-roots.sh (regression-fenced by
 # lib/tests/search-roots-smoke.sh) so the staging logic can't drift
 # into per-prompt rediscovery again.
-SEARCH_ROOTS=$(stage_search_roots "$REPO")
+if ! SEARCH_ROOTS=$(stage_search_roots "$REPO" "$REPO_DIR" "$DEFAULT_BRANCH_SHA"); then
+    log "$PR_ID: stage_search_roots failed (knightwatch-config error) — aborting"
+    rm -rf "$REPO_DIR"
+    exit 1
+fi
 
 # Materialize sibling-repo symlinks under .siblings/<owner>/<repo>, but
 # ONLY for siblings stage_search_roots above just classified as
@@ -725,12 +766,26 @@ if [ -n "$PRIOR_REVIEWS" ]; then
     write_scratch "$REPO_DIR" "prior-reviews.md" "$PRIOR_REVIEWS"
 fi
 
-CONTEXT_FILE="$HOME/.pr-reviewer/contexts/$(echo "$REPO" | tr '/' '_').md"
-if [ -f "$CONTEXT_FILE" ]; then
-    write_scratch "$REPO_DIR" "product-context.md" "$(cat "$CONTEXT_FILE")"
-else
-    write_scratch "$REPO_DIR" "product-context.md" "(no product context configured for $REPO)"
-fi
+# Product context: try .knightwatch/product-context.md first (per-repo,
+# committed to the base branch), fall back to ~/.pr-reviewer/contexts/<slug>.md
+# (legacy operator-managed). Once every tracked repo has its .knightwatch/
+# committed, the fallback can be removed.
+PRODUCT_CONTEXT=""
+PRODUCT_CONTEXT=$(read_knightwatch_file "$REPO_DIR" "$DEFAULT_BRANCH_SHA" "product-context.md")
+case $? in
+    0) : ;;  # PRESENT: use as-is (empty content = "explicitly no product context for this repo")
+    1)
+        # ABSENT: legacy fallback
+        CONTEXT_FILE="$HOME/.pr-reviewer/contexts/$(echo "$REPO" | tr '/' '_').md"
+        if [ -f "$CONTEXT_FILE" ]; then
+            PRODUCT_CONTEXT=$(cat "$CONTEXT_FILE")
+        else
+            PRODUCT_CONTEXT="(no product context configured for $REPO)"
+        fi
+        ;;
+    *) log "$PR_ID: knightwatch-config error reading product-context.md — aborting"; rm -rf "$REPO_DIR"; exit 1 ;;
+esac
+write_scratch "$REPO_DIR" "product-context.md" "$PRODUCT_CONTEXT"
 
 FILE_HISTORY=""
 # Derive file-history's file list from $KID_INPUT_DIFF directly by
