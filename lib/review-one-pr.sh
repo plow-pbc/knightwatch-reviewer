@@ -9,6 +9,100 @@
 set -u
 export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
 
+# Source-only guard: when called as `. lib/review-one-pr.sh --source-only`,
+# define helpers + return without running the orchestrator's main body.
+# Used by lib/tests/loc-trend-smoke.sh (and any future helper-level smoke).
+if [ "${1:-}" = "--source-only" ]; then
+    SOURCE_ONLY=true
+else
+    SOURCE_ONLY=false
+fi
+
+# compute_loc_trend <repo_slash> <pr_num> <repo_dir> <merge_base_sha> <state_dir>
+#   stdout: markdown loc-trend.md content
+#
+# repo_slash is the GitHub slash-form (e.g. "cncorp/plow"), NOT the
+# PR_ID (which carries a "#N" suffix). The function converts to
+# underscore-form for filesystem matching.
+#
+# Reads $state_dir/runs/<owner>_<repo>__<pr_num>__<ts>__<sha>/ entries,
+# computes git diff --shortstat <merge_base>..<sha> for each, emits a
+# markdown table sorted by timestamp. Handles empty runs/ (first review)
+# without aborting.
+compute_loc_trend() {
+    local repo="$1" pr_num="$2" repo_dir="$3" merge_base="$4" state_dir="$5"
+    local owner_repo="${repo//\//_}"
+    local runs_dir="$state_dir/runs"
+
+    echo "# LOC trend"
+    echo
+
+    if [ ! -d "$runs_dir" ]; then
+        echo "(no prior rounds — first review)"
+        return 0
+    fi
+
+    # Collect round data (ts:sha tuples sorted by timestamp).
+    local rounds=()
+    local d b ts sha
+    while IFS= read -r d; do
+        b=$(basename "$d")
+        ts=$(echo "$b" | awk -F'__' '{print $3}')
+        sha=$(echo "$b" | awk -F'__' '{print $4}')
+        [ -z "$ts" ] || [ -z "$sha" ] && continue
+        rounds+=("$ts:$sha")
+    done < <(find "$runs_dir" -maxdepth 1 -type d -name "${owner_repo}__${pr_num}__*" 2>/dev/null | sort)
+
+    if [ ${#rounds[@]} -eq 0 ]; then
+        echo "(no prior rounds — first review)"
+        return 0
+    fi
+
+    # Trajectory: ratio of last-round additions to first-round additions.
+    local first_round="${rounds[0]}"
+    local last_round="${rounds[-1]}"
+    local first_sha="${first_round#*:}"
+    local last_sha="${last_round#*:}"
+    local first_shortstat last_shortstat first_round_adds last_round_adds
+    first_shortstat=$(git -C "$repo_dir" diff --shortstat "$merge_base..$first_sha" 2>/dev/null || echo "")
+    last_shortstat=$(git -C "$repo_dir" diff --shortstat "$merge_base..$last_sha" 2>/dev/null || echo "")
+    first_round_adds=$(echo "$first_shortstat" | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+' || echo 0)
+    last_round_adds=$(echo "$last_shortstat" | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+' || echo 0)
+    first_round_adds=${first_round_adds:-0}
+    last_round_adds=${last_round_adds:-0}
+
+    local trajectory ratio
+    if [ "$first_round_adds" -eq 0 ]; then
+        trajectory="STABLE"
+    else
+        ratio=$(awk -v a="$last_round_adds" -v b="$first_round_adds" 'BEGIN{printf "%.2f", a/b}')
+        if awk -v r="$ratio" 'BEGIN{exit !(r >= 1.5)}'; then
+            trajectory="GROWING (${ratio}× from first review)"
+        elif awk -v r="$ratio" 'BEGIN{exit !(r <= 0.66)}'; then
+            trajectory="SHRINKING (${ratio}× from first review)"
+        else
+            trajectory="STABLE"
+        fi
+    fi
+
+    echo "This PR has been reviewed ${#rounds[@]} times. Trajectory: $trajectory."
+    echo
+    echo "| Round | Timestamp | SHA | base..head |"
+    echo "|---|---|---|---|"
+    local i=1 round stat
+    for round in "${rounds[@]}"; do
+        ts="${round%:*}"
+        sha="${round#*:}"
+        stat=$(git -C "$repo_dir" diff --shortstat "$merge_base..$sha" 2>/dev/null | sed 's/^ *//' | tr '\n' ' ')
+        [ -z "$stat" ] && stat="(sha not in local history)"
+        echo "| $i | $ts | ${sha:0:7} | $stat |"
+        i=$((i + 1))
+    done
+}
+
+# Source-only mode: helpers defined; bail before main body.
+$SOURCE_ONLY && return 0
+
 REPO="$1"
 PR_NUM="$2"
 PR_SHA="$3"
@@ -872,6 +966,11 @@ case $? in
     *) log "$PR_ID: knightwatch-config error reading product-context.md — aborting"; rm -rf "$REPO_DIR"; exit 1 ;;
 esac
 write_scratch "$REPO_DIR" "product-context.md" "$PRODUCT_CONTEXT"
+
+# loc-trend.md — per-round LOC trajectory for the momentum specialist
+# and aggregator's loop-breaker mode (see § Broken-Glass Test).
+LOC_TREND=$(compute_loc_trend "$REPO" "$PR_NUM" "$REPO_DIR" "$DEFAULT_BRANCH_SHA" "$STATE_DIR")
+write_scratch "$REPO_DIR" "loc-trend.md" "$LOC_TREND"
 
 FILE_HISTORY=""
 # Derive file-history's file list from $KID_INPUT_DIFF directly by

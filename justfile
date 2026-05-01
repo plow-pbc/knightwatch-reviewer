@@ -61,6 +61,10 @@ test:
     bash lib/tests/anti-bloat-contract-smoke.sh
 
     echo ""
+    echo "=== loc-trend smoke ==="
+    bash lib/tests/loc-trend-smoke.sh
+
+    echo ""
     echo "=== run-specialist smoke test ==="
     bash lib/tests/run-specialist-smoke.sh
 
