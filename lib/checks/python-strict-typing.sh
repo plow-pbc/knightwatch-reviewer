@@ -43,6 +43,17 @@
 # pyproject.toml / pyrightconfig.json / mypy.ini / setup.cfg — or a
 # symlink at PROJECT_DIR itself — could leak one bit per PR about an
 # arbitrary readable host file/dir. Refuse symlinks at both levels.
+#
+# Diff-scope gate: the strict-typing nag is only meaningful when the PR
+# actually touches typed code under PROJECT_DIR; running it on a
+# package-lock.json-only / docs-only / CI-config-only PR produces a
+# useless byte-identical nag every time. If the worker exports
+# TOUCHED_FILES_FILE (newline-separated, repo-root-relative paths) and
+# zero of those files match `*.py` / `*.pyi` under PROJECT_DIR, exit 0
+# with a stderr scope-skip log — the worker treats that identically to
+# "strict mode enforced" (no note). Manual invocation without
+# TOUCHED_FILES_FILE proceeds unconditionally so the smokes can drive
+# every config-detection branch without staging a fake diff.
 
 set -u
 
@@ -55,6 +66,18 @@ fi
 if [ ! -d "$PROJECT_DIR" ]; then
     echo "checker-error: PROJECT_DIR '$PROJECT_DIR' is not a directory" >&2
     exit 2
+fi
+
+if [ -n "${TOUCHED_FILES_FILE:-}" ] && [ -f "$TOUCHED_FILES_FILE" ]; then
+    if [ "$PROJECT_DIR" = "." ]; then
+        SCOPE_RE='\.pyi?$'
+    else
+        SCOPE_RE="^${PROJECT_DIR}/.*\.pyi?$"
+    fi
+    if ! grep -E "$SCOPE_RE" "$TOUCHED_FILES_FILE" >/dev/null; then
+        echo "scope-skip: no Python files (*.py, *.pyi) touched under '$PROJECT_DIR'" >&2
+        exit 0
+    fi
 fi
 
 cd "$PROJECT_DIR" || {

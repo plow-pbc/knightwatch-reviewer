@@ -293,4 +293,151 @@ W="$TMPDIR/ts-malformed"; mkdir -p "$W"
 echo '{not valid json' > "$W/tsconfig.json"
 (cd "$W" && assert_checker_error "$TS_CHECK" "ts-malformed" "malformed JSON")
 
-echo "  PASS (15 Python + 9 TS scenarios; tri-state contract + schema-fidelity + symlink-refusal + pyright-precedence regression-fences)"
+# ===== Diff-scope gate (TOUCHED_FILES_FILE) =====
+# The strict-typing nag is only meaningful when the PR touches typed
+# code under PROJECT_DIR. Helpers gate on TOUCHED_FILES_FILE: zero
+# extension matches → exit 0 + stderr "scope-skip". This fences the
+# package-lock-only / docs-only / CI-config-only PR class (the bug
+# from the original report).
+
+# assert_scope_skip CHECK DESC TOUCHED_FILES_CONTENT [ARGS...]
+#   Asserts: exit 0, empty stdout, stderr contains "scope-skip".
+assert_scope_skip() {
+    local check="$1" desc="$2" touched="$3"
+    shift 3
+    local touched_file stderr_file out rc err
+    touched_file=$(mktemp)
+    printf '%s' "$touched" > "$touched_file"
+    stderr_file=$(mktemp)
+    out=$(TOUCHED_FILES_FILE="$touched_file" bash "$check" "$@" 2>"$stderr_file") || rc=$?
+    rc=${rc:-0}
+    err=$(cat "$stderr_file")
+    rm -f "$touched_file" "$stderr_file"
+    if [ "$rc" -ne 0 ]; then
+        echo "FAIL: $desc — expected exit 0 (scope-skip), got rc=$rc; stdout: $out; stderr: $err"
+        exit 1
+    fi
+    if [ -n "$out" ]; then
+        echo "FAIL: $desc — expected empty stdout (scope-skip), got: $out"
+        exit 1
+    fi
+    if ! printf '%s' "$err" | grep -qF "scope-skip"; then
+        echo "FAIL: $desc — expected stderr to contain 'scope-skip', got: $err"
+        exit 1
+    fi
+}
+
+# assert_runs_with_scope CHECK DESC EXPECTED_RC TOUCHED_FILES_CONTENT [ARGS...]
+#   Asserts: helper progresses past the scope gate (exit code matches the
+#   normal config-detection branch), stderr does NOT contain "scope-skip".
+assert_runs_with_scope() {
+    local check="$1" desc="$2" expected_rc="$3" touched="$4"
+    shift 4
+    local touched_file stderr_file out rc err
+    touched_file=$(mktemp)
+    printf '%s' "$touched" > "$touched_file"
+    stderr_file=$(mktemp)
+    out=$(TOUCHED_FILES_FILE="$touched_file" bash "$check" "$@" 2>"$stderr_file") || rc=$?
+    rc=${rc:-0}
+    err=$(cat "$stderr_file")
+    rm -f "$touched_file" "$stderr_file"
+    if [ "$rc" -ne "$expected_rc" ]; then
+        echo "FAIL: $desc — expected exit $expected_rc (gate passed), got rc=$rc; stdout: $out; stderr: $err"
+        exit 1
+    fi
+    if printf '%s' "$err" | grep -qF "scope-skip"; then
+        echo "FAIL: $desc — unexpected scope-skip stderr (helper should have run): $err"
+        exit 1
+    fi
+}
+
+# Shared workdir for gate scenarios: bare pyproject.toml (no strict
+# config) so a gate-passes scenario produces exit 1 (gap), and a
+# gate-skips scenario produces exit 0 (scope-skip) — distinguishable.
+echo "  Python gate: package-lock-only diff → scope-skip (the original-report bug class)..."
+W="$TMPDIR/py-gate"; mkdir -p "$W"
+cat > "$W/pyproject.toml" <<'EOF'
+[project]
+name = "x"
+EOF
+(cd "$W" && assert_scope_skip "$PY_CHECK" "py-gate-package-lock" \
+    'package-lock.json
+README.md
+.github/workflows/ci.yml')
+
+echo "  Python gate: diff with .py file → gate passes, helper detects gap..."
+(cd "$W" && assert_runs_with_scope "$PY_CHECK" "py-gate-py-touches" 1 \
+    'README.md
+src/foo.py')
+
+echo "  Python gate: diff with .pyi stub → gate passes (stubs count)..."
+(cd "$W" && assert_runs_with_scope "$PY_CHECK" "py-gate-pyi-touches" 1 \
+    'src/foo.pyi')
+
+echo "  Python gate: empty TOUCHED_FILES_FILE → scope-skip (no files = no scope)..."
+(cd "$W" && assert_scope_skip "$PY_CHECK" "py-gate-empty" '')
+
+# Subdir gate: PROJECT_DIR=api means only api/**/*.py counts.
+# A .py file at the repo root or in another subdir is out of scope.
+echo "  Python gate (PROJECT_DIR=api): root .py → scope-skip (outside api/)..."
+W="$TMPDIR/py-gate-subdir"; mkdir -p "$W/api"
+cat > "$W/api/pyproject.toml" <<'EOF'
+[project]
+name = "x"
+EOF
+(cd "$W" && assert_scope_skip "$PY_CHECK" "py-gate-subdir-rootfile" \
+    'foo.py
+scripts/bar.py' \
+    api)
+
+echo "  Python gate (PROJECT_DIR=api): api/foo.py → gate passes..."
+(cd "$W" && assert_runs_with_scope "$PY_CHECK" "py-gate-subdir-match" 1 \
+    'api/foo.py' \
+    api)
+
+# Manual invocation without TOUCHED_FILES_FILE (smoke + ad-hoc) must
+# still run unconditionally — the gate is opt-in by the worker.
+echo "  Python gate: TOUCHED_FILES_FILE unset → helper runs unconditionally..."
+W="$TMPDIR/py-gate-unset"; mkdir -p "$W"
+cat > "$W/pyproject.toml" <<'EOF'
+[project]
+name = "x"
+EOF
+unset TOUCHED_FILES_FILE
+(cd "$W" && assert_gap "$PY_CHECK" "py-gate-unset" "no strict-mode config")
+
+# TS gate — same shape.
+echo "  TS gate: package-lock-only diff → scope-skip..."
+W="$TMPDIR/ts-gate"; mkdir -p "$W"
+echo '{"compilerOptions": {"strict": false}}' > "$W/tsconfig.json"
+(cd "$W" && assert_scope_skip "$TS_CHECK" "ts-gate-package-lock" \
+    'package-lock.json
+README.md')
+
+echo "  TS gate: diff with .ts file → gate passes, helper detects gap..."
+(cd "$W" && assert_runs_with_scope "$TS_CHECK" "ts-gate-ts-touches" 1 \
+    'src/foo.ts')
+
+echo "  TS gate: diff with .tsx file → gate passes..."
+(cd "$W" && assert_runs_with_scope "$TS_CHECK" "ts-gate-tsx-touches" 1 \
+    'src/Foo.tsx')
+
+# JS files are NOT in scope — strict typing is TypeScript-specific.
+echo "  TS gate: diff with .js file only → scope-skip (JS is out of scope)..."
+(cd "$W" && assert_scope_skip "$TS_CHECK" "ts-gate-js-only" \
+    'src/legacy.js')
+
+# Subdir gate
+echo "  TS gate (PROJECT_DIR=web): root .ts → scope-skip (outside web/)..."
+W="$TMPDIR/ts-gate-subdir"; mkdir -p "$W/web"
+echo '{"compilerOptions": {"strict": false}}' > "$W/web/tsconfig.json"
+(cd "$W" && assert_scope_skip "$TS_CHECK" "ts-gate-subdir-rootfile" \
+    'foo.ts' \
+    web)
+
+echo "  TS gate (PROJECT_DIR=web): web/foo.ts → gate passes..."
+(cd "$W" && assert_runs_with_scope "$TS_CHECK" "ts-gate-subdir-match" 1 \
+    'web/foo.ts' \
+    web)
+
+echo "  PASS (15 Python + 9 TS config scenarios + 13 diff-scope-gate scenarios; tri-state contract + schema-fidelity + symlink-refusal + pyright-precedence + diff-scope-gate fences)"

@@ -557,6 +557,39 @@ elif [ -n "$KID_INPUT_DIFF" ]; then
     log "$PR_ID: kid index not yet built at $KID_PROJECT_PATH — skipping prior-art lookup"
 fi
 
+# ---- touched-files derivation (shared by dead-code + strict-typing) ----
+# Multiple pre-checks need the PR's touched-files list. Build once and
+# share via two surfaces:
+#
+#   - TOUCHED_FILES_ARR  : bash array — positional args for the
+#                          per-repo dead-code command (which references
+#                          them as "$@"). PR-controlled filenames must
+#                          never flow through `eval`; the array form
+#                          quotes whitespace and shell metacharacters
+#                          correctly under `bash -c "$cmd" -- "$@"`.
+#
+#   - TOUCHED_FILES_FILE : path to a temp file with the same paths,
+#                          newline-separated, repo-root-relative.
+#                          Exported so language-specific strict-typing
+#                          helpers can do their own diff-scope gate
+#                          (skip the nag when zero touched files match
+#                          the language's extensions). The gate lives
+#                          in each helper because the extension list is
+#                          language-specific knowledge — keeps the
+#                          worker language-agnostic.
+#
+# Empty diff → empty array → every consumer no-ops correctly.
+TOUCHED_FILES_ARR=()
+if [ -n "$KID_INPUT_DIFF" ]; then
+    while IFS= read -r f; do
+        [ -n "$f" ] && TOUCHED_FILES_ARR+=("$f")
+    done < <(printf '%s' "$KID_INPUT_DIFF" | grep -E '^\+\+\+ b/' | sed 's|^+++ b/||')
+fi
+TOUCHED_FILES_FILE=$(mktemp)
+printf '%s\n' "${TOUCHED_FILES_ARR[@]}" > "$TOUCHED_FILES_FILE"
+export TOUCHED_FILES_FILE
+log "$PR_ID: touched-files = ${#TOUCHED_FILES_ARR[@]}"
+
 # ---- dead-code static-tool pre-pass ----
 # Mirrors the kid block above: per-repo command, graceful degrade on
 # failure, output to a scratch file consumed by ONE downstream step
@@ -565,35 +598,23 @@ fi
 # assoc array makes the lookup safe under `set -u` even in sandboxes
 # without repos.conf.
 #
-# Filenames are PR-controlled — never let them flow through `eval`.
-# TOUCHED_FILES_ARR is a bash array; `bash -c "$cmd" -- "$@"` invokes
-# the per-repo command with files as positional args, which the
-# command references as "$@" (see repos.conf). Filenames containing
-# whitespace or shell metacharacters are quoted correctly.
-#
 # Exit-code policy: keep stdout regardless of exit. Some tools (vulture)
 # exit 1 *because* findings exist. Treat empty-stdout-AND-non-zero-exit
 # as the only degrade signal; non-empty stdout is data.
 DEAD_CODE_STATIC=""
 DEAD_CODE_CMD="${DEAD_CODE_CMDS[$REPO]:-}"
-if [ -n "$DEAD_CODE_CMD" ] && [ -n "$KID_INPUT_DIFF" ]; then
-    TOUCHED_FILES_ARR=()
-    while IFS= read -r f; do
-        [ -n "$f" ] && TOUCHED_FILES_ARR+=("$f")
-    done < <(printf '%s' "$KID_INPUT_DIFF" | grep -E '^\+\+\+ b/' | sed 's|^+++ b/||')
-    if [ "${#TOUCHED_FILES_ARR[@]}" -gt 0 ]; then
-        DC_STATIC_STDERR=$(mktemp)
-        DEAD_CODE_STATIC=$(cd "$REPO_DIR" && bash -c "$DEAD_CODE_CMD" -- "${TOUCHED_FILES_ARR[@]}" 2>"$DC_STATIC_STDERR")
-        DC_STATIC_EXIT=$?
-        if [ -n "$DEAD_CODE_STATIC" ]; then
-            DC_LINE_COUNT=$(printf '%s\n' "$DEAD_CODE_STATIC" | wc -l)
-            log "$PR_ID: dead-code static pre-pass produced $DC_LINE_COUNT candidate line(s) (exit $DC_STATIC_EXIT)"
-        elif [ "$DC_STATIC_EXIT" -ne 0 ]; then
-            DC_ERR_SUMMARY=$(tail -n 3 "$DC_STATIC_STDERR" | tr '\n' ' ')
-            log "$PR_ID: dead-code static pre-pass exit $DC_STATIC_EXIT, no output — degrading. stderr tail: $DC_ERR_SUMMARY"
-        fi
-        rm -f "$DC_STATIC_STDERR"
+if [ -n "$DEAD_CODE_CMD" ] && [ "${#TOUCHED_FILES_ARR[@]}" -gt 0 ]; then
+    DC_STATIC_STDERR=$(mktemp)
+    DEAD_CODE_STATIC=$(cd "$REPO_DIR" && bash -c "$DEAD_CODE_CMD" -- "${TOUCHED_FILES_ARR[@]}" 2>"$DC_STATIC_STDERR")
+    DC_STATIC_EXIT=$?
+    if [ -n "$DEAD_CODE_STATIC" ]; then
+        DC_LINE_COUNT=$(printf '%s\n' "$DEAD_CODE_STATIC" | wc -l)
+        log "$PR_ID: dead-code static pre-pass produced $DC_LINE_COUNT candidate line(s) (exit $DC_STATIC_EXIT)"
+    elif [ "$DC_STATIC_EXIT" -ne 0 ]; then
+        DC_ERR_SUMMARY=$(tail -n 3 "$DC_STATIC_STDERR" | tr '\n' ' ')
+        log "$PR_ID: dead-code static pre-pass exit $DC_STATIC_EXIT, no output — degrading. stderr tail: $DC_ERR_SUMMARY"
     fi
+    rm -f "$DC_STATIC_STDERR"
 fi
 
 # ---- deterministic pre-checks ----
@@ -667,6 +688,13 @@ if [ -n "$STRICT_TYPING_CMD" ]; then
     esac
     rm -f "$STRICT_STDERR"
 fi
+
+# TOUCHED_FILES_FILE was only needed by the deterministic pre-checks
+# (dead-code, strict-typing). Clean up before the LLM specialists run —
+# they read the diff directly from the staged scratch files, not the
+# touched-files list.
+rm -f "$TOUCHED_FILES_FILE"
+unset TOUCHED_FILES_FILE
 
 log "$PR_ID: diff is ${#KID_INPUT_DIFF} bytes"
 
