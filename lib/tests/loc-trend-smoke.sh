@@ -1,5 +1,5 @@
 #!/bin/bash
-# Smoke for compute_loc_trend (lib/review-one-pr.sh) and
+# Smoke for compute_loc_trend (lib/loc-trend.sh) and
 # author_visible_rounds (lib/run-dir.sh).
 #
 # Contracts:
@@ -31,13 +31,12 @@ trap 'rm -rf "$TMPDIR"' EXIT
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-# Pin REVIEWER_LIB_DIR to the checkout's lib/ before sourcing the
-# orchestrator in --source-only mode. Without this, an inherited
-# REVIEWER_LIB_DIR (set by a parent env or a prior test) would cause
-# review-one-pr.sh to source the *installed* lib/run-dir.sh, which may
-# lag behind the checkout (e.g. missing is_run_author_visible /
-# author_visible_rounds). The smoke would then test the installed
-# helpers instead of the ones under review — silent false-pass.
+# Pin REVIEWER_LIB_DIR to the checkout's lib/ so lib/loc-trend.sh
+# sources its run-dir.sh dependency from the checkout, not from an
+# inherited installed copy that may lag behind (e.g. missing
+# is_run_author_visible / author_visible_rounds). Without this pin
+# the smoke would test the installed helpers instead of the ones
+# under review — silent false-pass.
 export REVIEWER_LIB_DIR="$PROJECT_ROOT/lib"
 
 # Build a fake repo with two commits the function can shortstat against.
@@ -80,9 +79,12 @@ CURRENT_SHA="$SHA2"
 
 OUT="$TMPDIR/loc-trend.md"
 
-# Source review-one-pr.sh in --source-only mode so compute_loc_trend is
-# defined without running the orchestrator's main body.
-. "$PROJECT_ROOT/lib/review-one-pr.sh" --source-only
+# Source the loc-trend lib directly. lib/loc-trend.sh handles its own
+# run-dir.sh dependency (single owner of is_run_author_visible /
+# author_visible_rounds), so the smoke gets both compute_loc_trend and
+# author_visible_rounds without going through the orchestrator's
+# bootstrap.
+. "$PROJECT_ROOT/lib/loc-trend.sh"
 
 # Test 1: 2 prior author-visible runs + current round → 3 rows + GROWING
 compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" "$CURRENT_RUN" "$CURRENT_SHA" > "$OUT"

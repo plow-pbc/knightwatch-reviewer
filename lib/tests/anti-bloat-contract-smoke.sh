@@ -101,4 +101,27 @@ assert_grep "aggregator.md should reference loc-trend.md trigger" \
 assert_grep "aggregator.md should reference momentum specialist output" \
     "momentum.md" prompts/aggregator.md
 
+# Path 2 trigger semantics — fence the actual SHAPE of the trigger, not
+# just the token presence. Round-5 finding: an earlier smoke only checked
+# "loc-trend.md" appears, which is satisfied even if the file is mentioned
+# without naming the threshold (≥1.5×) or the prior-rounds-only condition
+# (the gotcha is real — momentum runs before the critic, so "this round's"
+# Bug-Class-Recurrence isn't visible to it yet). Token-level fences below;
+# Rule 8 still bars pinning prose.
+echo "  asserting Path 2 trigger phrases in aggregator.md..."
+assert_grep "aggregator.md should fence the 1.5× LOC threshold" \
+    "1.5×" prompts/aggregator.md
+assert_grep "aggregator.md should fence the 2+ prior rounds threshold" \
+    "2+ prior rounds" prompts/aggregator.md
+assert_grep "aggregator.md should fence prior-rounds-only language ('any prior round')" \
+    "any prior round" prompts/aggregator.md
+
+# Pre-PMF lens (critic.md) — same prior-rounds-only fence; catches a
+# regression of the Round-5 spec/critic drift where critic.md said "this
+# round or any prior round" (unreachable, since the critic and Bug-Class-
+# Recurrence labelling happen in the same step).
+echo "  asserting Pre-PMF lens trigger phrases in critic.md..."
+assert_grep "critic.md should fence prior-rounds-only language ('any prior round')" \
+    "any prior round" prompts/critic.md
+
 echo "  PASS"

@@ -267,7 +267,9 @@ Reframe:
 
 Scope-creep findings (asking the PR to update unrelated infra, fix a long-pre-existing gap, expand into adjacent policy) MUST be REFRAME-AS-QUESTION'd if they survive — they are not bugs, the remedy is additive by definition, and the cost-naming forces the author to weigh in. The reframe must include explicit cost language ("adds complexity and makes PMF iteration harder").
 
-**(F3) Pre-PMF lens.** When `loc-trend.md` shows GROWING and Bug-Class-Recurrence has fired in this round or any prior round, the critic applies the lens to *every surviving finding*: would the failure mode the remedy is preventing be observed in production at our scale today? If no AND the remedy is additive without observed need → REMEDY-BLOAT (drop entirely). If no but the underlying concern is real → REFRAME-AS-QUESTION.
+**(F3) Pre-PMF lens.** When `loc-trend.md` shows GROWING and Bug-Class-Recurrence has fired in any prior round (visible in `prior-reviews.md`), the critic applies the lens to *every surviving finding*: would the failure mode the remedy is preventing be observed in production at our scale today? If no AND the remedy is additive without observed need → REMEDY-BLOAT (drop entirely). If no but the underlying concern is real → REFRAME-AS-QUESTION.
+
+(The lens reads only PRIOR rounds — the critic runs alongside the other specialists, so "this round's" Bug-Class-Recurrence finding does not yet exist when the critic is checking the trigger. Naming "this round" here would make the condition unreachable, mirroring the same gotcha for momentum's loop-breaker (G3 below).)
 
 Implementation: ~25 LOC added to critic.md (output schema + bucket descriptions + lens conditional + cost-language requirement). The existing critic machinery handles the rest.
 
@@ -313,7 +315,7 @@ Open Questions is no longer "padding" or "stuff that didn't fit elsewhere" — i
 **(G3) Re-review loop-breaker mode.** Modify step 6 (today's "step-back signal") to also fire on re-reviews when:
 
 - `loc-trend.md` shows GROWING (≥1.5× since first review), AND
-- `Bug-Class-Recurrence` has fired in this round or any prior round (visible in `prior-reviews.md`),
+- `Bug-Class-Recurrence` has fired in any prior round (visible in `prior-reviews.md`),
 
 OR
 
@@ -322,6 +324,8 @@ OR
 OR (existing trigger, unchanged):
 
 - First-review-only conditions from today's step 6.
+
+(The trigger reads only PRIOR rounds — the momentum specialist runs *before* the critic, so "this round's" Bug-Class-Recurrence finding does not yet exist when momentum is checking the trigger. Naming "this round" here would make the condition unreachable.)
 
 When the loop-breaker fires:
 
