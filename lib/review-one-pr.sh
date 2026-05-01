@@ -682,7 +682,7 @@ log "$PR_ID: diff is ${#KID_INPUT_DIFF} bytes — auto-nits: ${#AUTO_NITS[@]}"
 # source of truth. Lives in lib/search-roots.sh (regression-fenced by
 # lib/tests/search-roots-smoke.sh) so the staging logic can't drift
 # into per-prompt rediscovery again.
-SEARCH_ROOTS=$(stage_search_roots "$REPO")
+SEARCH_ROOTS=$(stage_search_roots "$REPO" "$REPO_DIR" "$DEFAULT_BRANCH")
 
 # Materialize sibling-repo symlinks under .siblings/<owner>/<repo>, but
 # ONLY for siblings stage_search_roots above just classified as
