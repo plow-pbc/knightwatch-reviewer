@@ -602,7 +602,20 @@ Find the section in `lib/review-one-pr.sh` that writes scratch files (around lin
 ```bash
 # loc-trend.md — per-round LOC trajectory for the momentum specialist
 # and aggregator's loop-breaker mode (see § Broken-Glass Test).
-LOC_TREND=$(compute_loc_trend "$REPO" "$PR_NUM" "$REPO_DIR" "$BASE_REF_SHA" "$STATE_DIR")
+#
+# compute_loc_trend returns 1 when a visible run's meta.json is
+# missing .sha or .started_at (corruption — would mean a regression
+# rewiring the SHA source). lib/review-one-pr.sh runs under `set -u`
+# without `set -e`, so a bare command-substitution would silently
+# swallow that exit code and write a partial loc-trend.md. Wrap the
+# assignment in an explicit status check that aborts loud — same
+# fail-fast posture as `is_clean_incremental_available`'s caller and
+# the other gh / git pre-checks.
+if ! LOC_TREND=$(compute_loc_trend "$REPO" "$PR_NUM" "$REPO_DIR" "$BASE_REF_SHA" "$STATE_DIR"); then
+    log "$PR_ID: compute_loc_trend FAILED (corrupt visible run meta.json) — aborting before specialist fan-out"
+    rm -rf "$REPO_DIR"
+    exit 1
+fi
 write_scratch "$REPO_DIR" "loc-trend.md" "$LOC_TREND"
 ```
 
