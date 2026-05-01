@@ -14,11 +14,11 @@
 # unchanged. Once all tracked repos have committed .knightwatch/ to
 # their base branches, the fallbacks can be removed in a follow-up.
 
-# read_knightwatch_file <repo_dir> <default_branch> <relative_path>
-#   stdout: file content from origin/<default_branch>:.knightwatch/<rel>
+# read_knightwatch_file <repo_dir> <base_ref> <relative_path>
+#   stdout: file content from <base_ref>:.knightwatch/<rel>
 #           (may be empty when the file exists but has no content)
-#   exit:   0 — PRESENT: file exists on the base branch (content possibly empty)
-#           1 — ABSENT:  file doesn't exist on the base branch (caller falls back to legacy)
+#   exit:   0 — PRESENT: file exists at the base ref (content possibly empty)
+#           1 — ABSENT:  file doesn't exist at the base ref (caller falls back to legacy)
 #           2 — ERROR:   git invocation failed for a non-absence reason (caller aborts loud)
 #
 # Three states, not two. The PRESENT-vs-ABSENT distinction is load-bearing
@@ -27,17 +27,22 @@
 # repo," NOT "fall back to legacy DEAD_CODE_CMDS"). The
 # ABSENT-vs-ERROR distinction is the Fail-Fast complement: callers
 # fall back to legacy ONLY for true absence, not for transient git
-# failures (broken origin/<default-branch> ref, corrupt object store,
-# missing remote, etc.) which would otherwise silently revive legacy
-# policy with no signal to the operator.
+# failures (broken base ref, corrupt object store, etc.) which would
+# otherwise silently revive legacy policy with no signal to the operator.
+#
+# <base_ref> is the caller's responsibility — typically a SHA snapshotted
+# BEFORE any PR-controlled code (e.g. `just test`) has had a chance to
+# rewrite local refs. Passing a SHA (immutable) instead of a branch
+# name (mutable via `git update-ref`) is the trust model: PR-head
+# edits to local refs cannot redirect the read after the SHA is
+# captured. The caller in review-one-pr.sh snapshots
+# `git rev-parse origin/$DEFAULT_BRANCH` once, before tests run.
 #
 # Implementation: rev-parse --verify the base ref first (exit 1 if
 # missing → ERROR rc 2). If the ref is fine, cat-file -e the path
-# (exit non-zero → ABSENT rc 1). Only on both checks succeeding do we
-# read content via git show.
+# (exit non-zero → distinguish ABSENT from ERROR via stderr message).
 read_knightwatch_file() {
-    local repo_dir="$1" default_branch="$2" rel_path="$3"
-    local base_ref="origin/${default_branch}"
+    local repo_dir="$1" base_ref="$2" rel_path="$3"
     local full_ref="${base_ref}:.knightwatch/${rel_path}"
     if ! git -C "$repo_dir" rev-parse --verify --quiet "$base_ref" >/dev/null 2>&1; then
         echo "knightwatch-config: base ref $base_ref not found in $repo_dir" >&2

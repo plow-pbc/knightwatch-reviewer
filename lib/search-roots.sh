@@ -37,21 +37,23 @@
 # coverage: partial        — at least one included AND at least one missing
 
 stage_search_roots() {
-    local repo="$1" repo_dir="$2" default_branch="$3"
+    local repo="$1" repo_dir="$2" base_ref="$3"
     local sibling_repo sibling_path
     local body=""
     local included=0 missing=0
     local sibling_list
 
     # Source of truth for the sibling allowlist:
-    #   1. .knightwatch/siblings on the base branch (per-repo, future)
+    #   1. .knightwatch/siblings at <base_ref> (per-repo, future)
     #   2. "all REPOS slugs except self" (legacy fallback)
     #
-    # The fallback path preserves un-onboarded repos' current behavior.
-    # Once every tracked repo has .knightwatch/siblings committed, the
-    # fallback can be removed.
+    # <base_ref> is normally a SHA pinned upstream BEFORE `just test`
+    # ran (so PR-controlled mid-test ref-rewrites can't redirect this
+    # read). The fallback path preserves un-onboarded repos' current
+    # behavior. Once every tracked repo has .knightwatch/siblings
+    # committed, the fallback can be removed.
     local siblings=()
-    sibling_list=$(read_knightwatch_file "$repo_dir" "$default_branch" "siblings")
+    sibling_list=$(read_knightwatch_file "$repo_dir" "$base_ref" "siblings")
     case $? in
         0)
             # PRESENT: per-repo allowlist. Parse line-by-line, ignore blanks + # comments.

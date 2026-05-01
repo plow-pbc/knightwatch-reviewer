@@ -87,7 +87,7 @@ echo "  scenario 1: .knightwatch/siblings as the allowlist..."
 SELF_REPO=$(make_self_repo yes "acme/foo")
 saved_repos=("${REPOS[@]}")
 REPOS=("acme/self" "acme/foo" "acme/bar")
-OUT=$(stage_search_roots "acme/self" "$SELF_REPO" "main")
+OUT=$(stage_search_roots "acme/self" "$SELF_REPO" "origin/main")
 REPOS=("${saved_repos[@]}")
 assert_contains "scenario 1: header full" "# coverage: full" "$OUT"
 assert_contains "scenario 1: foo included" "acme/foo included .siblings/acme/foo" "$OUT"
@@ -99,7 +99,7 @@ echo "  scenario 2: fallback to REPOS when .knightwatch absent..."
 SELF_REPO=$(make_self_repo no)
 saved_repos=("${REPOS[@]}")
 REPOS=("acme/self" "acme/foo" "acme/bar")
-OUT=$(stage_search_roots "acme/self" "$SELF_REPO" "main")
+OUT=$(stage_search_roots "acme/self" "$SELF_REPO" "origin/main")
 REPOS=("${saved_repos[@]}")
 assert_contains "scenario 2: header full" "# coverage: full" "$OUT"
 assert_contains "scenario 2: foo included" "acme/foo included .siblings/acme/foo" "$OUT"
@@ -109,7 +109,7 @@ assert_contains "scenario 2: bar included" "acme/bar included .siblings/acme/bar
 echo "  scenario 3: missing on-disk checkout..."
 SELF_REPO=$(make_self_repo yes "acme/foo
 acme/qux")
-OUT=$(stage_search_roots "acme/self" "$SELF_REPO" "main")
+OUT=$(stage_search_roots "acme/self" "$SELF_REPO" "origin/main")
 assert_contains "scenario 3: header partial" "# coverage: partial" "$OUT"
 assert_contains "scenario 3: foo included" "acme/foo included .siblings/acme/foo" "$OUT"
 assert_contains "scenario 3: qux missing" "acme/qux missing" "$OUT"
@@ -117,7 +117,7 @@ assert_contains "scenario 3: qux missing" "acme/qux missing" "$OUT"
 # --- scenario 4: empty .knightwatch/siblings → no siblings ---
 echo "  scenario 4: empty .knightwatch/siblings → no siblings..."
 SELF_REPO=$(make_self_repo yes "")
-OUT=$(stage_search_roots "acme/self" "$SELF_REPO" "main")
+OUT=$(stage_search_roots "acme/self" "$SELF_REPO" "origin/main")
 assert_contains "scenario 4: header same-repo-only" "same-repo-only" "$OUT"
 
 # --- scenario 5: comments + blank lines in .knightwatch/siblings ---
@@ -127,7 +127,7 @@ acme/foo
 
 # acme/bar — disabled while migrating
 ")
-OUT=$(stage_search_roots "acme/self" "$SELF_REPO" "main")
+OUT=$(stage_search_roots "acme/self" "$SELF_REPO" "origin/main")
 assert_contains "scenario 5: foo included" "acme/foo included .siblings/acme/foo" "$OUT"
 assert_not_contains "scenario 5: bar not included" "acme/bar" "$OUT"
 
@@ -139,7 +139,7 @@ assert_not_contains "scenario 5: bar not included" "acme/bar" "$OUT"
 echo "  scenario 6: declared sibling without SOURCE_PATHS entry → missing..."
 SELF_REPO=$(make_self_repo yes "acme/foo
 acme/never-configured")
-OUT=$(stage_search_roots "acme/self" "$SELF_REPO" "main")
+OUT=$(stage_search_roots "acme/self" "$SELF_REPO" "origin/main")
 assert_contains "scenario 6: header partial" "# coverage: partial" "$OUT"
 assert_contains "scenario 6: foo included" "acme/foo included .siblings/acme/foo" "$OUT"
 assert_contains "scenario 6: never-configured missing" "acme/never-configured missing" "$OUT"

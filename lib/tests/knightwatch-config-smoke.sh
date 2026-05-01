@@ -55,7 +55,7 @@ git -C "$WORK" checkout -q -B feature origin/feature
 
 # --- scenario 1: file exists on main → returns content -------------
 echo "  scenario 1: existing file → content + exit 0..."
-read_knightwatch_file "$WORK" "main" "siblings" > "$TMPDIR/out.txt" 2>/dev/null
+read_knightwatch_file "$WORK" "origin/main" "siblings" > "$TMPDIR/out.txt" 2>/dev/null
 exit_code=$?
 if [ "$exit_code" -ne 0 ]; then
     echo "FAIL: expected exit 0, got $exit_code"
@@ -80,7 +80,7 @@ fi
 # accepts any non-zero would let an ERROR-as-ABSENT regression slip
 # through (bot finding 1 PR #29 round 2).
 echo "  scenario 2: missing file → empty + exit 1 (ABSENT)..."
-read_knightwatch_file "$WORK" "main" "does-not-exist.sh" > "$TMPDIR/out.txt" 2>/dev/null
+read_knightwatch_file "$WORK" "origin/main" "does-not-exist.sh" > "$TMPDIR/out.txt" 2>/dev/null
 exit_code=$?
 if [ "$exit_code" -ne 1 ]; then
     echo "FAIL: expected exit 1 (ABSENT) for missing file, got $exit_code"
@@ -94,7 +94,7 @@ fi
 
 # --- scenario 3: read product-context.md → markdown content --------
 echo "  scenario 3: product-context.md → markdown content..."
-got=$(read_knightwatch_file "$WORK" "main" "product-context.md")
+got=$(read_knightwatch_file "$WORK" "origin/main" "product-context.md")
 if ! printf '%s' "$got" | grep -q '^# Product context$'; then
     echo "FAIL: expected markdown header"
     echo "  got: $got"
@@ -114,7 +114,7 @@ git -C "$SOURCE" add .knightwatch/empty-file.sh
 git -C "$SOURCE" commit -qm "main: add empty .knightwatch/empty-file.sh"
 git -C "$WORK" fetch -q origin main
 git -C "$WORK" checkout -q -B main origin/main
-got=$(read_knightwatch_file "$WORK" "main" "empty-file.sh")
+got=$(read_knightwatch_file "$WORK" "origin/main" "empty-file.sh")
 exit_code=$?
 if [ "$exit_code" -ne 0 ]; then
     echo "FAIL: expected exit 0 for present-but-empty file, got $exit_code"
@@ -139,4 +139,37 @@ if [ "$exit_code" -ne 2 ]; then
     exit 1
 fi
 
-echo "  PASS (5 scenarios: existing, missing-ABSENT, base-branch-only trust, present-but-empty, bad-ref-ERROR)"
+# --- scenario 6: SHA-pin resists mid-run ref rewriting --------------
+# The actual attack the trust model has to defend against: a PR's
+# `just test` recipe rewrites refs/remotes/origin/<default-branch>
+# to point at the PR head, then subsequent reads pick up PR-authored
+# .knightwatch/* policy as if it were base-branch policy. SHA-pinning
+# defeats this — the snapshotted SHA points at the original commit
+# regardless of how the local ref is later rewritten.
+echo "  scenario 6: SHA-pin resists mid-run ref rewriting..."
+git -C "$WORK" fetch -q origin main
+git -C "$WORK" checkout -q -B main origin/main
+BASE_SHA=$(git -C "$WORK" rev-parse "origin/main")
+# Simulate the attack: rewrite origin/main to point at the feature
+# branch (which has `evil/private-repo` in .knightwatch/siblings).
+git -C "$WORK" update-ref refs/remotes/origin/main "$(git -C "$WORK" rev-parse origin/feature)"
+# Helper called with the SHA still gets base-branch content
+got_pinned=$(read_knightwatch_file "$WORK" "$BASE_SHA" "siblings")
+if printf '%s' "$got_pinned" | grep -q 'evil/private-repo'; then
+    echo "FAIL: SHA-pin failed — read PR-head policy after ref rewrite"
+    exit 1
+fi
+if ! printf '%s' "$got_pinned" | grep -q '^cncorp/plow-content$'; then
+    echo "FAIL: SHA-pin should have returned base-branch content"
+    echo "  got: $got_pinned"
+    exit 1
+fi
+# Sanity-check the attack actually works against the unsafe ref form
+got_ref=$(read_knightwatch_file "$WORK" "origin/main" "siblings")
+if ! printf '%s' "$got_ref" | grep -q 'evil/private-repo'; then
+    echo "FAIL: ref-rewrite simulation didn't actually take effect — test is meaningless"
+    echo "  got: $got_ref"
+    exit 1
+fi
+
+echo "  PASS (6 scenarios: existing, missing-ABSENT, base-branch-only trust, present-but-empty, bad-ref-ERROR, SHA-pin-bypass-resistance)"
