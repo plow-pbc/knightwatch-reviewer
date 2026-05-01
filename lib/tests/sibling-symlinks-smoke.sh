@@ -463,6 +463,14 @@ chmod +x "$RACE_SHIM/git"
 SOURCE_PATHS["acme/race"]="$TMPDIR/racerepo"
 rc=0
 PATH="$RACE_SHIM:$PATH" materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/race" >/dev/null 2>&1 || rc=$?
+# Sanity: the shim must have actually fired. If the production call
+# is refactored (e.g., `ls-tree -z -r` instead of `ls-tree -r -z`),
+# the shim's substring match misses and the test silently passes
+# without exercising the race. Bot review 8 finding 1.
+if [ ! -e "$RACE_MARKER" ]; then
+    echo "FAIL: shim never advanced HEAD — race scenario didn't actually run (substring match missed?)"
+    exit 1
+fi
 if [ "$rc" -ne 0 ]; then
     echo "FAIL: helper returned $rc — ls-tree picked up post-advance paths (including new_file.py) and show couldn't find them at the pinned SHA"
     exit 1
@@ -495,7 +503,6 @@ init_git_repo "$TMPDIR/escaperepo"
 echo "ok" > "$TMPDIR/escaperepo/normal.py"
 git -C "$TMPDIR/escaperepo" add normal.py
 git -C "$TMPDIR/escaperepo" commit -qm "seed"
-PIN_SHA=$(git -C "$TMPDIR/escaperepo" rev-parse HEAD)
 NORMAL_BLOB=$(git -C "$TMPDIR/escaperepo" rev-parse HEAD:normal.py)
 # Shim: rev-parse + show pass through, but ls-tree returns one entry
 # with path `../../../escape.txt`. The path needs THREE `..` to
