@@ -42,6 +42,18 @@ echo "  asserting REMEDY-BLOAT bucket in critic.md..."
 assert_grep "REMEDY-BLOAT bucket missing from prompts/critic.md" \
     "REMEDY-BLOAT" prompts/critic.md
 
+echo "  asserting REFRAME-AS-QUESTION bucket in critic.md..."
+assert_grep "REFRAME-AS-QUESTION bucket missing from prompts/critic.md" \
+    "REFRAME-AS-QUESTION" prompts/critic.md
+
+echo "  asserting voice-posture pointer in critic.md..."
+assert_grep "critic.md should cite Broken-Glass Test" \
+    "Broken-Glass Test" prompts/critic.md
+
+echo "  asserting Pre-PMF lens reference in critic.md..."
+assert_grep "critic.md should reference loc-trend.md (Pre-PMF lens)" \
+    "loc-trend.md" prompts/critic.md
+
 echo "  asserting REMEDY-BLOAT handler in aggregator.md..."
 assert_grep "REMEDY-BLOAT handler missing from prompts/aggregator.md" \
     "REMEDY-BLOAT" prompts/aggregator.md
