@@ -420,4 +420,115 @@ if [ "$rc" -eq 0 ]; then
     exit 1
 fi
 
-echo "  ok: sibling materialization whitelist-gated, redirect-safe, idempotent, committed-blobs-only, symlink-safe, fail-fast"
+# --- scenario 12: snap_sha pinning regression fence ------------------
+# The materializer must use a pinned SHA (resolved once via
+# `git rev-parse HEAD`) for both `git ls-tree` and `git show`.
+# Reverting either to literal "HEAD" reopens the TOCTOU race that
+# round 5 caught: `plow-kid-refresh.sh` advancing the sibling between
+# the two git calls produces a mixed snapshot. The earlier scenarios
+# all happen to pass even if you rewrite both calls back to "HEAD"
+# (their fixtures don't move HEAD mid-materialize), so this fence
+# exists specifically to catch the regression directly. PR #37
+# review 6 finding 3.
+#
+# Approach: shim `git` via PATH and log every invocation. Run the
+# helper. Assert that ls-tree / show are called with a 40-char SHA,
+# not the string "HEAD", and that the SHA matches across the calls.
+echo "  scenario 12: snap_sha pinning regression fence..."
+SHIM_DIR=$(mktemp -d -t kw-git-shim-XXXXXX)
+GIT_LOG=$(mktemp -t kw-git-log-XXXXXX)
+REAL_GIT=$(command -v git)
+cat > "$SHIM_DIR/git" <<EOF
+#!/bin/bash
+echo "\$@" >> "$GIT_LOG"
+exec "$REAL_GIT" "\$@"
+EOF
+chmod +x "$SHIM_DIR/git"
+init_git_repo "$TMPDIR/pinrepo"
+echo "v1" > "$TMPDIR/pinrepo/file.py"
+git -C "$TMPDIR/pinrepo" add file.py
+git -C "$TMPDIR/pinrepo" commit -qm "v1"
+SOURCE_PATHS["acme/pin"]="$TMPDIR/pinrepo"
+PATH="$SHIM_DIR:$PATH" materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/pin" >/dev/null 2>&1
+# Extract the SHA argument from the ls-tree call (positional arg
+# after `-r -z`) and the show call (the part before `:`). Both must
+# be 40-char SHAs (not the literal string "HEAD"), and they must
+# match — that's the snapshot-coherence invariant.
+# `|| true` so a no-match grep doesn't trip set -e + pipefail and
+# silently abort before we can emit a useful FAIL message.
+ls_tree_sha=$(grep -oE 'ls-tree -r -z [0-9a-f]{40}' "$GIT_LOG" | awk '{print $NF}' | head -1 || true)
+show_sha=$(grep -oE 'show [0-9a-f]{40}:[^ ]+' "$GIT_LOG" | awk '{print $NF}' | head -1 | cut -d: -f1 || true)
+if [ -z "$ls_tree_sha" ] || [ "$ls_tree_sha" = "HEAD" ]; then
+    echo "FAIL: ls-tree was called with literal HEAD instead of a pinned SHA (race regression)"
+    cat "$GIT_LOG"
+    exit 1
+fi
+if [ -z "$show_sha" ] || [ "$show_sha" = "HEAD" ]; then
+    echo "FAIL: git show was called with literal HEAD: instead of a pinned SHA (race regression)"
+    cat "$GIT_LOG"
+    exit 1
+fi
+if [ "$ls_tree_sha" != "$show_sha" ]; then
+    echo "FAIL: ls-tree and show used different SHAs ($ls_tree_sha vs $show_sha) — mixed snapshot"
+    exit 1
+fi
+rm -rf "$SHIM_DIR" "$GIT_LOG"
+
+# --- scenario 13: unsafe tree path (../escape) → fail-loud -----------
+# Git tree paths *can* contain `..` (older git versions, custom
+# tree-building tools, hand-crafted blob+tree objects). Without
+# validation, `mkdir -p "$target/$(dirname ../escape.txt)"` walks out
+# of the slug dir and the shell redirect truncates a file outside
+# before `git show` even runs. Modern git refuses to construct such
+# trees via plumbing (`mktree` / `update-index --cacheinfo` both
+# reject), so we shim `git` to inject the malicious ls-tree output
+# directly — same trick scenario 12 uses to fence the SHA-pin contract.
+# PR #37 review 6 finding 1 (security).
+echo "  scenario 13: unsafe tree path (../escape) → fail-loud..."
+ESCAPE_SHIM=$(mktemp -d -t kw-escape-shim-XXXXXX)
+init_git_repo "$TMPDIR/escaperepo"
+echo "ok" > "$TMPDIR/escaperepo/normal.py"
+git -C "$TMPDIR/escaperepo" add normal.py
+git -C "$TMPDIR/escaperepo" commit -qm "seed"
+PIN_SHA=$(git -C "$TMPDIR/escaperepo" rev-parse HEAD)
+NORMAL_BLOB=$(git -C "$TMPDIR/escaperepo" rev-parse HEAD:normal.py)
+# Shim: rev-parse + show pass through, but ls-tree returns one entry
+# with path `../../escape.txt`. The materializer's case statement
+# should reject the path BEFORE any mkdir / redirect. We use two `..`
+# segments because the materializer wipes .siblings/ at the start of
+# each call, so the sentinel must live OUTSIDE .siblings/ — one up
+# from $target/ would still be inside the wiped tree.
+cat > "$ESCAPE_SHIM/git" <<EOF
+#!/bin/bash
+case "\$*" in
+    *"ls-tree -r -z"*)
+        printf '100644 blob %s\t../../escape.txt\0' "$NORMAL_BLOB"
+        exit 0
+        ;;
+    *)
+        exec "$REAL_GIT" "\$@"
+        ;;
+esac
+EOF
+chmod +x "$ESCAPE_SHIM/git"
+# Sentinel two levels above $target — outside .siblings/ entirely,
+# so the start-of-call wipe doesn't touch it. If path traversal
+# isn't caught, the redirect would clobber it.
+SENTINEL_TARGET="$WORKDIR/escape.txt"
+echo "PRE_EXISTING_SENTINEL" > "$SENTINEL_TARGET"
+SOURCE_PATHS["acme/escape"]="$TMPDIR/escaperepo"
+rc=0
+PATH="$ESCAPE_SHIM:$PATH" materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/escape" 2>/dev/null || rc=$?
+if [ "$rc" -eq 0 ]; then
+    echo "FAIL: unsafe tree path '../../escape.txt' should have returned non-zero"
+    exit 1
+fi
+got=$(cat "$SENTINEL_TARGET" 2>/dev/null)
+if [ "$got" != "PRE_EXISTING_SENTINEL" ]; then
+    echo "FAIL: sentinel outside slug dir was clobbered ('$got') — path traversal escaped"
+    exit 1
+fi
+rm -f "$SENTINEL_TARGET"
+rm -rf "$ESCAPE_SHIM"
+
+echo "  ok: sibling materialization whitelist-gated, redirect-safe, idempotent, committed-blobs-only, symlink-safe, fail-fast, snap-sha-pinned, path-traversal-safe"

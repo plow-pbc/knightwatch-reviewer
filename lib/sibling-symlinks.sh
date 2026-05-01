@@ -25,9 +25,10 @@
 #    So we wipe the entire `.siblings/` subtree first and create a
 #    fresh empty directory we own.
 #
-# 3. The materialized tree exposes ONLY committed blobs from HEAD
-#    (`git ls-tree -r HEAD` + `git show HEAD:<path>`), not the raw
-#    checkout root or worktree state. Per-machine artifacts that
+# 3. The materialized tree exposes ONLY committed blobs from a
+#    pinned snapshot SHA (resolved once via `git rev-parse HEAD`,
+#    then used for both `git ls-tree -r -z $sha` and `git show
+#    $sha:<path>`), not the raw checkout root or worktree state. Per-machine artifacts that
 #    aren't part of the sibling's source — `.git/`, `.venv/`,
 #    `node_modules/`, `__pycache__/`, lockfile byproducts — never
 #    appear, and uncommitted edits to tracked files (secrets in
@@ -93,8 +94,8 @@ materialize_sibling_symlinks() {
         # symlink to follow.
         mkdir -p "$target"
 
-        # Enumerate committed blobs via `git ls-tree -r -z HEAD` and
-        # write each blob's committed bytes via `git show HEAD:<path>`.
+        # Enumerate committed blobs via `git ls-tree -r -z $snap_sha`
+        # and write each blob's bytes via `git show $snap_sha:<path>`.
         # Two reasons to materialize from git, not the worktree:
         #
         # 1. Worktree bytes can include uncommitted edits — secrets in
@@ -144,6 +145,21 @@ materialize_sibling_symlinks() {
             case "$mode" in
                 100644|100755) ;;            # regular file
                 *) continue ;;               # skip symlinks (120000), gitlinks (160000)
+            esac
+            # Validate the tree path before mkdir / redirect. Git tree
+            # paths can technically be anything (`git update-index
+            # --cacheinfo` allows arbitrary strings; fast-import lets a
+            # tree have `..` components or absolute paths). Without
+            # validation, `mkdir -p "$target/$(dirname ../escape.txt)"`
+            # walks out of the slug dir, then `> "$target/../escape.txt"`
+            # truncates a file outside before `git show` rejects the
+            # blob read. PR #37 review 6 finding 1.
+            case "$rel" in
+                /*|..|../*|*/..|*/../*)
+                    rm -f "$list_file"
+                    echo "materialize_sibling_symlinks: rejected unsafe tree path '$rel' for $slug" >&2
+                    return 1
+                    ;;
             esac
             mkdir -p "$target/$(dirname "$rel")"
             if ! git -C "$src" show "$snap_sha:$rel" > "$target/$rel" 2>/dev/null; then

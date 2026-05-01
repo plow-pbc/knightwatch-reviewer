@@ -7,9 +7,9 @@
 #   2. .knightwatch/siblings absent → fall back to "all REPOS minus self"
 #
 # In both cases each sibling is then classified as `included` (slug in
-# SOURCE_PATHS AND its checkout exists on disk AND it's a git repo —
-# `git ls-files` is what materialize_sibling_symlinks uses to enumerate
-# tracked content) or `missing` (any of those preconditions absent).
+# SOURCE_PATHS AND its checkout exists on disk AND it's a git repo, so
+# the materializer can pin a HEAD SHA and enumerate tracked content)
+# or `missing` (any of those preconditions absent).
 
 set -euo pipefail
 
@@ -177,10 +177,10 @@ REPOS=("${saved_repos[@]}")
 
 # --- scenario 8: source dir exists but isn't a git repo → missing -----
 # Single-owner search-roots contract: stage_search_roots can't classify
-# a source as `included` if materialize_sibling_symlinks would yield an
-# empty tree. `git ls-files` returns nothing on a non-git source, so the
-# materialized .siblings/<slug>/ would be empty — but the prior contract
-# said "full" coverage anyway, so specialists searched empty content
+# a source as `included` if materialize_sibling_symlinks couldn't pin a
+# HEAD SHA on it. `git rev-parse HEAD` fails on a non-git source, so the
+# materializer would abort — but the prior contract said "full" coverage
+# anyway, so specialists searched empty content
 # while the bot reported the sibling as covered. cncorp/plow#37 review 1
 # finding 1 (Bug-Class-Recurrence). Stage it as `missing` instead.
 echo "  scenario 8: non-git source dir → missing (search-roots/materialize agreement)..."
