@@ -294,13 +294,14 @@ EOF
 
 ---
 
-## Task 4: Add `loc-trend.md` computation to `lib/review-one-pr.sh`
+## Task 4: Add `loc-trend.md` computation to `lib/run-dir.sh`
 
 **Files:**
-- Modify: `~/Hacking/knightwatch-reviewer/lib/review-one-pr.sh` (add `compute_loc_trend()` function + call site before specialist fan-out)
+- Modify: `~/Hacking/knightwatch-reviewer/lib/run-dir.sh` (add `compute_loc_trend()` next to the existing run-dir helpers)
+- Modify: `~/Hacking/knightwatch-reviewer/lib/review-one-pr.sh` (call site before specialist fan-out)
 - Create: `~/Hacking/knightwatch-reviewer/lib/tests/loc-trend-smoke.sh`
 
-The function reads `~/.pr-reviewer/runs/<repo>__<pr>__*` directories, computes `git diff --shortstat <merge-base>..<sha>` per round, and writes a markdown table to `.codex-scratch/loc-trend.md`.
+The function reads `~/.pr-reviewer/runs/<repo>__<pr>__*` directories, computes `git diff --shortstat <base_tip>...<sha>` per round (three-dot, source-of-truth SHA from each run's `meta.json.sha`), and writes a markdown table to `.codex-scratch/loc-trend.md`.
 
 - [ ] **Step 4.1: Write the smoke test first (TDD — token-level + behavior contract)**
 
@@ -348,9 +349,11 @@ SHA2=$(git -C "$REPO" rev-parse HEAD)
 # Build a fake STATE_DIR/runs layout. compute_loc_trend reads SHA +
 # started_at from each run's meta.json (the canonical source-of-truth
 # file, written post-checkout with the REVIEWED_SHA), so the fixture
-# writes one per round. The dir name's SHA suffix is what the
-# orchestrator wrote pre-checkout (PR_SHA prefix); the function
-# deliberately ignores it.
+# writes one per round. Dir-name SHA suffixes are deliberately set to
+# 7-char strings that do NOT match the meta.json SHA — this fences the
+# function: if a future regression rewires it back to parsing the dir
+# name, `git diff` would receive a non-existent SHA and the smoke
+# would fail.
 STATE_DIR="$TMPDIR/state"
 mkdir -p "$STATE_DIR/runs"
 mk_run_dir() {
@@ -359,17 +362,18 @@ mk_run_dir() {
     jq -n --arg sha "$sha" --arg started_at "$started_at" \
         '{sha: $sha, started_at: $started_at}' > "$dir/meta.json"
 }
-mk_run_dir "$STATE_DIR/runs/cncorp_plow__999__20260501T000000000Z__${SHA1:0:7}" \
+mk_run_dir "$STATE_DIR/runs/cncorp_plow__999__20260501T000000000Z__deadbe1" \
     "2026-05-01T00:00:00Z" "$SHA1"
-mk_run_dir "$STATE_DIR/runs/cncorp_plow__999__20260501T010000000Z__${SHA2:0:7}" \
+mk_run_dir "$STATE_DIR/runs/cncorp_plow__999__20260501T010000000Z__deadbe2" \
     "2026-05-01T01:00:00Z" "$SHA2"
 
 OUT="$TMPDIR/loc-trend.md"
 
-# Source the orchestrator's helpers — this reaches in for compute_loc_trend.
-# Use --source-only mode (the function should be defined inside a guard so
-# sourcing doesn't run the orchestrator's main body).
-. "$PROJECT_ROOT/lib/review-one-pr.sh" --source-only
+# Source lib/run-dir.sh — that's where compute_loc_trend lives, alongside
+# stage_prior_reviews and the other run-dir helpers. The worker already
+# sources lib/run-dir.sh, so production and the smoke share the same
+# function (no copy, no --source-only guard on the 1200-line worker).
+. "$PROJECT_ROOT/lib/run-dir.sh"
 
 # Test 1: 2 prior runs → table with 2 rows + GROWING trajectory
 compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" > "$OUT"
@@ -393,26 +397,14 @@ Run it:
 bash ~/Hacking/knightwatch-reviewer/lib/tests/loc-trend-smoke.sh
 ```
 
-Expected: FAIL — `--source-only` mode doesn't exist yet; `compute_loc_trend` is undefined.
+Expected: FAIL — `compute_loc_trend` is undefined in `lib/run-dir.sh`.
 
-- [ ] **Step 4.2: Add `--source-only` guard + `compute_loc_trend()` to `lib/review-one-pr.sh`**
+- [ ] **Step 4.2: Add `compute_loc_trend()` to `lib/run-dir.sh`**
 
-Find the top of `lib/review-one-pr.sh` (above the existing `set -euo pipefail`) and add:
-
-```bash
-# Source-only guard — when called as `. lib/review-one-pr.sh --source-only`,
-# define helpers + return without running the orchestrator's main body.
-# Used by lib/tests/loc-trend-smoke.sh and any future helper-level smokes.
-SOURCE_ONLY=false
-[ "${1:-}" = "--source-only" ] && SOURCE_ONLY=true
-```
-
-Then wrap the existing main body (everything after the existing helper definitions, starting where `REPO="$1"` / `PR_NUM="$2"` are read) in `if ! $SOURCE_ONLY; then ... fi`.
-
-Add the `compute_loc_trend` function near the other helpers (above the main body):
+`lib/run-dir.sh` is the existing run-dir-helpers seam — `allocate_run_dir`, `stage_prior_reviews`, `finalize_meta_json`, etc. all live there, and the worker already sources it at startup. New run-dir helpers go here, alongside their siblings; production and tests share the same definition. Append after the existing `stage_prior_reviews` function:
 
 ```bash
-# compute_loc_trend <repo_slash> <pr_num> <repo_dir> <merge_base_sha> <state_dir>
+# compute_loc_trend <repo_slash> <pr_num> <repo_dir> <base_tip_sha> <state_dir>
 #   stdout: markdown loc-trend.md content
 #
 # repo_slash is the GitHub slash-form (e.g. "cncorp/plow"), NOT the
@@ -422,9 +414,10 @@ Add the `compute_loc_trend` function near the other helpers (above the main body
 # Iterates $state_dir/runs/<owner>_<repo>__<pr_num>__<ts>__<sha>/ entries
 # (dir-name pattern is the filter — which runs belong to this PR),
 # reads each run's meta.json for the canonical SHA + started_at, and
-# computes git diff --shortstat <merge_base>..<sha> per round. Emits a
-# markdown table sorted by timestamp. Handles empty runs/ (first
-# review) and pre-checkout abort dirs (no meta.json) without aborting.
+# computes git diff --shortstat <base_tip>...<sha> per round (three-dot
+# semantics, matches GitHub's "Files changed" view). Emits a markdown
+# table sorted by timestamp. Handles empty runs/ (first review) and
+# pre-checkout abort dirs (no meta.json) without aborting.
 #
 # SHA source: meta.json.sha (REVIEWED_SHA, captured post-checkout) —
 # NOT the dir name's SHA suffix, which encodes the orchestrator's
@@ -432,8 +425,15 @@ Add the `compute_loc_trend` function near the other helpers (above the main body
 # fetch window, those two diverge; reading meta.json keeps loc-trend
 # anchored to the SHA the worker actually reviewed (same source-of-
 # truth contract as full-diff.patch / commits.md).
+#
+# Diff range: three-dot ($base_tip...$sha), NOT two-dot. The orchestrator
+# passes BASE_REF_SHA (the current tip of the base branch). When base
+# has advanced since the round was reviewed, two-dot would treat
+# base-only changes as deletions in the shortstat; three-dot uses
+# merge-base($base_tip, $sha) and reports only the PR's actual
+# contributions.
 compute_loc_trend() {
-    local repo="$1" pr_num="$2" repo_dir="$3" merge_base="$4" state_dir="$5"
+    local repo="$1" pr_num="$2" repo_dir="$3" base_tip="$4" state_dir="$5"
     local owner_repo="${repo//\//_}"
     local runs_dir="$state_dir/runs"
 
@@ -447,6 +447,14 @@ compute_loc_trend() {
 
     # Collect round data. Pre-checkout abort dirs leave no meta.json;
     # those didn't review anything so they're skipped from the trend.
+    # A meta.json that DOES exist but is missing sha/started_at is
+    # corruption — fail loud rather than silently dropping the round
+    # from the trend (would mask a regression that wires loc-trend
+    # back to a SHA source other than meta.json).
+    #
+    # Round entries are tab-delimited "ts<TAB>sha". ISO timestamps
+    # contain colons, so a colon-delimited form would split wrong on
+    # readback.
     local rounds=()
     while IFS= read -r d; do
         local meta="$d/meta.json"
@@ -454,8 +462,11 @@ compute_loc_trend() {
         local ts sha
         ts=$(jq -r '.started_at // empty' "$meta")
         sha=$(jq -r '.sha // empty' "$meta")
-        [ -z "$ts" ] || [ -z "$sha" ] && continue
-        rounds+=("$ts:$sha")
+        if [ -z "$ts" ] || [ -z "$sha" ]; then
+            echo "compute_loc_trend: $meta missing .sha or .started_at — corruption, refusing to silently drop round" >&2
+            return 1
+        fi
+        rounds+=("$(printf '%s\t%s' "$ts" "$sha")")
     done < <(find "$runs_dir" -maxdepth 1 -type d -name "${owner_repo}__${pr_num}__*" 2>/dev/null | sort)
 
     if [ ${#rounds[@]} -eq 0 ]; then
@@ -465,13 +476,11 @@ compute_loc_trend() {
 
     # First-round and last-round adds for trajectory classification.
     local first_round_adds=0 last_round_adds=0
-    local first_shortstat last_shortstat
-    local first_round="${rounds[0]}"
-    local last_round="${rounds[-1]}"
-    local first_sha="${first_round#*:}"
-    local last_sha="${last_round#*:}"
-    first_shortstat=$(git -C "$repo_dir" diff --shortstat "$merge_base..$first_sha" 2>/dev/null || echo "")
-    last_shortstat=$(git -C "$repo_dir" diff --shortstat "$merge_base..$last_sha" 2>/dev/null || echo "")
+    local first_shortstat last_shortstat first_ts first_sha last_ts last_sha
+    IFS=$'\t' read -r first_ts first_sha <<<"${rounds[0]}"
+    IFS=$'\t' read -r last_ts last_sha <<<"${rounds[-1]}"
+    first_shortstat=$(git -C "$repo_dir" diff --shortstat "$base_tip...$first_sha" 2>/dev/null || echo "")
+    last_shortstat=$(git -C "$repo_dir" diff --shortstat "$base_tip...$last_sha" 2>/dev/null || echo "")
     first_round_adds=$(echo "$first_shortstat" | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+' || echo 0)
     last_round_adds=$(echo "$last_shortstat" | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+' || echo 0)
     first_round_adds=${first_round_adds:-0}
@@ -495,12 +504,12 @@ compute_loc_trend() {
 
     echo "This PR has been reviewed ${#rounds[@]} times. Trajectory: $trajectory."
     echo
-    echo "| Round | Timestamp | SHA | base..head |"
+    echo "| Round | Timestamp | SHA | base...head |"
     echo "|---|---|---|---|"
-    local i=1
+    local i=1 round ts sha stat
     for round in "${rounds[@]}"; do
-        local ts="${round%:*}" sha="${round#*:}" stat
-        stat=$(git -C "$repo_dir" diff --shortstat "$merge_base..$sha" 2>/dev/null | sed 's/^ *//' | tr '\n' ' ')
+        IFS=$'\t' read -r ts sha <<<"$round"
+        stat=$(git -C "$repo_dir" diff --shortstat "$base_tip...$sha" 2>/dev/null | sed 's/^ *//' | tr '\n' ' ')
         [ -z "$stat" ] && stat="(sha not in local history)"
         echo "| $i | $ts | ${sha:0:7} | $stat |"
         i=$((i + 1))
@@ -551,18 +560,21 @@ Expected: all smoke tests pass, including `loc-trend smoke`.
 - [ ] **Step 4.7: Commit**
 
 ```bash
-git add lib/review-one-pr.sh lib/tests/loc-trend-smoke.sh justfile
+git add lib/run-dir.sh lib/review-one-pr.sh lib/tests/loc-trend-smoke.sh justfile
 git commit -m "$(cat <<'EOF'
 feat: compute_loc_trend() + loc-trend.md scratch
 
 Per-round LOC trajectory for momentum specialist + aggregator loop-breaker.
 
-Reads ~/.pr-reviewer/runs/<repo>__<pr>__* listing, runs git diff
---shortstat against the merge-base for each prior SHA, emits a markdown
-table + trajectory classification (GROWING / STABLE / SHRINKING).
+Reads ~/.pr-reviewer/runs/<repo>__<pr>__* listing, takes each run's
+canonical SHA from meta.json.sha (REVIEWED_SHA), runs git diff
+--shortstat with three-dot semantics against the base tip for each
+prior SHA, emits a markdown table + trajectory classification
+(GROWING / STABLE / SHRINKING).
 
-Adds --source-only guard so smoke can exercise the helper without
-running the orchestrator's main body.
+Lives in lib/run-dir.sh next to the existing run-dir helpers
+(allocate_run_dir, stage_prior_reviews, etc.) — production and the
+loc-trend smoke share the same definition.
 EOF
 )"
 ```
