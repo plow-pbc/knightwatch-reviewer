@@ -77,21 +77,14 @@ WORKDIRS_DIR="${WORKDIRS_DIR:-$STATE_DIR/workdirs}"
 # Tracked-repo manifest (REPOS array + KID_PATHS assoc array). Bash
 # arrays don't survive the process boundary between review.sh and this
 # worker, so we re-source via the shared loader. Loader also picks up
-# config.env (the legacy override seam).
+# config.env (the legacy override seam) and pins $TMPDIR=$STATE_DIR/tmp
+# post-config — keeps the worker's mktemp calls (KID / dead-code /
+# strict-typing stderr capture below) out of the unit-private /tmp the
+# systemd unit tears down under detached workers (see lib/tracked-repos.sh
+# and PR #33 for the full why).
 . "$_LIB_DIR_EARLY/tracked-repos.sh"
 BOT_USER="${BOT_USER:-srosro}"
 BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
-
-# Route mktemp to $STATE_DIR/tmp. With PrivateTmp=yes + KillMode=process
-# on pr-reviewer.service, this worker is detached and outlives the unit;
-# the unit-private /tmp tears down when the unit deactivates and any
-# `mktemp` (KID / dead-code / strict-typing stderr capture below) fails
-# with `'/tmp/tmp.XXXXXXXXXX': No such file or directory`. Set
-# unconditionally — and AFTER tracked-repos.sh sources config.env — so
-# neither an inherited TMPDIR nor a config.env override can silently
-# route mktemp back to /tmp.
-export TMPDIR="$STATE_DIR/tmp"
-mkdir -p "$TMPDIR"
 
 # Source helpers. Prefer REVIEWER_LIB_DIR if caller set it (smoke-test
 # isolation); fall back to the worker's own directory.

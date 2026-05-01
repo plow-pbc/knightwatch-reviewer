@@ -30,3 +30,21 @@ declare -A STRICT_TYPING_CMDS=()
 # is errexit-exempt — same effect, but safe under `set -e`.
 if [ -f "${STATE_DIR}/repos.conf" ]; then . "${STATE_DIR}/repos.conf"; fi
 if [ -f "${STATE_DIR}/config.env" ]; then . "${STATE_DIR}/config.env"; fi
+
+# Single owner of the post-config TMPDIR policy. pr-reviewer.service
+# combines PrivateTmp=yes (sandbox) with KillMode=process (workers
+# survive orchestrator exit); the unit-private /tmp tears down when the
+# unit deactivates a few seconds later, so any detached worker doing
+# `mktemp` in /tmp lands in a dead mount namespace and the call fails
+# with `'/tmp/tmp.XXXXXXXXXX': No such file or directory`. STATE_DIR
+# lives outside the private mount and is in the unit's ReadWritePaths.
+#
+# Pinning unconditionally — and HERE, after config.env may have set its
+# own TMPDIR — makes $STATE_DIR/tmp policy: every consumer that sources
+# this loader (review.sh orchestrator + lib/review-one-pr.sh worker +
+# all -from-replies / -poller / -refresh siblings) gets the same pin
+# without each script needing its own order-sensitive copy. This is
+# Bug-Class-Recurrence territory — the prior per-script duplication
+# made each new entrypoint a fresh chance to regress the invariant.
+export TMPDIR="$STATE_DIR/tmp"
+mkdir -p "$TMPDIR"

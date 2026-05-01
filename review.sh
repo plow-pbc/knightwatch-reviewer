@@ -16,22 +16,13 @@ MAX_CONCURRENT="${MAX_CONCURRENT:-8}"
 # Tracked-repo manifest (REPOS array + KID_PATHS assoc array). Single
 # source of truth at repos.conf — adding a repo only edits one file.
 # config.env can still REPOS=(...) override on top. The shared loader
-# at lib/tracked-repos.sh is the ONE seam every consumer goes through.
+# at lib/tracked-repos.sh is the ONE seam every consumer goes through;
+# it also pins $TMPDIR=$STATE_DIR/tmp post-config — keeps mktemp out of
+# the unit-private /tmp that the systemd unit tears down under detached
+# workers (see lib/tracked-repos.sh and PR #33 for the full why).
 REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 . "$REVIEWER_LIB_DIR/tracked-repos.sh"
 . "$REVIEWER_LIB_DIR/gh-comments.sh"
-
-# Route mktemp to $STATE_DIR/tmp. pr-reviewer.service runs with
-# PrivateTmp=yes (sandbox) AND KillMode=process (workers survive
-# orchestrator exit); the unit-private /tmp tears down when the unit
-# deactivates a few seconds later, leaving detached workers in a dead
-# mount namespace where `mktemp` fails with `'/tmp/tmp.XXXXXXXXXX': No
-# such file or directory`. STATE_DIR is in ReadWritePaths and outside
-# the private mount, so it survives. Set unconditionally — and AFTER
-# tracked-repos.sh sources config.env — so neither an inherited TMPDIR
-# nor a config.env override can silently route mktemp back to /tmp.
-export TMPDIR="$STATE_DIR/tmp"
-mkdir -p "$TMPDIR"
 [ ${#REPOS[@]} -ge 1 ] || { echo "FATAL: no tracked repos — populate $STATE_DIR/repos.conf or set REPOS in config.env" >&2; exit 1; }
 BOT_USER="${BOT_USER:-srosro}"
 # Hidden HTML-comment marker prepended to every auto-post by this repo
@@ -56,6 +47,17 @@ fi
 
 [ -f "$STATE_FILE" ] || echo '{}' > "$STATE_FILE"
 mkdir -p "$STATE_DIR" "$REPOS_DIR" "$WORKDIRS_DIR" "$STATE_DIR/locks"
+
+# Fail loud at the dispatcher level if the worker script is missing
+# or not executable. Catches the catastrophic class of dispatch failures
+# (broken install, accidental chmod -x, deleted symlink) before fan-out.
+# Checked HERE — before per-PR enumeration — so a doomed-to-abort run
+# never materializes a trigger-comment tempfile under $STATE_DIR/tmp
+# that no worker would clean up.
+if [[ ! -x "$REVIEWER_LIB_DIR/review-one-pr.sh" ]]; then
+    log "FATAL: $REVIEWER_LIB_DIR/review-one-pr.sh missing or not executable — aborting fan-out"
+    exit 1
+fi
 
 # ---------- enumerate eligible PRs ----------
 declare -a ELIGIBLE=()
@@ -223,17 +225,6 @@ done
 if [ ${#ELIGIBLE[@]} -eq 0 ]; then
     log "No PRs need review"
     exit 0
-fi
-
-# Fail loud at the dispatcher level if the worker script is missing
-# or not executable. Without this check, the loop below `& backgrounds`
-# the worker and exits 0 even on `exec` failure — the service journal
-# would still report "dispatched N worker(s)" while no review actually
-# ran. Catches the catastrophic class of dispatch failures (broken
-# install, accidental chmod -x, deleted symlink) before fan-out.
-if [[ ! -x "$REVIEWER_LIB_DIR/review-one-pr.sh" ]]; then
-    log "FATAL: $REVIEWER_LIB_DIR/review-one-pr.sh missing or not executable — aborting fan-out"
-    exit 1
 fi
 
 # Per-worker timeout. With detached workers (KillMode=process), the

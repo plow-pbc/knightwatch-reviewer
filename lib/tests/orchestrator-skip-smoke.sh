@@ -186,21 +186,32 @@ grep -q '^KillMode=process$' "$PROJECT_ROOT/systemd/pr-reviewer.service" || {
     exit 1
 }
 
-# --- TMPDIR fence (orchestrator + worker) ---------------------------------
+# --- TMPDIR fence (single-source-of-truth) --------------------------------
 # pr-reviewer.service combines PrivateTmp=yes (sandbox) with
 # KillMode=process (workers detach). When the orchestrator returns, the
 # unit-private /tmp gets torn down a few seconds later — any detached
 # worker doing `mktemp` in /tmp lands in a dead mount namespace and the
-# call fails with `No such file or directory`. Both review.sh and
-# lib/review-one-pr.sh must pin TMPDIR to $STATE_DIR/tmp unconditionally
-# (no `${TMPDIR:-...}` fallback chain) so neither an inherited TMPDIR
-# nor a config.env override can silently route mktemp back to /tmp.
-for f in "$PROJECT_ROOT/review.sh" "$PROJECT_ROOT/lib/review-one-pr.sh"; do
-    grep -qF 'export TMPDIR="$STATE_DIR/tmp"' "$f" || {
-        echo "FAIL setup: $(basename "$f") is missing the unconditional \$STATE_DIR/tmp TMPDIR pin — fallback chains let an inherited or config.env-set TMPDIR re-route mktemp into the unit-private /tmp"
-        exit 1
-    }
-done
+# call fails with `No such file or directory`. The fix lives at a single
+# seam: tracked-repos.sh pins TMPDIR=$STATE_DIR/tmp unconditionally,
+# AFTER it sources config.env. Every entrypoint (review.sh,
+# lib/review-one-pr.sh, the -from-replies / -poller / -refresh siblings)
+# sources tracked-repos.sh and inherits the pin for free, with no
+# order-sensitive copy in each script. This grep fences a regression
+# that drops the pin from the loader OR moves it before config.env's
+# source — either reintroduces the unit-private /tmp failure mode.
+LOADER="$PROJECT_ROOT/lib/tracked-repos.sh"
+grep -qF 'export TMPDIR="$STATE_DIR/tmp"' "$LOADER" || {
+    echo "FAIL setup: lib/tracked-repos.sh is missing the unconditional \$STATE_DIR/tmp TMPDIR pin — fallback chains or per-script copies let an inherited or config.env-set TMPDIR re-route mktemp into the unit-private /tmp"
+    exit 1
+}
+# Ordering check: the pin must follow the config.env source (otherwise
+# config.env's TMPDIR shadows the pin and detached workers regress).
+loader_pin_line=$(grep -nF 'export TMPDIR="$STATE_DIR/tmp"' "$LOADER" | head -1 | cut -d: -f1)
+loader_cfg_line=$(grep -nF '. "${STATE_DIR}/config.env"' "$LOADER" | head -1 | cut -d: -f1)
+if [ -z "$loader_cfg_line" ] || [ -z "$loader_pin_line" ] || [ "$loader_pin_line" -le "$loader_cfg_line" ]; then
+    echo "FAIL setup: lib/tracked-repos.sh — TMPDIR pin must come AFTER the config.env source (got pin@${loader_pin_line:-MISSING}, config.env@${loader_cfg_line:-MISSING})"
+    exit 1
+fi
 
 export MOCK_COMMENTS_FILE="$TMPDIR/comments.json"
 # Default trust set for the existing scenarios: srosro is the bot operator
@@ -620,15 +631,12 @@ if grep -q 'force_whole=true' "$LOG_FILE"; then
 fi
 
 # Scenario 14: TMPDIR pin survives both inherited TMPDIR and a config.env
-# override. The structural grep at suite setup catches the literal
-# `export TMPDIR="$STATE_DIR/tmp"`, but it can't tell whether the line
-# sits BEFORE or AFTER `tracked-repos.sh` (which sources $STATE_DIR/
-# config.env). Position matters: if a regression moves the pin above
-# tracked-repos.sh, a config.env-set TMPDIR would silently route mktemp
-# back to /tmp — re-introducing the unit-private /tmp failure mode while
-# the source still appears to have the fence. This scenario asserts the
-# pin's effective placement, not just its presence.
-echo "  scenario 14: TMPDIR pin overrides both inherited TMPDIR and config.env (post-load placement fence)..."
+# override. The structural greps at suite setup check the loader has the
+# pin AND that it follows the config.env source — but those are textual.
+# This scenario verifies the pin is effective end-to-end: dispatched
+# trigger files must land under $STATE_DIR/tmp even when both the
+# environment and config.env try to redirect TMPDIR.
+echo "  scenario 14: TMPDIR pin overrides both inherited TMPDIR and config.env (post-load behavioral fence)..."
 unset MOCK_COMMENTS_PAGE1_FILE MOCK_COMMENTS_PAGE2_FILE
 export MOCK_COMMENTS_FILE="$TMPDIR/comments.json"
 state_set "cncorp/plow#1" "abc123" false "prior review body" "$(($(date +%s) - 3600))"
@@ -646,7 +654,7 @@ if [ "$n" -ne 1 ]; then
     exit 1
 fi
 if ! grep -qF "trigger_file=$STATE_DIR/tmp/pr-review-trigger" "$LOG_FILE"; then
-    echo "FAIL scenario 14 (post-load TMPDIR placement regression): expected trigger_file=\$STATE_DIR/tmp/pr-review-trigger.* but got something else — config.env or inherited TMPDIR shadowed the pin, which means the unconditional export now sits BEFORE tracked-repos.sh in review.sh"
+    echo "FAIL scenario 14 (post-load TMPDIR placement regression): expected trigger_file=\$STATE_DIR/tmp/pr-review-trigger.* but got something else — config.env or inherited TMPDIR shadowed the pin, likely because the pin in lib/tracked-repos.sh now sits BEFORE the config.env source"
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
