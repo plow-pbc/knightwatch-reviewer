@@ -99,6 +99,6 @@ echo "  asserting re-review loop-breaker (Path 2) in aggregator.md..."
 assert_grep "aggregator.md should reference loc-trend.md trigger" \
     "loc-trend.md" prompts/aggregator.md
 assert_grep "aggregator.md should reference momentum specialist output" \
-    "agents/momentum" prompts/aggregator.md
+    "momentum.md" prompts/aggregator.md
 
 echo "  PASS"

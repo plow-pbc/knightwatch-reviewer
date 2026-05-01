@@ -1185,6 +1185,8 @@ if [ -s "$RUN_DIR/inputs/previous-review.md" ]; then
         "$HOME/.pr-reviewer/prompts/momentum.md" \
         "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR")
     "$_LIB_DIR/run-specialist.sh" "momentum" "$REPO_DIR" "$MOMENTUM_PROMPT" "$RUN_DIR/agents/momentum"
+    MOMENTUM_OUT="$RUN_DIR/agents/momentum/output.md"
+    ln -sfn "$MOMENTUM_OUT" "$REPO_DIR/.codex-scratch/momentum.md"
 else
     log "$PR_ID: skipping momentum specialist (first review)"
 fi

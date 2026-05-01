@@ -26,4 +26,8 @@ echo "  asserting momentum dispatch via run-specialist.sh..."
 assert_grep "review-one-pr.sh missing run-specialist.sh dispatch for momentum" \
     'run-specialist.sh" "momentum"' "$PROJECT_ROOT/lib/review-one-pr.sh"
 
+echo "  asserting momentum output symlink to .codex-scratch/momentum.md..."
+assert_grep "review-one-pr.sh missing symlink from RUN_DIR/agents/momentum/output.md to .codex-scratch/momentum.md" \
+    ".codex-scratch/momentum.md" "$PROJECT_ROOT/lib/review-one-pr.sh"
+
 echo "  PASS"

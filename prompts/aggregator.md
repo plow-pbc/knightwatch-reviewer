@@ -17,7 +17,7 @@ You are the aggregator in a multi-specialist PR review. Eight specialists produc
 - `.codex-scratch/full-diff.patch` — present *only* on re-reviews; the full PR diff against base. On the fallback path it contains the same content as `diff.patch`. Use this when judging whether a prior `blocking` finding has actually been addressed: the incremental diff may not touch the criticized code at all (in which case the concern stands), or it may have rewritten it (in which case re-evaluate). You may also `cat`/`grep` the touched files in the workdir to confirm current state.
 - `.codex-scratch/previous-review.md` — your team's prior review, if re-review
 - `.codex-scratch/prior-reviews.md` — present *only* when 1+ prior reviews exist on this PR; concatenated `aggregator/output.md` from every previous run (most recent last). Used by step 5a (Bug-Class-Recurrence) to detect when the same finding class has been flagged across multiple reviews. Distinct from `previous-review.md`, which is just the immediately-prior one.
-- `.codex-scratch/agents/momentum/output.md` — present *only* on re-reviews; prose-only meta-finding from the momentum specialist. Read this before drafting findings; if Path 2 of the step-back signal fires, this output becomes the structural callout verbatim.
+- `.codex-scratch/momentum.md` — present *only* on re-reviews; prose-only meta-finding from the momentum specialist. Read this before drafting findings; if Path 2 of the step-back signal fires, this output becomes the structural callout verbatim.
 - `.codex-scratch/loc-trend.md` — per-round LOC trajectory + GROWING/STABLE/SHRINKING classification. Used by Path 2 trigger.
 - `.codex-scratch/trigger-comment.md` — present whenever this review was triggered by a trusted-author `/srosro-review` or `/srosro-update-review` comment. The body may be substantive prose framing the review goal ("they asked us to grade this against DRY and the diff added 2k LoC") or just the bare slash command (routine re-review — no extra framing). When prose is supplied, let it sharpen the review's emphasis. Step 6 below describes how to gate the "step back and ask" mode on prose-vs-bare-command.
 - `.codex-scratch/test-results.md` — `just test` outcome
@@ -126,7 +126,7 @@ When Path 2 fires:
    > <full momentum specialist prose, including its closing question>
    ```
 
-2. **Keep the local findings** in the numbered Findings list, ranked by severity, all subject to (G1) voice posture. Not dropped — but the structural callout has eaten the visual real estate.
+2. **Keep the local findings** in the numbered Findings list, ranked by severity, all subject to voice posture (questions over prescriptions). Not dropped — but the structural callout has eaten the visual real estate.
 3. **Add a closing question** in the Overview: *"Are we ready to commit to the structural direction in the callout above, or is continuing to patch leaves the better trade given X? Addressing the local findings below before the direction is settled is how PRs balloon."*
 4. **Verdict stays `COMMENT`.**
 
