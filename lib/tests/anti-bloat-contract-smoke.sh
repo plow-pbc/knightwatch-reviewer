@@ -30,6 +30,14 @@ echo "  asserting Rule 8 (Remedy-cost framing) in common-header.md..."
 assert_grep "Rule 8 missing from prompts/common-header.md" \
     "Remedy-cost framing" prompts/common-header.md
 
+echo "  asserting voice-posture pointer in common-header.md..."
+assert_grep "common-header.md should reference Broken-Glass Test" \
+    "Broken-Glass Test" prompts/common-header.md
+assert_grep "common-header.md should mandate cost-naming" \
+    "adds complexity and makes PMF iteration harder" prompts/common-header.md
+assert_grep "common-header.md should reference review-priority.md scratch input" \
+    "review-priority.md" prompts/common-header.md
+
 echo "  asserting REMEDY-BLOAT bucket in critic.md..."
 assert_grep "REMEDY-BLOAT bucket missing from prompts/critic.md" \
     "REMEDY-BLOAT" prompts/critic.md
