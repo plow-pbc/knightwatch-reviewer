@@ -252,7 +252,6 @@ git clone -q "$GITHUB_BARE2" "$WORKING2"
     git commit -qm "PR feature"
 )
 PR_SHA2=$(git -C "$WORKING2" rev-parse HEAD)
-RELEASE_BASE_SHA=$(git -C "$WORKING2" rev-parse release-1.0)
 git -C "$WORKING2" push -q origin feat/test:refs/pull/2/head
 # M2: advance main with content NOT on release-1.0 — strengthens the
 # regression fence. With main advanced post-fork, a buggy main-as-base
@@ -344,4 +343,34 @@ if grep -qF "refs/remotes/origin/release-1.0 missing after canonical fetch" "$LO
     exit 1
 fi
 
-echo "  PASS (2 scenarios: orchestrator/worker SHA race + non-default-base canonical→workdir ref propagation)"
+# Second consumer fence: commits.md is also derived from the post-checkout
+# snapshot (`git log $BASE_REF_SHA..$REVIEWED_SHA`) — round-2 finding
+# closed by sourcing it from local git instead of pre-fetch PR_DATA.
+# This assertion proves the new commits-from-git seam stays sourced
+# from the same SHA contract as full-diff.patch — a regression that
+# rewires commits.md back to PR_DATA would silently fail the diff
+# fence above (contents still match) but trip THIS one (the PR-feature
+# commit message would be missing for a release-1.0 base, since
+# PR_DATA's commits list is whatever gh pr view returned). commits.md
+# is written after `just test` and the workdir-prelude — gh stub +
+# host `just` (no justfile in fixture → tests-not-run → continue) get
+# us through that. If a future refactor moves it earlier or later in
+# the worker, this assertion doubles as a tripwire.
+COMMITS_MD="$RUN_DIR2/inputs/commits.md"
+if [ ! -f "$COMMITS_MD" ]; then
+    echo "FAIL: scenario 2 — worker did not write $COMMITS_MD (expected before specialist phase)"
+    [ -f "$LOG2" ] && { echo "--- run.log ---"; tail -n 30 "$LOG2"; }
+    exit 1
+fi
+if ! grep -q "PR feature" "$COMMITS_MD"; then
+    echo "FAIL: scenario 2 — commits.md missing PR-feature commit message (range likely wider than $BASE_REF_SHA..$REVIEWED_SHA)"
+    cat "$COMMITS_MD"
+    exit 1
+fi
+if grep -q "release-1.0: base" "$COMMITS_MD"; then
+    echo "FAIL: scenario 2 — commits.md contains release-1.0 base commit (range too wide; should be $BASE_REF_SHA..$REVIEWED_SHA)"
+    cat "$COMMITS_MD"
+    exit 1
+fi
+
+echo "  PASS (2 scenarios: orchestrator/worker SHA race + non-default-base canonical→workdir ref propagation; both diff and commits consumers fenced)"
