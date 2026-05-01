@@ -12,8 +12,12 @@
 #      committed `.siblings/cncorp/plow-content` as a symlink to
 #      ~/.ssh/). Wipe whatever's there before materializing.
 #
-#   3. Missing siblings (no SOURCE_PATHS dir on disk) are skipped
-#      silently — the search-roots seam already classifies those.
+#   3. Missing siblings (no SOURCE_PATHS dir on disk, or src dir
+#      vanished after classification) make the helper return non-zero
+#      so the caller can abort. The search-roots seam already
+#      classifies absent sources as `missing` upstream; this is
+#      defense in depth for races between classification and
+#      materialization.
 #
 #   4. ONLY tracked files appear in the materialized tree. Untracked /
 #      gitignored content (`.git/`, `.venv/`, `node_modules/`, etc.)
@@ -53,6 +57,13 @@ init_sibling_repo() {
     echo "src" > "$dir/main.py"
     mkdir -p "$dir/pkg"
     echo "pkg-src" > "$dir/pkg/util.py"
+    # Executable shell script — covers the mode 100755 arm of the
+    # mode filter. Without this fixture, dropping the 100755 case in
+    # sibling-symlinks.sh would still pass the smoke. cncorp/plow#37
+    # review 5 finding 3 [low].
+    echo "#!/bin/sh"          > "$dir/run.sh"
+    echo "echo executable"   >> "$dir/run.sh"
+    chmod +x "$dir/run.sh"
     cat > "$dir/.gitignore" <<'EOF'
 .venv/
 node_modules/
@@ -64,7 +75,7 @@ EOF
     # materialized tree — only gitignored content is filtered out.
     mkdir -p "$dir/.knightwatch"
     echo "tracked-hidden" > "$dir/.knightwatch/product-context.md"
-    git -C "$dir" add main.py pkg/util.py .gitignore .knightwatch/product-context.md
+    git -C "$dir" add main.py pkg/util.py run.sh .gitignore .knightwatch/product-context.md
     git -C "$dir" commit -qm "seed"
     # Plant local-only artifacts AFTER commit. None should appear in
     # the materialized tree.
@@ -211,9 +222,8 @@ fi
 # Load-bearing: the prior raw-checkout `ln -sfn "$src" "$target"` shape
 # exposed the entire sibling tree (.git/, .venv/, node_modules/, etc.)
 # to specialist greps. cncorp/plow#567 review rounds 1-4 kept flagging
-# this. The fix is to materialize ONLY tracked files via `git ls-files`
-# so the worker mirrors the sibling's source contract, not whatever
-# happens to be on disk.
+# this. The fix is to materialize only the source the sibling
+# committed — see lib/sibling-symlinks.sh for the mechanism.
 echo "  scenario 6: only tracked files — .git / gitignored / untracked excluded..."
 materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/foo" "acme/bar"
 
@@ -224,6 +234,10 @@ materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/foo" "acme/bar"
 assert_tracked_file_copy "scenario 6: tracked main.py"     "acme/foo" "main.py"     "$TMPDIR/foo/main.py"
 assert_tracked_file_copy "scenario 6: tracked pkg/util.py" "acme/foo" "pkg/util.py" "$TMPDIR/foo/pkg/util.py"
 assert_tracked_file_copy "scenario 6: tracked .knightwatch/" "acme/foo" ".knightwatch/product-context.md" "$TMPDIR/foo/.knightwatch/product-context.md"
+# 100755 mode arm — fence the mode filter so a future "drop the
+# 100755 case" change can't silently hide executable scripts from
+# sibling greps.
+assert_tracked_file_copy "scenario 6: tracked executable run.sh" "acme/foo" "run.sh" "$TMPDIR/foo/run.sh"
 
 # Gitignored / untracked content absent. Each path was planted in
 # `init_sibling_repo` AFTER the commit, with `.venv/`, `node_modules/`,
@@ -321,10 +335,10 @@ if grep -rn "EXTERNAL_BYTES" "$WORKDIR/.siblings/acme/sym/" >/dev/null 2>&1; the
     exit 1
 fi
 
-# --- scenario 9: cp failure (worktree race) returns non-zero ----------
-# Single-owner gate: if any tracked file fails to copy (worktree race
-# deleted it between `git ls-files` and `cp`, permission, disk full),
-# materialize_sibling_symlinks returns non-zero so the caller can abort
+# --- scenario 9: corrupt object → non-zero rc ------------------------
+# Single-owner gate: any failure in the materialization path (corrupt
+# git object, disk full, permission) makes the helper return non-zero
+# so the caller can abort
 # the review instead of serving partial sibling content while reporting
 # `included` coverage. cncorp/plow#37 review 3 finding 1 (BCR — third
 # instance of silent-coverage-loss class).

@@ -68,7 +68,7 @@ materialize_sibling_symlinks() {
     rm -rf "$workdir/.siblings"
     mkdir -p "$workdir/.siblings"
 
-    local entry mode rel list_file
+    local entry mode rel list_file snap_sha
     for slug in "$@"; do
         src="${_src_paths[$slug]:-}"
         # No silent skips. By the time we get here, stage_search_roots
@@ -112,11 +112,25 @@ materialize_sibling_symlinks() {
         #    the target if cp-based); 160000 is a gitlink (submodule
         #    pointer, not source we should expose).
         #
+        # Pin one commit SHA per slug and use it for BOTH enumeration
+        # and content reads. Reading via the symbolic ref `HEAD` twice
+        # opens a race: `plow-kid-refresh.sh` (or any concurrent
+        # operator action) can advance the sibling checkout between
+        # the ls-tree and the show, leaving specialists with an old
+        # path set + new contents, or silently missing files added in
+        # the new commit. Pinning the SHA up front makes the whole
+        # materialization a single coherent snapshot. PR #37 review 5
+        # finding 1 (BCR — 5th instance of silent-coverage-loss).
+        if ! snap_sha=$(git -C "$src" rev-parse HEAD 2>/dev/null); then
+            echo "materialize_sibling_symlinks: git rev-parse HEAD failed for $slug ($src)" >&2
+            return 1
+        fi
+
         # Capture to tempfile (NUL-safe + status-checkable).
         list_file=$(mktemp -t kw-sib-XXXXXX) || return 1
-        if ! (cd "$src" && git ls-tree -r -z HEAD) > "$list_file" 2>/dev/null; then
+        if ! git -C "$src" ls-tree -r -z "$snap_sha" > "$list_file" 2>/dev/null; then
             rm -f "$list_file"
-            echo "materialize_sibling_symlinks: git ls-tree -r HEAD failed for $slug ($src)" >&2
+            echo "materialize_sibling_symlinks: git ls-tree -r $snap_sha failed for $slug ($src)" >&2
             return 1
         fi
 
@@ -132,9 +146,9 @@ materialize_sibling_symlinks() {
                 *) continue ;;               # skip symlinks (120000), gitlinks (160000)
             esac
             mkdir -p "$target/$(dirname "$rel")"
-            if ! git -C "$src" show "HEAD:$rel" > "$target/$rel" 2>/dev/null; then
+            if ! git -C "$src" show "$snap_sha:$rel" > "$target/$rel" 2>/dev/null; then
                 rm -f "$list_file"
-                echo "materialize_sibling_symlinks: git show HEAD:$rel failed for $slug" >&2
+                echo "materialize_sibling_symlinks: git show $snap_sha:$rel failed for $slug" >&2
                 return 1
             fi
         done < "$list_file"

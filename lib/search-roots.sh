@@ -19,12 +19,11 @@
 #
 # Per-sibling status:
 #   included      — slug in SOURCE_PATHS AND its checkout exists on
-#                   disk AND the checkout is a git repo (so
-#                   `git ls-files` can enumerate tracked content for
-#                   the materializer). The .siblings/<slug> path is
-#                   the workdir-relative directory of copied tracked
-#                   files materialized by sibling-symlinks.sh after
-#                   this helper runs.
+#                   disk AND the checkout is a git repo (the
+#                   materializer needs an enumerable HEAD). The
+#                   .siblings/<slug> path is the workdir-relative
+#                   directory the materializer (sibling-symlinks.sh)
+#                   populates after this helper runs.
 #   missing       — slug in SOURCE_PATHS BUT either (a) the checkout
 #                   directory is absent on this host or (b) the
 #                   checkout exists but isn't a git repo (so the

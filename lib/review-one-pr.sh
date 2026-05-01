@@ -816,10 +816,12 @@ fi
 # `included` (whitelisted in SOURCE_PATHS AND checkout present on disk
 # AND a git repo). Running before stage_search_roots would copy content
 # from siblings whose checkouts are absent. If materialization fails
-# (corrupt git objects, worktree race deleting a tracked file between
-# `git ls-files` and `cp`, disk full, permission), abort the review —
-# better to fail loud than serve specialists partial sibling content
-# while claiming `included` coverage.
+# (corrupt git objects, source disappeared after classification,
+# disk full, permission), abort the review — better to fail loud
+# than serve specialists partial sibling content while claiming
+# `included` coverage. Materializer details (HEAD-snapshot pinning,
+# blob reads via `git show`, mode filtering) live in
+# lib/sibling-symlinks.sh and shouldn't be duplicated here.
 INCLUDED_SLUGS=()
 while IFS= read -r line; do
     case "$line" in
