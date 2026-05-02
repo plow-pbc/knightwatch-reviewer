@@ -36,7 +36,16 @@ rank_hot_angles() {
         fi
     done
 
-    # Stage 2: if ≤3 hot, return as-is.
+    # Stage 2a: zero hot → emit nothing (explicit early return so
+    # caller's `mapfile -t HOT_ANGLES < <(...)` produces an empty array,
+    # not a 1-element array containing an empty string. printf '%s\n'
+    # with a zero-length quoted-array expansion is supposed to produce
+    # zero output across bash versions, but being explicit removes the
+    # cross-shell ambiguity entirely.
+    if [ "${#hot[@]}" -eq 0 ]; then
+        return 0
+    fi
+    # Stage 2b: ≤3 hot, return as-is.
     if [ "${#hot[@]}" -le 3 ]; then
         printf '%s\n' "${hot[@]}"
         return 0

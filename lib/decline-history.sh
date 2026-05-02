@@ -34,25 +34,33 @@ _decline_history_from_json() {
         return 0
     fi
 
-    local operator="${OPERATOR_NAME:-srosro}"
-    # Bot auto-posts sign as the operator (kw-reviewer's GH identity is the
-    # operator's account). The HTML marker `<!-- knightwatch-reviewer:auto-post -->`
-    # distinguishes bot output from operator-authored replies — required so
-    # the bot's own review bodies (which can mention the word "Declined" in
-    # findings prose) don't leak in as operator declines.
+    # BOT_USER is the GitHub login seam (review.sh:26, learn-from-replies.sh:36,
+    # approve-from-replies.sh:54) — operator's GH identity, also what the bot
+    # signs as. Distinct from OPERATOR_NAME, which is the voice/display seam
+    # (prompt-build.sh:18). Using OPERATOR_NAME here would let `OPERATOR_NAME=Frankie`
+    # silently filter OUT real srosro decline replies.
+    local operator="${BOT_USER:-srosro}"
+    # Bot auto-posts sign as $operator (kw-reviewer's GH identity is the
+    # operator's account). The HTML marker distinguishes bot output from
+    # operator-authored replies — required so the bot's own review bodies
+    # (which can mention "Declined" in findings prose) don't leak in as
+    # operator declines. Use the same env-var override seam as the rest
+    # of the codebase (review.sh:33, learn-from-replies.sh:37) instead of
+    # hardcoding the substring twice.
+    local marker="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
     local declines counters
-    declines=$(printf '%s' "$raw" | jq --arg op "$operator" -r '
+    declines=$(printf '%s' "$raw" | jq --arg op "$operator" --arg marker "$marker" -r '
         map(select(.user.login == $op))
-        | map(select(.body | test("knightwatch-reviewer:auto-post") | not))
+        | map(select(.body | contains($marker) | not))
         | map(select(.body | test("Declined —|Declined -|^Declined |\\[Bug-Class-Recurrence\\]")))
         | map({ts: .created_at, body: .body})
         | sort_by(.ts)
         | .[]
         | "\(.ts)\t\(.body | gsub("\n"; " ") | .[:400])"
     ' 2>/dev/null)
-    counters=$(printf '%s' "$raw" | jq --arg op "$operator" -r '
+    counters=$(printf '%s' "$raw" | jq --arg op "$operator" --arg marker "$marker" -r '
         map(select(.user.login == $op))
-        | map(select(.body | test("knightwatch-reviewer:auto-post") | not))
+        | map(select(.body | contains($marker) | not))
         | map(select(.body | test("Counter-proposed")))
         | map({ts: .created_at, body: .body})
         | sort_by(.ts)
