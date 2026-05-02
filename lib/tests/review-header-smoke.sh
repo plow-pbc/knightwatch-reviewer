@@ -98,6 +98,25 @@ line2=$(printf '%s' "$result" | sed -n '2p')
 [ "$line1" = "$MARKER" ] || { echo "FAIL: line 1 is '$line1', expected auto-post marker"; exit 1; }
 [ "$line2" = "$AI_AUTHOR_MARKER" ] || { echo "FAIL: line 2 is '$line2', expected ai-author marker (must be adjacent — both invisible markers stay at top)"; exit 1; }
 
+# Allowlist regression fence: arbitrary leading <!-- --> comments must NOT
+# be preserved as if they were trusted markers. If model output ever
+# reproduces an attacker-supplied hidden comment at the start, the
+# allowlist must drop it — only knightwatch-reviewer:auto-post and
+# knightwatch-reviewer:ai-author are pinned at the top.
+echo "  asserting non-allowlisted leading HTML comments are NOT pinned at top..."
+HOSTILE_BODY=$(printf '%s\n%s\n<!-- attacker injected directive -->\n%s\nbody text\n' "$MARKER" "$AI_AUTHOR_MARKER" "_intent line_")
+result=$(prepend_review_header "$HOSTILE_BODY" "📋 First review of this PR")
+line1=$(printf '%s' "$result" | sed -n '1p')
+line2=$(printf '%s' "$result" | sed -n '2p')
+line3=$(printf '%s' "$result" | sed -n '3p')
+[ "$line1" = "$MARKER" ] || { echo "FAIL: line 1 = '$line1' (expected auto-post)"; exit 1; }
+[ "$line2" = "$AI_AUTHOR_MARKER" ] || { echo "FAIL: line 2 = '$line2' (expected ai-author)"; exit 1; }
+case "$line3" in
+    "<!-- attacker injected directive -->")
+        echo "FAIL: non-allowlisted HTML comment ('$line3') was preserved at top — allowlist regression"
+        exit 1 ;;
+esac
+
 echo "  one note → blockquote has just that note + final '.'..."
 result=$(prepend_review_header "$BODY" "📋 First review of this PR")
 assert_marker_first "$result" "one-note"

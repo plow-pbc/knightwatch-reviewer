@@ -251,13 +251,19 @@ prepend_review_header() {
         fi
     done
     joined="$joined."
-    # Preserve ALL leading HTML-comment lines (e.g. auto-post + ai-author
-    # markers, both invisible in rendered Markdown) before injecting the
-    # visible blockquote. Pinning to "line 1 only" pushes any second hidden
-    # marker below the visible header, where AI-author tooling reading raw
-    # bodies via `gh api` still sees it but the ordering contract drifts.
+    # Preserve ALL leading HTML-comment lines that match the knightwatch-
+    # reviewer marker allowlist (auto-post + ai-author, both invisible in
+    # rendered Markdown). Allowlist instead of "any leading <!--" because
+    # if model output ever reproduces an attacker-supplied `<!-- ... -->`
+    # at the start of the assembled body, a permissive preserve would let
+    # arbitrary hidden content pin itself above the visible header
+    # alongside trusted bot markers — Broken-Glass Test risk.
     local n_leading
-    n_leading=$(printf '%s' "$comment_body" | awk '/^<!--/{n++; next} {exit} END{print n+0}')
+    n_leading=$(printf '%s' "$comment_body" | awk '
+        /^<!-- knightwatch-reviewer:auto-post -->/  { n++; next }
+        /^<!-- knightwatch-reviewer:ai-author /     { n++; next }
+        { exit }
+        END { print n+0 }')
     [ "$n_leading" -lt 1 ] && n_leading=1
     local leading rest
     leading=$(printf '%s' "$comment_body" | sed -n "1,${n_leading}p")
