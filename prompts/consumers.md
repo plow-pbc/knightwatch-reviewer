@@ -39,10 +39,6 @@ Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. Class
 
 You MUST emit at least one `complexity-cost` probe on any non-trivial PR. If none applies, append to your Surveyed section: "No complexity-cost probe — explanation: <one sentence>".
 
-Set `Answer: unknown` and `Evidence: —` on every probe — the critic fills these via grep / decline-history. Do NOT emit legacy `[severity]` finding paragraphs.
-
-If you have nothing to emit, write `No probes.` on a single line followed by a `## Surveyed` section.
-
 **Overlap with other specialists:**
 - `simplification` owns DRY / intra-PR duplication / drive-by tidies / unused imports / verbose code *within* touched files. You own *cross-symbol call-graph effects*.
 - `tests` owns "this bug-fix needs a regression test." You own "this regression *is happening now* because a caller wasn't updated."

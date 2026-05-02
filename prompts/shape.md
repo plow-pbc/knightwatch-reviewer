@@ -49,6 +49,6 @@ Out of scope: specific security bugs, concurrency bugs, test coverage, line-leve
 
 **Emission format:**
 
-Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. Set `Answer: unknown` and `Evidence: —` on every probe — the critic fills these in via grep/git-log. Do NOT emit legacy `[severity]` finding paragraphs. If you have nothing to emit, write `No probes.` on a single line followed by a `## Surveyed` section explaining what you looked at and why nothing surfaced (≥1 probe is expected on non-trivial PRs; zero probes signals either a perfect PR or a missed angle, and the Surveyed section is how you prove you looked).
+(Output shape, `Answer: unknown` default, `No probes.` fallback, and `## Surveyed` requirement live in `common-header.md` § Rules — they apply to every specialist; this file only carries class options + per-specialist mandate.)
 
 Look beyond the diff: the repo's canonical shapes live in `lib/`, `core/`, base classes, decorator modules, the framework's docs. Grep for the symbols you're evaluating (e.g. `grep -rn "Config" --include="*.py"` to find a Config helper before judging an `os.getenv` call).

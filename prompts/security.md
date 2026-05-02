@@ -25,6 +25,3 @@ You MUST emit at least one `complexity-cost` probe on any PR that adds new defen
 
 When the failing path is fully cited (you saw the bug), set `Confidence: high` — the critic will likely confirm `Answer: yes` immediately and the aggregator renders that as a declarative `[blocking]` line per `.codex-scratch/probe-schema.md` § Rendering.
 
-Set `Answer: unknown` and `Evidence: —` on every probe — the critic fills these. Do NOT emit legacy `[severity]` finding paragraphs.
-
-If you have nothing to emit, write `No probes.` on a single line followed by a `## Surveyed` section.

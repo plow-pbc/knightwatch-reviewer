@@ -25,8 +25,4 @@ Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. Class
 
 You MUST emit at least one `complexity-cost` probe on any non-trivial PR. If none applies, append to your Surveyed section: "No complexity-cost probe — explanation: <one sentence>".
 
-Set `Answer: unknown` and `Evidence: —` on every probe — the critic fills these. Do NOT emit legacy `[severity]` finding paragraphs.
-
-If you have nothing to emit, write `No probes.` on a single line followed by a `## Surveyed` section.
-
 Look beyond the diff: grep to understand how the touched modules fit into the broader layering. Read the top-level module structure before making layering claims.
