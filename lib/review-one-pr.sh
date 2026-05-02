@@ -963,14 +963,14 @@ fi
 # Product context from .knightwatch/product-context.md (per-repo,
 # committed to the base branch). PRESENT-empty and ABSENT both mean
 # "no per-repo product context"; the worker substitutes an explicit
-# placeholder so prompts don't see a blank input.
+# placeholder below so prompts don't see a blank input.
 PRODUCT_CONTEXT=""
 PRODUCT_CONTEXT=$(read_knightwatch_file "$REPO_DIR" "$BASE_REF_SHA" "product-context.md")
 case $? in
-    0) : ;;  # PRESENT: use as-is
-    1) PRODUCT_CONTEXT="(no product context configured for $REPO)" ;;  # ABSENT
+    0|1) : ;;  # PRESENT or ABSENT: use as-is (placeholder substituted below if empty)
     *) log "$PR_ID: knightwatch-config error reading product-context.md — aborting"; rm -rf "$REPO_DIR"; exit 1 ;;
 esac
+[ -z "$PRODUCT_CONTEXT" ] && PRODUCT_CONTEXT="(no product context configured for $REPO)"
 write_scratch "$REPO_DIR" "product-context.md" "$PRODUCT_CONTEXT"
 
 # review-priority.md — per-repo operating point + voice posture

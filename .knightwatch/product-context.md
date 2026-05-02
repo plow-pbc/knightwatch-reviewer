@@ -8,7 +8,7 @@
 - Shell-first. Scripts + prompts + systemd units. No application server, no database beyond `state.json`.
 - Each running timer is a `Type=oneshot` with a lightweight sandbox (`ProtectHome=read-only` + explicit `ReadWritePaths`). When adding a capability that touches a new path, widen `ReadWritePaths` in the corresponding unit file — don't relax the outer sandbox.
 - Codex runs with `--dangerously-bypass-approvals-and-sandbox` (Ubuntu 24.04 AppArmor breaks bwrap for unprivileged user namespaces). Outer sandbox is systemd; that substitution is load-bearing and should not be reverted casually.
-- State lives in `~/.pr-reviewer/`. Code lives in this repo. `~/.pr-reviewer/{review.sh, lib, prompts, contexts, docs}` are symlinks to the repo.
+- State lives in `~/.pr-reviewer/`. Code lives in this repo. `~/.pr-reviewer/{review.sh, lib, prompts, docs}` are symlinks to the repo.
 - Auto-tuning from PR-reply feedback runs hourly. It only edits `~/.claude/COMMENT_REVIEW_MISTAKES.md` — a ranked top-48 list of calibrations. It does NOT touch hand-curated files (`CODING_STANDARDS.md`, `REVIEW_PRACTICES.md`, `TESTING.md`).
 
 **Known near-term migrations / roadmap items:**
