@@ -57,7 +57,30 @@ LIB_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$LIB_DIR/orchestrate.sh"
 
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+# On exit, preserve per-agent log.txt files for post-mortem before
+# wiping $WORK. `run_specialist_pipeline` calls `exit 1` directly on
+# codex failure (auth, usage limit, network), which means replay.sh's
+# control flow can't capture stderr from the failing agent inline.
+# The trap captures log tails into $OUT/agents-on-exit/ regardless of
+# how the script exited.
+cleanup_replay() {
+    local rc=$?
+    if [ -d "$WORK/run/agents" ]; then
+        mkdir -p "$OUT/agents-on-exit"
+        for agent_dir in "$WORK"/run/agents/*/; do
+            [ -d "$agent_dir" ] || continue
+            local name
+            name=$(basename "$agent_dir")
+            mkdir -p "$OUT/agents-on-exit/$name"
+            for f in log.txt prompt.txt output.md; do
+                [ -f "$agent_dir/$f" ] && cp "$agent_dir/$f" "$OUT/agents-on-exit/$name/$f"
+            done
+        done
+    fi
+    rm -rf "$WORK"
+    return $rc
+}
+trap cleanup_replay EXIT
 git clone "https://github.com/$REPO.git" "$WORK/repo"
 ( cd "$WORK/repo" && git fetch origin "pull/$PR/head" && git checkout "$SHA" )
 
@@ -91,7 +114,30 @@ PR_AUTHOR="$(gh pr view "$PR" --repo "$REPO" --json author --jq .author.login)"
 _LIB_DIR="$LIB_DIR"
 LOG_FILE="$OUT/run.log"
 
+# `run_specialist_pipeline` itself calls `exit 1` on codex failure inside
+# the function body (intent failure, specialist failure, etc.). With
+# replay.sh's `set -euo pipefail`, ANY non-zero return from `dispatch_agent`
+# inside the function would abort BEFORE the function's own
+# "intent inference failed" log line runs — silent abort, operator sees
+# only "inferring developer intent..." then nothing. Drop set -e for the
+# pipeline call so the function's own diagnostics surface, then capture
+# the rc explicitly so a real failure still propagates with signal.
+# `run_specialist_pipeline` calls `exit 1` from inside the function on
+# codex failure (intent failure, specialist failure, etc.), which under
+# replay.sh's `set -euo pipefail` would have aborted BEFORE the
+# function's own "intent inference failed" log line ran — silent abort,
+# operator saw only "inferring developer intent..." then nothing. Drop
+# set -e for the pipeline call so the function's own diagnostics surface
+# in $OUT/run.log; re-enable set -e after. Per-agent log.txt files are
+# captured by the EXIT trap regardless of how the script exits.
+set +e
 run_specialist_pipeline
+PIPELINE_RC=$?
+set -e
+if [ "$PIPELINE_RC" -ne 0 ]; then
+    echo "replay: pipeline failed (rc=$PIPELINE_RC); see $OUT/run.log + $OUT/agents-on-exit/<agent>/log.txt for codex stderr" >&2
+    exit "$PIPELINE_RC"
+fi
 
 # Detect .knightwatch/ presence at the replayed SHA. ls-tree exits 0
 # regardless of presence/absence; empty stdout → absent.
