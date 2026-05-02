@@ -93,6 +93,22 @@ LOG_FILE="$OUT/run.log"
 
 run_specialist_pipeline
 
-cp "$RUN_DIR/agents/aggregator/output.md" "$OUT/aggregator-output.md"
+# Detect .knightwatch/ presence at the replayed SHA. ls-tree exits 0
+# regardless of presence/absence; empty stdout → absent.
+if git -C "$REPO_DIR" ls-tree "$SHA" .knightwatch/ 2>/dev/null | grep -q .; then
+    KNIGHTWATCH_PRESENT=1
+else
+    KNIGHTWATCH_PRESENT=0
+fi
+
+REVIEW_NOTES=()
+REVIEW_NOTES+=("🎬 Replay of \`$SHA\` (\`gh pr view --repo $REPO $PR\`)")
+if [ "$KNIGHTWATCH_PRESENT" = "0" ]; then
+    REVIEW_NOTES+=("⚙️ No .knightwatch/ config (review using defaults)")
+fi
+
+AGG_BODY=$(cat "$RUN_DIR/agents/aggregator/output.md")
+STITCHED=$(prepend_review_header "$AGG_BODY" "${REVIEW_NOTES[@]}")
+printf '%s\n' "$STITCHED" > "$OUT/aggregator-output.md"
 cp -r "$RUN_DIR/agents" "$OUT/agents"
 echo "replay complete: $OUT"
