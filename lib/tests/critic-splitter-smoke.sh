@@ -94,10 +94,12 @@ grep -qF "REFRAME-AS-QUESTION" "$SPECIALISTS_DIR/architecture.md" || {
     exit 1
 }
 
-echo "  asserting missed findings written to specialists/missed.md..."
-grep -qF "missing CSP" "$SPECIALISTS_DIR/missed.md" || {
-    echo "FAIL: missed findings not captured"
-    [ -f "$SPECIALISTS_DIR/missed.md" ] && cat "$SPECIALISTS_DIR/missed.md"
+echo "  asserting missed findings stay in critic.md (no separate sink)..."
+# Round-5 finding: specialists/missed.md was a sink with no runtime
+# reader (the aggregator reads missed findings from critic.md directly).
+# After dropping the sink, the file should NOT exist.
+[ ! -e "$SPECIALISTS_DIR/missed.md" ] || {
+    echo "FAIL: critic-splitter still writing missed.md (sink should be dropped — the aggregator reads from critic.md)"
     exit 1
 }
 

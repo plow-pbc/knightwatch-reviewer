@@ -261,6 +261,18 @@ run_specialist_pipeline() {
         log "$PR_ID: go-deep tech-leads complete"
     fi
 
+    # Persist the final layered specialist files into RUN_DIR so they
+    # survive the workdir rm -rf at the end of review-one-pr.sh — the
+    # spec promises operators can inspect runs/<id>/agents/<angle>/layered.md.
+    # Without this, the symlink target only carries the specialist's pristine
+    # output (round-5 F3).
+    local angle
+    for angle in "${ANGLES[@]}"; do
+        if [ -e "$SPECIALISTS_DIR/${angle}.md" ]; then
+            cp "$SPECIALISTS_DIR/${angle}.md" "$RUN_DIR/agents/${angle}/layered.md"
+        fi
+    done
+
     log "$PR_ID: aggregator (with critic input)..."
     # The aggregator's prompt build (stitching in prompts/voice.md at
     # aggregator.md's INSERT_VOICE_HERE marker) can fail pre-codex on

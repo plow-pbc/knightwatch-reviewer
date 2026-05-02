@@ -29,7 +29,9 @@ split_critic_to_specialists() {
     fi
 
     # Pass 1: walk critic.md, accumulate per-angle blocks into <angle>.angle-buf
-    # files and the missed-findings block into missed-buf.
+    # files. The "## Missed findings" section in critic.md stays in critic.md —
+    # the aggregator reads it from there directly (per prompts/aggregator.md);
+    # extracting it to a separate sink would duplicate the contract.
     awk -v out_dir="$specialists_dir" '
         function flush() {
             if (current_angle != "" && length(buf) > 0) {
@@ -38,17 +40,10 @@ split_critic_to_specialists() {
                 close(f)
                 buf = ""
             }
-            if (in_missed && length(missed_buf) > 0) {
-                f = out_dir "/missed.md"
-                print missed_buf >> f
-                close(f)
-                missed_buf = ""
-            }
         }
         # Per-angle finding section
         /^### \[[a-z][a-z-]*\] Finding/ {
             flush()
-            in_missed = 0
             line = $0
             sub(/^### \[/, "", line)
             sub(/\].*/, "", line)
@@ -56,29 +51,17 @@ split_critic_to_specialists() {
             buf = $0
             next
         }
-        # Missed-findings sink
-        /^## Missed findings/ {
-            flush()
-            current_angle = ""
-            in_missed = 1
-            missed_buf = $0
-            next
-        }
-        # Any other H2 ends the active section
+        # Any H2 (including "## Missed findings") ends the active angle.
         /^## / {
             flush()
             current_angle = ""
-            in_missed = 0
             next
         }
-        # Body lines accumulate to whichever section is active
+        # Body lines accumulate to whichever angle is active.
         {
             if (current_angle != "") {
                 if (length(buf) > 0) buf = buf "\n" $0
                 else                 buf = $0
-            } else if (in_missed) {
-                if (length(missed_buf) > 0) missed_buf = missed_buf "\n" $0
-                else                        missed_buf = $0
             }
         }
         END { flush() }
