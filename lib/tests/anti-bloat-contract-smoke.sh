@@ -54,6 +54,19 @@ echo "  asserting Pre-PMF lens reference in critic.md..."
 assert_grep "critic.md should reference loc-trend.md (Pre-PMF lens)" \
     "loc-trend.md" prompts/critic.md
 
+# ----- Phase 1: decline-history awareness + remedy-LOC + calibration ----
+echo "  asserting decline-history input in critic.md..."
+assert_grep "critic.md should reference decline-history.md" \
+    "decline-history.md" prompts/critic.md
+
+echo "  asserting remedy-LOC estimate contract in critic.md..."
+assert_grep "critic.md should fence Estimated remedy LOC token" \
+    "Estimated remedy LOC" prompts/critic.md
+
+echo "  asserting calibration-question contract in critic.md..."
+assert_grep "critic.md should fence Calibration questions for go-deep token" \
+    "Calibration questions for go-deep" prompts/critic.md
+
 echo "  asserting REMEDY-BLOAT handler in aggregator.md..."
 assert_grep "REMEDY-BLOAT handler missing from prompts/aggregator.md" \
     "REMEDY-BLOAT" prompts/aggregator.md
