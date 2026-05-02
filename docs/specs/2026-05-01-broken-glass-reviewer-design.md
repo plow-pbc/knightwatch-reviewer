@@ -222,24 +222,24 @@ Example output for `cncorp/plow#534` round 4:
 
 #### Change E — `.codex-scratch/loc-trend.md` scratch input
 
-New scratch file written by `lib/review-one-pr.sh` before specialist fan-out. The per-round SHAs come from each run's `meta.json.sha` (the canonical post-checkout `REVIEWED_SHA`); the run-directory listing is just the filter for "which runs belong to this PR".
+New scratch file written by `lib/review-one-pr.sh` before specialist fan-out. Sourced from the existing `~/.pr-reviewer/runs/<repo>__<pr>__*` directory listing.
 
-Format (one trajectory sentence + per-round table):
+Format (3-line summary + per-round table):
 
 ```markdown
 # LOC trend
 
-This PR has been reviewed N times. Trajectory: GROWING (X.X× from first review) | STABLE | SHRINKING | UNKNOWN.
+This PR has been reviewed N times. Trajectory: GROWING (X.X× from first review) | STABLE | SHRINKING | UNKNOWN (one or more prior reviewed SHAs not in local history — likely rebased or force-pushed).
 
-| Round | Timestamp | SHA | base...head |
+| Round | Timestamp | SHA | merge-base..head (additions only) |
 |---|---|---|---|
-| 1 | <ts> | <sha> | +A / −D (F files) |
-| 2 | ... | ... | ... |
+| 1 | <ts> | <sha> | +A / −D | (numeric row)
+| 2 | <ts> | <sha> | (zero diff) | (reachable_zero — no files in three-dot diff)
+| 3 | <ts> | <sha> | (0 adds, N dels) | (deletion_only)
+| 4 | <ts> | <sha> | (sha not in local history) | (unavailable)
 ```
 
-The `base...head` cell carries `git diff --shortstat` raw output (e.g. `2 files changed, 18 insertions(+), 4 deletions(-)`). Trajectory is `UNKNOWN` when either the first-round or last-round anchor SHA is unreachable (e.g. force-pushed away) — never silently `STABLE`, which would look like a converged signal to the aggregator's loop-breaker.
-
-`base...head` is `git diff --shortstat <base_tip>...<sha>` (three-dot, matches GitHub's "Files changed" view) — the same shape PR review uses for `FULL_PR_DIFF`. The helper lives in `lib/run-dir.sh` next to the existing run-dir helpers (`stage_prior_reviews`, etc.); the orchestrator calls it before specialist fan-out and writes the table.
+Per-round adds count comes from `git diff --numstat <merge-base>...<sha>` (three-dot, additions-only — sum of column 1). Two-dot would diff against the current default-branch SHA and retroactively distort older rounds when main advances between reviews; three-dot uses the dynamic per-pair merge-base. Display column also uses three-dot. Each row carries one of four typed states (`unavailable` / `reachable_zero` / `deletion_only` / `numeric`); the trajectory classifier routes on the typed states (UNKNOWN supersedes any other classification when at least one prior row is `unavailable`). The orchestrator script reads `~/.pr-reviewer/runs/` listing, computes the diff for each prior SHA's reviewed_sha (post-checkout HEAD), and writes the table.
 
 This file is consumed by the momentum specialist (Change D) and the aggregator's loop-breaker (Change G). Specialists already loaded today don't need it.
 
@@ -266,7 +266,9 @@ Reframe:
 
 Scope-creep findings (asking the PR to update unrelated infra, fix a long-pre-existing gap, expand into adjacent policy) MUST be REFRAME-AS-QUESTION'd if they survive — they are not bugs, the remedy is additive by definition, and the cost-naming forces the author to weigh in. The reframe must include explicit cost language ("adds complexity and makes PMF iteration harder").
 
-**(F3) Pre-PMF lens.** When `loc-trend.md` shows GROWING and Bug-Class-Recurrence has fired in this round or any prior round, the critic applies the lens to *every surviving finding*: would the failure mode the remedy is preventing be observed in production at our scale today? If no AND the remedy is additive without observed need → REMEDY-BLOAT (drop entirely). If no but the underlying concern is real → REFRAME-AS-QUESTION.
+**(F3) Pre-PMF lens.** When `loc-trend.md` shows GROWING and Bug-Class-Recurrence has fired in any prior round (visible in `prior-reviews.md`), the critic applies the lens to *every surviving finding*: would the failure mode the remedy is preventing be observed in production at our scale today? If no AND the remedy is additive without observed need → REMEDY-BLOAT (drop entirely). If no but the underlying concern is real → REFRAME-AS-QUESTION.
+
+(The lens reads only PRIOR rounds — the critic runs alongside the other specialists, so "this round's" Bug-Class-Recurrence finding does not yet exist when the critic is checking the trigger. Naming "this round" here would make the condition unreachable, mirroring the same gotcha for momentum's loop-breaker (G3 below).)
 
 Implementation: ~25 LOC added to critic.md (output schema + bucket descriptions + lens conditional + cost-language requirement). The existing critic machinery handles the rest.
 
@@ -312,7 +314,7 @@ Open Questions is no longer "padding" or "stuff that didn't fit elsewhere" — i
 **(G3) Re-review loop-breaker mode.** Modify step 6 (today's "step-back signal") to also fire on re-reviews when:
 
 - `loc-trend.md` shows GROWING (≥1.5× since first review), AND
-- `Bug-Class-Recurrence` has fired in this round or any prior round (visible in `prior-reviews.md`),
+- `Bug-Class-Recurrence` has fired in any prior round (visible in `prior-reviews.md`),
 
 OR
 
@@ -321,6 +323,8 @@ OR
 OR (existing trigger, unchanged):
 
 - First-review-only conditions from today's step 6.
+
+(The trigger reads only PRIOR rounds — the momentum specialist runs *before* the critic, so "this round's" Bug-Class-Recurrence finding does not yet exist when momentum is checking the trigger. Naming "this round" here would make the condition unreachable.)
 
 When the loop-breaker fires:
 
@@ -345,7 +349,7 @@ Three wire-ins in `lib/review-one-pr.sh`:
 
 1. **Momentum specialist.** Run alongside the critic, after specialists fan out. Output written to `.codex-scratch/agents/momentum/output.md`. The aggregator reads it as a new input. Skip when `previous-review.md` is empty (first review — no momentum to evaluate).
 2. **`review-priority.md` load path.** Read via `read_knightwatch_file` from the merge-base SHA (same pattern as `product-context.md`). Tri-state: PRESENT → use file content; ABSENT → use the default content embedded in the script; ERROR → abort the review (Fail-Fast — don't silently fall through to default if git itself failed).
-3. **`loc-trend.md` computation.** Read `~/.pr-reviewer/runs/<repo>__<pr>__*` listing, take each run's SHA from its `meta.json.sha` (post-checkout `REVIEWED_SHA`), compute `git diff --shortstat <base_tip>...<sha>` (three-dot) for each prior SHA, write the table format from Change E to `.codex-scratch/loc-trend.md`. Handle 1-round (no trend yet — emit a header noting it's the first review), N-round, and missing-`runs/` cases without aborting; fail loud on a `meta.json` that's present but missing `.sha` / `.started_at` (corruption — silent skip would mask a regression rewiring the SHA source).
+3. **`loc-trend.md` computation.** Read `~/.pr-reviewer/runs/<repo>__<pr>__*` listing, compute `git diff --numstat <merge-base>...<sha>` (three-dot, additions-only — sum of the additions column) for each prior author-visible round's reviewed_sha, classify each row into one of four typed states (`unavailable` / `reachable_zero` / `deletion_only` / `numeric`), and emit the trajectory plus table from Change E to `.codex-scratch/loc-trend.md`. UNKNOWN trajectory wins when any prior row is `unavailable` (rebase / force-push evicted the SHA, or `--numstat` exited non-zero on a reachable SHA). Handle 1-round (no trend yet — emit a header noting it's the first review), N-round, and missing-`runs/` cases without aborting.
 
 Plus prompt-side wire-ins:
 

@@ -21,8 +21,8 @@ test:
     bash lib/tests/repos-conf-smoke.sh
 
     echo ""
-    echo "=== state-io smoke test ==="
-    bash lib/tests/state-io-smoke.sh
+    echo "=== divergent-clock smoke test ==="
+    bash lib/tests/divergent-clock-smoke.sh
 
     echo ""
     echo "=== auth smoke test ==="
@@ -49,6 +49,10 @@ test:
     bash lib/tests/sibling-symlinks-smoke.sh
 
     echo ""
+    echo "=== codex-scratch-redirect smoke test ==="
+    bash lib/tests/codex-scratch-redirect-smoke.sh
+
+    echo ""
     echo "=== path-scrub smoke test ==="
     bash lib/tests/path-scrub-smoke.sh
 
@@ -59,6 +63,14 @@ test:
     echo ""
     echo "=== anti-bloat contract smoke test ==="
     bash lib/tests/anti-bloat-contract-smoke.sh
+
+    echo ""
+    echo "=== loc-trend smoke ==="
+    bash lib/tests/loc-trend-smoke.sh
+
+    echo ""
+    echo "=== momentum-wire smoke ==="
+    bash lib/tests/momentum-wire-smoke.sh
 
     echo ""
     echo "=== run-specialist smoke test ==="

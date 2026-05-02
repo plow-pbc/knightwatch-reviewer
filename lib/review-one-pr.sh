@@ -32,11 +32,18 @@ if [ -n "${TRIGGER_COMMENT_FILE:-}" ] && [ -f "${TRIGGER_COMMENT_FILE}" ]; then
 fi
 
 # Captured here (before anything that can take minutes: just test, specialists,
-# aggregator) and stamped into state.reviewed_at on success. The orchestrator
-# filters "new comments since last review" with created_at > reviewed_at, so if
+# aggregator) and stamped into meta.json.started_at below. The orchestrator
+# filters "new comments since last review" with created_at > started_at, so if
 # we stamped completion time instead, a /review posted during this run would
 # fall before the stamp and be invisible to the next tick.
+#
+# A SINGLE captured value drives BOTH the epoch form used by internal helpers
+# AND the ISO 8601 form written to meta.json. Two `date` calls (one here, one
+# at the meta.json write below) drift by sub-seconds under load, and a
+# /srosro-review trigger landing in that drift window would be silently
+# filtered out by review.sh's cutoff (created_at > meta.json.started_at).
 REVIEW_START_TS=$(date +%s)
+REVIEW_START_ISO=$(date -u -d "@$REVIEW_START_TS" +"%Y-%m-%dT%H:%M:%SZ")
 
 # --- per-PR advisory lock ----------------------------------------------------
 # Prevents two concurrent invocations from stepping on each other for the same
@@ -64,7 +71,6 @@ if ! acquire_pr_lock "$STATE_DIR" "$PR_LOCK_SLUG"; then
 fi
 # flock is held for the lifetime of PR_LOCK_FD; releases automatically on exit.
 
-STATE_FILE="${STATE_FILE:-$STATE_DIR/state.json}"
 # Per-run dir is set up below once we've sourced helpers; until then the
 # orchestrator-level fallback catches any early `log` call.
 LOG_FILE="${LOG_FILE:-$STATE_DIR/orchestrator.log}"
@@ -114,6 +120,12 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 . "$_LIB_DIR/agent-fallback.sh"
 . "$_LIB_DIR/run-dir.sh"
 
+# --- loc-trend computation (compute_loc_trend / _loc_trend_display) ---
+# Sources run-dir.sh internally for is_run_author_visible /
+# author_visible_rounds, but run-dir.sh is sourced just above and
+# multi-source is idempotent (function redefinition).
+. "$_LIB_DIR/loc-trend.sh"
+
 # --- per-run dir -------------------------------------------------------------
 # Every worker invocation gets its own runs/<RUN_ID>/ dir holding the run log,
 # input scratch, and one subdir per agent (prompt + output + log). The git
@@ -135,11 +147,11 @@ if ! allocate_run_dir "$RUN_DIR"; then
 fi
 LOG_FILE="$RUN_DIR/run.log"
 
-# Capture worker-start timestamp now; meta.json writes it later, after
-# REVIEWED_SHA is known (post-checkout). Recording started_at when meta
-# is first written would otherwise reflect the post-checkout time, not
-# when the worker actually began.
-STARTED_AT_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+# meta.json is written later (after REVIEWED_SHA is captured post-checkout)
+# so `sha` records what was actually reviewed instead of the orchestrator-
+# enumerated PR_SHA. The worker-start timestamp is REVIEW_START_ISO,
+# captured at the very top of this script (single-clock-read alongside
+# REVIEW_START_TS) — used for meta.json.started_at when meta is written.
 
 # write_scratch — writes input artifacts into the run dir's inputs/ and
 # exposes them under the codex-scratch view in the workdir so agents can
@@ -392,13 +404,13 @@ fi
 # PR_SHA points at an older commit and the worker's diff actually covers
 # `KNOWN_SHA..REVIEWED_SHA`. Using PR_SHA in the posted header would
 # render a `git diff` command that doesn't reproduce what the bot
-# reviewed (PR #35 round-1 finding); using PR_SHA in `state_set` would
-# also record a SHA that may no longer be on the branch (force-push
-# eviction) so the next tick can't anchor an incremental diff.
-# REVIEWED_SHA is the source of truth for "what this run evaluated";
-# the stale-head disclosure later compares it against the PR's
-# CURRENT_HEAD via gh API to catch movement that happens AFTER this
-# point but before posting.
+# reviewed (PR #35 round-1 finding); using PR_SHA in meta.json's
+# reviewed_sha (stamped just below) would also record a SHA that may no
+# longer be on the branch (force-push eviction) so the next tick can't
+# anchor an incremental diff. REVIEWED_SHA is the source of truth for
+# "what this run evaluated"; the stale-head disclosure later compares
+# it against the PR's CURRENT_HEAD via gh API to catch movement that
+# happens AFTER this point but before posting.
 REVIEWED_SHA=$(git -C "$REPO_DIR" rev-parse HEAD)
 if [ -z "$REVIEWED_SHA" ]; then
     log "$PR_ID: rev-parse HEAD returned empty after checkout — aborting"
@@ -409,13 +421,25 @@ if [ "$REVIEWED_SHA" != "$PR_SHA" ]; then
     log "$PR_ID: orchestrator enumerated ${PR_SHA:0:7}, worker checked out ${REVIEWED_SHA:0:7} — using checked-out SHA for header + state + meta"
 fi
 
+# Redirect-safe staging — a PR checkout could commit .codex-scratch as a
+# symlink to a writable service path (e.g. ~/.pr-reviewer/runs/...) so that
+# write_scratch + the per-specialist symlinks would redirect critic /
+# momentum / dead-code outputs into our own state dir. Wipe + recreate
+# unconditionally before any write so the worker owns the directory.
+# Mirrors lib/sibling-symlinks.sh's .siblings/ wipe-then-recreate pattern.
+rm -rf "$REPO_DIR/.codex-scratch"
+mkdir -p "$REPO_DIR/.codex-scratch"
+
 # meta.json — minimal post-mortem header. Written here (after checkout)
 # rather than at run-dir allocation so `sha` records what was actually
 # reviewed (REVIEWED_SHA) instead of the orchestrator's enumeration SHA
 # (PR_SHA). Worker abort paths between RUN_DIR allocation and this point
 # leave no meta.json; finalize_meta_json's missing-file path is
-# tolerant. Title is JSON-escaped via jq so titles with quotes /
-# newlines don't break the file.
+# tolerant. started_at uses REVIEW_START_ISO (captured at script entry,
+# single-clock-read alongside REVIEW_START_TS) so review.sh's "comments
+# newer than this review" cutoff doesn't drift past comments posted
+# during the worker's setup window. Title is JSON-escaped via jq so
+# titles with quotes / newlines don't break the file.
 if ! jq -n \
         --arg repo "$REPO" \
         --arg pr_id "$PR_ID" \
@@ -426,7 +450,7 @@ if ! jq -n \
         --arg title "$PR_TITLE" \
         --arg force_whole_pr "$FORCE_WHOLE_PR" \
         --arg workdir "$WORKDIRS_DIR/${REPO_SLUG_FOR_RUN}__${PR_NUM}" \
-        --arg started_at "$STARTED_AT_ISO" \
+        --arg started_at "$REVIEW_START_ISO" \
         '{repo: $repo, pr_id: $pr_id, pr_num: $pr_num, sha: $sha, branch: $branch, base_ref: $base_ref, title: $title, force_whole_pr: ($force_whole_pr == "true"), workdir: $workdir, started_at: $started_at}' \
         > "$RUN_DIR/meta.json"; then
     log "$PR_ID: failed to write $RUN_DIR/meta.json — aborting"
@@ -495,9 +519,28 @@ fi
 log "$PR_ID: full PR diff size = ${#FULL_PR_DIFF} bytes"
 KID_INPUT_DIFF="$FULL_PR_DIFF"
 
-KNOWN_SHA=$(state_get "$PR_ID" "sha")
-PREV_BODY=""
-PREV_APPROVED=""
+# All four "what did the author see last?" values (body, sha, approved,
+# started_at) source from runs/ via the latest_author_visible_review_*
+# helpers — the single source of truth for prior-author-visible-round
+# state. The orchestrator's KNOWN_SHA gate, the slash-command cutoff,
+# prior-reviews.md, and the LOC-trend table all consume the same
+# author_visible_runs_iter selection, so body/sha/approved/started_at
+# can't pick different rounds.
+#
+# state.json (state_get / state_set) was retired entirely with this
+# refactor — every runtime-decision seam now reads runs/, and the worker
+# no longer writes state.json. meta.json is stamped at run init and again
+# at finalize_run, both BEFORE the worker can crash mid-write, so the
+# "gh post succeeded but state_set failed" race that drove rounds 7-12
+# can no longer happen: there is no state_set to fail.
+#
+# Returns empty on first review (no prior author-visible run); empty
+# PREV_BODY then drives previous-review.md to be empty, which the
+# momentum gate uses as its "first review, skip momentum" signal.
+PREV_BODY=$(latest_author_visible_review "$STATE_DIR" "$REPO_SLUG_FOR_RUN" "$PR_NUM" "$RUN_DIR")
+KNOWN_SHA=$(latest_author_visible_review_sha "$STATE_DIR" "$REPO_SLUG_FOR_RUN" "$PR_NUM" "$RUN_DIR")
+PREV_APPROVED=$(latest_author_visible_review_approved "$STATE_DIR" "$REPO_SLUG_FOR_RUN" "$PR_NUM" "$RUN_DIR")
+[ "$FORCE_WHOLE_PR" = "true" ] && PREV_BODY=""
 
 # Optimization: use a local incremental diff for KID_INPUT_DIFF ONLY
 # when (a) the prior reviewed SHA is still on the branch's history AND
@@ -508,8 +551,6 @@ PREV_APPROVED=""
 # `prepend_review_header` emit a `fallback:<sha>` scope disclosure at
 # the top of the review (via REVIEW_SCOPE).
 if [ -n "$KNOWN_SHA" ] && [ "$FORCE_WHOLE_PR" != "true" ]; then
-    PREV_BODY=$(state_get "$PR_ID" "body")
-    PREV_APPROVED=$(state_get "$PR_ID" "approved")
     if is_clean_incremental_available "$REPO_DIR" "$KNOWN_SHA"; then
         KID_INPUT_DIFF=$(git -C "$REPO_DIR" diff "$KNOWN_SHA..$REVIEWED_SHA")
         log "$PR_ID: clean incremental diff since ${KNOWN_SHA:0:7}"
@@ -897,11 +938,24 @@ write_scratch "$REPO_DIR" "standards.md"       "$STANDARDS"
 # be detected. Empty / absent on the first review of a PR. Logic lives in
 # lib/run-dir.sh::stage_prior_reviews so the smoke test exercises the same
 # function the worker calls.
-PRIOR_REVIEWS=$(stage_prior_reviews "$STATE_DIR" "$REPO_SLUG_FOR_RUN" "$PR_NUM" "$RUN_DIR")
-if [ -n "$PRIOR_REVIEWS" ]; then
-    PRIOR_COUNT=$(printf '%s' "$PRIOR_REVIEWS" | grep -c '^--- review at ')
-    log "$PR_ID: staging $PRIOR_COUNT prior review(s) for recurrence detection"
-    write_scratch "$REPO_DIR" "prior-reviews.md" "$PRIOR_REVIEWS"
+#
+# Skipped when FORCE_WHOLE_PR=true (i.e. the user explicitly invoked
+# /srosro-review): the trigger text on that path commits to "Any prior
+# review is intentionally NOT provided — evaluate this PR from scratch."
+# Staging prior-reviews.md anyway would silently break that contract,
+# letting the bot consult prior reviews while telling the reader it
+# didn't. loc-trend.md (LOC trajectory) is independent of prior review
+# content and stays staged — it's derived from runs/ metadata, not from
+# what previous reviewers said.
+if [ "$FORCE_WHOLE_PR" = "true" ]; then
+    log "$PR_ID: FORCE_WHOLE_PR=true — skipping prior-reviews.md (whole-PR re-review evaluates from scratch)"
+else
+    PRIOR_REVIEWS=$(stage_prior_reviews "$STATE_DIR" "$REPO_SLUG_FOR_RUN" "$PR_NUM" "$RUN_DIR")
+    if [ -n "$PRIOR_REVIEWS" ]; then
+        PRIOR_COUNT=$(printf '%s' "$PRIOR_REVIEWS" | grep -c '^--- review at ')
+        log "$PR_ID: staging $PRIOR_COUNT prior review(s) for recurrence detection"
+        write_scratch "$REPO_DIR" "prior-reviews.md" "$PRIOR_REVIEWS"
+    fi
 fi
 
 # Product context: try .knightwatch/product-context.md first (per-repo,
@@ -925,21 +979,56 @@ case $? in
 esac
 write_scratch "$REPO_DIR" "product-context.md" "$PRODUCT_CONTEXT"
 
+# review-priority.md — per-repo operating point + voice posture
+# (Broken-Glass Test in standards.md cites this file by name).
+# Tri-state: PRESENT use file; ABSENT use embedded default; ERROR abort.
+REVIEW_PRIORITY=""
+REVIEW_PRIORITY=$(read_knightwatch_file "$REPO_DIR" "$BASE_REF_SHA" "review-priority.md")
+case $? in
+    0) : ;;  # PRESENT: use as-is
+    1)
+        # ABSENT: emit a short pointer at the canonical universal policy
+        # in standards.md instead of carrying a second policy source
+        # here (drift hazard with the per-repo .knightwatch/review-priority.md).
+        # The universal Broken-Glass posture lives in standards.md
+        # § Broken-Glass Test; cold-start operators get reasonable
+        # behavior without us shadowing the canonical text.
+        REVIEW_PRIORITY=$(cat <<'PRIORITY_EOF'
+# Review priority (default — no per-repo file configured)
+
+This repo has no `.knightwatch/review-priority.md` committed. Default behavior:
+- Apply `standards.md` § Broken-Glass Test on all findings (universal Broken-Glass policy).
+- Treat the repo's `.knightwatch/product-context.md` (if present) as the operating-point source.
+- No repo-specific contrast pairs. The universal contrast pairs in `standards.md` apply.
+
+If this repo needs a different operating point, commit `.knightwatch/review-priority.md` to the base branch.
+PRIORITY_EOF
+)
+        log "$PR_ID: review-priority.md ABSENT in $BASE_REF_SHA — using default content"
+        ;;
+    *) log "$PR_ID: knightwatch-config error reading review-priority.md — aborting"; rm -rf "$REPO_DIR"; exit 1 ;;
+esac
+write_scratch "$REPO_DIR" "review-priority.md" "$REVIEW_PRIORITY"
+
+# loc-trend.md — per-round LOC trajectory for the momentum specialist
+# and aggregator's loop-breaker mode (see § Broken-Glass Test).
+LOC_TREND=$(compute_loc_trend "$REPO" "$PR_NUM" "$REPO_DIR" "$BASE_REF_SHA" "$STATE_DIR" "$RUN_DIR" "$REVIEWED_SHA")
+write_scratch "$REPO_DIR" "loc-trend.md" "$LOC_TREND"
+
 FILE_HISTORY=""
-# Derive file-history's file list from $KID_INPUT_DIFF directly by
-# parsing `^diff --git a/<path> b/<path>` headers. This is the same
-# scope specialists see in diff.patch — single source of truth for
-# "what files this review covers." Works for both gh pr diff and
-# local git diff outputs (both emit `diff --git a/<path> b/<path>`).
+# Derive file-history's file list from $KID_INPUT_DIFF via the shared
+# extract_touched_files_both_sides helper (lib/diff-build.sh) — single
+# source of truth for "paths touched by this diff." The previous inline
+# `^diff --git a/(.*) b/.*` parse only emitted the a/ side, which
+# silently dropped rename targets and any path that only appears on
+# the b/ side (the same Narrow-Fix gap the strict-typing scope gate
+# already routes around by reusing this helper).
 while IFS= read -r f; do
     [ -z "$f" ] && continue
     FILE_HISTORY+="### $f"$'\n'
     hist=$(git -C "$REPO_DIR" log --oneline -n 5 -- "$f" 2>/dev/null)
     FILE_HISTORY+="${hist:-(no history)}"$'\n\n'
-done < <(printf '%s' "$KID_INPUT_DIFF" \
-    | grep -E '^diff --git a/' \
-    | sed -E 's|^diff --git a/(.*) b/.*$|\1|' \
-    | sort -u | head -30)
+done < <(printf '%s' "$KID_INPUT_DIFF" | extract_touched_files_both_sides | head -30)
 write_scratch "$REPO_DIR" "file-history.md" "${FILE_HISTORY:-(no touched files)}"
 
 # PR_DATA + PR_AUTHOR were fetched earlier (above the env mirror) so the
@@ -1093,6 +1182,34 @@ for angle in "${ANGLES[@]}"; do
     log "$PR_ID: specialist=$angle lines=$LINES$NO_FINDINGS"
 done
 
+# Momentum specialist — runs only on re-reviews. Outputs prose-only
+# trajectory meta-finding for the aggregator's loop-breaker (Path 2).
+# Skipped on first reviews (where the aggregator handles absence by
+# design); on re-reviews failure is fail-loud — see the abort below.
+if [ -s "$RUN_DIR/inputs/previous-review.md" ]; then
+    log "$PR_ID: launching momentum specialist (re-review)..."
+    MOMENTUM_PROMPT=$(substitute_placeholders \
+        "$HOME/.pr-reviewer/prompts/momentum.md" \
+        "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR")
+    "$_LIB_DIR/run-specialist.sh" "momentum" "$REPO_DIR" "$MOMENTUM_PROMPT" "$RUN_DIR/agents/momentum"
+    MOMENTUM_EXIT=$?
+    if [ $MOMENTUM_EXIT -ne 0 ]; then
+        # Fail-fast > graceful degradation. Path 2 of the aggregator's
+        # loop-breaker depends on this output; an absent momentum.md
+        # silently demotes Path 2 to "no structural callout," which is
+        # wrong output on exactly the re-reviews where the callout
+        # matters most. Mirror the existing fail-loud abort pattern
+        # (see knightwatch-config error arms above).
+        log "$PR_ID: momentum specialist failed (exit $MOMENTUM_EXIT) — aborting review (Path 2 needs this output; silent degrade would produce wrong loop-breaker behavior)"
+        rm -rf "$REPO_DIR"
+        exit 1
+    fi
+    MOMENTUM_OUT="$RUN_DIR/agents/momentum/output.md"
+    ln -sfn "$MOMENTUM_OUT" "$REPO_DIR/.codex-scratch/momentum.md"
+else
+    log "$PR_ID: skipping momentum specialist (first review)"
+fi
+
 log "$PR_ID: critic pass..."
 CRITIC_PROMPT=$(cat "$HOME/.pr-reviewer/prompts/critic.md")
 "$_LIB_DIR/run-specialist.sh" "critic" "$REPO_DIR" "$CRITIC_PROMPT" "$RUN_DIR/agents/critic"
@@ -1243,7 +1360,6 @@ else
     log "Posted review on $PR_ID (no placeholder was posted)"
 fi
 
-APPROVED=false
 if [[ "$VERDICT" == VERDICT:\ APPROVE* ]]; then
     if [[ "$VERDICT" == *"pending:"* ]]; then
         PENDING_NOTE=$(echo "$VERDICT" | sed 's/.*pending: *//')
@@ -1253,18 +1369,27 @@ if [[ "$VERDICT" == VERDICT:\ APPROVE* ]]; then
     fi
     # PR_AUTHOR was fetched at line ~305 — pass it through so submit_approval
     # doesn't re-query GitHub for a value the worker already has.
-    if submit_approval "$REPO" "$PR_NUM" "$BOT_USER" "$PR_AUTHOR" "$APPROVE_BODY"; then
-        APPROVED=true
-    fi
+    submit_approval "$REPO" "$PR_NUM" "$BOT_USER" "$PR_AUTHOR" "$APPROVE_BODY" || true
 else
     log "Commented on $PR_ID (no approval)"
 fi
 
-if ! state_set "$PR_ID" "$REVIEWED_SHA" "$APPROVED" "$COMMENT_BODY" "$REVIEW_START_TS"; then
-    log "$PR_ID: state_set FAILED — review posted but state.json not updated; next tick will re-review this SHA"
-    rm -rf "$REPO_DIR"
-    exit 1
-fi
+# state.json retired: every runtime-decision seam reads runs/ now (KNOWN_SHA
+# at the orchestrator gate, slash-cutoff started_at, worker's PREV_BODY /
+# KNOWN_SHA / PREV_APPROVED). The four pieces of round state the legacy
+# state_set call used to persist are already on disk in runs/ at this point:
+#   - body       → agents/aggregator/output.md (already written above)
+#   - reviewed_sha → meta.json.reviewed_sha (stamped post-checkout)
+#   - approved   → derived from output.md's `VERDICT: APPROVE` line by
+#                  latest_author_visible_review_approved
+#   - started_at → meta.json.started_at (stamped at run init)
+#   - posted_at  → finalize_run stamps it from the EXIT trap after gh pr
+#                  comment succeeded (GH_POSTED=true above)
+#
+# Nothing left to write here. The previous state_set call duplicated all of
+# the above into ~/.pr-reviewer/state.json; since no reader consults that
+# file anymore, the duplicate is dead weight and a second write that could
+# fail (round-11 BCR class). Deleting it closes that race entirely.
 rm -rf "$REPO_DIR"
 # Mark the run completed; the EXIT trap stamps meta.json on the way out.
 RUN_STATUS="completed"

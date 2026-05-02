@@ -257,67 +257,215 @@ prepend_review_header() {
     printf '%s\n> %s\n\n%s' "$first_line" "$joined" "$rest"
 }
 
-# iterate_visible_runs <state_dir> <repo_slug> <pr_num>
-#   stdout: one line per author-visible reviewed run, sorted by run-dir
-#           name (which already encodes the run timestamp). Each line is
-#           tab-separated `<run_dir>\t<started_at>\t<sha>` so callers can
-#           pipe through `while IFS=$'\t' read -r dir started_at sha`.
+# is_run_author_visible <run_dir>
+#   Returns 0 (author-visible — review was posted) or 1 (not author-visible —
+#   aborted, in-flight, or otherwise unposted).
 #
-#   Single source of truth for "which preserved run dirs represent
-#   reviews the PR author actually saw on GitHub". Two visibility
-#   signals:
-#     1. `posted_at` non-empty — primary, stamped right after
-#        `gh pr comment` succeeds in review-one-pr.sh. Set BEFORE
-#        state_set runs, so it correctly includes the rare case where
-#        gh posted but state_set / finalize failed.
-#     2. `status == "completed"` — fallback for legacy runs created
-#        before posted_at existed. status only flips to "completed"
-#        after state_set succeeds, which in production runs only after
-#        gh has posted, so "status == completed" reliably implies "gh
-#        post succeeded" for any preserved run.
+# Two signals indicate "the author saw this review on GitHub":
+#   1. posted_at present — primary signal, stamped immediately after
+#      `gh pr comment` succeeds.
+#   2. status == "completed" — fallback for legacy runs created before
+#      posted_at existed. status only flips to "completed" on the
+#      success path after gh has posted, so "status == completed"
+#      reliably implies "gh post succeeded" for any preserved run.
 #
-#   Skips:
-#     - dirs without meta.json (pre-checkout aborts — never reviewed)
-#     - dirs that fail the visibility predicate (mid-flight aborts —
-#       wrote meta.json post-checkout but never posted)
+# Single owner for "which prior review rounds count" — both
+# stage_prior_reviews (Bug-Class-Recurrence) and compute_loc_trend
+# (LOC trajectory table) call this so they can't drift.
+is_run_author_visible() {
+    local run_dir="$1"
+    [ -f "$run_dir/meta.json" ] || return 1
+    local included
+    included=$(jq -r 'if ((.posted_at // "") != "") or ((.status // "") == "completed") then "yes" else "no" end' \
+        "$run_dir/meta.json" 2>/dev/null)
+    [ "$included" = "yes" ]
+}
+
+# author_visible_runs_iter <state_dir> <repo_slug> <pr_num> <current_run_dir>
+#   stdout: one line per author-visible run dir for this PR, sorted by
+#   timestamp ascending (run-dir names share repo_slug+pr_num prefix, so
+#   `find | sort` is equivalent to "sort by RUN_TS"). Skips current_run_dir
+#   and any run dir that fails the author-visible predicate (which also
+#   filters out pre-checkout aborts that never wrote meta.json).
 #
-#   Permissive on fields: emits a row even when started_at / sha are
-#   missing (legacy pre-#36 meta.json, partial fields, etc.) — the
-#   started_at and sha cells are just empty in that case. Consumers
-#   that REQUIRE those fields (e.g., compute_loc_trend's diff range)
-#   should validate inline and fail-loud if missing for their use
-#   case. stage_prior_reviews doesn't read sha/started_at from this
-#   iterator (it derives the display ts from the dir name) so legacy
-#   runs without those fields stay visible — preserving the
-#   pre-refactor inclusion behavior.
-iterate_visible_runs() {
-    local state_dir="$1" repo_slug="$2" pr_num="$3"
-    while IFS= read -r d; do
-        local meta="$d/meta.json"
-        [ -f "$meta" ] || continue
-        local visible
-        visible=$(jq -r 'if ((.posted_at // "") != "") or ((.status // "") == "completed") then "yes" else "no" end' "$meta" 2>/dev/null)
-        [ "$visible" = "yes" ] || continue
-        local started_at sha
-        started_at=$(jq -r '.started_at // empty' "$meta")
-        sha=$(jq -r '.sha // empty' "$meta")
-        printf '%s\t%s\t%s\n' "$d" "$started_at" "$sha"
+# Single source-of-truth walker for "which prior posted reviews exist for
+# this PR." Every consumer that asks "what has the author seen?" reads
+# from this iterator instead of re-implementing the run-dir glob +
+# self-exclusion + author-visible filter — the BCR class flagged across
+# multiple rounds of PR #38 was exactly this kind of split-across-consumers
+# divergence (state.json's PREV_BODY vs runs/ metadata vs LOC-trend).
+#
+# Pure read-only walk; no side effects. Callers project whatever they
+# need (body, ts, sha) from the yielded run-dir paths.
+author_visible_runs_iter() {
+    local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"
+    local prior_run
+    while IFS= read -r prior_run; do
+        [ "$prior_run" = "$current_run_dir" ] && continue
+        is_run_author_visible "$prior_run" || continue
+        printf '%s\n' "$prior_run"
     done < <(find "$state_dir/runs" -maxdepth 1 -type d -name "${repo_slug}__${pr_num}__*" 2>/dev/null | sort)
 }
 
 stage_prior_reviews() {
     local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"
     local prior_run prior_ts result=""
-    while IFS=$'\t' read -r prior_run _started_at _sha; do
-        [ "$prior_run" = "$current_run_dir" ] && continue
-        # Display timestamp comes from the run-dir name (compact
-        # `T161337Z` form already familiar in prior-reviews specialist
-        # prompts). Iterator's started_at is the canonical post-checkout
-        # ISO form; not used here to avoid changing the rendered shape.
+    while IFS= read -r prior_run; do
         prior_ts=$(basename "$prior_run" | grep -oE 'T[0-9]+Z' | head -1)
         result+=$'\n--- review at '"${prior_ts:-unknown}"$' ---\n'
         result+=$(cat "$prior_run/agents/aggregator/output.md")
         result+=$'\n'
-    done < <(iterate_visible_runs "$state_dir" "$repo_slug" "$pr_num")
+    done < <(author_visible_runs_iter "$state_dir" "$repo_slug" "$pr_num" "$current_run_dir")
     printf '%s' "$result"
+}
+
+# latest_author_visible_review <state_dir> <repo_slug> <pr_num> <current_run_dir>
+#   stdout: aggregator output of the most recent author-visible prior review
+#   (last by timestamp), or empty if no prior author-visible run exists.
+#
+# Single seam for "what did the author see last?" — replaces state.json's
+# PREV_BODY as the source for previous-review.md staging + the momentum
+# gate. Sourcing from runs/ closes the BCR drift on the gh-post-succeeded /
+# state_set-failed path: meta.json's posted_at lands BEFORE state_set
+# fires, so this helper still sees the latest review even when state.json
+# never got the PREV_BODY/sha update.
+#
+# Sibling helpers latest_author_visible_review_sha and
+# latest_author_visible_review_approved expose the same selection's
+# reviewed SHA and approval verdict — together they form the "one
+# author-visible round projection" the BCR-class fence demands so the
+# three values (body, sha, approved) can't drift across consumers.
+latest_author_visible_review() {
+    local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"
+    local latest
+    latest=$(_latest_author_visible_run_dir "$state_dir" "$repo_slug" "$pr_num" "$current_run_dir")
+    [ -n "$latest" ] && cat "$latest/agents/aggregator/output.md" 2>/dev/null
+}
+
+# _latest_author_visible_run_dir — internal: returns the path of the
+# most recent author-visible run dir (or empty if none). Single owner
+# of the "last one wins" selection so body/sha/approved helpers can't
+# pick different runs.
+_latest_author_visible_run_dir() {
+    local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"
+    local latest="" prior_run
+    while IFS= read -r prior_run; do
+        latest="$prior_run"  # last one wins (iterator is sorted ascending)
+    done < <(author_visible_runs_iter "$state_dir" "$repo_slug" "$pr_num" "$current_run_dir")
+    printf '%s' "$latest"
+}
+
+# latest_author_visible_review_sha <state_dir> <repo_slug> <pr_num> <current_run_dir>
+#   stdout: reviewed SHA of the most recent author-visible prior review,
+#   or empty if no prior author-visible run exists.
+#
+# SHA preference matches author_visible_rounds: .reviewed_sha (post-
+# checkout HEAD the worker actually evaluated) wins over .sha
+# (orchestrator-enumerated, can drift from HEAD on a fast-cadence race).
+# Companion to latest_author_visible_review (body) and
+# latest_author_visible_review_approved — replaces state.json's
+# `state_get "sha"` read in review-one-pr.sh, closing the same BCR race
+# the body helper closed: gh-post-succeeded + state_set-failed leaves
+# state.json stale, but meta.json was stamped before state_set ran.
+latest_author_visible_review_sha() {
+    local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"
+    local latest
+    latest=$(_latest_author_visible_run_dir "$state_dir" "$repo_slug" "$pr_num" "$current_run_dir")
+    [ -z "$latest" ] && return 0
+    jq -r '.reviewed_sha // .sha // empty' "$latest/meta.json" 2>/dev/null
+}
+
+# latest_author_visible_review_approved <state_dir> <repo_slug> <pr_num> <current_run_dir>
+#   stdout: "true" if the latest author-visible round's aggregator output
+#   ended in a `VERDICT: APPROVE` (or `VERDICT: APPROVE — pending: ...`)
+#   line, "false" if it ended in `VERDICT: COMMENT`, or empty if no prior
+#   author-visible run exists.
+#
+# Semantic: "what did our last review SAY?" — sourced from output.md so it
+# anchors to the same round as body + sha (BCR fence). Consumers use it to
+# carry the prior verdict into the next round's prompt. NOT a signal of
+# the GitHub PR's current approval state — `submit_approval` (lib/auth.sh)
+# can decline self-authored PRs, so a markdown verdict of APPROVE may
+# coincide with no actual GitHub approval. That divergence is irrelevant
+# here because no consumer asks "is the PR approved on GitHub right now?"
+# (the only reader is REVIEW_TASK in lib/review-one-pr.sh, which reports
+# what the prior review said).
+#
+# Parsed from output.md rather than state.json so the body, sha, and
+# approved values all anchor to the same round — same BCR fence as the
+# other two helpers. Aggregator contract (prompts/aggregator.md): final
+# line is `VERDICT: APPROVE`, `VERDICT: APPROVE — pending: ...`, or
+# `VERDICT: COMMENT`. Match anchored at start-of-line on the last 10
+# lines so trailing prose can't false-positive.
+latest_author_visible_review_approved() {
+    local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"
+    local latest
+    latest=$(_latest_author_visible_run_dir "$state_dir" "$repo_slug" "$pr_num" "$current_run_dir")
+    [ -z "$latest" ] && return 0
+    if tail -n 10 "$latest/agents/aggregator/output.md" 2>/dev/null \
+            | grep -qE '^VERDICT: APPROVE'; then
+        printf 'true'
+    else
+        printf 'false'
+    fi
+}
+
+# latest_author_visible_review_started_at <state_dir> <repo_slug> <pr_num> <current_run_dir>
+#   stdout: ISO 8601 timestamp from meta.json's `started_at` field of the
+#           latest author-visible run, or empty if no prior author-visible
+#           run exists.
+#
+# Used by review.sh's slash-command cutoff logic ("are there /srosro-*
+# comments newer than the last review?"). Replaces a stale
+# `state_get "reviewed_at"` read on state.json that left the
+# gh-success + state_set-failure race leaking through the trigger
+# cutoff: meta.json's started_at is stamped at run init (well before
+# state_set), so the cutoff stays accurate even when the post-review
+# state.json write never landed.
+#
+# Field choice: started_at, NOT posted_at. Cutoff semantic is "any comment
+# arriving after this review STARTED is fresh and should requalify on
+# the next tick" — matches the existing REVIEW_START_TS plumbing in
+# lib/review-one-pr.sh. posted_at is later (after gh succeeds), so a
+# /srosro-review posted DURING the review would fall before posted_at
+# and be silently lost on the next tick if we keyed off it.
+latest_author_visible_review_started_at() {
+    local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"
+    local latest
+    latest=$(_latest_author_visible_run_dir "$state_dir" "$repo_slug" "$pr_num" "$current_run_dir")
+    [ -z "$latest" ] && return 0
+    jq -r '.started_at // empty' "$latest/meta.json" 2>/dev/null
+}
+
+# author_visible_rounds <state_dir> <repo_slug> <pr_num> <current_run_dir>
+#   stdout: one line per author-visible round, format: <ts>\t<sha>
+#   sorted by timestamp ascending (matches author_visible_runs_iter).
+#
+# Canonical SHA + timestamp sources are meta.json fields. SHA preference:
+#   1. .reviewed_sha — post-checkout HEAD; what the worker actually evaluated.
+#      Stamped after the checkout in review-one-pr.sh.
+#   2. .sha — pre-checkout, orchestrator-enumerated PR_SHA. Falls behind when
+#      the head moves between enumeration and the worker's fetch (a normal
+#      race in a fast-cadence orchestrator).
+#   3. Run-dir-name suffix — legacy parse for older runs without meta fields.
+# .reviewed_sha winning over .sha keeps the LOC trajectory anchored to the
+# SHA whose diff the worker fed into the round, even when an enumeration
+# race made the two diverge.
+#
+# This is the single owner for the "(ts, sha) per round" contract that
+# compute_loc_trend (LOC trajectory) consumes. Bug-Class-Recurrence
+# fence: keep the canonical-SHA projection in one helper so a downstream
+# caller can't drift to a stale local copy.
+author_visible_rounds() {
+    local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"
+    local prior_run meta_sha meta_ts
+    while IFS= read -r prior_run; do
+        meta_sha=$(jq -r '.reviewed_sha // .sha // empty' "$prior_run/meta.json" 2>/dev/null)
+        meta_ts=$(jq -r '.started_at // empty' "$prior_run/meta.json" 2>/dev/null)
+        # Fall back to run-dir name parsing only if meta is incomplete.
+        [ -z "$meta_ts" ] && meta_ts=$(basename "$prior_run" | grep -oE 'T[0-9]+Z' | head -1)
+        [ -z "$meta_sha" ] && meta_sha=$(basename "$prior_run" | awk -F'__' '{print $4}')
+        [ -z "$meta_sha" ] && continue
+        printf '%s\t%s\n' "$meta_ts" "$meta_sha"
+    done < <(author_visible_runs_iter "$state_dir" "$repo_slug" "$pr_num" "$current_run_dir")
 }

@@ -6,7 +6,6 @@
 export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
 
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
-STATE_FILE="${STATE_FILE:-$STATE_DIR/state.json}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/orchestrator.log}"
 REPOS_DIR="${REPOS_DIR:-$STATE_DIR/repos}"
 WORKDIRS_DIR="${WORKDIRS_DIR:-$STATE_DIR/workdirs}"
@@ -38,6 +37,14 @@ BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-pos
 # tracked-repos.sh above already resolved it.
 . "$REVIEWER_LIB_DIR/state-io.sh"
 . "$REVIEWER_LIB_DIR/auth.sh"
+# run-dir.sh exposes the latest_author_visible_review_* projection family
+# — the single source of truth for "what did we last review?" state. The
+# orchestrator's KNOWN_SHA gate reads from runs/<id>/meta.json (not
+# state.json) so a transient write failure after a successful `gh pr
+# comment` can't strand us in an infinite-dispatch loop. The legacy
+# state.json cache was retired entirely in PR #38; nothing reads or
+# writes it anymore.
+. "$REVIEWER_LIB_DIR/run-dir.sh"
 
 # Rotate the orchestrator log when it exceeds 5MB. Per-run logs under
 # runs/<id>/ aren't rotated — they're already bounded by run.
@@ -45,7 +52,6 @@ if [ -f "$LOG_FILE" ] && [ "$(stat -c%s "$LOG_FILE" 2>/dev/null)" -gt 5242880 ];
     mv "$LOG_FILE" "$LOG_FILE.1"
 fi
 
-[ -f "$STATE_FILE" ] || echo '{}' > "$STATE_FILE"
 mkdir -p "$STATE_DIR" "$REPOS_DIR" "$WORKDIRS_DIR" "$STATE_DIR/locks"
 
 # Fail loud at the dispatcher level if the worker script is missing
@@ -76,7 +82,16 @@ for REPO in "${REPOS[@]}"; do
         PR_SHA=$(echo "$PR_JSON" | jq -r '.headRefOid')
         PR_ID="${REPO}#${PR_NUM}"
 
-        KNOWN_SHA=$(state_get "$PR_ID" "sha")
+        # KNOWN_SHA at the dispatch gate reads from runs/<id>/meta.json
+        # — the single source of truth since PR #38 retired state.json.
+        # meta.json.reviewed_sha is stamped right after the worker checks
+        # out the PR head, so this gate sees the actually-reviewed SHA
+        # (not the orchestrator-enumerated PR_SHA, which can be stale on
+        # fast-cadence pushes). With state.json retired, there's no
+        # second write that can fail and leave a stale "have we reviewed
+        # this SHA?" answer driving an infinite dispatch loop.
+        REPO_SLUG_FOR_GATE="${REPO//\//_}"
+        KNOWN_SHA=$(latest_author_visible_review_sha "$STATE_DIR" "$REPO_SLUG_FOR_GATE" "$PR_NUM" "")
         FORCE_REVIEW=false
         FORCE_WHOLE_PR=false
         TRIGGER_FILE=""
@@ -84,8 +99,15 @@ for REPO in "${REPOS[@]}"; do
         TRIGGER_BODY=""
 
         if [ -n "$KNOWN_SHA" ]; then
-            REVIEWED_AT=$(state_get "$PR_ID" "reviewed_at")
-            REVIEWED_AT_ISO=$(date -d "@${REVIEWED_AT}" -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null)
+            # Cutoff timestamp sources from runs/ (meta.json.started_at)
+            # — single source of truth since state.json was retired in
+            # PR #38. started_at is stamped at run init (line ~165 of
+            # lib/review-one-pr.sh) BEFORE the worker can crash, so a
+            # /srosro-review posted while a review is in flight always
+            # falls AFTER the recorded started_at and re-qualifies for
+            # the next tick. Helper returns ISO 8601 directly —
+            # meta.json.started_at is already in that format.
+            REVIEWED_AT_ISO=$(latest_author_visible_review_started_at "$STATE_DIR" "$REPO_SLUG_FOR_GATE" "$PR_NUM" "")
             # Fail loud on a transient gh outage rather than treating
             # "API broken" as "no comments" and silently missing a
             # /srosro-update-review trigger. Same wrapper shape as

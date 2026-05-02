@@ -101,6 +101,51 @@ if ! printf '%s' "$got" | grep -q '^# Product context$'; then
     exit 1
 fi
 
+# --- scenario 3b: review-priority.md round-trips with same trust model.
+# Parallel to scenario 3 (product-context). Adds a review-priority.md
+# on main, asserts PRESENT (rc 0 + content match) when reading against
+# main's SHA, and asserts ABSENT (rc 1) when the file exists ONLY on a
+# feature branch — same base-branch-source-of-truth invariant.
+echo "  scenario 3b: review-priority.md round-trip + base-branch trust..."
+git -C "$SOURCE" checkout -q main
+printf '# Review priority\n\nreview-priority test content\n' > "$SOURCE/.knightwatch/review-priority.md"
+git -C "$SOURCE" add .knightwatch/review-priority.md
+git -C "$SOURCE" commit -qm "main: add review-priority.md"
+git -C "$WORK" fetch -q origin main
+git -C "$WORK" checkout -q -B main origin/main
+MAIN_SHA=$(git -C "$WORK" rev-parse origin/main)
+exit_code=0
+got=$(read_knightwatch_file "$WORK" "$MAIN_SHA" "review-priority.md") || exit_code=$?
+if [ "$exit_code" -ne 0 ]; then
+    echo "FAIL: review-priority.md from main expected exit 0, got $exit_code"
+    exit 1
+fi
+if ! printf '%s' "$got" | grep -q '^# Review priority$'; then
+    echo "FAIL: expected review-priority markdown header"
+    echo "  got: $got"
+    exit 1
+fi
+if ! printf '%s' "$got" | grep -q 'review-priority test content'; then
+    echo "FAIL: review-priority.md content mismatch"
+    echo "  got: $got"
+    exit 1
+fi
+
+# Feature-branch-only addition must NOT take effect when reading
+# against the base SHA (locks down the same invariant the bot enforces:
+# PR-head edits to .knightwatch/<file> don't take effect until merged).
+git -C "$SOURCE" checkout -q feature
+printf '# Review priority\n\nfeature-branch-only override\n' > "$SOURCE/.knightwatch/review-priority-feat.md"
+git -C "$SOURCE" add .knightwatch/review-priority-feat.md
+git -C "$SOURCE" commit -qm "feature: add review-priority-feat.md (PR-only)"
+git -C "$WORK" fetch -q origin feature
+exit_code=0
+read_knightwatch_file "$WORK" "$MAIN_SHA" "review-priority-feat.md" > "$TMPDIR/out.txt" 2>/dev/null || exit_code=$?
+if [ "$exit_code" -ne 1 ]; then
+    echo "FAIL: review-priority-feat.md (feature-only) expected rc 1 (ABSENT) against main SHA, got $exit_code"
+    exit 1
+fi
+
 # --- scenario 4: PRESENT but empty → exit 0 + empty content ---------
 # Load-bearing: a committed empty file means "no value for this concern
 # in this repo" (e.g., empty .knightwatch/dead-code.sh = "no dead-code
@@ -197,4 +242,4 @@ if [ "$exit_code" -ne 1 ]; then
     exit 1
 fi
 
-echo "  PASS (7 scenarios: existing, missing-ABSENT, base-branch-only trust, present-but-empty, bad-ref-ERROR, SHA-pin-bypass-resistance, onboarding-ABSENT)"
+echo "  PASS (8 scenarios: existing, missing-ABSENT, base-branch-only trust, review-priority round-trip + ABSENT, present-but-empty, bad-ref-ERROR, SHA-pin-bypass-resistance, onboarding-ABSENT)"
