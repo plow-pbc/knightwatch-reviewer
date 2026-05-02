@@ -126,6 +126,12 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # multi-source is idempotent (function redefinition).
 . "$_LIB_DIR/loc-trend.sh"
 
+# --- decline-history (fetch_decline_history) — operator's prior declines
+# on this PR; consumed by the critic to drop or footnote re-flagged
+# findings the operator has pushed back on ≥3 times. Sources gh-comments.sh
+# internally; multi-source is idempotent.
+. "$_LIB_DIR/decline-history.sh"
+
 # --- per-run dir -------------------------------------------------------------
 # Every worker invocation gets its own runs/<RUN_ID>/ dir holding the run log,
 # input scratch, and one subdir per agent (prompt + output + log). The git
@@ -1014,6 +1020,14 @@ write_scratch "$REPO_DIR" "review-priority.md" "$REVIEW_PRIORITY"
 # and aggregator's loop-breaker mode (see § Broken-Glass Test).
 LOC_TREND=$(compute_loc_trend "$REPO" "$PR_NUM" "$REPO_DIR" "$BASE_REF_SHA" "$STATE_DIR" "$RUN_DIR" "$REVIEWED_SHA")
 write_scratch "$REPO_DIR" "loc-trend.md" "$LOC_TREND"
+
+# decline-history.md — operator declines from prior review comments,
+# so the critic can drop or footnote findings the operator has already
+# pushed back on. Empty/absent on first reviews and on PRs with no
+# operator pushback. Fail-soft on gh-failure (helper emits a sentinel;
+# critic falls back to existing behavior).
+DECLINE_HISTORY=$(fetch_decline_history "$REPO" "$PR_NUM")
+write_scratch "$REPO_DIR" "decline-history.md" "$DECLINE_HISTORY"
 
 FILE_HISTORY=""
 # Derive file-history's file list from $KID_INPUT_DIFF via the shared
