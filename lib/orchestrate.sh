@@ -58,7 +58,7 @@ persist_layered_specialists() {
 
 dispatch_agent() {
     local name="$1"
-    local file="$HOME/.pr-reviewer/prompts/${name}.md"
+    local file="${PROMPTS_DIR:-$HOME/.pr-reviewer/prompts}/${name}.md"
     local prompt
     case "$name" in
         intent|dead-code-search|momentum)
@@ -72,7 +72,7 @@ dispatch_agent() {
             # the specialist common-header, same way intent / momentum do.
             local angle="${name#go-deep-}"
             prompt=$(substitute_placeholders \
-                "$HOME/.pr-reviewer/prompts/go-deep.md" \
+                "${PROMPTS_DIR:-$HOME/.pr-reviewer/prompts}/go-deep.md" \
                 "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR" "$angle") ;;
         critic)
             prompt=$(cat "$file") ;;

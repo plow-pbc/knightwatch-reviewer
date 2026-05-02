@@ -269,4 +269,42 @@ if ! echo "$REAL_OUTPUT" | grep -qF "blame Sam"; then
     exit 1
 fi
 
+echo "  scenario: PROMPTS_DIR override redirects prompt reads..."
+
+# Set up an alternate prompts dir with a stub common-header that the
+# default path would NOT have. If the override is honored, build_specialist_prompt
+# must read from the alternate path.
+ALT_PROMPTS_DIR="$TMPDIR/alt-prompts"
+mkdir -p "$ALT_PROMPTS_DIR"
+cat > "$ALT_PROMPTS_DIR/common-header.md" <<'COMMON'
+ALT_COMMON_MARKER
+
+PR: {{PR_ID}}
+COMMON
+cat > "$ALT_PROMPTS_DIR/security.md" <<'BODY'
+ALT_BODY_MARKER
+
+You are the security specialist for {{PR_ID}}.
+BODY
+
+# Default path would be $HOME/.pr-reviewer/prompts/common-header.md (set above
+# in this test to point at /tmp/...prompts). Override should win.
+OUT=$(PROMPTS_DIR="$ALT_PROMPTS_DIR" \
+    build_specialist_prompt security "$ALT_PROMPTS_DIR/security.md" \
+        "owner/repo#1" "title" "https://x" "alice")
+
+echo "$OUT" | grep -qF "ALT_COMMON_MARKER" \
+    || { echo "FAIL: PROMPTS_DIR override didn't redirect common-header"; exit 1; }
+echo "$OUT" | grep -qF "ALT_BODY_MARKER" \
+    || { echo "FAIL: alt body marker missing"; exit 1; }
+
+# And verify default behavior still works (PROMPTS_DIR unset → falls back).
+unset PROMPTS_DIR
+OUT_DEFAULT=$(build_specialist_prompt security "$ALT_PROMPTS_DIR/security.md" \
+    "owner/repo#1" "title" "https://x" "alice")
+echo "$OUT_DEFAULT" | grep -qF "ALT_COMMON_MARKER" \
+    && { echo "FAIL: default (PROMPTS_DIR unset) leaked alt path"; exit 1; }
+
+echo "  ok: PROMPTS_DIR override + default fallback"
+
 echo "  PASS"

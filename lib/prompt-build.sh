@@ -38,7 +38,7 @@ substitute_placeholders() {
 
 build_specialist_prompt() {
     local specialist_name="$1" specialist_file="$2" pr_id="$3" pr_title="$4" pr_url="$5" pr_author="$6"
-    local common="$HOME/.pr-reviewer/prompts/common-header.md"
+    local common="${PROMPTS_DIR:-$HOME/.pr-reviewer/prompts}/common-header.md"
     {
         substitute_placeholders "$common" "$pr_id" "$pr_title" "$pr_url" "$pr_author" "$specialist_name"
         echo ""
@@ -63,8 +63,9 @@ build_specialist_prompt() {
 # an incomplete deploy, not "operator opted out."
 build_aggregator_prompt() {
     local pr_id="$1" pr_title="$2" pr_url="$3" pr_author="$4"
-    local aggregator="$HOME/.pr-reviewer/prompts/aggregator.md"
-    local voice="$HOME/.pr-reviewer/prompts/voice.md"
+    local prompts_dir="${PROMPTS_DIR:-$HOME/.pr-reviewer/prompts}"
+    local aggregator="$prompts_dir/aggregator.md"
+    local voice="$prompts_dir/voice.md"
     if [ ! -f "$voice" ]; then
         printf 'build_aggregator_prompt: voice.md missing at %s — incomplete install\n' "$voice" >&2
         return 1
