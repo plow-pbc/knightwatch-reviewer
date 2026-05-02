@@ -19,9 +19,6 @@
 
 set -uo pipefail
 
-TMPDIR=$(mktemp -d -t decline-history-smoke-XXXXXX)
-trap 'rm -rf "$TMPDIR"' EXIT
-
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 . "$PROJECT_ROOT/lib/decline-history.sh"
 

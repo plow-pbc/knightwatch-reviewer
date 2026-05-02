@@ -27,7 +27,7 @@ You are the aggregator in a multi-specialist PR review. Eight specialists produc
 - `.codex-scratch/file-history.md` — recent commits for each touched file
 - `.codex-scratch/commits.md` — commit subjects on this branch, one per line.
 - `.codex-scratch/author-intent.md` — the PR's description + linked issues
-- `.codex-scratch/decline-history.md` — operator's prior decline replies on this PR. The critic already consumed this (drops findings declined ≥3 rounds, footnotes 1-2 round declines); read it for context when interpreting why a finding is or isn't carrying forward.
+- `.codex-scratch/decline-history.md` — operator's prior decline replies on this PR. Two channels: (a) "Decline replies" — free-form prose, used by the critic as context (no mechanical auto-drop); (b) "Explicit class markers" — counts of `<!-- decline:class=X -->` markers; classes counted ≥3 are mechanically dropped by the critic, others are read as context only. Read for context when interpreting why a finding is or isn't carrying forward.
 
 **Note on layered specialist files.** Each `.codex-scratch/specialists/<angle>.md` is now a layered file: original specialist findings → critic counter-arguments (split from `critic.md` by the orchestrator's critic-splitter) → optionally a Go-deep tech-lead investigation (when the finding's remedy was ≥20 LOC, ≤3 instances per review). When integrating findings, prefer the deepest available recommendation:
 - **Go-deep `KEEP`** → publish the finding as the specialist + critic produced it (severity from specialist + critic verdict).

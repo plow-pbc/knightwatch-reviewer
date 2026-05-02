@@ -99,14 +99,40 @@ mk_layered tests low:yes
 # simplification.md: Finding 1 nit calibrated → max-calibrated = NIT
 mk_layered simplification nit:yes
 OUT=$(rank_hot_angles "$SPECIALISTS_DIR" security architecture tests simplification)
-# Expected ordering: architecture (medium) → tests (low) → security/simplification (nit, alphabetical: security first).
-# A file-level ranker would put security FIRST (because it has a [blocking] header somewhere) — that's the bug we're catching.
+# Expected ordering: architecture (medium) → tests (low) → security/simplification (nit).
+# Within the nit band, the tiebreak is CALLER ORDER. Caller passes
+# `security` BEFORE `simplification` here, so security wins the third
+# slot. Round-8 F2 noted: this fixture happens to be ambiguous because
+# alphabetical also picks `security`; see fixture 3b below for a case
+# that uniquely fences caller-order.
+# A file-level ranker would put security FIRST (because it has a
+# [blocking] header somewhere) — that's the bug fixture 3 catches.
 EXPECTED="architecture
 tests
 security"
 [ "$OUT" = "$EXPECTED" ] || {
     echo "FAIL: round-5 regression — expected '$EXPECTED' (max-calibrated-severity ranking), got: '$OUT'"
     echo "If 'security' comes first, the ranker is still file-level (matches uncalibrated [blocking] severity)."
+    exit 1
+}
+
+# --- fixture 3b: caller-order tiebreak distinguishes from alphabetical ---
+# Round-8 F2 regression: pass `simplification` BEFORE `security`. With
+# caller order, simplification wins the third slot. With alphabetical,
+# security would. The contract is caller order, so simplification first.
+echo "  fixture 3b: round-8 regression — caller-order tiebreak (not alphabetical)..."
+OUT=$(rank_hot_angles "$SPECIALISTS_DIR" simplification security architecture tests)
+# Same severity scoring, but caller order is now: simplification, security, architecture, tests.
+# Bands: architecture (medium), tests (low), then nits in caller order
+# from `hot[]` which preserved input order: simplification, security.
+# Top 3: architecture, tests, simplification. (security drops off; alphabetical would have picked it.)
+EXPECTED_3B="architecture
+tests
+simplification"
+[ "$OUT" = "$EXPECTED_3B" ] || {
+    echo "FAIL: round-8 F2 regression — expected '$EXPECTED_3B' (caller order, simplification picked over security)"
+    echo "If 'security' is in the output instead of 'simplification', the tiebreak silently regressed to alphabetical."
+    echo "Got: '$OUT'"
     exit 1
 }
 

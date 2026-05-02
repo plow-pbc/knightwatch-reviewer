@@ -149,7 +149,7 @@ Operator (srosro) has declined the following finding classes on prior reviews of
 - Last decline reason: "edge-case for 10 users; deferred — see follow-up issue #N"
 ```
 
-The class identifiers (`session-scoping`, `stale-auth-error`) are extracted by the parser from the bot's prior `[Bug-Class-Recurrence]` framings + the babysit-pr Counter-propose triage tags.
+**Round-5 reframe (post-merge note):** the original draft above used a bash class-extraction parser (regex priority chain: BCR template → known-class list → noun-noun prose). After 4 review rounds of fiddly regex edge cases, the implementation switched to a structured/raw event contract: free-form replies emit verbatim as context; class counts come ONLY from explicit `<!-- decline:class=X -->` markers in operator reply bodies. The mechanical auto-drop fires only on explicit-marker counts; prose-inferred classes inform the critic's counter-argument but do not mechanically drop. The example above remains illustrative of the OUTPUT shape (per-class headers + decline counts) but the inputs that drive those headers are now markers, not regex extractions.
 
 **Implementation:** new helper `lib/decline-history.sh` with `fetch_decline_history <repo> <pr_num> <state_dir>`. Called from `lib/review-one-pr.sh` before specialist fan-out, output written to `.codex-scratch/decline-history.md`. ~80 LOC.
 
@@ -295,7 +295,7 @@ Two new orchestrator steps, after Phase 1's critic-splitter:
 - Rank top X (≤3) findings overall by:
   - Severity (`blocking` > `medium` > `low` > `nit`).
   - Critic verdict filter (skip findings the critic dropped via `REMEDY-BLOAT` / `FALSE POSITIVE`).
-  - Tiebreak by file-name (alphabetical, deterministic). Earlier draft proposed parsing the critic's remedy-LOC for descending tiebreak, but that adds prompt-output parsing for a tie that's only meaningful when 4+ specialists each have ≥20 LOC findings — rare enough that severity + alphabetical is the simpler, fail-loud shape.
+  - Tiebreak by **caller order** (the order angles are passed to `rank_hot_angles`, which is `ANGLES` — the orchestrator-fixed array in `lib/orchestrate.sh`). Deterministic by virtue of `ANGLES` being a static array. Earlier drafts proposed remedy-LOC desc and alphabetical tiebreaks; both were dropped because (a) caller-order is the simplest deterministic shape, (b) the tie-break is only meaningful when 4+ specialists each have ≥20 LOC findings — rare.
 - Group top findings by their specialist file → set of "hot" specialists.
 
 **G.2 Go-deep fan-out** (new in `lib/review-one-pr.sh`, ~30 LOC):
