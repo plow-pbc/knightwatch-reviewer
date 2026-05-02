@@ -37,7 +37,7 @@ For each input probe, set `Answer:` to one of:
 
 For each probe set to `Answer: yes` or `no`, also set `Evidence:` to a one-line citation. For `Answer: unknown`, set `Evidence:` to a one-line note explaining what evidence is missing (so the author can supply it). For `Answer: yes`, optionally set `Severity if yes:` to override the specialist's prior if your evidence changes the severity calculus (e.g., specialist set `medium` but you found the failing path is reachable on the request hot path → upgrade to `blocking`).
 
-**Generation pass.** After resolving every input probe, scan the diff yourself for assumptions stated as if settled that no specialist probed. For each, emit a new probe (per `.codex-scratch/probe-schema.md`) with `From: critic` and `Answer: unknown` (let the next round or the operator close it). The 8 specialists necessarily have angle-blind spots; this pass is your generative role. Generated probes go in a separate `## Generated probes` section at the end of your output (the splitter routes them to `.codex-scratch/specialists/critic.md`).
+**Generation pass.** After resolving every input probe, scan the diff yourself for assumptions stated as if settled that no specialist probed. For each, emit a new probe (per `.codex-scratch/probe-schema.md`) with `From: critic`. Default `Answer: unknown` and let the next round or the operator close it — but apply the SAME yes/no/unknown resolver rules to your own generated probes when you have evidence on hand: if you cite a failing path the diff makes reachable, set `Answer: yes` with the citation; if your own grep shows the assumption is false, set `Answer: no` with the drop reason. The 8 specialists necessarily have angle-blind spots; this pass is your generative role. Generated probes go in a separate `## Generated probes` section at the end of your output (the splitter routes them to `.codex-scratch/specialists/critic.md`).
 
 **Carry-forward stress-test (re-reviews only).** If `previous-review.md` is non-empty, also resolve every probe in it (parsed from the prior review's rendered probes). Specialists only see the incremental diff and won't re-emit probes about unchanged code, so without this pass a probe that was answered `yes` once becomes immune to re-evaluation.
 
@@ -73,7 +73,7 @@ For each probe set to `Answer: yes` or `no`, also set `Evidence:` to a one-line 
 
 ## Generated probes
 
-(Probe blocks per `.codex-scratch/probe-schema.md`, with `From: critic` and `Answer: unknown`. Splitter routes these to specialists/critic.md.)
+(Probe blocks per `.codex-scratch/probe-schema.md`, with `From: critic`. Default `Answer: unknown`; resolve to `yes`/`no` when you cite the same kind of evidence the resolution pass uses. Splitter routes these to specialists/critic.md.)
 ```
 
 The splitter (`lib/critic-splitter.sh`) reads this output and routes the per-angle resolution sections into each `specialists/<angle>.md` (under `## Critic counter-arguments` H2) and the generated probes into `specialists/critic.md`. The aggregator reads layered specialist files and applies the per-probe Answer overrides at render time.
