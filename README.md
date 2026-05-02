@@ -16,9 +16,9 @@ Reasonable. But that's a hardening note, not a finding that would stop the merge
 Knightwatch's review on the same PR:
 
 > **Knightwatch**:
-> > **[blocking]** IAM rollout would crash the API at startup. `start.sh` runs `alembic upgrade head` before Uvicorn, but `alembic/env.py` builds a plain `create_engine(get_url())` without the IAM hook (which is only wired into `build_async_engine`). Since `terraform/locals.tf` removes `DB_PASSWORD`, the migration step would attempt passwordless auth as `svc_app` and the API would never boot. Reuse `get_sync_connection()` so Alembic and runtime obtain credentials the same way.
+> > **[blocking]** IAM rollout would crash the API at startup. `entrypoint.sh` runs `migrate up` before the web server, but `migrations/env.py` builds a plain engine without the IAM hook (which is only wired into `build_runtime_engine`). Since `infra/locals.tf` removes the legacy password env var, the migration step would attempt passwordless auth as `svc_app` and the API would never boot. Reuse `get_migration_connection()` so the migration path and runtime obtain credentials the same way.
 
-The bug isn't visible in any single file. It only shows up when you stitch shell startup + Alembic engine builder + Terraform env + the location of the IAM hook. That's the kind of catch knightwatch is designed for.
+The bug isn't visible in any single file. It only shows up when you stitch shell startup + the migration engine builder + the infra env config + the location of the IAM hook. That's the kind of catch knightwatch is designed for.
 
 Two more, from the public [`tkmx-client`](https://github.com/srosro/tkmx-client) reporter:
 
