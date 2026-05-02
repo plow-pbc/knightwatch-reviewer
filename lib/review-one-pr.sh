@@ -1204,9 +1204,10 @@ REVIEW_NOTES+=("$SCOPE_NOTE")
 # Symmetric pre-check disclosure: every pre-check emits one fragment
 # describing its outcome (pass/fail/skip), not just on miss. Old asym-
 # metric pattern collapsed clean-PR headers to scope-only and left
-# readers guessing whether tests/KID/typing actually ran. Fail-fast in
-# the helpers (unrecognized summary or bogus boolean) bubbles via set
-# -e to the abort path below — silent header omission is the BCR class.
+# readers guessing whether tests/KID/typing actually ran. Fail-fast on
+# bogus inputs runs through the explicit `if ! ...; then ... exit 1`
+# guards below (worker is `set -u` only, no `-e`) — silent header
+# omission is the BCR class these guards exist to fence.
 if ! TESTS_NOTE=$(format_tests_note "$TESTS_RAN" "$TEST_SUMMARY"); then
     log "$PR_ID: format_tests_note failed (ran='$TESTS_RAN', summary='$TEST_SUMMARY') — internal invariant violated, aborting"
     rm -rf "$REPO_DIR"

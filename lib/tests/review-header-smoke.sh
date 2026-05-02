@@ -101,17 +101,22 @@ assert_one_blockquote() {
 # degrade per CLAUDE.md. Replaces six near-identical 7-line blocks; the
 # arity is fixed (no exit-code differentiation) so every call site reads
 # as "this command must die loudly with the cited diagnostic."
+#
+# Single invocation: captures rc + stderr from one run. The earlier shape
+# called CMD twice (once for rc, once to capture stderr) which is harmless
+# for pure helpers but would silently calcify a "safe to run twice"
+# contract for any future non-idempotent caller. Run once, check both.
 assert_fails_with() {
     local scenario="$1" needle="$2"
     shift 2
     [ "${1:-}" = "--" ] && shift
-    "$@" 2>/dev/null
-    if [ "$?" -eq 0 ]; then
+    local err rc
+    err=$("$@" 2>&1 >/dev/null)
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
         echo "FAIL: $scenario — returned 0 (silent degrade); should fail-fast per CLAUDE.md"
         exit 1
     fi
-    local err
-    err=$("$@" 2>&1 >/dev/null)
     if ! printf '%s' "$err" | grep -q "$needle"; then
         echo "FAIL: $scenario — stderr diagnostic missing '$needle'; got: $err"
         exit 1
