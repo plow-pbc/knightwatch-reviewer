@@ -168,20 +168,14 @@ echo "WORKER_DISPATCHED repo=$1 pr=$2 sha=$3 force_whole=$6 trigger_file=${TRIGG
 WORKER
 chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
 
-# Pre-stamp state: cncorp/plow#1 was reviewed at SHA abc123 (matches the
-# headRefOid the gh stub returns). reviewed_at is set to "1 hour ago"
-# so $MOCK_COMMENTS_FILE timestamps written as "now" are after it.
-# state.json stays around as a cache for legacy callers (reviewed_at is
-# still read here for the comment-since window).
 . "$REVIEWER_LIB_DIR/state-io.sh"
-state_set "cncorp/plow#1" "abc123" false "prior review body" "$(($(date +%s) - 3600))"
 
 # Seed runs/ with an author-visible run for this PR. The orchestrator's
-# dispatch gate now reads KNOWN_SHA from runs/ (via
-# latest_author_visible_review_sha), not state.json — closing the
-# infinite-dispatch loop where a `gh pr comment` success + state_set
-# failure used to leave state.json stale and re-dispatch forever. Most
-# scenarios want "we already reviewed abc123" → seed a posted run with
+# dispatch gate (KNOWN_SHA via latest_author_visible_review_sha) and
+# slash-command cutoff (started_at via
+# latest_author_visible_review_started_at) read exclusively from runs/
+# — state.json was retired entirely in PR #38. Most scenarios want
+# "we already reviewed abc123" → seed a posted run with
 # reviewed_sha=abc123.
 seed_run() {
     local slug="$1" pr="$2" ts="$3" sha="$4" verdict="${5:-COMMENT}"
@@ -636,12 +630,11 @@ echo "WORKER_DISPATCHED repo=$1 pr=$2 sha=$3 force_whole=$6 trigger_file=${TRIGG
 WORKER
 chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
 
-# Pre-stamp with a SHA that differs from the gh stub's headRefOid
-# (abc123). reviewed_at far in the past so MOCK_COMMENTS_PAGE*_FILE
-# timestamps written as "now" satisfy `created_at > reviewed_at`.
-# Also re-seed runs/ to report old_sha_999 so the runs/-sourced gate
-# matches state.json's view of "we last reviewed old_sha_999."
-state_set "cncorp/plow#1" "old_sha_999" false "prior review body" "$(($(date +%s) - 7200))"
+# Re-seed runs/ to report old_sha_999 so the dispatch gate sees a SHA
+# different from the gh stub's headRefOid (abc123). started_at on the
+# seeded run defaults to 2026-04-29T14:00:00Z (well in the past), so
+# MOCK_COMMENTS_PAGE*_FILE timestamps written as "now" satisfy
+# `created_at > started_at` for the slash-cutoff filter.
 clear_seeded_runs
 seed_run "cncorp_plow" "1" "20260429T100000000Z" "old_sha_999" "COMMENT" >/dev/null
 
@@ -674,7 +667,6 @@ fi
 echo "  scenario 14: TMPDIR pin overrides both inherited TMPDIR and config.env (post-load behavioral fence)..."
 unset MOCK_COMMENTS_PAGE1_FILE MOCK_COMMENTS_PAGE2_FILE
 export MOCK_COMMENTS_FILE="$TMPDIR/comments.json"
-state_set "cncorp/plow#1" "abc123" false "prior review body" "$(($(date +%s) - 3600))"
 clear_seeded_runs
 seed_run "cncorp_plow" "1" "20260429T100000000Z" "abc123" "COMMENT" >/dev/null
 rm -f "$STATE_DIR/tmp/pr-review-trigger".*
@@ -697,24 +689,21 @@ if ! grep -qF "trigger_file=$STATE_DIR/tmp/pr-review-trigger" "$LOG_FILE"; then
 fi
 
 # Scenario 15 (infinite-dispatch-loop fence): orchestrator's KNOWN_SHA
-# read sources from runs/ (meta.json), not state.json. The round-8 fix
-# moved the WORKER's KNOWN_SHA to runs/. If the orchestrator is left
-# reading state.json and a `gh pr comment` succeeds but state_set fails
-# afterward, state.json keeps the OLDER SHA — and on the next tick the
-# orchestrator dispatches again because state.json says "we last
-# reviewed OLDER_SHA != HEAD". The worker then reads runs/ for ITS
-# KNOWN_SHA, gets HEAD (correctly), computes git diff HEAD..HEAD, and
-# aborts on empty diff. state.json stays unchanged. The cycle repeats
-# every tick forever until a new commit lands or someone manually
-# repairs state.json.
+# read sources from runs/<id>/meta.json — the only source of truth since
+# state.json was retired in PR #38. Pre-retirement, a `gh pr comment`
+# success + state_set failure would leave state.json carrying an OLDER
+# SHA. On the next tick the orchestrator would dispatch again ("we last
+# reviewed OLDER_SHA != HEAD"), the worker (also reading runs/) would
+# see HEAD already reviewed and abort on empty diff, and the cycle
+# would repeat every tick. Reading runs/ at the gate closes that loop.
 #
-# Fence: state.json says OLDER_SHA, runs/ says HEAD (abc123 — the gh
-# stub's headRefOid). No /srosro-* trigger comments. Expect 0 dispatches.
-# Pre-fix this would have dispatched.
-echo "  scenario 15: state.json stale (OLDER_SHA), runs/ shows HEAD reviewed → no dispatch (infinite-loop fence)..."
+# Fence: runs/ says HEAD (abc123 — the gh stub's headRefOid) is
+# already reviewed. No /srosro-* trigger comments. Expect 0 dispatches.
+# A regression that re-routes the gate to a stale state.json reader
+# would dispatch here.
+echo "  scenario 15: runs/ shows HEAD reviewed → no dispatch (infinite-loop fence)..."
 unset MOCK_COMMENTS_PAGE1_FILE MOCK_COMMENTS_PAGE2_FILE
 export MOCK_COMMENTS_FILE="$TMPDIR/comments.json"
-state_set "cncorp/plow#1" "older_sha_stale" false "prior review body" "$(($(date +%s) - 3600))"
 clear_seeded_runs
 # runs/ correctly reports the actually-reviewed SHA (HEAD = abc123).
 seed_run "cncorp_plow" "1" "20260429T100000000Z" "abc123" "COMMENT" >/dev/null
@@ -722,19 +711,18 @@ echo "[]" > "$MOCK_COMMENTS_FILE"
 run_orchestrator
 n=$(count_dispatches)
 if [ "$n" -ne 0 ]; then
-    echo "FAIL scenario 15 (infinite-dispatch-loop regression): expected 0 dispatches when runs/ shows HEAD already reviewed, got $n — orchestrator likely still consults state.json for KNOWN_SHA"
+    echo "FAIL scenario 15 (infinite-dispatch-loop regression): expected 0 dispatches when runs/ shows HEAD already reviewed, got $n — orchestrator likely re-introduced a state.json read at the KNOWN_SHA gate"
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
 
 # Scenario 16 (changed-SHA dispatch from runs/): runs/ reports OLDER_SHA,
-# HEAD is abc123 — orchestrator must dispatch even when state.json is
-# empty/missing, because runs/ is now the authoritative source. No
-# /srosro-* trigger comments needed; the SHA delta alone drives dispatch.
-# Cooldown is bypassed because the gh stub returns a 2020-era commit
-# date for /pulls/<n>/commits.
-echo "  scenario 16: state.json empty, runs/ shows OLDER_SHA (HEAD differs) → 1 dispatch..."
-echo "{}" > "$STATE_FILE"
+# HEAD is abc123 — orchestrator must dispatch when runs/ says we
+# reviewed an older SHA than the current HEAD. The SHA delta alone
+# drives dispatch (no /srosro-* trigger comments needed). Cooldown is
+# bypassed because the gh stub returns a 2020-era commit date for
+# /pulls/<n>/commits.
+echo "  scenario 16: runs/ shows OLDER_SHA (HEAD differs) → 1 dispatch..."
 clear_seeded_runs
 seed_run "cncorp_plow" "1" "20260429T100000000Z" "older_sha_999" "COMMENT" >/dev/null
 echo "[]" > "$MOCK_COMMENTS_FILE"
@@ -746,61 +734,62 @@ if [ "$n" -ne 1 ]; then
     exit 1
 fi
 
-# Scenario 17 (slash-cutoff sourced from runs/): the round-10 fence for
-# the 4th leak of the gh-success + state_set-failure race. Round 9 closed
-# the orchestrator's KNOWN_SHA dispatch loop by reading runs/. But the
+# Scenario 17 (slash-cutoff sourced from runs/started_at): the
 # slash-command cutoff ("is this /srosro-review newer than the last
-# review?") still read state.json.reviewed_at — so the same race leaked:
-# state.json carries an ANCIENT reviewed_at while runs/ has a recent
-# started_at. An OLD /srosro-review comment (posted before runs/'s
-# started_at, after state.json's stale reviewed_at) used to requalify on
-# the cutoff and force a whole-PR re-review unnecessarily. Sourcing the
-# cutoff from runs/.started_at closes it.
+# review?") reads runs/<id>/meta.json.started_at, not a separate
+# state.json. An OLD /srosro-review comment posted BEFORE runs/'s
+# started_at must not requalify and force a whole-PR re-review. This
+# scenario also fences the round-11 write-side fix: meta.json.started_at
+# is stamped from REVIEW_START_TS (the captured variable), so the
+# orchestrator's cutoff and the worker's "since when" are pinned to a
+# single instant — no sub-second clock-skew window where a /review
+# trigger could fall.
 #
-# Setup: state.json reviewed_at = 2 hours ago. runs/ started_at = 30
-# minutes ago. /srosro-review comment posted 1 hour ago — between the
-# two. Pre-fix: comment.created_at > state.json.reviewed_at → trigger
-# fires → 1 dispatch (whole-PR). Post-fix: comment.created_at <
-# runs/started_at → cutoff filters it out → 0 dispatches.
-echo "  scenario 17: stale state.json reviewed_at + fresh runs/ started_at, OLD /srosro-review → no dispatch (4th-leak fence)..."
+# Setup: runs/ started_at = 30 minutes ago. /srosro-review comment
+# posted 1 hour ago — BEFORE the stamp. Cutoff filters it out → 0
+# dispatches. A regression that keys the cutoff off any time later
+# than started_at (e.g. posted_at, or a fresh `date` call) would
+# silently re-qualify the OLD comment and dispatch.
+echo "  scenario 17: OLD /srosro-review predates runs/.started_at → no dispatch (slash-cutoff fence)..."
 unset MOCK_COMMENTS_PAGE1_FILE MOCK_COMMENTS_PAGE2_FILE
 export MOCK_COMMENTS_FILE="$TMPDIR/comments.json"
-echo "{}" > "$STATE_FILE"
-# state.json: ancient reviewed_at (2 hours ago).
-state_set "cncorp/plow#1" "abc123" false "prior review body" "$(($(date +%s) - 7200))"
 clear_seeded_runs
-# runs/: started_at = 30 minutes ago (ISO 8601). Use a Linux date(1)
-# format spec that's portable to GNU date (the only one this codebase
-# targets).
+# runs/: started_at = 30 minutes ago (ISO 8601). GNU date — the only
+# format spec this codebase targets.
 RECENT_STARTED_AT=$(date -u -d "@$(($(date +%s) - 1800))" +"%Y-%m-%dT%H:%M:%SZ")
 seed_run "cncorp_plow" "1" "20260429T143000000Z" "abc123" "COMMENT" "$RECENT_STARTED_AT" >/dev/null
-# Comment posted 1 hour ago — AFTER state.json's stale reviewed_at
-# (2h ago) but BEFORE runs/'s started_at (30m ago). Pre-fix this trips
-# the cutoff (state.json view); post-fix it does not (runs/ view).
+# Comment posted 1 hour ago — BEFORE runs/'s started_at (30m ago).
 OLD_COMMENT_AT=$(date -u -d "@$(($(date +%s) - 3600))" +"%Y-%m-%dT%H:%M:%SZ")
 printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$OLD_COMMENT_AT" > "$MOCK_COMMENTS_FILE"
 run_orchestrator
 n=$(count_dispatches)
 if [ "$n" -ne 0 ]; then
-    echo "FAIL scenario 17 (slash-cutoff-from-state.json regression): expected 0 dispatches when comment predates runs/.started_at, got $n — review.sh's cutoff is still reading state.json.reviewed_at instead of runs/.started_at"
+    echo "FAIL scenario 17 (slash-cutoff regression): expected 0 dispatches when comment predates runs/.started_at, got $n — review.sh's cutoff is keying off something later than meta.json.started_at"
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
 
-# Scenario 18: structural fence — review.sh must call
-# latest_author_visible_review_started_at and must NOT re-introduce the
-# state.json reviewed_at read at the cutoff seam. The behavioral fence
-# above (scenario 17) is the primary check; this is a static guard so a
-# regression that breaks the wiring shows up here even if someone
-# accidentally weakens scenario 17's setup later.
-echo "  scenario 18: review.sh wires latest_author_visible_review_started_at (static gate)..."
+# Scenario 18: structural fences — review.sh wires
+# latest_author_visible_review_started_at, and NO production code path
+# (review.sh, lib/review-one-pr.sh) calls state_get/state_set or
+# touches state.json. State.json was retired entirely in PR #38; this
+# guard fails loud if a regression re-introduces any state.json read or
+# write at a runtime-decision seam.
+echo "  scenario 18: review.sh wires latest_author_visible_review_started_at + no state.json residue in production (static gate)..."
 if ! grep -q 'latest_author_visible_review_started_at' "$PROJECT_ROOT/review.sh"; then
     echo "FAIL scenario 18: review.sh no longer references latest_author_visible_review_started_at — slash-cutoff has been re-routed off runs/, reopens 4th-leak race"
     exit 1
 fi
-if grep -qE 'state_get[[:space:]]+"\$PR_ID"[[:space:]]+"reviewed_at"' "$PROJECT_ROOT/review.sh"; then
-    echo "FAIL scenario 18: review.sh re-introduced a state.json reviewed_at read — slash-cutoff regressed back to state.json source"
-    exit 1
-fi
+# state_get / state_set are deleted; any production CALL site re-introducing
+# them reopens the BCR class that drove rounds 7-12. The grep skips lines
+# that start with `#` so historical comments referencing the retired
+# helpers don't false-positive — only actual call sites trip the fence.
+for f in "$PROJECT_ROOT/review.sh" "$PROJECT_ROOT/lib/review-one-pr.sh"; do
+    if grep -vE '^[[:space:]]*#' "$f" | grep -qE '\bstate_(get|set)\b'; then
+        echo "FAIL scenario 18 (state.json retirement regression): $f re-introduced state_get / state_set — runtime decisions are back on the legacy state.json cache that PR #38 retired"
+        grep -nE '\bstate_(get|set)\b' "$f" | grep -vE ':[[:space:]]*#'
+        exit 1
+    fi
+done
 
-echo "  PASS (18 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip-when-state-stale, runs/-sourced-dispatch-when-head-differs, slash-cutoff-from-runs-when-state-stale, static-wiring-gate)"
+echo "  PASS (18 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue)"

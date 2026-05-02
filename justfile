@@ -21,8 +21,8 @@ test:
     bash lib/tests/repos-conf-smoke.sh
 
     echo ""
-    echo "=== state-io smoke test ==="
-    bash lib/tests/state-io-smoke.sh
+    echo "=== divergent-clock smoke test ==="
+    bash lib/tests/divergent-clock-smoke.sh
 
     echo ""
     echo "=== auth smoke test ==="
