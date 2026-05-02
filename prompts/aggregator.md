@@ -27,6 +27,15 @@ You are the aggregator in a multi-specialist PR review. Eight specialists produc
 - `.codex-scratch/file-history.md` — recent commits for each touched file
 - `.codex-scratch/commits.md` — commit subjects on this branch, one per line.
 - `.codex-scratch/author-intent.md` — the PR's description + linked issues
+- `.codex-scratch/decline-history.md` — operator's prior decline replies on this PR. The critic already consumed this (drops findings declined ≥3 rounds, footnotes 1-2 round declines); read it for context when interpreting why a finding is or isn't carrying forward.
+
+**Note on layered specialist files.** Each `.codex-scratch/specialists/<angle>.md` is now a layered file: original specialist findings → critic counter-arguments (split from `critic.md` by the orchestrator's critic-splitter) → optionally a Go-deep tech-lead investigation (when the finding's remedy was ≥20 LOC, ≤3 instances per review). When integrating findings, prefer the deepest available recommendation:
+- **Go-deep `KEEP`** → publish the finding as the specialist + critic produced it (severity from specialist + critic verdict).
+- **Go-deep `SIMPLIFY-WITH-PATTERN`** → rewrite the finding's remedy to use the cited pattern; severity stays. Cite the pattern's path:line in the published finding.
+- **Go-deep `DROP`** → omit from published findings. If the finding was originally `blocking`/`medium`, emit a one-line footnote: "X was investigated by go-deep tech-lead; decline reason: <one-line>." Otherwise, drop silently.
+- **Go-deep `REFRAME`** → move to **Open Questions** with the go-deep's reframed text verbatim. The reframe carries cost-naming already.
+
+If a specialist file has no Go-deep section, treat it as before (specialist + critic only).
 
 **PR:** {{PR_ID}}
 **Title:** {{PR_TITLE}}
