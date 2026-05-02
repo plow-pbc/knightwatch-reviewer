@@ -31,11 +31,17 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 ProtectHome=read-only
-# ReadWritePaths covers ONLY paths the bot writes to. Tracked-repo
-# checkouts under ~/Hacking/<slug>/ are read for kid-prior-art only;
-# reads stay allowed by ProtectHome=read-only without explicit entries.
-# Adding a new tracked repo no longer requires editing this list.
-ReadWritePaths=/home/odio/.pr-reviewer /home/odio/.codex /home/odio/.cache /home/odio/.local /home/odio/.config /home/odio/.docker
+# @KID_RW_PATHS@ is rendered at install time by install.sh from
+# repos.conf's KID_PATHS values (deduped, space-separated absolute
+# paths). The kid prior-art lookup opens chromadb against
+# `<KID_PATH>/.keepitdry/chroma.sqlite3`, and chromadb's SQLite
+# backend needs to write WAL/journal files even on read-only queries.
+# Without the templated paths, queries fail with "attempt to write a
+# readonly database" under ProtectHome=read-only and every review
+# silently degrades to kid-less. Mirrors the kid-refresh service so
+# both seams write to the same dirs from one source of truth
+# (repos.conf). Do not edit @KID_RW_PATHS@ by hand here.
+ReadWritePaths=/home/odio/.pr-reviewer /home/odio/.codex /home/odio/.cache /home/odio/.local /home/odio/.config /home/odio/.docker @KID_RW_PATHS@
 
 [Install]
 WantedBy=multi-user.target

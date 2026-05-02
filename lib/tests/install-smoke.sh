@@ -175,6 +175,18 @@ for unit in "${PROD_UNITS[@]}"; do
     fi
 done
 
+# Regression pin: pr-reviewer.service and pr-reviewer-kid-refresh.service
+# both run kid prior-art queries (or build the index), and chromadb's
+# SQLite backend writes WAL/journal files even on read-only queries. If
+# either unit drops @KID_RW_PATHS@, kid lookups fail with "attempt to
+# write a readonly database" under ProtectHome=read-only and reviews
+# silently degrade to kid-less. Pin the placeholder presence in the
+# source so a future edit can't quietly re-introduce that bug.
+for required in pr-reviewer.service pr-reviewer-kid-refresh.service; do
+    grep -q '@KID_RW_PATHS@' "$PROJECT_ROOT/systemd/$required" \
+        || { echo "FAIL scenario 1: $required is missing @KID_RW_PATHS@ — kid queries will hit chromadb readonly errors"; exit 1; }
+done
+
 # daemon-reload was called once (units actually changed)
 [ "$(count_stub 'SYSTEMCTL daemon-reload')" = "1" ] || { echo "FAIL scenario 1: expected exactly 1 daemon-reload"; cat "$STUB_LOG"; exit 1; }
 
