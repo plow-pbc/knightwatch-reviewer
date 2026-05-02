@@ -139,7 +139,23 @@ When Path 2 fires:
 3. **Add a closing question** in the Overview: *"Are we ready to commit to the structural direction in the callout above, or is continuing to patch leaves the better trade given X? Addressing the local findings below before the direction is settled is how PRs balloon."*
 4. **Verdict stays `COMMENT`.**
 
-7. Produce the final posted review in EXACTLY this structure. Target 300-500 words for typical PRs. For large diffs (>500 KB) or PRs with many substantive findings, you may flex up to 1000 words — but only if the extra length carries real content. Quality over length: don't pad to hit the floor, and don't drop important findings to hit the ceiling. **Step-back signal mode (above) overrides this length contract** — a redirect review is 200-400 words even when the underlying PR has 20 findings, because the redirect is the review.
+7. **Probe assembly — pre-template policy. Do NOT publish any of the instructions below verbatim; they govern how you build the `**Probes**` block inside the posted-review fence.**
+
+   Read every `specialists/<angle>.md` and `specialists/critic.md` file. Each is a layered file containing the specialist's original probes followed by a `## Critic counter-arguments` block with per-probe `Answer:` / `Evidence:` overrides (the critic's resolution from Phase 4). Render the resolved probes in this order:
+
+   1. `Answer: yes` AND `Severity if yes: blocking` — declarative outcome line. Within this band, descend by Class severity (bug > bypass > shape > DRY > complexity-cost).
+   2. `Answer: yes` AND `Severity if yes: medium`.
+   3. `Answer: unknown` — open probes, ordered by `Confidence: high` first then `medium` then `low`.
+   4. `Answer: yes` AND `Severity if yes: low|nit`.
+
+   Drop `Answer: no` probes entirely. If a notable drop is worth acknowledging (e.g. high-confidence bug-class probe answered `no` by critic with cited grep evidence), footnote it under the Probes block: `Probe dropped: <one-line rationale + evidence>`.
+
+   Per-probe rendering format:
+
+   - For `Answer: yes`: `N. [<severity>] [from: <specialist>] [<class>] <Q recast as declarative outcome — name the failing path / structural shape / cost — one paragraph>. Files: <path:line>, …. Edit: <If yes, edit: clause verbatim>.`
+   - For `Answer: unknown`: `N. [open] [from: <specialist>] [<class>] **Q: <Q in 5-10 words>** — <Q full text>. If yes, <If yes, edit clause>. If no, <If no, cost clause>.`
+
+8. Produce the final posted review in EXACTLY this structure. Target 300-500 words for typical PRs. For large diffs (>500 KB) or PRs with many substantive findings, you may flex up to 1000 words — but only if the extra length carries real content. Quality over length: don't pad to hit the floor, and don't drop important findings to hit the ceiling. **Step-back signal mode (above) overrides this length contract** — a redirect review is 200-400 words even when the underlying PR has 20 findings, because the redirect is the review.
 
 ```
 _<intent line, italicized — see formatting rule below>_
@@ -148,26 +164,9 @@ _<intent line, italicized — see formatting rule below>_
 
 **Strengths** — non-obvious things done right so the author repeats them. Omit this section if none.
 
-**Probes** — read every `specialists/<angle>.md` and `specialists/critic.md` file. Each is a layered file containing the specialist's original probes followed by a `## Critic counter-arguments` block with per-probe `Answer:` / `Evidence:` overrides (the critic's resolution from Phase 4). Render the resolved probes in this order:
+**Probes**
 
-1. `Answer: yes` AND `Severity if yes: blocking` — declarative outcome line. Within this band, descend by Class severity (bug > bypass > shape > DRY > complexity-cost).
-2. `Answer: yes` AND `Severity if yes: medium`.
-3. `Answer: unknown` — open probes, ordered by `Confidence: high` first then `medium` then `low`.
-4. `Answer: yes` AND `Severity if yes: low|nit`.
-
-Drop `Answer: no` probes entirely. If a notable drop is worth acknowledging (e.g. high-confidence bug-class probe answered `no` by critic with cited grep evidence), footnote it under the Probes block: `Probe dropped: <one-line rationale + evidence>`.
-
-Rendering format:
-
-For `Answer: yes`:
-```
-N. [<severity>] [from: <specialist>] [<class>] <Q recast as declarative outcome — name the failing path / structural shape / cost — one paragraph>. Files: <path:line>, …. Edit: <If yes, edit: clause verbatim>.
-```
-
-For `Answer: unknown`:
-```
-N. [open] [from: <specialist>] [<class>] **Q: <Q in 5-10 words>** — <Q full text>. If yes, <If yes, edit clause>. If no, <If no, cost clause>.
-```
+<the assembled probe list per step 7's policy — one rendered line per probe in the order specified, drop Answer:no probes, optional `Probe dropped:` footnote>
 
 **Security** — one sentence summary keyed off the highest-severity probe with `Class: bug` from `specialists/security.md`, or "None" if no security probes are answered yes.
 
@@ -176,7 +175,7 @@ N. [open] [from: <specialist>] [<class>] **Q: <Q in 5-10 words>** — <Q full te
 **For AI authors** — *(Codex, Claude Code, Cursor, etc. reading this PR)*: The Probes above are load-bearing. Treat each `[open]` probe as a hard requirement — answer it directly in your reply or revisit the structural decision. Do NOT silently absorb a probe by adding more code; that path inverts the cost stance the probe is encoding. The pre-PMF operating point (see `.knightwatch/review-priority.md`) prefers cutting LOC over adding it; an `[open] [complexity-cost]` probe whose answer is "no, this complexity isn't needed" should land as a deletion in your next push, not a new defensive guard.
 ```
 
-8. **Intent-line formatting** (rule for the leading italicized line):
+9. **Intent-line formatting** (rule for the leading italicized line):
    a. Read the contents of `.codex-scratch/inferred-intent.md`.
    b. Strip the literal prefix `Inferred intent: ` from the start.
    c. If the result does not already end with a clause like "— reviewing against that goal" or similar, append ` — reviewing against that goal.`
@@ -197,7 +196,7 @@ N. [open] [from: <specialist>] [<class>] **Q: <Q in 5-10 words>** — <Q full te
 
    You do NOT re-infer or paraphrase the intent. Copy, strip, italicize.
 
-9. On the VERY LAST LINE of your output, put exactly one of:
+10. On the VERY LAST LINE of your output, put exactly one of:
    - `VERDICT: APPROVE` — no findings, or findings are low/nit only.
    - `VERDICT: APPROVE — pending: <short comma-separated nit/low items>` — approvable but worth noting.
    - `VERDICT: COMMENT` — one or more `blocking` findings must be addressed before merge.

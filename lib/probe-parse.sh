@@ -17,15 +17,26 @@ probe_validate() {
     grep -q '^### Probe ' <<<"$input" || return 0
 
     local missing=0 field
+    # Skip content before the first `### Probe` header (specialists' shared
+    # header may emit `### Surveyed` or other prose before any probes; that
+    # is not a malformed probe). Once inside a probe block, terminate on the
+    # next `### `-prefixed header that isn't `### Probe ` (e.g. `### Surveyed`
+    # appearing AFTER the probes).
     local blocks
     blocks="$(awk '
         /^### Probe / {
-            if (block) print block "\n---PROBE-SPLIT---";
+            if (in_probe) print block "\n---PROBE-SPLIT---";
             block = $0;
+            in_probe = 1;
             next
         }
-        { block = block "\n" $0 }
-        END { if (block) print block }
+        /^### / && in_probe {
+            print block "\n---PROBE-SPLIT---";
+            in_probe = 0;
+            next
+        }
+        { if (in_probe) block = block "\n" $0 }
+        END { if (in_probe) print block }
     ' <<<"$input")"
 
     local probe_block="" line

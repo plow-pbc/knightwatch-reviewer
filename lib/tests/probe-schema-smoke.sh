@@ -61,4 +61,37 @@ EXTRACTED_CLASS="$(probe_extract_field "Class" <<<"$FIXTURE_OK")"
 [ "$EXTRACTED_CLASS" = "complexity-cost" ] || { echo "FAIL: expected Class=complexity-cost, got '$EXTRACTED_CLASS'"; exit 1; }
 echo "OK: probe_extract_field Class"
 
+# Fixture: specialist output with ### Surveyed prose before the first probe.
+# The shared specialist header still requires a Surveyed section even when
+# probes are present; the parser must skip pre-probe content rather than
+# treating it as a malformed probe.
+FIXTURE_WITH_SURVEYED="$(cat <<'EOF'
+### Surveyed
+- Looked at app/handlers.py
+- Looked at lib/utils.py — nothing structural
+- Looked at tests/ — coverage adequate
+
+### Probe 1
+- **From:** shape
+- **Class:** complexity-cost
+- **Q:** Does the new defensive guard ever fire?
+- **Files:** tests/test_oauth.py:120
+- **If yes, edit:** keep the lifecycle simulation
+- **If no, cost:** calcifies a fake-state branch tests must preserve
+- **Confidence:** medium
+- **Severity if yes:** low
+- **Answer:** unknown
+- **Evidence:** —
+
+### Surveyed (continued)
+- additional notes
+EOF
+)"
+
+if probe_validate <<<"$FIXTURE_WITH_SURVEYED"; then
+    echo "OK: pre-probe and post-probe ### Surveyed prose ignored"
+else
+    echo "FAIL: parser tripped on Surveyed prose"; exit 1
+fi
+
 echo "OK: probe-schema smoke"
