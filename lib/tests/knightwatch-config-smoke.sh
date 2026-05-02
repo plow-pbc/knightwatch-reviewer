@@ -148,12 +148,13 @@ if [ "$exit_code" -ne 1 ]; then
 fi
 
 # --- scenario 4: PRESENT but empty → exit 0 + empty content ---------
-# A committed empty file means "no value for this concern in this
-# repo" (e.g., empty .knightwatch/dead-code.sh = "no dead-code check,
-# please"). PRESENT-empty and ABSENT both resolve to the same caller
-# behavior (no-op for command files, placeholder for product-context),
-# but the read function still returns distinct exit codes so the
-# ERROR third state stays unambiguous (see scenario 5).
+# Helper-mechanism scenario: a committed empty file at a tracked path
+# returns rc=0 with empty stdout — distinct from rc=1 (ABSENT) and
+# rc=2 (ERROR). What PRESENT-empty MEANS is a per-caller decision
+# documented at each call site (e.g. search-roots.sh treats it as
+# "no siblings"; review-one-pr.sh's product-context block substitutes
+# the placeholder); this scenario only fences the helper's
+# mechanism, not caller policy.
 echo "  scenario 4: present but empty → exit 0 + empty content..."
 git -C "$SOURCE" checkout -q main
 echo > "$SOURCE/.knightwatch/empty-file.sh"
