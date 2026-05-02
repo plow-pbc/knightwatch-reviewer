@@ -29,12 +29,6 @@ For each new code path, ask:
 | Load-to-count | `len(list(qs))` | `qs.count()` |
 | O(n²) membership | `for x in a: if x in b:` where `b` is a list | `set(b)` once |
 
-**Severity:**
-- `blocking` — *either* (a) this WILL OOM / time out / crash at current or known-near-term scale, *OR* (b) the fix is one-line idiomatic AND the bug is real (not theoretical). Either condition is independently sufficient.
-- `medium` — real perf concern with a clear simple fix, no crash imminent.
-- `low` — observation worth noting; fix would add complexity.
-- Don't pad with "no findings." The Surveyed section is where you prove you looked.
-
 **Disallowed findings (DO NOT FILE):**
 
 - "Add Redis / memcached / a caching layer." — adds infra.
@@ -46,6 +40,19 @@ For each new code path, ask:
 - "Use Cython / Rust / a faster language." — out of scope.
 
 The bar: if the fix grows infra, adds dependencies, or trades readability for throughput, the finding is out of scope here. **Engineer-hours, not CPU.** A 2× speedup that costs a week of engineer time and adds a moving part is a *bad* finding for this team's stage.
+
+**Emission format:**
+
+Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. Class options for this specialist:
+
+- `Class: perf` — N+1 ORM, unbounded fetch, sync-in-async, count-instead-of-exists, re-compile-in-loop, load-to-count, O(n²) membership, or any other one-line idiomatic fix that prevents OOM / timeout / crash. `Confidence: high` when the failing path is fully cited; `medium` when the trigger is plausible at near-term scale. `Severity if yes: blocking` if WILL crash at current/known-near-term scale OR fix is one-line idiomatic AND bug is real; `medium` for real concerns with simple fixes; `low` for observations whose fix adds complexity. `If yes, edit:` name the canonical fix shape with file:line. `If no, cost:` "—" for high-confidence perf bugs; otherwise name the scale assumption that argues against the fix.
+- `Class: complexity-cost` — premature optimization in this PR (caching layers, hand-rolled query optimization, defensive batching where the unbatched path is fine at current scale). `Confidence: medium`. `Severity if yes: low|medium`. `If yes, edit:` "delete <optimization> — N LOC, restore simpler path". `If no, cost:` name the scale-driven necessity for the optimization.
+
+You MUST emit at least one `complexity-cost` probe on any non-trivial PR. If none applies, append to your Surveyed section: "No complexity-cost probe — explanation: <one sentence>".
+
+Set `Answer: unknown` and `Evidence: —` on every probe — the critic fills these. Do NOT emit legacy `[severity]` finding paragraphs.
+
+If you have nothing to emit, write `No probes.` on a single line followed by a `## Surveyed` section.
 
 Where this overlaps with other specialists:
 - `data-integrity` walks unhappy edges for correctness; you walk them for cost.

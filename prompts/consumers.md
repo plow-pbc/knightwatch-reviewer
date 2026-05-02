@@ -30,11 +30,18 @@ ALSO read: `.codex-scratch/diff.patch`, `.codex-scratch/file-history.md`.
 
 **External / public-API consumers are NOT your concern** — no external customers yet. Walk *internal* call sites only: this repo plus the `included` sibling source paths.
 
-**Severity:**
-- `blocking` — stale-caller (runtime failure pending), or unreachable conditional that lets bad data through.
-- `medium` — public/exported symbol with no remaining callers, or unreachable non-trivial code block.
-- `low` — private dead helper.
-- Don't pad with "clean" findings. Surveyed proves you looked.
+**Emission format:**
+
+Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. Class options for this specialist:
+
+- `Class: dead-code` — stale caller (runtime failure pending), or unreachable conditional that lets bad data through, or public/exported symbol with no remaining callers, or private dead helper. `Confidence: high` for stale-caller (pre-pass + grep both confirm); `medium` for "no remaining callers" (could be missed dynamic dispatch); `low` for private dead helpers. `Severity if yes: blocking` for stale-caller / unreachable-bad-path; `medium` for stale public symbol; `low` for private dead. `If yes, edit:` name the symbol + the caller list (or "delete <symbol>") with file impact. `If no, cost:` "—" for high-confidence dead-code probes; otherwise name the dynamic-dispatch surface that argues against deletion.
+- `Class: complexity-cost` — defensive caller-shape adapters or compatibility wrappers added in this PR that may not be needed (e.g. handling None when the caller can't return None, supporting old-and-new schema versions when the migration is in-PR). `Confidence: low|medium`. `Severity if yes: low|medium`. `If yes, edit:` "delete <wrapper> — N LOC". `If no, cost:` name the cross-version-compat invariant being preserved.
+
+You MUST emit at least one `complexity-cost` probe on any non-trivial PR. If none applies, append to your Surveyed section: "No complexity-cost probe — explanation: <one sentence>".
+
+Set `Answer: unknown` and `Evidence: —` on every probe — the critic fills these via grep / decline-history. Do NOT emit legacy `[severity]` finding paragraphs.
+
+If you have nothing to emit, write `No probes.` on a single line followed by a `## Surveyed` section.
 
 **Overlap with other specialists:**
 - `simplification` owns DRY / intra-PR duplication / drive-by tidies / unused imports / verbose code *within* touched files. You own *cross-symbol call-graph effects*.
