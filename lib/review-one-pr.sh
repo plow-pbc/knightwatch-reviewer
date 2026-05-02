@@ -831,13 +831,14 @@ fi
 # the byte-identical string and it gets repetitive fast. Keep fragments
 # bare-fact; voice lives in the LLM body where each PR is novel.
 
-# REVIEWER_LIB_DIR is referenced by the per-repo cmds in repos.conf
-# (which call $REVIEWER_LIB_DIR/checks/<lang>-strict-typing.sh). Export
-# so it propagates into the `bash -c "$cmd"` subshells below.
+# REVIEWER_LIB_DIR is referenced by the per-repo cmds in
+# .knightwatch/strict-typing.sh (which call
+# $REVIEWER_LIB_DIR/checks/<lang>-strict-typing.sh). Export so it
+# propagates into the `bash -c "$cmd"` subshells below.
 export REVIEWER_LIB_DIR="$_LIB_DIR"
 
-# Strict-typing pre-check. Per-repo cmd from repos.conf delegates to
-# lib/checks/<lang>-strict-typing.sh. Helper contract is tri-state:
+# Strict-typing pre-check. Per-repo cmd from .knightwatch/strict-typing.sh
+# delegates to lib/checks/<lang>-strict-typing.sh. Helper contract is tri-state:
 #   exit 0 — strict mode enforced.
 #   exit 1 — gap (stdout has verbose detail → logged).
 #   exit 2 — checker error (stderr has details → logged loud, no note).

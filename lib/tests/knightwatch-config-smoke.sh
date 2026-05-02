@@ -147,11 +147,12 @@ if [ "$exit_code" -ne 1 ]; then
 fi
 
 # --- scenario 4: PRESENT but empty → exit 0 + empty content ---------
-# Load-bearing: a committed empty file means "no value for this concern
-# in this repo" (e.g., empty .knightwatch/dead-code.sh = "no dead-code
-# check, please"). The PRESENT exit code MUST distinguish this from
-# ABSENT — callers that collapse the two states would re-enable the
-# legacy fallback for an explicitly-disabled concern.
+# A committed empty file means "no value for this concern in this
+# repo" (e.g., empty .knightwatch/dead-code.sh = "no dead-code check,
+# please"). PRESENT-empty and ABSENT both resolve to the same caller
+# behavior (no-op for command files, placeholder for product-context),
+# but the read function still returns distinct exit codes so the
+# ERROR third state stays unambiguous (see scenario 5).
 echo "  scenario 4: present but empty → exit 0 + empty content..."
 git -C "$SOURCE" checkout -q main
 echo > "$SOURCE/.knightwatch/empty-file.sh"
@@ -218,13 +219,13 @@ if ! printf '%s' "$got_ref" | grep -q 'evil/private-repo'; then
 fi
 
 # --- scenario 7: onboarding case — file exists ONLY on PR branch ---
-# An un-onboarded repo's first .knightwatch/* PR has the file on the
-# PR branch but NOT on the base branch yet. The helper must classify
-# this as ABSENT (rc 1, falls back to legacy) rather than ERROR (rc 2,
-# aborts the review). The prior stderr-parse implementation got this
-# wrong because git's "exists on disk, but not in" message for a
-# working-tree path missing from the ref doesn't match the canonical
-# "does not exist in" pattern. ls-tree avoids the ambiguity entirely.
+# A first-time `.knightwatch/*` PR has the file on the PR branch but
+# NOT on the base branch yet. The helper must classify this as ABSENT
+# (rc 1, treated as no-value) rather than ERROR (rc 2, aborts the
+# review). The prior stderr-parse implementation got this wrong
+# because git's "exists on disk, but not in" message for a working-
+# tree path missing from the ref doesn't match the canonical "does
+# not exist in" pattern. ls-tree avoids the ambiguity entirely.
 echo "  scenario 7: onboarding — file on PR branch only → ABSENT..."
 git -C "$SOURCE" checkout -q feature
 echo "pr-only" > "$SOURCE/.knightwatch/pr-only-file.sh"

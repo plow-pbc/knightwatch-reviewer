@@ -21,7 +21,7 @@
 #   stdout: file content from <base_ref>:.knightwatch/<rel>
 #           (may be empty when the file exists but has no content)
 #   exit:   0 — PRESENT: file exists at the base ref (content possibly empty)
-#           1 — ABSENT:  file doesn't exist at the base ref (caller falls back to legacy)
+#           1 — ABSENT:  file doesn't exist at the base ref (caller treats as no-value)
 #           2 — ERROR:   git invocation failed for a non-absence reason (caller aborts loud)
 #
 # Three states, not two. The PRESENT-vs-ABSENT distinction predates the
