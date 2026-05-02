@@ -118,12 +118,10 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 . "$_LIB_DIR/path-scrub.sh"
 
 # --- agent-failure + run-dir helpers ---
-. "$_LIB_DIR/agent-fallback.sh"
 . "$_LIB_DIR/run-dir.sh"
 
 # --- LLM specialist pipeline (intent → dead-code → 8 angles → momentum →
-# critic → aggregator). Sourced after agent-fallback so critic_fallback is
-# in scope for the function body. ---
+# critic → aggregator). Critic now fail-loud — see orchestrate.sh:215. ---
 . "$_LIB_DIR/orchestrate.sh"
 
 # --- loc-trend computation (compute_loc_trend / _loc_trend_display) ---

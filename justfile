@@ -114,10 +114,6 @@ test:
     bash lib/tests/dispatch-agent-smoke.sh
 
     echo ""
-    echo "=== critic-fallback smoke test ==="
-    bash lib/tests/critic-fallback-smoke.sh
-
-    echo ""
     echo "=== run-dir smoke test ==="
     bash lib/tests/run-dir-smoke.sh
 

@@ -7,7 +7,7 @@
 #   2. dead-code-search pre-pass (sequential, fail-soft → degraded mode)
 #   3. 8 angle specialists (parallel, fail-loud on any)
 #   4. momentum specialist (re-reviews only, fail-loud)
-#   5. critic pass (fail-soft → placeholder via critic_fallback)
+#   5. critic pass (fail-loud — probe-resolver is load-bearing)
 #   6. aggregator (fail-loud)
 #
 # Inputs (read from caller's environment):
@@ -29,7 +29,7 @@
 #
 # Requires the following helpers already sourced in the caller's shell:
 #   log, write_scratch, substitute_placeholders, build_specialist_prompt,
-#   build_aggregator_prompt, critic_fallback.
+#   build_aggregator_prompt.
 
 # `dispatch_agent NAME`: build the prompt for NAME (using the right builder
 # for its contract) and run it through run-specialist.sh. Reads $REPO_DIR,
@@ -207,15 +207,20 @@ run_specialist_pipeline() {
     local CRITIC_EXIT=$?
     local CRITIC_OUT="$RUN_DIR/agents/critic/output.md"
 
-    # Log the failure mode for the run.log narrative; critic_fallback in
-    # lib/agent-fallback.sh handles the actual file substitution and is the
-    # regression-fenced path (see lib/tests/critic-fallback-smoke.sh).
-    # Empty-output is reported as exit 3 by run-specialist.sh, so it lands
-    # here as a non-zero CRITIC_EXIT — there's no separate elif branch.
+    # Fail-fast on critic failure. Pre-Phase-4 the aggregator could
+    # render a review without critic counterarguments (the verdict-token
+    # mapping treated absent critic output as "keep all findings as-is").
+    # Post-Phase-4, the critic IS the path that flips Answer: unknown →
+    # Answer: yes for high-confidence specialist probes; without it,
+    # every probe stays unknown and renders as `[open]`, silently
+    # demoting real `[blocking]` security/data-integrity probes to open
+    # questions. Mirror momentum's fail-loud abort below — the next
+    # timer tick retries.
     if [ "$CRITIC_EXIT" -ne 0 ]; then
-        log "$PR_ID: critic exited $CRITIC_EXIT — discarding any partial/empty output, falling back to placeholder (see agents/critic/log.txt)"
+        log "$PR_ID: critic failed (exit $CRITIC_EXIT) — aborting review (probe-resolver depends on critic Answer fills; silent degrade to all-Answer:unknown demotes blockers to open questions)"
+        rm -rf "$REPO_DIR"
+        exit 1
     fi
-    critic_fallback "$CRITIC_EXIT" "$CRITIC_OUT"
     ln -sfn "$CRITIC_OUT" "$REPO_DIR/.codex-scratch/critic.md"
 
     # Split the critic's per-finding output by [<angle>] section and append
