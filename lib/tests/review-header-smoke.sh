@@ -4,6 +4,8 @@
 #   format_review_scope SCOPE  (scope-token → human-readable fragment)
 #   compute_review_scope FORCE KNOWN_SHA USED_FALLBACK
 #   classify_just_test_outcome TEST_EXIT TEST_LOG TEST_TIMEOUT
+#   format_tests_note TESTS_RAN TEST_SUMMARY
+#   format_kid_note KID_RAN
 #
 # REVIEW_NOTES is the single registry the worker assembles before posting.
 # Each entry is a fully-rendered fragment (icon + text, no trailing
@@ -26,6 +28,9 @@
 #     wording stays stable
 #   - compute_review_scope worker-seam (5 scenarios)
 #   - classify_just_test_outcome worker-seam (9 scenarios)
+#   - format_tests_note + format_kid_note: symmetric pass/fail/skip
+#     emission (every pre-check produces exactly one fragment, so the
+#     header doesn't collapse to scope-only on clean PRs)
 #
 # Hermetic — sources lib/run-dir.sh and invokes helpers with explicit
 # args; no closure state.
@@ -347,4 +352,125 @@ if [ "$got_ran" != "false" ] || [ "$got_summary" != "not run (just pre-recipe fa
     exit 1
 fi
 
-echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios)"
+# ===== format_tests_note (symmetric pre-check disclosure) =====
+# Every pre-check emits exactly one fragment describing its outcome
+# (pass / fail / skip). The worker's old asymmetric pattern — "only
+# push a note when something went wrong" — collapsed clean PRs to a
+# scope-only header and left readers guessing whether tests/KID/typing
+# even ran. Every (TESTS_RAN, TEST_SUMMARY) shape that
+# classify_just_test_outcome emits is fenced here.
+
+assert_tests_note() {
+    local tests_ran="$1" summary="$2" want="$3" desc="$4" got
+    got=$(format_tests_note "$tests_ran" "$summary")
+    if [ "$got" != "$want" ]; then
+        echo "FAIL: format_tests_note($tests_ran, '$summary') — $desc"
+        echo "  expected: $want"
+        echo "  got:      $got"
+        exit 1
+    fi
+}
+
+echo "  format_tests_note: ran + PASSED → ✅ Tests passed..."
+assert_tests_note "true" "PASSED" "✅ Tests passed" "clean pass"
+
+echo "  format_tests_note: ran + FAILED (exit 1) → 🧪 Tests failed (exit 1)..."
+assert_tests_note "true" "FAILED (exit 1)" "🧪 Tests failed (exit 1)" "real test failure"
+
+echo "  format_tests_note: ran + FAILED (exit 2) → 🧪 Tests failed (exit 2)..."
+assert_tests_note "true" "FAILED (exit 2)" "🧪 Tests failed (exit 2)" "non-special failure exit"
+
+echo "  format_tests_note: ran + TIMED OUT → 🧪 Tests timed out..."
+assert_tests_note "true" "TIMED OUT (>30m)" "🧪 Tests timed out (>30m)" "timeout"
+
+echo "  format_tests_note: not run (no justfile) → 🧪 Tests not run..."
+assert_tests_note "false" "not run (no justfile in repo root)" "🧪 Tests not run" "no justfile"
+
+echo "  format_tests_note: not run (pre-recipe failure) → 🧪 Tests not run..."
+assert_tests_note "false" "not run (just pre-recipe failure: see test-results below)" "🧪 Tests not run" "pre-recipe failure"
+
+echo "  format_tests_note: not run (cmd-not-found inside) → 🧪 Tests not run..."
+assert_tests_note "false" "not run (recipe ran but command-not-found inside, exit 127)" "🧪 Tests not run" "exit 127"
+
+# Wording-fence: clean PR header reads as "Tests passed", not silent omission.
+# Regression here would re-collapse the header on clean PRs (the bug that
+# motivated this whole symmetric-disclosure change — feedback_fail_hard +
+# ≪ /srosro-update-review re-review of changes ≫ landing as scope-only).
+echo "  format_tests_note: clean-PR fence — passed must NOT match the 'not run' wording..."
+result=$(format_tests_note "true" "PASSED")
+if printf '%s' "$result" | grep -q "not run"; then
+    echo "FAIL: clean-PR fence — passed fragment matches 'not run' wording (regression)"
+    echo "  got: $result"
+    exit 1
+fi
+
+echo "  format_tests_note: bogus tests_ran → fail-fast (rc=1 + stderr diagnostic)..."
+format_tests_note "yes" "PASSED" 2>/dev/null
+if [ "$?" -eq 0 ]; then
+    echo "FAIL: bogus tests_ran — returned 0 (silent degrade); should fail-fast per CLAUDE.md"
+    exit 1
+fi
+err=$(format_tests_note "yes" "PASSED" 2>&1 >/dev/null)
+if ! printf '%s' "$err" | grep -q "tests_ran must be"; then
+    echo "FAIL: bogus tests_ran — stderr diagnostic missing 'tests_ran must be'; got: $err"
+    exit 1
+fi
+
+echo "  format_tests_note: ran=true + unrecognized summary → fail-fast..."
+format_tests_note "true" "weird state nobody handles" 2>/dev/null
+if [ "$?" -eq 0 ]; then
+    echo "FAIL: unrecognized summary — returned 0 (silent degrade); should fail-fast"
+    exit 1
+fi
+err=$(format_tests_note "true" "weird state nobody handles" 2>&1 >/dev/null)
+if ! printf '%s' "$err" | grep -q "unrecognized TEST_SUMMARY"; then
+    echo "FAIL: unrecognized summary — stderr diagnostic missing 'unrecognized TEST_SUMMARY'; got: $err"
+    exit 1
+fi
+
+# ===== format_kid_note =====
+assert_kid_note() {
+    local kid_ran="$1" want="$2" desc="$3" got
+    got=$(format_kid_note "$kid_ran")
+    if [ "$got" != "$want" ]; then
+        echo "FAIL: format_kid_note($kid_ran) — $desc"
+        echo "  expected: $want"
+        echo "  got:      $got"
+        exit 1
+    fi
+}
+
+echo "  format_kid_note: true → ✅ Prior-art (KID) checked..."
+assert_kid_note "true" "✅ Prior-art (KID) checked" "kid ran successfully"
+
+echo "  format_kid_note: false → 🔍 Prior-art (KID) not run..."
+assert_kid_note "false" "🔍 Prior-art (KID) not run" "kid skipped or errored"
+
+echo "  format_kid_note: bogus → fail-fast..."
+format_kid_note "maybe" 2>/dev/null
+if [ "$?" -eq 0 ]; then
+    echo "FAIL: bogus kid_ran — returned 0 (silent degrade); should fail-fast"
+    exit 1
+fi
+err=$(format_kid_note "maybe" 2>&1 >/dev/null)
+if ! printf '%s' "$err" | grep -q "kid_ran must be"; then
+    echo "FAIL: bogus kid_ran — stderr diagnostic missing 'kid_ran must be'; got: $err"
+    exit 1
+fi
+
+# Realistic clean-PR composition: every pre-check passed. Fence the
+# end-to-end header — readers should see a four-fragment line, not a
+# scope-only line that hides whether anything ran.
+echo "  realistic clean-PR composition: scope + tests-passed + KID-checked + strict-enforced → all four..."
+result=$(prepend_review_header "$BODY" \
+    "$(format_review_scope "incremental:$SHA_OLD" "$SHA_NEW")" \
+    "$(format_tests_note "true" "PASSED")" \
+    "$(format_kid_note "true")" \
+    "✅ Strict typing enforced")
+assert_one_blockquote "$result" "clean-PR-symmetric"
+assert_contains "$result" "Re-review of changes" "clean-PR scope"
+assert_contains "$result" "✅ Tests passed" "clean-PR tests"
+assert_contains "$result" "✅ Prior-art (KID) checked" "clean-PR kid"
+assert_contains "$result" "✅ Strict typing enforced" "clean-PR strict-typing"
+
+echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 7 tests-note + 3 kid-note + clean-PR composition)"

@@ -880,7 +880,7 @@ if [ -n "$STRICT_TYPING_CMD" ]; then
     STRICT_GAP=$(cd "$REPO_DIR" && bash -c "$STRICT_TYPING_CMD" 2>"$STRICT_STDERR")
     STRICT_RC=$?
     case $STRICT_RC in
-        0) ;;
+        0) STRICT_TYPING_NOTE="✅ Strict typing enforced" ;;
         1)
             log "$PR_ID: strict-typing gap detected — $STRICT_GAP"
             STRICT_TYPING_NOTE="❌ Strict typing not enforced"
@@ -1201,8 +1201,28 @@ fi
 REVIEW_NOTES+=("$SCOPE_NOTE")
 [ -n "$CURRENT_HEAD" ] && [ "$CURRENT_HEAD" != "$REVIEWED_SHA" ] && \
     REVIEW_NOTES+=("⚠️ Stale: head moved from \`${REVIEWED_SHA:0:7}\` to \`${CURRENT_HEAD:0:7}\` mid-run — see commands below to re-run")
-[ "$TESTS_RAN" = "false" ] && REVIEW_NOTES+=("🧪 Tests not run")
-[ "$KID_RAN"   = "false" ] && REVIEW_NOTES+=("🔍 Prior-art (KID) not run")
+# Symmetric pre-check disclosure: every pre-check emits one fragment
+# describing its outcome (pass/fail/skip), not just on miss. Old asym-
+# metric pattern collapsed clean-PR headers to scope-only and left
+# readers guessing whether tests/KID/typing actually ran. Fail-fast in
+# the helpers (unrecognized summary or bogus boolean) bubbles via set
+# -e to the abort path below — silent header omission is the BCR class.
+if ! TESTS_NOTE=$(format_tests_note "$TESTS_RAN" "$TEST_SUMMARY"); then
+    log "$PR_ID: format_tests_note failed (ran='$TESTS_RAN', summary='$TEST_SUMMARY') — internal invariant violated, aborting"
+    rm -rf "$REPO_DIR"
+    exit 1
+fi
+REVIEW_NOTES+=("$TESTS_NOTE")
+if ! KID_NOTE=$(format_kid_note "$KID_RAN"); then
+    log "$PR_ID: format_kid_note failed (ran='$KID_RAN') — internal invariant violated, aborting"
+    rm -rf "$REPO_DIR"
+    exit 1
+fi
+REVIEW_NOTES+=("$KID_NOTE")
+# Strict typing stays guarded: empty STRICT_TYPING_NOTE means the repo
+# either has no strict-typing check configured (per-repo strict-typing.sh
+# absent + no STRICT_TYPING_CMDS entry) or the checker errored (logged
+# loud above). Both cases are correctly silent in the header.
 [ -n "$STRICT_TYPING_NOTE" ] && REVIEW_NOTES+=("$STRICT_TYPING_NOTE")
 log "$PR_ID: review-notes = ${#REVIEW_NOTES[@]} (${REVIEW_NOTES[*]:-none})"
 

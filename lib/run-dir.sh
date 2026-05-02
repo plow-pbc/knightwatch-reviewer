@@ -214,6 +214,55 @@ classify_just_test_outcome() {
     fi
 }
 
+# format_tests_note TESTS_RAN TEST_SUMMARY
+#
+# Maps the (TESTS_RAN, TEST_SUMMARY) pair from classify_just_test_outcome
+# into the deterministic header fragment. Symmetric with format_kid_note
+# and the strict-typing note: every pre-check emits exactly one fragment
+# describing its outcome, so a clean PR's header reads as "everything
+# checked, all green" instead of collapsing to scope-only and leaving
+# the reader guessing whether the checks ran at all.
+#
+# Pure function. Returns 1 on unrecognized inputs (fail-fast — silent
+# fallback would publish a wrong outcome to the author).
+format_tests_note() {
+    local tests_ran="$1" summary="$2"
+    if [ "$tests_ran" = "false" ]; then
+        printf '🧪 Tests not run'
+        return
+    fi
+    if [ "$tests_ran" != "true" ]; then
+        printf 'format_tests_note: tests_ran must be "true"/"false", got "%s"\n' "$tests_ran" >&2
+        return 1
+    fi
+    case "$summary" in
+        PASSED)           printf '✅ Tests passed' ;;
+        "TIMED OUT"*)     printf '🧪 Tests timed out (%s' "${summary#TIMED OUT (}" ;;
+        "FAILED (exit "*) printf '🧪 Tests failed (exit %s' "${summary#FAILED (exit }" ;;
+        *)
+            printf 'format_tests_note: unrecognized TEST_SUMMARY for tests_ran=true: "%s"\n' "$summary" >&2
+            return 1
+            ;;
+    esac
+}
+
+# format_kid_note KID_RAN
+#
+# Symmetric with format_tests_note: emits one fragment whether KID ran
+# or was skipped, so the header surfaces the prior-art check on every
+# review instead of going silent on the success path.
+format_kid_note() {
+    local kid_ran="$1"
+    case "$kid_ran" in
+        true)  printf '✅ Prior-art (KID) checked' ;;
+        false) printf '🔍 Prior-art (KID) not run' ;;
+        *)
+            printf 'format_kid_note: kid_ran must be "true"/"false", got "%s"\n' "$kid_ran" >&2
+            return 1
+            ;;
+    esac
+}
+
 # prepend_review_header COMMENT_BODY NOTE [NOTE...]
 #
 # Renders the unified deterministic registry as one blockquote line right
