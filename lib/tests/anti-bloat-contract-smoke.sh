@@ -191,19 +191,31 @@ assert_grep "critic.md should fence engagement-K signal" \
     "Engagement signal" prompts/critic.md
 
 echo "  asserting K-decay thresholds in critic.md..."
-assert_grep "critic.md should fence K >= 3 REFRAME-AS-QUESTION threshold" \
-    "K ≥ 3" prompts/critic.md
-assert_grep "critic.md should fence K >= 5 REMEDY-BLOAT threshold" \
-    "K ≥ 5" prompts/critic.md
+# Unique paired tokens — bare "K ≥ 3" / "K ≥ 5" also appear in the
+# carve-out clause, so a regression that deletes only the decay bullets
+# would still satisfy bare-threshold assertions. Pair the threshold with
+# the verdict it triggers, which only appears in the decay bullets.
+assert_grep "critic.md should fence K >= 3 -> REFRAME-AS-QUESTION decay rule" \
+    "K ≥ 3 with no engagement: REFRAME-AS-QUESTION" prompts/critic.md
+assert_grep "critic.md should fence K >= 5 -> REMEDY-BLOAT decay rule" \
+    "K ≥ 5 with no engagement: REMEDY-BLOAT" prompts/critic.md
 
-echo "  asserting security carve-out for K-decay in critic.md..."
-assert_grep "critic.md should carve security findings out of K-decay" \
-    "Security carve-out for K-decay" prompts/critic.md
+echo "  asserting severe-bug carve-out for K-decay in critic.md..."
+assert_grep "critic.md should carve severe-bug findings out of K-decay" \
+    "Severe-bug carve-out for K-decay" prompts/critic.md
+assert_grep "critic.md should key carve-out on failing-path text not specialist tag" \
+    "Key on the cited failing-path text" prompts/critic.md
 
 echo "  asserting aggregator applies critic carry-forward verdicts..."
-assert_grep "aggregator.md should reference Carried-forward findings section" \
+# Same uniqueness concern — generic "Carried-forward findings" appears
+# both in the section heading and in cross-references. The aggregator's
+# carry-forward verdict mapping is the load-bearing rule, so fence its
+# unique phrasing rather than a substring that can survive elsewhere.
+assert_grep "aggregator.md should reference critic's Carried-forward findings section" \
     "Carried-forward findings" prompts/aggregator.md
-assert_grep "aggregator.md should apply critic carry-forward verdict" \
-    "carry-forward verdict" prompts/aggregator.md
+assert_grep "aggregator.md should apply critic's carry-forward verdict mapping" \
+    "Apply the critic's carry-forward verdict" prompts/aggregator.md
+assert_grep "aggregator.md should fence the K >= 3 fallback to REFRAME-AS-QUESTION on unchanged code" \
+    "K ≥ 3 rounds without engagement" prompts/aggregator.md
 
 echo "  PASS"
