@@ -9,31 +9,23 @@
 # (line-oriented, markdown, bash). No central manifest, no parser
 # dependency.
 #
-# ABSENCE semantics are caller-specific. ABSENT (rc=1) and PRESENT-empty
-# (rc=0 + empty content) always produce the same caller behavior, but
-# what that behavior IS depends on the concern:
-#   - dead-code.sh, strict-typing.sh — skip the check
-#   - product-context.md             — substitute an explicit placeholder
-#   - siblings                       — default to all tracked REPOS minus self
-#   - review-priority.md             — emit an embedded default that points
-#                                      at standards.md for the universal policy
-# The read function still returns rc=0 vs rc=1 distinctly so the ERROR
-# third state (rc=2, transient git failure) stays unambiguous and
-# callers can fail loud rather than misread it as absence.
+# What the three exit codes MEAN to the caller is the caller's
+# decision — the helper just reports presence/content/failure. PRESENT
+# (rc=0) and ABSENT (rc=1) are not always interchangeable for a given
+# concern (e.g. for siblings, PRESENT-empty means "no sibling repos"
+# while ABSENT means "default to all tracked REPOS minus self"); each
+# call site documents what its own ABSENCE rule is. The
+# ABSENT-vs-ERROR distinction is the universal Fail-Fast complement:
+# every caller MUST treat (2) ERROR as a hard abort so transient git
+# failures (broken base ref, corrupt object store, etc.) cannot be
+# misread as absence.
 
 # read_knightwatch_file <repo_dir> <base_ref> <relative_path>
 #   stdout: file content from <base_ref>:.knightwatch/<rel>
 #           (may be empty when the file exists but has no content)
 #   exit:   0 — PRESENT: file exists at the base ref (content possibly empty)
-#           1 — ABSENT:  file doesn't exist at the base ref (caller treats as no-value)
-#           2 — ERROR:   git invocation failed for a non-absence reason (caller aborts loud)
-#
-# Three states, not two. The PRESENT-vs-ABSENT distinction predates the
-# completion of the migration off the legacy fallback tables — today
-# both states resolve to the same caller behavior ("no value"). The
-# ABSENT-vs-ERROR distinction is the Fail-Fast complement: callers
-# treat (2) ERROR as a hard abort so transient git failures (broken
-# base ref, corrupt object store, etc.) cannot be misread as absence.
+#           1 — ABSENT:  file doesn't exist at the base ref
+#           2 — ERROR:   git invocation failed for a non-absence reason
 #
 # <base_ref> is the caller's responsibility — typically a SHA snapshotted
 # BEFORE any PR-controlled code (e.g. `just test`) has had a chance to

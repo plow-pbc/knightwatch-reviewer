@@ -176,10 +176,10 @@ fi
 # A non-existent default branch (e.g., the operator forgot to fetch
 # origin/main, or the workdir is corrupt) must NOT collapse onto the
 # ABSENT exit code — that would silently route callers down their
-# no-value path (e.g. broaden the sibling set to all REPOS, or skip a
+# ABSENCE path (e.g. broaden the sibling set to all REPOS, or skip a
 # strict-typing check) with no operator signal. The helper
-# distinguishes via `git rev-parse --verify` on the base ref before
-# reading the path.
+# distinguishes via `git ls-tree` returning non-zero on a bad ref,
+# before any read attempt.
 echo "  scenario 5: bad base ref → exit 2 (ERROR)..."
 exit_code=0
 read_knightwatch_file "$WORK" "nonexistent-branch" "siblings" > "$TMPDIR/out.txt" 2>/dev/null || exit_code=$?
