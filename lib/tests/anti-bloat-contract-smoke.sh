@@ -175,4 +175,52 @@ if grep -qF "this round or any prior round" prompts/critic.md; then
     exit 1
 fi
 
+# ----- carry-forward stress-test contract (PR#45) -----------------------
+# Fences the new contract that closes the carry-forward-bypasses-critic
+# loop: critic.md must run a stress-test on prior [blocking]/[medium]
+# findings and emit a "Carried-forward findings" section; aggregator.md
+# must apply those verdicts in re-review handling. The K-decay thresholds
+# and the severe-bug carve-out are what stop the loop from collapsing into
+# either a stuck record (no decay) or a severe-bug gate (decay too aggressive).
+echo "  asserting carry-forward stress-test pass in critic.md..."
+assert_grep "critic.md should fence Carry-forward stress-test pass" \
+    "Carry-forward stress-test" prompts/critic.md
+assert_grep "critic.md should fence the Carried-forward output section" \
+    "Carried-forward findings" prompts/critic.md
+assert_grep "critic.md should fence engagement-K signal" \
+    "Engagement signal" prompts/critic.md
+
+echo "  asserting K-decay thresholds in critic.md..."
+# Unique paired tokens — bare "K ≥ 3" / "K ≥ 5" also appear in the
+# carve-out clause, so a regression that deletes only the decay bullets
+# would still satisfy bare-threshold assertions. Pair the threshold with
+# the verdict it triggers, which only appears in the decay bullets.
+assert_grep "critic.md should fence K >= 3 -> REFRAME-AS-QUESTION decay rule" \
+    "K ≥ 3 with no engagement: REFRAME-AS-QUESTION" prompts/critic.md
+assert_grep "critic.md should fence K >= 5 -> REMEDY-BLOAT decay rule" \
+    "K ≥ 5 with no engagement: REMEDY-BLOAT" prompts/critic.md
+
+echo "  asserting severe-bug carve-out for K-decay in critic.md..."
+assert_grep "critic.md should carve severe-bug findings out of K-decay" \
+    "Severe-bug carve-out for K-decay" prompts/critic.md
+assert_grep "critic.md should key carve-out on failing-path text not specialist tag" \
+    "Key on the cited failing-path text" prompts/critic.md
+# Non-security severe-bug token — guards against a regression that
+# narrows the carve-out back to security-only by dropping data-loss
+# class words from the prompt prose.
+assert_grep "critic.md severe-bug carve-out should cover data-loss class" \
+    "data loss" prompts/critic.md
+
+echo "  asserting aggregator applies critic carry-forward verdicts..."
+# Same uniqueness concern — generic "Carried-forward findings" appears
+# both in the section heading and in cross-references. The aggregator's
+# carry-forward verdict mapping is the load-bearing rule, so fence its
+# unique phrasing rather than a substring that can survive elsewhere.
+assert_grep "aggregator.md should reference critic's Carried-forward findings section" \
+    "Carried-forward findings" prompts/aggregator.md
+assert_grep "aggregator.md should defer carry-forward verdicts to the step-1 table" \
+    "same step-1 verdict table below" prompts/aggregator.md
+assert_grep "aggregator.md should fence the K >= 3 fallback to REFRAME-AS-QUESTION on unchanged code" \
+    "K ≥ 3 rounds without engagement" prompts/aggregator.md
+
 echo "  PASS"

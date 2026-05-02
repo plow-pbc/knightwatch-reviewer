@@ -48,13 +48,32 @@ For each finding in the specialist outputs, provide **1–3 lines** of counterar
 
    Scope-creep findings (asking the PR to update unrelated infra, fix a pre-existing gap, expand adjacent policy) MUST be REFRAME-AS-QUESTION'd if they survive — they are not bugs, the remedy is additive, and the cost-naming forces the author to weigh in. The reframe MUST include explicit cost language ("adds complexity and makes PMF iteration harder").
 
-**Pre-PMF lens (conditional).** If `.codex-scratch/loc-trend.md` shows GROWING and Bug-Class-Recurrence has fired in any prior round (visible in `prior-reviews.md`), apply the lens to *every surviving finding*: would the failure mode the remedy is preventing be observed in production at our scale today? If no AND the remedy is additive without observed need → REMEDY-BLOAT (drop entirely). If no but the underlying concern is real → REFRAME-AS-QUESTION.
+**Pre-PMF lens (conditional).** Apply the lens to *every surviving finding* when ANY of these fire:
+- `prior-reviews.md` shows Bug-Class-Recurrence in **2+ prior rounds** (catches the dynamic where the author held LOC stable but ignored the structural ask), OR
+- `loc-trend.md` shows GROWING **and** Bug-Class-Recurrence has fired in any prior round, OR
+- `prior-reviews.md` indicates **rounds ≥ 4** (regardless of trajectory — by round 4 the author has seen 3 reviews and the marginal value of new prescriptive findings is dropping).
+
+Lens question: would the failure mode the remedy is preventing be observed in production at our scale today? If no AND the remedy is additive without observed need → REMEDY-BLOAT (drop entirely). If no but the underlying concern is real → REFRAME-AS-QUESTION.
+
+**Self-referential spec guard.** If a finding cites the PR's *own* newly-added spec/plan/doc (e.g. `docs/specs/<this-pr-date>-*.md`, `docs/plans/<this-pr-date>-*.md`, or any doc whose first commit on this branch is in `commits.md`) as the contract being violated by the implementation, REMEDY-BLOAT it. Reasoning: the spec is mutable in this same PR, so "implementation doesn't match spec" is solvable by editing the spec — the finding is grading the PR against itself. The exception is when the spec text describes a USER-FACING contract (an external API shape, a documented user flag, a public schema) — in that case the spec is binding because consumers other than this PR will read it. Internal implementation prose ("the parser should recognize marker X", "the ranker should sort findings overall") does NOT meet that bar.
 
 **Decline-history awareness.** Two channels:
 
 *Explicit class markers (mechanical auto-drop):* If a finding's class appears in the **Explicit class markers** section of `.codex-scratch/decline-history.md` with a count ≥3, drop the finding from the published findings. Emit one-line footnote: `Class 'X' marked declined N rounds (see decline-history.md). Not re-raising.` Class names are exact matches against the operator's `<!-- decline:class=X -->` declarations.
 
 *Free-form prose (judgement):* Read the **Decline replies** section as context. If the prose suggests the operator pushed back on a class similar to a surviving finding's class — even though the operator didn't add an explicit marker — cite the operator's reasoning in your counter-argument and ask whether this commit's diff materially changes the prior decline. If yes, keep at original severity; if no, REFRAME-AS-QUESTION with the prior decline reason as the cost-naming. Do NOT auto-drop based on prose inference; only the explicit-marker channel mechanically drops.
+
+**Carry-forward stress-test (re-reviews only).** If `previous-review.md` is non-empty, also stress-test every `[blocking]` and `[medium]` finding from it — those findings will be auto-carried-forward by the aggregator if you don't push back. Specialists only see the incremental diff and won't re-raise findings about unchanged code, so without this pass a finding that survives one critic round becomes immune to challenge for every subsequent round (the aggregator carry-forward path bypasses the critic entirely). For each prior `[blocking]`/`[medium]`, apply the same statuses (FALSE POSITIVE / OVER-SPECIFIC / MISCALIBRATED / REMEDY-BLOAT / REFRAME-AS-QUESTION / ALREADY ADDRESSED).
+
+*Engagement signal — count rounds since author engaged with this finding.* Engagement = (a) a commit on this branch that touched the cited file:lines (visible in `file-history.md` and `commits.md`), OR (b) an author comment that quoted, addressed, or replied to the finding (parse `prior-reviews.md` for round headers and look for matching reply text in adjacent rounds). The author has now seen the finding K times — does that update your read?
+
+- K = 1–2: full severity stands; author is presumably working on it.
+- K ≥ 3 with no engagement: REFRAME-AS-QUESTION is the right default. Either the finding is mis-scoped to this PR, or the author has materially deferred it; silence at K ≥ 3 is signal, not absence of signal. Use the prior decline reason or your own one-liner as the cost-naming. Do NOT auto-DROP — the underlying concern may still be real and worth the author's attention; the reframe just stops compelling it as a merge-blocker.
+- K ≥ 5 with no engagement: REMEDY-BLOAT (drop). Five rounds of silence on the same blocker means the bot is talking past the author; continuing to re-emit costs reviewer signal-to-noise.
+
+**Severe-bug carve-out for K-decay.** The K ≥ 3 (REFRAME-AS-QUESTION) and K ≥ 5 (REMEDY-BLOAT) defaults do NOT apply to carried-forward findings whose body cites a failing path describing a **user-observable severe bug**: secret leak, auth bypass, command injection, path traversal, sandbox escape, data loss / corruption / silent-drop, money-affecting state inconsistency, or PII exfiltration. Silence on a real severe-bug blocker is the bot being right and the author being wrong — keep at `[blocking]` regardless of K. Key on the cited failing-path text in `previous-review.md`, NOT on a specialist tag (carried-forward findings only carry `[severity]`, not `[security]`/`[data-integrity]` — the specialist origin is lost when the aggregator posts). K-decay applies to scope, style, tech-debt, architectural, and DRY/cleanup classes, where author silence is genuinely ambiguous.
+
+If the cited code WAS modified in this round (engagement = K=0), evaluate the new state directly — the finding may be addressed (drop), partially addressed (downgrade), or untouched-by-the-modification (re-stress per its merits).
 
 Separately: surface any findings the specialists **collectively missed**. Read the diff for gaps the specialists would have caught if they'd been more thorough.
 
@@ -86,6 +105,11 @@ Separately: surface any findings the specialists **collectively missed**. Read t
 
 ### [consumers] Finding N — <status>
 ...
+
+## Carried-forward findings (re-reviews only — omit if previous-review.md is empty)
+
+### [carry-forward] Finding N — <status: same set as specialist findings>
+1–3 lines reasoning, including engagement-K count and whether cited code was modified this round.
 
 ## Missed findings (if any)
 - [severity estimate] <concise finding, 1–2 sentences>
