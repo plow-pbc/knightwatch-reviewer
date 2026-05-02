@@ -162,4 +162,8 @@ test:
     bash lib/tests/install-smoke.sh
 
     echo ""
+    echo "=== replay smoke test ==="
+    bash lib/tests/replay-smoke.sh
+
+    echo ""
     echo "all checks passed"
