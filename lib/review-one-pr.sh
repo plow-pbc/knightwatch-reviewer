@@ -132,6 +132,11 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # internally; multi-source is idempotent.
 . "$_LIB_DIR/decline-history.sh"
 
+# --- critic-splitter (split_critic_to_specialists) — co-locates per-angle
+# critic counter-arguments in specialists/<angle>.md so the aggregator
+# (and Phase 2's go-deep tech-leads) read a layered file per specialist.
+. "$_LIB_DIR/critic-splitter.sh"
+
 # --- per-run dir -------------------------------------------------------------
 # Every worker invocation gets its own runs/<RUN_ID>/ dir holding the run log,
 # input scratch, and one subdir per agent (prompt + output + log). The git
@@ -1240,6 +1245,15 @@ if [ "$CRITIC_EXIT" -ne 0 ]; then
 fi
 critic_fallback "$CRITIC_EXIT" "$CRITIC_OUT"
 ln -sfn "$CRITIC_OUT" "$REPO_DIR/.codex-scratch/critic.md"
+
+# Split the critic's per-finding output by [<angle>] section and append
+# each section to the corresponding specialists/<angle>.md, so the
+# aggregator + go-deep tech-leads see one layered file per specialist
+# (specialist findings → critic counter-arguments). Single writer per
+# phase per file — no race. Fail-soft (logs per-angle warnings; never
+# aborts the review — the aggregator can still read critic.md directly).
+log "$PR_ID: splitting critic output into specialist files..."
+split_critic_to_specialists "$CRITIC_OUT" "$SPECIALISTS_DIR" 2>>"$LOG_FILE" || true
 
 log "$PR_ID: aggregator (with critic input)..."
 # build_aggregator_prompt stitches in prompts/voice.md (operator-tunable
