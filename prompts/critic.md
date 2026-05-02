@@ -63,6 +63,16 @@ Lens question: would the failure mode the remedy is preventing be observed in pr
 
 *Free-form prose (judgement):* Read the **Decline replies** section as context. If the prose suggests the operator pushed back on a class similar to a surviving finding's class — even though the operator didn't add an explicit marker — cite the operator's reasoning in your counter-argument and ask whether this commit's diff materially changes the prior decline. If yes, keep at original severity; if no, REFRAME-AS-QUESTION with the prior decline reason as the cost-naming. Do NOT auto-drop based on prose inference; only the explicit-marker channel mechanically drops.
 
+**Carry-forward stress-test (re-reviews only).** If `previous-review.md` is non-empty, also stress-test every `[blocking]` and `[medium]` finding from it — those findings will be auto-carried-forward by the aggregator if you don't push back. Specialists only see the incremental diff and won't re-raise findings about unchanged code, so without this pass a finding that survives one critic round becomes immune to challenge for every subsequent round (the aggregator carry-forward path bypasses the critic entirely). For each prior `[blocking]`/`[medium]`, apply the same statuses (FALSE POSITIVE / OVER-SPECIFIC / MISCALIBRATED / REMEDY-BLOAT / REFRAME-AS-QUESTION / ALREADY ADDRESSED).
+
+*Engagement signal — count rounds since author engaged with this finding.* Engagement = (a) a commit on this branch that touched the cited file:lines (visible in `file-history.md` and `commits.md`), OR (b) an author comment that quoted, addressed, or replied to the finding (parse `prior-reviews.md` for round headers and look for matching reply text in adjacent rounds). The author has now seen the finding K times — does that update your read?
+
+- K = 1–2: full severity stands; author is presumably working on it.
+- K ≥ 3 with no engagement: REFRAME-AS-QUESTION is the right default. Either the finding is mis-scoped to this PR, or the author has materially deferred it; silence at K ≥ 3 is signal, not absence of signal. Use the prior decline reason or your own one-liner as the cost-naming. Do NOT auto-DROP — the underlying concern may still be real and worth the author's attention; the reframe just stops compelling it as a merge-blocker.
+- K ≥ 5 with no engagement: REMEDY-BLOAT (drop). Five rounds of silence on the same blocker means the bot is talking past the author; continuing to re-emit costs reviewer signal-to-noise.
+
+If the cited code WAS modified in this round (engagement = K=0), evaluate the new state directly — the finding may be addressed (drop), partially addressed (downgrade), or untouched-by-the-modification (re-stress per its merits).
+
 Separately: surface any findings the specialists **collectively missed**. Read the diff for gaps the specialists would have caught if they'd been more thorough.
 
 **Output format — exactly this:**
@@ -93,6 +103,11 @@ Separately: surface any findings the specialists **collectively missed**. Read t
 
 ### [consumers] Finding N — <status>
 ...
+
+## Carried-forward findings (re-reviews only — omit if previous-review.md is empty)
+
+### [carry-forward] Finding N — <status: same set as specialist findings>
+1–3 lines reasoning, including engagement-K count and whether cited code was modified this round.
 
 ## Missed findings (if any)
 - [severity estimate] <concise finding, 1–2 sentences>

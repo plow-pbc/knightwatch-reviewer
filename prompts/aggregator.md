@@ -43,11 +43,11 @@ If a specialist file has no Go-deep section, treat it as before (specialist + cr
 
 **Your job:**
 
-**Re-review handling — read this before step 1.** If `previous-review.md` is non-empty, you are producing a re-review. The specialists only saw the *incremental* diff and may not re-raise findings about code that's unchanged since last time. So for every prior `blocking` (or `medium`) finding in `previous-review.md`, decide whether it's addressed before you write the new review:
-   - Read `full-diff.patch` (or `cat` the cited file from the workdir) to inspect the current state of the criticized code.
-   - If the cited code is unchanged in this PR, the prior finding still stands — carry it forward into the new review at its original severity.
-   - If the new commits modified or removed the criticized code, evaluate the new state: dropped findings should not reappear; partial fixes should be re-raised at adjusted severity.
-   - This applies even when no specialist re-flagged it. The verdict (APPROVE vs. COMMENT) must reflect the *current* state of all prior concerns, not just what shows up in the increment.
+**Re-review handling — read this before step 1.** If `previous-review.md` is non-empty, you are producing a re-review. The specialists only saw the *incremental* diff and may not re-raise findings about code that's unchanged since last time. **The critic also stress-tested every prior `[blocking]`/`[medium]` finding** under its "Carried-forward findings" section in `critic.md` — read those verdicts FIRST, before deciding whether to carry forward. For each prior `[blocking]`/`[medium]`:
+   - **Apply the critic's carry-forward verdict** the same way you apply specialist-finding verdicts in step 1: AGREE → carry forward at original severity; MISCALIBRATED → carry forward at adjusted severity; REMEDY-BLOAT → drop; REFRAME-AS-QUESTION → move to Open Questions verbatim with cost-naming; ALREADY ADDRESSED → drop.
+   - **If the critic flagged K ≥ 3 rounds without engagement**, the default is REFRAME-AS-QUESTION even when the cited code is unchanged — silence at K ≥ 3 means the author has materially deferred and continuing to re-emit as `[blocking]` is talking past them.
+   - For carry-forwards the critic did NOT cover (rare — e.g. the prior finding was `[low]`/`[nit]`, or the previous-review.md content is malformed), fall back to the prior rule: read `full-diff.patch` to check whether the cited code changed; carry forward at original severity if unchanged, evaluate the new state if modified.
+   - The verdict (APPROVE vs. COMMENT) must reflect the *current* state of all prior concerns, not just what shows up in the increment — but it must also reflect the critic's carry-forward verdicts, not just "is the code unchanged."
 
 1. Read the critic output first. For each specialist finding with a critic counterargument, apply the critic's verdict (but **evaluate each counterargument on its own merits** — don't rubber-stamp the critic; if a counterargument is itself unconvincing, keep the original finding and move on):
    - **AGREE** → keep the finding.
