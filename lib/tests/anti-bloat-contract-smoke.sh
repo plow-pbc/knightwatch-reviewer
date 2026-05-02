@@ -124,30 +124,11 @@ assert_grep "aggregator.md should have **For AI authors** callout" \
 echo "  asserting unified-probes section ordering instructions..."
 assert_grep "aggregator.md should fence Answer: yes ordering" \
     "Answer: yes" prompts/aggregator.md
-echo "  asserting complexity-cost probe class in shape.md..."
-assert_grep "shape.md should require a complexity-cost probe class" \
-    "Class: complexity-cost" prompts/shape.md
-echo "  asserting complexity-cost probe class in simplification.md..."
-assert_grep "simplification.md should require a complexity-cost probe class" \
-    "Class: complexity-cost" prompts/simplification.md
-echo "  asserting complexity-cost probe class in architecture.md..."
-assert_grep "architecture.md should require a complexity-cost probe class" \
-    "Class: complexity-cost" prompts/architecture.md
-echo "  asserting complexity-cost probe class in consumers.md..."
-assert_grep "consumers.md should require a complexity-cost probe class" \
-    "Class: complexity-cost" prompts/consumers.md
-echo "  asserting complexity-cost probe class in tests.md..."
-assert_grep "tests.md should require a complexity-cost probe class" \
-    "Class: complexity-cost" prompts/tests.md
-echo "  asserting complexity-cost probe class in performance.md..."
-assert_grep "performance.md should require a complexity-cost probe class" \
-    "Class: complexity-cost" prompts/performance.md
-echo "  asserting complexity-cost probe class in security.md..."
-assert_grep "security.md should require a complexity-cost probe class" \
-    "Class: complexity-cost" prompts/security.md
-echo "  asserting complexity-cost probe class in data-integrity.md..."
-assert_grep "data-integrity.md should require a complexity-cost probe class" \
-    "Class: complexity-cost" prompts/data-integrity.md
+for specialist in shape simplification architecture consumers tests performance security data-integrity; do
+    echo "  asserting complexity-cost probe class in ${specialist}.md..."
+    assert_grep "${specialist}.md should require a complexity-cost probe class" \
+        "Class: complexity-cost" "prompts/${specialist}.md"
+done
 echo "  asserting re-review loop-breaker (Path 2) in aggregator.md..."
 assert_grep "aggregator.md should reference loc-trend.md trigger" \
     "loc-trend.md" prompts/aggregator.md
@@ -210,16 +191,14 @@ assert_grep "critic.md should carve severe-bug probes out of decay/Pre-PMF" \
 assert_grep "critic.md severe-bug carve-out should cover data-loss class" \
     "data loss" prompts/critic.md
 
-echo "  asserting aggregator applies critic carry-forward verdicts..."
-# Same uniqueness concern — generic "Carried-forward findings" appears
-# both in the section heading and in cross-references. The aggregator's
-# carry-forward verdict mapping is the load-bearing rule, so fence its
-# unique phrasing rather than a substring that can survive elsewhere.
-assert_grep "aggregator.md should reference critic's Carried-forward findings section" \
-    "Carried-forward findings" prompts/aggregator.md
-assert_grep "aggregator.md should defer carry-forward verdicts to the step-1 table" \
-    "same step-1 verdict table below" prompts/aggregator.md
-assert_grep "aggregator.md should fence the K >= 3 fallback to REFRAME-AS-QUESTION on unchanged code" \
-    "K ≥ 3 rounds without engagement" prompts/aggregator.md
+echo "  asserting aggregator reads carry-forward via specialists/critic.md sink..."
+# Probe-era carry-forward routes prior probes through the same
+# specialists/critic.md sink as critic-generated probes (single channel,
+# single render path). Fence both the routing claim and the union-verdict
+# rule so a regression that splits the sink trips here.
+assert_grep "aggregator.md should reference specialists/critic.md as the carry-forward sink" \
+    "specialists/critic.md" prompts/aggregator.md
+assert_grep "aggregator.md should fence the union-of-current-and-carried-forward verdict rule" \
+    "union of current and carried-forward" prompts/aggregator.md
 
 echo "  PASS"

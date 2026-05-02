@@ -236,11 +236,21 @@ run_specialist_pipeline() {
     # appends to specialists/<angle>.md after wait. Auto-scales to 0 on
     # simple PRs: empty hot-list → no go-deep runs. Selection logic lives
     # in lib/go-deep-rank.sh (sourceable seam, behavior-tested).
+    #
+    # Probes-as-unit transition: the critic stopped emitting the
+    # "Calibration questions for go-deep" markers in Phase 4 (the
+    # probe-resolver replaces calibration with per-probe Answer +
+    # Evidence). rank_hot_angles will return empty under probe-format
+    # input, making this block a no-op until Phase 6 re-keys it to
+    # rank high-cost unresolved probes (Severity if yes ≥ medium AND
+    # Answer: unknown). High-cost calibration today happens in the
+    # critic's Resolved-probes pass — go-deep is intentionally idle
+    # here, not silently skipped.
     declare -a HOT_ANGLES=()
     mapfile -t HOT_ANGLES < <(rank_hot_angles "$SPECIALISTS_DIR" "${ANGLES[@]}")
 
     if [ "${#HOT_ANGLES[@]}" -eq 0 ]; then
-        log "$PR_ID: no findings ≥20 LOC remedy — skipping go-deep tech-leads"
+        log "$PR_ID: no high-cost calibration markers in specialists — go-deep idle (probe-format pipeline; Phase 6 re-keys lib/go-deep-rank.sh to scan unresolved probes)"
     else
         log "$PR_ID: launching ${#HOT_ANGLES[@]} go-deep tech-lead(s): ${HOT_ANGLES[*]}"
         declare -A GD_PIDS=()
