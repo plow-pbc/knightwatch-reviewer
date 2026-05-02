@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Smoke for allocate_run_dir (lib/run-dir.sh).
 #
 # Locks down the no-overwrite guarantee at the worker's runtime guard:

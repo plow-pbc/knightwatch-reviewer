@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Translates `/srosro-approve` PR comments from trusted (push-access)
 # collaborators into a posted APPROVED review on the PR.
 #

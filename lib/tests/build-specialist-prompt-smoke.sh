@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Smoke test for lib/prompt-build.sh.
 #
 # Verifies:

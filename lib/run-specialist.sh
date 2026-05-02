@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Run one codex exec pass with read-only repo access.
 #
 # Args:

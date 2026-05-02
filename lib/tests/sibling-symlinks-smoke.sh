@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Smoke for lib/sibling-symlinks.sh. Four invariants:
 #
 #   1. Only materialize siblings the caller explicitly classified as

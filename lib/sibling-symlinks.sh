@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Materialize sibling-repo content under <workdir>/.siblings/<owner>/<repo>.
 #
 # Why: lib/search-roots.sh used to write absolute host paths (e.g.

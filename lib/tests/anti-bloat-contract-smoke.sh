@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Smoke: anti-bloat prompt-contract sync.
 #
 # Token-level sync check between prompts/common-header.md, prompts/critic.md,

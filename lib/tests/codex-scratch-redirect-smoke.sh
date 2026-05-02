@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Smoke for the .codex-scratch redirect-safe staging in lib/review-one-pr.sh.
 #
 # Mirrors lib/tests/sibling-symlinks-smoke.sh's scenario 3 in shape: a PR

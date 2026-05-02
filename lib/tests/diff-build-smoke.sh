@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Smoke for lib/diff-build.sh.
 #
 # Covers two helpers:

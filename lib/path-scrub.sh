@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Path-scrub safety net. Runs over the assembled review comment body
 # right before `gh pr comment`. Three substitutions, in order:
 #   1. <workdir>/                  -> ""             (current-repo paths become repo-relative)

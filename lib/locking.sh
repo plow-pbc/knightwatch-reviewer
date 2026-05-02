@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Per-PR advisory lock acquisition. Used by lib/review-one-pr.sh to
 # prevent two concurrent invocations from stepping on each other for
 # the same PR. Extracted into its own file so the smoke test can call

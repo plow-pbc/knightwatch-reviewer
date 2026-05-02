@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Smoke for lib/path-scrub.sh. The reviewer's specialists/aggregator
 # can emit absolute paths from the workdir or sibling-repo abs paths.
 # scrub_review_paths() runs before `gh pr comment` and rewrites those

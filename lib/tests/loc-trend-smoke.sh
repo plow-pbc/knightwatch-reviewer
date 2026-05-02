@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Smoke for compute_loc_trend (lib/loc-trend.sh) and
 # author_visible_rounds (lib/run-dir.sh).
 #

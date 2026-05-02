@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Smoke test for the round-11 fix: meta.json.started_at must be derived
 # from REVIEW_START_TS (the early capture) and NOT from a fresh `date`
 # call later in the run. The two values drift by sub-seconds under

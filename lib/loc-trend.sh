@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Sourceable helper for computing loc-trend.md (per-round LOC trajectory)
 # from the per-PR runs/ history. Lives outside review-one-pr.sh so the
 # regression smoke can exercise the same function the worker calls

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Reviews one PR end-to-end. Invoked by review.sh as:
 #   TRIGGER_COMMENT_FILE=<path> lib/review-one-pr.sh REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR
 # where FORCE_WHOLE_PR is "true" or "false". TRIGGER_COMMENT_FILE is

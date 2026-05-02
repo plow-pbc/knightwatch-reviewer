@@ -11,6 +11,19 @@ test:
     #!/usr/bin/env bash
     set -euo pipefail
 
+    # macOS /bin/bash is frozen at 3.2 (no associative arrays). The
+    # smokes use declare -A in 12 files, so bash 4+ is required. On
+    # macOS, `brew install bash` and ensure /opt/homebrew/bin is first
+    # in PATH (or use `#!/usr/bin/env bash` shebangs, which we do).
+    bash_major=$(bash -c 'echo ${BASH_VERSION%%.*}')
+    if [ "$bash_major" -lt 4 ]; then
+        echo "FATAL: bash $bash_major detected; smokes require bash 4+." >&2
+        echo "On macOS: brew install bash, then ensure /opt/homebrew/bin precedes /bin in PATH." >&2
+        exit 1
+    fi
+    echo "  bash major version: $bash_major"
+    echo ""
+
     echo "=== bash -n (syntax check on tracked .sh files) ==="
     while IFS= read -r f; do
         bash -n "$f" && echo "  ok: $f"

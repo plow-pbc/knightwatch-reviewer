@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Behavior smoke for rank_hot_angles (lib/go-deep-rank.sh).
 #
 # Round-5 reframe: ranking is FINDING-level, not file-level. The bot

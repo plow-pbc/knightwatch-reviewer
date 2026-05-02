@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Sourceable helpers for assembling prompts.
 #
 # `safe_sed`: escape a string for use as a sed replacement.
@@ -100,13 +100,21 @@ build_aggregator_prompt() {
     # the operator's surface — read it as data; awk does no expansion.
     # Substitution of placeholders (including {{OPERATOR_NAME}} which
     # voice.md uses) runs on the combined text afterwards.
+    # BSD awk (macOS default) rejects newlines inside -v values; use a
+    # tempfile + getline so this works on both BSD awk and gawk without
+    # adding a gawk dependency.
+    local voice_tmp
+    voice_tmp=$(mktemp)
+    printf '%s' "$voice_body" > "$voice_tmp"
     local stitched
-    stitched=$(awk -v voice_body="$voice_body" '
+    stitched=$(awk -v vfile="$voice_tmp" '
         /INSERT_VOICE_HERE/ {
-            print voice_body
+            while ((getline line < vfile) > 0) print line
+            close(vfile)
             next
         }
         { print }
     ' "$aggregator")
+    rm -f "$voice_tmp"
     substitute_placeholders <(printf '%s' "$stitched") "$pr_id" "$pr_title" "$pr_url" "$pr_author"
 }

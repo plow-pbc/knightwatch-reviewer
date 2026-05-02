@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Behavior smoke for `dispatch_agent` in lib/orchestrate.sh.
 #
 # `dispatch_agent NAME` is the routing seam that selects the right prompt
