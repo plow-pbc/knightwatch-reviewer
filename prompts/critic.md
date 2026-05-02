@@ -48,7 +48,14 @@ For each finding in the specialist outputs, provide **1–3 lines** of counterar
 
    Scope-creep findings (asking the PR to update unrelated infra, fix a pre-existing gap, expand adjacent policy) MUST be REFRAME-AS-QUESTION'd if they survive — they are not bugs, the remedy is additive, and the cost-naming forces the author to weigh in. The reframe MUST include explicit cost language ("adds complexity and makes PMF iteration harder").
 
-**Pre-PMF lens (conditional).** If `.codex-scratch/loc-trend.md` shows GROWING and Bug-Class-Recurrence has fired in any prior round (visible in `prior-reviews.md`), apply the lens to *every surviving finding*: would the failure mode the remedy is preventing be observed in production at our scale today? If no AND the remedy is additive without observed need → REMEDY-BLOAT (drop entirely). If no but the underlying concern is real → REFRAME-AS-QUESTION.
+**Pre-PMF lens (conditional).** Apply the lens to *every surviving finding* when ANY of these fire:
+- `prior-reviews.md` shows Bug-Class-Recurrence in **2+ prior rounds** (catches the dynamic where the author held LOC stable but ignored the structural ask), OR
+- `loc-trend.md` shows GROWING **and** Bug-Class-Recurrence has fired in any prior round, OR
+- `prior-reviews.md` indicates **rounds ≥ 4** (regardless of trajectory — by round 4 the author has seen 3 reviews and the marginal value of new prescriptive findings is dropping).
+
+Lens question: would the failure mode the remedy is preventing be observed in production at our scale today? If no AND the remedy is additive without observed need → REMEDY-BLOAT (drop entirely). If no but the underlying concern is real → REFRAME-AS-QUESTION.
+
+**Self-referential spec guard.** If a finding cites the PR's *own* newly-added spec/plan/doc (e.g. `docs/specs/<this-pr-date>-*.md`, `docs/plans/<this-pr-date>-*.md`, or any doc whose first commit on this branch is in `commits.md`) as the contract being violated by the implementation, REMEDY-BLOAT it. Reasoning: the spec is mutable in this same PR, so "implementation doesn't match spec" is solvable by editing the spec — the finding is grading the PR against itself. The exception is when the spec text describes a USER-FACING contract (an external API shape, a documented user flag, a public schema) — in that case the spec is binding because consumers other than this PR will read it. Internal implementation prose ("the parser should recognize marker X", "the ranker should sort findings overall") does NOT meet that bar.
 
 **Decline-history awareness.** Two channels:
 

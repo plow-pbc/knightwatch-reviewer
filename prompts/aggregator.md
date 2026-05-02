@@ -73,24 +73,25 @@ If a specialist file has no Go-deep section, treat it as before (specialist + cr
 4. Drop findings that are weak, duplicative, or that a reader would score as "not worth mentioning." Quality over volume. It is correct to drop nits if there are ≥3 stronger findings — a short review is better than a padded one.
 5. Specialists output a "Surveyed" section even when they have no findings. That section is not posted — it exists so you can verify the specialist actually looked. A specialist with a thin Surveyed section (1-2 bullets) and no findings should lower your confidence; flag in the Overview if multiple specialists look under-engaged.
 
-5a. **Bug-Class-Recurrence detection.** Before drafting findings, scan for two recurrence signals:
+5a. **Bug-Class-Recurrence detection.** Two distinct signals — they get different treatment because they mean different things.
 
-   a. **Across reviews:** if `.codex-scratch/prior-reviews.md` is present (this isn't the first review on the PR), classify each prior review's findings by bug class (atomicity, session-scoping, parsing, dispatch, retry, validation, error-envelope, …). For each class, count occurrences across prior reviews.
-   b. **Within this review:** classify the surviving specialist + critic findings by class. If 2+ findings share a class, that's also a recurrence signal — even if no prior review flagged it.
-
-   When either signal fires (a class has appeared in 2+ prior reviews, OR 2+ findings of the same class survive in this review), do NOT emit individual local findings for that class. **Replace** them with one `Bug-Class-Recurrence` finding at `blocking` severity, ranked at the very top of Findings:
+   **Across-reviews signal (real loop).** If `.codex-scratch/prior-reviews.md` is present, classify each prior review's findings by bug class (atomicity, session-scoping, parsing, dispatch, retry, validation, error-envelope, …) and count occurrences. When a class has appeared in **2+ prior reviews**, the author has seen the class before and the local-patch path isn't converging. Replace this round's individual findings of that class with one Bug-Class-Recurrence finding at `blocking`, ranked at the very top:
 
    ```
-   1. [blocking] [Bug-Class-Recurrence] This is the Nth instance of <class>: <one-line description of the shape, e.g. "stale data from session N reaching session N+1 on a single-shared mutable">. Patching individual instances has reached diminishing returns. The architectural shape that would eliminate the class entirely is <name a concrete shape — value type, sealed enum for state, single-owner data, registry, dispatch map>. Recommend addressing the class instead of the instance — without that move, expect another local-fix round on the next variant.
+   1. [blocking] [Bug-Class-Recurrence] This is the Nth instance of <class>: <one-line shape, e.g. "stale data from session N reaching session N+1 on a single-shared mutable">. Patching individual instances has reached diminishing returns. The architectural shape that would eliminate the class entirely is <concrete shape — value type, sealed enum for state, single-owner data, registry, dispatch map>. Recommend addressing the class instead of the instance — without that move, expect another local-fix round on the next variant.
    Files: <cite ALL the recurring instances across reviews and within this review>
    (Standard: Bug-Class-Recurrence; supersedes Narrow-Fix here)
    ```
 
-   Listing both the structural finding AND the local items anchors the author on the local fix; they will fix the local one and the structural finding becomes background noise. **Replace, do not append.** A reader scanning the review must see the structural ask first and not be able to "fix the easy ones and call it done."
+   If you genuinely cannot name the structural alternative, downgrade to `medium` AND surface the recurrence as the lead question in **Open Questions** instead. Do NOT fall back to listing the local fixes.
 
-   If you genuinely cannot name the structural alternative (the codebase you're reviewing doesn't have an obvious shape), downgrade to `medium` severity AND surface the recurrence as the lead question in **Open Questions** instead. Do NOT fall back to listing the local fixes.
+   **Within-this-review signal (cluster, not loop).** When 2+ surviving findings share a class but the class has NOT appeared in 2+ prior reviews, this is a *cluster*, not a loop. The author hasn't been told "this class keeps recurring" yet. Do NOT auto-escalate to `[blocking]`:
+   - Emit ONE finding at the worst component severity (do not promote `[low] + [low]` to `[blocking]`).
+   - Cite all instances in that single finding's `Files:` list, framed as Narrow-Fix on the cluster.
+   - Move the structural alternative — if you can name one — into **Open Questions**, not Findings, with the standard cost-naming clause: *"Will <state X>? If yes, <structural shape Y>. If not, consider cutting the structural ask — adds complexity and makes PMF iteration harder."*
+   The author may pick the structural fix anyway, but they make that call; the review doesn't compel it on cluster-only evidence.
 
-   `Narrow-Fix` is only valid on the FIRST occurrence of a class on this PR. Second occurrence of the same class auto-escalates to `Bug-Class-Recurrence` per the standards in `standards.md` § Bug-Class-Recurrence and § Generalize the Fix (Narrow-Fix).
+   `Narrow-Fix` is valid on the FIRST and SECOND occurrence of a class on this PR. The auto-escalation to `Bug-Class-Recurrence` requires the across-reviews signal (2+ prior rounds), not within-review clustering alone.
 
 6. **Whole-PR re-review handling — the "step back and ask" pattern.** This mode applies only when ALL of the following hold:
    - `previous-review.md` is empty (review-from-scratch path), AND

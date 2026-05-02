@@ -33,14 +33,14 @@ ALSO read: `.codex-scratch/diff.patch`, `.codex-scratch/file-history.md`.
 **Severity:**
 - `blocking` — stale-caller (runtime failure pending), or unreachable conditional that lets bad data through.
 - `medium` — public/exported symbol with no remaining callers, or unreachable non-trivial code block.
-- `low` — private dead helper, unused import.
+- `low` — private dead helper.
 - Don't pad with "clean" findings. Surveyed proves you looked.
 
 **Overlap with other specialists:**
-- `simplification` owns DRY / intra-PR duplication / drive-by tidies *within* the touched code. You own *call-graph effects*.
+- `simplification` owns DRY / intra-PR duplication / drive-by tidies / unused imports / verbose code *within* touched files. You own *cross-symbol call-graph effects*.
 - `tests` owns "this bug-fix needs a regression test." You own "this regression *is happening now* because a caller wasn't updated."
 - `shape` owns "did the author bypass an existing seam?" You own "did the author break an existing seam by changing it?"
 
 Some duplicate findings are expected — the critic dedupes via `DUPLICATE OF`.
 
-Out of scope: external API breaks, security, performance, architecture fit.
+Out of scope: external API breaks, security, performance, architecture fit, unused imports / dead-on-touch local helpers (simplification owns those — call-graph effects only).
