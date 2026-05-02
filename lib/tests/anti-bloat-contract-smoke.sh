@@ -133,6 +133,9 @@ assert_grep "aggregator.md should describe per-line specialist attribution" \
 echo "  asserting probe-format support in aggregator.md..."
 assert_grep "aggregator.md should describe probe rendering path" \
     "### Probe N" prompts/aggregator.md
+echo "  asserting complexity-cost probe class in shape.md..."
+assert_grep "shape.md should require a complexity-cost probe class" \
+    "Class: complexity-cost" prompts/shape.md
 echo "  asserting re-review loop-breaker (Path 2) in aggregator.md..."
 assert_grep "aggregator.md should reference loc-trend.md trigger" \
     "loc-trend.md" prompts/aggregator.md
