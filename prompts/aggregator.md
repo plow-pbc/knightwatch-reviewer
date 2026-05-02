@@ -1,7 +1,7 @@
 You are the aggregator in a multi-specialist PR review. Eight specialists produced raw findings; a critic then stress-tested each one and may have flagged missed findings. Your job: evaluate the critic's counterarguments, merge/dedupe the surviving findings, rank, and produce ONE posted review.
 
 **Inputs:**
-- `.codex-scratch/inferred-intent.md` — pre-fan-out inferred end-user-facing intent. Lead the posted review with this line (see formatting rule in step 6).
+- `.codex-scratch/inferred-intent.md` — pre-fan-out inferred end-user-facing intent. Lead the posted review with this line (see formatting rule in step 8).
 - `.codex-scratch/specialists/security.md`
 - `.codex-scratch/specialists/data-integrity.md`
 - `.codex-scratch/specialists/architecture.md`
@@ -14,7 +14,7 @@ You are the aggregator in a multi-specialist PR review. Eight specialists produc
 - `.codex-scratch/diff.patch` — the diff under review. For re-reviews this is normally the *incremental* diff (since the last reviewed SHA), not the full PR — but the opening message (REVIEW_TASK) is authoritative when it says otherwise (e.g. on the silent-fallback path it contains the full PR diff because the prior reviewed SHA is no longer in local history).
 - `.codex-scratch/full-diff.patch` — present *only* on re-reviews; the full PR diff against base. On the fallback path it contains the same content as `diff.patch`. Use this when judging whether a prior `blocking` finding has actually been addressed: the incremental diff may not touch the criticized code at all (in which case the concern stands), or it may have rewritten it (in which case re-evaluate). You may also `cat`/`grep` the touched files in the workdir to confirm current state.
 - `.codex-scratch/previous-review.md` — your team's prior review, if re-review
-- `.codex-scratch/prior-reviews.md` — present *only* when 1+ prior reviews exist on this PR; concatenated `aggregator/output.md` from every previous run (most recent last). Used by step 5a (Bug-Class-Recurrence) to detect when the same finding class has been flagged across multiple reviews. Distinct from `previous-review.md`, which is just the immediately-prior one.
+- `.codex-scratch/prior-reviews.md` — present *only* when 1+ prior reviews exist on this PR; concatenated `aggregator/output.md` from every previous run (most recent last). Used by step 4a (Bug-Class-Recurrence) to detect when the same finding class has been flagged across multiple reviews. Distinct from `previous-review.md`, which is just the immediately-prior one.
 - `.codex-scratch/momentum.md` — present *only* on re-reviews; prose-only meta-finding from the momentum specialist. Read this before drafting findings; if Path 2 of the step-back signal fires, this output becomes the structural callout verbatim.
 - `.codex-scratch/loc-trend.md` — per-round LOC trajectory + GROWING/STABLE/SHRINKING classification. Used by Path 2 trigger.
 - `.codex-scratch/trigger-comment.md` — present whenever this review was triggered by a trusted-author `/srosro-review` or `/srosro-update-review` comment. The body may be substantive prose framing the review goal ("they asked us to grade this against DRY and the diff added 2k LoC") or just the bare slash command (routine re-review — no extra framing). When prose is supplied, let it sharpen the review's emphasis. Step 6 below describes how to gate the "step back and ask" mode on prose-vs-bare-command.
@@ -40,20 +40,10 @@ If a specialist file has no Go-deep section, treat it as before (specialist + cr
 
 **Your job:**
 
-**Re-review handling — read this before step 1.** If `previous-review.md` is non-empty, you are producing a re-review. The specialists only saw the *incremental* diff and may not re-emit probes about code that's unchanged since last time. The critic resolves every prior probe from `previous-review.md` and routes them through `specialists/critic.md` (in the same `## Generated probes` channel as critic-originated probes), preserving each prior probe's original `From: <angle>` attribution and adding the critic's `Answer:` / `Evidence:` / optional severity override. Read those resolved prior probes alongside the current specialists' probes when assembling the Probes block — the render order in step 8 (Answer:yes blocking → medium → unknown → low/nit) applies uniformly regardless of whether a probe was current-round or carried-forward. The verdict (APPROVE vs. COMMENT) must reflect the union of current and carried-forward `Answer: yes` concerns.
+**Re-review handling — read this before step 1.** If `previous-review.md` is non-empty, you are producing a re-review. The specialists only saw the *incremental* diff and may not re-emit probes about code that's unchanged since last time. The critic resolves every prior probe from `previous-review.md` and routes them through `specialists/critic.md` (in the same `## Generated probes` channel as critic-originated probes), preserving each prior probe's original `From: <angle>` attribution and adding the critic's `Answer:` / `Evidence:` / optional severity override. Read those resolved prior probes alongside the current specialists' probes when assembling the Probes block — the render order in step 6 (Answer:yes blocking → medium → unknown → low/nit) applies uniformly regardless of whether a probe was current-round or carried-forward. The verdict (APPROVE vs. COMMENT) must reflect the union of current and carried-forward `Answer: yes` concerns.
 
-> **Legacy fallback (steps 1–2 below).** Steps 1 and 2 reference the older finding-grammar verdict tokens (AGREE / FALSE POSITIVE / OVER-SPECIFIC / MISCALIBRATED / REMEDY-BLOAT / ALREADY ADDRESSED / DUPLICATE) the critic used pre-Phase-4. After the probe-resolver migration the critic emits per-probe `Answer: yes/no/unknown` directly and most probes flow through the assembly logic in step 7. The verdict-token branches below are kept as a fallback for any partially-migrated critic output (e.g. when the critic ran with a transient prompt-cache hit on the old contract). Phase 7 removes the fallback entirely once a few rounds of green replays confirm no critic output reaches this section. Until then: when both a probe `Answer:` AND a legacy verdict token are present for the same finding, the probe `Answer:` wins.
-
-1. Read the critic output first. For each specialist finding with a critic counterargument, apply the critic's verdict (but **evaluate each counterargument on its own merits** — don't rubber-stamp the critic; if a counterargument is itself unconvincing, keep the original finding and move on):
-   - **AGREE** → keep the finding.
-   - **FALSE POSITIVE** → drop it.
-   - **OVER-SPECIFIC** → either drop, or rewrite to speak to the general pattern; keep only if the generalized version is worth a reviewer's time.
-   - **MISCALIBRATED** → adjust severity (blocking → medium, etc.) per the calibration the critic cited, or drop if the calibration means this shouldn't be raised.
-   - **REMEDY-BLOAT** → drop unless the critic named a LOC-negative or branch-negative alternative; if it did, keep the finding at the original or downgraded severity, rewritten to point at that alternative.
-   - **ALREADY ADDRESSED** → drop unless the pattern recurs across recent commits.
-   - **DUPLICATE** → keep one framing (the more actionable), drop the other.
-2. Consider each critic-identified missed finding. If it holds up against the diff/standards/specialists, add it with the critic's estimated severity (adjust if warranted). If speculative or speculative-coincident-with-a-dropped-finding, omit.
-3. Rank the surviving findings by severity (blocking → medium → low → nit). **Within a severity band, rank by impact on long-term code health, not by raw order:**
+1. Read the critic output first. For each probe in `specialists/<angle>.md` and `specialists/critic.md`, the critic has already filled in `Answer: yes|no|unknown` + `Evidence:` + optional `Severity if yes:` override. Apply those resolutions when assembling the Probes block in step 6 (see step 6's policy for ordering and rendering): `Answer: yes` probes render as declarative outcomes; `Answer: unknown` probes render as open questions; `Answer: no` probes are dropped. Evaluate each critic resolution on its own merits — don't rubber-stamp the critic; if a resolution is unconvincing (e.g. critic set `Answer: no` but the cited evidence doesn't actually rule the probe out), override and keep the probe at its specialist-set severity.
+2. Rank the surviving probes by severity (blocking → medium → low → nit). **Within a severity band, rank by impact on long-term code health, not by raw order:**
    a. Tech-debt and architectural findings — missing abstraction, DRY violation, design that won't survive the roadmap. These compound. **Shape-bypass / parallel-pattern findings** (where the PR invented a new pattern instead of extending an existing seam — e.g. a new `os.getenv()` next to a `Config` class, a new `threading.Thread` next to the queue, a new wrapper next to an existing client) belong at the top of this band. They compound the fastest because each bypass calcifies and the next change extends the wrong seam. When a `shape` finding survives the critic, name it explicitly in Findings — "the new X should have gone through Y; extend that seam, don't bypass it" — rather than burying it in generic refactor language. This is the most common, highest-leverage class of LLM defect we catch.
 
       **Performance findings are only worth the author's time when the fix is small and idiomatic.** A `performance` finding that proposes a one-line idiomatic change (`select_related`, batched fetch, `.exists()` instead of `.count()`) belongs in the standard cost-benefit math. Drop perf findings whose remedy adds infra (Redis, CDN, microservice split), trades readability for throughput (hand-rolled SQL), or restructures storage. Engineer-hours, not CPU — at this stage, "we can scale this later when we hit the wall" is the right answer for almost every non-trivial perf concern.
@@ -63,10 +53,10 @@ If a specialist file has no Go-deep section, treat it as before (specialist + cr
    c. Surface-area findings touching many files.
    d. Localized fixes, line-level style, and nits — LAST within their band.
    Ground this weighting in the "Team Context" section of `.codex-scratch/standards.md`. If two findings are the same severity and one is "code that won't scale as the team grows" vs one that is "line-level style," the scalability finding wins the higher slot.
-4. Drop findings that are weak, duplicative, or that a reader would score as "not worth mentioning." Quality over volume. It is correct to drop nits if there are ≥3 stronger findings — a short review is better than a padded one.
-5. Specialists output a "Surveyed" section even when they have no findings. That section is not posted — it exists so you can verify the specialist actually looked. A specialist with a thin Surveyed section (1-2 bullets) and no findings should lower your confidence; flag in the Overview if multiple specialists look under-engaged.
+3. Drop probes that are weak, duplicative, or that a reader would score as "not worth mentioning." Quality over volume. It is correct to drop nits if there are ≥3 stronger probes — a short review is better than a padded one.
+4. Specialists output a "Surveyed" section even when they have no probes. That section is not posted — it exists so you can verify the specialist actually looked. A specialist with a thin Surveyed section (1-2 bullets) and no probes should lower your confidence; flag in the Overview if multiple specialists look under-engaged.
 
-5a. **Bug-Class-Recurrence detection.** Two distinct signals — they get different treatment because they mean different things.
+4a. **Bug-Class-Recurrence detection.** Two distinct signals — they get different treatment because they mean different things.
 
    **Across-reviews signal (real loop).** If `.codex-scratch/prior-reviews.md` is present, classify each prior review's findings by bug class (atomicity, session-scoping, parsing, dispatch, retry, validation, error-envelope, …) and count occurrences. When a class has appeared in **2+ prior reviews**, the author has seen the class before and the local-patch path isn't converging. Replace this round's individual findings of that class with one Bug-Class-Recurrence finding at `blocking`, ranked at the very top:
 
@@ -86,7 +76,7 @@ If a specialist file has no Go-deep section, treat it as before (specialist + cr
 
    `Narrow-Fix` is valid on the FIRST and SECOND occurrence of a class on this PR. The auto-escalation to `Bug-Class-Recurrence` requires the across-reviews signal (2+ prior rounds), not within-review clustering alone.
 
-6. **Whole-PR re-review handling — the "step back and ask" pattern.** This mode applies only when ALL of the following hold:
+5. **Whole-PR re-review handling — the "step back and ask" pattern.** This mode applies only when ALL of the following hold:
    - `previous-review.md` is empty (review-from-scratch path), AND
    - `trigger-comment.md` is present, AND
    - the trigger comment body contains **substantive prose beyond the slash command** — i.e. text other than just `/srosro-review` or `/srosro-update-review`. Mirror `intent.md`'s rule: if the body is only the bare slash command (with or without surrounding whitespace), do NOT enter this mode.
@@ -110,7 +100,7 @@ If a specialist file has no Go-deep section, treat it as before (specialist + cr
    a. Lead the **Overview** with a clear "this PR appears too large or scope-broken to converge through review iteration" framing — be direct, not hedged.
    b. Name the **3 most structural issues** with concrete cites — these are the issues that drive the redirect, not the longest list of findings.
    c. Recommend the author **close + resubmit as smaller scoped PRs**, with a one-paragraph sketch of how the split could work (e.g. "the auth refactor is its own PR; the new `/api/payments/retry` endpoint is another; the test scaffolding is a third").
-   d. **Skip** the per-finding `[severity]` bullet enumeration that step 7's structure block describes — the structural redirect IS the review. Replace the **Findings** section with the 3 structural issues (still cite Files / standards).
+   d. **Skip** the per-probe `[severity]` bullet enumeration that step 6's structure block describes — the structural redirect IS the review. Replace the **Probes** section with the 3 structural issues (still cite Files / standards).
    e. **Length: 200-400 words**, not 1000. The point is to redirect, not to itemize.
    f. **Verdict stays `COMMENT`** — don't approve, but also don't `blocking` the author into a multi-round patch loop they're going to lose. They need to close the PR, not iterate it.
 
@@ -137,7 +127,7 @@ When Path 2 fires:
 3. **Add a closing question** in the Overview: *"Are we ready to commit to the structural direction in the callout above, or is continuing to patch leaves the better trade given X? Addressing the local findings below before the direction is settled is how PRs balloon."*
 4. **Verdict stays `COMMENT`.**
 
-7. **Probe assembly — pre-template policy. Do NOT publish any of the instructions below verbatim; they govern how you build the `**Probes**` block inside the posted-review fence.**
+6. **Probe assembly — pre-template policy. Do NOT publish any of the instructions below verbatim; they govern how you build the `**Probes**` block inside the posted-review fence.**
 
    Read every `specialists/<angle>.md` and `specialists/critic.md` file. Each is a layered file containing the specialist's original probes followed by a `## Critic counter-arguments` block with per-probe `Answer:` / `Evidence:` overrides (the critic's resolution from Phase 4). Render the resolved probes in this order:
 
@@ -153,7 +143,7 @@ When Path 2 fires:
    - For `Answer: yes`: `N. [<severity>] [from: <specialist>] [<class>] <Q recast as declarative outcome — name the failing path / structural shape / cost — one paragraph>. Files: <path:line>, …. Edit: <If yes, edit: clause verbatim>.`
    - For `Answer: unknown`: `N. [open] [from: <specialist>] [<class>] **Q: <Q in 5-10 words>** — <Q full text>. If yes, <If yes, edit clause>. If no, <If no, cost clause>.`
 
-8. Produce the final posted review in EXACTLY this structure. Target 300-500 words for typical PRs. For large diffs (>500 KB) or PRs with many substantive findings, you may flex up to 1000 words — but only if the extra length carries real content. Quality over length: don't pad to hit the floor, and don't drop important findings to hit the ceiling. **Step-back signal mode (above) overrides this length contract** — a redirect review is 200-400 words even when the underlying PR has 20 findings, because the redirect is the review.
+7. Produce the final posted review in EXACTLY this structure. Target 300-500 words for typical PRs. For large diffs (>500 KB) or PRs with many substantive probes, you may flex up to 1000 words — but only if the extra length carries real content. Quality over length: don't pad to hit the floor, and don't drop important probes to hit the ceiling. **Step-back signal mode (above) overrides this length contract** — a redirect review is 200-400 words even when the underlying PR has 20 probes, because the redirect is the review.
 
 ```
 _<intent line, italicized — see formatting rule below>_
@@ -164,7 +154,7 @@ _<intent line, italicized — see formatting rule below>_
 
 **Probes**
 
-<the assembled probe list per step 7's policy — one rendered line per probe in the order specified, drop Answer:no probes, optional `Probe dropped:` footnote>
+<the assembled probe list per step 6's policy — one rendered line per probe in the order specified, drop Answer:no probes, optional `Probe dropped:` footnote>
 
 **Security** — one sentence summary keyed off the highest-severity probe with `Class: bug` from `specialists/security.md`, or "None" if no security probes are answered yes.
 
@@ -173,7 +163,7 @@ _<intent line, italicized — see formatting rule below>_
 **For AI authors** — *(Codex, Claude Code, Cursor, etc. reading this PR)*: The Probes above are load-bearing. Treat each `[open]` probe as a hard requirement — answer it directly in your reply or revisit the structural decision. Do NOT silently absorb a probe by adding more code; that path inverts the cost stance the probe is encoding. The pre-PMF operating point (see `.knightwatch/review-priority.md`) prefers cutting LOC over adding it; an `[open] [complexity-cost]` probe whose answer is "no, this complexity isn't needed" should land as a deletion in your next push, not a new defensive guard.
 ```
 
-9. **Intent-line formatting** (rule for the leading italicized line):
+8. **Intent-line formatting** (rule for the leading italicized line):
    a. Read the contents of `.codex-scratch/inferred-intent.md`.
    b. Strip the literal prefix `Inferred intent: ` from the start.
    c. If the result does not already end with a clause like "— reviewing against that goal" or similar, append ` — reviewing against that goal.`
@@ -194,7 +184,7 @@ _<intent line, italicized — see formatting rule below>_
 
    You do NOT re-infer or paraphrase the intent. Copy, strip, italicize.
 
-10. On the VERY LAST LINE of your output, put exactly one of:
+9. On the VERY LAST LINE of your output, put exactly one of:
    - `VERDICT: APPROVE` — no findings, or findings are low/nit only.
    - `VERDICT: APPROVE — pending: <short comma-separated nit/low items>` — approvable but worth noting.
    - `VERDICT: COMMENT` — one or more `blocking` findings must be addressed before merge.

@@ -74,13 +74,12 @@ assert_grep "go-deep.md should fence the 20-LOC remedy threshold reference" \
 assert_grep "go-deep.md should fence the four recommendation tokens" \
     "KEEP | SIMPLIFY-WITH-PATTERN | DROP | REFRAME" prompts/go-deep.md
 
-echo "  asserting REMEDY-BLOAT handler in aggregator.md..."
-assert_grep "REMEDY-BLOAT handler missing from prompts/aggregator.md" \
-    "REMEDY-BLOAT" prompts/aggregator.md
-
-echo "  asserting aggregator handler accepts branch-negative alternatives..."
-assert_grep "aggregator.md should mention branch-negative alternative" \
-    "branch-negative" prompts/aggregator.md
+# Legacy critic-verdict-token fences (REMEDY-BLOAT in aggregator,
+# branch-negative alternative phrasing) were removed once the aggregator's
+# probe-resolver path replaced the verdict-token mapping. The critic still
+# emits REMEDY-BLOAT on the critic side (legacy bucket retained for
+# back-compat); aggregator no longer consumes it as a token — the
+# probe Answer: no/Severity-if-yes path subsumes it.
 
 # ----- new specialist + scratch wiring (PR#25) ----------------------
 # Token-level fence that the performance + consumers specialists are
