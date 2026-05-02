@@ -1,6 +1,16 @@
 #!/bin/bash
 # Diff-build helper for the reviewer worker.
 #
+# Single source of truth for "what was reviewed": the worker captures
+# REVIEWED_SHA + BASE_REF after `git checkout`, then derives the full
+# PR diff, the optional incremental diff, the touched-file lists, and
+# the diff-source context all from that one local worktree snapshot.
+# No live `gh pr diff` calls during review production — those raced
+# with mid-run pushes and contradicted the SHA the worker had just
+# checked out (the BCR class flagged across PR #31 and PR #35 reviews).
+# BASE_REF itself is resolved inline by the worker via the consolidated
+# `gh pr view --json baseRefName` call up front; no helper needed.
+#
 # is_clean_incremental_available <repo_dir> <known_sha>
 #   exit 0 if a local incremental diff (`git diff $known_sha..HEAD`)
 #   would faithfully represent "what's new on the branch since
@@ -12,14 +22,6 @@
 #         round 2 same-file leak finding)
 #   exit 1 otherwise — caller falls back to the full PR diff with a
 #   deterministic warning at the top of the review.
-#
-# This is the only helper from the deleted lib/diff-scope.sh that
-# survived. The rest of that machinery — build_pr_diff,
-# build_incremental_diff, compute_authored_files, has_traceable_history,
-# DIFF_EXCLUDES tracking — was layers of trying to reinvent what
-# `gh pr diff` (server-side three-dot) already does correctly. The
-# worker now defaults to gh pr diff and only takes the local
-# incremental optimization when this predicate confirms it's safe.
 is_clean_incremental_available() {
     local repo_dir="$1" known_sha="$2"
     git -C "$repo_dir" merge-base --is-ancestor "$known_sha" HEAD 2>/dev/null \
@@ -56,43 +58,3 @@ extract_touched_files_both_sides() {
         | LC_ALL=C sort -u
 }
 
-# classify_gh_pr_diff_failure STDOUT STDERR
-#
-# Pure function. Maps `gh pr diff`'s (stdout, stderr) into one of three
-# outcome tokens — caller switches on the token to pick the right next
-# step:
-#
-#   "ok"            — non-empty stdout; no fallback needed.
-#   "cap-exceeded"  — empty stdout + stderr names GitHub's 300-file
-#                     diff cap. Caller should retry locally with
-#                     `git diff origin/<base>...HEAD` (same three-dot
-#                     semantics as `gh pr diff`, no server-side cap).
-#                     The cap is reachable on legitimate-but-large
-#                     PRs (300-650 files); the prior "auth/network"
-#                     abort message was wrong-cause AND lost
-#                     reviewable PRs entirely.
-#   "error"         — empty stdout + stderr names something else
-#                     (auth, network, rate-limit, transient gh
-#                     failure). Caller should abort loudly with the
-#                     stderr text; no local fallback can recover.
-#
-# Pattern matched: GitHub returns HTTP 406 on the diff cap, with
-# stderr wording that varies — observed forms include
-# "exceeded max files (300)" and
-# "exceeded the maximum number of files". Match on multiple
-# alternatives so a wording wobble on either side doesn't regress
-# this back to "auth/network". The HTTP 406 prefix alone is also
-# sufficient: the diff endpoint uses 406 only for this cap, so the
-# status code is a reliable backstop even if both phrasings change.
-classify_gh_pr_diff_failure() {
-    local stdout="$1" stderr="$2"
-    if [ -n "$stdout" ]; then
-        printf 'ok'
-        return
-    fi
-    if printf '%s' "$stderr" | grep -qiE 'HTTP 406|exceeded max files|maximum number of files'; then
-        printf 'cap-exceeded'
-        return
-    fi
-    printf 'error'
-}

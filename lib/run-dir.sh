@@ -162,7 +162,7 @@ format_review_scope() {
             printf '📋 Re-review of changes from `%s` to `%s` (`git diff %s..%s`)' "$from" "$to" "$from" "$to" ;;
         fallback:*)
             sha="${scope#fallback:}"
-            printf '📋 Re-review — clean incremental unavailable for `%s` (rebase, force-push, or merge-from-main); evaluated full PR' "${sha:0:7}" ;;
+            printf '📋 Re-review — clean incremental unavailable for `%s` (rebase, force-push, or merge from base branch); evaluated full PR' "${sha:0:7}" ;;
         *)
             printf 'format_review_scope: unknown scope "%s" — internal invariant violated\n' "$scope" >&2
             return 1
@@ -265,13 +265,16 @@ prepend_review_header() {
 #   1. posted_at present — primary signal, stamped immediately after
 #      `gh pr comment` succeeds.
 #   2. status == "completed" — fallback for legacy runs created before
-#      posted_at existed.
+#      posted_at existed. status only flips to "completed" on the
+#      success path after gh has posted, so "status == completed"
+#      reliably implies "gh post succeeded" for any preserved run.
 #
 # Single owner for "which prior review rounds count" — both
 # stage_prior_reviews (Bug-Class-Recurrence) and compute_loc_trend
 # (LOC trajectory table) call this so they can't drift.
 is_run_author_visible() {
     local run_dir="$1"
+    [ -f "$run_dir/meta.json" ] || return 1
     local included
     included=$(jq -r 'if ((.posted_at // "") != "") or ((.status // "") == "completed") then "yes" else "no" end' \
         "$run_dir/meta.json" 2>/dev/null)
@@ -282,7 +285,8 @@ is_run_author_visible() {
 #   stdout: one line per author-visible run dir for this PR, sorted by
 #   timestamp ascending (run-dir names share repo_slug+pr_num prefix, so
 #   `find | sort` is equivalent to "sort by RUN_TS"). Skips current_run_dir
-#   and any run dir that fails the author-visible predicate.
+#   and any run dir that fails the author-visible predicate (which also
+#   filters out pre-checkout aborts that never wrote meta.json).
 #
 # Single source-of-truth walker for "which prior posted reviews exist for
 # this PR." Every consumer that asks "what has the author seen?" reads

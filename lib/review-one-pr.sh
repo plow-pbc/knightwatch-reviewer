@@ -147,28 +147,11 @@ if ! allocate_run_dir "$RUN_DIR"; then
 fi
 LOG_FILE="$RUN_DIR/run.log"
 
-# meta.json — minimal post-mortem header. Title is JSON-escaped via jq so
-# titles with quotes / newlines don't break the file. Workdir path is
-# recorded for the live-run window even though rm -rf eventually clears it.
-if ! jq -n \
-        --arg repo "$REPO" \
-        --arg pr_id "$PR_ID" \
-        --argjson pr_num "$PR_NUM" \
-        --arg sha "$PR_SHA" \
-        --arg branch "$PR_BRANCH" \
-        --arg title "$PR_TITLE" \
-        --arg force_whole_pr "$FORCE_WHOLE_PR" \
-        --arg workdir "$WORKDIRS_DIR/${REPO_SLUG_FOR_RUN}__${PR_NUM}" \
-        --arg started_at "$REVIEW_START_ISO" \
-        '{repo: $repo, pr_id: $pr_id, pr_num: $pr_num, sha: $sha, branch: $branch, title: $title, force_whole_pr: ($force_whole_pr == "true"), workdir: $workdir, started_at: $started_at}' \
-        > "$RUN_DIR/meta.json"; then
-    # Without meta.json the run header is broken from the start — abort
-    # rather than running blind. Falls through to the EXIT trap, which
-    # may in turn fail to update meta.json; that's acceptable because
-    # the file already doesn't exist as expected.
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $PR_ID: failed to write $RUN_DIR/meta.json — aborting" >&2
-    exit 1
-fi
+# meta.json is written later (after REVIEWED_SHA is captured post-checkout)
+# so `sha` records what was actually reviewed instead of the orchestrator-
+# enumerated PR_SHA. The worker-start timestamp is REVIEW_START_ISO,
+# captured at the very top of this script (single-clock-read alongside
+# REVIEW_START_TS) — used for meta.json.started_at when meta is written.
 
 # write_scratch — writes input artifacts into the run dir's inputs/ and
 # exposes them under the codex-scratch view in the workdir so agents can
@@ -294,6 +277,24 @@ if [ ! -d "$CANONICAL_DIR/.git" ]; then
     fi
 fi
 
+# Resolve PR metadata up front. baseRefName must be known BEFORE the
+# canonical fetch — we need it to fetch the PR's actual upstream
+# (was `defaultBranchRef`, which silently mis-fetched repo-default for
+# non-default-base PRs). Combined with the rest of the PR_DATA blob
+# the worker uses later (PR_AUTHOR for the env-mirror trust gate +
+# title/body/linked-issues for AUTHOR_INTENT — commits are sourced
+# from local git later, post-checkout, to stay in sync with REVIEWED_SHA)
+# so a single gh
+# call covers all consumers — fewer API hits, no partial state if a
+# later resolve raced a closed PR.
+PR_DATA=$(gh pr view "$PR_NUM" --repo "$REPO" --json baseRefName,title,body,author,closingIssuesReferences 2>/dev/null)
+BASE_REF=$(printf '%s' "$PR_DATA" | jq -r '.baseRefName // empty')
+PR_AUTHOR=$(printf '%s' "$PR_DATA" | jq -r '.author.login // empty')
+if [ -z "$BASE_REF" ] || [ -z "$PR_AUTHOR" ]; then
+    log "$PR_ID: gh pr view returned no baseRefName / author (PR_DATA=${PR_DATA:0:80}) — aborting"
+    exit 1
+fi
+
 # Fetch latest refs into the canonical clone. We fetch the PR head via
 # `refs/pull/N/head` rather than by branch name, so fork PRs work
 # uniformly with same-repo PRs (fork PRs' heads live on the fork, not
@@ -303,22 +304,74 @@ fi
 # $PR_BRANCH` so downstream code (per-PR workdir checkout, diff, log
 # messages) can use the human-readable branch name.
 #
-# The default branch stays as a plain fetch (updating only refs/remotes/
-# origin/$DEFAULT_BRANCH) because canonical has $DEFAULT_BRANCH checked
-# out and git refuses to force-update a checked-out ref. Stale local
-# main is fine for our use — we only need it for listing touched files.
-DEFAULT_BRANCH=$(gh repo view "$REPO" --json defaultBranchRef --jq '.defaultBranchRef.name')
-if [ -z "$DEFAULT_BRANCH" ]; then
-    log "$PR_ID: could not resolve default branch from gh repo view — aborting"
+# The base branch is fetched as `origin/$BASE_REF` so the per-PR clone
+# can diff against it locally. --depth=500 covers ~all PRs (deepening
+# logic could be added if a deep PR's merge-base falls outside that
+# window).
+if ! git -C "$CANONICAL_DIR" fetch origin "$BASE_REF" --depth=500 --quiet; then
+    log "$PR_ID: canonical fetch of $BASE_REF failed — aborting"
     exit 1
 fi
-if ! git -C "$CANONICAL_DIR" fetch origin "$DEFAULT_BRANCH" --depth=500 --quiet; then
-    log "$PR_ID: canonical fetch of $DEFAULT_BRANCH failed — aborting"
+# Collision guard: a PR head named the same as the base branch
+# (fork PR from the fork's main → upstream's main) would otherwise
+# get fetched into refs/heads/$BASE_REF, then overwritten by the
+# subsequent update-ref alignment. Operator-fixable (rename the
+# fork branch); fail loud.
+if [ "$PR_BRANCH" = "$BASE_REF" ]; then
+    log "$PR_ID: PR head branch '$PR_BRANCH' collides with base '$BASE_REF' — refusing to fetch into refs/heads/$BASE_REF (would corrupt canonical's base ref)"
     exit 1
 fi
 if ! git -C "$CANONICAL_DIR" fetch origin "+refs/pull/$PR_NUM/head:$PR_BRANCH" --depth=500 --quiet; then
     log "$PR_ID: refs/pull/$PR_NUM/head not fetchable (PR closed?) — skipping"
     exit 0
+fi
+
+# Align canonical's `refs/heads/$BASE_REF` with the just-fetched
+# `refs/remotes/origin/$BASE_REF` BEFORE the `git clone --shared`.
+# This is load-bearing for two coupled reasons:
+#
+# 1. The clone's `refs/remotes/origin/*` mirrors canonical's
+#    `refs/heads/*`, NOT canonical's `refs/remotes/origin/*`. So if
+#    canonical's `refs/heads/$BASE_REF` is stale (the typical state —
+#    `git fetch origin BASE_REF` only updates the remote-tracking
+#    ref, never the local head), the workdir's `origin/$BASE_REF`
+#    points at a stale SHA that doesn't include the latest base
+#    commits.
+#
+# 2. For SHALLOW canonical clones (cncorp/plow uses --depth=500),
+#    `git clone --shared` from a shallow source does NOT set up
+#    `objects/info/alternates` in the new clone. So the workdir has
+#    ONLY the objects reachable from refs propagated by the clone
+#    (canonical's `refs/heads/*` → workdir's `refs/remotes/origin/*`).
+#    If BASE_REF_SHA is canonical's `refs/remotes/origin/$BASE_REF`
+#    but `refs/heads/$BASE_REF` is stale, that SHA is not in the
+#    workdir's reachable object set — and `git diff $BASE_REF_SHA...
+#    $REVIEWED_SHA` errors with "Invalid symmetric difference" but
+#    bash captures the empty stdout and the bot reads it as an
+#    empty diff, then aborts with `local git diff origin/<base>...
+#    <reviewed-sha> returned empty — aborting`.
+#
+# Both fail-modes were observed on cncorp/plow#568 after PR #36
+# deployed: every cncorp/plow review aborted at the diff stage
+# because the shallow canonical's `refs/heads/main` was at an old
+# SHA while `refs/remotes/origin/main` had been advanced by recent
+# fetches. The `update-ref` here makes both refs point at the same
+# SHA so the workdir gets a usable base via either path.
+#
+# Safe to run unconditionally: canonical's HEAD is on a per-PR
+# `pr-N` branch from a previous review, not on `$BASE_REF`, so
+# updating `refs/heads/$BASE_REF` doesn't move HEAD or touch the
+# working tree. The .env-mirror step that reads `$CANONICAL_DIR`'s
+# working tree is unaffected (working tree files persist across
+# ref updates).
+if ! git -C "$CANONICAL_DIR" update-ref "refs/heads/$BASE_REF" "refs/remotes/origin/$BASE_REF"; then
+    log "$PR_ID: failed to align refs/heads/$BASE_REF with refs/remotes/origin/$BASE_REF in canonical — aborting"
+    exit 1
+fi
+BASE_REF_SHA=$(git -C "$CANONICAL_DIR" rev-parse --verify --quiet "refs/heads/$BASE_REF")
+if [ -z "$BASE_REF_SHA" ]; then
+    log "$PR_ID: refs/heads/$BASE_REF missing after canonical fetch + update-ref — aborting"
+    exit 1
 fi
 
 # Tear down any stale per-PR workdir and create a fresh shared clone.
@@ -365,7 +418,7 @@ if [ -z "$REVIEWED_SHA" ]; then
     exit 1
 fi
 if [ "$REVIEWED_SHA" != "$PR_SHA" ]; then
-    log "$PR_ID: orchestrator enumerated ${PR_SHA:0:7}, worker checked out ${REVIEWED_SHA:0:7} — using checked-out SHA for header + state"
+    log "$PR_ID: orchestrator enumerated ${PR_SHA:0:7}, worker checked out ${REVIEWED_SHA:0:7} — using checked-out SHA for header + state + meta"
 fi
 
 # Redirect-safe staging — a PR checkout could commit .codex-scratch as a
@@ -377,33 +430,37 @@ fi
 rm -rf "$REPO_DIR/.codex-scratch"
 mkdir -p "$REPO_DIR/.codex-scratch"
 
-# Stamp the actually-reviewed SHA into meta.json. The earlier write
-# (line ~268) used PR_SHA — the orchestrator-enumerated SHA before
-# fetch + checkout — but the worker's source of truth for "what was
-# evaluated" is REVIEWED_SHA (post-checkout HEAD). Downstream
-# consumers (compute_loc_trend / author_visible_rounds) prefer
-# .reviewed_sha when present, falling back to .sha for legacy runs
-# pre-dating this field. Atomic jq + mv so a crash mid-write doesn't
-# leave a torn file.
-META_TMP="$RUN_DIR/meta.json.tmp"
-if jq --arg sha "$REVIEWED_SHA" '. + {reviewed_sha: $sha}' \
-        "$RUN_DIR/meta.json" > "$META_TMP" 2>/dev/null; then
-    mv -f "$META_TMP" "$RUN_DIR/meta.json" || rm -f "$META_TMP"
-else
-    rm -f "$META_TMP"
-    log "$PR_ID: meta.json reviewed_sha stamp failed — LOC trajectory may use enumerated SHA for this run"
-fi
-
-# Fetch PR metadata once, here, so PR_AUTHOR is available before the env
-# mirror runs (the trust gate below depends on it). The full PR_DATA blob
-# is reused later for AUTHOR_INTENT, commits, and linked-issue context.
-PR_DATA=$(gh pr view "$PR_NUM" --repo "$REPO" --json title,body,author,commits,closingIssuesReferences 2>/dev/null)
-PR_AUTHOR=$(printf '%s' "$PR_DATA" | jq -r '.author.login // empty')
-if [ -z "$PR_AUTHOR" ]; then
-    log "$PR_ID: gh pr view returned no author handle — aborting"
+# meta.json — minimal post-mortem header. Written here (after checkout)
+# rather than at run-dir allocation so `sha` records what was actually
+# reviewed (REVIEWED_SHA) instead of the orchestrator's enumeration SHA
+# (PR_SHA). Worker abort paths between RUN_DIR allocation and this point
+# leave no meta.json; finalize_meta_json's missing-file path is
+# tolerant. started_at uses REVIEW_START_ISO (captured at script entry,
+# single-clock-read alongside REVIEW_START_TS) so review.sh's "comments
+# newer than this review" cutoff doesn't drift past comments posted
+# during the worker's setup window. Title is JSON-escaped via jq so
+# titles with quotes / newlines don't break the file.
+if ! jq -n \
+        --arg repo "$REPO" \
+        --arg pr_id "$PR_ID" \
+        --argjson pr_num "$PR_NUM" \
+        --arg sha "$REVIEWED_SHA" \
+        --arg branch "$PR_BRANCH" \
+        --arg base_ref "$BASE_REF" \
+        --arg title "$PR_TITLE" \
+        --arg force_whole_pr "$FORCE_WHOLE_PR" \
+        --arg workdir "$WORKDIRS_DIR/${REPO_SLUG_FOR_RUN}__${PR_NUM}" \
+        --arg started_at "$REVIEW_START_ISO" \
+        '{repo: $repo, pr_id: $pr_id, pr_num: $pr_num, sha: $sha, branch: $branch, base_ref: $base_ref, title: $title, force_whole_pr: ($force_whole_pr == "true"), workdir: $workdir, started_at: $started_at}' \
+        > "$RUN_DIR/meta.json"; then
+    log "$PR_ID: failed to write $RUN_DIR/meta.json — aborting"
     rm -rf "$REPO_DIR"
     exit 1
 fi
+
+# PR_DATA + BASE_REF + PR_AUTHOR were resolved up front (before the
+# canonical fetch), so AUTHOR_INTENT / commits / linked-issue context
+# pull from the same blob without a second gh round-trip.
 
 # Mirror gitignored env files from canonical into the workdir. `git clone
 # --shared` only carries tracked content, so .env files the user keeps in
@@ -445,40 +502,21 @@ fi
 # burning a full `just test` cycle — including live-API recipes — on a
 # workdir that has nothing to review.
 
-# Single gh pr diff call up front — the canonical "what's in this PR"
-# view, same one humans see on the PR's "Files changed" tab. Used for
-# both KID_INPUT_DIFF (the diff specialists review) by default, and
-# FULL_PR_DIFF (the aggregator's "verify prior findings against
-# current state" reference) always.
-#
-# Capture stderr separately and classify the failure mode. GitHub
-# caps `gh pr diff` at 300 files (HTTP 406 with "exceeded max files");
-# the prior code swallowed stderr via `2>/dev/null` and reported every
-# empty-stdout case as "auth/network", which lost reviewable
-# 300-650-file PRs entirely. On the cap, fall back to a local
-# `git diff origin/<base>...HEAD` (same three-dot semantics, no cap).
-GH_DIFF_STDERR=$(mktemp)
-FULL_PR_DIFF=$(gh pr diff "$PR_NUM" --repo "$REPO" 2>"$GH_DIFF_STDERR")
-GH_DIFF_ERR=$(cat "$GH_DIFF_STDERR")
-rm -f "$GH_DIFF_STDERR"
-case "$(classify_gh_pr_diff_failure "$FULL_PR_DIFF" "$GH_DIFF_ERR")" in
-    ok) ;;
-    cap-exceeded)
-        log "$PR_ID: gh pr diff hit GitHub's 300-file cap — falling back to local git diff origin/${DEFAULT_BRANCH}...HEAD"
-        FULL_PR_DIFF=$(git -C "$REPO_DIR" diff "origin/$DEFAULT_BRANCH"...HEAD)
-        if [ -z "$FULL_PR_DIFF" ]; then
-            log "$PR_ID: local git diff fallback also empty (origin/${DEFAULT_BRANCH} missing in workdir?) — aborting"
-            rm -rf "$REPO_DIR"
-            exit 1
-        fi
-        log "$PR_ID: local fallback diff size = ${#FULL_PR_DIFF} bytes"
-        ;;
-    error)
-        log "$PR_ID: gh pr diff failed — aborting before specialists run. stderr: ${GH_DIFF_ERR:-no stderr}"
-        rm -rf "$REPO_DIR"
-        exit 1
-        ;;
-esac
+# FULL_PR_DIFF is built locally from the just-checked-out worktree:
+# `git diff origin/<base>...<reviewed-sha>` — three-dot semantics match
+# GitHub's "Files changed" view. Reading from the local snapshot
+# instead of `gh pr diff` eliminates a class of races where the live
+# GitHub call could serve a different head than REVIEWED_SHA (the BCR
+# class flagged across PR #31 and PR #35 reviews — single source of
+# truth: the worktree). Also collapses the prior cap-exceeded fallback
+# into the primary path, since `git diff` has no server-side file cap.
+FULL_PR_DIFF=$(git -C "$REPO_DIR" diff "$BASE_REF_SHA...$REVIEWED_SHA")
+if [ -z "$FULL_PR_DIFF" ]; then
+    log "$PR_ID: local git diff origin/${BASE_REF}...${REVIEWED_SHA:0:7} returned empty — aborting"
+    rm -rf "$REPO_DIR"
+    exit 1
+fi
+log "$PR_ID: full PR diff size = ${#FULL_PR_DIFF} bytes"
 KID_INPUT_DIFF="$FULL_PR_DIFF"
 
 # All four "what did the author see last?" values (body, sha, approved,
@@ -514,7 +552,7 @@ PREV_APPROVED=$(latest_author_visible_review_approved "$STATE_DIR" "$REPO_SLUG_F
 # the top of the review (via REVIEW_SCOPE).
 if [ -n "$KNOWN_SHA" ] && [ "$FORCE_WHOLE_PR" != "true" ]; then
     if is_clean_incremental_available "$REPO_DIR" "$KNOWN_SHA"; then
-        KID_INPUT_DIFF=$(git -C "$REPO_DIR" diff "$KNOWN_SHA..HEAD")
+        KID_INPUT_DIFF=$(git -C "$REPO_DIR" diff "$KNOWN_SHA..$REVIEWED_SHA")
         log "$PR_ID: clean incremental diff since ${KNOWN_SHA:0:7}"
     else
         USED_FALLBACK=true
@@ -546,7 +584,7 @@ case "$REVIEW_SCOPE" in
         REVIEW_TASK="Re-review: the author has pushed new commits since your previous review (at ${KNOWN_SHA:0:7}, approved=$PREV_APPROVED). Your prior review is in .codex-scratch/previous-review.md. The incremental diff since that review is in .codex-scratch/diff.patch; the full PR diff is in .codex-scratch/full-diff.patch (consult it when verifying whether prior findings are addressed). Assess whether the new commits address your prior concerns, then produce an updated review."
         ;;
     fallback:*)
-        REVIEW_TASK="Re-review (clean incremental unavailable for ${KNOWN_SHA:0:7} — either rebase/force-push evicted it from the branch's history, or the branch merged origin/${DEFAULT_BRANCH} between then and now). Your prior review is in .codex-scratch/previous-review.md. Because the incremental view is unavailable, .codex-scratch/diff.patch contains the FULL PR diff (identical to .codex-scratch/full-diff.patch) — evaluate accordingly. Assess whether the current state addresses your prior concerns, then produce an updated review."
+        REVIEW_TASK="Re-review (clean incremental unavailable for ${KNOWN_SHA:0:7} — either rebase/force-push evicted it from the branch's history, or the branch merged origin/${BASE_REF} between then and now). Your prior review is in .codex-scratch/previous-review.md. Because the incremental view is unavailable, .codex-scratch/diff.patch contains the FULL PR diff (identical to .codex-scratch/full-diff.patch) — evaluate accordingly. Assess whether the current state addresses your prior concerns, then produce an updated review."
         ;;
 esac
 
@@ -574,21 +612,13 @@ if ! command -v just >/dev/null 2>&1; then
     exit 1
 fi
 
-# Snapshot the base-branch SHA BEFORE running `just test`. Trust model
-# for .knightwatch/<file> reads: the worker treats the base branch as
-# the source of truth (PR-head edits don't take effect until merged).
-# But `just test` runs PR-controlled code in the same workdir AND can
-# rewrite local refs (e.g., `git update-ref refs/remotes/origin/main HEAD`).
-# After tests, every read of `origin/<default-branch>:.knightwatch/...`
-# would silently pick up PR-head policy. Snapshotting the base SHA
-# upfront and passing the SHA (immutable) — not the ref — to all
-# downstream .knightwatch reads closes that bypass.
-DEFAULT_BRANCH_SHA=$(git -C "$REPO_DIR" rev-parse --verify --quiet "origin/$DEFAULT_BRANCH")
-if [ -z "$DEFAULT_BRANCH_SHA" ]; then
-    log "$PR_ID: failed to resolve origin/$DEFAULT_BRANCH SHA — aborting"
-    rm -rf "$REPO_DIR"
-    exit 1
-fi
+# BASE_REF_SHA was captured from canonical right after the fetch (well
+# before the per-PR clone, the env-mirror, and `just test` — all of
+# which run PR-controlled code that could rewrite local refs). The
+# downstream `.knightwatch/<file>` reads consume the immutable SHA
+# (not the symbolic ref), so a PR that runs
+# `git update-ref refs/remotes/origin/main HEAD` during `just test`
+# can't redirect the next config read to PR-head policy.
 
 JUST_FILE=""
 for n in justfile Justfile JUSTFILE .justfile .Justfile .JUSTFILE; do
@@ -738,7 +768,7 @@ DEAD_CODE_STATIC=""
 # (per-repo, committed to the base branch), fall back to DEAD_CODE_CMDS[$REPO]
 # from repos.conf (legacy operator-managed).
 DEAD_CODE_CMD=""
-DEAD_CODE_CMD=$(read_knightwatch_file "$REPO_DIR" "$DEFAULT_BRANCH_SHA" "dead-code.sh")
+DEAD_CODE_CMD=$(read_knightwatch_file "$REPO_DIR" "$BASE_REF_SHA" "dead-code.sh")
 case $? in
     0) : ;;  # PRESENT: use as-is (empty content = "no dead-code check for this repo")
     1) DEAD_CODE_CMD="${DEAD_CODE_CMDS[$REPO]:-}" ;;  # ABSENT: legacy fallback
@@ -817,7 +847,7 @@ STRICT_TYPING_NOTE=""
 # (per-repo, committed to the base branch), fall back to STRICT_TYPING_CMDS[$REPO]
 # from repos.conf (legacy operator-managed).
 STRICT_TYPING_CMD=""
-STRICT_TYPING_CMD=$(read_knightwatch_file "$REPO_DIR" "$DEFAULT_BRANCH_SHA" "strict-typing.sh")
+STRICT_TYPING_CMD=$(read_knightwatch_file "$REPO_DIR" "$BASE_REF_SHA" "strict-typing.sh")
 case $? in
     0) : ;;  # PRESENT: use as-is (empty content = "no strict-typing check for this repo")
     1) STRICT_TYPING_CMD="${STRICT_TYPING_CMDS[$REPO]:-}" ;;  # ABSENT: legacy fallback
@@ -859,25 +889,34 @@ log "$PR_ID: diff is ${#KID_INPUT_DIFF} bytes"
 # source of truth. Lives in lib/search-roots.sh (regression-fenced by
 # lib/tests/search-roots-smoke.sh) so the staging logic can't drift
 # into per-prompt rediscovery again.
-if ! SEARCH_ROOTS=$(stage_search_roots "$REPO" "$REPO_DIR" "$DEFAULT_BRANCH_SHA"); then
+if ! SEARCH_ROOTS=$(stage_search_roots "$REPO" "$REPO_DIR" "$BASE_REF_SHA"); then
     log "$PR_ID: stage_search_roots failed (knightwatch-config error) — aborting"
     rm -rf "$REPO_DIR"
     exit 1
 fi
 
-# Materialize sibling-repo symlinks under .siblings/<owner>/<repo>, but
+# Materialize sibling-repo content under .siblings/<owner>/<repo>, but
 # ONLY for siblings stage_search_roots above just classified as
-# `included` (whitelisted in SOURCE_PATHS AND checkout present on disk).
-# Running before stage_search_roots would symlink siblings whose
-# checkouts are absent — symlinks would dangle and specialists would
-# get confused.
+# `included` (whitelisted in SOURCE_PATHS AND checkout present on disk
+# AND a git repo). Running before stage_search_roots would copy content
+# from siblings whose checkouts are absent. If materialization fails
+# (corrupt git objects, source disappeared after classification,
+# disk full, permission), abort the review — better to fail loud
+# than serve specialists partial sibling content while claiming
+# `included` coverage. Materializer details (HEAD-snapshot pinning,
+# blob reads via `git show`, mode filtering) live in
+# lib/sibling-symlinks.sh and shouldn't be duplicated here.
 INCLUDED_SLUGS=()
 while IFS= read -r line; do
     case "$line" in
         *' included '*) INCLUDED_SLUGS+=("${line%% included *}") ;;
     esac
 done <<< "$SEARCH_ROOTS"
-materialize_sibling_symlinks "$REPO_DIR" SOURCE_PATHS "${INCLUDED_SLUGS[@]}"
+if ! materialize_sibling_symlinks "$REPO_DIR" SOURCE_PATHS "${INCLUDED_SLUGS[@]}"; then
+    log "$PR_ID: materialize_sibling_symlinks failed — aborting (would otherwise serve partial sibling content while claiming full coverage)"
+    rm -rf "$REPO_DIR"
+    exit 1
+fi
 
 # ---- write scratch files ----
 write_scratch "$REPO_DIR" "diff.patch"         "$KID_INPUT_DIFF"
@@ -924,7 +963,7 @@ fi
 # (legacy operator-managed). Once every tracked repo has its .knightwatch/
 # committed, the fallback can be removed.
 PRODUCT_CONTEXT=""
-PRODUCT_CONTEXT=$(read_knightwatch_file "$REPO_DIR" "$DEFAULT_BRANCH_SHA" "product-context.md")
+PRODUCT_CONTEXT=$(read_knightwatch_file "$REPO_DIR" "$BASE_REF_SHA" "product-context.md")
 case $? in
     0) : ;;  # PRESENT: use as-is (empty content = "explicitly no product context for this repo")
     1)
@@ -944,7 +983,7 @@ write_scratch "$REPO_DIR" "product-context.md" "$PRODUCT_CONTEXT"
 # (Broken-Glass Test in standards.md cites this file by name).
 # Tri-state: PRESENT use file; ABSENT use embedded default; ERROR abort.
 REVIEW_PRIORITY=""
-REVIEW_PRIORITY=$(read_knightwatch_file "$REPO_DIR" "$DEFAULT_BRANCH_SHA" "review-priority.md")
+REVIEW_PRIORITY=$(read_knightwatch_file "$REPO_DIR" "$BASE_REF_SHA" "review-priority.md")
 case $? in
     0) : ;;  # PRESENT: use as-is
     1)
@@ -965,7 +1004,7 @@ This repo has no `.knightwatch/review-priority.md` committed. Default behavior:
 If this repo needs a different operating point, commit `.knightwatch/review-priority.md` to the base branch.
 PRIORITY_EOF
 )
-        log "$PR_ID: review-priority.md ABSENT in $DEFAULT_BRANCH_SHA — using default content"
+        log "$PR_ID: review-priority.md ABSENT in $BASE_REF_SHA — using default content"
         ;;
     *) log "$PR_ID: knightwatch-config error reading review-priority.md — aborting"; rm -rf "$REPO_DIR"; exit 1 ;;
 esac
@@ -973,7 +1012,7 @@ write_scratch "$REPO_DIR" "review-priority.md" "$REVIEW_PRIORITY"
 
 # loc-trend.md — per-round LOC trajectory for the momentum specialist
 # and aggregator's loop-breaker mode (see § Broken-Glass Test).
-LOC_TREND=$(compute_loc_trend "$REPO" "$PR_NUM" "$REPO_DIR" "$DEFAULT_BRANCH_SHA" "$STATE_DIR" "$RUN_DIR" "$REVIEWED_SHA")
+LOC_TREND=$(compute_loc_trend "$REPO" "$PR_NUM" "$REPO_DIR" "$BASE_REF_SHA" "$STATE_DIR" "$RUN_DIR" "$REVIEWED_SHA")
 write_scratch "$REPO_DIR" "loc-trend.md" "$LOC_TREND"
 
 FILE_HISTORY=""
@@ -1019,9 +1058,17 @@ $IS_BODY
 done < <(printf '%s' "$PR_DATA" | jq -r '.closingIssuesReferences[]? | [.owner.login, .repo.name, (.number|tostring)] | @tsv' 2>/dev/null)
 write_scratch "$REPO_DIR" "author-intent.md" "$AUTHOR_INTENT"
 
-COMMITS=$(printf '%s' "$PR_DATA" | jq -r '.commits[]? | "\(.oid[0:7]) \(.messageHeadline)"')
+# Commits narrative for AUTHOR_INTENT — sourced from the local
+# checkout (BASE_REF_SHA..REVIEWED_SHA) rather than PR_DATA.commits.
+# PR_DATA was captured before the canonical fetch + checkout, so a
+# push that landed in the race window between `gh pr view` and the
+# `refs/pull/N/head` fetch would leave PR_DATA's commit list one
+# behind REVIEWED_SHA — and specialists would see a commit narrative
+# that doesn't match diff.patch / full-diff.patch (round-2 finding
+# on PR #36 — same source-of-truth class as the diff itself).
+COMMITS=$(git -C "$REPO_DIR" log --pretty=format:'%h %s' "$BASE_REF_SHA..$REVIEWED_SHA")
 if [ -z "$COMMITS" ]; then
-    log "$PR_ID: gh pr view returned no commits — aborting"
+    log "$PR_ID: git log $BASE_REF_SHA..$REVIEWED_SHA returned no commits — aborting"
     rm -rf "$REPO_DIR"
     exit 1
 fi

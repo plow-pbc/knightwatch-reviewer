@@ -19,12 +19,16 @@
 #
 # Per-sibling status:
 #   included      — slug in SOURCE_PATHS AND its checkout exists on
-#                   disk. The .siblings/<slug> path is the workdir-
-#                   relative symlink materialized by sibling-symlinks.sh
-#                   after this helper runs.
-#   missing       — slug in SOURCE_PATHS BUT its checkout absent on
-#                   this host (operator-config gap, not a security
-#                   boundary).
+#                   disk AND the checkout is a git repo (the
+#                   materializer needs an enumerable HEAD). The
+#                   .siblings/<slug> path is the workdir-relative
+#                   directory the materializer (sibling-symlinks.sh)
+#                   populates after this helper runs.
+#   missing       — slug in SOURCE_PATHS BUT either (a) the checkout
+#                   directory is absent on this host or (b) the
+#                   checkout exists but isn't a git repo (so the
+#                   materializer can't enumerate it). All operator-
+#                   config gaps (not a security boundary).
 #
 # Output format:
 #   # coverage: full | partial | same-repo-only
@@ -83,13 +87,30 @@ stage_search_roots() {
     for sibling_repo in "${siblings[@]}"; do
         [ "$sibling_repo" = "$repo" ] && continue
         sibling_path="${SOURCE_PATHS[$sibling_repo]:-}"
-        # Two ways a declared sibling can be unavailable: (a) operator
-        # has no SOURCE_PATHS entry for the slug — they haven't told us
-        # where to find it on this host; (b) entry exists but the
-        # checkout directory is absent on disk. Both are operator-config
-        # gaps (NOT a security boundary) and both classify as `missing`
-        # so the user sees them in coverage rather than silent drops.
+        # Three ways a declared sibling can be unavailable, all classified
+        # as `missing` so the user sees them in coverage instead of as
+        # silent drops:
+        #   (a) operator has no SOURCE_PATHS entry — they haven't told us
+        #       where to find it on this host
+        #   (b) entry exists but the checkout directory is absent on disk
+        #   (c) entry + dir exist but it isn't a git repo (corrupt clone,
+        #       raw download, operator misconfig) — the materializer
+        #       requires a git repo to pin a HEAD snapshot, so without
+        #       this gate the coverage marker would say "full" while
+        #       specialists searched a tree the materializer couldn't
+        #       even enumerate. (Mechanism details belong in
+        #       lib/sibling-symlinks.sh; this comment just notes what
+        #       this gate is preventing.)
+        # Cases (a)+(b) are operator-config gaps (NOT a security boundary).
+        # Case (c) is what cncorp/plow#37 review 1 caught — the second
+        # half of the BCR finding. Single-owner contract: if it can't
+        # be searched, it isn't included.
         if [ -z "$sibling_path" ] || [ ! -d "$sibling_path" ]; then
+            body+="$sibling_repo missing"$'\n'
+            missing=$((missing + 1))
+            continue
+        fi
+        if ! git -C "$sibling_path" rev-parse --git-dir >/dev/null 2>&1; then
             body+="$sibling_repo missing"$'\n'
             missing=$((missing + 1))
             continue

@@ -7,8 +7,8 @@
 **Working directory:** You are running inside a fresh checkout of the PR branch. Read any file in this repo. For modified public symbols that plausibly have cross-repo consumers (shared libraries, server-side schemas consumed by client repos), additionally grep the sibling source-checkout paths listed in `.codex-scratch/search-roots.md`.
 
 **`search-roots.md` format.** The first line is a coverage header (`# coverage: full | partial | same-repo-only — ...`). Each subsequent line classifies one sibling repo:
-- `<repo-slug> included .siblings/<repo-slug>` — whitelisted in SOURCE_PATHS AND its checkout exists on this host; grep this workdir-relative path. The `.siblings/` directory is a tree of symlinks pointing at the operator's local checkouts of each whitelisted sibling repo.
-- `<repo-slug> missing` — whitelisted in SOURCE_PATHS BUT its checkout is absent on this host (operator-config gap). Treat as a coverage gap for any modified public symbol that plausibly has consumers there.
+- `<repo-slug> included .siblings/<repo-slug>` — sibling source available for cross-repo search; grep this workdir-relative path. The directory contains tracked source from a recent committed snapshot; `grep -r` is safe.
+- `<repo-slug> missing` — whitelisted in SOURCE_PATHS BUT either the checkout is absent on this host or the checkout isn't a git repo (operator-config gap; either way the materializer can't enumerate tracked content). Treat as a coverage gap for any modified public symbol that plausibly has consumers there.
 
 **Citation form (cross-repo).** When you cite a hit in a sibling repo, write the path as `<owner>/<repo>/<rel-path>:<line>` (e.g. `cncorp/plow-content/plow_content/emit_pr.py:59`) — no `.siblings/` prefix and no host absolute paths. The post-time scrub step rewrites stragglers to that form, so emit it correctly yourself for clean evidence the consumers specialist can read.
 
