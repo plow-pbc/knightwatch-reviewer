@@ -142,6 +142,12 @@ mkdir -p "$HOME/.local/bin"
 export PATH="$HOME/.local/bin:$PATH"
 write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"
 
+# Stage installed prompts the worker fail-fast-checks for. probe-schema.md
+# is the only one currently required (lib/review-one-pr.sh:962); install.sh
+# would symlink the whole prompts/ dir on a real host.
+mkdir -p "$HOME/.pr-reviewer/prompts"
+cp "$PROJECT_ROOT/prompts/probe-schema.md" "$HOME/.pr-reviewer/prompts/probe-schema.md"
+
 # ---- repos.conf with this repo declared (worker reads it) ----
 write_probe_repos_conf "$STATE_DIR/repos.conf"
 

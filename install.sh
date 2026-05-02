@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Idempotent install / re-install for the knightwatch-reviewer bot host.
 # Run from the repo root: ./install.sh
 #
