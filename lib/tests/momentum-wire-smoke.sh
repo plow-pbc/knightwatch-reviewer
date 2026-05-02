@@ -14,9 +14,14 @@ assert_grep() {
     grep -qF -- "$pattern" "$file" || { echo "FAIL: $label"; exit 1; }
 }
 
-echo "  asserting momentum.md invocation in review-one-pr.sh..."
-assert_grep "review-one-pr.sh missing momentum.md reference" \
-    "momentum.md" "$PROJECT_ROOT/lib/review-one-pr.sh"
+# Wiring lives in lib/orchestrate.sh (extracted from review-one-pr.sh) —
+# the function `run_specialist_pipeline` is sourced and invoked from the
+# main worker.
+ORCHESTRATE="$PROJECT_ROOT/lib/orchestrate.sh"
+
+echo "  asserting momentum.md invocation in orchestrate.sh..."
+assert_grep "orchestrate.sh missing momentum.md reference" \
+    "momentum.md" "$ORCHESTRATE"
 
 echo "  asserting momentum gate on previous-review.md..."
 # Fence the EXACT guard pattern, not the bare substring "previous-review.md"
@@ -24,15 +29,19 @@ echo "  asserting momentum gate on previous-review.md..."
 # even if the re-review-only gate around the momentum specialist disappeared).
 # A future refactor that drops the `if [ -s ... ]; then` around the momentum
 # block now fails here instead of silently regressing.
-assert_grep "review-one-pr.sh missing momentum gate (\$RUN_DIR/inputs/previous-review.md)" \
-    'if [ -s "$RUN_DIR/inputs/previous-review.md" ]' "$PROJECT_ROOT/lib/review-one-pr.sh"
+assert_grep "orchestrate.sh missing momentum gate (\$RUN_DIR/inputs/previous-review.md)" \
+    'if [ -s "$RUN_DIR/inputs/previous-review.md" ]' "$ORCHESTRATE"
 
 echo "  asserting momentum dispatch via run-specialist.sh..."
-assert_grep "review-one-pr.sh missing run-specialist.sh dispatch for momentum" \
-    'run-specialist.sh" "momentum"' "$PROJECT_ROOT/lib/review-one-pr.sh"
+assert_grep "orchestrate.sh missing run-specialist.sh dispatch for momentum" \
+    'run-specialist.sh" "momentum"' "$ORCHESTRATE"
 
 echo "  asserting momentum output symlink to .codex-scratch/momentum.md..."
-assert_grep "review-one-pr.sh missing symlink from RUN_DIR/agents/momentum/output.md to .codex-scratch/momentum.md" \
-    ".codex-scratch/momentum.md" "$PROJECT_ROOT/lib/review-one-pr.sh"
+assert_grep "orchestrate.sh missing symlink from RUN_DIR/agents/momentum/output.md to .codex-scratch/momentum.md" \
+    ".codex-scratch/momentum.md" "$ORCHESTRATE"
+
+echo "  asserting orchestrate.sh is sourced from review-one-pr.sh..."
+assert_grep "review-one-pr.sh does not source lib/orchestrate.sh" \
+    'orchestrate.sh' "$PROJECT_ROOT/lib/review-one-pr.sh"
 
 echo "  PASS"

@@ -120,6 +120,11 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 . "$_LIB_DIR/agent-fallback.sh"
 . "$_LIB_DIR/run-dir.sh"
 
+# --- LLM specialist pipeline (intent → dead-code → 8 angles → momentum →
+# critic → aggregator). Sourced after agent-fallback so critic_fallback is
+# in scope for the function body. ---
+. "$_LIB_DIR/orchestrate.sh"
+
 # --- loc-trend computation (compute_loc_trend / _loc_trend_display) ---
 # Sources run-dir.sh internally for is_run_author_visible /
 # author_visible_rounds, but run-dir.sh is sourced just above and
@@ -1074,173 +1079,10 @@ if [ -z "$COMMITS" ]; then
 fi
 write_scratch "$REPO_DIR" "commits.md" "$COMMITS"
 
-SPECIALISTS_DIR="$REPO_DIR/.codex-scratch/specialists"
-mkdir -p "$SPECIALISTS_DIR"
-
-# Every codex invocation goes through run-specialist.sh — it writes the
-# prompt, output, and codex stderr into runs/<RUN_ID>/agents/<name>/.
-# Symlinks under .codex-scratch/ keep the prompt-cited paths
-# (.codex-scratch/inferred-intent.md, .codex-scratch/specialists/<angle>.md,
-# .codex-scratch/critic.md) resolving to those outputs.
-log "$PR_ID: inferring developer intent..."
-INTENT_PROMPT=$(substitute_placeholders \
-    "$HOME/.pr-reviewer/prompts/intent.md" \
-    "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR")
-"$_LIB_DIR/run-specialist.sh" "intent" "$REPO_DIR" "$INTENT_PROMPT" "$RUN_DIR/agents/intent"
-INTENT_EXIT=$?
-INTENT_OUT="$RUN_DIR/agents/intent/output.md"
-ln -sfn "$INTENT_OUT" "$REPO_DIR/.codex-scratch/inferred-intent.md"
-
-if [ "$INTENT_EXIT" -ne 0 ] || [ ! -s "$INTENT_OUT" ]; then
-    log "$PR_ID: intent inference failed (codex exit=$INTENT_EXIT, output empty=$([ ! -s "$INTENT_OUT" ] && echo true || echo false)) — aborting"
-    rm -rf "$REPO_DIR"
-    exit 1
-fi
-
-INTENT_NONBLANK_LINES=$(grep -cv '^[[:space:]]*$' "$INTENT_OUT")
-if [ "$INTENT_NONBLANK_LINES" -ne 1 ]; then
-    log "$PR_ID: intent output has $INTENT_NONBLANK_LINES non-blank lines, expected exactly 1 — aborting"
-    rm -rf "$REPO_DIR"
-    exit 1
-fi
-
-if ! grep -q '^Inferred intent: ' "$INTENT_OUT"; then
-    log "$PR_ID: intent output missing 'Inferred intent: ' prefix — aborting"
-    rm -rf "$REPO_DIR"
-    exit 1
-fi
-
-log "$PR_ID: intent inference complete: $(head -1 "$INTENT_OUT")"
-
-# ---- dead-code-search LLM pre-pass ----
-# Reads .codex-scratch/dead-code-static.md (raw static-tool output) +
-# diff.patch and writes structured evidence to .codex-scratch/dead-code.md
-# for the `consumers` specialist to file findings from. Same pattern as
-# the intent pre-pass above: synchronous, sequential, non-fatal on
-# failure (degrades to empty evidence; consumers specialist falls back
-# to its degraded LLM-grep mode).
-log "$PR_ID: dead-code search..."
-DC_PROMPT=$(substitute_placeholders \
-    "$HOME/.pr-reviewer/prompts/dead-code-search.md" \
-    "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR")
-"$_LIB_DIR/run-specialist.sh" "dead-code-search" "$REPO_DIR" "$DC_PROMPT" "$RUN_DIR/agents/dead-code-search"
-DC_EXIT=$?
-DC_OUT="$RUN_DIR/agents/dead-code-search/output.md"
-if [ "$DC_EXIT" -eq 0 ] && [ -s "$DC_OUT" ]; then
-    ln -sfn "$DC_OUT" "$REPO_DIR/.codex-scratch/dead-code.md"
-    log "$PR_ID: dead-code search complete ($(wc -l < "$DC_OUT") line(s) of evidence)"
-else
-    log "$PR_ID: dead-code search failed (exit $DC_EXIT, empty=$([ ! -s "$DC_OUT" ] && echo true || echo false)) — consumers specialist falls back to degraded LLM-grep mode"
-    : > "$REPO_DIR/.codex-scratch/dead-code.md"
-fi
-
-ANGLES=(security data-integrity architecture simplification tests shape performance consumers)
-
-log "$PR_ID: launching ${#ANGLES[@]} specialists in parallel..."
-declare -A AGENT_PIDS=()
-for angle in "${ANGLES[@]}"; do
-    PROMPT=$(build_specialist_prompt \
-        "$angle" \
-        "$HOME/.pr-reviewer/prompts/${angle}.md" \
-        "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR")
-    "$_LIB_DIR/run-specialist.sh" \
-        "$angle" \
-        "$REPO_DIR" \
-        "$PROMPT" \
-        "$RUN_DIR/agents/$angle" &
-    AGENT_PIDS["$angle"]=$!
-done
-
-# Per-PID wait so a non-zero exit from run-specialist.sh (codex error or
-# empty output) actually surfaces as a worker abort. Bare `wait` returns 0
-# even when individual children failed, so a partial codex output could
-# previously slip through the empty-file check and reach the aggregator.
-SPECIALIST_FAILURE=0
-for angle in "${ANGLES[@]}"; do
-    if ! wait "${AGENT_PIDS[$angle]}"; then
-        log "$PR_ID: specialist $angle exited non-zero (see $RUN_DIR/agents/$angle/log.txt)"
-        SPECIALIST_FAILURE=1
-    fi
-done
-# Symlink each specialist's output into the codex-scratch view so the
-# critic + aggregator prompts ('.codex-scratch/specialists/<angle>.md')
-# resolve to it. Created after the per-PID wait completes — half-written
-# outputs aren't visible through the symlink during the parallel phase.
-for angle in "${ANGLES[@]}"; do
-    ln -sfn "$RUN_DIR/agents/$angle/output.md" "$SPECIALISTS_DIR/${angle}.md"
-done
-if [ "$SPECIALIST_FAILURE" -ne 0 ]; then
-    log "$PR_ID: at least one specialist failed — aborting review"
-    rm -rf "$REPO_DIR"
-    exit 1
-fi
-log "$PR_ID: all ${#ANGLES[@]} specialists completed"
-for angle in "${ANGLES[@]}"; do
-    LINES=$(wc -l < "$SPECIALISTS_DIR/${angle}.md")
-    NO_FINDINGS=""
-    grep -q '^No findings\.' "$SPECIALISTS_DIR/${angle}.md" && NO_FINDINGS=" (no findings)"
-    log "$PR_ID: specialist=$angle lines=$LINES$NO_FINDINGS"
-done
-
-# Momentum specialist — runs only on re-reviews. Outputs prose-only
-# trajectory meta-finding for the aggregator's loop-breaker (Path 2).
-# Skipped on first reviews (where the aggregator handles absence by
-# design); on re-reviews failure is fail-loud — see the abort below.
-if [ -s "$RUN_DIR/inputs/previous-review.md" ]; then
-    log "$PR_ID: launching momentum specialist (re-review)..."
-    MOMENTUM_PROMPT=$(substitute_placeholders \
-        "$HOME/.pr-reviewer/prompts/momentum.md" \
-        "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR")
-    "$_LIB_DIR/run-specialist.sh" "momentum" "$REPO_DIR" "$MOMENTUM_PROMPT" "$RUN_DIR/agents/momentum"
-    MOMENTUM_EXIT=$?
-    if [ $MOMENTUM_EXIT -ne 0 ]; then
-        # Fail-fast > graceful degradation. Path 2 of the aggregator's
-        # loop-breaker depends on this output; an absent momentum.md
-        # silently demotes Path 2 to "no structural callout," which is
-        # wrong output on exactly the re-reviews where the callout
-        # matters most. Mirror the existing fail-loud abort pattern
-        # (see knightwatch-config error arms above).
-        log "$PR_ID: momentum specialist failed (exit $MOMENTUM_EXIT) — aborting review (Path 2 needs this output; silent degrade would produce wrong loop-breaker behavior)"
-        rm -rf "$REPO_DIR"
-        exit 1
-    fi
-    MOMENTUM_OUT="$RUN_DIR/agents/momentum/output.md"
-    ln -sfn "$MOMENTUM_OUT" "$REPO_DIR/.codex-scratch/momentum.md"
-else
-    log "$PR_ID: skipping momentum specialist (first review)"
-fi
-
-log "$PR_ID: critic pass..."
-CRITIC_PROMPT=$(cat "$HOME/.pr-reviewer/prompts/critic.md")
-"$_LIB_DIR/run-specialist.sh" "critic" "$REPO_DIR" "$CRITIC_PROMPT" "$RUN_DIR/agents/critic"
-CRITIC_EXIT=$?
-CRITIC_OUT="$RUN_DIR/agents/critic/output.md"
-
-# Log the failure mode for the run.log narrative; critic_fallback in
-# lib/agent-fallback.sh handles the actual file substitution and is the
-# regression-fenced path (see lib/tests/critic-fallback-smoke.sh).
-# Empty-output is reported as exit 3 by run-specialist.sh, so it lands
-# here as a non-zero CRITIC_EXIT — there's no separate elif branch.
-if [ "$CRITIC_EXIT" -ne 0 ]; then
-    log "$PR_ID: critic exited $CRITIC_EXIT — discarding any partial/empty output, falling back to placeholder (see agents/critic/log.txt)"
-fi
-critic_fallback "$CRITIC_EXIT" "$CRITIC_OUT"
-ln -sfn "$CRITIC_OUT" "$REPO_DIR/.codex-scratch/critic.md"
-
-log "$PR_ID: aggregator (with critic input)..."
-# build_aggregator_prompt stitches in prompts/voice.md (operator-tunable
-# voice + tone) at aggregator.md's INSERT_VOICE_HERE marker, then
-# substitutes placeholders. The aggregator is NOT a specialist — must
-# not inherit the specialist common-header which would demand the
-# Surveyed/Finding-N output shape — so it gets its own build path.
-if ! AGG_PROMPT=$(build_aggregator_prompt "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR"); then
-    log "$PR_ID: build_aggregator_prompt failed — aborting (incomplete install or stitch-contract regression)"
-    rm -rf "$REPO_DIR"
-    exit 1
-fi
-"$_LIB_DIR/run-specialist.sh" "aggregator" "$REPO_DIR" "$AGG_PROMPT" "$RUN_DIR/agents/aggregator"
-AGG_EXIT=$?
-AGG_OUT="$RUN_DIR/agents/aggregator/output.md"
+# Run the LLM review pipeline (intent → dead-code → 8 angles → momentum →
+# critic → aggregator). Sets AGG_EXIT and AGG_OUT in this shell; aborts on
+# any fail-loud error. Body lives in lib/orchestrate.sh.
+run_specialist_pipeline
 
 # Aggregator output is what gets posted to GitHub — abort on any codex error
 # even if a partial output happens to be non-empty, so a truncated review
