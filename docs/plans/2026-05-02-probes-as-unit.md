@@ -4,7 +4,7 @@
 
 **Goal:** Refactor the LLM review pipeline so every specialist emits **probes** (one schema covering today's findings AND open-questions) with explicit specialist attribution. Critic's job becomes generating + answering probes with evidence rather than counter-arguing findings. Aggregator publishes a single ranked probe list with per-line `[from: <specialist>]` attribution. Removes the Findings/Open-Questions duality, the voice-posture rewrite-pass, and the REFRAME-AS-QUESTION funnel. Adds always-on complexity-cut probes and an AI-author callout (visible + hidden HTML comment).
 
-**Architecture:** Probe schema lives in `prompts/standards.md` as the canonical contract. Each specialist prompt is rewritten to emit probes natively (replacing finding emission). The critic prompt is rewritten to (a) generate additional probes the specialists missed and (b) answer each probe with evidence (`grep`, `git log`, `decline-history.md`, `prior-art.md`); answered probes carry an explicit `Answer:` field that re-ranks them. The aggregator collapses Findings + Open Questions into one section, renders every line with `[from: <specialist>]`, and prepends both a human-visible AI-author callout and a hidden `<!-- knightwatch-reviewer:ai-author -->` HTML comment block. A new `replay.sh` tool (Phase 0) lets us rerun the pipeline against historical PR SHAs to verify each phase improves output without regressing bug-catch.
+**Architecture:** Probe schema lives in `prompts/standards.md` as the canonical contract. Each specialist prompt is rewritten to emit probes natively (replacing finding emission). The critic prompt is rewritten to (a) generate additional probes the specialists missed and (b) answer each probe with evidence (`grep`, `git log`, `decline-history.md`, `prior-art.md`); answered probes carry an explicit `Answer:` field that re-ranks them. The aggregator collapses Findings + Open Questions into one section, renders every line with `[from: <specialist>]`, and prepends both a human-visible AI-author callout and a hidden `<!-- knightwatch-reviewer:ai-author -->` HTML comment block. Replay-validation against historical PR SHAs uses an external `lib/replay.sh` shipping separately from `~/Hacking/knightwatch-reviewer feat/replay-harness` — this plan does not reproduce that tool.
 
 **Tech Stack:** bash 5, codex CLI, gh CLI, jq, awk, gnu sed. Prompt files are Markdown.
 
@@ -20,8 +20,6 @@ The user's stated goal is *both* improving reviewer output (more complexity-cut 
 
 **Created:**
 
-- `lib/replay.sh` (~150 LOC) — replay tool: `./replay.sh <repo> <pr#> <commit-sha>` reruns the pipeline against the historical SHA, writes output to `replays/<repo>-<pr>-<sha>/`. Phase 0.
-- `lib/tests/replay-smoke.sh` (~50 LOC) — verifies replay tool against a fixture run-dir.
 - `prompts/probe-schema.md` (~60 LOC, sourced into other prompts) — the probe contract referenced by every specialist + the critic + aggregator.
 - `lib/tests/probe-schema-smoke.sh` (~80 LOC) — parses probe outputs, asserts schema fields present.
 
@@ -42,7 +40,7 @@ The user's stated goal is *both* improving reviewer output (more complexity-cut 
 - `lib/tests/anti-bloat-contract-smoke.sh` — new token fences for probe schema; remove fences referencing dropped concepts (REFRAME-AS-QUESTION, "Open Questions" section header).
 - `lib/tests/critic-splitter-smoke.sh` — fixture updated to probe format.
 - `lib/tests/critic-fallback-smoke.sh` — fallback emits an empty probe list.
-- `justfile` — wire 2 new smokes (`replay-smoke`, `probe-schema-smoke`).
+- `justfile` — wire 1 new smoke (`probe-schema-smoke`).
 - `README.md` — update specialist-pipeline description; reference probes.
 
 **Out of scope for this plan (follow-up plan after Phase 5 lands):**
@@ -53,6 +51,8 @@ The user's stated goal is *both* improving reviewer output (more complexity-cut 
 ---
 
 ## Replay validation corpus
+
+**Replay tool — external.** This plan does NOT build a replay tool; replay scaffolding ships in parallel from `~/Hacking/knightwatch-reviewer` on `feat/replay-harness`. When phases below say `./lib/replay.sh ...`, invoke `~/Hacking/knightwatch-reviewer/lib/replay.sh ...` instead — same CLI. Baselines (the rendered review for each corpus PR before any prompt changes) should also be captured from that repo before Phase 1 begins, OR fall back to manual spot-check against the publicly-posted bot reviews on each corpus PR (sampled at session start; broadly representative).
 
 Every phase from Phase 1 onward includes a replay step. The fixed corpus is:
 
@@ -72,206 +72,6 @@ For each replay, the spot-check is:
 
 ---
 
-## Phase 0 — Replay scaffolding
-
-Per `feedback_validation_style.md`: scaffolding before fix-list. No replay tool exists today, so build the minimum.
-
-### Task 0.1: Create branch
-
-**Files:** none.
-
-- [ ] **Step 0.1.1: Create the feature branch**
-
-```bash
-cd /Users/so/Hacking/knightwatch-reviewer2
-git checkout main && git pull --ff-only
-git checkout -b feat/probes-as-unit
-```
-
-### Task 0.2: Replay tool
-
-**Files:**
-- Create: `lib/replay.sh`
-- Test: `lib/tests/replay-smoke.sh`
-
-The replay tool fetches a PR at a specific historical SHA, sets up a temp checkout, and runs the existing review pipeline (`run_specialist_pipeline` from `lib/orchestrate.sh`) against it. Output goes to `replays/<repo>-<pr>-<sha>/`. The tool is deliberately *not* trying to be hermetic — it uses the live codex CLI; the only thing it stubs is the GitHub-posting step.
-
-- [ ] **Step 0.2.1: Write the failing smoke test first**
-
-```bash
-# lib/tests/replay-smoke.sh
-#!/bin/bash
-set -euo pipefail
-REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-TMPDIR="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR"' EXIT
-
-# Dry-run mode: pass --dry-run to skip codex; assert the prep steps work.
-"$REPO_ROOT/lib/replay.sh" --dry-run \
-  --repo srosro/knightwatch-reviewer \
-  --pr 43 \
-  --sha HEAD \
-  --output-dir "$TMPDIR/replay-out"
-
-# Assertions
-test -d "$TMPDIR/replay-out" || { echo "FAIL: output dir not created"; exit 1; }
-test -s "$TMPDIR/replay-out/diff.patch" || { echo "FAIL: diff.patch not written"; exit 1; }
-test -s "$TMPDIR/replay-out/manifest.json" || { echo "FAIL: manifest.json not written"; exit 1; }
-echo "OK: replay-smoke (dry-run)"
-```
-
-- [ ] **Step 0.2.2: Run the smoke and verify it fails**
-
-```bash
-bash lib/tests/replay-smoke.sh
-# Expected: FAIL — no such file lib/replay.sh
-```
-
-- [ ] **Step 0.2.3: Implement `lib/replay.sh`**
-
-```bash
-#!/bin/bash
-# Replay a PR review at a historical SHA. Writes outputs to <output-dir>.
-# Usage:
-#   ./lib/replay.sh --repo OWNER/REPO --pr N --sha SHA [--output-dir PATH] [--dry-run]
-#
-# Modes:
-#   default: runs the full LLM pipeline (codex) against the historical SHA
-#   --dry-run: prepares the input scratch dir + manifest, skips codex
-set -euo pipefail
-
-DRY_RUN=0
-REPO=""; PR=""; SHA=""; OUT=""
-while [ $# -gt 0 ]; do
-    case "$1" in
-        --repo) REPO="$2"; shift 2 ;;
-        --pr) PR="$2"; shift 2 ;;
-        --sha) SHA="$2"; shift 2 ;;
-        --output-dir) OUT="$2"; shift 2 ;;
-        --dry-run) DRY_RUN=1; shift ;;
-        *) echo "unknown arg: $1" >&2; exit 2 ;;
-    esac
-done
-
-[ -n "$REPO" ] && [ -n "$PR" ] && [ -n "$SHA" ] || {
-    echo "usage: $0 --repo OWNER/REPO --pr N --sha SHA [--output-dir PATH] [--dry-run]" >&2
-    exit 2
-}
-OUT="${OUT:-replays/${REPO//\//-}-${PR}-${SHA:0:7}}"
-mkdir -p "$OUT"
-
-# Fetch diff at the historical SHA
-gh pr diff "$PR" --repo "$REPO" --patch > "$OUT/diff.patch"
-
-# Manifest captures replay provenance — deterministic spot-check input
-cat > "$OUT/manifest.json" <<EOF
-{
-    "repo": "$REPO",
-    "pr": $PR,
-    "sha": "$SHA",
-    "replayed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-    "dry_run": $([ "$DRY_RUN" -eq 1 ] && echo true || echo false)
-}
-EOF
-
-if [ "$DRY_RUN" -eq 1 ]; then
-    echo "dry-run: scratch prepared at $OUT"
-    exit 0
-fi
-
-# Real replay: stage the same .codex-scratch inputs run_specialist_pipeline reads,
-# then invoke run_specialist_pipeline against a fresh checkout at $SHA. The post-
-# pipeline gh-posting step is deliberately skipped — we only want the rendered review.
-LIB_DIR="$(cd "$(dirname "$0")" && pwd)"
-. "$LIB_DIR/orchestrate.sh"
-. "$LIB_DIR/run-dir.sh"
-. "$LIB_DIR/agent-fallback.sh"
-. "$LIB_DIR/llm-pipeline.sh"
-. "$LIB_DIR/critic-splitter.sh"
-. "$LIB_DIR/go-deep-rank.sh"
-
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
-git clone --depth 50 "https://github.com/$REPO.git" "$WORK/repo"
-( cd "$WORK/repo" && git fetch origin "pull/$PR/head" && git checkout "$SHA" )
-
-REPO_DIR="$WORK/repo"
-RUN_DIR="$WORK/run"
-mkdir -p "$RUN_DIR/agents" "$REPO_DIR/.codex-scratch"
-cp "$OUT/diff.patch" "$REPO_DIR/.codex-scratch/diff.patch"
-
-PR_ID="$REPO#$PR"
-PR_TITLE="$(gh pr view "$PR" --repo "$REPO" --json title --jq .title)"
-PR_URL="https://github.com/$REPO/pull/$PR"
-PR_AUTHOR="$(gh pr view "$PR" --repo "$REPO" --json author --jq .author.login)"
-_LIB_DIR="$LIB_DIR"
-LOG_FILE="$OUT/run.log"
-
-run_specialist_pipeline
-
-cp "$RUN_DIR/agents/aggregator/output.md" "$OUT/aggregator-output.md"
-cp -r "$RUN_DIR/agents" "$OUT/agents"
-echo "replay complete: $OUT"
-```
-
-- [ ] **Step 0.2.4: Run the smoke and verify it passes (dry-run path only)**
-
-```bash
-bash lib/tests/replay-smoke.sh
-# Expected: OK: replay-smoke (dry-run)
-```
-
-- [ ] **Step 0.2.5: Wire smoke into justfile**
-
-Edit `justfile`, add to `test:` recipe before the closing newline:
-
-```make
-    echo ""
-    echo "=== replay smoke test ==="
-    bash lib/tests/replay-smoke.sh
-```
-
-- [ ] **Step 0.2.6: Run full suite and commit**
-
-```bash
-just test
-git add lib/replay.sh lib/tests/replay-smoke.sh justfile
-git commit -m "feat(replay): scaffolding to rerun pipeline against historical SHAs"
-```
-
-### Task 0.3: Capture baseline outputs from corpus
-
-The 4 corpus PRs need a baseline rendered review captured *before* any prompt changes, so every later phase has a deterministic comparison target.
-
-**Files:**
-- Create: `replays/baseline/` (gitignored after capture; the *outputs* live in PR review history, the local copies are working artifacts).
-
-- [ ] **Step 0.3.1: Add `replays/` to `.gitignore`**
-
-```bash
-echo "replays/" >> .gitignore
-git add .gitignore
-git commit -m "chore: gitignore replays/ working dir"
-```
-
-- [ ] **Step 0.3.2: Capture baselines (run replay against each corpus PR head SHA)**
-
-```bash
-for spec in \
-    "cncorp/plow 578" \
-    "cncorp/plow 576" \
-    "srosro/knightwatch-reviewer 43" \
-    "plow-pbc/watchmepivot 3"; do
-    repo="${spec% *}"; pr="${spec##* }"
-    sha="$(gh pr view "$pr" --repo "$repo" --json headRefOid --jq .headRefOid)"
-    ./lib/replay.sh --repo "$repo" --pr "$pr" --sha "$sha" \
-        --output-dir "replays/baseline/${repo//\//-}-${pr}"
-done
-```
-
-The baseline outputs in `replays/baseline/*/aggregator-output.md` are the comparison target for every phase below.
-
----
 
 ## Phase 1 — Probe schema + dual-format aggregator with attribution
 
@@ -723,13 +523,12 @@ This is the natural PR boundary. Push the branch, open a PR, run `/babysit-pr`. 
 
 ```bash
 git push -u origin feat/probes-as-unit
-gh pr create --title "feat: probes-as-unit foundation (Phases 0-2)" --body "$(cat <<'EOF'
+gh pr create --title "feat: probes-as-unit foundation (Phases 1-2)" --body "$(cat <<'EOF'
 ## Summary
-- Phase 0: replay scaffolding (`lib/replay.sh` + smoke)
 - Phase 1: probe schema + per-line specialist attribution in aggregator output
 - Phase 2: `shape` specialist migrated to probe-native emission with mandatory complexity-cost probe
 
-Foundation for the probes-as-unit refactor. Output format adds `[from: <specialist>]` to every line; `shape` emissions are now probe-formatted while other 7 specialists still emit legacy findings (aggregator handles both).
+Foundation for the probes-as-unit refactor. Output format adds `[from: <specialist>]` to every line; `shape` emissions are now probe-formatted while other 7 specialists still emit legacy findings (aggregator handles both). Replay validation is via the external `~/Hacking/knightwatch-reviewer feat/replay-harness` tool.
 
 ## Test plan
 - [ ] `just test` green
@@ -1299,7 +1098,7 @@ EOF
 - "Reduce complexity (DRY findings/questions)" → Phase 4 collapses critic counter-argument + REFRAME-AS-QUESTION + Pre-PMF lens into one probe-resolver model (Task 4.1.2). Phase 5 collapses Findings + Open Questions sections (Task 5.1.2-5.1.5).
 - "Deterministically name the specialist for every probe" → Phase 1 adds `[from: <specialist>]` to every aggregator-rendered line (Task 1.4.2-1.4.4).
 - "AI-author callout" → Phase 5 (Task 5.2.1-5.2.3) — visible block + hidden HTML comment marker `<!-- knightwatch-reviewer:ai-author -->`.
-- "Replay-validatable per Sam's preference" → Phase 0 (Task 0.2-0.3) builds replay tool + captures baselines; every later phase ends with replay validation against the same 4-PR corpus.
+- "Replay-validatable per Sam's preference" → external replay tool ships from `~/Hacking/knightwatch-reviewer feat/replay-harness`; every phase below ends with a replay validation step that invokes that tool against the same 4-PR corpus.
 
 **2. Placeholder scan:** no `TBD`, `implement later`, `add appropriate error handling`. Each prompt-rewrite step shows the actual replacement text. Each smoke test shows the actual fixture.
 
