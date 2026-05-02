@@ -136,6 +136,12 @@ assert_grep "aggregator.md should describe probe rendering path" \
 echo "  asserting complexity-cost probe class in shape.md..."
 assert_grep "shape.md should require a complexity-cost probe class" \
     "Class: complexity-cost" prompts/shape.md
+echo "  asserting complexity-cost probe class in simplification.md..."
+assert_grep "simplification.md should require a complexity-cost probe class" \
+    "Class: complexity-cost" prompts/simplification.md
+echo "  asserting complexity-cost probe class in architecture.md..."
+assert_grep "architecture.md should require a complexity-cost probe class" \
+    "Class: complexity-cost" prompts/architecture.md
 echo "  asserting re-review loop-breaker (Path 2) in aggregator.md..."
 assert_grep "aggregator.md should reference loc-trend.md trigger" \
     "loc-trend.md" prompts/aggregator.md

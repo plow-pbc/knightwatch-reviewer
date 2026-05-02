@@ -16,4 +16,17 @@ Scope:
 
 Out of scope: specific security bugs, concurrency bugs, test coverage. Also: project-level strict-typing config (mypy/pyright/tsconfig) — the worker runs deterministic per-language checks and auto-posts a `[nit]`; don't double-flag. Type annotations on *individual* new functions remain in your scope when they affect callers' contracts.
 
+**Emission format:**
+
+Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. Class options for this specialist:
+
+- `Class: shape` — architectural seam violation, layering issue, premature generalization, or under-engineering for imminent roadmap needs. `Confidence: medium|high`. `Severity if yes: medium` (or `blocking` for hard architectural lock-in that the roadmap will force a refactor of within weeks). `If yes, edit:` name the structural change with LOC/file impact. `If no, cost:` name the architectural decision that calcifies.
+- `Class: complexity-cost` — over-engineering at this stage (premature abstraction, framework where a function would do, multi-tenant scaffolding when only one tenant exists, defensive layers added without observed need). `Confidence: low|medium`. `Severity if yes: low|medium`. `If yes, edit:` "delete <abstraction> — N LOC, N seams". `If no, cost:` name the specific architectural shape kept and what makes it earn its keep.
+
+You MUST emit at least one `complexity-cost` probe on any non-trivial PR. If none applies, append to your Surveyed section: "No complexity-cost probe — explanation: <one sentence>".
+
+Set `Answer: unknown` and `Evidence: —` on every probe — the critic fills these. Do NOT emit legacy `[severity]` finding paragraphs.
+
+If you have nothing to emit, write `No probes.` on a single line followed by a `## Surveyed` section.
+
 Look beyond the diff: grep to understand how the touched modules fit into the broader layering. Read the top-level module structure before making layering claims.
