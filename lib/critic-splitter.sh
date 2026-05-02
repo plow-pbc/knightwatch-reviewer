@@ -8,14 +8,15 @@
 # split_critic_to_specialists CRITIC_MD SPECIALISTS_DIR
 #   reads:  $CRITIC_MD
 #   writes: $SPECIALISTS_DIR/<angle>.md (replaces with original + critic
-#           counter-arguments H2 + per-angle critic block)
-#           $SPECIALISTS_DIR/missed.md ("## Missed findings" section
-#           if present in critic.md; written verbatim)
+#           per-angle resolution H2 + per-angle critic block)
+#           $SPECIALISTS_DIR/critic.md (Generated probes from critic, routed here so
+#           the aggregator picks them up alongside angle-specialist files)
 #
 # Section grammar in critic.md:
-#   ### [<angle>] Finding N — <status>     ← per-angle finding section
-#   ## Missed findings (if any)            ← global missed-findings sink
-#   ## <anything else>                     ← treated as section terminator
+#   ### [<angle>] Finding N — <status>           ← legacy per-angle finding (back-compat)
+#   ### [from: <angle>] Probe N                  ← new per-angle probe resolution
+#   ## Generated probes                          ← critic-originated probes sink
+#   ## <anything else>                           ← treated as section terminator
 
 split_critic_to_specialists() {
     local critic_md="$1" specialists_dir="$2"
@@ -41,12 +42,13 @@ split_critic_to_specialists() {
                 buf = ""
             }
         }
-        # Per-angle finding section
-        /^### \[[a-z][a-z-]*\] Finding/ {
+        # Per-angle finding/probe section (legacy Finding or new Probe, with optional "from: " prefix)
+        /^### \[(from: )?[a-z][a-z-]*\] (Finding|Probe)/ {
             flush()
             line = $0
             sub(/^### \[/, "", line)
             sub(/\].*/, "", line)
+            sub(/^from: /, "", line)
             current_angle = line
             buf = $0
             next
@@ -65,6 +67,13 @@ split_critic_to_specialists() {
             }
         }
         END { flush() }
+    ' "$critic_md"
+
+    # Pass 1.5: extract "## Generated probes" section to specialists/critic.md.
+    awk -v out_file="$specialists_dir/critic.md" '
+        /^## Generated probes/ { in_gen = 1; next }
+        /^## / && in_gen { in_gen = 0 }
+        in_gen { print > out_file }
     ' "$critic_md"
 
     # Pass 2: for each .angle-buf, append to specialists/<angle>.md under

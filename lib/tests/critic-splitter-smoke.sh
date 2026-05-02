@@ -114,4 +114,70 @@ grep -qF "removed-angle" "$TMPDIR/stderr.log" || {
     exit 1
 }
 
+echo "  asserting probe-format critic resolution routes to per-angle file..."
+PROBE_CRITIC="$TMPDIR/probe-critic.md"
+cat > "$PROBE_CRITIC" <<'EOF'
+## Resolved probes
+
+### [from: shape] Probe 1
+- **Answer:** yes
+- **Evidence:** grep showed two callsites in app/handlers.py
+- **Severity if yes:** blocking
+
+### [from: simplification] Probe 1
+- **Answer:** unknown
+- **Evidence:** could not confirm whether the helper has a third caller
+
+## Generated probes
+
+### Probe 1
+- **From:** critic
+- **Class:** complexity-cost
+- **Q:** Is the new error envelope necessary at our operating point?
+- **Files:** app/api.py:30
+- **If yes, edit:** keep
+- **If no, cost:** calcifies a wrap-once-then-wrap layer
+- **Confidence:** medium
+- **Severity if yes:** low
+- **Answer:** unknown
+- **Evidence:** —
+EOF
+
+# Pre-stage the specialists for the probe pass
+mkdir -p "$TMPDIR/specialists2"
+cat > "$TMPDIR/specialists2/shape.md" <<'EOF'
+### Probe 1
+- **From:** shape
+- **Class:** bypass
+- **Q:** Does the diff sidestep Config.load?
+EOF
+cat > "$TMPDIR/specialists2/simplification.md" <<'EOF'
+### Probe 1
+- **From:** simplification
+- **Class:** DRY
+- **Q:** Three near-identical helpers in this PR?
+EOF
+
+split_critic_to_specialists "$PROBE_CRITIC" "$TMPDIR/specialists2" 2>"$TMPDIR/stderr2.log"
+
+grep -qF "Answer:** yes" "$TMPDIR/specialists2/shape.md" || {
+    echo "FAIL: probe resolution not routed to shape.md"
+    cat "$TMPDIR/specialists2/shape.md"
+    exit 1
+}
+grep -qF "Answer:** unknown" "$TMPDIR/specialists2/simplification.md" || {
+    echo "FAIL: probe resolution not routed to simplification.md"
+    cat "$TMPDIR/specialists2/simplification.md"
+    exit 1
+}
+[ -s "$TMPDIR/specialists2/critic.md" ] || {
+    echo "FAIL: generated probes not routed to specialists/critic.md"
+    exit 1
+}
+grep -qF "From:** critic" "$TMPDIR/specialists2/critic.md" || {
+    echo "FAIL: generated probe missing 'From: critic' marker"
+    cat "$TMPDIR/specialists2/critic.md"
+    exit 1
+}
+
 echo "  PASS"

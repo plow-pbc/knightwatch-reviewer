@@ -18,6 +18,7 @@
 critic_fallback() {
     local exit_code="$1" out_file="$2"
     if [ "$exit_code" -ne 0 ]; then
-        echo "(critic failed with exit=$exit_code — fall back)" > "$out_file"
+        printf '## Resolved probes\n\n(critic fallback — codex run failed with exit=%s; no probe resolutions)\n\n## Generated probes\n\n(critic fallback — codex run failed; no generated probes)\n' \
+            "$exit_code" > "$out_file"
     fi
 }

@@ -38,13 +38,9 @@ assert_grep "common-header.md should mandate cost-naming" \
 assert_grep "common-header.md should reference review-priority.md scratch input" \
     "review-priority.md" prompts/common-header.md
 
-echo "  asserting REMEDY-BLOAT bucket in critic.md..."
-assert_grep "REMEDY-BLOAT bucket missing from prompts/critic.md" \
-    "REMEDY-BLOAT" prompts/critic.md
-
-echo "  asserting REFRAME-AS-QUESTION bucket in critic.md..."
-assert_grep "REFRAME-AS-QUESTION bucket missing from prompts/critic.md" \
-    "REFRAME-AS-QUESTION" prompts/critic.md
+echo "  asserting probe-resolver job description in critic.md..."
+assert_grep "critic.md should describe probe resolution job" \
+    "probe resolution" prompts/critic.md
 
 echo "  asserting voice-posture pointer in critic.md..."
 assert_grep "critic.md should cite Broken-Glass Test" \
@@ -58,14 +54,6 @@ assert_grep "critic.md should reference loc-trend.md (Pre-PMF lens)" \
 echo "  asserting decline-history input in critic.md..."
 assert_grep "critic.md should reference decline-history.md" \
     "decline-history.md" prompts/critic.md
-
-echo "  asserting remedy-LOC estimate contract in critic.md..."
-assert_grep "critic.md should fence Estimated remedy LOC token" \
-    "Estimated remedy LOC" prompts/critic.md
-
-echo "  asserting calibration-question contract in critic.md..."
-assert_grep "critic.md should fence Calibration questions for go-deep token" \
-    "Calibration questions for go-deep" prompts/critic.md
 
 # ----- Phase 2: go-deep tech-lead specialist + aggregator integration ----
 echo "  asserting decline-history input in aggregator.md..."
@@ -188,53 +176,31 @@ if grep -qF "this round or any prior round" prompts/aggregator.md; then
     exit 1
 fi
 
-# Pre-PMF lens (critic.md) — same prior-rounds-only fence; catches a
-# regression of the Round-5 spec/critic drift where critic.md said "this
-# round or any prior round" (unreachable, since the critic and Bug-Class-
-# Recurrence labelling happen in the same step).
-echo "  asserting Pre-PMF lens trigger phrases in critic.md..."
-assert_grep "critic.md should fence prior-rounds-only language ('any prior round')" \
-    "any prior round" prompts/critic.md
+# Pre-PMF lens (critic.md) — the probe-resolver model uses an always-on
+# Pre-PMF lens; the old "any prior round" trigger phrase no longer applies.
+# Fence the new pre-pmf lens token instead.
+echo "  asserting Pre-PMF lens (always-on) in critic.md..."
+assert_grep "critic.md should fence Pre-PMF lens (always-on)" \
+    "Pre-PMF lens (always-on)" prompts/critic.md
 
-# Negative fence (matches the aggregator.md fence above) — same
-# false-positive risk: the positive assertion is satisfied by the bad
-# regression string. Reject the literal bad string here too.
-echo "  asserting critic.md has no 'this round or any prior round' regression..."
-if grep -qF "this round or any prior round" prompts/critic.md; then
-    echo "FAIL: critic.md regressed to old 'this round or any prior round' wording"
-    exit 1
-fi
-
-# ----- carry-forward stress-test contract (PR#45) -----------------------
-# Fences the new contract that closes the carry-forward-bypasses-critic
-# loop: critic.md must run a stress-test on prior [blocking]/[medium]
-# findings and emit a "Carried-forward findings" section; aggregator.md
-# must apply those verdicts in re-review handling. The K-decay thresholds
-# and the severe-bug carve-out are what stop the loop from collapsing into
-# either a stuck record (no decay) or a severe-bug gate (decay too aggressive).
+# ----- carry-forward stress-test contract (PR#45, updated PR#48) ----------
+# Probe-resolver model: carry-forward is now a probe-resolution pass (not a
+# finding-level stress-test). Fence the new probe-model tokens.
 echo "  asserting carry-forward stress-test pass in critic.md..."
 assert_grep "critic.md should fence Carry-forward stress-test pass" \
     "Carry-forward stress-test" prompts/critic.md
-assert_grep "critic.md should fence the Carried-forward output section" \
-    "Carried-forward findings" prompts/critic.md
-assert_grep "critic.md should fence engagement-K signal" \
-    "Engagement signal" prompts/critic.md
 
 echo "  asserting K-decay thresholds in critic.md..."
-# Unique paired tokens — bare "K ≥ 3" / "K ≥ 5" also appear in the
-# carve-out clause, so a regression that deletes only the decay bullets
-# would still satisfy bare-threshold assertions. Pair the threshold with
-# the verdict it triggers, which only appears in the decay bullets.
-assert_grep "critic.md should fence K >= 3 -> REFRAME-AS-QUESTION decay rule" \
-    "K ≥ 3 with no engagement: REFRAME-AS-QUESTION" prompts/critic.md
-assert_grep "critic.md should fence K >= 5 -> REMEDY-BLOAT decay rule" \
-    "K ≥ 5 with no engagement: REMEDY-BLOAT" prompts/critic.md
+# The probe-resolver model uses "K ≥ 3 with no engagement and Class ≠ bug"
+# and "K ≥ 5 with no engagement and Class ≠ bug" — pair threshold with Class guard.
+assert_grep "critic.md should fence K >= 3 decay rule with Class guard" \
+    "K ≥ 3 with no engagement" prompts/critic.md
+assert_grep "critic.md should fence K >= 5 decay rule with Class guard" \
+    "K ≥ 5 with no engagement" prompts/critic.md
 
-echo "  asserting severe-bug carve-out for K-decay in critic.md..."
-assert_grep "critic.md should carve severe-bug findings out of K-decay" \
-    "Severe-bug carve-out for K-decay" prompts/critic.md
-assert_grep "critic.md should key carve-out on failing-path text not specialist tag" \
-    "Key on the cited failing-path text" prompts/critic.md
+echo "  asserting severe-bug carve-out in critic.md..."
+assert_grep "critic.md should carve severe-bug probes out of decay/Pre-PMF" \
+    "Severe-bug carve-out" prompts/critic.md
 # Non-security severe-bug token — guards against a regression that
 # narrows the carve-out back to security-only by dropping data-loss
 # class words from the prompt prose.

@@ -36,8 +36,18 @@ if grep -q "partial truncated" "$OUT"; then
     cat "$OUT"
     exit 1
 fi
-if ! grep -q "(critic failed with exit=7 — fall back)" "$OUT"; then
-    echo "FAIL: placeholder not written on non-zero exit"
+if ! grep -q "## Resolved probes" "$OUT"; then
+    echo "FAIL: probe-format placeholder not written on non-zero exit"
+    cat "$OUT"
+    exit 1
+fi
+if ! grep -q "exit=7" "$OUT"; then
+    echo "FAIL: exit code not embedded in fallback placeholder"
+    cat "$OUT"
+    exit 1
+fi
+if ! grep -q "## Generated probes" "$OUT"; then
+    echo "FAIL: Generated probes section not written in fallback placeholder"
     cat "$OUT"
     exit 1
 fi
@@ -45,8 +55,13 @@ fi
 echo "  scenario 2: empty output reaches the function via run-specialist exit 3 → placeholder..."
 : > "$OUT"
 critic_fallback 3 "$OUT"
-if ! grep -q "(critic failed with exit=3 — fall back)" "$OUT"; then
-    echo "FAIL: placeholder not written on run-specialist's empty-output exit (3)"
+if ! grep -q "## Resolved probes" "$OUT"; then
+    echo "FAIL: probe-format placeholder not written on run-specialist's empty-output exit (3)"
+    cat "$OUT"
+    exit 1
+fi
+if ! grep -q "exit=3" "$OUT"; then
+    echo "FAIL: exit code 3 not embedded in fallback placeholder"
     cat "$OUT"
     exit 1
 fi
