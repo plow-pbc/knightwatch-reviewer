@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Smoke for go-deep tech-lead orchestrator wiring.
 #
 # Token-level fence — orchestrate.sh must reference go-deep.md, gate

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Smoke for finalize_meta_json (lib/run-dir.sh).
 #
 # This is the writer-side of the recurrence-detection pipeline:

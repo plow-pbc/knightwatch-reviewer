@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Sourceable helpers that decide what to do with an agent's output file
 # when the agent's run-specialist.sh invocation exits non-zero or empty.
 # Lives outside review-one-pr.sh so the regression smoke can exercise

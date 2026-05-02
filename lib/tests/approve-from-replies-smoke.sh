@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Smoke test for approve-from-replies.sh.
 #
 # Stubs `gh` via PATH so neither the network nor real PR infrastructure

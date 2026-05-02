@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # LLM specialist pipeline — the production half of a review.
 #
 # `run_specialist_pipeline`: runs the full LLM review pipeline against a

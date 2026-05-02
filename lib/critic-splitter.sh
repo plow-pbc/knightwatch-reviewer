@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Sourceable helper for splitting critic.md by [<angle>] sections and
 # appending each section to the corresponding specialists/<angle>.md
 # file. Single writer per phase per file — orchestrator runs this

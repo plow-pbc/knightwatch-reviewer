@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Smoke for fetch_decline_history (lib/decline-history.sh).
 #
 # Pure-transform helper _decline_history_from_json drives the test;

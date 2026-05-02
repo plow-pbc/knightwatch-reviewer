@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Smoke test for plow-kid-refresh.sh.
 #
 # Closes the runtime-coverage gap on the manifest consumer that

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Smoke test for install.sh.
 #
 # Runs the installer against a sandboxed INSTALL_DIR + SYSTEMD_DIR with

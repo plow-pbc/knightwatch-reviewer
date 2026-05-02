@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Diff-build helper for the reviewer worker.
 #
 # Single source of truth for "what was reviewed": the worker captures

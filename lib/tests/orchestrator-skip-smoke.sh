@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Smoke test for review.sh's same-SHA dispatch decision.
 #
 # Covers the trigger model:

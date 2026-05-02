@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Sourceable helper for selecting which specialist files become "hot" —
 # i.e. get a go-deep tech-lead investigation. Lives outside review-one-pr.sh
 # so the smoke can exercise the selection logic directly with synthetic

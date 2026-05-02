@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Smoke for stage_prior_reviews (lib/run-dir.sh).
 #
 # Bug-Class-Recurrence detection depends entirely on this helper returning

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Smoke for momentum specialist orchestrator wiring.
 #
 # Token-level fence — the orchestrator's momentum invocation block must

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Smoke test for lib/auth.sh — covers is_trusted_repo_author and
 # submit_approval. Stubs `gh` so the real GitHub API is never touched.
 

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Smoke test for learn-from-replies.sh.
 #
 # Focused on the regression-test gap knightwatch flagged on PR #14:

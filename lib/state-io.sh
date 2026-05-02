@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Shared logger + per-tick "seen comment IDs" key-value file helpers, used
 # across the orchestrator (review.sh), the per-PR worker (review-one-pr.sh),
 # and the sister tools (learn-from-replies.sh, approve-from-replies.sh).

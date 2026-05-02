@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Detects whether the working dir's TypeScript project enforces strict typing.
 #
 # Usage: typescript-strict-typing.sh [PROJECT_DIR]
