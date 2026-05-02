@@ -117,4 +117,97 @@ else
     echo "FAIL: probe with invalid enum values accepted"; exit 1
 fi
 
+# Fixture: legacy finding-format header — must be rejected so a specialist
+# that ignored the probe contract can't drift through.
+FIXTURE_LEGACY_FINDING="$(cat <<'EOF'
+## [shape] findings
+
+### Finding 1 — blocking
+some legacy finding text
+EOF
+)"
+
+if ! probe_validate <<<"$FIXTURE_LEGACY_FINDING" 2>/dev/null; then
+    echo "OK: legacy '### Finding' header rejected"
+else
+    echo "FAIL: legacy finding-format accepted by probe_validate"; exit 1
+fi
+
+# Fixture: bare "No probes." with NO Surveyed section — specialist must
+# prove it looked. Common-header rule 3 mandates Surveyed.
+FIXTURE_NO_PROOF="$(cat <<'EOF'
+## [shape] probes
+
+No probes.
+EOF
+)"
+
+if ! probe_validate <<<"$FIXTURE_NO_PROOF" 2>/dev/null; then
+    echo "OK: bare 'No probes.' without Surveyed rejected"
+else
+    echo "FAIL: bare 'No probes.' accepted with no Surveyed evidence"; exit 1
+fi
+
+# Fixture: "No probes." WITH Surveyed section — vacuously valid.
+FIXTURE_SURVEYED_ONLY="$(cat <<'EOF'
+## [shape] probes
+
+No probes.
+
+## Surveyed
+- looked at app/handlers.py — clean
+- looked at lib/utils.py — clean
+EOF
+)"
+
+if probe_validate <<<"$FIXTURE_SURVEYED_ONLY"; then
+    echo "OK: 'No probes.' with Surveyed section accepted"
+else
+    echo "FAIL: 'No probes.' with Surveyed section rejected"; exit 1
+fi
+
+# Fixture: critic resolved-probe delta block with invalid Answer enum.
+# These blocks are `### [from: <angle>] Probe N` headers (not `### Probe N`)
+# carrying delta fields only. Bot R8 specifically called out
+# `Answer: maybe` as a case that previously passed because the parser
+# only activated on full-probe headers.
+FIXTURE_BAD_RESOLVED="$(cat <<'EOF'
+## Resolved probes
+
+### [from: shape] Probe 1
+- **Answer:** maybe
+- **Evidence:** uncertain
+
+## Generated probes
+
+(empty for this run)
+EOF
+)"
+
+if ! probe_validate <<<"$FIXTURE_BAD_RESOLVED" 2>/dev/null; then
+    echo "OK: resolved-probe delta block with invalid Answer enum rejected"
+else
+    echo "FAIL: resolved-probe with Answer: maybe accepted"; exit 1
+fi
+
+# Fixture: critic resolved-probe delta block with VALID Answer — accepted.
+FIXTURE_GOOD_RESOLVED="$(cat <<'EOF'
+## Resolved probes
+
+### [from: shape] Probe 1
+- **Answer:** yes
+- **Evidence:** grep app/handlers.py:42
+
+## Generated probes
+
+(none generated this round)
+EOF
+)"
+
+if probe_validate <<<"$FIXTURE_GOOD_RESOLVED"; then
+    echo "OK: resolved-probe with valid Answer enum accepted"
+else
+    echo "FAIL: well-formed critic resolution rejected"; exit 1
+fi
+
 echo "OK: probe-schema smoke"

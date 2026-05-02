@@ -22,14 +22,63 @@ probe_validate() {
     local input
     input="$(cat)"
     [ -z "$input" ] && return 0
-    grep -q '^### Probe ' <<<"$input" || return 0
+
+    # Reject legacy `### Finding` headers — those mean the specialist
+    # ignored the probe contract and emitted finding-era output. Pre-probe
+    # parser was permissive (returned 0 for anything without `### Probe`),
+    # which let legacy output drift through. Now: explicit reject.
+    if grep -q '^### Finding' <<<"$input"; then
+        echo "legacy '### Finding' header — must emit probe-format per .codex-scratch/probe-schema.md" >&2
+        return 1
+    fi
+
+    # Require at least ONE of: full probe block, critic resolved-probe
+    # delta block (`### [from: <angle>] Probe N`), or a `## Surveyed`
+    # section. Bare `No probes.` with no Surveyed evidence means the
+    # specialist failed to prove it looked — same fail-loud as
+    # common-header rule 3.
+    if ! grep -qE '^### Probe |^### \[from: [a-z][a-z-]+\] Probe |^## Surveyed|^### Surveyed' <<<"$input"; then
+        echo "no probe blocks AND no Surveyed section — specialist must emit probes or prove it looked via Surveyed" >&2
+        return 1
+    fi
 
     local missing=0 field
+
+    # Validate critic resolved-probe delta blocks (header form
+    # `### [from: <angle>] Probe N`). These don't contain full probes;
+    # they carry `Answer:` / `Evidence:` / optional `Severity if yes:`
+    # only. Enum-check `Answer:` so off-contract values
+    # (e.g. `Answer: maybe`) trip the validator.
+    local resolved_answers
+    resolved_answers="$(awk '
+        /^### \[from: [a-z][a-z-]+\] Probe / { in_block = 1; next }
+        in_block && /^- \*\*Answer:\*\* / { print; in_block = 0; next }
+        in_block && /^### |^## / { in_block = 0 }
+    ' <<<"$input")"
+    if [ -n "$resolved_answers" ]; then
+        local ans_line val v ok
+        while IFS= read -r ans_line; do
+            val=$(printf '%s' "$ans_line" | sed 's/^- \*\*Answer:\*\* //;s/[[:space:]]*$//')
+            ok=0
+            for v in "${PROBE_ENUM_ANSWER[@]}"; do
+                [ "$val" = "$v" ] && { ok=1; break; }
+            done
+            if [ "$ok" -eq 0 ]; then
+                echo "invalid Answer enum in resolved-probe delta: '$val' (expected: ${PROBE_ENUM_ANSWER[*]})" >&2
+                missing=1
+            fi
+        done <<<"$resolved_answers"
+    fi
+
     # Skip content before the first `### Probe` header (specialists' shared
     # header may emit `### Surveyed` or other prose before any probes; that
     # is not a malformed probe). Once inside a probe block, terminate on the
     # next `### `-prefixed header that isn't `### Probe ` (e.g. `### Surveyed`
     # appearing AFTER the probes).
+    if ! grep -q '^### Probe ' <<<"$input"; then
+        # Surveyed-only or resolved-only input (already validated above).
+        return "$missing"
+    fi
     local blocks
     blocks="$(awk '
         /^### Probe / {

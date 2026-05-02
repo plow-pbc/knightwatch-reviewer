@@ -55,8 +55,12 @@ exit 0
 STUB
 chmod +x "$TMPDIR/bin/codex"
 
-AGENT_DIR="$TMPDIR/agents/security"
-bash "$SCRIPT" "security" "$REPO_DIR" "test-prompt-body" "$AGENT_DIR"
+# Use 'intent' as the agent name here — it's NOT in the probe-validated
+# allowlist (run-specialist.sh:69), so the artifact-contract test runs
+# without colliding with the probe parser. The probe-validation path is
+# exercised separately in scenarios 4 + 5 below.
+AGENT_DIR="$TMPDIR/agents/intent"
+bash "$SCRIPT" "intent" "$REPO_DIR" "test-prompt-body" "$AGENT_DIR"
 RC=$?
 if [ "$RC" -ne 0 ]; then
     echo "FAIL: success path exited $RC, expected 0"
@@ -76,11 +80,11 @@ if ! grep -q '^stub-output-marker$' "$AGENT_DIR/output.md"; then
     echo "FAIL: output.md does not contain stubbed codex output"
     exit 1
 fi
-if ! grep -q 'agent=security starting' "$AGENT_DIR/log.txt"; then
+if ! grep -q 'agent=intent starting' "$AGENT_DIR/log.txt"; then
     echo "FAIL: log.txt missing start marker"
     exit 1
 fi
-if ! grep -q 'agent=security exit=0' "$AGENT_DIR/log.txt"; then
+if ! grep -q 'agent=intent exit=0' "$AGENT_DIR/log.txt"; then
     echo "FAIL: log.txt missing exit marker"
     exit 1
 fi
@@ -143,4 +147,74 @@ if ! grep -q 'produced empty output' "$AGENT_DIR/log.txt"; then
     exit 1
 fi
 
-echo "  PASS (3 scenarios: success path, codex error propagates, empty output → exit 3)"
+# ---- scenario 4: validated agent + malformed probe output → exit 4 ----
+# The probe-validation seam at run-specialist.sh:69 runs probe_validate
+# on the 8 angle specialists + critic. R8 found that the validator was
+# permissive — legacy `### Finding` headers and bare `No probes.`
+# without Surveyed both passed. This scenario locks down the fix:
+# malformed output from a validated agent must trip exit 4 BEFORE the
+# orchestrator dispatches downstream.
+echo "  scenario 4: validated agent + malformed output → exit 4..."
+cat > "$TMPDIR/bin/codex" <<'STUB'
+#!/bin/bash
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -o) OUT_FILE="$2"; shift 2 ;;
+        -C|-c) shift 2 ;;
+        --dangerously-bypass-approvals-and-sandbox) shift ;;
+        *) shift ;;
+    esac
+done
+# Legacy '### Finding' header — must be rejected by probe_validate.
+printf '## [shape] findings\n\n### Finding 1 — blocking\nlegacy text\n' > "$OUT_FILE"
+exit 0
+STUB
+
+AGENT_DIR="$TMPDIR/agents/shape-malformed"
+bash "$SCRIPT" "shape" "$REPO_DIR" "p" "$AGENT_DIR"
+RC=$?
+if [ "$RC" -ne 4 ]; then
+    echo "FAIL: expected exit 4 for malformed validated-agent output, got $RC"
+    cat "$AGENT_DIR/log.txt" 2>/dev/null
+    exit 1
+fi
+if ! grep -q 'emitted malformed probe' "$AGENT_DIR/log.txt"; then
+    echo "FAIL: log.txt missing malformed-probe marker"
+    cat "$AGENT_DIR/log.txt"
+    exit 1
+fi
+
+# ---- scenario 5: validated agent + valid probe output → exit 0 --------
+echo "  scenario 5: validated agent + valid probe output → exit 0..."
+cat > "$TMPDIR/bin/codex" <<'STUB'
+#!/bin/bash
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -o) OUT_FILE="$2"; shift 2 ;;
+        -C|-c) shift 2 ;;
+        --dangerously-bypass-approvals-and-sandbox) shift ;;
+        *) shift ;;
+    esac
+done
+cat > "$OUT_FILE" <<'PROBE'
+## [shape] probes
+
+### Surveyed
+- looked at app/handlers.py — clean
+- looked at lib/utils.py — clean
+
+No probes.
+PROBE
+exit 0
+STUB
+
+AGENT_DIR="$TMPDIR/agents/shape-valid"
+bash "$SCRIPT" "shape" "$REPO_DIR" "p" "$AGENT_DIR"
+RC=$?
+if [ "$RC" -ne 0 ]; then
+    echo "FAIL: expected exit 0 for valid probe output, got $RC"
+    cat "$AGENT_DIR/log.txt" 2>/dev/null
+    exit 1
+fi
+
+echo "  PASS (5 scenarios: success path, codex error propagates, empty → 3, malformed probe → 4, valid probe → 0)"
