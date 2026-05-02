@@ -93,6 +93,10 @@ test:
     bash lib/tests/run-specialist-smoke.sh
 
     echo ""
+    echo "=== dispatch-agent smoke test ==="
+    bash lib/tests/dispatch-agent-smoke.sh
+
+    echo ""
     echo "=== critic-fallback smoke test ==="
     bash lib/tests/critic-fallback-smoke.sh
 
