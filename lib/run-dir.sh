@@ -251,17 +251,20 @@ prepend_review_header() {
         fi
     done
     joined="$joined."
-    # Preserve ALL leading HTML-comment lines that match the knightwatch-
-    # reviewer marker allowlist (auto-post + ai-author, both invisible in
-    # rendered Markdown). Allowlist instead of "any leading <!--" because
-    # if model output ever reproduces an attacker-supplied `<!-- ... -->`
-    # at the start of the assembled body, a permissive preserve would let
-    # arbitrary hidden content pin itself above the visible header
-    # alongside trusted bot markers — Broken-Glass Test risk.
+    # Preserve ONLY the two exact-match knightwatch-reviewer markers
+    # (auto-post + ai-author, both invisible in rendered Markdown).
+    # Exact match — not prefix — because R8 caught that prefix matching
+    # on the ai-author line lets an attacker craft a different content
+    # suffix that gets preserved as if trusted. Both strings here MUST
+    # equal the corresponding constants in lib/review-one-pr.sh
+    # (BOT_AUTO_POST_MARKER, BOT_AI_AUTHOR_MARKER); anti-bloat smoke
+    # fences agreement.
+    local AUTO_POST_LINE='<!-- knightwatch-reviewer:auto-post -->'
+    local AI_AUTHOR_LINE='<!-- knightwatch-reviewer:ai-author note=load-bearing-probes operating-point=pre-pmf prefer=cut-loc-over-add -->'
     local n_leading
-    n_leading=$(printf '%s' "$comment_body" | awk '
-        /^<!-- knightwatch-reviewer:auto-post -->/  { n++; next }
-        /^<!-- knightwatch-reviewer:ai-author /     { n++; next }
+    n_leading=$(printf '%s' "$comment_body" | awk -v auto="$AUTO_POST_LINE" -v ai="$AI_AUTHOR_LINE" '
+        $0 == auto { n++; next }
+        $0 == ai   { n++; next }
         { exit }
         END { print n+0 }')
     [ "$n_leading" -lt 1 ] && n_leading=1

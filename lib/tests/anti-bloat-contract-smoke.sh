@@ -136,6 +136,38 @@ assert_grep "common-header.md should describe complexity-cost probe expectation"
 echo "  asserting legacy finding-format carry-forward bucket in critic.md..."
 assert_grep "critic.md should describe Legacy finding-format conversion path" \
     "Legacy finding-format" prompts/critic.md
+
+# Allowlist constants must agree between worker (BOT_AI_AUTHOR_MARKER in
+# lib/review-one-pr.sh) and the prepend_review_header allowlist in
+# lib/run-dir.sh. R8 caught that the previous prefix-match left a gap;
+# this fence catches drift between the two strings going forward.
+# Probe-schema enum agreement: lib/probe-parse.sh's enum arrays and
+# prompts/probe-schema.md's prose contract are two sources of truth.
+# Drift between them means specialists are told to emit X but the
+# parser rejects X (or vice versa). Fence the load-bearing values.
+echo "  asserting Class enum values appear in probe-schema.md..."
+for class_val in bug bypass shape DRY tests dead-code perf complexity-cost; do
+    assert_grep "probe-schema.md should list Class: $class_val" \
+        "$class_val" prompts/probe-schema.md
+done
+echo "  asserting Answer enum values appear in probe-schema.md..."
+for ans_val in yes no unknown; do
+    grep -qE "(Answer:[^|]*\b${ans_val}\b|<${ans_val}\|)" prompts/probe-schema.md || {
+        echo "FAIL: probe-schema.md missing Answer enum value '$ans_val'"
+        exit 1
+    }
+done
+
+echo "  asserting marker constants agree between review-one-pr.sh and run-dir.sh..."
+worker_marker=$(grep -E '^BOT_AI_AUTHOR_MARKER=' lib/review-one-pr.sh | sed -E 's/^[^"]*"([^"]*)".*/\1/')
+allow_marker=$(grep -E "^[[:space:]]*local AI_AUTHOR_LINE=" lib/run-dir.sh | sed -E "s/^[^']*'([^']*)'.*/\1/")
+# strip the ${BOT_AI_AUTHOR_MARKER:-...} default-syntax wrapper if present
+worker_marker=${worker_marker#\${BOT_AI_AUTHOR_MARKER:-}
+worker_marker=${worker_marker%\}}
+[ "$worker_marker" = "$allow_marker" ] || {
+    echo "FAIL: BOT_AI_AUTHOR_MARKER ('$worker_marker') != prepend_review_header AI_AUTHOR_LINE ('$allow_marker')"
+    exit 1
+}
 echo "  asserting re-review loop-breaker (Path 2) in aggregator.md..."
 assert_grep "aggregator.md should reference loc-trend.md trigger" \
     "loc-trend.md" prompts/aggregator.md
