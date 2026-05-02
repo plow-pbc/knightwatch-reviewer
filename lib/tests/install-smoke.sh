@@ -136,9 +136,9 @@ for d in lib contexts docs prompts; do
     [ -L "$INSTALL_DIR/$d" ] || { echo "FAIL scenario 1: $INSTALL_DIR/$d not a symlink"; exit 1; }
 done
 
-# Render the same @KID_RW_PATHS@ value install.sh derives from
-# $PROJECT_ROOT/repos.conf, so the cmp below compares against what
-# install.sh actually wrote (post-substitution), not the source-with-
+# Render the same @KID_RW_PATHS@ / @KID_INDEX_RW_PATHS@ values install.sh
+# derives from $PROJECT_ROOT/repos.conf, so the cmp below compares against
+# what install.sh actually wrote (post-substitution), not the source-with-
 # placeholder. Sources repos.conf in a subshell so the smoke's own
 # REPOS / KID_PATHS state isn't perturbed.
 EXPECTED_KID_RW_PATHS=$(
@@ -148,25 +148,30 @@ EXPECTED_KID_RW_PATHS=$(
     paths=$(printf '%s\n' "${KID_PATHS[@]}" | sort -u | tr '\n' ' ')
     printf '%s' "${paths% }"
 )
+EXPECTED_KID_INDEX_RW_PATHS=$(
+    REPOS=( ); declare -A KID_PATHS=( )
+    # shellcheck disable=SC1091
+    . "$PROJECT_ROOT/repos.conf"
+    paths=$(printf '%s\n' "${KID_PATHS[@]}" | sort -u | sed 's|$|/.keepitdry|; s|^|-|' | tr '\n' ' ')
+    printf '%s' "${paths% }"
+)
 
 # Every unit file copied
 for unit in "${PROD_UNITS[@]}"; do
     name="$(basename "$unit")"
     [ -f "$SYSTEMD_DIR/$name" ] || { echo "FAIL scenario 1: $SYSTEMD_DIR/$name missing"; exit 1; }
-    if grep -q "@KID_RW_PATHS@" "$unit"; then
+    if grep -qE '@KID_(RW|INDEX_RW)_PATHS@' "$unit"; then
         # Templated unit — compare against rendered version.
         rendered_expected="$TMPDIR/${name}.expected"
-        sed "s|@KID_RW_PATHS@|$EXPECTED_KID_RW_PATHS|g" "$unit" > "$rendered_expected"
+        sed -e "s|@KID_INDEX_RW_PATHS@|$EXPECTED_KID_INDEX_RW_PATHS|g" \
+            -e "s|@KID_RW_PATHS@|$EXPECTED_KID_RW_PATHS|g" \
+            "$unit" > "$rendered_expected"
         cmp -s "$rendered_expected" "$SYSTEMD_DIR/$name" || { echo "FAIL scenario 1: $name rendered content differs from installed"; diff "$rendered_expected" "$SYSTEMD_DIR/$name"; exit 1; }
-        # Verbose check: the installed unit must contain the dedicated
-        # KID_PATHS values (not the broad parent dir, not the literal
-        # placeholder). Catches a regression where install.sh forgets
-        # the substitution and ships @KID_RW_PATHS@ verbatim, OR widens
-        # back to /home/odio/Hacking.
-        grep -q "@KID_RW_PATHS@" "$SYSTEMD_DIR/$name" && { echo "FAIL scenario 1: installed $name still contains @KID_RW_PATHS@ placeholder (substitution broke)"; exit 1; }
+        # Verbose check: no placeholder leaks into the installed unit.
+        grep -qE '@KID_(RW|INDEX_RW)_PATHS@' "$SYSTEMD_DIR/$name" && { echo "FAIL scenario 1: installed $name still contains a @KID_*_PATHS@ placeholder (substitution broke)"; exit 1; }
         # Each KID_PATHS value must appear in the installed unit's
-        # ReadWritePaths line — otherwise the kid-refresh job would lose
-        # write access to that repo's index dir.
+        # ReadWritePaths line. Bare path matches both the refresh
+        # (full repo) render and the index (suffixed) render.
         while IFS= read -r kp; do
             grep -F "$kp" "$SYSTEMD_DIR/$name" >/dev/null || { echo "FAIL scenario 1: installed $name is missing KID_PATHS entry: $kp"; exit 1; }
         done < <(printf '%s\n' "$EXPECTED_KID_RW_PATHS" | tr ' ' '\n' | grep -v '^$')
@@ -178,13 +183,21 @@ done
 # Regression pin: pr-reviewer.service and pr-reviewer-kid-refresh.service
 # both run kid prior-art queries (or build the index), and chromadb's
 # SQLite backend writes WAL/journal files even on read-only queries. If
-# either unit drops @KID_RW_PATHS@, kid lookups fail with "attempt to
-# write a readonly database" under ProtectHome=read-only and reviews
-# silently degrade to kid-less. Pin the placeholder presence in the
-# source so a future edit can't quietly re-introduce that bug.
-for required in pr-reviewer.service pr-reviewer-kid-refresh.service; do
-    grep -q '@KID_RW_PATHS@' "$PROJECT_ROOT/systemd/$required" \
-        || { echo "FAIL scenario 1: $required is missing @KID_RW_PATHS@ — kid queries will hit chromadb readonly errors"; exit 1; }
+# either unit drops the placeholder from its actual ReadWritePaths=
+# directive, kid lookups fail with "attempt to write a readonly
+# database" under ProtectHome=read-only and reviews silently degrade
+# to kid-less. The grep targets the live `ReadWritePaths=` line (no
+# leading `#`) so a placeholder-only-in-comment edit can't sneak past
+# the assertion while the actual directive ships broken — that was the
+# exact gap knightwatch flagged on PR #41 round 1.
+declare -A REQUIRED_PLACEHOLDER=(
+    [pr-reviewer.service]='@KID_INDEX_RW_PATHS@'
+    [pr-reviewer-kid-refresh.service]='@KID_RW_PATHS@'
+)
+for required in "${!REQUIRED_PLACEHOLDER[@]}"; do
+    placeholder="${REQUIRED_PLACEHOLDER[$required]}"
+    grep -E "^ReadWritePaths=.*${placeholder}" "$PROJECT_ROOT/systemd/$required" >/dev/null \
+        || { echo "FAIL scenario 1: $required's ReadWritePaths= line is missing $placeholder — kid queries will hit chromadb readonly errors"; exit 1; }
 done
 
 # daemon-reload was called once (units actually changed)

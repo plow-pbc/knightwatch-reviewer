@@ -31,17 +31,19 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 ProtectHome=read-only
-# @KID_RW_PATHS@ is rendered at install time by install.sh from
-# repos.conf's KID_PATHS values (deduped, space-separated absolute
-# paths). The kid prior-art lookup opens chromadb against
-# `<KID_PATH>/.keepitdry/chroma.sqlite3`, and chromadb's SQLite
-# backend needs to write WAL/journal files even on read-only queries.
-# Without the templated paths, queries fail with "attempt to write a
-# readonly database" under ProtectHome=read-only and every review
-# silently degrades to kid-less. Mirrors the kid-refresh service so
-# both seams write to the same dirs from one source of truth
-# (repos.conf). Do not edit @KID_RW_PATHS@ by hand here.
-ReadWritePaths=/home/odio/.pr-reviewer /home/odio/.codex /home/odio/.cache /home/odio/.local /home/odio/.config /home/odio/.docker @KID_RW_PATHS@
+# @KID_INDEX_RW_PATHS@ is rendered at install time by install.sh from
+# repos.conf's KID_PATHS values, suffixed with `/.keepitdry` and
+# prefixed with `-` so missing index dirs don't fail unit start. The
+# kid prior-art lookup opens chromadb at
+# `<KID_PATH>/.keepitdry/chroma.sqlite3`, and chromadb's SQLite backend
+# needs to write WAL/journal files even on read-only queries. Without
+# write access, queries fail with "attempt to write a readonly
+# database" under ProtectHome=read-only and every review silently
+# degrades to kid-less. Narrower than the kid-refresh render
+# (@KID_RW_PATHS@): review specialists run with Codex's inner sandbox
+# disabled and don't need writes outside the index dir. Do not edit
+# @KID_INDEX_RW_PATHS@ by hand here.
+ReadWritePaths=/home/odio/.pr-reviewer /home/odio/.codex /home/odio/.cache /home/odio/.local /home/odio/.config /home/odio/.docker @KID_INDEX_RW_PATHS@
 
 [Install]
 WantedBy=multi-user.target

@@ -116,13 +116,23 @@ units=( systemd/*.service systemd/*.timer )
 shopt -u nullglob
 [[ ${#units[@]} -ge 1 ]] || fail "no systemd unit files in $REPO_DIR/systemd/"
 
-# @KID_RW_PATHS@ in any unit file is rendered from repos.conf's KID_PATHS
-# values (deduped, space-separated absolute paths). Keeps the kid-refresh
-# unit's ReadWritePaths sandbox minimal — adding a repo to repos.conf
-# widens it by exactly that one path on the next install, never the whole
-# parent. The render happens in-loop into a temp file so the cmp-based
-# idempotency check compares the *rendered* unit (what gets installed)
-# against the destination, not the source-with-placeholder.
+# Two render shapes from the same KID_PATHS source of truth, one per
+# unit's actual access need:
+#
+#   @KID_RW_PATHS@        — full repo roots (e.g. /home/odio/Hacking/foo).
+#                           Used by pr-reviewer-kid-refresh.service, which
+#                           git-pulls and re-indexes the checkouts.
+#
+#   @KID_INDEX_RW_PATHS@  — `.keepitdry` subdirs only, prefixed with `-`
+#                           so missing dirs don't fail systemd unit start
+#                           (review code already skips when index is
+#                           absent — see lib/review-one-pr.sh's kid block).
+#                           Used by pr-reviewer.service, which only needs
+#                           chromadb's SQLite WAL/journal writes inside
+#                           the index dir.
+#
+# The narrower review render keeps Codex specialists (inner sandbox
+# disabled) from getting writes to entire repo source trees.
 [[ -f "$REPO_DIR/repos.conf" ]] || fail "repos.conf missing at $REPO_DIR/repos.conf — needed to render kid-refresh ReadWritePaths"
 # shellcheck disable=SC1091
 . "$REPO_DIR/repos.conf"
@@ -131,15 +141,19 @@ shopt -u nullglob
 # array between runs.
 KID_RW_PATHS=$(printf '%s\n' "${KID_PATHS[@]}" | sort -u | tr '\n' ' ')
 KID_RW_PATHS="${KID_RW_PATHS% }"
+KID_INDEX_RW_PATHS=$(printf '%s\n' "${KID_PATHS[@]}" | sort -u | sed 's|$|/.keepitdry|; s|^|-|' | tr '\n' ' ')
+KID_INDEX_RW_PATHS="${KID_INDEX_RW_PATHS% }"
 
 CHANGED=0
 for unit in "${units[@]}"; do
   name="$(basename "$unit")"
   dst="$SYSTEMD_DIR/$name"
   rendered="$unit"
-  if grep -q "@KID_RW_PATHS@" "$unit"; then
+  if grep -qE '@KID_(RW|INDEX_RW)_PATHS@' "$unit"; then
     rendered="$(mktemp)"
-    sed "s|@KID_RW_PATHS@|$KID_RW_PATHS|g" "$unit" > "$rendered"
+    sed -e "s|@KID_INDEX_RW_PATHS@|$KID_INDEX_RW_PATHS|g" \
+        -e "s|@KID_RW_PATHS@|$KID_RW_PATHS|g" \
+        "$unit" > "$rendered"
   fi
   if [[ -f "$dst" ]] && cmp -s "$rendered" "$dst"; then
     [[ "$rendered" != "$unit" ]] && rm -f "$rendered"
