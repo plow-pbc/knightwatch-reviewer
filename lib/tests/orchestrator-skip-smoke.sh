@@ -159,6 +159,7 @@ cp "$PROJECT_ROOT/lib/auth.sh"          "$REVIEWER_LIB_DIR/auth.sh"
 cp "$PROJECT_ROOT/lib/locking.sh"       "$REVIEWER_LIB_DIR/locking.sh"
 cp "$PROJECT_ROOT/lib/tracked-repos.sh" "$REVIEWER_LIB_DIR/tracked-repos.sh"
 cp "$PROJECT_ROOT/lib/gh-comments.sh"   "$REVIEWER_LIB_DIR/gh-comments.sh"
+cp "$PROJECT_ROOT/lib/run-dir.sh"       "$REVIEWER_LIB_DIR/run-dir.sh"
 cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<'WORKER'
 #!/bin/bash
 # Args from review.sh: REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR
@@ -170,8 +171,32 @@ chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
 # Pre-stamp state: cncorp/plow#1 was reviewed at SHA abc123 (matches the
 # headRefOid the gh stub returns). reviewed_at is set to "1 hour ago"
 # so $MOCK_COMMENTS_FILE timestamps written as "now" are after it.
+# state.json stays around as a cache for legacy callers (reviewed_at is
+# still read here for the comment-since window).
 . "$REVIEWER_LIB_DIR/state-io.sh"
 state_set "cncorp/plow#1" "abc123" false "prior review body" "$(($(date +%s) - 3600))"
+
+# Seed runs/ with an author-visible run for this PR. The orchestrator's
+# dispatch gate now reads KNOWN_SHA from runs/ (via
+# latest_author_visible_review_sha), not state.json — closing the
+# infinite-dispatch loop where a `gh pr comment` success + state_set
+# failure used to leave state.json stale and re-dispatch forever. Most
+# scenarios want "we already reviewed abc123" → seed a posted run with
+# reviewed_sha=abc123.
+seed_run() {
+    local slug="$1" pr="$2" ts="$3" sha="$4" verdict="${5:-COMMENT}"
+    local rd="$STATE_DIR/runs/${slug}__${pr}__${ts}__${sha:0:7}"
+    mkdir -p "$rd/agents/aggregator"
+    printf '## prior review\n\nVERDICT: %s\n' "$verdict" > "$rd/agents/aggregator/output.md"
+    printf '{"status":"completed","posted_at":"2026-04-29T15:00:00Z","reviewed_sha":"%s"}' "$sha" > "$rd/meta.json"
+    echo "$rd"
+}
+clear_seeded_runs() {
+    rm -rf "$STATE_DIR/runs"
+    mkdir -p "$STATE_DIR/runs"
+}
+clear_seeded_runs
+seed_run "cncorp_plow" "1" "20260429T100000000Z" "abc123" "COMMENT" >/dev/null
 
 # --- Systemd contract static check (fails the suite at setup) -------------
 # Detached-worker correctness depends on KillMode=process in the service
@@ -608,7 +633,11 @@ chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
 # Pre-stamp with a SHA that differs from the gh stub's headRefOid
 # (abc123). reviewed_at far in the past so MOCK_COMMENTS_PAGE*_FILE
 # timestamps written as "now" satisfy `created_at > reviewed_at`.
+# Also re-seed runs/ to report old_sha_999 so the runs/-sourced gate
+# matches state.json's view of "we last reviewed old_sha_999."
 state_set "cncorp/plow#1" "old_sha_999" false "prior review body" "$(($(date +%s) - 7200))"
+clear_seeded_runs
+seed_run "cncorp_plow" "1" "20260429T100000000Z" "old_sha_999" "COMMENT" >/dev/null
 
 PAGE1="$TMPDIR/page1.json"
 PAGE2="$TMPDIR/page2.json"
@@ -640,6 +669,8 @@ echo "  scenario 14: TMPDIR pin overrides both inherited TMPDIR and config.env (
 unset MOCK_COMMENTS_PAGE1_FILE MOCK_COMMENTS_PAGE2_FILE
 export MOCK_COMMENTS_FILE="$TMPDIR/comments.json"
 state_set "cncorp/plow#1" "abc123" false "prior review body" "$(($(date +%s) - 3600))"
+clear_seeded_runs
+seed_run "cncorp_plow" "1" "20260429T100000000Z" "abc123" "COMMENT" >/dev/null
 rm -f "$STATE_DIR/tmp/pr-review-trigger".*
 echo 'export TMPDIR="/tmp/should-not-be-honored-via-config-env"' > "$STATE_DIR/config.env"
 printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
@@ -659,4 +690,54 @@ if ! grep -qF "trigger_file=$STATE_DIR/tmp/pr-review-trigger" "$LOG_FILE"; then
     exit 1
 fi
 
-echo "  PASS (14 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence)"
+# Scenario 15 (infinite-dispatch-loop fence): orchestrator's KNOWN_SHA
+# read sources from runs/ (meta.json), not state.json. The round-8 fix
+# moved the WORKER's KNOWN_SHA to runs/. If the orchestrator is left
+# reading state.json and a `gh pr comment` succeeds but state_set fails
+# afterward, state.json keeps the OLDER SHA — and on the next tick the
+# orchestrator dispatches again because state.json says "we last
+# reviewed OLDER_SHA != HEAD". The worker then reads runs/ for ITS
+# KNOWN_SHA, gets HEAD (correctly), computes git diff HEAD..HEAD, and
+# aborts on empty diff. state.json stays unchanged. The cycle repeats
+# every tick forever until a new commit lands or someone manually
+# repairs state.json.
+#
+# Fence: state.json says OLDER_SHA, runs/ says HEAD (abc123 — the gh
+# stub's headRefOid). No /srosro-* trigger comments. Expect 0 dispatches.
+# Pre-fix this would have dispatched.
+echo "  scenario 15: state.json stale (OLDER_SHA), runs/ shows HEAD reviewed → no dispatch (infinite-loop fence)..."
+unset MOCK_COMMENTS_PAGE1_FILE MOCK_COMMENTS_PAGE2_FILE
+export MOCK_COMMENTS_FILE="$TMPDIR/comments.json"
+state_set "cncorp/plow#1" "older_sha_stale" false "prior review body" "$(($(date +%s) - 3600))"
+clear_seeded_runs
+# runs/ correctly reports the actually-reviewed SHA (HEAD = abc123).
+seed_run "cncorp_plow" "1" "20260429T100000000Z" "abc123" "COMMENT" >/dev/null
+echo "[]" > "$MOCK_COMMENTS_FILE"
+run_orchestrator
+n=$(count_dispatches)
+if [ "$n" -ne 0 ]; then
+    echo "FAIL scenario 15 (infinite-dispatch-loop regression): expected 0 dispatches when runs/ shows HEAD already reviewed, got $n — orchestrator likely still consults state.json for KNOWN_SHA"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+
+# Scenario 16 (changed-SHA dispatch from runs/): runs/ reports OLDER_SHA,
+# HEAD is abc123 — orchestrator must dispatch even when state.json is
+# empty/missing, because runs/ is now the authoritative source. No
+# /srosro-* trigger comments needed; the SHA delta alone drives dispatch.
+# Cooldown is bypassed because the gh stub returns a 2020-era commit
+# date for /pulls/<n>/commits.
+echo "  scenario 16: state.json empty, runs/ shows OLDER_SHA (HEAD differs) → 1 dispatch..."
+echo "{}" > "$STATE_FILE"
+clear_seeded_runs
+seed_run "cncorp_plow" "1" "20260429T100000000Z" "older_sha_999" "COMMENT" >/dev/null
+echo "[]" > "$MOCK_COMMENTS_FILE"
+run_orchestrator
+n=$(count_dispatches)
+if [ "$n" -ne 1 ]; then
+    echo "FAIL scenario 16 (runs/-sourced SHA gate): expected 1 dispatch when runs/ shows older SHA than HEAD, got $n"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+
+echo "  PASS (16 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip-when-state-stale, runs/-sourced-dispatch-when-head-differs)"

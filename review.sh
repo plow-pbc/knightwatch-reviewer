@@ -38,6 +38,17 @@ BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-pos
 # tracked-repos.sh above already resolved it.
 . "$REVIEWER_LIB_DIR/state-io.sh"
 . "$REVIEWER_LIB_DIR/auth.sh"
+# run-dir.sh exposes latest_author_visible_review_sha — the orchestrator
+# reads it at the dispatch gate so a state_set failure after a successful
+# `gh pr comment` can't strand us in an infinite-dispatch loop. meta.json
+# in runs/ is stamped BEFORE state_set fires, so runs/ correctly reports
+# "HEAD already reviewed" even when state.json missed the update. Without
+# this, the orchestrator would dispatch on stale state.json, the worker
+# would compute git diff HEAD..HEAD (since worker also reads runs/ for
+# KNOWN_SHA), abort on empty diff, and the cycle would repeat forever.
+# state.json stays as a cache for legacy callers but is no longer the
+# authoritative source of "have we reviewed this SHA?".
+. "$REVIEWER_LIB_DIR/run-dir.sh"
 
 # Rotate the orchestrator log when it exceeds 5MB. Per-run logs under
 # runs/<id>/ aren't rotated — they're already bounded by run.
@@ -76,7 +87,16 @@ for REPO in "${REPOS[@]}"; do
         PR_SHA=$(echo "$PR_JSON" | jq -r '.headRefOid')
         PR_ID="${REPO}#${PR_NUM}"
 
-        KNOWN_SHA=$(state_get "$PR_ID" "sha")
+        # KNOWN_SHA at the dispatch gate reads from runs/ (meta.json),
+        # not state.json. The worker stamps meta.json's posted_at BEFORE
+        # state_set runs, so a `gh pr comment` success + state_set
+        # failure leaves state.json stale but runs/ accurate. Reading
+        # runs/ here closes the infinite-dispatch loop that would
+        # otherwise fire: stale state.json says SHA differs → dispatch
+        # → worker reads runs/ for its own KNOWN_SHA, computes empty
+        # diff, aborts → state.json still stale → next tick repeats.
+        REPO_SLUG_FOR_GATE="${REPO//\//_}"
+        KNOWN_SHA=$(latest_author_visible_review_sha "$STATE_DIR" "$REPO_SLUG_FOR_GATE" "$PR_NUM" "")
         FORCE_REVIEW=false
         FORCE_WHOLE_PR=false
         TRIGGER_FILE=""

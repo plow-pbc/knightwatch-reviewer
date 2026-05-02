@@ -49,6 +49,10 @@ test:
     bash lib/tests/sibling-symlinks-smoke.sh
 
     echo ""
+    echo "=== codex-scratch-redirect smoke test ==="
+    bash lib/tests/codex-scratch-redirect-smoke.sh
+
+    echo ""
     echo "=== path-scrub smoke test ==="
     bash lib/tests/path-scrub-smoke.sh
 
