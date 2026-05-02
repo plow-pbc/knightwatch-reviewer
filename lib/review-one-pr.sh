@@ -948,6 +948,17 @@ write_scratch "$REPO_DIR" "prior-art.md"       "${PRIOR_ART:-}"
 write_scratch "$REPO_DIR" "dead-code-static.md" "${DEAD_CODE_STATIC:-}"
 write_scratch "$REPO_DIR" "search-roots.md"    "${SEARCH_ROOTS:-}"
 write_scratch "$REPO_DIR" "standards.md"       "$STANDARDS"
+
+# ---- probe schema ----
+# probe-schema.md ships in prompts/ and is symlinked into ~/.pr-reviewer/prompts
+# at install time. Specialists + critic + aggregator (Phases 2+) reference
+# .codex-scratch/probe-schema.md as the canonical contract. Empty fallback is
+# survivable on early-phase reviews where no specialist reads it yet.
+PROBE_SCHEMA=""
+[ -f "$HOME/.pr-reviewer/prompts/probe-schema.md" ] && PROBE_SCHEMA="$(cat "$HOME/.pr-reviewer/prompts/probe-schema.md")"
+[ -z "$PROBE_SCHEMA" ] && [ -f prompts/probe-schema.md ] && PROBE_SCHEMA="$(cat prompts/probe-schema.md)"
+write_scratch "$REPO_DIR" "probe-schema.md" "$PROBE_SCHEMA"
+
 [ -n "${FULL_PR_DIFF:-}" ] && \
     write_scratch "$REPO_DIR" "full-diff.patch" "$FULL_PR_DIFF"
 [ -n "$TRIGGER_COMMENT_BODY" ] && \
