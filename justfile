@@ -74,16 +74,12 @@ test:
     bash lib/tests/build-specialist-prompt-smoke.sh
 
     echo ""
-    echo "=== anti-bloat contract smoke test ==="
-    bash lib/tests/anti-bloat-contract-smoke.sh
+    echo "=== prompt-contracts smoke (anti-bloat + momentum-wire, folded) ==="
+    bash lib/tests/prompt-contracts-smoke.sh
 
     echo ""
     echo "=== loc-trend smoke ==="
     bash lib/tests/loc-trend-smoke.sh
-
-    echo ""
-    echo "=== momentum-wire smoke ==="
-    bash lib/tests/momentum-wire-smoke.sh
 
     echo ""
     echo "=== decline-history smoke ==="
