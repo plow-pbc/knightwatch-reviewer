@@ -166,4 +166,8 @@ test:
     bash lib/tests/replay-smoke.sh
 
     echo ""
+    echo "=== replay-source-chain smoke test ==="
+    bash lib/tests/replay-source-chain-smoke.sh
+
+    echo ""
     echo "all checks passed"

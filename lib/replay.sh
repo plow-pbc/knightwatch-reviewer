@@ -28,21 +28,18 @@ done
 OUT="${OUT:-replays/${REPO//\//-}-${PR}-${SHA:0:7}}"
 mkdir -p "$OUT"
 
-# Fetch diff at the historical SHA
-gh pr diff "$PR" --repo "$REPO" --patch > "$OUT/diff.patch"
-
 # Manifest captures replay provenance — deterministic spot-check input
-cat > "$OUT/manifest.json" <<EOF
-{
-    "repo": "$REPO",
-    "pr": $PR,
-    "sha": "$SHA",
-    "replayed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-    "dry_run": $([ "$DRY_RUN" -eq 1 ] && echo true || echo false)
-}
-EOF
+jq -n \
+  --arg repo "$REPO" \
+  --argjson pr "$PR" \
+  --arg sha "$SHA" \
+  --argjson dry_run "$DRY_RUN" \
+  '{repo: $repo, pr: $pr, sha: $sha, replayed_at: (now | todate), dry_run: ($dry_run == 1)}' \
+  > "$OUT/manifest.json"
 
 if [ "$DRY_RUN" -eq 1 ]; then
+    # Dry-run: prep scratch and fallback to gh pr diff (not historical)
+    gh pr diff "$PR" --repo "$REPO" --patch > "$OUT/diff.patch"
     echo "dry-run: scratch prepared at $OUT"
     exit 0
 fi
@@ -51,22 +48,41 @@ fi
 # then invoke run_specialist_pipeline against a fresh checkout at $SHA. The post-
 # pipeline gh-posting step is deliberately skipped — we only want the rendered review.
 LIB_DIR="$(cd "$(dirname "$0")" && pwd)"
-. "$LIB_DIR/orchestrate.sh"
-. "$LIB_DIR/run-dir.sh"
+. "$LIB_DIR/state-io.sh"
+. "$LIB_DIR/prompt-build.sh"
 . "$LIB_DIR/agent-fallback.sh"
-. "$LIB_DIR/llm-pipeline.sh"
+. "$LIB_DIR/run-dir.sh"
 . "$LIB_DIR/critic-splitter.sh"
 . "$LIB_DIR/go-deep-rank.sh"
+. "$LIB_DIR/orchestrate.sh"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
-git clone --depth 50 "https://github.com/$REPO.git" "$WORK/repo"
+git clone "https://github.com/$REPO.git" "$WORK/repo"
 ( cd "$WORK/repo" && git fetch origin "pull/$PR/head" && git checkout "$SHA" )
+
+# Build diff at the historical SHA using local git diff, not gh pr diff
+BASE_REF="$(gh pr view "$PR" --repo "$REPO" --json baseRefName --jq .baseRefName)"
+( cd "$WORK/repo" && git fetch origin "$BASE_REF" )
+git -C "$WORK/repo" diff "origin/$BASE_REF...$SHA" > "$OUT/diff.patch"
 
 REPO_DIR="$WORK/repo"
 RUN_DIR="$WORK/run"
 mkdir -p "$RUN_DIR/agents" "$REPO_DIR/.codex-scratch"
 cp "$OUT/diff.patch" "$REPO_DIR/.codex-scratch/diff.patch"
+
+# Minimal scratch staging — most prompts fail-soft on empty inputs.
+# Real replay fidelity (full staging matching review-one-pr.sh) is deferred to
+# the first invocation in Task 1.5; this is the floor that lets the pipeline boot.
+for f in standards.md review-priority.md decline-history.md loc-trend.md \
+         prior-art.md dead-code-static.md prior-reviews.md previous-review.md \
+         file-history.md commits.md author-intent.md search-roots.md; do
+    : > "$REPO_DIR/.codex-scratch/$f"
+done
+# standards.md needs real content — copy from current repo
+cp "$LIB_DIR/../prompts/probe-schema.md" "$REPO_DIR/.codex-scratch/standards.md" 2>/dev/null \
+    || cp "$LIB_DIR/../prompts/standards.md" "$REPO_DIR/.codex-scratch/standards.md" 2>/dev/null \
+    || true
 
 PR_ID="$REPO#$PR"
 PR_TITLE="$(gh pr view "$PR" --repo "$REPO" --json title --jq .title)"
