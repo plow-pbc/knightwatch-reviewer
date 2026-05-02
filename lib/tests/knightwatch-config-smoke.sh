@@ -3,10 +3,10 @@
 #
 # Three invariants:
 #   1. File exists on the base branch → returns content + exit 0
-#   2. File absent → returns empty + exit 1 (caller falls back)
-#   3. File exists ONLY on a non-base branch (PR head) → still falls
-#      back. Trust model: base branch is the source of truth; PR head
-#      edits don't take effect until merged.
+#   2. File absent → returns empty + exit 1 (caller takes its no-value path)
+#   3. File exists ONLY on a non-base branch (PR head) → still classified
+#      as ABSENT against the base ref. Trust model: base branch is the
+#      source of truth; PR head edits don't take effect until merged.
 
 set -euo pipefail
 
@@ -75,10 +75,11 @@ fi
 
 # --- scenario 2: missing file → empty + EXACTLY exit 1 (ABSENT) ----
 # Specifically expect rc=1 (ABSENT), not just "non-zero." Distinguishing
-# ABSENT (rc=1) from ERROR (rc=2) is load-bearing: ABSENT triggers
-# legacy fallback in callers, ERROR aborts the worker. A test that
-# accepts any non-zero would let an ERROR-as-ABSENT regression slip
-# through (bot finding 1 PR #29 round 2).
+# ABSENT (rc=1) from ERROR (rc=2) is load-bearing: ABSENT routes callers
+# down their no-value path (skip check / substitute placeholder /
+# default sibling set / embedded review-priority default), ERROR aborts
+# the worker. A test that accepts any non-zero would let an
+# ERROR-as-ABSENT regression slip through (bot finding 1 PR #29 round 2).
 echo "  scenario 2: missing file → empty + exit 1 (ABSENT)..."
 exit_code=0
 read_knightwatch_file "$WORK" "origin/main" "does-not-exist.sh" > "$TMPDIR/out.txt" 2>/dev/null || exit_code=$?
@@ -174,9 +175,11 @@ fi
 # --- scenario 5: bad base ref → exit 2 (ERROR, NOT ABSENT) ---------
 # A non-existent default branch (e.g., the operator forgot to fetch
 # origin/main, or the workdir is corrupt) must NOT collapse onto the
-# ABSENT exit code — that would silently revive legacy fallback policy
-# with no signal. The helper distinguishes via `git rev-parse --verify`
-# on the base ref before reading the path.
+# ABSENT exit code — that would silently route callers down their
+# no-value path (e.g. broaden the sibling set to all REPOS, or skip a
+# strict-typing check) with no operator signal. The helper
+# distinguishes via `git rev-parse --verify` on the base ref before
+# reading the path.
 echo "  scenario 5: bad base ref → exit 2 (ERROR)..."
 exit_code=0
 read_knightwatch_file "$WORK" "nonexistent-branch" "siblings" > "$TMPDIR/out.txt" 2>/dev/null || exit_code=$?

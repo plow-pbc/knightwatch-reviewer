@@ -69,7 +69,7 @@ stage_search_roots() {
             done <<< "$sibling_list"
             ;;
         1)
-            # ABSENT: legacy fallback to all REPOS minus self
+            # ABSENT: default to all tracked REPOS minus self
             for sibling_repo in "${REPOS[@]}"; do
                 [ "$sibling_repo" = "$repo" ] && continue
                 siblings+=("$sibling_repo")
@@ -77,8 +77,9 @@ stage_search_roots() {
             ;;
         *)
             # ERROR: knightwatch-config helper had a real failure (missing
-            # base ref, corrupt object store, etc.). Don't silently revive
-            # legacy policy — fail loud so the operator sees it.
+            # base ref, corrupt object store, etc.). Fail loud rather than
+            # misread as ABSENT — wrong sibling set silently broadens the
+            # cross-repo grep surface.
             echo "search-roots: knightwatch-config error reading siblings for $repo" >&2
             return 2
             ;;

@@ -9,13 +9,17 @@
 # (line-oriented, markdown, bash). No central manifest, no parser
 # dependency.
 #
-# ABSENCE semantics: callers treat ABSENT (file not in base ref) as the
-# same as PRESENT-empty — "no value for this concern." Both result in
-# the worker either skipping the check (dead-code, strict-typing) or
-# substituting an explicit placeholder (product-context). The
-# distinction the read function still preserves between PRESENT-empty
-# and ABSENT exists for the ERROR third state, not because callers
-# act differently between (0) and (1).
+# ABSENCE semantics are caller-specific. ABSENT (rc=1) and PRESENT-empty
+# (rc=0 + empty content) always produce the same caller behavior, but
+# what that behavior IS depends on the concern:
+#   - dead-code.sh, strict-typing.sh — skip the check
+#   - product-context.md             — substitute an explicit placeholder
+#   - siblings                       — default to all tracked REPOS minus self
+#   - review-priority.md             — emit an embedded default that points
+#                                      at standards.md for the universal policy
+# The read function still returns rc=0 vs rc=1 distinctly so the ERROR
+# third state (rc=2, transient git failure) stays unambiguous and
+# callers can fail loud rather than misread it as absence.
 
 # read_knightwatch_file <repo_dir> <base_ref> <relative_path>
 #   stdout: file content from <base_ref>:.knightwatch/<rel>
