@@ -23,6 +23,7 @@ Then read:
 - `.codex-scratch/review-priority.md` — per-repo operating point + voice posture.
 - `.codex-scratch/loc-trend.md` — per-round LOC trajectory; consulted by the Pre-PMF lens.
 - `.codex-scratch/prior-reviews.md` — concatenated prior aggregator outputs; consulted by the Pre-PMF lens for Bug-Class-Recurrence detection.
+- `.codex-scratch/decline-history.md` — operator's prior decline replies on this PR. If a finding-class appears here ≥3 times, drop it (footnote only); if 1-2 times, keep but cite the operator's prior reasoning + ask whether the new commit affects the prior decline.
 
 **Your job:**
 
@@ -48,6 +49,11 @@ For each finding in the specialist outputs, provide **1–3 lines** of counterar
    Scope-creep findings (asking the PR to update unrelated infra, fix a pre-existing gap, expand adjacent policy) MUST be REFRAME-AS-QUESTION'd if they survive — they are not bugs, the remedy is additive, and the cost-naming forces the author to weigh in. The reframe MUST include explicit cost language ("adds complexity and makes PMF iteration harder").
 
 **Pre-PMF lens (conditional).** If `.codex-scratch/loc-trend.md` shows GROWING and Bug-Class-Recurrence has fired in any prior round (visible in `prior-reviews.md`), apply the lens to *every surviving finding*: would the failure mode the remedy is preventing be observed in production at our scale today? If no AND the remedy is additive without observed need → REMEDY-BLOAT (drop entirely). If no but the underlying concern is real → REFRAME-AS-QUESTION.
+
+**Decline-history awareness.** For each surviving finding, check whether its class matches any in `.codex-scratch/decline-history.md`:
+- **Declined ≥3 rounds:** drop from the published findings; emit one-line footnote `Class 'X' declined N rounds (see decline-history.md). Not re-raising.`
+- **Declined 1-2 rounds:** keep but cite the operator's prior reasoning AND ask whether this commit's diff materially changes the prior decline. If yes — keep at original severity; if no — REFRAME-AS-QUESTION with the prior decline reason as the cost-naming.
+- **No prior declines:** existing handling.
 
 Separately: surface any findings the specialists **collectively missed**. Read the diff for gaps the specialists would have caught if they'd been more thorough.
 
@@ -84,6 +90,24 @@ Separately: surface any findings the specialists **collectively missed**. Read t
 - [severity estimate] <concise finding, 1–2 sentences>
 - [severity estimate] <another, ...>
 ```
+
+**For each surviving finding, append after your 1–3 line counterargument:**
+
+```
+**Estimated remedy LOC:** ~N LOC across M files.
+```
+
+Estimate by counting `+` lines in any code blocks the specialist proposed; fall back to "if the finding cites K files, estimate K×20 LOC" when no code is shown.
+
+**For findings ≥20 LOC remedy:** generate 1-2 calibration questions targeting the cultural lens from `standards.md` § Broken-Glass Test → 20-LOC remedy threshold. Pattern (LLM generates per-finding, NOT templated):
+
+```
+**Calibration questions for go-deep investigation:**
+- Q1: <will users at <operating-point> hit this state? cite firing-rate evidence if available, or "no observed instances">
+- Q2: <is there a similar pattern in <path/to/lib.sh> or another existing seam we could reuse to avoid adding N LOC?>
+```
+
+The calibration questions ladder up to: *"Is the additional complexity of addressing this issue worth the cost of slowing down PMF iteration?"* (from § Broken-Glass Test). For findings <20 LOC remedy, omit the calibration block entirely. For findings the critic recommends dropping (FALSE POSITIVE, REMEDY-BLOAT-with-no-alternative), omit both blocks.
 
 **Constraints:**
 - Keep each counterargument tight (1–3 lines). One-line AGREE is fine when a finding survives cleanly.
