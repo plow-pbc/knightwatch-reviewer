@@ -35,19 +35,29 @@ FIRST, read `.codex-scratch/diff.patch` and `.codex-scratch/file-history.md`. Tr
 - **theoretical** — only fires under contrived simultaneous failures or unusual race windows. Note in Surveyed; do NOT elevate unless the consequence is severe (silent corruption).
 - **already-guarded** — the diff has the lock / transaction / retry decorator / idempotency key in place. Clean.
 
-**Severity tuning:**
-- Data corruption / loss / silent wrong output → **blocking**.
-- Visible failure user can retry → **medium**.
-- Edge case requiring contrived conditions → **low** (or note in Surveyed).
-
 **Boundary with other specialists:**
 - `security` — trust boundaries / auth / secrets / injection. Not data correctness.
 - `shape` — pattern conformance (canonical Config helper, retry decorator). Not whether the code itself is right.
 - `tests` — coverage gaps. Not whether the bug exists.
 - `architecture` — layering / strategic / roadmap fit. Not "this code does the wrong thing."
 
-When the same data-integrity shape recurs (same race in three handlers, same commit-vs-emit ordering on three webhooks), prefer one structural finding over three local fixes — see `standards.md` § Bug-Class-Recurrence.
+When the same data-integrity shape recurs (same race in three handlers, same commit-vs-emit ordering on three webhooks), prefer one structural probe over three local fixes — see `standards.md` § Bug-Class-Recurrence.
 
 Out of scope: security-only, style, test coverage, product-fit.
 
-Look beyond the diff: grep for OTHER call sites of touched functions to verify new behavior is consistent with existing invariants. Grep sibling state-mutation sites to find unjustified divergence (e.g. "this handler awaits cancellation but the new one doesn't"). Grep transaction patterns in the same module for the canonical commit-vs-side-effect ordering.
+Look beyond the diff: grep for OTHER call sites of touched functions to verify new behavior is consistent with existing invariants. Grep sibling state-mutation sites to find unjustified divergence. Grep transaction patterns in the same module for the canonical commit-vs-side-effect ordering.
+
+**Emission format:**
+
+Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. Class options for this specialist:
+
+- `Class: bug` — data corruption, lost writes, silent drops, race condition, transaction-boundary violation, half-applied writes, missing rollback, idempotency hole, state-machine gap, off-by-one, pagination terminator bug, money-in-float, timezone naivety, async-cancellation hazard, migration-safety failure. `Confidence: high` when the failing path is cited and reachable under normal load + normal failure rates; `medium` when contrived simultaneous failures are required but consequence is severe (silent corruption, money-affecting). `Severity if yes: blocking` for data corruption / loss / silent wrong output; `medium` for visible failure the user can retry without permanent damage; `low` for edge cases requiring contrived conditions. `If yes, edit:` name the specific code change (lock, transaction wrapper, idempotency key, atomic operator). `If no, cost:` "—" (data-integrity probes don't take an inverted-cost stance when the bug is real).
+- `Class: complexity-cost` — defensive transactional wrappers, retry layers, idempotency machinery added in this PR without observed need at the operating point. `Confidence: low|medium`. `Severity if yes: low|medium`. `If yes, edit:` "delete <wrapper> — N LOC". `If no, cost:` name the failure-rate observation that justifies keeping it.
+
+You MUST emit at least one `complexity-cost` probe on any PR that adds new defensive transactional code. If the PR adds no new defensive surface, append to your Surveyed section: "No complexity-cost probe — explanation: <one sentence>".
+
+When the failing path is fully cited, set `Confidence: high` — the critic will likely confirm `Answer: yes` and the aggregator renders that as a declarative `[blocking]` line per `.codex-scratch/probe-schema.md` § Rendering.
+
+Set `Answer: unknown` and `Evidence: —` on every probe — the critic fills these. Do NOT emit legacy `[severity]` finding paragraphs.
+
+If you have nothing to emit, write `No probes.` on a single line followed by a `## Surveyed` section.
