@@ -94,4 +94,27 @@ else
     echo "FAIL: parser tripped on Surveyed prose"; exit 1
 fi
 
+# Fixture: invalid enum values — fields exist but values are off-contract.
+# Catches truncated probes or LLM hallucinations of nearby-but-wrong tokens.
+FIXTURE_BAD_ENUMS="$(cat <<'EOF'
+### Probe 1
+- **From:** shape
+- **Class:** invalid-class-name
+- **Q:** Does this probe slip past field-presence checks?
+- **Files:** lib/foo.sh:1
+- **If yes, edit:** something
+- **If no, cost:** something
+- **Confidence:** super-high
+- **Severity if yes:** critical
+- **Answer:** maybe
+- **Evidence:** —
+EOF
+)"
+
+if ! probe_validate <<<"$FIXTURE_BAD_ENUMS" 2>/dev/null; then
+    echo "OK: invalid enums (Class / Confidence / Severity / Answer) rejected"
+else
+    echo "FAIL: probe with invalid enum values accepted"; exit 1
+fi
+
 echo "OK: probe-schema smoke"

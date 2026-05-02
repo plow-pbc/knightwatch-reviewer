@@ -10,6 +10,14 @@
 
 REQUIRED_PROBE_FIELDS=(From Class Q Files "If yes, edit" "If no, cost" Confidence "Severity if yes" Answer Evidence)
 
+# Enum constraints — fields where free-form values would silently drift the
+# contract. Confidence/Answer/Severity-if-yes drive aggregator render logic;
+# an invalid enum makes a probe render in the wrong band or get dropped.
+PROBE_ENUM_CLASS=(bug bypass shape DRY tests dead-code perf complexity-cost)
+PROBE_ENUM_CONFIDENCE=(high medium low)
+PROBE_ENUM_SEVERITY=(blocking medium low nit)
+PROBE_ENUM_ANSWER=(yes no unknown)
+
 probe_validate() {
     local input
     input="$(cat)"
@@ -39,24 +47,45 @@ probe_validate() {
         END { if (in_probe) print block }
     ' <<<"$input")"
 
+    # _validate_probe_block: invoked per probe block; checks required fields
+    # AND enum-constrained fields (Class / Confidence / Severity if yes /
+    # Answer). Sets `missing=1` on any failure.
+    _validate_probe_block() {
+        local block="$1"
+        local field val
+        for field in "${REQUIRED_PROBE_FIELDS[@]}"; do
+            grep -q "^- \*\*${field}:\*\*" <<<"$block" \
+                || { echo "missing field: $field" >&2; missing=1; }
+        done
+        # Enum checks. Skip when the field is missing (already reported above).
+        _check_enum() {
+            local field="$1"; shift
+            local valid=("$@")
+            local val v
+            val=$(grep "^- \*\*${field}:\*\*" <<<"$block" | head -1 | sed "s/^- \*\*${field}:\*\* //" | sed 's/[[:space:]]*$//')
+            [ -z "$val" ] && return 0
+            for v in "${valid[@]}"; do
+                [ "$val" = "$v" ] && return 0
+            done
+            echo "invalid enum: ${field}='${val}' (expected: ${valid[*]})" >&2
+            missing=1
+        }
+        _check_enum "Class" "${PROBE_ENUM_CLASS[@]}"
+        _check_enum "Confidence" "${PROBE_ENUM_CONFIDENCE[@]}"
+        _check_enum "Severity if yes" "${PROBE_ENUM_SEVERITY[@]}"
+        _check_enum "Answer" "${PROBE_ENUM_ANSWER[@]}"
+    }
+
     local probe_block="" line
     while IFS= read -r line; do
         if [ "$line" = "---PROBE-SPLIT---" ]; then
-            for field in "${REQUIRED_PROBE_FIELDS[@]}"; do
-                grep -q "^- \*\*${field}:\*\*" <<<"$probe_block" \
-                    || { echo "missing field: $field" >&2; missing=1; }
-            done
+            _validate_probe_block "$probe_block"
             probe_block=""
         else
             probe_block="$probe_block"$'\n'"$line"
         fi
     done <<<"$blocks"
-    if [ -n "$probe_block" ]; then
-        for field in "${REQUIRED_PROBE_FIELDS[@]}"; do
-            grep -q "^- \*\*${field}:\*\*" <<<"$probe_block" \
-                || { echo "missing field: $field" >&2; missing=1; }
-        done
-    fi
+    [ -n "$probe_block" ] && _validate_probe_block "$probe_block"
 
     return "$missing"
 }
