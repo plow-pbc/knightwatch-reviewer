@@ -52,7 +52,7 @@ REPOS=(
 )
 ```
 
-The next 2-minute timer tick picks it up. `SOURCE_PATHS` in the same file enables cross-repo grep/search-roots; `KID_PATHS` (kid-prior-art) and `DEAD_CODE_CMDS` (static dead-code prepass) are optional supporting hooks. See the inline comments in [`repos.conf`](repos.conf) for shapes and `lib/tracked-repos.sh` for the loader.
+The next 2-minute timer tick picks it up. `SOURCE_PATHS` in the same file enables cross-repo grep/search-roots and `KID_PATHS` wires kid-prior-art lookup. Per-repo policy (product context, review priority, sibling allowlist, dead-code command, strict-typing command) lives in each tracked repo's `.knightwatch/` directory and is read from the base branch via `lib/knightwatch-config.sh`. See the inline comments in [`repos.conf`](repos.conf) for shapes and `lib/tracked-repos.sh` for the loader.
 
 ## Use on a PR
 

@@ -777,23 +777,21 @@ log "$PR_ID: touched-files post-image=${#TOUCHED_FILES_ARR[@]} both-sides=$(wc -
 # ---- dead-code static-tool pre-pass ----
 # Mirrors the kid block above: per-repo command, graceful degrade on
 # failure, output to a scratch file consumed by ONE downstream step
-# (the dead-code-search LLM pre-pass). DEAD_CODE_CMDS was loaded at
-# file scope via the tracked-repos.sh loader; the pre-declared empty
-# assoc array makes the lookup safe under `set -u` even in sandboxes
-# without repos.conf.
+# (the dead-code-search LLM pre-pass). Command source is the per-repo
+# .knightwatch/dead-code.sh file (read below).
 #
 # Exit-code policy: keep stdout regardless of exit. Some tools (vulture)
 # exit 1 *because* findings exist. Treat empty-stdout-AND-non-zero-exit
 # as the only degrade signal; non-empty stdout is data.
 DEAD_CODE_STATIC=""
-# Dead-code static-analysis command: try .knightwatch/dead-code.sh first
-# (per-repo, committed to the base branch), fall back to DEAD_CODE_CMDS[$REPO]
-# from repos.conf (legacy operator-managed).
+# Dead-code static-analysis command from .knightwatch/dead-code.sh
+# (per-repo, committed to the base branch). PRESENT-empty and ABSENT
+# both mean "no static dead-code check for this repo" — the LLM grep
+# pre-pass still runs from the diff alone.
 DEAD_CODE_CMD=""
 DEAD_CODE_CMD=$(read_knightwatch_file "$REPO_DIR" "$BASE_REF_SHA" "dead-code.sh")
 case $? in
-    0) : ;;  # PRESENT: use as-is (empty content = "no dead-code check for this repo")
-    1) DEAD_CODE_CMD="${DEAD_CODE_CMDS[$REPO]:-}" ;;  # ABSENT: legacy fallback
+    0|1) : ;;  # PRESENT or ABSENT: use as-is (empty / unset = no check)
     *) log "$PR_ID: knightwatch-config error reading dead-code.sh — aborting"; rm -rf "$REPO_DIR"; exit 1 ;;
 esac
 # TOUCHED_FILES_ARR is hoisted earlier (post-image side, shared with the
@@ -850,13 +848,14 @@ fi
 # the byte-identical string and it gets repetitive fast. Keep fragments
 # bare-fact; voice lives in the LLM body where each PR is novel.
 
-# REVIEWER_LIB_DIR is referenced by the per-repo cmds in repos.conf
-# (which call $REVIEWER_LIB_DIR/checks/<lang>-strict-typing.sh). Export
-# so it propagates into the `bash -c "$cmd"` subshells below.
+# REVIEWER_LIB_DIR is referenced by the per-repo cmds in
+# .knightwatch/strict-typing.sh (which call
+# $REVIEWER_LIB_DIR/checks/<lang>-strict-typing.sh). Export so it
+# propagates into the `bash -c "$cmd"` subshells below.
 export REVIEWER_LIB_DIR="$_LIB_DIR"
 
-# Strict-typing pre-check. Per-repo cmd from repos.conf delegates to
-# lib/checks/<lang>-strict-typing.sh. Helper contract is tri-state:
+# Strict-typing pre-check. Per-repo cmd from .knightwatch/strict-typing.sh
+# delegates to lib/checks/<lang>-strict-typing.sh. Helper contract is tri-state:
 #   exit 0 — strict mode enforced.
 #   exit 1 — gap (stdout has verbose detail → logged).
 #   exit 2 — checker error (stderr has details → logged loud, no note).
@@ -865,14 +864,13 @@ export REVIEWER_LIB_DIR="$_LIB_DIR"
 # malformed config file, refused symlink). Fail-loud here keeps the
 # deterministic section honest.
 STRICT_TYPING_NOTE=""
-# Strict-typing pre-check: try .knightwatch/strict-typing.sh first
-# (per-repo, committed to the base branch), fall back to STRICT_TYPING_CMDS[$REPO]
-# from repos.conf (legacy operator-managed).
+# Strict-typing pre-check command from .knightwatch/strict-typing.sh
+# (per-repo, committed to the base branch). PRESENT-empty and ABSENT
+# both mean "no strict-typing check for this repo" (e.g. bash repos).
 STRICT_TYPING_CMD=""
 STRICT_TYPING_CMD=$(read_knightwatch_file "$REPO_DIR" "$BASE_REF_SHA" "strict-typing.sh")
 case $? in
-    0) : ;;  # PRESENT: use as-is (empty content = "no strict-typing check for this repo")
-    1) STRICT_TYPING_CMD="${STRICT_TYPING_CMDS[$REPO]:-}" ;;  # ABSENT: legacy fallback
+    0|1) : ;;  # PRESENT or ABSENT: use as-is (empty / unset = no check)
     *) log "$PR_ID: knightwatch-config error reading strict-typing.sh — aborting"; rm -rf "$REPO_DIR"; exit 1 ;;
 esac
 if [ -n "$STRICT_TYPING_CMD" ]; then
@@ -980,25 +978,17 @@ else
     fi
 fi
 
-# Product context: try .knightwatch/product-context.md first (per-repo,
-# committed to the base branch), fall back to ~/.pr-reviewer/contexts/<slug>.md
-# (legacy operator-managed). Once every tracked repo has its .knightwatch/
-# committed, the fallback can be removed.
+# Product context from .knightwatch/product-context.md (per-repo,
+# committed to the base branch). PRESENT-empty and ABSENT both mean
+# "no per-repo product context"; the worker substitutes an explicit
+# placeholder below so prompts don't see a blank input.
 PRODUCT_CONTEXT=""
 PRODUCT_CONTEXT=$(read_knightwatch_file "$REPO_DIR" "$BASE_REF_SHA" "product-context.md")
 case $? in
-    0) : ;;  # PRESENT: use as-is (empty content = "explicitly no product context for this repo")
-    1)
-        # ABSENT: legacy fallback
-        CONTEXT_FILE="$HOME/.pr-reviewer/contexts/$(echo "$REPO" | tr '/' '_').md"
-        if [ -f "$CONTEXT_FILE" ]; then
-            PRODUCT_CONTEXT=$(cat "$CONTEXT_FILE")
-        else
-            PRODUCT_CONTEXT="(no product context configured for $REPO)"
-        fi
-        ;;
+    0|1) : ;;  # PRESENT or ABSENT: use as-is (placeholder substituted below if empty)
     *) log "$PR_ID: knightwatch-config error reading product-context.md — aborting"; rm -rf "$REPO_DIR"; exit 1 ;;
 esac
+[ -z "$PRODUCT_CONTEXT" ] && PRODUCT_CONTEXT="(no product context configured for $REPO)"
 write_scratch "$REPO_DIR" "product-context.md" "$PRODUCT_CONTEXT"
 
 # review-priority.md — per-repo operating point + voice posture

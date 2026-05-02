@@ -3,32 +3,24 @@
 # branch via `git show`. Trust model: base branch only — PR head edits
 # don't take effect until merged.
 #
-# Each per-repo concern (sibling allowlist, product context, dead-code
-# command, strict-typing command) gets its own file under .knightwatch/
-# with the natural format for that concern (line-oriented, markdown,
-# bash). No central manifest, no parser dependency.
+# Each per-repo concern (sibling allowlist, product context, review
+# priority, dead-code command, strict-typing command) gets its own
+# file under .knightwatch/ with the natural format for that concern
+# (line-oriented, markdown, bash). No central manifest, no parser
+# dependency.
 #
-# Migration model: each lookup falls back to today's central config
-# (repos.conf entries, ~/.pr-reviewer/contexts/<slug>.md) when the
-# .knightwatch/<file> is absent — un-onboarded repos keep working
-# unchanged. Once all tracked repos have committed .knightwatch/ to
-# their base branches, the fallbacks can be removed in a follow-up.
+# The helper reports presence/content/failure; callers decide policy.
+# Each call site documents its own PRESENT-empty and ABSENT semantics.
+# The one universal rule: every caller MUST treat (2) ERROR as a hard
+# abort so transient git failures (broken base ref, corrupt object
+# store, etc.) cannot be misread as absence.
 
 # read_knightwatch_file <repo_dir> <base_ref> <relative_path>
 #   stdout: file content from <base_ref>:.knightwatch/<rel>
 #           (may be empty when the file exists but has no content)
 #   exit:   0 — PRESENT: file exists at the base ref (content possibly empty)
-#           1 — ABSENT:  file doesn't exist at the base ref (caller falls back to legacy)
-#           2 — ERROR:   git invocation failed for a non-absence reason (caller aborts loud)
-#
-# Three states, not two. The PRESENT-vs-ABSENT distinction is load-bearing
-# for the "empty file = explicit no value" semantics (an empty
-# .knightwatch/dead-code.sh means "no dead-code static check for this
-# repo," NOT "fall back to legacy DEAD_CODE_CMDS"). The
-# ABSENT-vs-ERROR distinction is the Fail-Fast complement: callers
-# fall back to legacy ONLY for true absence, not for transient git
-# failures (broken base ref, corrupt object store, etc.) which would
-# otherwise silently revive legacy policy with no signal to the operator.
+#           1 — ABSENT:  file doesn't exist at the base ref
+#           2 — ERROR:   git invocation failed for a non-absence reason
 #
 # <base_ref> is the caller's responsibility — typically a SHA snapshotted
 # BEFORE any PR-controlled code (e.g. `just test`) has had a chance to
