@@ -202,4 +202,67 @@ if [ -s "$RUN_SPECIALIST_LOG" ]; then
     exit 1
 fi
 
-echo "  PASS (4 contract groups: standalone × 3, raw critic, aggregator stitch + failure path, specialist default × 3)"
+# ---- pipeline abort: critic non-zero must skip aggregator dispatch ---
+# R6 introduced fail-loud on critic non-zero (orchestrate.sh:215+). Pre-R6
+# the worker fell back to an empty-critic placeholder which let
+# Answer: unknown probes silently render as [open], demoting real
+# blockers. Fence the abort path by stubbing dispatch_agent so every
+# upstream agent succeeds, critic returns non-zero, and asserting
+# (a) run_specialist_pipeline exits non-zero, (b) aggregator was never
+# called.
+echo "  critic non-zero → run_specialist_pipeline aborts before aggregator..."
+
+# Stub log() since state-io.sh isn't sourced in this smoke
+log() { :; }
+
+# Override dispatch_agent at the smoke level. Each agent writes a stub
+# output.md to its expected path and returns 0, except critic which
+# returns non-zero.
+AGGREGATOR_CALLED_FLAG="$TMPDIR/aggregator-called"
+dispatch_agent() {
+    local name="$1"
+    mkdir -p "$RUN_DIR/agents/$name"
+    case "$name" in
+        intent)
+            printf 'Inferred intent: stub intent line\n' > "$RUN_DIR/agents/$name/output.md"
+            return 0 ;;
+        dead-code-search)
+            printf 'stub dead-code output\n' > "$RUN_DIR/agents/$name/output.md"
+            return 0 ;;
+        critic)
+            return 7 ;;
+        aggregator)
+            : > "$AGGREGATOR_CALLED_FLAG"
+            printf 'aggregator-stub\n' > "$RUN_DIR/agents/$name/output.md"
+            return 0 ;;
+        *)
+            # 8 angles + go-deep-*: stub success
+            printf '## [%s] probes\n\nNo probes.\n' "$name" > "$RUN_DIR/agents/$name/output.md"
+            return 0 ;;
+    esac
+}
+
+# rm -rf "$REPO_DIR" inside run_specialist_pipeline kills our tree on
+# abort — wrap the call in a subshell so the smoke can recover the
+# exit code without losing test state. REPO_DIR is recreated below.
+mkdir -p "$REPO_DIR/.codex-scratch/specialists"
+rm -f "$AGGREGATOR_CALLED_FLAG"
+(
+    # Empty previous-review.md → first-review path (skips momentum).
+    mkdir -p "$RUN_DIR/inputs"
+    : > "$RUN_DIR/inputs/previous-review.md"
+    LOG_FILE=/dev/null run_specialist_pipeline
+)
+PIPE_EXIT=$?
+
+if [ "$PIPE_EXIT" -eq 0 ]; then
+    echo "FAIL: run_specialist_pipeline must abort on critic non-zero (got exit 0)"
+    exit 1
+fi
+if [ -e "$AGGREGATOR_CALLED_FLAG" ]; then
+    echo "FAIL: aggregator was dispatched after critic failure (must abort before)"
+    exit 1
+fi
+echo "  OK: critic non-zero → pipeline aborts (exit $PIPE_EXIT), aggregator never reached"
+
+echo "  PASS (4 contract groups: standalone × 3, raw critic, aggregator stitch + failure path, specialist default × 3, critic fail-loud abort)"

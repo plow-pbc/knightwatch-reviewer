@@ -132,6 +132,10 @@ done
 echo "  asserting unified complexity-cost expectation in common-header.md..."
 assert_grep "common-header.md should describe complexity-cost probe expectation" \
     "Complexity-cost probe expectation" prompts/common-header.md
+
+echo "  asserting legacy finding-format carry-forward bucket in critic.md..."
+assert_grep "critic.md should describe Legacy finding-format conversion path" \
+    "Legacy finding-format" prompts/critic.md
 echo "  asserting re-review loop-breaker (Path 2) in aggregator.md..."
 assert_grep "aggregator.md should reference loc-trend.md trigger" \
     "loc-trend.md" prompts/aggregator.md
