@@ -131,6 +131,23 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # multi-source is idempotent (function redefinition).
 . "$_LIB_DIR/loc-trend.sh"
 
+# --- decline-history (fetch_decline_history) — operator's prior declines
+# on this PR; consumed by the critic to drop or footnote re-flagged
+# findings the operator has pushed back on ≥3 times. Sources gh-comments.sh
+# internally; multi-source is idempotent.
+. "$_LIB_DIR/decline-history.sh"
+
+# --- critic-splitter (split_critic_to_specialists) — co-locates per-angle
+# critic counter-arguments in specialists/<angle>.md so the aggregator
+# (and Phase 2's go-deep tech-leads) read a layered file per specialist.
+. "$_LIB_DIR/critic-splitter.sh"
+
+# --- go-deep ranker (rank_hot_angles) — selects which specialist files
+# become "hot" (≥20 LOC remedy → go-deep investigation). Sourced as a
+# helper so the smoke exercises the selection logic with synthetic
+# specialist files, not just token-greps the regex.
+. "$_LIB_DIR/go-deep-rank.sh"
+
 # --- per-run dir -------------------------------------------------------------
 # Every worker invocation gets its own runs/<RUN_ID>/ dir holding the run log,
 # input scratch, and one subdir per agent (prompt + output + log). The git
@@ -1020,6 +1037,40 @@ write_scratch "$REPO_DIR" "review-priority.md" "$REVIEW_PRIORITY"
 LOC_TREND=$(compute_loc_trend "$REPO" "$PR_NUM" "$REPO_DIR" "$BASE_REF_SHA" "$STATE_DIR" "$RUN_DIR" "$REVIEWED_SHA")
 write_scratch "$REPO_DIR" "loc-trend.md" "$LOC_TREND"
 
+# decline-history.md — operator declines from prior review comments,
+# so the critic can drop or footnote findings the operator has already
+# pushed back on. Empty/absent on first reviews and on PRs with no
+# operator pushback. Fail-soft on gh-failure (helper emits a sentinel;
+# critic falls back to existing behavior).
+#
+# Skipped on:
+#   - FORCE_WHOLE_PR=true (i.e. /srosro-review) — the trigger text on that
+#     path commits to "Any prior review is intentionally NOT provided —
+#     evaluate this PR from scratch." Staging decline history anyway
+#     would silently break that contract.
+#   - First reviews (no PRIOR_REVIEWS) — operator declines on bot reviews
+#     can't exist before there has been a bot review. Pre-existing operator
+#     comments on the PR (review-author conversation, etc.) are not bot-
+#     finding declines. Staging them would let the critic suppress finding
+#     classes the bot has never raised — a class-of-finding ban with no
+#     class-of-finding actually flagged, which is wrong.
+# Mirrors the existing prior-reviews.md skip semantics above.
+if [ "$FORCE_WHOLE_PR" = "true" ]; then
+    log "$PR_ID: FORCE_WHOLE_PR=true — staging decline-history.md sentinel (whole-PR re-review evaluates from scratch)"
+    # Sentinel keeps the prompt-input contract intact for critic.md /
+    # go-deep.md / aggregator.md, which all list .codex-scratch/decline-history.md
+    # as a required input. Empty/absent file would tempt those agents to
+    # explore the filesystem; the sentinel makes the "from scratch"
+    # decision explicit.
+    write_scratch "$REPO_DIR" "decline-history.md" "(decline history intentionally not staged on /srosro-review path — this is a from-scratch whole-PR re-review)"
+elif [ -z "${PRIOR_REVIEWS:-}" ]; then
+    log "$PR_ID: first review (no prior bot reviews) — staging decline-history.md sentinel"
+    write_scratch "$REPO_DIR" "decline-history.md" "(decline history intentionally not staged — first review on this PR; no prior bot findings exist for the operator to have declined)"
+else
+    DECLINE_HISTORY=$(fetch_decline_history "$REPO" "$PR_NUM")
+    write_scratch "$REPO_DIR" "decline-history.md" "$DECLINE_HISTORY"
+fi
+
 FILE_HISTORY=""
 # Derive file-history's file list from $KID_INPUT_DIFF via the shared
 # extract_touched_files_both_sides helper (lib/diff-build.sh) — single
@@ -1080,8 +1131,9 @@ fi
 write_scratch "$REPO_DIR" "commits.md" "$COMMITS"
 
 # Run the LLM review pipeline (intent → dead-code → 8 angles → momentum →
-# critic → aggregator). Sets AGG_EXIT and AGG_OUT in this shell; aborts on
-# any fail-loud error. Body lives in lib/orchestrate.sh.
+# critic → critic-splitter → go-deep tech-leads (≤3) → aggregator). Sets
+# AGG_EXIT and AGG_OUT in this shell; aborts on any fail-loud error. Body
+# lives in lib/orchestrate.sh.
 run_specialist_pipeline
 
 # Aggregator output is what gets posted to GitHub — abort on any codex error

@@ -66,7 +66,12 @@ mkdir -p "$REPO_DIR" "$RUN_DIR"
 . "$PROJECT_ROOT/lib/orchestrate.sh"
 
 BUILDER_LOG="$TMPDIR/builder.log"
-substitute_placeholders() { echo "substitute_placeholders:$1" >> "$BUILDER_LOG"; echo "PROMPT[$1]"; }
+# substitute_placeholders takes $6 = specialist_name (optional) — log it
+# explicitly so go-deep-* dispatch can fence the bare-angle pin: a
+# regression that drops the sixth arg would substitute an empty
+# {{SPECIALIST_NAME}} and the prompt would resolve
+# `.codex-scratch/specialists/.md` instead of the assigned angle.
+substitute_placeholders() { echo "substitute_placeholders:$1:specialist_name=${6:-}" >> "$BUILDER_LOG"; echo "PROMPT[$1]"; }
 build_specialist_prompt()  { echo "build_specialist_prompt:$1:$2" >> "$BUILDER_LOG"; echo "PROMPT[$1@$2]"; }
 build_aggregator_prompt()  { echo "build_aggregator_prompt" >> "$BUILDER_LOG"; echo "PROMPT[aggregator]"; }
 
@@ -147,6 +152,31 @@ for name in security tests consumers; do
     assert_grep "$name should reach run-specialist.sh with correct name" \
         "name=$name" "$RUN_SPECIALIST_LOG"
 done
+
+# ---- go-deep-* — substitute_placeholders against prompts/go-deep.md ----
+# All go-deep instances share prompts/go-deep.md but pin to a different
+# specialist file via the SPECIALIST_NAME placeholder (the bare angle,
+# stripped from the agent-name's go-deep- prefix). Output dir is the
+# full prefixed name to avoid races between parallel instances.
+echo "  go-deep-* → prompts/go-deep.md (no header), output dir per-instance..."
+echo "stub-prompt-for-go-deep" > "$HOME/.pr-reviewer/prompts/go-deep.md"
+run_one "go-deep-security"
+assert_grep "go-deep-* should call substitute_placeholders against go-deep.md" \
+    "substitute_placeholders:$HOME/.pr-reviewer/prompts/go-deep.md" "$BUILDER_LOG"
+assert_no_grep "go-deep-* must NOT call build_specialist_prompt (would inherit specialist common-header)" \
+    "build_specialist_prompt" "$BUILDER_LOG"
+# Round-4 regression fence: the sixth arg to substitute_placeholders
+# (specialist_name) MUST be the bare angle, stripped of the "go-deep-"
+# prefix. A drop would substitute {{SPECIALIST_NAME}} with empty string
+# and the prompt would point the tech-lead at .codex-scratch/specialists/.md
+# instead of the assigned specialist file. The earlier round-1 fence on
+# this dispatch only checked the prompt-file-path arg.
+assert_grep "go-deep-* must pin SPECIALIST_NAME to the bare angle (not empty, not the prefixed name)" \
+    "specialist_name=security" "$BUILDER_LOG"
+assert_grep "go-deep-* should reach run-specialist.sh with prefixed agent name" \
+    "name=go-deep-security" "$RUN_SPECIALIST_LOG"
+assert_grep "go-deep-* output dir should be RUN_DIR/agents/go-deep-<angle>" \
+    "agent_dir=$RUN_DIR/agents/go-deep-security" "$RUN_SPECIALIST_LOG"
 
 # ---- aggregator failure path: build_aggregator_prompt non-zero return ---
 # The aggregator stitch can fail pre-codex on missing voice.md or missing

@@ -54,6 +54,38 @@ echo "  asserting Pre-PMF lens reference in critic.md..."
 assert_grep "critic.md should reference loc-trend.md (Pre-PMF lens)" \
     "loc-trend.md" prompts/critic.md
 
+# ----- Phase 1: decline-history awareness + remedy-LOC + calibration ----
+echo "  asserting decline-history input in critic.md..."
+assert_grep "critic.md should reference decline-history.md" \
+    "decline-history.md" prompts/critic.md
+
+echo "  asserting remedy-LOC estimate contract in critic.md..."
+assert_grep "critic.md should fence Estimated remedy LOC token" \
+    "Estimated remedy LOC" prompts/critic.md
+
+echo "  asserting calibration-question contract in critic.md..."
+assert_grep "critic.md should fence Calibration questions for go-deep token" \
+    "Calibration questions for go-deep" prompts/critic.md
+
+# ----- Phase 2: go-deep tech-lead specialist + aggregator integration ----
+echo "  asserting decline-history input in aggregator.md..."
+assert_grep "aggregator.md should reference decline-history.md" \
+    "decline-history.md" prompts/aggregator.md
+
+echo "  asserting layered-file note in aggregator.md..."
+assert_grep "aggregator.md should describe layered specialist files" \
+    "layered specialist files" prompts/aggregator.md
+
+echo "  asserting go-deep recommendation handlers in aggregator.md..."
+assert_grep "aggregator.md should reference SIMPLIFY-WITH-PATTERN go-deep recommendation" \
+    "SIMPLIFY-WITH-PATTERN" prompts/aggregator.md
+
+echo "  asserting go-deep prompt exists with 20-LOC threshold reference..."
+assert_grep "go-deep.md should fence the 20-LOC remedy threshold reference" \
+    "20-LOC remedy threshold" prompts/go-deep.md
+assert_grep "go-deep.md should fence the four recommendation tokens" \
+    "KEEP | SIMPLIFY-WITH-PATTERN | DROP | REFRAME" prompts/go-deep.md
+
 echo "  asserting REMEDY-BLOAT handler in aggregator.md..."
 assert_grep "REMEDY-BLOAT handler missing from prompts/aggregator.md" \
     "REMEDY-BLOAT" prompts/aggregator.md

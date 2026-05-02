@@ -37,6 +37,25 @@
 # enclosing scope. Returns the underlying run-specialist exit code, or
 # build_aggregator_prompt's non-zero exit if the aggregator stitch fails
 # pre-codex (caller's existing AGG_EXIT/AGG_OUT gate handles both).
+# `persist_layered_specialists SPECIALISTS_DIR RUN_DIR ANGLE1 [ANGLE2 ...]`
+# Mirrors each layered specialist file (specialist + critic + optional
+# go-deep) from the workdir-resident `.codex-scratch/specialists/<angle>.md`
+# into `RUN_DIR/agents/<angle>/layered.md`. The workdir is rm -rf'd at the
+# end of review-one-pr.sh; this copy is the operator-inspection artifact
+# the spec promises. Sourceable so the smoke can drive it directly with
+# fixture files (round-5/round-7 regression coverage).
+persist_layered_specialists() {
+    local specialists_dir="$1" run_dir="$2"
+    shift 2
+    local angle
+    for angle in "$@"; do
+        if [ -e "$specialists_dir/${angle}.md" ]; then
+            mkdir -p "$run_dir/agents/${angle}"
+            cp "$specialists_dir/${angle}.md" "$run_dir/agents/${angle}/layered.md"
+        fi
+    done
+}
+
 dispatch_agent() {
     local name="$1"
     local file="$HOME/.pr-reviewer/prompts/${name}.md"
@@ -44,6 +63,17 @@ dispatch_agent() {
     case "$name" in
         intent|dead-code-search|momentum)
             prompt=$(substitute_placeholders "$file" "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR") ;;
+        go-deep-*)
+            # Up to 3 instances per review, all sharing prompts/go-deep.md
+            # but each pinned to a different specialist file via the
+            # SPECIALIST_NAME placeholder. The output dir uses the full
+            # prefixed name to avoid races. substitute_placeholders (not
+            # build_specialist_prompt) — go-deep's contract conflicts with
+            # the specialist common-header, same way intent / momentum do.
+            local angle="${name#go-deep-}"
+            prompt=$(substitute_placeholders \
+                "$HOME/.pr-reviewer/prompts/go-deep.md" \
+                "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR" "$angle") ;;
         critic)
             prompt=$(cat "$file") ;;
         aggregator)
@@ -187,6 +217,70 @@ run_specialist_pipeline() {
     fi
     critic_fallback "$CRITIC_EXIT" "$CRITIC_OUT"
     ln -sfn "$CRITIC_OUT" "$REPO_DIR/.codex-scratch/critic.md"
+
+    # Split the critic's per-finding output by [<angle>] section and append
+    # each section to the corresponding specialists/<angle>.md, so the
+    # aggregator + go-deep tech-leads see one layered file per specialist
+    # (specialist findings → critic counter-arguments). Single writer per
+    # phase per file — no race. Fail-soft (logs per-angle warnings; never
+    # aborts — the aggregator can still read critic.md directly).
+    log "$PR_ID: splitting critic output into specialist files..."
+    split_critic_to_specialists "$CRITIC_OUT" "$SPECIALISTS_DIR" 2>>"$LOG_FILE" || true
+
+    # ---- go-deep tech-leads (Phase 2) ----
+    # Hot specialist files = those whose layered file contains a critic-
+    # emitted "Calibration questions for go-deep" block (only emitted for
+    # ≥20 LOC remedies). Cap parallel fan-out at 3, biased by severity
+    # band ([blocking] > [medium] > [low] > [nit]). Each go-deep instance
+    # writes to RUN_DIR/agents/go-deep-<angle>/output.md; orchestrator
+    # appends to specialists/<angle>.md after wait. Auto-scales to 0 on
+    # simple PRs: empty hot-list → no go-deep runs. Selection logic lives
+    # in lib/go-deep-rank.sh (sourceable seam, behavior-tested).
+    declare -a HOT_ANGLES=()
+    mapfile -t HOT_ANGLES < <(rank_hot_angles "$SPECIALISTS_DIR" "${ANGLES[@]}")
+
+    if [ "${#HOT_ANGLES[@]}" -eq 0 ]; then
+        log "$PR_ID: no findings ≥20 LOC remedy — skipping go-deep tech-leads"
+    else
+        log "$PR_ID: launching ${#HOT_ANGLES[@]} go-deep tech-lead(s): ${HOT_ANGLES[*]}"
+        declare -A GD_PIDS=()
+        for angle in "${HOT_ANGLES[@]}"; do
+            dispatch_agent "go-deep-$angle" &
+            GD_PIDS["$angle"]=$!
+        done
+        local GD_FAILURE=0
+        for angle in "${HOT_ANGLES[@]}"; do
+            if ! wait "${GD_PIDS[$angle]}"; then
+                log "$PR_ID: go-deep-$angle exited non-zero (see $RUN_DIR/agents/go-deep-$angle/log.txt)"
+                GD_FAILURE=1
+            fi
+        done
+        if [ "$GD_FAILURE" -ne 0 ]; then
+            # Fail-fast > graceful degradation. The hot-list selection
+            # means at least one ≥20 LOC remedy finding exists — exactly
+            # the population go-deep is meant to investigate. Silently
+            # degrading to specialist+critic output would publish the
+            # high-cost findings without the calibration the operator
+            # selected go-deep to provide. Mirror the momentum specialist's
+            # fail-loud abort pattern above.
+            log "$PR_ID: at least one go-deep tech-lead failed — aborting review (high-LOC findings need go-deep calibration; silent degrade would publish wrong recommendations)"
+            rm -rf "$REPO_DIR"
+            exit 1
+        fi
+        local GD_OUT
+        for angle in "${HOT_ANGLES[@]}"; do
+            GD_OUT="$RUN_DIR/agents/go-deep-$angle/output.md"
+            if [ -s "$GD_OUT" ]; then
+                {
+                    printf '\n---\n\n## Go-deep tech-lead investigation\n\n'
+                    cat "$GD_OUT"
+                } >> "$SPECIALISTS_DIR/${angle}.md"
+            fi
+        done
+        log "$PR_ID: go-deep tech-leads complete"
+    fi
+
+    persist_layered_specialists "$SPECIALISTS_DIR" "$RUN_DIR" "${ANGLES[@]}"
 
     log "$PR_ID: aggregator (with critic input)..."
     # The aggregator's prompt build (stitching in prompts/voice.md at

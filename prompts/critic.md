@@ -23,6 +23,7 @@ Then read:
 - `.codex-scratch/review-priority.md` — per-repo operating point + voice posture.
 - `.codex-scratch/loc-trend.md` — per-round LOC trajectory; consulted by the Pre-PMF lens.
 - `.codex-scratch/prior-reviews.md` — concatenated prior aggregator outputs; consulted by the Pre-PMF lens for Bug-Class-Recurrence detection.
+- `.codex-scratch/decline-history.md` — operator's prior decline replies on this PR. Two layers: (a) **Decline replies** are emitted verbatim as context — read the prose and use your judgement on whether a class is recurring (the orchestrator no longer auto-classifies). (b) **Explicit class markers** (`<!-- decline:class=X -->`) are counted; the ≥3-rounds auto-drop rule applies ONLY to classes counted there, not to prose-inferred classes.
 
 **Your job:**
 
@@ -48,6 +49,12 @@ For each finding in the specialist outputs, provide **1–3 lines** of counterar
    Scope-creep findings (asking the PR to update unrelated infra, fix a pre-existing gap, expand adjacent policy) MUST be REFRAME-AS-QUESTION'd if they survive — they are not bugs, the remedy is additive, and the cost-naming forces the author to weigh in. The reframe MUST include explicit cost language ("adds complexity and makes PMF iteration harder").
 
 **Pre-PMF lens (conditional).** If `.codex-scratch/loc-trend.md` shows GROWING and Bug-Class-Recurrence has fired in any prior round (visible in `prior-reviews.md`), apply the lens to *every surviving finding*: would the failure mode the remedy is preventing be observed in production at our scale today? If no AND the remedy is additive without observed need → REMEDY-BLOAT (drop entirely). If no but the underlying concern is real → REFRAME-AS-QUESTION.
+
+**Decline-history awareness.** Two channels:
+
+*Explicit class markers (mechanical auto-drop):* If a finding's class appears in the **Explicit class markers** section of `.codex-scratch/decline-history.md` with a count ≥3, drop the finding from the published findings. Emit one-line footnote: `Class 'X' marked declined N rounds (see decline-history.md). Not re-raising.` Class names are exact matches against the operator's `<!-- decline:class=X -->` declarations.
+
+*Free-form prose (judgement):* Read the **Decline replies** section as context. If the prose suggests the operator pushed back on a class similar to a surviving finding's class — even though the operator didn't add an explicit marker — cite the operator's reasoning in your counter-argument and ask whether this commit's diff materially changes the prior decline. If yes, keep at original severity; if no, REFRAME-AS-QUESTION with the prior decline reason as the cost-naming. Do NOT auto-drop based on prose inference; only the explicit-marker channel mechanically drops.
 
 Separately: surface any findings the specialists **collectively missed**. Read the diff for gaps the specialists would have caught if they'd been more thorough.
 
@@ -84,6 +91,24 @@ Separately: surface any findings the specialists **collectively missed**. Read t
 - [severity estimate] <concise finding, 1–2 sentences>
 - [severity estimate] <another, ...>
 ```
+
+**For each surviving finding, append after your 1–3 line counterargument:**
+
+```
+**Estimated remedy LOC:** ~N LOC across M files.
+```
+
+Estimate by counting `+` lines in any code blocks the specialist proposed; fall back to "if the finding cites K files, estimate K×20 LOC" when no code is shown.
+
+**For findings ≥20 LOC remedy:** generate 1-2 calibration questions targeting the cultural lens from `standards.md` § Broken-Glass Test → 20-LOC remedy threshold. Pattern (LLM generates per-finding, NOT templated):
+
+```
+**Calibration questions for go-deep investigation:**
+- Q1: <will users at <operating-point> hit this state? cite firing-rate evidence if available, or "no observed instances">
+- Q2: <is there a similar pattern in <path/to/lib.sh> or another existing seam we could reuse to avoid adding N LOC?>
+```
+
+The calibration questions ladder up to: *"Is the additional complexity of addressing this issue worth the cost of slowing down PMF iteration?"* (from § Broken-Glass Test). For findings <20 LOC remedy, omit the calibration block entirely. For findings the critic recommends dropping (FALSE POSITIVE, REMEDY-BLOAT-with-no-alternative), omit both blocks.
 
 **Constraints:**
 - Keep each counterargument tight (1–3 lines). One-line AGREE is fine when a finding survives cleanly.
