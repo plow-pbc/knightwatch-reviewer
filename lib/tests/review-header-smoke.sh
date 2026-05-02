@@ -94,6 +94,30 @@ assert_one_blockquote() {
     fi
 }
 
+# assert_fails_with SCENARIO STDERR_NEEDLE -- CMD ARGS...
+#
+# Asserts CMD exits non-zero AND stderr contains STDERR_NEEDLE. Used to
+# fence the fail-fast contract on every helper that refuses to silently
+# degrade per CLAUDE.md. Replaces six near-identical 7-line blocks; the
+# arity is fixed (no exit-code differentiation) so every call site reads
+# as "this command must die loudly with the cited diagnostic."
+assert_fails_with() {
+    local scenario="$1" needle="$2"
+    shift 2
+    [ "${1:-}" = "--" ] && shift
+    "$@" 2>/dev/null
+    if [ "$?" -eq 0 ]; then
+        echo "FAIL: $scenario — returned 0 (silent degrade); should fail-fast per CLAUDE.md"
+        exit 1
+    fi
+    local err
+    err=$("$@" 2>&1 >/dev/null)
+    if ! printf '%s' "$err" | grep -q "$needle"; then
+        echo "FAIL: $scenario — stderr diagnostic missing '$needle'; got: $err"
+        exit 1
+    fi
+}
+
 # ===== prepend_review_header — join behavior =====
 echo "  one note → blockquote has just that note + final '.'..."
 result=$(prepend_review_header "$BODY" "📋 First review of this PR")
@@ -113,16 +137,7 @@ assert_one_blockquote "$result" "three-notes"
 assert_contains "$result" "> A. B. C." "three-notes joined"
 
 echo "  empty notes list → fail-fast (rc=1 + stderr diagnostic)..."
-prepend_review_header "$BODY" 2>/dev/null
-if [ "$?" -eq 0 ]; then
-    echo "FAIL: empty-notes — function returned 0 (silent degrade); should exit non-zero per CLAUDE.md fail-fast"
-    exit 1
-fi
-err=$(prepend_review_header "$BODY" 2>&1 >/dev/null)
-if ! printf '%s' "$err" | grep -q "empty notes list"; then
-    echo "FAIL: empty-notes — stderr diagnostic missing 'empty notes list' phrasing; got: $err"
-    exit 1
-fi
+assert_fails_with "empty-notes" "empty notes list" -- prepend_review_header "$BODY"
 
 # Realistic worker-output combinations: scope + skipped checks + gap
 # fragments. Verifies the helper handles every typical REVIEW_NOTES
@@ -132,12 +147,12 @@ SCOPE=$(format_review_scope "first")
 result=$(prepend_review_header "$BODY" \
     "$SCOPE" \
     "🧪 Tests not run" \
-    "🔍 Prior-art (KID) not run" \
+    "🔍 Prior-art (KID) unavailable" \
     "❌ Strict typing not enforced")
 assert_one_blockquote "$result" "all-four-signals"
 assert_contains "$result" "First review of this PR" "all-four-signals scope"
 assert_contains "$result" "🧪 Tests not run" "all-four-signals tests"
-assert_contains "$result" "🔍 Prior-art (KID) not run" "all-four-signals kid"
+assert_contains "$result" "🔍 Prior-art (KID) unavailable" "all-four-signals kid"
 assert_contains "$result" "❌ Strict typing not enforced" "all-four-signals strict-typing"
 
 # Regression-fence: the bot flagged the trailing "review based on the
@@ -147,7 +162,7 @@ assert_contains "$result" "❌ Strict typing not enforced" "all-four-signals str
 echo "  KID-only skip → no 'diff alone' tail re-introduced (PR #24 round 4 fence)..."
 result=$(prepend_review_header "$BODY" \
     "$(format_review_scope "first")" \
-    "🔍 Prior-art (KID) not run")
+    "🔍 Prior-art (KID) unavailable")
 if printf '%s' "$result" | grep -q "diff alone"; then
     echo "FAIL: kid-only — re-introduced misleading 'diff alone' tail"
     exit 1
@@ -161,7 +176,7 @@ result=$(prepend_review_header "$BODY" \
     "$(format_review_scope "incremental:$SHA_OLD" "$SHA_NEW")" \
     "⚠️ Stale: head moved from \`${SHA_OLD:0:7}\` to \`${SHA_NEW:0:7}\` mid-run — see commands below to re-run" \
     "🧪 Tests not run" \
-    "🔍 Prior-art (KID) not run" \
+    "🔍 Prior-art (KID) unavailable" \
     "❌ Strict typing not enforced")
 assert_one_blockquote "$result" "worst-case"
 result_line=$(printf '%s\n' "$result" | grep '^> ')
@@ -220,16 +235,8 @@ result=$(format_review_scope "incremental:$SHA_OLD" "$SHA_NEW")
 assert_scope_text "$result" "📋 Re-review of changes from \`abc1234\` to \`def9876\` (\`git diff abc1234..def9876\`)" "incremental"
 
 echo "  format_review_scope: incremental without head_sha → fail-fast (rc=1 + stderr diagnostic)..."
-format_review_scope "incremental:$SHA_OLD" 2>/dev/null
-if [ "$?" -eq 0 ]; then
-    echo "FAIL: incremental w/o head_sha — returned 0 (silent degrade); should fail-fast per CLAUDE.md"
-    exit 1
-fi
-err=$(format_review_scope "incremental:$SHA_OLD" 2>&1 >/dev/null)
-if ! printf '%s' "$err" | grep -q "incremental scope requires head_sha"; then
-    echo "FAIL: incremental w/o head_sha — stderr diagnostic missing 'incremental scope requires head_sha'; got: $err"
-    exit 1
-fi
+assert_fails_with "incremental w/o head_sha" "incremental scope requires head_sha" -- \
+    format_review_scope "incremental:$SHA_OLD"
 
 # Wording-fence — fallback MUST NOT be misframed as incremental. A bug
 # class flagged in PR #22 bot review (USED_FALLBACK=true previously got
@@ -246,16 +253,7 @@ if printf '%s' "$result" | grep -q "Re-review of changes from"; then
 fi
 
 echo "  format_review_scope: bogus → fail-fast (rc=1 + stderr diagnostic)..."
-format_review_scope "bogus" 2>/dev/null
-if [ "$?" -eq 0 ]; then
-    echo "FAIL: bogus scope — format_review_scope returned 0 (silent degrade)"
-    exit 1
-fi
-err=$(format_review_scope "bogus" 2>&1 >/dev/null)
-if ! printf '%s' "$err" | grep -q "unknown scope"; then
-    echo "FAIL: bogus scope — stderr missing 'unknown scope'; got: $err"
-    exit 1
-fi
+assert_fails_with "bogus scope" "unknown scope" -- format_review_scope "bogus"
 
 # ===== compute_review_scope (worker seam) — unchanged =====
 assert_scope() {
@@ -405,28 +403,11 @@ if printf '%s' "$result" | grep -q "not run"; then
 fi
 
 echo "  format_tests_note: bogus tests_ran → fail-fast (rc=1 + stderr diagnostic)..."
-format_tests_note "yes" "PASSED" 2>/dev/null
-if [ "$?" -eq 0 ]; then
-    echo "FAIL: bogus tests_ran — returned 0 (silent degrade); should fail-fast per CLAUDE.md"
-    exit 1
-fi
-err=$(format_tests_note "yes" "PASSED" 2>&1 >/dev/null)
-if ! printf '%s' "$err" | grep -q "tests_ran must be"; then
-    echo "FAIL: bogus tests_ran — stderr diagnostic missing 'tests_ran must be'; got: $err"
-    exit 1
-fi
+assert_fails_with "bogus tests_ran" "tests_ran must be" -- format_tests_note "yes" "PASSED"
 
 echo "  format_tests_note: ran=true + unrecognized summary → fail-fast..."
-format_tests_note "true" "weird state nobody handles" 2>/dev/null
-if [ "$?" -eq 0 ]; then
-    echo "FAIL: unrecognized summary — returned 0 (silent degrade); should fail-fast"
-    exit 1
-fi
-err=$(format_tests_note "true" "weird state nobody handles" 2>&1 >/dev/null)
-if ! printf '%s' "$err" | grep -q "unrecognized TEST_SUMMARY"; then
-    echo "FAIL: unrecognized summary — stderr diagnostic missing 'unrecognized TEST_SUMMARY'; got: $err"
-    exit 1
-fi
+assert_fails_with "unrecognized summary" "unrecognized TEST_SUMMARY" -- \
+    format_tests_note "true" "weird state nobody handles"
 
 # ===== format_kid_note =====
 assert_kid_note() {
@@ -443,20 +424,16 @@ assert_kid_note() {
 echo "  format_kid_note: true → ✅ Prior-art (KID) checked..."
 assert_kid_note "true" "✅ Prior-art (KID) checked" "kid ran successfully"
 
-echo "  format_kid_note: false → 🔍 Prior-art (KID) not run..."
-assert_kid_note "false" "🔍 Prior-art (KID) not run" "kid skipped or errored"
+# False covers two operational states — never invoked (no KID config /
+# .keepitdry / KID_INPUT_DIFF) AND invoked-but-errored (KID_EXIT != 0,
+# KID_FLAG written). "unavailable" is honest for both; "not run" mis-
+# stated the error path as a skip. Operator-facing diagnostics still go
+# to the worker log + KID_FLAG; this is the public reader-facing label.
+echo "  format_kid_note: false → 🔍 Prior-art (KID) unavailable..."
+assert_kid_note "false" "🔍 Prior-art (KID) unavailable" "kid skipped or errored — both render as 'unavailable'"
 
 echo "  format_kid_note: bogus → fail-fast..."
-format_kid_note "maybe" 2>/dev/null
-if [ "$?" -eq 0 ]; then
-    echo "FAIL: bogus kid_ran — returned 0 (silent degrade); should fail-fast"
-    exit 1
-fi
-err=$(format_kid_note "maybe" 2>&1 >/dev/null)
-if ! printf '%s' "$err" | grep -q "kid_ran must be"; then
-    echo "FAIL: bogus kid_ran — stderr diagnostic missing 'kid_ran must be'; got: $err"
-    exit 1
-fi
+assert_fails_with "bogus kid_ran" "kid_ran must be" -- format_kid_note "maybe"
 
 # Realistic clean-PR composition: every pre-check passed. Fence the
 # end-to-end header — readers should see a four-fragment line, not a
