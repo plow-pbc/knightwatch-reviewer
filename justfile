@@ -81,6 +81,10 @@ test:
     bash lib/tests/critic-splitter-smoke.sh
 
     echo ""
+    echo "=== go-deep-fanout smoke ==="
+    bash lib/tests/go-deep-fanout-smoke.sh
+
+    echo ""
     echo "=== run-specialist smoke test ==="
     bash lib/tests/run-specialist-smoke.sh
 
