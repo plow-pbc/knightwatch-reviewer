@@ -86,4 +86,16 @@ JSON
 OUT=$(_decline_history_from_json "$BCR_ONLY")
 echo "$OUT" | grep -qF "atomicity" || { echo "FAIL: BCR body without 'Declined' was filtered out"; echo "$OUT"; exit 1; }
 
+# --- fixture 6: canonical aggregator BCR template extracts <class>, not "This" ---
+echo "  fixture 6: canonical BCR template captures class via 'instance of'..."
+BCR_CANONICAL=$(cat <<'JSON'
+[
+  {"user":{"login":"srosro"},"created_at":"2026-05-01T11:00:00Z","body":"[Bug-Class-Recurrence] This is the 3rd instance of dispatch-routing: stale data from session N reaching session N+1 on a single-shared mutable."}
+]
+JSON
+)
+OUT=$(_decline_history_from_json "$BCR_CANONICAL")
+echo "$OUT" | grep -qF "dispatch-routing" || { echo "FAIL: canonical BCR template did not extract dispatch-routing"; echo "$OUT"; exit 1; }
+echo "$OUT" | grep -qE "Class:[[:space:]]+This\b" && { echo "FAIL: regex captured 'This' instead of class via 'instance of'"; echo "$OUT"; exit 1; } || true
+
 echo "  PASS"

@@ -137,6 +137,12 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # (and Phase 2's go-deep tech-leads) read a layered file per specialist.
 . "$_LIB_DIR/critic-splitter.sh"
 
+# --- go-deep ranker (rank_hot_angles) — selects which specialist files
+# become "hot" (≥20 LOC remedy → go-deep investigation). Sourced as a
+# helper so the smoke exercises the selection logic with synthetic
+# specialist files, not just token-greps the regex.
+. "$_LIB_DIR/go-deep-rank.sh"
+
 # --- per-run dir -------------------------------------------------------------
 # Every worker invocation gets its own runs/<RUN_ID>/ dir holding the run log,
 # input scratch, and one subdir per agent (prompt + output + log). The git
@@ -1038,7 +1044,13 @@ write_scratch "$REPO_DIR" "loc-trend.md" "$LOC_TREND"
 # anyway would silently break that contract. Mirrors the prior-reviews.md
 # skip block above.
 if [ "$FORCE_WHOLE_PR" = "true" ]; then
-    log "$PR_ID: FORCE_WHOLE_PR=true — skipping decline-history.md (whole-PR re-review evaluates from scratch)"
+    log "$PR_ID: FORCE_WHOLE_PR=true — staging decline-history.md sentinel (whole-PR re-review evaluates from scratch)"
+    # Sentinel keeps the prompt-input contract intact for critic.md /
+    # go-deep.md / aggregator.md, which all list .codex-scratch/decline-history.md
+    # as a required input. Empty/absent file would tempt those agents to
+    # explore the filesystem; the sentinel makes the "from scratch"
+    # decision explicit.
+    write_scratch "$REPO_DIR" "decline-history.md" "(decline history intentionally not staged on /srosro-review path — this is a from-scratch whole-PR re-review)"
 else
     DECLINE_HISTORY=$(fetch_decline_history "$REPO" "$PR_NUM")
     write_scratch "$REPO_DIR" "decline-history.md" "$DECLINE_HISTORY"
@@ -1279,29 +1291,7 @@ split_critic_to_specialists "$CRITIC_OUT" "$SPECIALISTS_DIR" 2>>"$LOG_FILE" || t
 # Auto-scales to 0 on simple PRs: empty hot-list → no go-deep runs.
 
 declare -a HOT_ANGLES=()
-for angle in "${ANGLES[@]}"; do
-    if grep -qF "Calibration questions for go-deep" "$SPECIALISTS_DIR/${angle}.md" 2>/dev/null; then
-        HOT_ANGLES+=("$angle")
-    fi
-done
-
-if [ "${#HOT_ANGLES[@]}" -gt 3 ]; then
-    # Specialists emit "### Finding N — <severity>" (per common-header.md:48),
-    # so we anchor on the trailing severity token. The aggregator's published
-    # findings use bracketed `[severity]`, but those don't appear in specialist
-    # files yet at this stage of the pipeline.
-    declare -a RANKED=()
-    for sev in "blocking" "medium" "low" "nit"; do
-        for angle in "${HOT_ANGLES[@]}"; do
-            if [ "${#RANKED[@]}" -lt 3 ] && \
-               grep -qE "^### Finding [0-9]+ — $sev\\b" "$SPECIALISTS_DIR/${angle}.md" 2>/dev/null && \
-               ! printf '%s\n' "${RANKED[@]}" | grep -qxF "$angle"; then
-                RANKED+=("$angle")
-            fi
-        done
-    done
-    HOT_ANGLES=("${RANKED[@]}")
-fi
+mapfile -t HOT_ANGLES < <(rank_hot_angles "$SPECIALISTS_DIR" "${ANGLES[@]}")
 
 if [ "${#HOT_ANGLES[@]}" -eq 0 ]; then
     log "$PR_ID: no findings ≥20 LOC remedy — skipping go-deep tech-leads"
@@ -1331,10 +1321,22 @@ else
     GD_FAILURE=0
     for angle in "${HOT_ANGLES[@]}"; do
         if ! wait "${GD_PIDS[$angle]}"; then
-            log "$PR_ID: go-deep-$angle exited non-zero (see $RUN_DIR/agents/go-deep-$angle/log.txt) — aggregator publishes from specialist+critic without this enrichment"
+            log "$PR_ID: go-deep-$angle exited non-zero (see $RUN_DIR/agents/go-deep-$angle/log.txt)"
             GD_FAILURE=1
         fi
     done
+    if [ "$GD_FAILURE" -ne 0 ]; then
+        # Fail-fast > graceful degradation. The hot-list selection means
+        # this PR has at least one ≥20 LOC remedy finding — exactly the
+        # population go-deep is meant to investigate. Silently degrading
+        # to specialist+critic output would publish the high-cost
+        # findings without the calibration the operator selected go-deep
+        # to provide. Mirror the momentum specialist's fail-loud abort
+        # pattern (review-one-pr.sh:1218 above).
+        log "$PR_ID: at least one go-deep tech-lead failed — aborting review (high-LOC findings need go-deep calibration; silent degrade would publish wrong recommendations)"
+        rm -rf "$REPO_DIR"
+        exit 1
+    fi
     for angle in "${HOT_ANGLES[@]}"; do
         GD_OUT="$RUN_DIR/agents/go-deep-$angle/output.md"
         if [ -s "$GD_OUT" ]; then
@@ -1344,7 +1346,7 @@ else
             } >> "$SPECIALISTS_DIR/${angle}.md"
         fi
     done
-    log "$PR_ID: go-deep tech-leads complete (failure=$GD_FAILURE)"
+    log "$PR_ID: go-deep tech-leads complete"
 fi
 
 log "$PR_ID: aggregator (with critic input)..."

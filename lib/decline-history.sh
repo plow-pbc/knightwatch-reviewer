@@ -74,10 +74,19 @@ _decline_history_from_json() {
     local class_keys=()
     while IFS=$'\t' read -r ts body; do
         [ -z "$body" ] && continue
+        # Priority order matters: the canonical aggregator BCR template
+        # is `[Bug-Class-Recurrence] This is the Nth instance of <class>:`
+        # (per prompts/aggregator.md). The "instance of <class>" capture
+        # must come BEFORE the loose `\[Bug-Class-Recurrence\] <word>`
+        # capture, otherwise the latter matches "This" as the class and
+        # the operator's decline never re-classifies into the bot's own
+        # canonical class names.
         local class=""
-        if [[ "$body" =~ \[Bug-Class-Recurrence\][[:space:]]*([A-Za-z][A-Za-z0-9_-]+) ]]; then
+        if [[ "$body" =~ \[Bug-Class-Recurrence\].*instance[[:space:]]+of[[:space:]]+([A-Za-z][A-Za-z0-9_-]+) ]]; then
             class="${BASH_REMATCH[1]}"
         elif [[ "$body" =~ (session-scoping|stale-auth|atomicity|parsing|dispatch|retry|validation|error-envelope|race) ]]; then
+            class="${BASH_REMATCH[1]}"
+        elif [[ "$body" =~ \[Bug-Class-Recurrence\][[:space:]]+([A-Za-z][A-Za-z0-9_-]+) ]]; then
             class="${BASH_REMATCH[1]}"
         elif [[ "$body" =~ ([a-z][a-z]+-[a-z][a-z]+)[[:space:]]+finding ]]; then
             class="${BASH_REMATCH[1]}"

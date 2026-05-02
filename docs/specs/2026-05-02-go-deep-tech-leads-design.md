@@ -301,8 +301,8 @@ Two new orchestrator steps, after Phase 1's critic-splitter:
 **G.2 Go-deep fan-out** (new in `lib/review-one-pr.sh`, ~30 LOC):
 - For each hot specialist (up to 3): invoke `run-specialist.sh` in parallel, passing the augmented specialist file as input.
 - Each instance is identified by `<angle>` (e.g. `go-deep-security`) so its output dir is `RUN_DIR/agents/go-deep-<angle>/output.md` (avoids races between parallel instances), but **all instances use the same `prompts/go-deep.md` template**.
-  - Implementation: extend `run-specialist.sh` with a `--prompt-name <name>` flag that decouples the output dir name from the prompt file path. Default behavior (no flag) keeps the existing 1:1 name↔prompt mapping. ~10 LOC of the +30 budgeted here goes to that flag.
-- Wait for all go-deep PIDs (mirrors existing specialist fan-out wait logic).
+  - Implementation: build the prompt via `substitute_placeholders` directly (not `build_specialist_prompt`, which would prepend `common-header.md` and dilute go-deep's own contract — same pattern as the intent step). Pass the bare `<angle>` as the `{{SPECIALIST_NAME}}` placeholder so the prompt's `.codex-scratch/specialists/<angle>.md` reference resolves; pass `go-deep-<angle>` as the agent name so the output dir is unique per instance. No `run-specialist.sh` interface change needed — the existing seam already accepts arbitrary prompt strings.
+- Wait for all go-deep PIDs (mirrors existing specialist fan-out wait logic). Any non-zero exit aborts the review (fail-loud: high-LOC findings need go-deep calibration; silent degrade would publish wrong recommendations — same pattern as the momentum specialist).
 - Orchestrator appends each go-deep output to its assigned `specialists/<angle>.md`.
 
 **Smoke test:** `lib/tests/go-deep-fanout-smoke.sh` — token-level fence on the orchestrator wiring (rank step is invoked, fan-out happens, append step happens). ~50 LOC.

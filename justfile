@@ -85,6 +85,10 @@ test:
     bash lib/tests/go-deep-fanout-smoke.sh
 
     echo ""
+    echo "=== go-deep-rank smoke ==="
+    bash lib/tests/go-deep-rank-smoke.sh
+
+    echo ""
     echo "=== run-specialist smoke test ==="
     bash lib/tests/run-specialist-smoke.sh
 

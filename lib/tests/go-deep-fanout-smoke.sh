@@ -24,21 +24,20 @@ echo "  asserting hot-list gate on Calibration questions token..."
 assert_grep "review-one-pr.sh missing 'Calibration questions for go-deep' gate" \
     "Calibration questions for go-deep" "$PROJECT_ROOT/lib/review-one-pr.sh"
 
-echo "  asserting parallel cap at 3..."
-assert_grep "review-one-pr.sh missing parallel cap (-gt 3)" \
-    "-gt 3" "$PROJECT_ROOT/lib/review-one-pr.sh"
+echo "  asserting orchestrator delegates ranking to rank_hot_angles helper..."
+assert_grep "review-one-pr.sh should call rank_hot_angles (lib/go-deep-rank.sh sourceable seam)" \
+    'rank_hot_angles "$SPECIALISTS_DIR"' "$PROJECT_ROOT/lib/review-one-pr.sh"
 
-echo "  asserting severity-band ranker..."
-assert_grep "review-one-pr.sh missing severity-band ranker (blocking medium low nit loop)" \
-    'in "blocking" "medium" "low" "nit"' "$PROJECT_ROOT/lib/review-one-pr.sh"
-
-echo "  asserting ranker matches specialist contract (### Finding N — <severity>)..."
-# Regression fence for the F2 round-1 finding: earlier code grepped for
-# "[blocking]" (aggregator-published format) but specialist files at this
-# stage emit "### Finding N — blocking" per common-header.md:48. Wrong
-# pattern would silently empty HOT_ANGLES on the 4+ specialist case.
-assert_grep "review-one-pr.sh ranker should grep '### Finding N — <sev>' specialist contract" \
-    '^### Finding [0-9]+ — $sev' "$PROJECT_ROOT/lib/review-one-pr.sh"
+echo "  asserting rank_hot_angles helper exists with severity-band ranker..."
+# Round-1 + round-2 regression fences moved into go-deep-rank-smoke.sh
+# (behavior tests with synthetic specialist files). Token-grep here just
+# fences the helper's existence + presence of the severity-band loop.
+assert_grep "lib/go-deep-rank.sh missing parallel cap (-le 3)" \
+    "-le 3" "$PROJECT_ROOT/lib/go-deep-rank.sh"
+assert_grep "lib/go-deep-rank.sh missing severity-band loop" \
+    'in "blocking" "medium" "low" "nit"' "$PROJECT_ROOT/lib/go-deep-rank.sh"
+assert_grep "lib/go-deep-rank.sh should grep '### Finding N — <sev>' specialist contract" \
+    '^### Finding [0-9]+ — $sev' "$PROJECT_ROOT/lib/go-deep-rank.sh"
 
 echo "  asserting go-deep prompt build uses substitute_placeholders (not build_specialist_prompt)..."
 # Regression fence for the F3 round-1 finding: build_specialist_prompt
