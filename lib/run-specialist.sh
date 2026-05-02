@@ -64,4 +64,27 @@ if [ ! -s "$OUT_FILE" ]; then
     exit 3
 fi
 
+# Probe-format validation for agents that emit probe blocks (per
+# prompts/probe-schema.md). Catches LLM drift on required fields and
+# enum values BEFORE the malformed output reaches critic / aggregator
+# (where it would silently render in the wrong band or get dropped).
+# Skipped for agents whose output contract is not probe-shaped: intent
+# (single-line), dead-code-search (free-form), momentum (prose),
+# aggregator (final posted review), go-deep-* (legacy contract, idle
+# under the probe pipeline). Critic IS validated — its "## Resolved
+# probes" section is delta-only (no full probe blocks), but its
+# "## Generated probes" section MUST contain valid probes; the parser
+# only activates on `### Probe N` headers and so naturally validates
+# only the generated-probes block.
+case "$NAME" in
+    security|data-integrity|architecture|simplification|tests|shape|performance|consumers|critic)
+        SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+        . "$SCRIPT_DIR/probe-parse.sh"
+        if ! probe_validate < "$OUT_FILE" 2>>"$LOG_FILE"; then
+            echo "[$(date '+%H:%M:%S')] agent=$NAME emitted malformed probe(s) — see log above" >> "$LOG_FILE"
+            exit 4
+        fi
+        ;;
+esac
+
 exit 0
