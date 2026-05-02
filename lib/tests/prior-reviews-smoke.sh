@@ -324,4 +324,39 @@ if [ -n "$appr_result" ]; then
     exit 1
 fi
 
-echo "  PASS (16 scenarios: no-runs, self-excluded, chronological-prior, aborted-skipped, no-meta-skipped, posted-but-aborted-INCLUDED, legacy-completed-no-posted-at-INCLUDED, foreign-pr-filtered, latest-author-visible-review, latest-empty-on-first-review, sha-reviewed_sha-precedence, sha-falls-back-to-sha, approved-APPROVE-true, approved-APPROVE-pending-true, approved-COMMENT-false, no-prior-empty)"
+# ---- scenario 11: latest_author_visible_review_started_at — returns latest run's started_at ----
+# Round-10 BCR fence: review.sh's slash-command cutoff timestamp now reads
+# from runs/ (meta.json.started_at) instead of state.json.reviewed_at,
+# closing the 4th leak of the gh-success + state_set-failure race. The
+# helper must (a) select the SAME run as the body/sha/approved siblings
+# (latest author-visible) and (b) return the started_at field verbatim
+# (already ISO 8601, no conversion).
+echo "  scenario 11: latest_author_visible_review_started_at — returns latest run's started_at ISO..."
+TS_PR=801
+ts_current=$(make_run "$REPO_SLUG" "$TS_PR" "20260429T120000000Z" "ggggggg" "## current run for started_at test")
+ts_run_a=$(make_run "$REPO_SLUG" "$TS_PR" "20260429T100000000Z" "1111112" "## ts review one")
+ts_run_b=$(make_run "$REPO_SLUG" "$TS_PR" "20260429T110000000Z" "2222223" "## ts review two")
+# Stamp distinct started_at values; the LATEST run (ts_run_b) wins.
+jq --arg s "2026-04-29T10:00:00Z" '. + {started_at: $s}' \
+   "$ts_run_a/meta.json" > "$ts_run_a/meta.json.tmp" && mv "$ts_run_a/meta.json.tmp" "$ts_run_a/meta.json"
+jq --arg s "2026-04-29T11:00:00Z" '. + {started_at: $s}' \
+   "$ts_run_b/meta.json" > "$ts_run_b/meta.json.tmp" && mv "$ts_run_b/meta.json.tmp" "$ts_run_b/meta.json"
+result=$(latest_author_visible_review_started_at "$TMPDIR/state" "$REPO_SLUG" "$TS_PR" "$ts_current")
+if [ "$result" != "2026-04-29T11:00:00Z" ]; then
+    echo "FAIL: scenario 11 — expected latest run's started_at (2026-04-29T11:00:00Z), got: '$result'"
+    exit 1
+fi
+
+# ---- scenario 11b: latest_author_visible_review_started_at — empty when no prior ----
+# Mirrors scenario 10 for the new helper. First review on the PR returns
+# empty; review.sh treats that as "no prior cutoff" and falls into the
+# unchanged-SHA branch with KNOWN_SHA also empty (the gate above the
+# cutoff read keys off KNOWN_SHA, so this is consistent).
+echo "  scenario 11b: latest_author_visible_review_started_at with no prior runs → empty..."
+result=$(latest_author_visible_review_started_at "$TMPDIR/state" "$REPO_SLUG" "999997" "$ts_current")
+if [ -n "$result" ]; then
+    echo "FAIL: scenario 11b — expected empty for PR with no prior runs, got: '$result'"
+    exit 1
+fi
+
+echo "  PASS (18 scenarios: no-runs, self-excluded, chronological-prior, aborted-skipped, no-meta-skipped, posted-but-aborted-INCLUDED, legacy-completed-no-posted-at-INCLUDED, foreign-pr-filtered, latest-author-visible-review, latest-empty-on-first-review, sha-reviewed_sha-precedence, sha-falls-back-to-sha, approved-APPROVE-true, approved-APPROVE-pending-true, approved-COMMENT-false, no-prior-empty, started_at-latest-wins, started_at-empty-no-prior)"

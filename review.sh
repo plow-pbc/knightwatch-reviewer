@@ -104,8 +104,20 @@ for REPO in "${REPOS[@]}"; do
         TRIGGER_BODY=""
 
         if [ -n "$KNOWN_SHA" ]; then
-            REVIEWED_AT=$(state_get "$PR_ID" "reviewed_at")
-            REVIEWED_AT_ISO=$(date -d "@${REVIEWED_AT}" -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null)
+            # Cutoff timestamp sources from runs/ (meta.json.started_at),
+            # not state.json.reviewed_at. Same race fix as KNOWN_SHA above:
+            # `gh pr comment` success + state_set failure leaves
+            # state.json's reviewed_at stale, but meta.json's started_at
+            # was stamped at run init (well before state_set). Reading the
+            # stale state.json here would re-qualify the OLD /srosro-review
+            # comment as "newer than reviewed_at" → set FORCE_WHOLE_PR=true
+            # → bypass the unchanged-SHA skip → re-run the whole-PR review
+            # unnecessarily. Sourcing from runs/ closes the 4th leak of
+            # this same race (after rounds 7/8/9 closed body/sha/dispatch).
+            #
+            # Helper returns ISO 8601 directly — meta.json.started_at is
+            # already in that format, so no conversion needed.
+            REVIEWED_AT_ISO=$(latest_author_visible_review_started_at "$STATE_DIR" "$REPO_SLUG_FOR_GATE" "$PR_NUM" "")
             # Fail loud on a transient gh outage rather than treating
             # "API broken" as "no comments" and silently missing a
             # /srosro-update-review trigger. Same wrapper shape as

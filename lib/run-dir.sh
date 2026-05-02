@@ -377,6 +377,16 @@ latest_author_visible_review_sha() {
 #   line, "false" if it ended in `VERDICT: COMMENT`, or empty if no prior
 #   author-visible run exists.
 #
+# Semantic: "what did our last review SAY?" — sourced from output.md so it
+# anchors to the same round as body + sha (BCR fence). Consumers use it to
+# carry the prior verdict into the next round's prompt. NOT a signal of
+# the GitHub PR's current approval state — `submit_approval` (lib/auth.sh)
+# can decline self-authored PRs, so a markdown verdict of APPROVE may
+# coincide with no actual GitHub approval. That divergence is irrelevant
+# here because no consumer asks "is the PR approved on GitHub right now?"
+# (the only reader is REVIEW_TASK in lib/review-one-pr.sh, which reports
+# what the prior review said).
+#
 # Parsed from output.md rather than state.json so the body, sha, and
 # approved values all anchor to the same round — same BCR fence as the
 # other two helpers. Aggregator contract (prompts/aggregator.md): final
@@ -394,6 +404,33 @@ latest_author_visible_review_approved() {
     else
         printf 'false'
     fi
+}
+
+# latest_author_visible_review_started_at <state_dir> <repo_slug> <pr_num> <current_run_dir>
+#   stdout: ISO 8601 timestamp from meta.json's `started_at` field of the
+#           latest author-visible run, or empty if no prior author-visible
+#           run exists.
+#
+# Used by review.sh's slash-command cutoff logic ("are there /srosro-*
+# comments newer than the last review?"). Replaces a stale
+# `state_get "reviewed_at"` read on state.json that left the
+# gh-success + state_set-failure race leaking through the trigger
+# cutoff: meta.json's started_at is stamped at run init (well before
+# state_set), so the cutoff stays accurate even when the post-review
+# state.json write never landed.
+#
+# Field choice: started_at, NOT posted_at. Cutoff semantic is "any comment
+# arriving after this review STARTED is fresh and should requalify on
+# the next tick" — matches the existing REVIEW_START_TS plumbing in
+# lib/review-one-pr.sh. posted_at is later (after gh succeeds), so a
+# /srosro-review posted DURING the review would fall before posted_at
+# and be silently lost on the next tick if we keyed off it.
+latest_author_visible_review_started_at() {
+    local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"
+    local latest
+    latest=$(_latest_author_visible_run_dir "$state_dir" "$repo_slug" "$pr_num" "$current_run_dir")
+    [ -z "$latest" ] && return 0
+    jq -r '.started_at // empty' "$latest/meta.json" 2>/dev/null
 }
 
 # author_visible_rounds <state_dir> <repo_slug> <pr_num> <current_run_dir>

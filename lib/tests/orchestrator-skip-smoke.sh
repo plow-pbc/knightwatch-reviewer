@@ -185,10 +185,16 @@ state_set "cncorp/plow#1" "abc123" false "prior review body" "$(($(date +%s) - 3
 # reviewed_sha=abc123.
 seed_run() {
     local slug="$1" pr="$2" ts="$3" sha="$4" verdict="${5:-COMMENT}"
+    local started_at="${6:-2026-04-29T14:00:00Z}"
     local rd="$STATE_DIR/runs/${slug}__${pr}__${ts}__${sha:0:7}"
     mkdir -p "$rd/agents/aggregator"
     printf '## prior review\n\nVERDICT: %s\n' "$verdict" > "$rd/agents/aggregator/output.md"
-    printf '{"status":"completed","posted_at":"2026-04-29T15:00:00Z","reviewed_sha":"%s"}' "$sha" > "$rd/meta.json"
+    # started_at is what review.sh's slash-command cutoff now reads (via
+    # latest_author_visible_review_started_at). posted_at + reviewed_sha
+    # remain for KNOWN_SHA + author-visible filtering. All three live in
+    # the SAME meta.json so a regression that re-routes any of the three
+    # back to state.json shows up here.
+    printf '{"status":"completed","posted_at":"2026-04-29T15:00:00Z","started_at":"%s","reviewed_sha":"%s"}' "$started_at" "$sha" > "$rd/meta.json"
     echo "$rd"
 }
 clear_seeded_runs() {
@@ -740,4 +746,61 @@ if [ "$n" -ne 1 ]; then
     exit 1
 fi
 
-echo "  PASS (16 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip-when-state-stale, runs/-sourced-dispatch-when-head-differs)"
+# Scenario 17 (slash-cutoff sourced from runs/): the round-10 fence for
+# the 4th leak of the gh-success + state_set-failure race. Round 9 closed
+# the orchestrator's KNOWN_SHA dispatch loop by reading runs/. But the
+# slash-command cutoff ("is this /srosro-review newer than the last
+# review?") still read state.json.reviewed_at — so the same race leaked:
+# state.json carries an ANCIENT reviewed_at while runs/ has a recent
+# started_at. An OLD /srosro-review comment (posted before runs/'s
+# started_at, after state.json's stale reviewed_at) used to requalify on
+# the cutoff and force a whole-PR re-review unnecessarily. Sourcing the
+# cutoff from runs/.started_at closes it.
+#
+# Setup: state.json reviewed_at = 2 hours ago. runs/ started_at = 30
+# minutes ago. /srosro-review comment posted 1 hour ago — between the
+# two. Pre-fix: comment.created_at > state.json.reviewed_at → trigger
+# fires → 1 dispatch (whole-PR). Post-fix: comment.created_at <
+# runs/started_at → cutoff filters it out → 0 dispatches.
+echo "  scenario 17: stale state.json reviewed_at + fresh runs/ started_at, OLD /srosro-review → no dispatch (4th-leak fence)..."
+unset MOCK_COMMENTS_PAGE1_FILE MOCK_COMMENTS_PAGE2_FILE
+export MOCK_COMMENTS_FILE="$TMPDIR/comments.json"
+echo "{}" > "$STATE_FILE"
+# state.json: ancient reviewed_at (2 hours ago).
+state_set "cncorp/plow#1" "abc123" false "prior review body" "$(($(date +%s) - 7200))"
+clear_seeded_runs
+# runs/: started_at = 30 minutes ago (ISO 8601). Use a Linux date(1)
+# format spec that's portable to GNU date (the only one this codebase
+# targets).
+RECENT_STARTED_AT=$(date -u -d "@$(($(date +%s) - 1800))" +"%Y-%m-%dT%H:%M:%SZ")
+seed_run "cncorp_plow" "1" "20260429T143000000Z" "abc123" "COMMENT" "$RECENT_STARTED_AT" >/dev/null
+# Comment posted 1 hour ago — AFTER state.json's stale reviewed_at
+# (2h ago) but BEFORE runs/'s started_at (30m ago). Pre-fix this trips
+# the cutoff (state.json view); post-fix it does not (runs/ view).
+OLD_COMMENT_AT=$(date -u -d "@$(($(date +%s) - 3600))" +"%Y-%m-%dT%H:%M:%SZ")
+printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$OLD_COMMENT_AT" > "$MOCK_COMMENTS_FILE"
+run_orchestrator
+n=$(count_dispatches)
+if [ "$n" -ne 0 ]; then
+    echo "FAIL scenario 17 (slash-cutoff-from-state.json regression): expected 0 dispatches when comment predates runs/.started_at, got $n — review.sh's cutoff is still reading state.json.reviewed_at instead of runs/.started_at"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+
+# Scenario 18: structural fence — review.sh must call
+# latest_author_visible_review_started_at and must NOT re-introduce the
+# state.json reviewed_at read at the cutoff seam. The behavioral fence
+# above (scenario 17) is the primary check; this is a static guard so a
+# regression that breaks the wiring shows up here even if someone
+# accidentally weakens scenario 17's setup later.
+echo "  scenario 18: review.sh wires latest_author_visible_review_started_at (static gate)..."
+if ! grep -q 'latest_author_visible_review_started_at' "$PROJECT_ROOT/review.sh"; then
+    echo "FAIL scenario 18: review.sh no longer references latest_author_visible_review_started_at — slash-cutoff has been re-routed off runs/, reopens 4th-leak race"
+    exit 1
+fi
+if grep -qE 'state_get[[:space:]]+"\$PR_ID"[[:space:]]+"reviewed_at"' "$PROJECT_ROOT/review.sh"; then
+    echo "FAIL scenario 18: review.sh re-introduced a state.json reviewed_at read — slash-cutoff regressed back to state.json source"
+    exit 1
+fi
+
+echo "  PASS (18 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip-when-state-stale, runs/-sourced-dispatch-when-head-differs, slash-cutoff-from-runs-when-state-stale, static-wiring-gate)"
