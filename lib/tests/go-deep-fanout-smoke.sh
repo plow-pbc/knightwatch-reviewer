@@ -32,6 +32,32 @@ echo "  asserting severity-band ranker..."
 assert_grep "review-one-pr.sh missing severity-band ranker (blocking medium low nit loop)" \
     'in "blocking" "medium" "low" "nit"' "$PROJECT_ROOT/lib/review-one-pr.sh"
 
+echo "  asserting ranker matches specialist contract (### Finding N — <severity>)..."
+# Regression fence for the F2 round-1 finding: earlier code grepped for
+# "[blocking]" (aggregator-published format) but specialist files at this
+# stage emit "### Finding N — blocking" per common-header.md:48. Wrong
+# pattern would silently empty HOT_ANGLES on the 4+ specialist case.
+assert_grep "review-one-pr.sh ranker should grep '### Finding N — <sev>' specialist contract" \
+    '^### Finding [0-9]+ — $sev' "$PROJECT_ROOT/lib/review-one-pr.sh"
+
+echo "  asserting go-deep prompt build uses substitute_placeholders (not build_specialist_prompt)..."
+# Regression fence for the F3 round-1 finding: build_specialist_prompt
+# prepends common-header.md (specialist Surveyed/Finding-N contract) which
+# conflicts with go-deep.md's "no extra headers + Recommendation block"
+# contract. Mirror the intent step's substitute_placeholders pattern.
+assert_grep "review-one-pr.sh go-deep build should call substitute_placeholders directly" \
+    'substitute_placeholders \\
+            "$HOME/.pr-reviewer/prompts/go-deep.md"' "$PROJECT_ROOT/lib/review-one-pr.sh"
+
+echo "  asserting decline-history skipped on FORCE_WHOLE_PR=true..."
+# Regression fence for the F1a round-1 finding: /srosro-review path
+# commits to "Any prior review is intentionally NOT provided — evaluate
+# this PR from scratch." Staging decline-history anyway breaks that
+# contract. Mirrors the existing prior-reviews.md skip block.
+assert_grep "review-one-pr.sh missing FORCE_WHOLE_PR gate around fetch_decline_history" \
+    'FORCE_WHOLE_PR" = "true" ]; then
+    log "$PR_ID: FORCE_WHOLE_PR=true — skipping decline-history.md' "$PROJECT_ROOT/lib/review-one-pr.sh"
+
 echo "  asserting go-deep dispatch via run-specialist.sh..."
 assert_grep "review-one-pr.sh missing 'go-deep-' agent name prefix" \
     '"go-deep-$angle"' "$PROJECT_ROOT/lib/review-one-pr.sh"

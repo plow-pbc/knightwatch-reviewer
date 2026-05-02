@@ -1031,8 +1031,18 @@ write_scratch "$REPO_DIR" "loc-trend.md" "$LOC_TREND"
 # pushed back on. Empty/absent on first reviews and on PRs with no
 # operator pushback. Fail-soft on gh-failure (helper emits a sentinel;
 # critic falls back to existing behavior).
-DECLINE_HISTORY=$(fetch_decline_history "$REPO" "$PR_NUM")
-write_scratch "$REPO_DIR" "decline-history.md" "$DECLINE_HISTORY"
+#
+# Skipped when FORCE_WHOLE_PR=true (i.e. /srosro-review): the trigger
+# text on that path commits to "Any prior review is intentionally NOT
+# provided — evaluate this PR from scratch." Staging decline history
+# anyway would silently break that contract. Mirrors the prior-reviews.md
+# skip block above.
+if [ "$FORCE_WHOLE_PR" = "true" ]; then
+    log "$PR_ID: FORCE_WHOLE_PR=true — skipping decline-history.md (whole-PR re-review evaluates from scratch)"
+else
+    DECLINE_HISTORY=$(fetch_decline_history "$REPO" "$PR_NUM")
+    write_scratch "$REPO_DIR" "decline-history.md" "$DECLINE_HISTORY"
+fi
 
 FILE_HISTORY=""
 # Derive file-history's file list from $KID_INPUT_DIFF via the shared
@@ -1276,11 +1286,15 @@ for angle in "${ANGLES[@]}"; do
 done
 
 if [ "${#HOT_ANGLES[@]}" -gt 3 ]; then
+    # Specialists emit "### Finding N — <severity>" (per common-header.md:48),
+    # so we anchor on the trailing severity token. The aggregator's published
+    # findings use bracketed `[severity]`, but those don't appear in specialist
+    # files yet at this stage of the pipeline.
     declare -a RANKED=()
     for sev in "blocking" "medium" "low" "nit"; do
         for angle in "${HOT_ANGLES[@]}"; do
             if [ "${#RANKED[@]}" -lt 3 ] && \
-               grep -qF "[$sev]" "$SPECIALISTS_DIR/${angle}.md" 2>/dev/null && \
+               grep -qE "^### Finding [0-9]+ — $sev\\b" "$SPECIALISTS_DIR/${angle}.md" 2>/dev/null && \
                ! printf '%s\n' "${RANKED[@]}" | grep -qxF "$angle"; then
                 RANKED+=("$angle")
             fi
@@ -1295,16 +1309,18 @@ else
     log "$PR_ID: launching ${#HOT_ANGLES[@]} go-deep tech-lead(s): ${HOT_ANGLES[*]}"
     declare -A GD_PIDS=()
     for angle in "${HOT_ANGLES[@]}"; do
-        # Pass the bare $angle as specialist_name so {{SPECIALIST_NAME}}
-        # in prompts/go-deep.md resolves to the angle (the prompt cites
-        # `.codex-scratch/specialists/{{SPECIALIST_NAME}}.md` and needs
-        # the bare name to resolve). The agent_name passed to
-        # run-specialist.sh carries the "go-deep-" prefix so the output
-        # dir doesn't collide with the original specialist's dir.
-        GD_PROMPT=$(build_specialist_prompt \
-            "$angle" \
+        # go-deep is NOT a fan-out specialist — it has its own output
+        # contract ("Recommendation: KEEP|SIMPLIFY-WITH-PATTERN|DROP|REFRAME",
+        # no Surveyed/Finding-N shape) which conflicts with the specialist
+        # common-header. Use substitute_placeholders directly (same pattern
+        # as the intent step at line 1105) so go-deep.md's contract isn't
+        # diluted by common-header.md prepended on top. Pass the bare $angle
+        # as the SPECIALIST_NAME so go-deep.md's
+        # `.codex-scratch/specialists/{{SPECIALIST_NAME}}.md` reference
+        # resolves to the assigned specialist file.
+        GD_PROMPT=$(substitute_placeholders \
             "$HOME/.pr-reviewer/prompts/go-deep.md" \
-            "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR")
+            "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR" "$angle")
         "$_LIB_DIR/run-specialist.sh" \
             "go-deep-$angle" \
             "$REPO_DIR" \

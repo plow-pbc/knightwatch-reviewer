@@ -35,10 +35,16 @@ _decline_history_from_json() {
     fi
 
     local operator="${OPERATOR_NAME:-srosro}"
+    # Bot auto-posts sign as the operator (kw-reviewer's GH identity is the
+    # operator's account). The HTML marker `<!-- knightwatch-reviewer:auto-post -->`
+    # distinguishes bot output from operator-authored replies — required so
+    # the bot's own review bodies (which can mention the word "Declined" in
+    # findings prose) don't leak in as operator declines.
     local declines counters
     declines=$(printf '%s' "$raw" | jq --arg op "$operator" -r '
         map(select(.user.login == $op))
-        | map(select(.body | test("Declined —|Declined -|^Declined ")))
+        | map(select(.body | test("knightwatch-reviewer:auto-post") | not))
+        | map(select(.body | test("Declined —|Declined -|^Declined |\\[Bug-Class-Recurrence\\]")))
         | map({ts: .created_at, body: .body})
         | sort_by(.ts)
         | .[]
@@ -46,6 +52,7 @@ _decline_history_from_json() {
     ' 2>/dev/null)
     counters=$(printf '%s' "$raw" | jq --arg op "$operator" -r '
         map(select(.user.login == $op))
+        | map(select(.body | test("knightwatch-reviewer:auto-post") | not))
         | map(select(.body | test("Counter-proposed")))
         | map({ts: .created_at, body: .body})
         | sort_by(.ts)
@@ -108,14 +115,18 @@ _decline_history_from_json() {
 }
 
 # Public entry point. Calls gh, then delegates to the pure-transform helper.
+#
+# Only fetches top-level (issue) comments — the operator's decline replies
+# go to top-level threads (per the babysit-pr skill templates), not inline
+# review-thread comments. Adding inline-comment fetch here would duplicate
+# the lib/gh-comments.sh pagination contract for a use case that doesn't
+# happen in production.
 fetch_decline_history() {
     local repo="$1" pr_num="$2"
-    local issue_comments inline_comments combined
+    local issue_comments
     if ! issue_comments=$(fetch_issue_comments "$repo" "$pr_num"); then
         echo "(decline history unavailable — gh fetch failed)"
         return 0
     fi
-    inline_comments=$(gh api --paginate "repos/${repo}/pulls/${pr_num}/comments" 2>/dev/null | jq -s 'add // []' || echo '[]')
-    combined=$(jq -n --argjson a "$issue_comments" --argjson b "$inline_comments" '$a + $b')
-    _decline_history_from_json "$combined"
+    _decline_history_from_json "$issue_comments"
 }

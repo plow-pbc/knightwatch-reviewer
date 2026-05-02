@@ -61,4 +61,29 @@ JSON
 OUT=$(_decline_history_from_json "$FREEFORM")
 echo "$OUT" | grep -qF "(unclassified)" || { echo "FAIL: free-form pushback did not classify as unclassified"; echo "$OUT"; exit 1; }
 
+# --- fixture 4: bot auto-posts (signed as operator) excluded ---
+echo "  fixture 4: bot auto-posts excluded by HTML marker..."
+BOT_ECHO=$(cat <<'JSON'
+[
+  {"user":{"login":"srosro"},"created_at":"2026-05-01T08:00:00Z","body":"<!-- knightwatch-reviewer:auto-post -->\n## Findings\n1. [blocking] Declined — bot's own review body mentioning 'Declined' in finding prose."},
+  {"user":{"login":"srosro"},"created_at":"2026-05-01T08:30:00Z","body":"Declined — operator's actual decline. session-scoping finding."}
+]
+JSON
+)
+OUT=$(_decline_history_from_json "$BOT_ECHO")
+echo "$OUT" | grep -qF "session-scoping" || { echo "FAIL: operator decline missed"; echo "$OUT"; exit 1; }
+echo "$OUT" | grep -qF "bot's own review body" && { echo "FAIL: bot auto-post leaked through marker filter"; echo "$OUT"; exit 1; } || true
+echo "$OUT" | grep -qF "declined 1 round" || { echo "FAIL: count should be 1 (bot post excluded)"; echo "$OUT"; exit 1; }
+
+# --- fixture 5: [Bug-Class-Recurrence] body without "Declined" still classified ---
+echo "  fixture 5: bare [Bug-Class-Recurrence] body admitted to classifier..."
+BCR_ONLY=$(cat <<'JSON'
+[
+  {"user":{"login":"srosro"},"created_at":"2026-05-01T09:00:00Z","body":"[Bug-Class-Recurrence] atomicity — third instance, see prior thread."}
+]
+JSON
+)
+OUT=$(_decline_history_from_json "$BCR_ONLY")
+echo "$OUT" | grep -qF "atomicity" || { echo "FAIL: BCR body without 'Declined' was filtered out"; echo "$OUT"; exit 1; }
+
 echo "  PASS"

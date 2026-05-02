@@ -295,7 +295,7 @@ Two new orchestrator steps, after Phase 1's critic-splitter:
 - Rank top X (≤3) findings overall by:
   - Severity (`blocking` > `medium` > `low` > `nit`).
   - Critic verdict filter (skip findings the critic dropped via `REMEDY-BLOAT` / `FALSE POSITIVE`).
-  - Tiebreak by remedy LOC, **descending** (biggest LOC first — go-deep targets the highest-cost findings, since ≥20 LOC is the population we want investigated).
+  - Tiebreak by file-name (alphabetical, deterministic). Earlier draft proposed parsing the critic's remedy-LOC for descending tiebreak, but that adds prompt-output parsing for a tie that's only meaningful when 4+ specialists each have ≥20 LOC findings — rare enough that severity + alphabetical is the simpler, fail-loud shape.
 - Group top findings by their specialist file → set of "hot" specialists.
 
 **G.2 Go-deep fan-out** (new in `lib/review-one-pr.sh`, ~30 LOC):
