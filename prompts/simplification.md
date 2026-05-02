@@ -11,7 +11,7 @@ Scope:
 
 Out of scope (other specialists own these — do NOT raise):
 - **Simplest-shape-vs-spirit-of-ask** (overall design overshoot, public-surface simplification, decomposition, wrong-shape smells like regex on structured input): `shape` owns this. Even when a simplification thread leads you toward "the whole shape is wrong," stop and let `shape` raise it.
-- **Stale callers / unused imports / dead public symbols**: `consumers` owns the call-graph view. Raise dead code here only when it's intra-PR (a helper added in this PR with zero callers in the same diff).
+- **Stale callers / dead public symbols** (cross-symbol call-graph effects): `consumers` owns these. Raise dead code here only when it's intra-PR (a helper added in this PR with zero callers in the same diff). Unused imports and dead-on-touch local helpers are YOURS — they're file-local cleanups, not call-graph effects, and consumers's out-of-scope explicitly disclaims them.
 - Security bugs, concurrency bugs, test coverage gaps, strategic/roadmap concerns.
 
 Severity tuning: DRY findings are usually `medium` or `low`. Reserve `blocking` only for severe cases (e.g., the same 100-line handler authored five times in one PR, or introduced code that duplicates a well-established utility that's already sitting in the repo).

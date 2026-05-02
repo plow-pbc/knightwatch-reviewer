@@ -71,6 +71,8 @@ Lens question: would the failure mode the remedy is preventing be observed in pr
 - K ≥ 3 with no engagement: REFRAME-AS-QUESTION is the right default. Either the finding is mis-scoped to this PR, or the author has materially deferred it; silence at K ≥ 3 is signal, not absence of signal. Use the prior decline reason or your own one-liner as the cost-naming. Do NOT auto-DROP — the underlying concern may still be real and worth the author's attention; the reframe just stops compelling it as a merge-blocker.
 - K ≥ 5 with no engagement: REMEDY-BLOAT (drop). Five rounds of silence on the same blocker means the bot is talking past the author; continuing to re-emit costs reviewer signal-to-noise.
 
+**Security carve-out for K-decay.** The K ≥ 3 (REFRAME-AS-QUESTION) and K ≥ 5 (REMEDY-BLOAT) defaults do NOT apply to high-confidence `[security]` findings with a cited failing path (secret leak, auth bypass, command injection, path traversal, sandbox escape). Silence on a real security blocker is the bot being right and the author being wrong — keep the finding at `[blocking]` regardless of K. K-decay applies to scope, style, tech-debt, and architectural classes, where author silence is genuinely ambiguous.
+
 If the cited code WAS modified in this round (engagement = K=0), evaluate the new state directly — the finding may be addressed (drop), partially addressed (downgrade), or untouched-by-the-modification (re-stress per its merits).
 
 Separately: surface any findings the specialists **collectively missed**. Read the diff for gaps the specialists would have caught if they'd been more thorough.
