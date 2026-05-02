@@ -1255,6 +1255,82 @@ ln -sfn "$CRITIC_OUT" "$REPO_DIR/.codex-scratch/critic.md"
 log "$PR_ID: splitting critic output into specialist files..."
 split_critic_to_specialists "$CRITIC_OUT" "$SPECIALISTS_DIR" 2>>"$LOG_FILE" || true
 
+# ---- go-deep tech-leads (Phase 2) ----
+# Rank "hot" specialist files (those whose layered file contains a
+# critic-emitted "Calibration questions for go-deep" block — the critic
+# only emits those for ≥20 LOC remedies). Cap the parallel fan-out at
+# 3, biased by severity band ([blocking] > [medium] > [low] > [nit])
+# present in the file. Each go-deep tech-lead writes to
+# RUN_DIR/agents/go-deep-<angle>/output.md; orchestrator appends to
+# specialists/<angle>.md after wait. Fail-soft on per-instance
+# failure (the go-deep enrichment is purely additive value; the
+# specialist + critic findings still publish).
+#
+# Auto-scales to 0 on simple PRs: empty hot-list → no go-deep runs.
+
+declare -a HOT_ANGLES=()
+for angle in "${ANGLES[@]}"; do
+    if grep -qF "Calibration questions for go-deep" "$SPECIALISTS_DIR/${angle}.md" 2>/dev/null; then
+        HOT_ANGLES+=("$angle")
+    fi
+done
+
+if [ "${#HOT_ANGLES[@]}" -gt 3 ]; then
+    declare -a RANKED=()
+    for sev in "blocking" "medium" "low" "nit"; do
+        for angle in "${HOT_ANGLES[@]}"; do
+            if [ "${#RANKED[@]}" -lt 3 ] && \
+               grep -qF "[$sev]" "$SPECIALISTS_DIR/${angle}.md" 2>/dev/null && \
+               ! printf '%s\n' "${RANKED[@]}" | grep -qxF "$angle"; then
+                RANKED+=("$angle")
+            fi
+        done
+    done
+    HOT_ANGLES=("${RANKED[@]}")
+fi
+
+if [ "${#HOT_ANGLES[@]}" -eq 0 ]; then
+    log "$PR_ID: no findings ≥20 LOC remedy — skipping go-deep tech-leads"
+else
+    log "$PR_ID: launching ${#HOT_ANGLES[@]} go-deep tech-lead(s): ${HOT_ANGLES[*]}"
+    declare -A GD_PIDS=()
+    for angle in "${HOT_ANGLES[@]}"; do
+        # Pass the bare $angle as specialist_name so {{SPECIALIST_NAME}}
+        # in prompts/go-deep.md resolves to the angle (the prompt cites
+        # `.codex-scratch/specialists/{{SPECIALIST_NAME}}.md` and needs
+        # the bare name to resolve). The agent_name passed to
+        # run-specialist.sh carries the "go-deep-" prefix so the output
+        # dir doesn't collide with the original specialist's dir.
+        GD_PROMPT=$(build_specialist_prompt \
+            "$angle" \
+            "$HOME/.pr-reviewer/prompts/go-deep.md" \
+            "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR")
+        "$_LIB_DIR/run-specialist.sh" \
+            "go-deep-$angle" \
+            "$REPO_DIR" \
+            "$GD_PROMPT" \
+            "$RUN_DIR/agents/go-deep-$angle" &
+        GD_PIDS["$angle"]=$!
+    done
+    GD_FAILURE=0
+    for angle in "${HOT_ANGLES[@]}"; do
+        if ! wait "${GD_PIDS[$angle]}"; then
+            log "$PR_ID: go-deep-$angle exited non-zero (see $RUN_DIR/agents/go-deep-$angle/log.txt) — aggregator publishes from specialist+critic without this enrichment"
+            GD_FAILURE=1
+        fi
+    done
+    for angle in "${HOT_ANGLES[@]}"; do
+        GD_OUT="$RUN_DIR/agents/go-deep-$angle/output.md"
+        if [ -s "$GD_OUT" ]; then
+            {
+                printf '\n---\n\n## Go-deep tech-lead investigation\n\n'
+                cat "$GD_OUT"
+            } >> "$SPECIALISTS_DIR/${angle}.md"
+        fi
+    done
+    log "$PR_ID: go-deep tech-leads complete (failure=$GD_FAILURE)"
+fi
+
 log "$PR_ID: aggregator (with critic input)..."
 # build_aggregator_prompt stitches in prompts/voice.md (operator-tunable
 # voice + tone) at aggregator.md's INSERT_VOICE_HERE marker, then
