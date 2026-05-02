@@ -36,8 +36,6 @@ For each construct, emit a probe with:
 - `Class: shape` — second-instance, no canonical yet. `Confidence: medium`, `Severity if yes: medium`. `If yes, edit:` "extract <name> at <path:line> as the canonical shape". `If no, cost:` "third instance will be cheaper to write than to refactor — pattern established by inertia".
 - `Class: complexity-cost` — existing complexity in the diff that may not be needed (defensive branches, validation guards, helpers added with one call site, schema fields, env vars, abstractions, parallel modes). `Confidence: low|medium`. `If yes, edit:` "delete <specific code> — fewer LOC, fewer seams". `If no, cost:` name the specific shape that calcifies if kept.
 
-You MUST emit at least one `complexity-cost` probe on any non-trivial PR. If none applies, append to your Surveyed section: "No complexity-cost probe — explanation: <one sentence>".
-
 Where this overlaps with other specialists:
 - `simplification` owns DRY (N near-identical blocks), kid-prior-art, verbose conditional/early-return cleanups, drive-by tidies, dead-code-on-touched-files.
 - `architecture` owns layering, lock-in, roadmap fit, cross-cutting *strategic* decisions.

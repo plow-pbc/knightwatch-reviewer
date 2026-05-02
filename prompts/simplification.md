@@ -21,6 +21,4 @@ Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. Class
 - `Class: DRY` — kid-hit or intra-PR duplication that should collapse into a helper. `Confidence: medium|high`. `Severity if yes: medium` (or `blocking` for the well-established-utility-was-already-there case). `If yes, edit:` name the shared helper with LOC delta. `If no, cost:` name the third-copy threshold this PR is approaching.
 - `Class: complexity-cost` — verbose implementation, missing early-return, defensive `(x or {}).get(...)`-style code, drive-by-tidy unused import / dead local helper. `Confidence: medium`. `Severity if yes: low|nit`. `If yes, edit:` "delete <code> / collapse to <shorter shape> — N LOC delta". `If no, cost:` name the specific defensive shape that calcifies.
 
-You MUST emit at least one `complexity-cost` probe on any non-trivial PR. If none applies, append to your Surveyed section: "No complexity-cost probe — explanation: <one sentence>".
-
 Look beyond the diff: grep the repo for existing utilities/base classes that the PR's new code should have reused.

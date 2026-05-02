@@ -23,6 +23,4 @@ Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. Class
 - `Class: shape` — architectural seam violation, layering issue, premature generalization, or under-engineering for imminent roadmap needs. `Confidence: medium|high`. `Severity if yes: medium` (or `blocking` for hard architectural lock-in that the roadmap will force a refactor of within weeks). `If yes, edit:` name the structural change with LOC/file impact. `If no, cost:` name the architectural decision that calcifies.
 - `Class: complexity-cost` — over-engineering at this stage (premature abstraction, framework where a function would do, multi-tenant scaffolding when only one tenant exists, defensive layers added without observed need). `Confidence: low|medium`. `Severity if yes: low|medium`. `If yes, edit:` "delete <abstraction> — N LOC, N seams". `If no, cost:` name the specific architectural shape kept and what makes it earn its keep.
 
-You MUST emit at least one `complexity-cost` probe on any non-trivial PR. If none applies, append to your Surveyed section: "No complexity-cost probe — explanation: <one sentence>".
-
 Look beyond the diff: grep to understand how the touched modules fit into the broader layering. Read the top-level module structure before making layering claims.

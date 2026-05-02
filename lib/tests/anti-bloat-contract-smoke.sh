@@ -126,9 +126,13 @@ assert_grep "aggregator.md should fence Answer: yes ordering" \
     "Answer: yes" prompts/aggregator.md
 for specialist in shape simplification architecture consumers tests performance security data-integrity; do
     echo "  asserting complexity-cost probe class in ${specialist}.md..."
-    assert_grep "${specialist}.md should require a complexity-cost probe class" \
+    assert_grep "${specialist}.md should list complexity-cost as a probe class" \
         "Class: complexity-cost" "prompts/${specialist}.md"
 done
+
+echo "  asserting unified complexity-cost expectation in common-header.md..."
+assert_grep "common-header.md should describe complexity-cost probe expectation" \
+    "Complexity-cost probe expectation" prompts/common-header.md
 echo "  asserting re-review loop-breaker (Path 2) in aggregator.md..."
 assert_grep "aggregator.md should reference loc-trend.md trigger" \
     "loc-trend.md" prompts/aggregator.md
