@@ -1,7 +1,7 @@
 #!/bin/bash
 # Smoke for the deterministic strict-typing checkers under lib/checks/.
 # Helpers run inside REPO_DIR (the PR's working tree) and follow the
-# tri-state contract documented in repos.conf::STRICT_TYPING_CMDS:
+# tri-state contract dispatched in lib/review-one-pr.sh:
 #
 #   exit 0 — strict mode enforced.        stdout: empty.
 #   exit 1 — real gap.                    stdout: gap text → posted as [nit].
