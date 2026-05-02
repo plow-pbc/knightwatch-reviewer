@@ -180,8 +180,8 @@ fi
 # loop: critic.md must run a stress-test on prior [blocking]/[medium]
 # findings and emit a "Carried-forward findings" section; aggregator.md
 # must apply those verdicts in re-review handling. The K-decay thresholds
-# and the security carve-out are what stop the loop from collapsing into
-# either a stuck record (no decay) or a security gate (decay too aggressive).
+# and the severe-bug carve-out are what stop the loop from collapsing into
+# either a stuck record (no decay) or a severe-bug gate (decay too aggressive).
 echo "  asserting carry-forward stress-test pass in critic.md..."
 assert_grep "critic.md should fence Carry-forward stress-test pass" \
     "Carry-forward stress-test" prompts/critic.md
@@ -205,6 +205,11 @@ assert_grep "critic.md should carve severe-bug findings out of K-decay" \
     "Severe-bug carve-out for K-decay" prompts/critic.md
 assert_grep "critic.md should key carve-out on failing-path text not specialist tag" \
     "Key on the cited failing-path text" prompts/critic.md
+# Non-security severe-bug token — guards against a regression that
+# narrows the carve-out back to security-only by dropping data-loss
+# class words from the prompt prose.
+assert_grep "critic.md severe-bug carve-out should cover data-loss class" \
+    "data loss" prompts/critic.md
 
 echo "  asserting aggregator applies critic carry-forward verdicts..."
 # Same uniqueness concern — generic "Carried-forward findings" appears
