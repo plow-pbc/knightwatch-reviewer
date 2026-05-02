@@ -1,5 +1,9 @@
 # Go-Deep Tech Leads Implementation Plan
 
+> **POST-IMPLEMENTATION ARCHIVE — read source for current behavior.** This plan was the implementation guide; the merged code in `lib/{decline-history,critic-splitter,go-deep-rank,orchestrate}.sh`, `prompts/go-deep.md`, `prompts/critic.md`, and `prompts/aggregator.md` is now the source of truth. Code blocks below match the original plan and have drifted in spots (e.g. `OPERATOR_NAME` → `BOT_USER`, `build_specialist_prompt` → `substitute_placeholders` for go-deep, fail-loud abort on go-deep failure, decline-history sentinel on /srosro-review and first reviews). Do not consume code blocks here as authoritative; consult source files. The high-level task structure remains useful as historical context for why the architecture is shaped the way it is.
+>
+> Architectural source of truth: `docs/specs/2026-05-02-go-deep-tech-leads-design.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Wire Phase 1 (decline-history awareness + critic generates calibration questions for ≥20 LOC findings + critic-splitter co-locates critic output in specialist files) and Phase 2 (go-deep tech-leads fan-out, ≤3 parallel) per `docs/specs/2026-05-02-go-deep-tech-leads-design.md`.

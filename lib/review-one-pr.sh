@@ -1043,11 +1043,18 @@ write_scratch "$REPO_DIR" "loc-trend.md" "$LOC_TREND"
 # operator pushback. Fail-soft on gh-failure (helper emits a sentinel;
 # critic falls back to existing behavior).
 #
-# Skipped when FORCE_WHOLE_PR=true (i.e. /srosro-review): the trigger
-# text on that path commits to "Any prior review is intentionally NOT
-# provided — evaluate this PR from scratch." Staging decline history
-# anyway would silently break that contract. Mirrors the prior-reviews.md
-# skip block above.
+# Skipped on:
+#   - FORCE_WHOLE_PR=true (i.e. /srosro-review) — the trigger text on that
+#     path commits to "Any prior review is intentionally NOT provided —
+#     evaluate this PR from scratch." Staging decline history anyway
+#     would silently break that contract.
+#   - First reviews (no PRIOR_REVIEWS) — operator declines on bot reviews
+#     can't exist before there has been a bot review. Pre-existing operator
+#     comments on the PR (review-author conversation, etc.) are not bot-
+#     finding declines. Staging them would let the critic suppress finding
+#     classes the bot has never raised — a class-of-finding ban with no
+#     class-of-finding actually flagged, which is wrong.
+# Mirrors the existing prior-reviews.md skip semantics above.
 if [ "$FORCE_WHOLE_PR" = "true" ]; then
     log "$PR_ID: FORCE_WHOLE_PR=true — staging decline-history.md sentinel (whole-PR re-review evaluates from scratch)"
     # Sentinel keeps the prompt-input contract intact for critic.md /
@@ -1056,6 +1063,9 @@ if [ "$FORCE_WHOLE_PR" = "true" ]; then
     # explore the filesystem; the sentinel makes the "from scratch"
     # decision explicit.
     write_scratch "$REPO_DIR" "decline-history.md" "(decline history intentionally not staged on /srosro-review path — this is a from-scratch whole-PR re-review)"
+elif [ -z "${PRIOR_REVIEWS:-}" ]; then
+    log "$PR_ID: first review (no prior bot reviews) — staging decline-history.md sentinel"
+    write_scratch "$REPO_DIR" "decline-history.md" "(decline history intentionally not staged — first review on this PR; no prior bot findings exist for the operator to have declined)"
 else
     DECLINE_HISTORY=$(fetch_decline_history "$REPO" "$PR_NUM")
     write_scratch "$REPO_DIR" "decline-history.md" "$DECLINE_HISTORY"
