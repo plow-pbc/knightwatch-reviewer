@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Reviews one PR end-to-end. Invoked by review.sh as:
 #   TRIGGER_COMMENT_FILE=<path> lib/review-one-pr.sh REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR
 # where FORCE_WHOLE_PR is "true" or "false". TRIGGER_COMMENT_FILE is
@@ -955,12 +955,17 @@ write_scratch "$REPO_DIR" "standards.md"       "$STANDARDS"
 # ---- probe schema ----
 # probe-schema.md ships in prompts/ and is symlinked into ~/.pr-reviewer/prompts
 # at install time. Specialists + critic + aggregator (Phases 2+) reference
-# .codex-scratch/probe-schema.md as the canonical contract. Empty fallback is
-# survivable on early-phase reviews where no specialist reads it yet.
-PROBE_SCHEMA=""
-[ -f "$HOME/.pr-reviewer/prompts/probe-schema.md" ] && PROBE_SCHEMA="$(cat "$HOME/.pr-reviewer/prompts/probe-schema.md")"
-[ -z "$PROBE_SCHEMA" ] && [ -f prompts/probe-schema.md ] && PROBE_SCHEMA="$(cat prompts/probe-schema.md)"
-write_scratch "$REPO_DIR" "probe-schema.md" "$PROBE_SCHEMA"
+# .codex-scratch/probe-schema.md as the canonical contract. Missing on disk
+# is fail-fast — same shape as build_aggregator_prompt's voice.md handling
+# (lib/prompt-build.sh:64); a missing prompt means an incomplete deploy, not
+# "operator opted out."
+PROBE_SCHEMA_PATH="$HOME/.pr-reviewer/prompts/probe-schema.md"
+if [ ! -f "$PROBE_SCHEMA_PATH" ]; then
+    log "$PR_ID: probe-schema.md missing at $PROBE_SCHEMA_PATH — incomplete install — aborting"
+    rm -rf "$REPO_DIR"
+    exit 1
+fi
+write_scratch "$REPO_DIR" "probe-schema.md" "$(cat "$PROBE_SCHEMA_PATH")"
 
 [ -n "${FULL_PR_DIFF:-}" ] && \
     write_scratch "$REPO_DIR" "full-diff.patch" "$FULL_PR_DIFF"

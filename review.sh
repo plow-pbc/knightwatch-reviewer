@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Orchestrator: enumerate eligible PRs across all tracked repos and fan out
 # per-PR reviews via lib/review-one-pr.sh. Up to MAX_CONCURRENT reviews run
 # concurrently per service tick. Per-PR locking is handled by the worker.

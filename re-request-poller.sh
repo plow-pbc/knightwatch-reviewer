@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Translates GitHub "Re-request review" button events into /srosro-review
 # comments so the existing review.sh force-review path picks them up. Runs
 # every 2 min via systemd timer.
