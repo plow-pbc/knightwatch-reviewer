@@ -92,6 +92,30 @@ OUT=$(_decline_history_from_json "$WITH_MARKERS")
 echo "$OUT" | grep -qE '\*\*`session-scoping`\*\*: 3 rounds' || { echo "FAIL: session-scoping count missing or wrong"; echo "$OUT"; exit 1; }
 echo "$OUT" | grep -qE '\*\*`stale-auth-error`\*\*: 1 round' || { echo "FAIL: stale-auth-error count missing or wrong"; echo "$OUT"; exit 1; }
 
+# --- fixture 4b: marker-only reply emits class count even without Declined/BCR prose ---
+# Round-7 F5 regression: the empty-history sentinel short-circuited before
+# explicit_classes was rendered. A reply body that contains just a marker
+# (no "Declined" / "[Bug-Class-Recurrence]" / "Counter-proposed" prose)
+# would lose its only signal.
+echo "  fixture 4b: marker-only reply still emits class count (round-7 F5)..."
+MARKER_ONLY=$(cat <<'JSON'
+[
+  {"user":{"login":"srosro"},"created_at":"2026-05-01T11:00:00Z","body":"Quick note: <!-- decline:class=session-scoping --> not changing this round either."}
+]
+JSON
+)
+OUT=$(_decline_history_from_json "$MARKER_ONLY")
+echo "$OUT" | grep -qF "(no decline history)" && {
+    echo "FAIL: marker-only reply hit empty-history sentinel — explicit_classes was ignored"
+    echo "$OUT"
+    exit 1
+} || true
+echo "$OUT" | grep -qE '\*\*`session-scoping`\*\*: 1 round' || {
+    echo "FAIL: marker-only reply did not emit explicit-class count"
+    echo "$OUT"
+    exit 1
+}
+
 # --- fixture 5: BCR-prose-only reply emits as context (no auto-classify) ---
 echo "  fixture 5: BCR-shaped prose without explicit marker stays as context..."
 BCR_PROSE=$(cat <<'JSON'

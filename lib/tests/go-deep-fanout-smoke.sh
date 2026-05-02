@@ -94,4 +94,59 @@ echo "  asserting critic-splitter call between critic and go-deep..."
 assert_grep "orchestrate.sh missing split_critic_to_specialists call" \
     "split_critic_to_specialists" "$PROJECT_ROOT/lib/orchestrate.sh"
 
+# ----- behavior fence: persist_layered_specialists actually writes
+# RUN_DIR/agents/<angle>/layered.md with the layered content (round-7 F1
+# regression — token-grep alone can pass while the persistence step
+# silently fails to materialize the operator-visible artifact).
+echo "  asserting persist_layered_specialists materializes layered.md..."
+SMOKE_TMPDIR=$(mktemp -d -t persist-layered-smoke-XXXXXX)
+trap 'rm -rf "$SMOKE_TMPDIR"' EXIT
+. "$PROJECT_ROOT/lib/orchestrate.sh"
+
+LAYER_SPEC_DIR="$SMOKE_TMPDIR/codex-scratch/specialists"
+LAYER_RUN_DIR="$SMOKE_TMPDIR/run"
+mkdir -p "$LAYER_SPEC_DIR"
+cat > "$LAYER_SPEC_DIR/security.md" <<'EOF'
+## [security] findings
+### Finding 1 — blocking
+real bug.
+
+---
+
+## Critic counter-arguments
+
+### [security] Finding 1 — AGREE
+**Estimated remedy LOC:** ~50 LOC.
+**Calibration questions for go-deep investigation:**
+- Q1: filler
+
+---
+
+## Go-deep tech-lead investigation
+
+### Investigation of Finding 1
+**Recommendation:** SIMPLIFY-WITH-PATTERN
+EOF
+cat > "$LAYER_SPEC_DIR/architecture.md" <<'EOF'
+## [architecture] findings
+No findings.
+EOF
+
+persist_layered_specialists "$LAYER_SPEC_DIR" "$LAYER_RUN_DIR" security architecture missing-angle
+
+assert_grep "persist_layered_specialists missed go-deep section in layered.md" \
+    "## Go-deep tech-lead investigation" "$LAYER_RUN_DIR/agents/security/layered.md"
+assert_grep "persist_layered_specialists missed critic section in layered.md" \
+    "## Critic counter-arguments" "$LAYER_RUN_DIR/agents/security/layered.md"
+assert_grep "persist_layered_specialists missed specialist section in layered.md" \
+    "## [security] findings" "$LAYER_RUN_DIR/agents/security/layered.md"
+[ -e "$LAYER_RUN_DIR/agents/architecture/layered.md" ] || {
+    echo "FAIL: persist_layered_specialists did not create layered.md for cold specialist (architecture)"
+    exit 1
+}
+[ ! -e "$LAYER_RUN_DIR/agents/missing-angle/layered.md" ] || {
+    echo "FAIL: persist_layered_specialists created phantom layered.md for missing-angle (no source file)"
+    exit 1
+}
+
 echo "  PASS"

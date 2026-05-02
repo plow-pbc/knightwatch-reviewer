@@ -37,6 +37,25 @@
 # enclosing scope. Returns the underlying run-specialist exit code, or
 # build_aggregator_prompt's non-zero exit if the aggregator stitch fails
 # pre-codex (caller's existing AGG_EXIT/AGG_OUT gate handles both).
+# `persist_layered_specialists SPECIALISTS_DIR RUN_DIR ANGLE1 [ANGLE2 ...]`
+# Mirrors each layered specialist file (specialist + critic + optional
+# go-deep) from the workdir-resident `.codex-scratch/specialists/<angle>.md`
+# into `RUN_DIR/agents/<angle>/layered.md`. The workdir is rm -rf'd at the
+# end of review-one-pr.sh; this copy is the operator-inspection artifact
+# the spec promises. Sourceable so the smoke can drive it directly with
+# fixture files (round-5/round-7 regression coverage).
+persist_layered_specialists() {
+    local specialists_dir="$1" run_dir="$2"
+    shift 2
+    local angle
+    for angle in "$@"; do
+        if [ -e "$specialists_dir/${angle}.md" ]; then
+            mkdir -p "$run_dir/agents/${angle}"
+            cp "$specialists_dir/${angle}.md" "$run_dir/agents/${angle}/layered.md"
+        fi
+    done
+}
+
 dispatch_agent() {
     local name="$1"
     local file="$HOME/.pr-reviewer/prompts/${name}.md"
@@ -261,17 +280,7 @@ run_specialist_pipeline() {
         log "$PR_ID: go-deep tech-leads complete"
     fi
 
-    # Persist the final layered specialist files into RUN_DIR so they
-    # survive the workdir rm -rf at the end of review-one-pr.sh — the
-    # spec promises operators can inspect runs/<id>/agents/<angle>/layered.md.
-    # Without this, the symlink target only carries the specialist's pristine
-    # output (round-5 F3).
-    local angle
-    for angle in "${ANGLES[@]}"; do
-        if [ -e "$SPECIALISTS_DIR/${angle}.md" ]; then
-            cp "$SPECIALISTS_DIR/${angle}.md" "$RUN_DIR/agents/${angle}/layered.md"
-        fi
-    done
+    persist_layered_specialists "$SPECIALISTS_DIR" "$RUN_DIR" "${ANGLES[@]}"
 
     log "$PR_ID: aggregator (with critic input)..."
     # The aggregator's prompt build (stitching in prompts/voice.md at

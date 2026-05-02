@@ -80,14 +80,17 @@ _decline_history_from_json() {
         | .[0]
     ' 2>/dev/null)
 
-    if [ -z "$declines" ] && [ -z "$counters" ]; then
+    if [ -z "$declines" ] && [ -z "$counters" ] && [ -z "$explicit_classes" ]; then
         echo "(no decline history)"
         return 0
     fi
 
     echo "# Decline history"
     echo
-    echo "Operator ($operator) replies on prior reviews of this PR. Read these as **context** — the critic decides whether a class is recurring based on the prose. Auto-drop (\"declined ≥3 rounds → drop\") only applies to classes counted in the **Explicit class markers** section below."
+    echo "Operator ($operator) replies on prior reviews of this PR. Two channels — read both:"
+    echo
+    echo "1. **Decline replies / Counter-proposed**: free-form operator prose, emitted verbatim as **context**. Use your judgement — if the prose suggests a finding's class recurs, cite it in your counter-argument and ask whether this commit changes the calculus. Do NOT mechanically drop based on prose inference."
+    echo "2. **Explicit class markers**: counts of \`<!-- decline:class=X -->\` markers the operator deliberately added to a reply. THIS is the only channel that drives mechanical auto-drop (\"declined ≥3 rounds → drop\"). Without an explicit marker, no auto-drop fires — the operator has to opt in by tagging a reply."
     echo
 
     if [ -n "$declines" ]; then
