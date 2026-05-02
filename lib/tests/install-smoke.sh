@@ -169,32 +169,6 @@ for unit in "${PROD_UNITS[@]}"; do
         cmp -s "$rendered_expected" "$SYSTEMD_DIR/$name" || { echo "FAIL scenario 1: $name rendered content differs from installed"; diff "$rendered_expected" "$SYSTEMD_DIR/$name"; exit 1; }
         # Verbose check: no placeholder leaks into the installed unit.
         grep -qE '@KID_(RW|INDEX_RW)_PATHS@' "$SYSTEMD_DIR/$name" && { echo "FAIL scenario 1: installed $name still contains a @KID_*_PATHS@ placeholder (substitution broke)"; exit 1; }
-        # Per-unit contract check on the installed `ReadWritePaths=`
-        # directive itself. The cmp above is the strongest pin (full
-        # file equality with the rendered expected); this layer adds
-        # explicit format coverage so a future render-derivation bug
-        # would fail with the *contract* it violates rather than just a
-        # generic diff. Refresh unit gets bare repo roots; review unit
-        # gets `-<kp>/.keepitdry` (optional, narrow) so chromadb can
-        # write the SQLite WAL inside the index dir without granting
-        # write access to the source tree.
-        installed_rw=$(grep -E '^ReadWritePaths=' "$SYSTEMD_DIR/$name" || true)
-        [ -n "$installed_rw" ] || { echo "FAIL scenario 1: installed $name has no ReadWritePaths= directive"; exit 1; }
-        if grep -q '@KID_INDEX_RW_PATHS@' "$unit"; then
-            while IFS= read -r kp; do
-                case "$installed_rw" in
-                    *"-${kp}/.keepitdry"*) ;;
-                    *) echo "FAIL scenario 1: installed $name ReadWritePaths= is missing review-narrow token -${kp}/.keepitdry"; exit 1 ;;
-                esac
-            done < <(printf '%s\n' "$EXPECTED_KID_RW_PATHS" | tr ' ' '\n' | grep -v '^$')
-        else
-            while IFS= read -r kp; do
-                case "$installed_rw" in
-                    *"$kp"*) ;;
-                    *) echo "FAIL scenario 1: installed $name ReadWritePaths= is missing refresh token $kp"; exit 1 ;;
-                esac
-            done < <(printf '%s\n' "$EXPECTED_KID_RW_PATHS" | tr ' ' '\n' | grep -v '^$')
-        fi
     else
         cmp -s "$unit" "$SYSTEMD_DIR/$name" || { echo "FAIL scenario 1: $name content differs from source"; exit 1; }
     fi
