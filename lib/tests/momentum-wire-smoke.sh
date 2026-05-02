@@ -32,9 +32,11 @@ echo "  asserting momentum gate on previous-review.md..."
 assert_grep "orchestrate.sh missing momentum gate (\$RUN_DIR/inputs/previous-review.md)" \
     'if [ -s "$RUN_DIR/inputs/previous-review.md" ]' "$ORCHESTRATE"
 
-echo "  asserting momentum dispatch via run-specialist.sh..."
-assert_grep "orchestrate.sh missing run-specialist.sh dispatch for momentum" \
-    'run-specialist.sh" "momentum"' "$ORCHESTRATE"
+echo "  asserting momentum is dispatched..."
+# Dispatch goes through the generic `dispatch_agent NAME` helper which
+# selects the right prompt builder and calls run-specialist.sh.
+assert_grep "orchestrate.sh missing dispatch_agent momentum call" \
+    'dispatch_agent momentum' "$ORCHESTRATE"
 
 echo "  asserting momentum output symlink to .codex-scratch/momentum.md..."
 assert_grep "orchestrate.sh missing symlink from RUN_DIR/agents/momentum/output.md to .codex-scratch/momentum.md" \

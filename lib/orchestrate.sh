@@ -31,6 +31,29 @@
 #   log, write_scratch, substitute_placeholders, build_specialist_prompt,
 #   build_aggregator_prompt, critic_fallback.
 
+# `dispatch_agent NAME`: build the prompt for NAME (using the right builder
+# for its contract) and run it through run-specialist.sh. Reads $REPO_DIR,
+# $RUN_DIR, $PR_ID/$PR_TITLE/$PR_URL/$PR_AUTHOR, $_LIB_DIR from the
+# enclosing scope. Returns the underlying run-specialist exit code, or
+# build_aggregator_prompt's non-zero exit if the aggregator stitch fails
+# pre-codex (caller's existing AGG_EXIT/AGG_OUT gate handles both).
+dispatch_agent() {
+    local name="$1"
+    local file="$HOME/.pr-reviewer/prompts/${name}.md"
+    local prompt
+    case "$name" in
+        intent|dead-code-search|momentum)
+            prompt=$(substitute_placeholders "$file" "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR") ;;
+        critic)
+            prompt=$(cat "$file") ;;
+        aggregator)
+            prompt=$(build_aggregator_prompt "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR") || return $? ;;
+        *)
+            prompt=$(build_specialist_prompt "$name" "$file" "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR") ;;
+    esac
+    "$_LIB_DIR/run-specialist.sh" "$name" "$REPO_DIR" "$prompt" "$RUN_DIR/agents/$name"
+}
+
 run_specialist_pipeline() {
     local SPECIALISTS_DIR="$REPO_DIR/.codex-scratch/specialists"
     mkdir -p "$SPECIALISTS_DIR"
@@ -41,11 +64,7 @@ run_specialist_pipeline() {
     # (.codex-scratch/inferred-intent.md, .codex-scratch/specialists/<angle>.md,
     # .codex-scratch/critic.md) resolving to those outputs.
     log "$PR_ID: inferring developer intent..."
-    local INTENT_PROMPT
-    INTENT_PROMPT=$(substitute_placeholders \
-        "$HOME/.pr-reviewer/prompts/intent.md" \
-        "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR")
-    "$_LIB_DIR/run-specialist.sh" "intent" "$REPO_DIR" "$INTENT_PROMPT" "$RUN_DIR/agents/intent"
+    dispatch_agent intent
     local INTENT_EXIT=$?
     local INTENT_OUT="$RUN_DIR/agents/intent/output.md"
     ln -sfn "$INTENT_OUT" "$REPO_DIR/.codex-scratch/inferred-intent.md"
@@ -80,11 +99,7 @@ run_specialist_pipeline() {
     # failure (degrades to empty evidence; consumers specialist falls back
     # to its degraded LLM-grep mode).
     log "$PR_ID: dead-code search..."
-    local DC_PROMPT
-    DC_PROMPT=$(substitute_placeholders \
-        "$HOME/.pr-reviewer/prompts/dead-code-search.md" \
-        "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR")
-    "$_LIB_DIR/run-specialist.sh" "dead-code-search" "$REPO_DIR" "$DC_PROMPT" "$RUN_DIR/agents/dead-code-search"
+    dispatch_agent dead-code-search
     local DC_EXIT=$?
     local DC_OUT="$RUN_DIR/agents/dead-code-search/output.md"
     if [ "$DC_EXIT" -eq 0 ] && [ -s "$DC_OUT" ]; then
@@ -99,17 +114,9 @@ run_specialist_pipeline() {
 
     log "$PR_ID: launching ${#ANGLES[@]} specialists in parallel..."
     declare -A AGENT_PIDS=()
-    local angle PROMPT
+    local angle
     for angle in "${ANGLES[@]}"; do
-        PROMPT=$(build_specialist_prompt \
-            "$angle" \
-            "$HOME/.pr-reviewer/prompts/${angle}.md" \
-            "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR")
-        "$_LIB_DIR/run-specialist.sh" \
-            "$angle" \
-            "$REPO_DIR" \
-            "$PROMPT" \
-            "$RUN_DIR/agents/$angle" &
+        dispatch_agent "$angle" &
         AGENT_PIDS["$angle"]=$!
     done
 
@@ -146,11 +153,7 @@ run_specialist_pipeline() {
     # design); on re-reviews failure is fail-loud — see the abort below.
     if [ -s "$RUN_DIR/inputs/previous-review.md" ]; then
         log "$PR_ID: launching momentum specialist (re-review)..."
-        local MOMENTUM_PROMPT
-        MOMENTUM_PROMPT=$(substitute_placeholders \
-            "$HOME/.pr-reviewer/prompts/momentum.md" \
-            "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR")
-        "$_LIB_DIR/run-specialist.sh" "momentum" "$REPO_DIR" "$MOMENTUM_PROMPT" "$RUN_DIR/agents/momentum"
+        dispatch_agent momentum
         local MOMENTUM_EXIT=$?
         if [ $MOMENTUM_EXIT -ne 0 ]; then
             # Fail-fast > graceful degradation. Path 2 of the aggregator's
@@ -170,9 +173,7 @@ run_specialist_pipeline() {
     fi
 
     log "$PR_ID: critic pass..."
-    local CRITIC_PROMPT
-    CRITIC_PROMPT=$(cat "$HOME/.pr-reviewer/prompts/critic.md")
-    "$_LIB_DIR/run-specialist.sh" "critic" "$REPO_DIR" "$CRITIC_PROMPT" "$RUN_DIR/agents/critic"
+    dispatch_agent critic
     local CRITIC_EXIT=$?
     local CRITIC_OUT="$RUN_DIR/agents/critic/output.md"
 
@@ -188,20 +189,15 @@ run_specialist_pipeline() {
     ln -sfn "$CRITIC_OUT" "$REPO_DIR/.codex-scratch/critic.md"
 
     log "$PR_ID: aggregator (with critic input)..."
-    # build_aggregator_prompt stitches in prompts/voice.md (operator-tunable
-    # voice + tone) at aggregator.md's INSERT_VOICE_HERE marker, then
-    # substitutes placeholders. The aggregator is NOT a specialist — must
-    # not inherit the specialist common-header which would demand the
-    # Surveyed/Finding-N output shape — so it gets its own build path.
-    local AGG_PROMPT
-    if ! AGG_PROMPT=$(build_aggregator_prompt "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR"); then
-        log "$PR_ID: build_aggregator_prompt failed — aborting (incomplete install or stitch-contract regression)"
-        rm -rf "$REPO_DIR"
-        exit 1
-    fi
-    "$_LIB_DIR/run-specialist.sh" "aggregator" "$REPO_DIR" "$AGG_PROMPT" "$RUN_DIR/agents/aggregator"
-    # AGG_EXIT and AGG_OUT are caller-visible (no `local`) — the caller
-    # gates on these to decide whether to post the review.
+    # The aggregator's prompt build (stitching in prompts/voice.md at
+    # aggregator.md's INSERT_VOICE_HERE marker) can fail pre-codex on
+    # missing voice.md or stitch-contract regression — dispatch_agent
+    # propagates that as a non-zero return, and the AGG_EXIT/AGG_OUT
+    # gate in the caller treats it the same as any other aggregator
+    # failure (build_aggregator_prompt's own stderr message names the
+    # specific cause). AGG_EXIT and AGG_OUT are caller-visible (no
+    # `local`) — the caller gates on these to decide whether to post.
+    dispatch_agent aggregator
     AGG_EXIT=$?
     AGG_OUT="$RUN_DIR/agents/aggregator/output.md"
 }
