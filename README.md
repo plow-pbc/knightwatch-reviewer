@@ -25,7 +25,7 @@ Two more, from the public [`tkmx-client`](https://github.com/srosro/tkmx-client)
 
 ## How it works
 
-A timer polls tracked repos for new or updated PRs. For each, it spawns a set of specialists — `performance`, `dead-code-search`, `security`, `data-integrity`, `architecture`, `consumers`, `shape`, `simplification`, `tests` — each looking at one angle of the diff against the rest of the repo. A `critic` round prunes weak findings, an `aggregator` produces the posted review with a verdict (`APPROVE` or one or more blocking findings), and a marker (`<!-- knightwatch-reviewer:auto-post -->`) tags every post so reply automation and human babysitting can filter cleanly.
+A timer polls tracked repos for new or updated PRs. For each, it spawns a set of specialists — `performance`, `dead-code-search`, `security`, `data-integrity`, `architecture`, `consumers`, `shape`, `simplification`, `tests` — each looking at one angle of the diff against the rest of the repo. Each specialist emits structured **probes** (hypothesis + severity + class). A `critic` round resolves each probe (`Answer: yes/no/unknown` + evidence), and an `aggregator` renders a single ranked **Probes** section with `[from: <specialist>]` attribution, a verdict (`APPROVE` or one or more blocking probes), and an AI-author callout so Codex/Claude Code/Cursor can parse load-bearing open probes directly. A marker (`<!-- knightwatch-reviewer:auto-post -->`) tags every post so reply automation and human babysitting can filter cleanly.
 
 The bot signs as a real GitHub user, so reviews appear under that account.
 

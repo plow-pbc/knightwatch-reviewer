@@ -91,6 +91,7 @@ WORKDIRS_DIR="${WORKDIRS_DIR:-$STATE_DIR/workdirs}"
 . "$_LIB_DIR_EARLY/tracked-repos.sh"
 BOT_USER="${BOT_USER:-srosro}"
 BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
+BOT_AI_AUTHOR_MARKER="${BOT_AI_AUTHOR_MARKER:-<!-- knightwatch-reviewer:ai-author note=load-bearing-probes operating-point=pre-pmf prefer=cut-loc-over-add -->}"
 
 # Source helpers. Prefer REVIEWER_LIB_DIR if caller set it (smoke-test
 # isolation); fall back to the worker's own directory.
@@ -248,6 +249,7 @@ log "Reviewing $PR_ID (force_whole_pr=$FORCE_WHOLE_PR)"
 EYES_COMMENT_ID=$(gh api "repos/$REPO/issues/$PR_NUM/comments" \
     --method POST \
     -f body="$BOT_AUTO_POST_MARKER
+$BOT_AI_AUTHOR_MARKER
 👀 reviewing — [sam's ai review bot](https://github.com/srosro/knightwatch-reviewer)" \
     --jq '.id' 2>/dev/null) || EYES_COMMENT_ID=""
 
@@ -258,6 +260,7 @@ cleanup_eyes() {
     fi
     gh api "repos/$REPO/issues/comments/$EYES_COMMENT_ID" --method PATCH \
         -f body="$BOT_AUTO_POST_MARKER
+$BOT_AI_AUTHOR_MARKER
 review aborted before completion — see knightwatch-reviewer logs; will retry on the next tick if the PR head hasn't moved." \
         >/dev/null 2>&1 || true
 }
@@ -1171,6 +1174,7 @@ fi
 # Leading HTML comment is the orchestrator's discriminator for "this is
 # one of our auto-posts" — see the corresponding jq filter in review.sh.
 COMMENT_BODY="$BOT_AUTO_POST_MARKER
+$BOT_AI_AUTHOR_MARKER
 $COMMENT_BODY
 
 ---

@@ -109,18 +109,21 @@ echo "  asserting common-header documents dead-code.md scratch..."
 assert_grep "common-header.md should document dead-code.md" \
     "dead-code.md" prompts/common-header.md
 
-echo "  asserting voice-posture pointer in aggregator.md..."
-assert_grep "aggregator.md should cite Broken-Glass Test" \
-    "Broken-Glass Test" prompts/aggregator.md
 echo "  asserting Open Questions Q: format in aggregator.md..."
 assert_grep "aggregator.md should describe Q: question template" \
     "**Q:" prompts/aggregator.md
 echo "  asserting [from: <specialist>] attribution token in aggregator.md..."
 assert_grep "aggregator.md should describe per-line specialist attribution" \
     "[from: <specialist>]" prompts/aggregator.md
-echo "  asserting probe-format support in aggregator.md..."
-assert_grep "aggregator.md should describe probe rendering path" \
-    "### Probe N" prompts/aggregator.md
+echo "  asserting unified Probes section in aggregator.md..."
+assert_grep "aggregator.md should have **Probes** unified section" \
+    "**Probes**" prompts/aggregator.md
+echo "  asserting AI-author callout in aggregator.md..."
+assert_grep "aggregator.md should have **For AI authors** callout" \
+    "**For AI authors**" prompts/aggregator.md
+echo "  asserting unified-probes section ordering instructions..."
+assert_grep "aggregator.md should fence Answer: yes ordering" \
+    "Answer: yes" prompts/aggregator.md
 echo "  asserting complexity-cost probe class in shape.md..."
 assert_grep "shape.md should require a complexity-cost probe class" \
     "Class: complexity-cost" prompts/shape.md

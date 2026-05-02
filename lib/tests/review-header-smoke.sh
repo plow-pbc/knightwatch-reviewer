@@ -37,7 +37,8 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 . "$PROJECT_ROOT/lib/run-dir.sh"
 
 MARKER='<!-- knightwatch-reviewer:auto-post -->'
-BODY=$(printf '%s\n_intent line_\n\n**Overview** — text\n\n**Findings**\n1. [medium] something' "$MARKER")
+AI_AUTHOR_MARKER='<!-- knightwatch-reviewer:ai-author note=load-bearing-probes operating-point=pre-pmf prefer=cut-loc-over-add -->'
+BODY=$(printf '%s\n%s\n_intent line_\n\n**Overview** — text\n\n**Findings**\n1. [medium] something' "$MARKER" "$AI_AUTHOR_MARKER")
 
 SHA_OLD="abc1234567"
 SHA_NEW="def9876543"
@@ -90,6 +91,11 @@ assert_one_blockquote() {
 }
 
 # ===== prepend_review_header — join behavior =====
+echo "  asserting BOT_AI_AUTHOR_MARKER prepended after auto-post marker..."
+result=$(prepend_review_header "$BODY" "📋 First review of this PR")
+grep -q '<!-- knightwatch-reviewer:auto-post -->' <<< "$result" || { echo "FAIL: auto-post marker missing"; exit 1; }
+grep -q '<!-- knightwatch-reviewer:ai-author' <<< "$result" || { echo "FAIL: ai-author marker missing"; exit 1; }
+
 echo "  one note → blockquote has just that note + final '.'..."
 result=$(prepend_review_header "$BODY" "📋 First review of this PR")
 assert_marker_first "$result" "one-note"
