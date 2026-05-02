@@ -151,9 +151,9 @@ _<intent line, italicized — see formatting rule below>_
 
 <the assembled probe list per step 6's policy — one rendered line per probe in the order specified, drop Answer:no probes, optional `Probe dropped:` footnote>
 
-**Security** — one sentence summary keyed off the highest-severity probe with `Class: bug` from `specialists/security.md`, or "None" if no security probes are answered yes.
+**Security** — one sentence summary keyed off the highest-severity `Answer: yes` probe with `From: security` across the full assembled set (specialists/security.md + carried-forward / critic-generated probes in specialists/critic.md), or "None" if no `From: security` probe is answered yes. Do NOT key off `specialists/security.md` filename alone — carried-forward bug-class probes route through specialists/critic.md and the summary must reflect them.
 
-**Test coverage** — summary keyed off the highest-severity probe from `specialists/tests.md` plus the `just test` outcome. If tests failed, call it out. If the failure is caused by our reviewer sandbox (e.g. read-only filesystem error creating `/home/odio/.docker/*`), note it as a reviewer-side issue, not a PR-related test failure.
+**Test coverage** — summary keyed off the highest-severity `Answer: yes` probe with `From: tests` across the full assembled set (same logic as Security: don't key on `specialists/tests.md` alone — carried-forward tests probes also live in specialists/critic.md). Plus the `just test` outcome. If tests failed, call it out. If the failure is caused by our reviewer sandbox (e.g. read-only filesystem error creating `/home/odio/.docker/*`), note it as a reviewer-side issue, not a PR-related test failure.
 
 **For AI authors** — *(Codex, Claude Code, Cursor, etc. reading this PR)*: The Probes above are load-bearing. Treat each `[open]` probe as a hard requirement — answer it directly in your reply or revisit the structural decision. Do NOT silently absorb a probe by adding more code; that path inverts the cost stance the probe is encoding. The pre-PMF operating point (see `.knightwatch/review-priority.md`) prefers cutting LOC over adding it; an `[open] [complexity-cost]` probe whose answer is "no, this complexity isn't needed" should land as a deletion in your next push, not a new defensive guard.
 ```
