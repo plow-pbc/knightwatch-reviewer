@@ -1,19 +1,12 @@
 #!/bin/bash
 # Behavior smoke for rank_hot_angles (lib/go-deep-rank.sh).
 #
-# Token-grep on the orchestrator regex passes even when selection logic
-# is broken — the round-1 PR #42 finding was exactly that case (regex
-# matched the wrong format, hot-list silently emptied). This smoke
-# exercises the selection logic with real specialist-file fixtures.
-#
-# Contracts:
-#   1. ≤3 hot angles → all returned in input order.
-#   2. >3 hot angles → severity-band rank ([blocking] > [medium] > [low] > [nit]),
-#      capped at 3, alphabetical tiebreak within band.
-#   3. Severity matched against specialist contract
-#      "### Finding N — <severity>" (NOT bracketed [severity]).
-#   4. No "Calibration questions for go-deep" token → not hot,
-#      regardless of severity.
+# Round-5 reframe: ranking is FINDING-level, not file-level. The bot
+# repeatedly flagged that file-level ranking could pick a specialist
+# whose calibrated finding was a low-severity nit, ahead of another
+# file's correctly-calibrated blocking, just because the first file
+# ALSO had an uncalibrated blocking elsewhere. This smoke fixtures
+# that exact case as the load-bearing regression.
 
 set -uo pipefail
 
@@ -26,52 +19,68 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SPECIALISTS_DIR="$TMPDIR/specialists"
 mkdir -p "$SPECIALISTS_DIR"
 
-mk_file() {
-    local angle="$1" severity="$2" calibration="$3"
-    cat > "$SPECIALISTS_DIR/${angle}.md" <<EOF
-## [${angle}] findings
-
-### Finding 1 — ${severity}
-something happened in app/foo.py:42.
-
----
-
-## Critic counter-arguments
-
-### [${angle}] Finding 1 — AGREE
-real bug.
-**Estimated remedy LOC:** ~50 LOC across 2 files.
-EOF
-    if [ "$calibration" = "yes" ]; then
-        cat >> "$SPECIALISTS_DIR/${angle}.md" <<'EOF'
-
-**Calibration questions for go-deep investigation:**
-- Q1: Does this fire at our scale?
-- Q2: Is there an existing helper?
-EOF
-    fi
+# Helper: build a layered specialist file with $angle's findings, where each
+# finding has a (severity, calibrated) tuple. SPECIALIST_FINDINGS is "sev1:cal1 sev2:cal2 ..."
+# e.g. "blocking:no medium:yes" → Finding 1 blocking uncalibrated, Finding 2 medium calibrated.
+mk_layered() {
+    local angle="$1"
+    shift
+    local file="$SPECIALISTS_DIR/${angle}.md"
+    {
+        echo "## [${angle}] findings"
+        echo
+        echo "### Surveyed"
+        echo "- looked at code"
+        local i=0
+        for spec in "$@"; do
+            i=$((i+1))
+            local sev="${spec%%:*}"
+            echo
+            echo "### Finding $i — $sev"
+            echo "Some finding text in app/foo.py:42."
+        done
+        echo
+        echo "---"
+        echo
+        echo "## Critic counter-arguments"
+        echo
+        i=0
+        for spec in "$@"; do
+            i=$((i+1))
+            local sev="${spec%%:*}"
+            local cal="${spec##*:}"
+            echo "### [${angle}] Finding $i — AGREE"
+            echo "real bug."
+            echo "**Estimated remedy LOC:** ~50 LOC across 2 files."
+            if [ "$cal" = "yes" ]; then
+                echo
+                echo "**Calibration questions for go-deep investigation:**"
+                echo "- Q1: scale firing rate?"
+                echo "- Q2: existing helper?"
+            fi
+            echo
+        done
+    } > "$file"
 }
 
-# --- fixture 1: ≤3 hot → all returned ---
+# --- fixture 1: ≤3 hot — all returned in input order ---
 echo "  fixture 1: 2 hot specialists → both returned in input order..."
-mk_file security medium yes
-mk_file architecture blocking yes
-mk_file tests low no    # not hot — no calibration block
+mk_layered security medium:yes
+mk_layered architecture blocking:yes
+mk_layered tests low:no  # not hot — no calibration block
 OUT=$(rank_hot_angles "$SPECIALISTS_DIR" security architecture tests)
 [ "$OUT" = "security
 architecture" ] || { echo "FAIL: expected 'security\\narchitecture', got: $OUT"; exit 1; }
 
 rm -f "$SPECIALISTS_DIR"/*.md
 
-# --- fixture 2: >3 hot, severity-band ranker (the round-1 regression case) ---
-echo "  fixture 2: 4 hot specialists with mixed severities → top 3 by severity..."
-mk_file security medium yes      # hot, medium
-mk_file architecture blocking yes # hot, blocking
-mk_file tests medium yes          # hot, medium
-mk_file simplification low yes    # hot, low
+# --- fixture 2: >3 hot, severity-band ranker by max-calibrated-severity ---
+echo "  fixture 2: 4 hot specialists with mixed severities → top 3 by max-calibrated-severity..."
+mk_layered security medium:yes        # max-calibrated = medium
+mk_layered architecture blocking:yes  # max-calibrated = blocking
+mk_layered tests medium:yes           # max-calibrated = medium
+mk_layered simplification low:yes     # max-calibrated = low
 OUT=$(rank_hot_angles "$SPECIALISTS_DIR" security architecture tests simplification)
-# Expected: architecture (blocking), then alphabetical within medium band
-# (security, tests), capped at 3. simplification (low) drops off.
 EXPECTED="architecture
 security
 tests"
@@ -79,51 +88,71 @@ tests"
 
 rm -f "$SPECIALISTS_DIR"/*.md
 
-# --- fixture 3: regression fence — bracketed [severity] format MUST NOT match ---
-echo "  fixture 3: aggregator-bracketed [blocking] format does NOT count as specialist severity..."
-# Synthesize a file that has "[blocking]" (aggregator format) but NO
-# "### Finding N — blocking" (specialist format). Round-1 bug would
-# treat this as blocking; the fix should treat it as no-severity-found.
+# --- fixture 3: ROUND-5 REGRESSION — uncalibrated blocking + calibrated nit must NOT outrank a calibrated medium elsewhere ---
+echo "  fixture 3: round-5 regression — file-level ranker would mis-pick the blocking-w/-uncalibrated-blocking file..."
+# security.md: Finding 1 blocking uncalibrated + Finding 2 nit calibrated → max-calibrated = NIT
+mk_layered security blocking:no nit:yes
+# architecture.md: Finding 1 medium calibrated → max-calibrated = MEDIUM
+mk_layered architecture medium:yes
+# tests.md: Finding 1 low calibrated → max-calibrated = LOW
+mk_layered tests low:yes
+# simplification.md: Finding 1 nit calibrated → max-calibrated = NIT
+mk_layered simplification nit:yes
+OUT=$(rank_hot_angles "$SPECIALISTS_DIR" security architecture tests simplification)
+# Expected ordering: architecture (medium) → tests (low) → security/simplification (nit, alphabetical: security first).
+# A file-level ranker would put security FIRST (because it has a [blocking] header somewhere) — that's the bug we're catching.
+EXPECTED="architecture
+tests
+security"
+[ "$OUT" = "$EXPECTED" ] || {
+    echo "FAIL: round-5 regression — expected '$EXPECTED' (max-calibrated-severity ranking), got: '$OUT'"
+    echo "If 'security' comes first, the ranker is still file-level (matches uncalibrated [blocking] severity)."
+    exit 1
+}
+
+rm -f "$SPECIALISTS_DIR"/*.md
+
+# --- fixture 4: zero hot → empty output ---
+echo "  fixture 4: zero hot specialists → empty output..."
+mk_layered security medium:no
+mk_layered architecture blocking:no
+OUT=$(rank_hot_angles "$SPECIALISTS_DIR" security architecture)
+[ -z "$OUT" ] || { echo "FAIL: expected empty, got: '$OUT'"; exit 1; }
+
+rm -f "$SPECIALISTS_DIR"/*.md
+
+# --- fixture 5: aggregator-bracketed [blocking] format does NOT count as specialist severity ---
+echo "  fixture 5: aggregator-bracketed [blocking] in commentary does NOT match specialist contract..."
 cat > "$SPECIALISTS_DIR/security.md" <<'EOF'
 ## [security] findings
 
 ### Surveyed
 - looked at it.
 
-(no findings — the prior aggregator review at [blocking] is unrelated to this round)
+(prior aggregator review at [blocking] severity is unrelated.)
 
 ---
+
+## Critic counter-arguments
+
+### [security] Finding 1 — AGREE
+filler
 
 **Calibration questions for go-deep investigation:**
 - Q1: filler
 EOF
-mk_file architecture blocking yes
-mk_file tests medium yes
-mk_file simplification low yes
+mk_layered architecture blocking:yes
+mk_layered tests medium:yes
+mk_layered simplification low:yes
 OUT=$(rank_hot_angles "$SPECIALISTS_DIR" security architecture tests simplification)
-# security has no specialist-format severity → falls through all bands → drops out.
-# architecture (blocking) + tests (medium) + simplification (low) → 3 hot, ≤3 path,
-# returned in input order.
-# But wait — this is >3 hot (4 candidates); only 3 of them have a real specialist
-# severity. The ranker walks bands and picks any with severity. Let's trace:
-#   blocking band: architecture matches → ranked=[architecture]
-#   medium band: tests matches → ranked=[architecture, tests]
-#   low band: simplification matches → ranked=[architecture, tests, simplification]
-#   nit band: nothing matches
-# Result: architecture, tests, simplification. security drops because the
-# bracketed [blocking] in its file doesn't satisfy the specialist regex.
+# security has no specialist-format `### Finding N — <severity>` header → falls
+# through severity bands → drops out. Other three sort by max-calibrated.
 EXPECTED="architecture
 tests
 simplification"
-[ "$OUT" = "$EXPECTED" ] || { echo "FAIL: expected '$EXPECTED', got: '$OUT' (round-1 regression: bracketed [blocking] should NOT match specialist contract)"; exit 1; }
-
-rm -f "$SPECIALISTS_DIR"/*.md
-
-# --- fixture 4: zero hot → empty output ---
-echo "  fixture 4: zero hot specialists → empty output..."
-mk_file security medium no
-mk_file architecture blocking no
-OUT=$(rank_hot_angles "$SPECIALISTS_DIR" security architecture)
-[ -z "$OUT" ] || { echo "FAIL: expected empty, got: '$OUT'"; exit 1; }
+[ "$OUT" = "$EXPECTED" ] || {
+    echo "FAIL: bracketed [blocking] in prose should NOT match specialist contract; expected '$EXPECTED', got: '$OUT'"
+    exit 1
+}
 
 echo "  PASS"

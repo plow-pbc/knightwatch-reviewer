@@ -1,25 +1,31 @@
 #!/bin/bash
-# Sourceable helper for fetching and classifying operator decline replies
-# from a PR's comment thread. Output is fed to the critic prompt as
-# .codex-scratch/decline-history.md so re-flagged findings the operator
-# has already declined ≥3 times can be dropped or footnoted.
+# Sourceable helper for fetching operator decline replies from a PR's
+# comment thread. Output is fed to the critic prompt as
+# .codex-scratch/decline-history.md so the critic has prior pushback as
+# context (and so explicitly-marked classes can drive auto-drop logic).
 #
 # fetch_decline_history REPO PR_NUM
 #   stdout: markdown decline-history.md content
 #
-# Class identification (conservative — under-classify is fine, over-classify
-# silently drops findings the operator might still want flagged):
-#   1. [Bug-Class-Recurrence] tags from prior bot reviews — class label
-#      inside the brackets is the canonical class name.
-#   2. "<noun>-<noun> finding" / "<noun>-<noun>:" prose patterns.
-#   3. Known recurring classes (session-scoping, stale-auth, atomicity,
-#      parsing, dispatch, retry, validation, error-envelope, race).
-#   4. Fall back to "(unclassified)" — preserves the signal without
-#      pretending we know the class.
+# Round-5 architectural reframe: this used to bash-parse operator replies
+# into class buckets via a regex priority chain (BCR template, known-class
+# list, "<noun>-<noun> finding"). The chain accumulated edge cases across
+# 4 review rounds — the bot kept finding cases the regex missed or
+# misclassified. Replaced with a structured/raw event contract:
+#
+#   1. Free-form decline replies are emitted VERBATIM as context. The
+#      critic reads them as prose and uses its own judgement on whether
+#      a class recurs.
+#   2. Class-count auto-drop logic (the "declined ≥3 rounds → drop" rule
+#      in critic.md) only fires for classes the operator has EXPLICITLY
+#      marked via `<!-- decline:class=X -->` in their reply body. Implicit
+#      class inference is left to the critic.
+#
+# This keeps the per-PR decline-memory feature while removing the brittle
+# regex-classification seam.
 #
 # Empty / absent output is fail-soft (the critic just sees "(no decline
-# history)" — no decline information available, fall back to existing
-# behavior).
+# history)" — falls back to existing behavior).
 
 _DECLINE_HISTORY_LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 . "$_DECLINE_HISTORY_LIB_DIR/gh-comments.sh"
@@ -35,37 +41,43 @@ _decline_history_from_json() {
     fi
 
     # BOT_USER is the GitHub login seam (review.sh:26, learn-from-replies.sh:36,
-    # approve-from-replies.sh:54) — operator's GH identity, also what the bot
-    # signs as. Distinct from OPERATOR_NAME, which is the voice/display seam
-    # (prompt-build.sh:18). Using OPERATOR_NAME here would let `OPERATOR_NAME=Frankie`
-    # silently filter OUT real srosro decline replies.
+    # approve-from-replies.sh:54). Distinct from OPERATOR_NAME (the voice/display
+    # seam at prompt-build.sh:18) — using the wrong one would silently filter
+    # out real decline replies under a renamed operator.
     local operator="${BOT_USER:-srosro}"
     # Bot auto-posts sign as $operator (kw-reviewer's GH identity is the
     # operator's account). The HTML marker distinguishes bot output from
-    # operator-authored replies — required so the bot's own review bodies
-    # (which can mention "Declined" in findings prose) don't leak in as
-    # operator declines. Use the same env-var override seam as the rest
-    # of the codebase (review.sh:33, learn-from-replies.sh:37) instead of
-    # hardcoding the substring twice.
+    # operator-authored replies.
     local marker="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
-    local declines counters
+    local declines counters explicit_classes
     declines=$(printf '%s' "$raw" | jq --arg op "$operator" --arg marker "$marker" -r '
         map(select(.user.login == $op))
         | map(select(.body | contains($marker) | not))
         | map(select(.body | test("Declined —|Declined -|^Declined |\\[Bug-Class-Recurrence\\]")))
-        | map({ts: .created_at, body: .body})
-        | sort_by(.ts)
+        | sort_by(.created_at)
         | .[]
-        | "\(.ts)\t\(.body | gsub("\n"; " ") | .[:400])"
+        | "\(.created_at)\t\(.body | gsub("\n"; " ") | .[:600])"
     ' 2>/dev/null)
     counters=$(printf '%s' "$raw" | jq --arg op "$operator" --arg marker "$marker" -r '
         map(select(.user.login == $op))
         | map(select(.body | contains($marker) | not))
         | map(select(.body | test("Counter-proposed")))
-        | map({ts: .created_at, body: .body})
-        | sort_by(.ts)
+        | sort_by(.created_at)
         | .[]
-        | "\(.ts)\t\(.body | gsub("\n"; " ") | .[:400])"
+        | "\(.created_at)\t\(.body | gsub("\n"; " ") | .[:600])"
+    ' 2>/dev/null)
+    # Explicit class markers — operator-authored, not bot. One marker per
+    # reply body counts as one class instance. The critic uses these for
+    # the ≥3-rounds auto-drop rule; everything else is read as context.
+    explicit_classes=$(printf '%s' "$raw" | jq --arg op "$operator" --arg marker "$marker" -r '
+        map(select(.user.login == $op))
+        | map(select(.body | contains($marker) | not))
+        | sort_by(.created_at)
+        | .[]
+        | .body as $b
+        | $b
+        | scan("<!-- decline:class=([A-Za-z][A-Za-z0-9_-]+) -->")
+        | .[0]
     ' 2>/dev/null)
 
     if [ -z "$declines" ] && [ -z "$counters" ]; then
@@ -75,69 +87,53 @@ _decline_history_from_json() {
 
     echo "# Decline history"
     echo
-    echo "Operator ($operator) replies on prior reviews of this PR:"
+    echo "Operator ($operator) replies on prior reviews of this PR. Read these as **context** — the critic decides whether a class is recurring based on the prose. Auto-drop (\"declined ≥3 rounds → drop\") only applies to classes counted in the **Explicit class markers** section below."
     echo
 
-    declare -A class_count class_first class_last class_reason
-    local class_keys=()
-    while IFS=$'\t' read -r ts body; do
-        [ -z "$body" ] && continue
-        # Priority order matters: the canonical aggregator BCR template
-        # is `[Bug-Class-Recurrence] This is the Nth instance of <class>:`
-        # (per prompts/aggregator.md). The "instance of <class>" capture
-        # must come BEFORE the loose `\[Bug-Class-Recurrence\] <word>`
-        # capture, otherwise the latter matches "This" as the class and
-        # the operator's decline never re-classifies into the bot's own
-        # canonical class names.
-        local class=""
-        if [[ "$body" =~ \[Bug-Class-Recurrence\].*instance[[:space:]]+of[[:space:]]+([A-Za-z][A-Za-z0-9_-]+) ]]; then
-            class="${BASH_REMATCH[1]}"
-        elif [[ "$body" =~ (session-scoping|stale-auth|atomicity|parsing|dispatch|retry|validation|error-envelope|race) ]]; then
-            class="${BASH_REMATCH[1]}"
-        elif [[ "$body" =~ \[Bug-Class-Recurrence\][[:space:]]+([A-Za-z][A-Za-z0-9_-]+) ]]; then
-            class="${BASH_REMATCH[1]}"
-        elif [[ "$body" =~ ([a-z][a-z]+-[a-z][a-z]+)[[:space:]]+finding ]]; then
-            class="${BASH_REMATCH[1]}"
-        else
-            class="(unclassified)"
-        fi
-        if [ -z "${class_count[$class]:-}" ]; then
-            class_keys+=("$class")
-            class_first[$class]="$ts"
-        fi
-        class_count[$class]=$(( ${class_count[$class]:-0} + 1 ))
-        class_last[$class]="$ts"
-        class_reason[$class]="$body"
-    done <<< "$declines"
-
-    local class
-    for class in "${class_keys[@]}"; do
-        local plural=""
-        [ "${class_count[$class]}" -gt 1 ] && plural="s"
-        echo "## Class: $class (declined ${class_count[$class]} round${plural})"
-        echo "- First declined: ${class_first[$class]}"
-        echo "- Last declined: ${class_last[$class]}"
-        echo "- Last decline reason: \"${class_reason[$class]}\""
+    if [ -n "$declines" ]; then
+        echo "## Decline replies"
         echo
-    done
+        local i=0
+        while IFS=$'\t' read -r ts body; do
+            [ -z "$body" ] && continue
+            i=$((i + 1))
+            echo "### Reply $i — $ts"
+            echo
+            echo "$body"
+            echo
+        done <<< "$declines"
+    fi
 
     if [ -n "$counters" ]; then
         echo "## Counter-proposed (operator applied LOC-negative version)"
+        echo
         while IFS=$'\t' read -r ts body; do
             [ -z "$body" ] && continue
-            echo "- $ts: $body"
+            echo "- **$ts:** $body"
         done <<< "$counters"
         echo
     fi
+
+    echo "## Explicit class markers"
+    echo
+    if [ -z "$explicit_classes" ]; then
+        echo "(none — operator has not declared any explicit \`<!-- decline:class=X -->\` markers on this PR)"
+    else
+        # Count occurrences per class.
+        echo "$explicit_classes" | sort | uniq -c | sort -rn | while read -r count class; do
+            local plural=""
+            [ "$count" -gt 1 ] && plural="s"
+            echo "- **\`$class\`**: $count round${plural}"
+        done
+    fi
+    echo
 }
 
 # Public entry point. Calls gh, then delegates to the pure-transform helper.
 #
 # Only fetches top-level (issue) comments — the operator's decline replies
 # go to top-level threads (per the babysit-pr skill templates), not inline
-# review-thread comments. Adding inline-comment fetch here would duplicate
-# the lib/gh-comments.sh pagination contract for a use case that doesn't
-# happen in production.
+# review-thread comments.
 fetch_decline_history() {
     local repo="$1" pr_num="$2"
     local issue_comments

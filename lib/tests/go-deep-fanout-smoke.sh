@@ -28,16 +28,18 @@ echo "  asserting hot-list gate token in run_specialist_pipeline..."
 assert_grep "orchestrate.sh should call rank_hot_angles (lib/go-deep-rank.sh sourceable seam)" \
     'rank_hot_angles "$SPECIALISTS_DIR"' "$PROJECT_ROOT/lib/orchestrate.sh"
 
-echo "  asserting rank_hot_angles helper exists with severity-band ranker..."
-# Round-1 + round-2 regression fences moved into go-deep-rank-smoke.sh
-# (behavior tests with synthetic specialist files). Token-grep here just
-# fences the helper's existence + presence of the severity-band loop.
+echo "  asserting rank_hot_angles helper exists with finding-level ranker..."
+# Behavior tests live in go-deep-rank-smoke.sh (synthetic layered specialist
+# files including the round-5 uncalibrated-blocking + calibrated-nit
+# regression case). Token-grep here just fences the helper's structure.
 assert_grep "lib/go-deep-rank.sh missing parallel cap (-le 3)" \
     "-le 3" "$PROJECT_ROOT/lib/go-deep-rank.sh"
 assert_grep "lib/go-deep-rank.sh missing severity-band loop" \
     'in "blocking" "medium" "low" "nit"' "$PROJECT_ROOT/lib/go-deep-rank.sh"
-assert_grep "lib/go-deep-rank.sh should grep '### Finding N — <sev>' specialist contract" \
-    '^### Finding [0-9]+ — $sev' "$PROJECT_ROOT/lib/go-deep-rank.sh"
+assert_grep "lib/go-deep-rank.sh missing _max_calibrated_severity helper (round-5 finding-level granularity)" \
+    "_max_calibrated_severity" "$PROJECT_ROOT/lib/go-deep-rank.sh"
+assert_grep "lib/go-deep-rank.sh should pin calibration block to current critic finding (not file-level)" \
+    "Calibration questions for go-deep investigation" "$PROJECT_ROOT/lib/go-deep-rank.sh"
 
 echo "  asserting decline-history gated on FORCE_WHOLE_PR=true AND first-review..."
 # Regression fence for the round-1 F1a + round-4 F5 findings:
