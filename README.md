@@ -54,7 +54,7 @@ REPOS=(
 )
 ```
 
-The next 2-minute timer tick picks it up. `repos.conf` also holds three associative arrays — `KID_PATHS` (per-repo path to a kid-prior-art index), `SOURCE_PATHS` (per-repo local checkout that drives the sibling-grep/search-roots surface for the dead-code and consumers specialists), and `DEAD_CODE_CMDS` (per-repo static dead-code prepass command — empty string disables it). Each keyed by `owner/repo`; loader is `lib/tracked-repos.sh`.
+The next 2-minute timer tick picks it up. Optional per-repo arrays — `KID_PATHS`, `SOURCE_PATHS`, `DEAD_CODE_CMDS` — live in the same file; see the inline comments in [`repos.conf`](repos.conf) for shapes and `lib/tracked-repos.sh` for the loader.
 
 ## Use on a PR
 
