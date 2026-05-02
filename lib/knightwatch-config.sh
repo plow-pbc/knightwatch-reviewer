@@ -9,16 +9,11 @@
 # (line-oriented, markdown, bash). No central manifest, no parser
 # dependency.
 #
-# What the three exit codes MEAN to the caller is the caller's
-# decision — the helper just reports presence/content/failure. PRESENT
-# (rc=0) and ABSENT (rc=1) are not always interchangeable for a given
-# concern (e.g. for siblings, PRESENT-empty means "no sibling repos"
-# while ABSENT means "default to all tracked REPOS minus self"); each
-# call site documents what its own ABSENCE rule is. The
-# ABSENT-vs-ERROR distinction is the universal Fail-Fast complement:
-# every caller MUST treat (2) ERROR as a hard abort so transient git
-# failures (broken base ref, corrupt object store, etc.) cannot be
-# misread as absence.
+# The helper reports presence/content/failure; callers decide policy.
+# Each call site documents its own PRESENT-empty and ABSENT semantics.
+# The one universal rule: every caller MUST treat (2) ERROR as a hard
+# abort so transient git failures (broken base ref, corrupt object
+# store, etc.) cannot be misread as absence.
 
 # read_knightwatch_file <repo_dir> <base_ref> <relative_path>
 #   stdout: file content from <base_ref>:.knightwatch/<rel>

@@ -3,7 +3,7 @@
 #
 # Three invariants:
 #   1. File exists on the base branch → returns content + exit 0
-#   2. File absent → returns empty + exit 1 (caller takes its no-value path)
+#   2. File absent → returns empty + exit 1
 #   3. File exists ONLY on a non-base branch (PR head) → still classified
 #      as ABSENT against the base ref. Trust model: base branch is the
 #      source of truth; PR head edits don't take effect until merged.
@@ -74,11 +74,8 @@ if printf '%s' "$got" | grep -q 'evil/private-repo'; then
 fi
 
 # --- scenario 2: missing file → empty + EXACTLY exit 1 (ABSENT) ----
-# Specifically expect rc=1 (ABSENT), not just "non-zero." Distinguishing
-# ABSENT (rc=1) from ERROR (rc=2) is load-bearing: ABSENT routes callers
-# down their no-value path (skip check / substitute placeholder /
-# default sibling set / embedded review-priority default), ERROR aborts
-# the worker. A test that accepts any non-zero would let an
+# Expect rc=1 (ABSENT), not just "non-zero." Callers act on rc=1 vs
+# rc=2 differently, so a test that accepts any non-zero would let an
 # ERROR-as-ABSENT regression slip through (bot finding 1 PR #29 round 2).
 echo "  scenario 2: missing file → empty + exit 1 (ABSENT)..."
 exit_code=0
@@ -177,10 +174,8 @@ fi
 # A non-existent default branch (e.g., the operator forgot to fetch
 # origin/main, or the workdir is corrupt) must NOT collapse onto the
 # ABSENT exit code — that would silently route callers down their
-# ABSENCE path (e.g. broaden the sibling set to all REPOS, or skip a
-# strict-typing check) with no operator signal. The helper
-# distinguishes via `git ls-tree` returning non-zero on a bad ref,
-# before any read attempt.
+# absence path with no operator signal. The helper distinguishes via
+# `git ls-tree` returning non-zero on a bad ref.
 echo "  scenario 5: bad base ref → exit 2 (ERROR)..."
 exit_code=0
 read_knightwatch_file "$WORK" "nonexistent-branch" "siblings" > "$TMPDIR/out.txt" 2>/dev/null || exit_code=$?
@@ -225,11 +220,11 @@ fi
 # --- scenario 7: onboarding case — file exists ONLY on PR branch ---
 # A first-time `.knightwatch/*` PR has the file on the PR branch but
 # NOT on the base branch yet. The helper must classify this as ABSENT
-# (rc 1, treated as no-value) rather than ERROR (rc 2, aborts the
-# review). The prior stderr-parse implementation got this wrong
-# because git's "exists on disk, but not in" message for a working-
-# tree path missing from the ref doesn't match the canonical "does
-# not exist in" pattern. ls-tree avoids the ambiguity entirely.
+# (rc 1) rather than ERROR (rc 2). The prior stderr-parse
+# implementation got this wrong because git's "exists on disk, but
+# not in" message for a working-tree path missing from the ref doesn't
+# match the canonical "does not exist in" pattern. ls-tree avoids the
+# ambiguity entirely.
 echo "  scenario 7: onboarding — file on PR branch only → ABSENT..."
 git -C "$SOURCE" checkout -q feature
 echo "pr-only" > "$SOURCE/.knightwatch/pr-only-file.sh"
