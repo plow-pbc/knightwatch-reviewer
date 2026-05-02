@@ -251,10 +251,18 @@ prepend_review_header() {
         fi
     done
     joined="$joined."
-    local first_line rest
-    first_line=$(printf '%s' "$comment_body" | head -1)
-    rest=$(printf '%s' "$comment_body" | tail -n +2)
-    printf '%s\n> %s\n\n%s' "$first_line" "$joined" "$rest"
+    # Preserve ALL leading HTML-comment lines (e.g. auto-post + ai-author
+    # markers, both invisible in rendered Markdown) before injecting the
+    # visible blockquote. Pinning to "line 1 only" pushes any second hidden
+    # marker below the visible header, where AI-author tooling reading raw
+    # bodies via `gh api` still sees it but the ordering contract drifts.
+    local n_leading
+    n_leading=$(printf '%s' "$comment_body" | awk '/^<!--/{n++; next} {exit} END{print n+0}')
+    [ "$n_leading" -lt 1 ] && n_leading=1
+    local leading rest
+    leading=$(printf '%s' "$comment_body" | sed -n "1,${n_leading}p")
+    rest=$(printf '%s' "$comment_body" | sed -n "$((n_leading + 1)),\$p")
+    printf '%s\n> %s\n\n%s' "$leading" "$joined" "$rest"
 }
 
 # is_run_author_visible <run_dir>

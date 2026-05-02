@@ -91,10 +91,12 @@ assert_one_blockquote() {
 }
 
 # ===== prepend_review_header — join behavior =====
-echo "  asserting BOT_AI_AUTHOR_MARKER prepended after auto-post marker..."
+echo "  asserting BOT_AI_AUTHOR_MARKER stays adjacent to auto-post marker on lines 1-2..."
 result=$(prepend_review_header "$BODY" "📋 First review of this PR")
-grep -q '<!-- knightwatch-reviewer:auto-post -->' <<< "$result" || { echo "FAIL: auto-post marker missing"; exit 1; }
-grep -q '<!-- knightwatch-reviewer:ai-author' <<< "$result" || { echo "FAIL: ai-author marker missing"; exit 1; }
+line1=$(printf '%s' "$result" | sed -n '1p')
+line2=$(printf '%s' "$result" | sed -n '2p')
+[ "$line1" = "$MARKER" ] || { echo "FAIL: line 1 is '$line1', expected auto-post marker"; exit 1; }
+[ "$line2" = "$AI_AUTHOR_MARKER" ] || { echo "FAIL: line 2 is '$line2', expected ai-author marker (must be adjacent — both invisible markers stay at top)"; exit 1; }
 
 echo "  one note → blockquote has just that note + final '.'..."
 result=$(prepend_review_header "$BODY" "📋 First review of this PR")
