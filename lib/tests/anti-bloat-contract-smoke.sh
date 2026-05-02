@@ -127,6 +127,12 @@ assert_grep "aggregator.md should cite Broken-Glass Test" \
 echo "  asserting Open Questions Q: format in aggregator.md..."
 assert_grep "aggregator.md should describe Q: question template" \
     "**Q:" prompts/aggregator.md
+echo "  asserting [from: <specialist>] attribution token in aggregator.md..."
+assert_grep "aggregator.md should describe per-line specialist attribution" \
+    "[from: <specialist>]" prompts/aggregator.md
+echo "  asserting probe-format support in aggregator.md..."
+assert_grep "aggregator.md should describe probe rendering path" \
+    "### Probe N" prompts/aggregator.md
 echo "  asserting re-review loop-breaker (Path 2) in aggregator.md..."
 assert_grep "aggregator.md should reference loc-trend.md trigger" \
     "loc-trend.md" prompts/aggregator.md

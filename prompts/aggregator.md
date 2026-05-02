@@ -153,17 +153,31 @@ _<intent line, italicized — see formatting rule below>_
 
 **Strengths** — non-obvious things done right so the author repeats them. Omit this section if none.
 
+**Probe rendering — read each `specialists/<angle>.md` and detect format.**
+
+- If the file contains one or more `### Probe N` blocks (probe format, per `.codex-scratch/probe-schema.md`), render each probe per the schema's § Rendering. Carry `From:` through as `[from: <specialist>]` on the rendered line.
+- If the file contains legacy findings (no `### Probe` headers), render them as before, but inject `[from: <angle>]` immediately after the severity badge on every line. The `<angle>` is the filename stem of the specialist file.
+
+Until every specialist emits probes, the rendered review will be a mix of both formats. Order all rendered items by:
+
+1. `Answer: yes` with `Severity if yes: blocking` (or legacy `[blocking]`)
+2. `Answer: yes` with `Severity if yes: medium` (or legacy `[medium]`)
+3. `Answer: unknown` (probe form only; legacy "Open Questions" items also belong here)
+4. `Answer: yes` with `Severity if yes: low` / `nit` (or legacy `[low]`/`[nit]`)
+
+Drop `Answer: no` probes entirely (footnote allowed: `Probe dropped: <evidence>`).
+
 **Findings**
-1. [blocking|medium|low|nit] <one paragraph, cite Files: path:line, cite the standard violated where applicable (Fail-Fast, Tests, Concise Code, DRY, Narrow-Fix, Spec-Reframe, Migrations)>
+1. [blocking|medium|low|nit] [from: <specialist>] <one paragraph, cite Files: path:line, cite the standard violated where applicable (Fail-Fast, Tests, Concise Code, DRY, Narrow-Fix, Spec-Reframe, Migrations)>
 2. ...
 
 **Open Questions** — homes for legitimate concerns whose remedy is additive enough that the author should answer rather than absorb. Includes critic REFRAME-AS-QUESTION outputs verbatim. Format:
 
-- **Q: <name the choice in 5-10 words>** — <state-trigger sentence>. <If-yes branch.> <If-not branch with cost-naming.> <Optional: recommendation given operating point.>
+- [from: <specialist>] **Q: <name the choice in 5-10 words>** — <state-trigger sentence>. <If-yes branch.> <If-not branch with cost-naming.> <Optional: recommendation given operating point.>
 
 Example:
 
-- **Q: Permanent fourth taxonomy class, or one-off?** — Will we add a 2nd `team-skills/` bundle in the next month? If yes, the taxonomy row pays for itself now. If not, consider cutting the taxonomy demand — adds complexity and makes PMF iteration harder.
+- [from: shape] **Q: Permanent fourth taxonomy class, or one-off?** — Will we add a 2nd `team-skills/` bundle in the next month? If yes, the taxonomy row pays for itself now. If not, consider cutting the taxonomy demand — adds complexity and makes PMF iteration harder.
 
 Open Questions is no longer "padding" — it's the home for reviewer pushback that doesn't rise to a Finding. Don't drop these to keep the review short; questions are the unit of pushback. Cap at quality, not volume — questions that don't meet the template (state-trigger + if-not-branch with cost-naming + optional recommendation) get dropped, same bar as Findings.
 
