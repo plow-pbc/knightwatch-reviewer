@@ -218,8 +218,8 @@ echo "  asserting aggregator applies critic carry-forward verdicts..."
 # unique phrasing rather than a substring that can survive elsewhere.
 assert_grep "aggregator.md should reference critic's Carried-forward findings section" \
     "Carried-forward findings" prompts/aggregator.md
-assert_grep "aggregator.md should apply critic's carry-forward verdict mapping" \
-    "Apply the critic's carry-forward verdict" prompts/aggregator.md
+assert_grep "aggregator.md should defer carry-forward verdicts to the step-1 table" \
+    "same step-1 verdict table below" prompts/aggregator.md
 assert_grep "aggregator.md should fence the K >= 3 fallback to REFRAME-AS-QUESTION on unchanged code" \
     "K ≥ 3 rounds without engagement" prompts/aggregator.md
 
