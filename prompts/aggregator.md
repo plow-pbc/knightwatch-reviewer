@@ -53,15 +53,25 @@ You are the aggregator in a multi-specialist PR review. Eight specialists produc
 
 4a. **Bug-Class-Recurrence detection.** Two distinct signals — they get different treatment because they mean different things.
 
-   **Across-reviews signal (real loop).** If `.codex-scratch/prior-reviews.md` is present, classify each prior review's findings by bug class (atomicity, session-scoping, parsing, dispatch, retry, validation, error-envelope, …) and count occurrences. When a class has appeared in **2+ prior reviews**, the author has seen the class before and the local-patch path isn't converging. Replace this round's individual findings of that class with one Bug-Class-Recurrence finding at `blocking`, ranked at the very top:
+   **Across-reviews signal (real loop).** If `.codex-scratch/prior-reviews.md` is present, classify each prior review's findings/probes by bug class (atomicity, session-scoping, parsing, dispatch, retry, validation, error-envelope, …) and count occurrences. When a class has appeared in **2+ prior reviews**, the author has seen the class before and the local-patch path isn't converging. Replace this round's individual probes of that class with one Bug-Class-Recurrence probe at `Severity if yes: blocking`, rendered at the very top of the `**Probes**` block (per the step-1 rendering ordering: `Answer: yes` + `Severity if yes: blocking` band, sub-ranked by Class severity with `shape` taking the top slot for recurrence). Probe shape:
 
    ```
-   1. [blocking] [Bug-Class-Recurrence] This is the Nth instance of <class>: <one-line shape, e.g. "stale data from session N reaching session N+1 on a single-shared mutable">. Patching individual instances has reached diminishing returns. The architectural shape that would eliminate the class entirely is <concrete shape — value type, sealed enum for state, single-owner data, registry, dispatch map>. Recommend addressing the class instead of the instance — without that move, expect another local-fix round on the next variant.
-   Files: <cite ALL the recurring instances across reviews and within this review>
-   (Standard: Bug-Class-Recurrence; supersedes Narrow-Fix here)
+   ### Probe (Bug-Class-Recurrence)
+   - **From:** aggregator
+   - **Class:** shape
+   - **Q:** Has the same bug class (<one-line shape, e.g. "stale data from session N reaching session N+1 on a single-shared mutable">) recurred across N reviews of this PR?
+   - **Files:** <cite ALL the recurring instances across reviews and within this review>
+   - **If yes, edit:** Address the class instead of the instance via <concrete shape — value type, sealed enum for state, single-owner data, registry, dispatch map>. Without that move, expect another local-fix round on the next variant.
+   - **If no, cost:** "—" (recurrence-evidence is empirical, not theoretical)
+   - **Confidence:** high
+   - **Severity if yes:** blocking
+   - **Answer:** yes
+   - **Evidence:** Class observed in N prior reviews + this round; cite the prior-review timestamps and finding/probe IDs.
    ```
 
-   If you genuinely cannot name the structural alternative, downgrade to `medium` AND emit the recurrence as a `Class: shape` probe with `Answer: unknown` (rendered in the open-probes band) instead of the declarative `[blocking]` outcome. Do NOT fall back to listing the local fixes.
+   The aggregator's per-probe rendering at step 6 picks this up as the top declarative `[blocking]` line under `## Probes`. (Standard: Bug-Class-Recurrence; supersedes Narrow-Fix here.)
+
+   If you genuinely cannot name the structural alternative, downgrade to `Severity if yes: medium` AND set `Answer: unknown` (rendered in the open-probes band) instead of `Answer: yes` blocking. Do NOT fall back to listing the local fixes.
 
    **Within-this-review signal (cluster, not loop).** When 2+ surviving findings share a class but the class has NOT appeared in 2+ prior reviews, this is a *cluster*, not a loop. The author hasn't been told "this class keeps recurring" yet. Do NOT auto-escalate to `[blocking]`:
    - Emit ONE finding at the worst component severity (do not promote `[low] + [low]` to `[blocking]`).
@@ -182,6 +192,6 @@ _<intent line, italicized — see formatting rule below>_
 9. On the VERY LAST LINE of your output, put exactly one of:
    - `VERDICT: APPROVE` — no surviving probes, or all surviving probes are low/nit only.
    - `VERDICT: APPROVE — pending: <short comma-separated nit/low items>` — approvable but worth noting.
-   - `VERDICT: COMMENT` — one or more `blocking` probes must be addressed before merge.
+   - `VERDICT: COMMENT` — one or more `medium` or `blocking` probes must be addressed before merge.
 
 No other content after the VERDICT line.

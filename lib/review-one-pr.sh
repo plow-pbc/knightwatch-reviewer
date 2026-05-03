@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Reviews one PR end-to-end. Invoked by review.sh as:
 #   TRIGGER_COMMENT_FILE=<path> lib/review-one-pr.sh REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR
 # where FORCE_WHOLE_PR is "true" or "false". TRIGGER_COMMENT_FILE is
@@ -950,7 +950,7 @@ write_scratch "$REPO_DIR" "standards.md"       "$STANDARDS"
 # is fail-fast — same shape as build_aggregator_prompt's voice.md handling
 # (lib/prompt-build.sh:64); a missing prompt means an incomplete deploy, not
 # "operator opted out."
-PROBE_SCHEMA_PATH="$HOME/.pr-reviewer/prompts/probe-schema.md"
+PROBE_SCHEMA_PATH="${PROMPTS_DIR:-$HOME/.pr-reviewer/prompts}/probe-schema.md"
 if [ ! -f "$PROBE_SCHEMA_PATH" ]; then
     log "$PR_ID: probe-schema.md missing at $PROBE_SCHEMA_PATH — incomplete install — aborting"
     rm -rf "$REPO_DIR"

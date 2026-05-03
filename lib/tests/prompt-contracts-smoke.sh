@@ -234,6 +234,35 @@ assert_grep "aggregator.md should fence the union-of-current-and-carried-forward
     "union of current and carried-forward" prompts/aggregator.md
 
 # ====================================================================
+# Section 1.5: systemd-chain shebang security
+# ====================================================================
+# Security fence: scripts launched directly by systemd ExecStart, or
+# exec'd from those scripts, MUST use the absolute `#!/bin/bash`
+# shebang — NOT `#!/usr/bin/env bash`. The reviewer service grants
+# write access to /home/odio/.local and puts it first in PATH; an
+# attacker-placed `~/.local/bin/bash` would be exec'd via env-bash
+# resolution. Sourced helpers (lib/orchestrate.sh, lib/critic-splitter.sh,
+# lib/run-dir.sh, etc.) have no exec-time shebang lookup, so their
+# shebang is documentation only and not fenced here.
+echo "  asserting systemd-chain scripts use absolute /bin/bash shebang..."
+SYSTEMD_CHAIN_SCRIPTS=(
+    review.sh
+    learn-from-replies.sh
+    approve-from-replies.sh
+    plow-kid-refresh.sh
+    re-request-poller.sh
+    lib/review-one-pr.sh
+    lib/run-specialist.sh
+)
+for script in "${SYSTEMD_CHAIN_SCRIPTS[@]}"; do
+    first_line=$(head -1 "$script")
+    if [ "$first_line" != "#!/bin/bash" ]; then
+        echo "FAIL: $script has shebang '$first_line' — must be '#!/bin/bash' (env-bash on systemd-launched/exec'd scripts is a PATH-attack vector via writable ~/.local/bin)"
+        exit 1
+    fi
+done
+
+# ====================================================================
 # Section 2: orchestrator wiring (formerly momentum-wire-smoke.sh)
 # ====================================================================
 

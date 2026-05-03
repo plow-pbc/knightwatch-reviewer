@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Refresh kid indexes for all tracked review repos. Runs hourly via the
 # pr-reviewer-kid-refresh.timer systemd unit. No-op per-project when
 # origin/main has no new commits. If a project has never been indexed,

@@ -133,15 +133,24 @@ for f in review-priority.md decline-history.md loc-trend.md \
          product-context.md test-results.md; do
     write_scratch "$REPO_DIR" "$f" "(replay: not staged — upstream pipeline stage skipped)"
 done
-# standards.md gets real content from this repo's prompts/ so the
-# specialists have something to grade against.
-STANDARDS_CONTENT=""
-if [ -f "$LIB_DIR/../prompts/standards.md" ]; then
-    STANDARDS_CONTENT="$(cat "$LIB_DIR/../prompts/standards.md")"
-elif [ -f "$LIB_DIR/../prompts/probe-schema.md" ]; then
-    STANDARDS_CONTENT="$(cat "$LIB_DIR/../prompts/probe-schema.md")"
+# standards.md content lives in operator-private ~/.claude/CODING_STANDARDS.md
+# in production (review-one-pr.sh:677). Replay can't rely on that — try the
+# operator's home tree if available, otherwise mark as unstaged like the
+# other deferred inputs above. The PROBE-SCHEMA fallback was incorrect
+# (probe-schema is shape, not standards content).
+STANDARDS_CONTENT="(replay: not staged — set ~/.claude/CODING_STANDARDS.md to ground specialists)"
+if [ -f "$HOME/.claude/CODING_STANDARDS.md" ]; then
+    STANDARDS_CONTENT="$(cat "$HOME/.claude/CODING_STANDARDS.md")"
 fi
 write_scratch "$REPO_DIR" "standards.md" "$STANDARDS_CONTENT"
+
+# probe-schema.md is the canonical Class-options + render contract; specialists
+# + critic + aggregator all reference .codex-scratch/probe-schema.md by name.
+# Stage from prompts/ so replay sees the same shape production does.
+PROBE_SCHEMA_SRC="${PROMPTS_DIR:-$LIB_DIR/../prompts}/probe-schema.md"
+if [ -f "$PROBE_SCHEMA_SRC" ]; then
+    write_scratch "$REPO_DIR" "probe-schema.md" "$(cat "$PROBE_SCHEMA_SRC")"
+fi
 
 PR_ID="$REPO#$PR"
 PR_TITLE="$(gh pr view "$PR" --repo "$REPO" --json title --jq .title)"
