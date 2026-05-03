@@ -67,14 +67,14 @@ split_critic_to_specialists() {
             }
         }
         END { flush() }
-    ' "$critic_md"
+    ' "$critic_md" || return 1
 
     # Pass 1.5: extract "## Generated probes" section to specialists/critic.md.
     awk -v out_file="$specialists_dir/critic.md" '
         /^## Generated probes/ { in_gen = 1; next }
         /^## / && in_gen { in_gen = 0 }
         in_gen { print > out_file }
-    ' "$critic_md"
+    ' "$critic_md" || return 1
 
     # Pass 2: for each .angle-buf, append to specialists/<angle>.md under
     # a "## Critic counter-arguments" H2. Replaces the file (which is
@@ -99,13 +99,13 @@ split_critic_to_specialists() {
             missing_targets=$((missing_targets + 1))
             continue
         fi
-        original=$(cat "$target")
+        original=$(cat "$target") || return 1
         rm -f "$target"
         {
             printf '%s\n\n---\n\n## Critic counter-arguments\n\n' "$original"
             cat "$f"
             printf '\n'
-        } > "$target"
+        } > "$target" || return 1
         rm -f "$f"
     done
     [ "$missing_targets" -eq 0 ]

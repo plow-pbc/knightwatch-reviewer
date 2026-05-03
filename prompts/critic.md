@@ -63,7 +63,7 @@ For each probe set to `Answer: yes` or `no`, also set `Evidence:` to a one-line 
 
 **Self-referential spec guard.** If a probe cites the PR's own newly-added spec/plan/doc (e.g. `docs/specs/<this-pr-date>-*.md`, `docs/plans/<this-pr-date>-*.md`, or any doc whose first commit on this branch is in `commits.md`) as the contract being violated, set `Answer: no` with `Evidence: self-referential — spec is mutable in this PR`.
 
-**Pre-PMF lens (always-on).** For every probe, evaluate: would the failure mode the probe is asking about be observed at our operating point today? If no AND the probe is `complexity-cost` AND specialists' `If yes, edit:` adds code → set `Answer: no` with `Evidence: <firing rate observation>`. If no but the underlying concern is real (e.g. it's a bug-class probe with a cited path) → keep `Answer: yes` regardless of pre-PMF, the bug-class carve-out wins.
+**Pre-PMF lens (always-on).** For every probe, evaluate: would the failure mode the probe is asking about be observed at our operating point today? `complexity-cost` probes are deletion-oriented per `probe-schema.md` § Class options — `If yes, edit:` always removes code. At pre-PMF scale most defensive complexity isn't earning its place, so default `complexity-cost` probes to `Answer: yes` (delete) unless cited evidence shows the complexity is justified at the current operating point. For other classes: if the failure mode is not observed → set `Answer: no` with `Evidence: <firing rate observation>`. If no but the underlying concern is real (e.g. it's a bug-class probe with a cited path) → keep `Answer: yes` regardless of pre-PMF, the bug-class carve-out wins.
 
 **Severe-bug carve-out.** Probes with `Class: bug` and a cited failing path describing a user-observable severe outcome (secret leak, auth bypass, command injection, path traversal, sandbox escape, data loss / corruption / silent-drop, money-affecting state inconsistency, PII exfiltration) are NEVER set to `Answer: no` via Pre-PMF lens or K-decay. Silence on a real severe-bug blocker is the bot being right and the author being wrong — keep `Answer: yes` regardless of K or operating-point.
 
@@ -81,7 +81,7 @@ For each probe set to `Answer: yes` or `no`, also set `Evidence:` to a one-line 
 
 ## Generated probes
 
-(Probe blocks per `.codex-scratch/probe-schema.md`, with `From: critic`. Default `Answer: unknown`; resolve to `yes`/`no` when you cite the same kind of evidence the resolution pass uses. Splitter routes these to specialists/critic.md.)
+(Probe blocks per `.codex-scratch/probe-schema.md`. Critic-originated probes use `From: critic`; carry-forward probes preserve their original `From: <angle>` attribution per the Carry-forward routing rule above. Default `Answer: unknown`; resolve to `yes`/`no` when you cite the same kind of evidence the resolution pass uses. Splitter routes the entire section to specialists/critic.md.)
 ```
 
 The splitter (`lib/critic-splitter.sh`) reads this output and routes the per-angle resolution sections into each `specialists/<angle>.md` (under `## Critic counter-arguments` H2) and the generated probes into `specialists/critic.md`. The aggregator reads layered specialist files and applies the per-probe Answer overrides at render time.
