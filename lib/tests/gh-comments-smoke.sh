@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Smoke for fetch_issue_comments (lib/gh-comments.sh).
 #
 # This helper is the shared seam three orchestrator-level scripts go

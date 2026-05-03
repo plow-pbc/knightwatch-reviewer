@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Sourceable helpers for assembling prompts.
 #
 # `safe_sed`: escape a string for use as a sed replacement.
@@ -38,7 +38,7 @@ substitute_placeholders() {
 
 build_specialist_prompt() {
     local specialist_name="$1" specialist_file="$2" pr_id="$3" pr_title="$4" pr_url="$5" pr_author="$6"
-    local common="$HOME/.pr-reviewer/prompts/common-header.md"
+    local common="${PROMPTS_DIR:-$HOME/.pr-reviewer/prompts}/common-header.md"
     {
         substitute_placeholders "$common" "$pr_id" "$pr_title" "$pr_url" "$pr_author" "$specialist_name"
         echo ""
@@ -63,8 +63,9 @@ build_specialist_prompt() {
 # an incomplete deploy, not "operator opted out."
 build_aggregator_prompt() {
     local pr_id="$1" pr_title="$2" pr_url="$3" pr_author="$4"
-    local aggregator="$HOME/.pr-reviewer/prompts/aggregator.md"
-    local voice="$HOME/.pr-reviewer/prompts/voice.md"
+    local prompts_dir="${PROMPTS_DIR:-$HOME/.pr-reviewer/prompts}"
+    local aggregator="$prompts_dir/aggregator.md"
+    local voice="$prompts_dir/voice.md"
     if [ ! -f "$voice" ]; then
         printf 'build_aggregator_prompt: voice.md missing at %s — incomplete install\n' "$voice" >&2
         return 1
@@ -100,13 +101,21 @@ build_aggregator_prompt() {
     # the operator's surface — read it as data; awk does no expansion.
     # Substitution of placeholders (including {{OPERATOR_NAME}} which
     # voice.md uses) runs on the combined text afterwards.
+    # BSD awk (macOS default) rejects newlines inside -v values; use a
+    # tempfile + getline so this works on both BSD awk and gawk without
+    # adding a gawk dependency.
+    local voice_tmp
+    voice_tmp=$(mktemp)
+    printf '%s' "$voice_body" > "$voice_tmp"
     local stitched
-    stitched=$(awk -v voice_body="$voice_body" '
+    stitched=$(awk -v vfile="$voice_tmp" '
         /INSERT_VOICE_HERE/ {
-            print voice_body
+            while ((getline line < vfile) > 0) print line
+            close(vfile)
             next
         }
         { print }
     ' "$aggregator")
+    rm -f "$voice_tmp"
     substitute_placeholders <(printf '%s' "$stitched") "$pr_id" "$pr_title" "$pr_url" "$pr_author"
 }

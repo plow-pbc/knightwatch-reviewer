@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Smoke for the deterministic strict-typing checkers under lib/checks/.
 # Helpers run inside REPO_DIR (the PR's working tree) and follow the
 # tri-state contract dispatched in lib/review-one-pr.sh:

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Detects whether the working dir's Python project enforces strict typing.
 #
 # Usage: python-strict-typing.sh [PROJECT_DIR]

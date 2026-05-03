@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Sourceable helper for allocating a per-run dir. Lives outside
 # review-one-pr.sh so the regression smoke can exercise the same
 # function the worker calls (instead of testing a copy).

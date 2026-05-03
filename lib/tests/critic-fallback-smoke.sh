@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Smoke for critic_fallback (lib/agent-fallback.sh).
 #
 # The critic step is the only agent the review pipeline tolerates a failure

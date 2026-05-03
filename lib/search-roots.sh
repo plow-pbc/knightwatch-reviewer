@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Coverage-state seam for cross-repo grep — whitelist-only.
 #
 # stage_search_roots is the single worker-owned helper that classifies

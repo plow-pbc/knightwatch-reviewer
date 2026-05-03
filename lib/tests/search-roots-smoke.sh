@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Smoke for lib/search-roots.sh — whitelist-only contract with
 # per-repo .knightwatch/siblings as the primary source of truth.
 #

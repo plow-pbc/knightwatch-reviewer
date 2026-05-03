@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Smoke for the unified deterministic-registry rendering path:
 #   prepend_review_header COMMENT_BODY NOTE [NOTE...]
 #   format_review_scope SCOPE  (scope-token → human-readable fragment)

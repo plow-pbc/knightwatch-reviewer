@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Smoke test for lib/run-specialist.sh.
 #
 # Locks down the artifact contract the per-run logging relies on:

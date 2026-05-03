@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Sourceable helper for fetching operator decline replies from a PR's
 # comment thread. Output is fed to the critic prompt as
 # .codex-scratch/decline-history.md so the critic has prior pushback as

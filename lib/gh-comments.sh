@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Sourceable helper for fetching all issue-level comments on a PR.
 #
 # fetch_issue_comments REPO PR_NUM

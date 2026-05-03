@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Author-trust gating. Two callers in this codebase grant trust to GitHub
 # usernames who can ride into the review pipeline:
 #

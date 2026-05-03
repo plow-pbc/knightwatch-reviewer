@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Smoke for lib/review-one-pr.sh — fences the orchestrator/worker SHA race.
 #
 # When the orchestrator enumerates a PR via `gh pr list` it captures

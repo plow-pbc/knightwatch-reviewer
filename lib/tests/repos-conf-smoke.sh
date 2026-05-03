@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Manifest contract smoke — the SINGLE suite that exercises every
 # repos.conf consumer plus install.sh from one shared fixture.
 # Replaces the previous patch-by-patch approach where each consumer

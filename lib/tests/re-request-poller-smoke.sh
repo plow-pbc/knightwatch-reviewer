@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Smoke test for re-request-poller.sh.
 #
 # Closes the runtime-coverage gap on the manifest consumer that

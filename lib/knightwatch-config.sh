@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Per-repo config seam. Reads .knightwatch/<file> from the repo's base
 # branch via `git show`. Trust model: base branch only — PR head edits
 # don't take effect until merged.

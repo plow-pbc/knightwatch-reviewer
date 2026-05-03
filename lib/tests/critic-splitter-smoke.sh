@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Smoke for split_critic_to_specialists (lib/critic-splitter.sh).
 #
 # Contracts:

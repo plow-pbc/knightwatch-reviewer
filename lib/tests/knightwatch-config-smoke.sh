@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Smoke for lib/knightwatch-config.sh::read_knightwatch_file.
 #
 # Three invariants:
