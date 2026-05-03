@@ -158,21 +158,19 @@ fi
 STUB
 chmod +x "$HOME/.local/bin/gh"
 
-# Stub `timeout`. review.sh fans out workers via `timeout
-# "$WORKER_TIMEOUT" worker.sh ... &` (review.sh:290) — that's GNU
-# coreutils on Linux production. macOS doesn't ship `timeout` at all,
-# so without this stub the worker is never executed and every dispatch
-# scenario fails with "got 0". The stub parses GNU duration suffixes
-# (Ns / Nm / N) and uses bash to enforce kill-on-timeout, so scenario
-# 12 (WORKER_TIMEOUT=2s on a sleep-10s worker) still gets real
-# behavior, not a passthrough.
-# Stub `flock`. macOS doesn't ship util-linux flock(1); python3
-# fcntl.flock(2) provides the same OFD-tied advisory-lock semantics,
-# so lib/locking.sh's `exec {PR_LOCK_FD}> file; flock -n PR_LOCK_FD`
-# pattern survives parent-shell exit identically. Production runs on
-# Linux with the real flock binary; this stub is only for `just test`
-# on a Mac dev box (scenario 10 — per-PR mutex contract).
-cat > "$HOME/.local/bin/flock" <<'STUB'
+# Stub `flock` and `timeout` ONLY when missing — review.sh's fan-out
+# (`timeout "$WORKER_TIMEOUT" worker.sh ... &` at review.sh:297) and
+# lib/locking.sh's `flock -n FD` are real production deps on Linux.
+# Same `command -v` gate pattern lib/review-one-pr.sh:624 uses for
+# `just`. On Linux production: real /usr/bin/timeout + /usr/bin/flock
+# are used and `just test` keeps proving the production wiring works.
+# On macOS dev: stubs fill the gap (no `timeout(1)`; util-linux's
+# brew formula explicitly excludes `flock(1)`). The stubs match real
+# semantics — flock via python3 fcntl.flock(2) for OFD-tied locks
+# (lib/locking.sh:29-30 still survives parent-shell exit), timeout via
+# bash for real kill-on-timeout (scenario 12: WORKER_TIMEOUT=2s).
+if ! command -v flock >/dev/null 2>&1; then
+    cat > "$HOME/.local/bin/flock" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
     -n) shift; fd="$1" ;;
@@ -187,9 +185,11 @@ except BlockingIOError:
     sys.exit(1)
 PY
 STUB
-chmod +x "$HOME/.local/bin/flock"
+    chmod +x "$HOME/.local/bin/flock"
+fi
 
-cat > "$HOME/.local/bin/timeout" <<'STUB'
+if ! command -v timeout >/dev/null 2>&1; then
+    cat > "$HOME/.local/bin/timeout" <<'STUB'
 #!/usr/bin/env bash
 dur_raw="$1"; shift
 case "$dur_raw" in
@@ -206,7 +206,8 @@ rc=$?
 kill "$sleeper" 2>/dev/null
 exit "$rc"
 STUB
-chmod +x "$HOME/.local/bin/timeout"
+    chmod +x "$HOME/.local/bin/timeout"
+fi
 
 # Sandbox lib dir: real state-io.sh + auth.sh, stub worker that logs the
 # dispatch (including the trigger-comment file path so trust-gate
