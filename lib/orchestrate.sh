@@ -166,9 +166,12 @@ run_specialist_pipeline() {
         fi
         ln -sfn "$RUN_DIR/agents/$angle/output.md" "$SPECIALISTS_DIR/${angle}.md"
         LINES=$(wc -l < "$SPECIALISTS_DIR/${angle}.md")
-        NO_FINDINGS=""
-        grep -q '^No findings\.' "$SPECIALISTS_DIR/${angle}.md" && NO_FINDINGS=" (no findings)"
-        log "$PR_ID: specialist=$angle lines=$LINES$NO_FINDINGS"
+        NO_PROBES=""
+        # common-header.md § Rules 3 mandates `No probes.` as the empty-output
+        # marker (probe-as-unit contract). Mismatch here would silently drop
+        # the "(no probes)" tag from the per-specialist log line.
+        grep -q '^No probes\.' "$SPECIALISTS_DIR/${angle}.md" && NO_PROBES=" (no probes)"
+        log "$PR_ID: specialist=$angle lines=$LINES$NO_PROBES"
     done
     if [ "$SPECIALIST_FAILURE" -ne 0 ]; then
         log "$PR_ID: at least one specialist failed — aborting review"

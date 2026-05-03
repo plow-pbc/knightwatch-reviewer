@@ -346,4 +346,14 @@ echo "  asserting orchestrate.sh is sourced from review-one-pr.sh..."
 assert_grep "review-one-pr.sh does not source lib/orchestrate.sh" \
     'orchestrate.sh' lib/review-one-pr.sh
 
+# R27 F#1a — the no-output marker MUST agree between common-header.md
+# (where specialists are told what to emit) and orchestrate.sh (where
+# the log scanner counts it). A mismatch silently drops the per-
+# specialist "(no probes)" tag from the run log.
+echo "  asserting common-header 'No probes.' marker matches orchestrate.sh log scanner..."
+assert_grep "common-header.md should mandate 'No probes.' marker" \
+    "No probes." prompts/common-header.md
+assert_grep "orchestrate.sh should grep for the same 'No probes.' marker" \
+    "^No probes\\." "$ORCHESTRATE"
+
 echo "  PASS"
