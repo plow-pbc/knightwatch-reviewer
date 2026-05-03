@@ -1,34 +1,18 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# Hermetic smoke for replay's header-stitching path. The full real-replay
+# path (clone → diff → stage → pipeline) needs live gh + codex, which we
+# don't run in `just test`; the header-stitching logic is what makes a
+# replay output recognizable as a replay output, so that's what we cover
+# here. Sources run-dir.sh to get prepend_review_header and drives it
+# with synthetic aggregator output, mirroring what replay.sh does
+# post-pipeline.
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
-# Dry-run mode: pass --dry-run to skip codex; assert the prep steps work.
-"$REPO_ROOT/lib/replay.sh" --dry-run \
-  --repo srosro/knightwatch-reviewer \
-  --pr 43 \
-  --sha HEAD \
-  --output-dir "$TMPDIR/replay-out"
-
-# Assertions
-test -d "$TMPDIR/replay-out" || { echo "FAIL: output dir not created"; exit 1; }
-test -s "$TMPDIR/replay-out/diff.patch" || { echo "FAIL: diff.patch not written"; exit 1; }
-test -s "$TMPDIR/replay-out/manifest.json" || { echo "FAIL: manifest.json not written"; exit 1; }
-
-# Validate manifest.json content
-jq -e '.repo == "srosro/knightwatch-reviewer" and .pr == 43 and .sha == "HEAD" and .dry_run == true' \
-    "$TMPDIR/replay-out/manifest.json" >/dev/null \
-    || { echo "FAIL: manifest.json content invalid"; exit 1; }
-
-echo "OK: replay-smoke (dry-run)"
-
-# Scenario 2: .knightwatch/-absent note appears in aggregator output.
-# Tests the stitching logic in isolation — sources run-dir.sh to get
-# prepend_review_header and drives it with synthetic aggregator output,
-# mirroring what replay.sh does post-pipeline. Observable: the note
-# text appears in the final output file.
-echo "  scenario 2: .knightwatch/-absent — note appears in aggregator output..."
+# Scenario 1: .knightwatch/-absent → note appears in aggregator output.
+echo "  scenario 1: .knightwatch/-absent — note appears in aggregator output..."
 (
     set +u
     . "$REPO_ROOT/lib/run-dir.sh"
@@ -41,12 +25,12 @@ echo "  scenario 2: .knightwatch/-absent — note appears in aggregator output..
     printf '%s\n' "$STITCHED" > "$TMPDIR/absent-out.md"
 )
 grep -qF "⚙️ No .knightwatch/ config (review using defaults)" "$TMPDIR/absent-out.md" \
-    || { echo "FAIL scenario 2: absent-note not found in output"; cat "$TMPDIR/absent-out.md"; exit 1; }
+    || { echo "FAIL scenario 1: absent-note not found in output"; cat "$TMPDIR/absent-out.md"; exit 1; }
 grep -qF "🎬 Replay of" "$TMPDIR/absent-out.md" \
-    || { echo "FAIL scenario 2: replay scope note not found in output"; exit 1; }
+    || { echo "FAIL scenario 1: replay scope note not found in output"; exit 1; }
 
-# Scenario 3: .knightwatch/-present — absent note must NOT appear.
-echo "  scenario 3: .knightwatch/-present — absent note not in aggregator output..."
+# Scenario 2: .knightwatch/-present → absent note must NOT appear.
+echo "  scenario 2: .knightwatch/-present — absent note not in aggregator output..."
 (
     set +u
     . "$REPO_ROOT/lib/run-dir.sh"
@@ -59,11 +43,11 @@ echo "  scenario 3: .knightwatch/-present — absent note not in aggregator outp
     printf '%s\n' "$STITCHED" > "$TMPDIR/present-out.md"
 )
 if grep -qF "⚙️ No .knightwatch/ config" "$TMPDIR/present-out.md"; then
-    echo "FAIL scenario 3: absent-note should not appear when .knightwatch/ is present"
+    echo "FAIL scenario 2: absent-note should not appear when .knightwatch/ is present"
     cat "$TMPDIR/present-out.md"
     exit 1
 fi
 grep -qF "🎬 Replay of" "$TMPDIR/present-out.md" \
-    || { echo "FAIL scenario 3: replay scope note not found in output"; exit 1; }
+    || { echo "FAIL scenario 2: replay scope note not found in output"; exit 1; }
 
 echo "OK: replay-smoke (absent-note appears; present-note suppressed)"

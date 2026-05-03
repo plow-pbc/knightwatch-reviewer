@@ -3,11 +3,7 @@
 #
 # Usage:
 #   ./lib/replay.sh --repo OWNER/REPO --pr N --sha SHA \
-#                   [--prompts DIR] [--output-dir PATH] [--dry-run]
-#
-# Modes:
-#   default: runs the full LLM pipeline (codex) against the historical SHA
-#   --dry-run: prepares the input scratch dir + manifest, skips codex
+#                   [--prompts DIR] [--output-dir PATH]
 #
 # Trust boundary — read before running:
 #   This tool runs OUTSIDE the production systemd lockbox. It clones the
@@ -24,7 +20,6 @@
 
 set -euo pipefail
 
-DRY_RUN=0
 REPO=""; PR=""; SHA=""; OUT=""
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -40,13 +35,12 @@ while [ $# -gt 0 ]; do
             export PROMPTS_DIR="$2"
             shift 2
             ;;
-        --dry-run) DRY_RUN=1; shift ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
 
 [ -n "$REPO" ] && [ -n "$PR" ] && [ -n "$SHA" ] || {
-    echo "usage: $0 --repo OWNER/REPO --pr N --sha SHA [--prompts DIR] [--output-dir PATH] [--dry-run]" >&2
+    echo "usage: $0 --repo OWNER/REPO --pr N --sha SHA [--prompts DIR] [--output-dir PATH]" >&2
     exit 2
 }
 # Default OUT includes a prompt-set slug so back-to-back A/B runs against
@@ -65,18 +59,10 @@ jq -n \
   --argjson pr "$PR" \
   --arg sha "$SHA" \
   --arg prompts_dir "${PROMPTS_DIR:-$HOME/.pr-reviewer/prompts}" \
-  --argjson dry_run "$DRY_RUN" \
-  '{repo: $repo, pr: $pr, sha: $sha, prompts_dir: $prompts_dir, replayed_at: (now | todate), dry_run: ($dry_run == 1)}' \
+  '{repo: $repo, pr: $pr, sha: $sha, prompts_dir: $prompts_dir, replayed_at: (now | todate)}' \
   > "$OUT/manifest.json"
 
-if [ "$DRY_RUN" -eq 1 ]; then
-    # Dry-run: prep scratch and fallback to gh pr diff (not historical)
-    gh pr diff "$PR" --repo "$REPO" --patch > "$OUT/diff.patch"
-    echo "dry-run: scratch prepared at $OUT"
-    exit 0
-fi
-
-# Real replay: stage the same .codex-scratch inputs run_specialist_pipeline reads,
+# Stage the same .codex-scratch inputs run_specialist_pipeline reads,
 # then invoke run_specialist_pipeline against a fresh checkout at $SHA. The post-
 # pipeline gh-posting step is deliberately skipped — we only want the rendered review.
 LIB_DIR="$(cd "$(dirname "$0")" && pwd)"
