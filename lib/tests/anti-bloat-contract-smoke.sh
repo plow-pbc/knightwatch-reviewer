@@ -140,7 +140,12 @@ assert_grep "common-header.md should describe complexity-cost probe expectation"
 # public PR comment. Fence the absence; the regression-fix is to keep
 # only owner/repo#num + URL.
 echo "  asserting linked-issue staging does NOT call 'gh issue view'..."
-if grep -nE '^[[:space:]]*[A-Z_]+=\$\(gh issue view |^[[:space:]]*gh issue view ' lib/review-one-pr.sh; then
+# Plain fixed-string match — catches any executable form (with/without
+# quotes, casing, whitespace, $(...) vs backticks). The earlier regex
+# (R11) only caught `TITLE=$(gh issue view ...)` and missed common
+# variants like `TITLE="$(gh issue view ...)"` or lowercase
+# assignments — bot R12 caught the gap.
+if grep -nF 'gh issue view' lib/review-one-pr.sh; then
     echo "FAIL: lib/review-one-pr.sh calls 'gh issue view' — linked-issue title/body minimization regressed (R9 + R10)"
     exit 1
 fi
