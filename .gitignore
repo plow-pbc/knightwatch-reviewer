@@ -228,3 +228,12 @@ learn.log*
 plow-kid-refresh.log
 kid-last-failure
 .keepitdry/
+
+# Replay-tool artifacts: keep aggregator/specialist/critic outputs,
+# drop agent prompt.txt + log.txt (regenerable + huge) and agents-on-exit/
+# (debug-only, mirror of agents/).
+replays/comparison/**/agents/*/prompt.txt
+replays/comparison/**/agents/*/log.txt
+replays/comparison/**/agents-on-exit/
+replays/comparison/**/run-dir/agents/*/prompt.txt
+replays/comparison/**/run-dir/agents/*/log.txt
