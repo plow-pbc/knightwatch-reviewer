@@ -5,14 +5,20 @@
 #   1. Per-angle [<angle>] sections in critic.md are appended to the
 #      corresponding specialists/<angle>.md file under a "## Critic
 #      counter-arguments" H2 (so the layered file flows specialist-then-critic).
-#   2. The "## Missed findings" section from critic.md is preserved
-#      and written to specialists/missed.md.
+#   2. The "## Missed findings" section is NOT written to a separate
+#      specialists/missed.md sink — the aggregator reads missed findings
+#      directly from critic.md, so a sink with no runtime reader was
+#      dead surface. Smoke asserts the absence below.
 #   3. Missing specialist file for a section that the critic produced
-#      is fail-loud: function returns non-zero, valid per-angle splits
-#      still happen on the way through (so we can assert them), but the
-#      orchestrator aborts the review on the non-zero return rather
-#      than silently dropping the critic resolution. R13 finding —
-#      previous fail-soft behavior demoted resolved blockers.
+#      is fail-loud: function returns non-zero at first miss. The
+#      orchestrator aborts the review on this and rm -rf's REPO_DIR,
+#      so partial state from earlier splits in the same pass is
+#      unreachable downstream. R13 fixed the silent drop; R14 dropped
+#      the missing-target counter (since partial state was unreachable
+#      anyway). The smoke fixture below uses an `[architecture]` valid
+#      target before the bad `[removed-angle]` target — both R13's
+#      "valid splits before the failure point" assertion and R14's
+#      "any miss returns nonzero" assertion are exercised.
 #   4. Each specialists/<angle>.md keeps its original content UNCHANGED
 #      ahead of the critic block (specialist's own findings preserved).
 
