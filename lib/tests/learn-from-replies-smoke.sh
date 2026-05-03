@@ -38,6 +38,10 @@ mkdir -p "$CLAUDE_DIR"
 
 export HOME="$TMPDIR/home"
 mkdir -p "$HOME/.local/bin"
+# Production no longer prepends $HOME/.local/bin to PATH (writable-PATH
+# attack vector — d42946b / R26 F#1). Smoke prepends here so its gh
+# stub resolves.
+export PATH="$HOME/.local/bin:$PATH"
 
 export STUB_PR_LIST_LOG="$STATE_DIR/gh-pr-list.log"
 export MOCK_COMMENTS_FILE="$TMPDIR/comments.json"
