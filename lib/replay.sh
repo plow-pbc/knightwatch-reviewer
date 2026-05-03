@@ -49,7 +49,12 @@ done
     echo "usage: $0 --repo OWNER/REPO --pr N --sha SHA [--prompts DIR] [--output-dir PATH] [--dry-run]" >&2
     exit 2
 }
-OUT="${OUT:-replays/${REPO//\//-}-${PR}-${SHA:0:7}}"
+# Default OUT includes a prompt-set slug so back-to-back A/B runs against
+# the same repo/PR/SHA don't clobber each other's manifest.json /
+# aggregator-output.md / agents/. Operator-supplied --output-dir is
+# respected verbatim.
+PROMPT_SLUG="$(basename "${PROMPTS_DIR:-default}" | tr -c 'A-Za-z0-9' '_')"
+OUT="${OUT:-replays/${REPO//\//-}-${PR}-${SHA:0:7}-${PROMPT_SLUG}}"
 mkdir -p "$OUT"
 
 # Manifest captures replay provenance — deterministic spot-check input.
@@ -82,6 +87,7 @@ LIB_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$LIB_DIR/critic-splitter.sh"
 . "$LIB_DIR/go-deep-rank.sh"
 . "$LIB_DIR/orchestrate.sh"
+. "$LIB_DIR/scratch.sh"
 
 WORK="$(mktemp -d)"
 # On exit, preserve per-agent log.txt files for post-mortem before
@@ -118,21 +124,39 @@ git -C "$WORK/repo" diff "origin/$BASE_REF...$SHA" > "$OUT/diff.patch"
 
 REPO_DIR="$WORK/repo"
 RUN_DIR="$WORK/run"
-mkdir -p "$RUN_DIR/agents" "$REPO_DIR/.codex-scratch"
-cp "$OUT/diff.patch" "$REPO_DIR/.codex-scratch/diff.patch"
+mkdir -p "$RUN_DIR/agents"
+# Redirect-safe staging: a PR checkout could commit .codex-scratch as a
+# symlink to a writable path; mkdir -p would follow it and subsequent
+# writes would escape the checkout. Wipe-and-recreate matches production
+# (lib/review-one-pr.sh:446-453).
+rm -rf "$REPO_DIR/.codex-scratch"
+mkdir -p "$REPO_DIR/.codex-scratch"
 
-# Minimal scratch staging — most prompts fail-soft on empty inputs.
-# Real replay fidelity (full staging matching review-one-pr.sh's write_scratch
-# seam) is a tracked follow-up; this is the floor that lets the pipeline boot.
-for f in standards.md review-priority.md decline-history.md loc-trend.md \
+# Stage scratch via the same write_scratch primitive production uses
+# (lib/scratch.sh) so paths and symlink shape match. Prompts cite paths
+# like .codex-scratch/standards.md; using the same writer is the only
+# way prompt A/B replays produce production-comparable output.
+#
+# Replay can't reproduce inputs that depend on running upstream pipeline
+# stages (KID prior-art, decline-history from state, sibling-repo
+# context). Stage those with explicit "(replay: not staged …)" markers
+# so downstream prompts can fail-soft and the operator sees the gap.
+write_scratch "$REPO_DIR" "diff.patch" "$(cat "$OUT/diff.patch")"
+for f in review-priority.md decline-history.md loc-trend.md \
          prior-art.md dead-code-static.md prior-reviews.md previous-review.md \
-         file-history.md commits.md author-intent.md search-roots.md; do
-    : > "$REPO_DIR/.codex-scratch/$f"
+         file-history.md commits.md author-intent.md search-roots.md \
+         product-context.md test-results.md; do
+    write_scratch "$REPO_DIR" "$f" "(replay: not staged — upstream pipeline stage skipped)"
 done
-# standards.md needs real content — copy from current repo
-cp "$LIB_DIR/../prompts/probe-schema.md" "$REPO_DIR/.codex-scratch/standards.md" 2>/dev/null \
-    || cp "$LIB_DIR/../prompts/standards.md" "$REPO_DIR/.codex-scratch/standards.md" 2>/dev/null \
-    || true
+# standards.md gets real content from this repo's prompts/ so the
+# specialists have something to grade against.
+STANDARDS_CONTENT=""
+if [ -f "$LIB_DIR/../prompts/standards.md" ]; then
+    STANDARDS_CONTENT="$(cat "$LIB_DIR/../prompts/standards.md")"
+elif [ -f "$LIB_DIR/../prompts/probe-schema.md" ]; then
+    STANDARDS_CONTENT="$(cat "$LIB_DIR/../prompts/probe-schema.md")"
+fi
+write_scratch "$REPO_DIR" "standards.md" "$STANDARDS_CONTENT"
 
 PR_ID="$REPO#$PR"
 PR_TITLE="$(gh pr view "$PR" --repo "$REPO" --json title --jq .title)"

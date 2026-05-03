@@ -175,17 +175,10 @@ LOG_FILE="$RUN_DIR/run.log"
 # captured at the very top of this script (single-clock-read alongside
 # REVIEW_START_TS) — used for meta.json.started_at when meta is written.
 
-# write_scratch — writes input artifacts into the run dir's inputs/ and
-# exposes them under the codex-scratch view in the workdir so agents can
-# read them via the paths their prompts cite (e.g. ".codex-scratch/diff.patch").
-write_scratch() {
-    local repo_dir="$1" filename="$2" content="$3"
-    local input_path="$RUN_DIR/inputs/$filename"
-    local scratch_dir="$repo_dir/.codex-scratch"
-    mkdir -p "$(dirname "$input_path")" "$scratch_dir/specialists"
-    printf '%s' "$content" > "$input_path"
-    ln -sfn "$input_path" "$scratch_dir/$filename"
-}
+# write_scratch lives in lib/scratch.sh so lib/replay.sh can stage scratch
+# with the same shape (real files in $RUN_DIR/inputs/, symlinks under
+# .codex-scratch/) without reimplementing the contract.
+. "$_LIB_DIR/scratch.sh"
 
 # Convenience symlink: latest run for this PR. Lets `tail -f
 # runs-by-pr/<repo-slug>/<pr>/latest/run.log` follow the most recent worker
