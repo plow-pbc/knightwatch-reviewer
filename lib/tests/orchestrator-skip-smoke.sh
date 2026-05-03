@@ -64,6 +64,15 @@ CONF
 export HOME="$TMPDIR/home"
 mkdir -p "$HOME/.local/bin"
 
+# Prepend the stub bin to PATH for every child this smoke spawns. Most
+# scenarios spawn `bash review.sh`, which does its own
+# `export PATH="$HOME/.local/bin:..."` first thing — but scenario 10
+# spawns `bash holder.sh` and inline subshells that source locking.sh
+# directly (bypassing review.sh), so they need the stubs reachable
+# through the inherited PATH alone. Linux production never sees this
+# path anyway (real gh / timeout / flock all live in /usr/bin).
+export PATH="$HOME/.local/bin:$PATH"
+
 # Stub `gh`. The orchestrator calls:
 #   gh pr list --repo <repo> --json number,title,headRefName,headRefOid
 #   gh api repos/<owner>/<repo>/issues/<num>/comments
@@ -148,6 +157,56 @@ else
 fi
 STUB
 chmod +x "$HOME/.local/bin/gh"
+
+# Stub `timeout`. review.sh fans out workers via `timeout
+# "$WORKER_TIMEOUT" worker.sh ... &` (review.sh:290) — that's GNU
+# coreutils on Linux production. macOS doesn't ship `timeout` at all,
+# so without this stub the worker is never executed and every dispatch
+# scenario fails with "got 0". The stub parses GNU duration suffixes
+# (Ns / Nm / N) and uses bash to enforce kill-on-timeout, so scenario
+# 12 (WORKER_TIMEOUT=2s on a sleep-10s worker) still gets real
+# behavior, not a passthrough.
+# Stub `flock`. macOS doesn't ship util-linux flock(1); python3
+# fcntl.flock(2) provides the same OFD-tied advisory-lock semantics,
+# so lib/locking.sh's `exec {PR_LOCK_FD}> file; flock -n PR_LOCK_FD`
+# pattern survives parent-shell exit identically. Production runs on
+# Linux with the real flock binary; this stub is only for `just test`
+# on a Mac dev box (scenario 10 — per-PR mutex contract).
+cat > "$HOME/.local/bin/flock" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+    -n) shift; fd="$1" ;;
+    *) echo "flock-stub: only -n FD is supported (got: $*)" >&2; exit 2 ;;
+esac
+exec python3 - "$fd" <<'PY'
+import fcntl, sys
+fd = int(sys.argv[1])
+try:
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    sys.exit(1)
+PY
+STUB
+chmod +x "$HOME/.local/bin/flock"
+
+cat > "$HOME/.local/bin/timeout" <<'STUB'
+#!/usr/bin/env bash
+dur_raw="$1"; shift
+case "$dur_raw" in
+    *s) dur="${dur_raw%s}" ;;
+    *m) dur=$(( ${dur_raw%m} * 60 )) ;;
+    *)  dur="$dur_raw" ;;
+esac
+"$@" &
+pid=$!
+( sleep "$dur"; kill "$pid" 2>/dev/null ) &
+sleeper=$!
+wait "$pid" 2>/dev/null
+rc=$?
+kill "$sleeper" 2>/dev/null
+exit "$rc"
+STUB
+chmod +x "$HOME/.local/bin/timeout"
 
 # Sandbox lib dir: real state-io.sh + auth.sh, stub worker that logs the
 # dispatch (including the trigger-comment file path so trust-gate
@@ -251,9 +310,29 @@ run_orchestrator() {
 }
 
 count_dispatches() {
-    local n
-    n=$(grep -c '^WORKER_DISPATCHED ' "$LOG_FILE" 2>/dev/null) || true
-    echo "${n:-0}"
+    # Workers fan out via `timeout ... worker.sh ... &` (review.sh:290)
+    # and write WORKER_DISPATCHED lines asynchronously after the
+    # orchestrator has already exited. A synchronous grep beats the
+    # write on fast machines, producing flaky 0-counts on dispatch
+    # scenarios. Read the orchestrator's own promise (its
+    # synchronously-logged "Fan-out: dispatched N worker(s)" line) and
+    # poll until N writes show up — capped so 0-dispatch scenarios stay
+    # fast (orchestrator promised 0 → return 0 immediately, no wait).
+    local promised actual
+    promised=$(grep -oE 'dispatched [0-9]+ worker' "$LOG_FILE" 2>/dev/null \
+                  | grep -oE '[0-9]+' | tail -1)
+    promised="${promised:-0}"
+    if [ "$promised" -eq 0 ]; then
+        echo 0
+        return
+    fi
+    for _ in $(seq 1 50); do   # up to ~5s
+        actual=$(grep -c '^WORKER_DISPATCHED ' "$LOG_FILE" 2>/dev/null || true)
+        actual="${actual:-0}"
+        [ "$actual" -ge "$promised" ] && break
+        sleep 0.1
+    done
+    echo "$actual"
 }
 
 # Scenario 1: same SHA, no comments → no dispatch
@@ -511,7 +590,7 @@ mkdir -p "$LOCK_TEST_STATE_DIR"
 HOLDER_MARKER="$TMPDIR/holder-acquired.flag"
 HOLDER_RELEASE="$TMPDIR/holder-release.flag"
 cat > "$TMPDIR/holder.sh" <<HOLDER
-#!/bin/bash
+#!/usr/bin/env bash
 . "$REVIEWER_LIB_DIR/locking.sh"
 if ! acquire_pr_lock "$LOCK_TEST_STATE_DIR" "test_repo__1"; then
     echo "HOLDER_FAILED_TO_ACQUIRE" >&2
@@ -532,7 +611,13 @@ for _ in $(seq 1 50); do
     [ -f "$HOLDER_MARKER" ] && break
     sleep 0.1
 done
-[ -f "$HOLDER_MARKER" ] || { kill "$HOLDER_PID" 2>/dev/null; echo "FAIL scenario 10: holder never acquired the lock"; cat "$TMPDIR/holder.log"; exit 1; }
+[ -f "$HOLDER_MARKER" ] || {
+    kill "$HOLDER_PID" 2>/dev/null
+    echo "FAIL scenario 10: holder never acquired the lock"
+    echo "--- holder.log ---"; cat "$TMPDIR/holder.log"
+    echo "--- holder.sh ---"; cat "$TMPDIR/holder.sh"
+    exit 1
+}
 
 if ( . "$REVIEWER_LIB_DIR/locking.sh" && acquire_pr_lock "$LOCK_TEST_STATE_DIR" "test_repo__1" ); then
     touch "$HOLDER_RELEASE"; wait "$HOLDER_PID" 2>/dev/null
@@ -756,10 +841,16 @@ export MOCK_COMMENTS_FILE="$TMPDIR/comments.json"
 clear_seeded_runs
 # runs/: started_at = 30 minutes ago (ISO 8601). GNU date — the only
 # format spec this codebase targets.
-RECENT_STARTED_AT=$(date -u -d "@$(($(date +%s) - 1800))" +"%Y-%m-%dT%H:%M:%SZ")
+# `date -u -d @<epoch>` is GNU-only (BSD has -r instead). Use python3
+# for portable epoch→ISO conversion — same pattern as
+# lib/tests/divergent-clock-smoke.sh:67.
+epoch_to_iso() {
+    python3 -c "import datetime; print(datetime.datetime.fromtimestamp(int('$1'), tz=datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))"
+}
+RECENT_STARTED_AT=$(epoch_to_iso "$(($(date +%s) - 1800))")
 seed_run "cncorp_plow" "1" "20260429T143000000Z" "abc123" "COMMENT" "$RECENT_STARTED_AT" >/dev/null
 # Comment posted 1 hour ago — BEFORE runs/'s started_at (30m ago).
-OLD_COMMENT_AT=$(date -u -d "@$(($(date +%s) - 3600))" +"%Y-%m-%dT%H:%M:%SZ")
+OLD_COMMENT_AT=$(epoch_to_iso "$(($(date +%s) - 3600))")
 printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$OLD_COMMENT_AT" > "$MOCK_COMMENTS_FILE"
 run_orchestrator
 n=$(count_dispatches)

@@ -57,7 +57,8 @@ BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-pos
 
 # Rotate the orchestrator log when it exceeds 5MB. Per-run logs under
 # runs/<id>/ aren't rotated — they're already bounded by run.
-if [ -f "$LOG_FILE" ] && [ "$(stat -c%s "$LOG_FILE" 2>/dev/null)" -gt 5242880 ]; then
+# `wc -c` is portable; `stat -c%s` is GNU-only (BSD stat uses -f%z).
+if [ -f "$LOG_FILE" ] && [ "$(wc -c < "$LOG_FILE" 2>/dev/null | tr -d ' ')" -gt 5242880 ]; then
     mv "$LOG_FILE" "$LOG_FILE.1"
 fi
 
@@ -244,7 +245,13 @@ for REPO in "${REPOS[@]}"; do
         # leaked stale files under $STATE_DIR/tmp on the unchanged-SHA
         # /srosro-update-review skip path, where no worker runs to clean up.
         if [ -n "$TRIGGER_BODY" ]; then
-            TRIGGER_FILE=$(mktemp -t pr-review-trigger.XXXXXX)
+            # Path-style template (not `-t`): BSD mktemp's `-t` ignores
+            # TMPDIR and always uses /var/folders/.../T on macOS, which
+            # would land trigger files outside the $STATE_DIR/tmp pin
+            # (lib/tracked-repos.sh:47) and reopen the PrivateTmp
+            # tear-down race on Linux production. Path-form honors
+            # TMPDIR identically on BSD and GNU.
+            TRIGGER_FILE=$(mktemp "$TMPDIR/pr-review-trigger.XXXXXX")
             printf 'Comment by @%s:\n\n%s\n' "$TRIGGER_USER" "$TRIGGER_BODY" > "$TRIGGER_FILE"
         fi
 
