@@ -93,7 +93,10 @@ for REPO in "${REPOS[@]}"; do
             BODY=$(echo "$COMMENT" | jq -r '.body')
             ID=$(echo "$COMMENT" | jq -r '.id')
             CREATED=$(echo "$COMMENT" | jq -r '.created_at')
-            TS=$(date -d "$CREATED" +%s 2>/dev/null || echo 0)
+            # Portable ISO→epoch — `date -d` is GNU-only; macOS BSD date doesn't
+            # support it. python3 (already a project dep) handles both. Same
+            # fail-soft semantics as the original `|| echo 0`.
+            TS=$(python3 -c "import datetime,sys; s=sys.argv[1].replace('Z','+00:00'); print(int(datetime.datetime.fromisoformat(s).timestamp()))" "$CREATED" 2>/dev/null || echo 0)
 
             if [ "$USER" = "$BOT_USER" ]; then
                 LAST_OUR_TS=$TS

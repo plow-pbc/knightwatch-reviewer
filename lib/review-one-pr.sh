@@ -46,7 +46,10 @@ fi
 # /srosro-review trigger landing in that drift window would be silently
 # filtered out by review.sh's cutoff (created_at > meta.json.started_at).
 REVIEW_START_TS=$(date +%s)
-REVIEW_START_ISO=$(date -u -d "@$REVIEW_START_TS" +"%Y-%m-%dT%H:%M:%SZ")
+# Portable epoch→ISO conversion — `date -u -d "@<epoch>"` is GNU-only and
+# breaks on macOS BSD date. Use python3 (already a project dep) for both
+# platforms. Same fix as lib/tests/divergent-clock-smoke.sh.
+REVIEW_START_ISO=$(python3 -c "import datetime; print(datetime.datetime.fromtimestamp(int('$REVIEW_START_TS'), tz=datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))")
 
 # --- per-PR advisory lock ----------------------------------------------------
 # Prevents two concurrent invocations from stepping on each other for the same

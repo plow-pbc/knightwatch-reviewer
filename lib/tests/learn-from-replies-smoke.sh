@@ -145,7 +145,8 @@ fi
 # mutating the shared mistakes list.
 echo "  scenario 2: untrusted /srosro-memorize — ignored with log..."
 NOW_ISO=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-EARLIER_ISO=$(date -u -d "@$(($(date +%s) - 60))" +"%Y-%m-%dT%H:%M:%SZ")
+# Portable epoch→ISO — `date -u -d "@<epoch>"` is GNU-only. python3 fixes both.
+EARLIER_ISO=$(python3 -c "import datetime; print(datetime.datetime.fromtimestamp($(($(date +%s) - 60)), tz=datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))")
 # The script requires a prior comment from BOT_USER (srosro) to anchor
 # "after a bot review" sequencing. Then a later comment from a non-
 # trusted user containing /srosro-memorize.
@@ -161,7 +162,8 @@ grep -q "no new /srosro-memorize requests" "$LOG_FILE" || { echo "FAIL scenario 
 # single-page fetch, the request is invisible and the script logs "no
 # new requests" instead — this scenario fails on that regression.
 echo "  scenario 3: /srosro-memorize on page 2 — pagination merges both pages..."
-EARLIER_ISO=$(date -u -d "@$(($(date +%s) - 60))" +"%Y-%m-%dT%H:%M:%SZ")
+# Portable epoch→ISO — `date -u -d "@<epoch>"` is GNU-only. python3 fixes both.
+EARLIER_ISO=$(python3 -c "import datetime; print(datetime.datetime.fromtimestamp($(($(date +%s) - 60)), tz=datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))")
 NOW_ISO=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 # Page 1: bot's auto-post anchoring LAST_OUR_TS.
 printf '[{"id":920,"created_at":"%s","user":{"login":"srosro"},"body":"%s\\nbot review"}]\n' "$EARLIER_ISO" "$BOT_AUTO_POST_MARKER" > "$MOCK_COMMENTS_FILE"
