@@ -286,6 +286,37 @@ for script in "${SYSTEMD_CHAIN_SCRIPTS[@]}"; do
     fi
 done
 
+# Defense-in-depth: scripts must NOT prepend writable user dirs to
+# PATH. The systemd unit sets PATH with system dirs first and writable
+# user dirs trailing; a script-level `export PATH="$HOME/.local/bin:..."`
+# would re-introduce the writable-PATH attack at the script's own
+# command-resolution boundary (timeout, gh, git, awk, etc.).
+echo "  asserting systemd-chain scripts do NOT prepend writable user PATH..."
+for script in "${SYSTEMD_CHAIN_SCRIPTS[@]}"; do
+    if grep -nE '^[[:space:]]*export PATH="\$HOME/' "$script"; then
+        echo "FAIL: $script prepends \$HOME/.local/bin to PATH — defeats the systemd PATH ordering and reopens writable-command resolution"
+        exit 1
+    fi
+done
+
+# Systemd unit PATH ordering: each unit's `Environment=PATH=...` line
+# MUST start with a system dir (/usr/...) and place writable user dirs
+# (/home/odio/.local/bin, /home/odio/.npm-global/bin) after them.
+echo "  asserting systemd unit Environment=PATH starts with system dirs..."
+for unit in systemd/pr-reviewer.service systemd/pr-reviewer-learn.service \
+            systemd/pr-reviewer-approve.service \
+            systemd/pr-reviewer-re-request.service \
+            systemd/pr-reviewer-kid-refresh.service; do
+    path_line=$(grep -E '^Environment=PATH=' "$unit")
+    case "$path_line" in
+        Environment=PATH=/usr/*) : ;;  # OK — system dir first
+        *)
+            echo "FAIL: $unit Environment=PATH does not start with /usr/... — writable user dirs would be searched first"
+            echo "  got: $path_line"
+            exit 1 ;;
+    esac
+done
+
 # ====================================================================
 # Section 2: orchestrator wiring (formerly momentum-wire-smoke.sh)
 # ====================================================================

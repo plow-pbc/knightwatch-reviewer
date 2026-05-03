@@ -35,6 +35,9 @@ export BOT_USER="srosro"
 
 export HOME="$TMPDIR/home"
 mkdir -p "$HOME/.local/bin"
+# Production no longer prepends $HOME/.local/bin to PATH (writable-PATH
+# attack vector). Smoke prepends here so its stubs (gh, etc.) resolve.
+export PATH="$HOME/.local/bin:$PATH"
 
 export STUB_PR_LIST_LOG="$STATE_DIR/gh-pr-list.log"
 export STUB_COMMENT_LOG="$STATE_DIR/gh-pr-comment.log"

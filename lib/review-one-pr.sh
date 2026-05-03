@@ -7,7 +7,10 @@
 # the worker slurps it and rm -fs the file early.
 
 set -u
-export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
+# Inherit PATH from the systemd unit (system dirs first, writable user
+# dirs trailing). Do NOT prepend $HOME/.local/bin here — it would let
+# an attacker-placed ~/.local/bin/<command> shadow system tools that
+# this worker invokes by name. See review.sh's PATH note.
 
 REPO="$1"
 PR_NUM="$2"

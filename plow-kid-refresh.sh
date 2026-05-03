@@ -9,7 +9,8 @@
 # the reviewer uses.
 
 set -u
-export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
+# PATH inherited from systemd unit (system dirs first; writable user dirs
+# trailing). See review.sh for the writable-PATH security context.
 
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 LOG="${LOG:-$STATE_DIR/plow-kid-refresh.log}"

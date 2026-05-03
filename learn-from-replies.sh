@@ -21,7 +21,8 @@
 # produces empty input that jq turns into [] without surfacing the
 # failure — silently dropping page-1 comments or a whole fetch.
 set -o pipefail
-export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
+# PATH inherited from systemd unit (system dirs first; writable user dirs
+# trailing). See review.sh for the writable-PATH security context.
 
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 REPLIES_SEEN_FILE="${REPLIES_SEEN_FILE:-$STATE_DIR/replies-seen.json}"
