@@ -159,8 +159,8 @@ STUB
 chmod +x "$HOME/.local/bin/gh"
 
 # Stub `flock` and `timeout` ONLY when missing — review.sh's fan-out
-# (`timeout "$WORKER_TIMEOUT" worker.sh ... &` at review.sh:297) and
-# lib/locking.sh's `flock -n FD` are real production deps on Linux.
+# (`timeout "$WORKER_TIMEOUT" worker.sh ... &`) and lib/locking.sh's
+# `flock -n FD` are real production deps on Linux.
 # Same `command -v` gate pattern lib/review-one-pr.sh:624 uses for
 # `just`. On Linux production: real /usr/bin/timeout + /usr/bin/flock
 # are used and `just test` keeps proving the production wiring works.
@@ -311,7 +311,7 @@ run_orchestrator() {
 }
 
 count_dispatches() {
-    # Workers fan out via `timeout ... worker.sh ... &` (review.sh:290)
+    # Workers fan out via `timeout ... worker.sh ... &` in review.sh
     # and write WORKER_DISPATCHED lines asynchronously after the
     # orchestrator has already exited. A synchronous grep beats the
     # write on fast machines, producing flaky 0-counts on dispatch
