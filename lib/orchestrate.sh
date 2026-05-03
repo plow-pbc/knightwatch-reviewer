@@ -233,7 +233,7 @@ run_specialist_pipeline() {
     # review (R13 finding). Mirrors critic fail-loud above.
     log "$PR_ID: splitting critic output into specialist files..."
     if ! split_critic_to_specialists "$CRITIC_OUT" "$SPECIALISTS_DIR" 2>>"$LOG_FILE"; then
-        log "$PR_ID: critic-splitter reported missing specialist target(s) — aborting review (silent drop would demote a critic-resolved blocker)"
+        log "$PR_ID: critic-splitter failed (missing target, awk write, or specialist rewrite — see stderr in $LOG_FILE) — aborting review (silent drop would demote a critic-resolved blocker)"
         rm -rf "$REPO_DIR"
         exit 1
     fi

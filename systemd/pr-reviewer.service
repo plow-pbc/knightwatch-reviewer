@@ -17,7 +17,13 @@ User=odio
 Group=odio
 WorkingDirectory=/home/odio/.pr-reviewer
 Environment=HOME=/home/odio
-Environment=PATH=/home/odio/.local/bin:/home/odio/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# PATH: system dirs FIRST so `timeout`, `bash`, `gh`, `git`, etc.
+# resolve to /usr/bin paths even though ReadWritePaths grants write
+# access to /home/odio/.local. Otherwise an attacker-placed
+# ~/.local/bin/<command> would shadow the system tool. User-installed
+# tools (codex via npm-global, pipx, etc.) remain reachable via the
+# trailing user-writable dirs.
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/odio/.local/bin:/home/odio/.npm-global/bin
 ExecStart=/home/odio/.pr-reviewer/review.sh
 TimeoutStartSec=90min
 StandardOutput=journal

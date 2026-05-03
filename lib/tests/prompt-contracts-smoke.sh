@@ -206,6 +206,22 @@ echo "  asserting carry-forward stress-test pass in critic.md..."
 assert_grep "critic.md should fence Carry-forward stress-test pass" \
     "Carry-forward stress-test" prompts/critic.md
 
+# Probe-as-unit polarity contracts (R23 F#2, R23 F#6 / R24 F#4):
+# - complexity-cost is deletion-oriented per probe-schema.md § Class
+#   options; Pre-PMF lens defaults to Answer: yes (delete) at this scale.
+# - Carry-forward probes preserve the original specialist's `From: <angle>`
+#   attribution in `## Generated probes`; only critic-originated probes
+#   use `From: critic`.
+echo "  asserting complexity-cost deletion-oriented polarity in critic.md Pre-PMF lens..."
+assert_grep "critic.md should mark complexity-cost as deletion-oriented" \
+    "deletion-oriented" prompts/critic.md
+assert_grep "critic.md should default complexity-cost to Answer: yes (delete) at pre-PMF" \
+    "default \`complexity-cost\` probes to \`Answer: yes\` (delete)" prompts/critic.md
+
+echo "  asserting carry-forward attribution preservation in critic.md..."
+assert_grep "critic.md Generated probes block should distinguish critic-origin from carry-forward" \
+    "carry-forward probes preserve their original \`From: <angle>\` attribution" prompts/critic.md
+
 echo "  asserting K-decay thresholds in critic.md..."
 # Probe-resolver model: "K ≥ 3 with no engagement and Class ≠ bug" /
 # "K ≥ 5 with no engagement and Class ≠ bug" — pair threshold with Class

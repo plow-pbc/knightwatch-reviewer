@@ -210,4 +210,36 @@ grep -qF "From:** critic" "$TMPDIR/specialists2/critic.md" || {
     exit 1
 }
 
+# Write-failure path: R22 F#1 added `|| return 1` to the awk + target
+# rewrite paths so the function fails loud on disk-full / EPERM /
+# read-only-target instead of returning 0 with partial state. Exercise
+# the Pass-2 rewrite failure by making the target file un-writable +
+# the parent dir un-writable so the redirect can't replace the file.
+# A non-zero rc is the contract; any green path here means production
+# would silently post a review with dropped probe resolutions.
+echo "  asserting write-failure on Pass-2 rewrite returns non-zero..."
+RO_DIR="$TMPDIR/specialists-readonly"
+mkdir -p "$RO_DIR"
+# Stage one valid specialist target + a critic probe targeting it.
+cat > "$RO_DIR/security.md" <<'EOF'
+- security probe content
+EOF
+RO_CRITIC="$TMPDIR/critic-readonly.md"
+cat > "$RO_CRITIC" <<'EOF'
+## Resolved probes
+
+### [from: security] Probe 1
+- **Answer:** yes
+- **Evidence:** test
+EOF
+chmod 555 "$RO_DIR"  # make dir un-writable so redirect can't replace files
+split_critic_to_specialists "$RO_CRITIC" "$RO_DIR" 2>"$TMPDIR/stderr-readonly.log"
+RO_RC=$?
+chmod 755 "$RO_DIR"  # restore for cleanup
+if [ "$RO_RC" -eq 0 ]; then
+    echo "FAIL: split returned 0 with read-only target dir — write failure should return non-zero (R22 F#1 regression)"
+    cat "$TMPDIR/stderr-readonly.log"
+    exit 1
+fi
+
 echo "  PASS"
