@@ -1,0 +1,9 @@
+## [performance] findings
+
+### Surveyed
+- `InstallerView`’s new height plumbing and `>1pt` deadband are clean; material height changes are the only ones that flow into state, so poll/download updates should not thrash window-resize animation. Files: app/Phoenix/InstallerView.swift:80-118
+- `SettingsView`’s `GeometryReader`-based content measurement is clean for this surface; it adds one layout measurement over a small installer form, not an unbounded per-record or per-request path. Files: app/Phoenix/SettingsView.swift:20-37
+- `SelfSizingHostingView.invalidateIntrinsicContentSize()` remains guarded by `window.frame.size == size`, so unrelated SwiftUI invalidations do not automatically turn into repeated `setFrame` work. Files: app/Phoenix/MenuBarController.swift:415-450
+- The installer-specific `animatesWindowResize` / `clampsToScreen` flags are clean from a scale perspective; they reuse the existing hosting-view path and add no new timers, I/O, or collection growth. Files: app/Phoenix/PhoenixApp.swift:153-185, app/Phoenix/MenuBarController.swift:396-450
+- I checked the only recurring state source in this flow, `updateConnectorPolling()`, against the new sizing path; the 3-second connector refresh is pre-existing, and this PR does not turn it into steady resize work unless the visible content height actually changes. Files: app/Phoenix/InstallerView.swift:452-463, app/Phoenix/InstallerView.swift:114-118
+- The new pure height helper and tests are clean; capping back into the existing `ScrollView` keeps the window bounded instead of letting content growth become unbounded layout work. Files: app/Phoenix/InstallerView.swift:519-557, app/PhoenixTests/InstallerStateTests.swift:120-194

@@ -1,0 +1,1567 @@
+[15:42:18] agent=critic starting
+Reading additional input from stdin...
+OpenAI Codex v0.128.0 (research preview)
+--------
+workdir: /tmp/tmp.jy1OGKWBWx/repo
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: high
+reasoning summaries: none
+session id: 019deadb-5f08-71e2-8ca7-80a16206e17d
+--------
+user
+You are the devil's advocate in a multi-specialist PR review. Eight specialists have surfaced findings. Before the aggregator synthesizes the final review, your job is to stress-test each finding and surface anything the specialists collectively missed. Your output passes to the aggregator along with the raw specialist outputs.
+
+**Voice posture (apply on every finding you process):** Apply `standards.md` § Broken-Glass Test — every non-bug finding's #1 assumption must be stated as a question. Declarative voice is allowed only when the specialist can cite the failing path, the user-observable outcome, and the line where the contract breaks. For scope-creep findings (asking the PR to update unrelated infra, fix a long-pre-existing gap, expand into adjacent policy), reframe with the cost-naming clause: *"adds complexity and makes PMF iteration harder."*
+
+FIRST, read `.codex-scratch/standards.md` — all of it, but especially the "Comment Review Mistakes" section. It lists calibration corrections the reviewer should apply (e.g. don't over-call blocking on tests when 1-2 behavior tests suffice; don't demand dedup refactors when parity tests cover drift risk). If a specialist finding is about to commit a documented mistake, flag it.
+
+Then read:
+- `.codex-scratch/specialists/security.md`
+- `.codex-scratch/specialists/data-integrity.md`
+- `.codex-scratch/specialists/architecture.md`
+- `.codex-scratch/specialists/simplification.md`
+- `.codex-scratch/specialists/tests.md`
+- `.codex-scratch/specialists/shape.md`
+- `.codex-scratch/specialists/performance.md`
+- `.codex-scratch/specialists/consumers.md`
+- `.codex-scratch/diff.patch` — the actual change
+- `.codex-scratch/file-history.md` — recent commits on touched files
+- `.codex-scratch/commits.md` — commit subjects on this branch, one per line
+- `.codex-scratch/inferred-intent.md` — the pre-fan-out inferred end-user-facing intent. Specialists were told to grade implementation against this; you should too when stress-testing their findings.
+- `.codex-scratch/author-intent.md` — the PR's own description + linked issues (READ THIS — it often explains WHY the author did something a specialist is about to criticize)
+- `.codex-scratch/trigger-comment.md` — present whenever the review was triggered by a trusted-author `/srosro-review` or `/srosro-update-review` comment. Contains the commenter's GitHub login + body. When the body has substantive prose, it's the requester's stated framing of what they want reviewed; specialists were told to weight it, and if a specialist finding is in tension with this framing, decide whether the finding still stands or the specialist over-called. When the body is only the bare slash command, ignore it — no extra framing.
+- `.codex-scratch/product-context.md` — product stage and roadmap
+- `.codex-scratch/review-priority.md` — per-repo operating point + voice posture.
+- `.codex-scratch/loc-trend.md` — per-round LOC trajectory; consulted by the Pre-PMF lens.
+- `.codex-scratch/prior-reviews.md` — concatenated prior aggregator outputs; consulted by the Pre-PMF lens for Bug-Class-Recurrence detection.
+- `.codex-scratch/decline-history.md` — operator's prior decline replies on this PR. Two layers: (a) **Decline replies** are emitted verbatim as context — read the prose and use your judgement on whether a class is recurring (the orchestrator no longer auto-classifies). (b) **Explicit class markers** (`<!-- decline:class=X -->`) are counted; the ≥3-rounds auto-drop rule applies ONLY to classes counted there, not to prose-inferred classes.
+
+**Your job:**
+
+For each finding in the specialist outputs, provide **1–3 lines** of counterargument. Consider:
+
+1. **False positive** — author may have deliberately done this; specialist may have misread the code; the standard being cited may not apply here.
+2. **Over-specific** — the finding is technically correct but describes a one-off case rather than a general pattern worth a reviewer's time.
+3. **Miscalibrated** — check `COMMENT_REVIEW_MISTAKES` for exactly this calibration. A finding labeled `blocking` that lives in the "over-called blocking" mistakes bucket should be downgraded.
+4. **Already addressed** — check `file-history.md`; author may have handled this in a recent commit not reflected in the diff.
+5. **Contradicts author intent** — `author-intent.md` may explain the tradeoff the specialist is assuming was an oversight.
+6. **Duplicate** — two specialists may have raised effectively the same issue from different angles; note the overlap.
+7. **REMEDY-BLOAT** — finding may be valid but the implied fix adds defensive branches, fallback chains, type validation outside trust boundaries, a new abstraction for one call site, or handles a theoretical edge case that doesn't actually occur. The cost is conditionals/special cases that calcify, not just LOC. In your counterargument, name a LOC-negative or branch-negative alternative the aggregator should rewrite the finding to point at — or recommend the aggregator drop it. Cite `Concise Code`, `Fail-Fast`, or the relevant `COMMENT_REVIEW_MISTAKES` entry.
+8. **REFRAME-AS-QUESTION** — finding's underlying concern is real (so it's not FALSE POSITIVE), AND the proposed remedy is additive (adds defensive code, abstraction, validation, test, branch, file), AND the author could legitimately decide either way once the assumption is named. When applied, emit the reframed text inline so the aggregator can drop it directly into Open Questions:
+
+   ```
+   ### [<specialist>] Finding N — REFRAME-AS-QUESTION
+   <one-line reason: what assumption is being asserted as if settled>
+   Reframe:
+   > Will [state X]? If yes, [Y]. If not, consider cutting [Y] — adds complexity and makes PMF iteration harder.
+   > [Optional recommendation given operating point.]
+   ```
+
+   Scope-creep findings (asking the PR to update unrelated infra, fix a pre-existing gap, expand adjacent policy) MUST be REFRAME-AS-QUESTION'd if they survive — they are not bugs, the remedy is additive, and the cost-naming forces the author to weigh in. The reframe MUST include explicit cost language ("adds complexity and makes PMF iteration harder").
+
+**Pre-PMF lens (conditional).** Apply the lens to *every surviving finding* when ANY of these fire:
+- `prior-reviews.md` shows Bug-Class-Recurrence in **2+ prior rounds** (catches the dynamic where the author held LOC stable but ignored the structural ask), OR
+- `loc-trend.md` shows GROWING **and** Bug-Class-Recurrence has fired in any prior round, OR
+- `prior-reviews.md` indicates **rounds ≥ 4** (regardless of trajectory — by round 4 the author has seen 3 reviews and the marginal value of new prescriptive findings is dropping).
+
+Lens question: would the failure mode the remedy is preventing be observed in production at our scale today? If no AND the remedy is additive without observed need → REMEDY-BLOAT (drop entirely). If no but the underlying concern is real → REFRAME-AS-QUESTION.
+
+**Self-referential spec guard.** If a finding cites the PR's *own* newly-added spec/plan/doc (e.g. `docs/specs/<this-pr-date>-*.md`, `docs/plans/<this-pr-date>-*.md`, or any doc whose first commit on this branch is in `commits.md`) as the contract being violated by the implementation, REMEDY-BLOAT it. Reasoning: the spec is mutable in this same PR, so "implementation doesn't match spec" is solvable by editing the spec — the finding is grading the PR against itself. The exception is when the spec text describes a USER-FACING contract (an external API shape, a documented user flag, a public schema) — in that case the spec is binding because consumers other than this PR will read it. Internal implementation prose ("the parser should recognize marker X", "the ranker should sort findings overall") does NOT meet that bar.
+
+**Decline-history awareness.** Two channels:
+
+*Explicit class markers (mechanical auto-drop):* If a finding's class appears in the **Explicit class markers** section of `.codex-scratch/decline-history.md` with a count ≥3, drop the finding from the published findings. Emit one-line footnote: `Class 'X' marked declined N rounds (see decline-history.md). Not re-raising.` Class names are exact matches against the operator's `<!-- decline:class=X -->` declarations.
+
+*Free-form prose (judgement):* Read the **Decline replies** section as context. If the prose suggests the operator pushed back on a class similar to a surviving finding's class — even though the operator didn't add an explicit marker — cite the operator's reasoning in your counter-argument and ask whether this commit's diff materially changes the prior decline. If yes, keep at original severity; if no, REFRAME-AS-QUESTION with the prior decline reason as the cost-naming. Do NOT auto-drop based on prose inference; only the explicit-marker channel mechanically drops.
+
+**Carry-forward stress-test (re-reviews only).** If `previous-review.md` is non-empty, also stress-test every `[blocking]` and `[medium]` finding from it — those findings will be auto-carried-forward by the aggregator if you don't push back. Specialists only see the incremental diff and won't re-raise findings about unchanged code, so without this pass a finding that survives one critic round becomes immune to challenge for every subsequent round (the aggregator carry-forward path bypasses the critic entirely). For each prior `[blocking]`/`[medium]`, apply the same statuses (FALSE POSITIVE / OVER-SPECIFIC / MISCALIBRATED / REMEDY-BLOAT / REFRAME-AS-QUESTION / ALREADY ADDRESSED).
+
+*Engagement signal — count rounds since author engaged with this finding.* Engagement = (a) a commit on this branch that touched the cited file:lines (visible in `file-history.md` and `commits.md`), OR (b) an author comment that quoted, addressed, or replied to the finding (parse `prior-reviews.md` for round headers and look for matching reply text in adjacent rounds). The author has now seen the finding K times — does that update your read?
+
+- K = 1–2: full severity stands; author is presumably working on it.
+- K ≥ 3 with no engagement: REFRAME-AS-QUESTION is the right default. Either the finding is mis-scoped to this PR, or the author has materially deferred it; silence at K ≥ 3 is signal, not absence of signal. Use the prior decline reason or your own one-liner as the cost-naming. Do NOT auto-DROP — the underlying concern may still be real and worth the author's attention; the reframe just stops compelling it as a merge-blocker.
+- K ≥ 5 with no engagement: REMEDY-BLOAT (drop). Five rounds of silence on the same blocker means the bot is talking past the author; continuing to re-emit costs reviewer signal-to-noise.
+
+**Severe-bug carve-out for K-decay.** The K ≥ 3 (REFRAME-AS-QUESTION) and K ≥ 5 (REMEDY-BLOAT) defaults do NOT apply to carried-forward findings whose body cites a failing path describing a **user-observable severe bug**: secret leak, auth bypass, command injection, path traversal, sandbox escape, data loss / corruption / silent-drop, money-affecting state inconsistency, or PII exfiltration. Silence on a real severe-bug blocker is the bot being right and the author being wrong — keep at `[blocking]` regardless of K. Key on the cited failing-path text in `previous-review.md`, NOT on a specialist tag (carried-forward findings only carry `[severity]`, not `[security]`/`[data-integrity]` — the specialist origin is lost when the aggregator posts). K-decay applies to scope, style, tech-debt, architectural, and DRY/cleanup classes, where author silence is genuinely ambiguous.
+
+If the cited code WAS modified in this round (engagement = K=0), evaluate the new state directly — the finding may be addressed (drop), partially addressed (downgrade), or untouched-by-the-modification (re-stress per its merits).
+
+Separately: surface any findings the specialists **collectively missed**. Read the diff for gaps the specialists would have caught if they'd been more thorough.
+
+**Output format — exactly this:**
+
+```
+## Critic counterarguments
+
+### [security] Finding N — <status: AGREE | FALSE POSITIVE | OVER-SPECIFIC | MISCALIBRATED | REMEDY-BLOAT | REFRAME-AS-QUESTION | ALREADY ADDRESSED | DUPLICATE OF [other-specialist] Finding M>
+1–3 lines of reasoning. Cite specific evidence (file:line, standard name, history commit, author-intent quote).
+
+### [data-integrity] Finding N — <status>
+...
+
+### [architecture] Finding N — <status>
+...
+
+### [simplification] Finding N — <status>
+...
+
+### [tests] Finding N — <status>
+...
+
+### [shape] Finding N — <status>
+...
+
+### [performance] Finding N — <status>
+...
+
+### [consumers] Finding N — <status>
+...
+
+## Carried-forward findings (re-reviews only — omit if previous-review.md is empty)
+
+### [carry-forward] Finding N — <status: same set as specialist findings>
+1–3 lines reasoning, including engagement-K count and whether cited code was modified this round.
+
+## Missed findings (if any)
+- [severity estimate] <concise finding, 1–2 sentences>
+- [severity estimate] <another, ...>
+```
+
+**For each surviving finding, append after your 1–3 line counterargument:**
+
+```
+**Estimated remedy LOC:** ~N LOC across M files.
+```
+
+Estimate by counting `+` lines in any code blocks the specialist proposed; fall back to "if the finding cites K files, estimate K×20 LOC" when no code is shown.
+
+**For findings ≥20 LOC remedy:** generate 1-2 calibration questions targeting the cultural lens from `standards.md` § Broken-Glass Test → 20-LOC remedy threshold. Pattern (LLM generates per-finding, NOT templated):
+
+```
+**Calibration questions for go-deep investigation:**
+- Q1: <will users at <operating-point> hit this state? cite firing-rate evidence if available, or "no observed instances">
+- Q2: <is there a similar pattern in <path/to/lib.sh> or another existing seam we could reuse to avoid adding N LOC?>
+```
+
+The calibration questions ladder up to: *"Is the additional complexity of addressing this issue worth the cost of slowing down PMF iteration?"* (from § Broken-Glass Test). For findings <20 LOC remedy, omit the calibration block entirely. For findings the critic recommends dropping (FALSE POSITIVE, REMEDY-BLOAT-with-no-alternative), omit both blocks.
+
+**Constraints:**
+- Keep each counterargument tight (1–3 lines). One-line AGREE is fine when a finding survives cleanly.
+- Do NOT rewrite or rank the findings. The aggregator does that. You only provide counterarguments + missed findings.
+- Reference specialists' findings in the order they appear within each specialist's file (Finding 1, Finding 2, etc.).
+- If every finding survives and no gaps exist, output exactly this and nothing else:
+  ```
+  ## Critic counterarguments
+
+  All findings survive scrutiny. No missed findings identified.
+  ```
+codex
+I’ll read the scratch review artifacts first, then stress-test each finding against the repo standards and the actual patch. After that I’ll check prior/carry-forward context and look for missed issues in the diff.
+exec
+/bin/bash -lc "sed -n '1,260p' .codex-scratch/standards.md" in /tmp/tmp.jy1OGKWBWx/repo
+ succeeded in 0ms:
+exec
+/bin/bash -lc 'ls -la .codex-scratch .codex-scratch/specialists' in /tmp/tmp.jy1OGKWBWx/repo
+ succeeded in 0ms:
+.codex-scratch:
+total 32
+drwxrwxr-x  3 odio odio  4096 May  2 15:40 .
+drwxrwxr-x 24 odio odio  4096 May  2 15:38 ..
+-rw-rw-r--  1 odio odio     0 May  2 15:38 author-intent.md
+-rw-rw-r--  1 odio odio     0 May  2 15:38 commits.md
+-rw-rw-r--  1 odio odio     0 May  2 15:38 dead-code-static.md
+lrwxrwxrwx  1 odio odio    57 May  2 15:40 dead-code.md -> /tmp/tmp.jy1OGKWBWx/run/agents/dead-code-search/output.md
+-rw-rw-r--  1 odio odio     0 May  2 15:38 decline-history.md
+-rw-rw-r--  1 odio odio 16999 May  2 15:38 diff.patch
+-rw-rw-r--  1 odio odio     0 May  2 15:38 file-history.md
+lrwxrwxrwx  1 odio odio    47 May  2 15:38 inferred-intent.md -> /tmp/tmp.jy1OGKWBWx/run/agents/intent/output.md
+-rw-rw-r--  1 odio odio     0 May  2 15:38 loc-trend.md
+-rw-rw-r--  1 odio odio     0 May  2 15:38 previous-review.md
+-rw-rw-r--  1 odio odio     0 May  2 15:38 prior-art.md
+-rw-rw-r--  1 odio odio     0 May  2 15:38 prior-reviews.md
+-rw-rw-r--  1 odio odio     0 May  2 15:38 review-priority.md
+-rw-rw-r--  1 odio odio     0 May  2 15:38 search-roots.md
+drwxrwxr-x  2 odio odio  4096 May  2 15:42 specialists
+-rw-rw-r--  1 odio odio     0 May  2 15:38 standards.md
+
+.codex-scratch/specialists:
+total 8
+drwxrwxr-x 2 odio odio 4096 May  2 15:42 .
+drwxrwxr-x 3 odio odio 4096 May  2 15:40 ..
+lrwxrwxrwx 1 odio odio   53 May  2 15:42 architecture.md -> /tmp/tmp.jy1OGKWBWx/run/agents/architecture/output.md
+lrwxrwxrwx 1 odio odio   50 May  2 15:42 consumers.md -> /tmp/tmp.jy1OGKWBWx/run/agents/consumers/output.md
+lrwxrwxrwx 1 odio odio   55 May  2 15:42 data-integrity.md -> /tmp/tmp.jy1OGKWBWx/run/agents/data-integrity/output.md
+lrwxrwxrwx 1 odio odio   52 May  2 15:42 performance.md -> /tmp/tmp.jy1OGKWBWx/run/agents/performance/output.md
+lrwxrwxrwx 1 odio odio   49 May  2 15:42 security.md -> /tmp/tmp.jy1OGKWBWx/run/agents/security/output.md
+lrwxrwxrwx 1 odio odio   46 May  2 15:42 shape.md -> /tmp/tmp.jy1OGKWBWx/run/agents/shape/output.md
+lrwxrwxrwx 1 odio odio   55 May  2 15:42 simplification.md -> /tmp/tmp.jy1OGKWBWx/run/agents/simplification/output.md
+lrwxrwxrwx 1 odio odio   46 May  2 15:42 tests.md -> /tmp/tmp.jy1OGKWBWx/run/agents/tests/output.md
+
+exec
+/bin/bash -lc "find .codex-scratch -maxdepth 1 -type f -printf '%f\\n' | sort" in /tmp/tmp.jy1OGKWBWx/repo
+ succeeded in 0ms:
+author-intent.md
+commits.md
+dead-code-static.md
+decline-history.md
+diff.patch
+file-history.md
+loc-trend.md
+previous-review.md
+prior-art.md
+prior-reviews.md
+review-priority.md
+search-roots.md
+standards.md
+
+codex
+The checked-in `.codex-scratch/standards.md` is empty in this workspace, so I can’t apply any repo-specific text from that file beyond the Broken-Glass guidance embedded in your prompt. I’m continuing with the specialist outputs and patch evidence.
+exec
+/bin/bash -lc "sed -n '1,260p' .codex-scratch/specialists/security.md" in /tmp/tmp.jy1OGKWBWx/repo
+ succeeded in 0ms:
+## [security] findings
+
+### Surveyed
+- InstallerView height/overlay measurement and screen-parameter observers — clean; only local AppKit/SwiftUI layout state is consumed.
+- SettingsView geometry measurement and self-sizing frame logic — clean; no user input, secrets, network calls, or persistence added.
+- SelfSizingHostingView promotion plus resize/clamp flags — clean; window frame math only, no auth or sandbox boundary changes.
+- InstallerWindowController switch from `NSHostingView` to `SelfSizingHostingView` — clean; existing client/dismiss flow is unchanged.
+- DEBUG-gated sizing instrumentation visible in the current GitHub PR diff — clean for security; it logs window/display geometry, not credentials, tokens, message content, or PII.
+- InstallerWindowSizeTests additions — clean; synthetic sizing inputs only, no fixture secrets or live external surfaces.
+exec
+/bin/bash -lc "sed -n '1,260p' .codex-scratch/specialists/data-integrity.md" in /tmp/tmp.jy1OGKWBWx/repo
+ succeeded in 0ms:
+## [data-integrity] findings
+
+### Surveyed
+- Settings and download-bar height preferences flowing into `InstallerView` — clean; stale content height is ignored outside `.connectors`
+- `installerWindowHeight` zero-measurement, overlay addition, retry-bar growth, and cap behavior — clean
+- `SelfSizingHostingView` reuse by the menu-bar panel — clean; defaults preserve the prior non-animated, unclamped behavior
+- Installer window creation with intrinsic sizing enabled — clean
+- Screen cap and clamp behavior after the installer is moved between displays — see Finding 1
+
+### Finding 1 — low
+Under the Broken-Glass Test, the failing path is: the installer is movable, `installerHeightCap()` caps height from `NSScreen.main`, but `SelfSizingHostingView` later clamps position against `window.screen`. If a user drags the installer to a shorter secondary display and then connector/download content grows, the height can still be based on the taller main screen; the clamp only changes `origin.y`, not `height`, so the window can extend off the current display instead of letting `SettingsView` scroll. The remedy cost is small screen-cap plumbing, not new defensive branches or special-case heuristics.
+Files: app/Phoenix/InstallerView.swift:519, app/Phoenix/MenuBarController.swift:437
+exec
+/bin/bash -lc "sed -n '1,260p' .codex-scratch/specialists/architecture.md" in /tmp/tmp.jy1OGKWBWx/repo
+ succeeded in 0ms:
+## [architecture] findings
+
+### Surveyed
+- Phoenix app boundary and current focus from `README.md` / `docs/phoenix.md` — clean
+- Intent-to-implementation fit for installer autosizing via `SelfSizingHostingView` — clean
+- Split sizing ownership: splash frames in `InstallerView`, connectors self-sizing in `SettingsView` — clean
+- Host-screen cap propagation and clamp alignment for secondary displays — clean
+- Shared `SelfSizingHostingView` changes used by both menu bar and installer — see Finding 1
+- Tests around pure height policy and secondary-display cap behavior — clean
+
+### Finding 1 — low
+Could the temporary `PLO-35-DEBUG` probes be removed before merge instead of carrying issue-specific instrumentation through the shared window-sizing primitive? Under the Broken-Glass Test this is not a user-visible bug, but it adds debug-only branches and installer-specific logging to `SelfSizingHostingView`, `installerHeightCap`, and `installerWindowHeight`; that makes the shared sizing layer noisier and harder to reuse for the next UI surface. The low-cost remedy is deletion only: it removes conditionals and log paths without adding a fallback or new abstraction, which aligns with Concise Code and the repo rule to remove debug leftovers.
+Files: app/Phoenix/MenuBarController.swift:417, app/Phoenix/InstallerView.swift:83, app/Phoenix/InstallerView.swift:619, AGENTS.md:150
+exec
+/bin/bash -lc "sed -n '1,260p' .codex-scratch/specialists/simplification.md" in /tmp/tmp.jy1OGKWBWx/repo
+ succeeded in 0ms:
+## [simplification] findings
+
+### Surveyed
+- Kid prior-art surface — clean; `prior-art.md` is empty, so no score ≥ 0.75 duplication hits to keep or dismiss.
+- Two new SwiftUI height-preference emitters in `InstallerView` and `SettingsView` — clean; same mechanism, but separate semantic channels for content vs overlay height.
+- `installerWindowHeight(...)` helper and sizing tests — clean; small pure helper, direct cases, no unnecessary fallback chain.
+- `SelfSizingHostingView` promoted from menu-bar-only to shared installer usage — see Finding 1.
+- Added AppKit resize flags, `animatesWindowResize` and `clampsToScreen` — clean; defaults preserve the existing menu-bar behavior without branching at call sites.
+
+### Finding 1 — low
+Under the Broken-Glass Test, this is a code-local cleanup question, not a bug: now that `SelfSizingHostingView` is shared by the menu-bar panel and installer, could it stop living inside `MenuBarController.swift`? `PhoenixApp.swift` now depends on a sizing primitive hidden in a controller file whose surrounding context is menu-bar-specific, which makes the shared seam harder to find. The remedy cost is just a file move to a small `SelfSizingHostingView.swift`, with no new conditionals, special cases, or defensive branches.
+Files: app/Phoenix/MenuBarController.swift:396, app/Phoenix/PhoenixApp.swift:159
+exec
+/bin/bash -lc "sed -n '1,260p' .codex-scratch/specialists/performance.md" in /tmp/tmp.jy1OGKWBWx/repo
+exec
+/bin/bash -lc "sed -n '1,260p' .codex-scratch/specialists/consumers.md" in /tmp/tmp.jy1OGKWBWx/repo
+ succeeded in 0ms:
+## [performance] findings
+
+### Surveyed
+- `SettingsView` connector height measurement via `.onGeometryChange` — clean: constant-time geometry read plus 1pt deadband, no loop/I/O path (`app/Phoenix/SettingsView.swift:69`).
+- `installerWindowHeight` and `installerHeightCap` sizing helpers — clean: pure constant-time math with no data growth behavior (`app/Phoenix/InstallerView.swift:588`, `app/Phoenix/InstallerView.swift:625`).
+- `SelfSizingHostingView.syncWindowSize` intrinsic-size propagation — clean: constant AppKit frame calculation per invalidation, with early return when size already matches (`app/Phoenix/MenuBarController.swift:444`).
+- Overlay height measurement for `DownloadBarView` — clean: one geometry preference and deadbanded state update, no progress-rate work tied to content size (`app/Phoenix/InstallerView.swift:54`, `app/Phoenix/InstallerView.swift:127`).
+- Display-change cap refresh notifications — clean: rare OS notifications, no polling or per-frame screen scanning (`app/Phoenix/InstallerView.swift:106`, `app/Phoenix/InstallerView.swift:114`).
+- DEBUG `[PLO-35-DEBUG]` instrumentation in layout paths — clean for production performance because it is compiled under `#if DEBUG`, so it does not create a shipped runtime cost (`app/Phoenix/MenuBarController.swift:417`, `app/Phoenix/InstallerView.swift:633`).
+ succeeded in 0ms:
+## [consumers] findings
+
+### Surveyed
+- `SelfSizingHostingView<Content>` visibility and new configuration properties — clean; repo callers in `MenuBarPanel` and `InstallerWindowController` match the unchanged initializer and property writes at `app/Phoenix/MenuBarController.swift:375`, `app/Phoenix/MenuBarController.swift:396`, and `app/Phoenix/PhoenixApp.swift:159`.
+- `animatesWindowResize` / `clampsToScreen` consumers — clean; only the installer sets them, while the menu-bar panel uses default behavior at `app/Phoenix/PhoenixApp.swift:160` and `app/Phoenix/PhoenixApp.swift:164`.
+- `InstallerContentHeightKey` producer/consumer path — clean; `SettingsView` emits it and `InstallerView` consumes it at `app/Phoenix/SettingsView.swift:33` and `app/Phoenix/InstallerView.swift:114`.
+- `InstallerOverlayHeightKey` producer/consumer path — clean; `DownloadBarView` measurement is emitted and consumed in the same installer tree at `app/Phoenix/InstallerView.swift:73` and `app/Phoenix/InstallerView.swift:117`.
+- `installerWindowHeight(for:contentHeight:overlayHeight:cap:)` call graph — clean; used by production sizing and the added test coverage at `app/Phoenix/InstallerView.swift:82`, `app/Phoenix/InstallerView.swift:546`, and `app/PhoenixTests/InstallerStateTests.swift:134`.
+- Removed `updateWindowHeight(for:)` path — clean; repo grep found no remaining callers after the intrinsic-sizing replacement, so there is no stale internal call site.
+- Sibling search coverage for these symbols — clean; `.codex-scratch/search-roots.md` declares no included or missing sibling roots, and the touched symbols are Phoenix app-target internals rather than shared package APIs.
+exec
+/bin/bash -lc "sed -n '1,260p' .codex-scratch/specialists/shape.md" in /tmp/tmp.jy1OGKWBWx/repo
+ succeeded in 0ms:
+## [shape] findings
+
+### Surveyed
+- Reuse of `SelfSizingHostingView` for installer sizing instead of a fresh imperative `NSWindow.setFrame` lookup path — clean
+- `SettingsView` owning the connectors `ScrollView` frame and reporting height with `onGeometryChange` — clean
+- Host-display cap plumbing through `visibleFrameHeight` into `installerHeightCap` — clean
+- Splash/connectors height policy centralized in `installerWindowHeight` — clean
+- Temporary `[PLO-35-DEBUG]` diagnostics in production source shape — see Finding 1
+
+### Finding 1 — medium
+Broken-Glass Test / Name the Shape question: can the temporary diagnostic seam come out before merge? The PR’s spirit is auto-sizing the installer; the current shape carries many installer-only `#if DEBUG` log branches in both `InstallerView` and shared `SelfSizingHostingView`, keyed to `"installer"` and `[PLO-35-DEBUG]`. Even though debug-gated, this adds conditionals and special-case knowledge to the shared hosting-view seam, which violates Concise Code by making future PMF iteration harder to reason about. The author intent says this instrumentation should be reverted once verified, so this looks above the spirit-of-ask line rather than durable shape.
+Files: app/Phoenix/InstallerView.swift:83, app/Phoenix/InstallerView.swift:589, app/Phoenix/MenuBarController.swift:417
+exec
+/bin/bash -lc "sed -n '1,260p' .codex-scratch/specialists/tests.md" in /tmp/tmp.jy1OGKWBWx/repo
+ succeeded in 0ms:
+## [tests] findings
+
+### Surveyed
+- Recorded `just test` output — unavailable locally; `.codex-scratch/test-results.md` was missing, so I could not classify run failures
+- Added `InstallerWindowSizeTests` for `installerWindowHeight` math — clean for pure height/cap cases
+- Secondary-display cap regression tests — see Finding 2
+- New `SettingsView` `onGeometryChange` measurement path — see Finding 1
+- `SelfSizingHostingView` installer sizing/clamp flags — clean for scope; behavior is indirectly covered by the cap math, not by AppKit frame tests
+- Existing Phoenix test patterns — clean; current suite is mostly pure/unit tests with no established SwiftUI hosting harness
+
+### Finding 1 — blocking
+This PR’s core bug fix moved from pure height math to `SettingsView`’s `onGeometryChange` feeding `measuredContentHeight`, but the tests still only call `installerWindowHeight` with synthetic non-zero heights. That is the exact gap the PR history says let prior rounds pass while the real connectors window stayed at 530. A regression that removes or breaks the measurement at `SettingsView.swift:69` would leave users seeing the scrollbar/overlap again while every added test still passes. The lowest-cost seam is a tiny internal measurement host or extracted `AutoSizingScrollView` with a `Binding<CGFloat>`, hosted in an `NSHostingView` test and asserted to publish a non-zero height after layout.
+Files: app/Phoenix/SettingsView.swift:69, app/PhoenixTests/InstallerStateTests.swift:131
+
+### Finding 2 — blocking
+The round-3 fix depends on `InstallerView` refreshing `visibleFrameHeight` from both `NSWindow.didChangeScreenNotification` and `NSApplication.didChangeScreenParametersNotification`, but the regression tests stop at `installerHeightCap(visibleFrameHeight:)`. If either observer is deleted or stops calling `refreshVisibleFrameHeight`, `testSecondaryDisplayCapPreventsOversize` still passes because it injects the final height directly. That misses the user-visible failure: after display reconfiguration, the installer can size against a stale cap and slide under the Dock. A compact seam would be an internal `VisibleFrameHeightTracker`/provider function injected with window/main-screen readers and driven by notification handlers, avoiding extra defensive branches while making the state transition testable.
+Files: app/Phoenix/InstallerView.swift:106, app/Phoenix/InstallerView.swift:114, app/PhoenixTests/InstallerStateTests.swift:225
+exec
+/bin/bash -lc "sed -n '1,260p' .codex-scratch/diff.patch" in /tmp/tmp.jy1OGKWBWx/repo
+ succeeded in 0ms:
+diff --git a/app/Phoenix/InstallerView.swift b/app/Phoenix/InstallerView.swift
+index 537ed1e7..49cdca0d 100644
+--- a/app/Phoenix/InstallerView.swift
++++ b/app/Phoenix/InstallerView.swift
+@@ -10,6 +10,8 @@ struct InstallerView: View {
+     @State private var showWelcomeRows = false
+     @State private var connectorPollTimer: Timer?
+     @State private var fdaBubblesVisible = false
++    @State private var measuredContentHeight: CGFloat = 0
++    @State private var measuredOverlayHeight: CGFloat = 0
+ 
+     private var screen: InstallerScreen {
+         let s = resolveInstallerScreen(
+@@ -65,14 +67,34 @@ struct InstallerView: View {
+                     subLabel: client.headerSubLabel,
+                     downloadManager: downloadManager
+                 )
++                .background(
++                    GeometryReader { geo in
++                        Color.clear.preference(
++                            key: InstallerOverlayHeightKey.self,
++                            value: geo.size.height
++                        )
++                    }
++                )
+             }
+         }
+-        .frame(width: 680)
++        .frame(
++            width: 680,
++            height: installerWindowHeight(
++                for: screen,
++                contentHeight: measuredContentHeight,
++                overlayHeight: measuredOverlayHeight,
++                cap: installerHeightCap()
++            )
++        )
++        // No SwiftUI implicit animation on the height plumbing — AppKit's
++        // setFrame animator (driven by SelfSizingHostingView when
++        // animatesWindowResize is true) owns the resize animation. Stacking
++        // both engines was restarting the AppKit animator on every SwiftUI
++        // intermediate frame, producing visible jitter mid-resize.
+         .onAppear {
+             refreshInstallerState()
+             finalizePermissionsIfNeeded()
+             updateConnectorPolling()
+-            updateWindowHeight(for: screen)
+             if screen == .welcomeInstall && !showWelcomeRows {
+                 animateWelcomeRows()
+             }
+@@ -84,7 +106,16 @@ struct InstallerView: View {
+         .onChange(of: screen) {
+             finalizePermissionsIfNeeded()
+             updateConnectorPolling()
+-            updateWindowHeight(for: screen)
++        }
++        // 1pt deadband on the measured-height inputs — sub-pixel layout
++        // jitter during the settle pass would otherwise re-trigger the
++        // AppKit setFrame animator and produce a visible micro-shimmy after
++        // every screen transition.
++        .onPreferenceChange(InstallerContentHeightKey.self) { newHeight in
++            if abs(measuredContentHeight - newHeight) > 1 { measuredContentHeight = newHeight }
++        }
++        .onPreferenceChange(InstallerOverlayHeightKey.self) { newHeight in
++            if abs(measuredOverlayHeight - newHeight) > 1 { measuredOverlayHeight = newHeight }
+         }
+         .onChange(of: downloadManager.runtimeLaunchReady) {
+             if agentReady {
+@@ -485,23 +516,68 @@ struct InstallerView: View {
+         }
+     }
+ 
+-    private func updateWindowHeight(for screen: InstallerScreen) {
+-        guard let window = NSApp.windows.first(where: { $0.identifier?.rawValue == "installer" }) else { return }
+-        let targetHeight: CGFloat = screen == .connectors ? 610 : 530
+-        let currentFrame = window.frame
+-        guard abs(currentFrame.height - targetHeight) > 1 else { return }
+-        let newOriginY = currentFrame.origin.y + (currentFrame.height - targetHeight)
+-        let newFrame = NSRect(
+-            x: currentFrame.origin.x,
+-            y: newOriginY,
+-            width: currentFrame.width,
+-            height: targetHeight
+-        )
+-        NSAnimationContext.runAnimationGroup { context in
+-            context.duration = 0.45
+-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+-            window.animator().setFrame(newFrame, display: true)
+-        }
++    private func installerHeightCap() -> CGFloat {
++        // Leave 80pt of slack so a maximally-grown window doesn't touch the
++        // menu bar or Dock. The 420pt floor protects against degenerate
++        // visibleFrame values (multi-display reconfigurations, etc.).
++        max(420, (NSScreen.main?.visibleFrame.height ?? 900) - 80)
++    }
++}
++
++/// Pure mapping from screen state + measured intrinsic heights → desired
++/// installer window height. Splash screens (welcomeInstall / welcomeFDA /
++/// activation / connectContext) keep the design height of 530 because they
++/// fill via `Spacer`s rather than intrinsic content. The connectors screen
++/// sizes to its inner SettingsView content (reported via
++/// `InstallerContentHeightKey`) plus the bottom-anchored DownloadBarView's
++/// height (reported via `InstallerOverlayHeightKey`, zero when absent), and
++/// is capped so a long settings list falls back to scrolling inside
++/// SettingsView's existing ScrollView rather than pushing the window
++/// off-screen.
++///
++/// Returns 530 (the splash height) for connectors when no measurement has
++/// arrived yet — better to render at the design height for one frame than
++/// flash a degenerate window.
++///
++/// The cap applies to *all* screens, including splash: on a degenerate
++/// `visibleFrame` (multi-display reconfiguration, sidecar with a tiny
++/// secondary display, etc.) the cap may drop below 530, in which case
++/// fitting the visible frame matters more than honoring the design height.
++func installerWindowHeight(
++    for screen: InstallerScreen,
++    contentHeight: CGFloat,
++    overlayHeight: CGFloat,
++    cap: CGFloat
++) -> CGFloat {
++    let splashHeight: CGFloat = 530
++    let unclamped: CGFloat = {
++        guard screen == .connectors, contentHeight > 0 else { return splashHeight }
++        return contentHeight + overlayHeight
++    }()
++    return min(unclamped, cap)
++}
++
++/// SwiftUI preference key carrying the measured intrinsic height of the
++/// active installer screen up to `InstallerView`, which feeds it into the
++/// outer `.frame(height:)` and from there into the hosting view's
++/// intrinsicContentSize. Emitted by `SettingsView` (the only screen whose
++/// content can grow as connectors/containers come and go); unspecified for
++/// the splash screens, which use a design-set fixed height.
++struct InstallerContentHeightKey: PreferenceKey {
++    static var defaultValue: CGFloat = 0
++    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
++        value = nextValue()
++    }
++}
++
++/// Carries the bottom-anchored `DownloadBarView`'s measured height up to
++/// `InstallerView` so the connectors-screen window can grow to keep the
++/// settings content above the bar (including the taller "retry" state).
++/// Reverts to zero when the bar isn't in the view tree (post-install).
++struct InstallerOverlayHeightKey: PreferenceKey {
++    static var defaultValue: CGFloat = 0
++    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
++        value = nextValue()
+     }
+ }
+ 
+diff --git a/app/Phoenix/MenuBarController.swift b/app/Phoenix/MenuBarController.swift
+index 709dfb63..ed06eb34 100644
+--- a/app/Phoenix/MenuBarController.swift
++++ b/app/Phoenix/MenuBarController.swift
+@@ -393,30 +393,61 @@ final class MenuBarPanel: NSPanel {
+ /// treats the SwiftUI ideal as *content-area* size and then adds the titlebar
+ /// back on — producing a window that is taller than the content by exactly
+ /// the titlebar height.
+-private final class SelfSizingHostingView<Content: View>: NSHostingView<Content> {
++final class SelfSizingHostingView<Content: View>: NSHostingView<Content> {
++    /// When true, intrinsic-driven resizes (after the initial sizing) animate
++    /// via AppKit's setFrame animator. The menu-bar panel keeps this off
++    /// because it has its own fade orchestration; the installer window flips
++    /// it on so screen transitions resize smoothly instead of snapping.
++    var animatesWindowResize: Bool = false
++
++    /// When true, the post-resize frame is clamped to the host screen's
++    /// `visibleFrame` so growth (which pins the top edge and pushes the
++    /// bottom down) cannot slide the window under the Dock or above the
++    /// menu bar. The menu-bar panel keeps this off because it's anchored
++    /// to the menu bar by construction; floating windows that the user
++    /// repositions (the installer is `window.center()`-ed at open) need
++    /// the clamp because top-edge pinning otherwise compounds with growth
++    /// to march the window off-screen on tall content / small displays.
++    var clampsToScreen: Bool = false
++
+     override var safeAreaInsets: NSEdgeInsets { NSEdgeInsets() }
+ 
+     override func invalidateIntrinsicContentSize() {
+         super.invalidateIntrinsicContentSize()
+-        syncWindowSize()
++        syncWindowSize(animate: animatesWindowResize)
+     }
+ 
+     override func viewDidMoveToWindow() {
+         super.viewDidMoveToWindow()
+-        syncWindowSize()
++        // Initial sizing (window just opened) should never animate — there's
++        // no prior frame to animate from.
++        syncWindowSize(animate: false)
+     }
+ 
+-    private func syncWindowSize() {
++    private func syncWindowSize(animate: Bool) {
+         guard let window else { return }
+         let size = intrinsicContentSize
+         guard size.width > 0, size.height > 0 else { return }
+         if window.frame.size == size { return }
+-        // Pin the top edge — the menu-bar anchor is at the top of the panel,
+-        // so growth must expand downward rather than upward.
++        // Pin the top edge — both the menu-bar panel and the installer window
++        // anchor visually at the top, so growth must expand downward.
+         var frame = window.frame
+         frame.origin.y += frame.size.height - size.height
+         frame.size = size
+-        window.setFrame(frame, display: true, animate: false)
++        if clampsToScreen, let visibleFrame = (window.screen ?? NSScreen.main)?.visibleFrame {
++            // Fix the top edge first, then the bottom — order matters so
++            // the bottom adjustment wins when the window is taller than
++            // the visible frame (degenerate; cap is supposed to prevent
++            // it). Result in that case: top pinned to visibleFrame.minY,
++            // bottom may extend above visibleFrame.maxY.
++            if frame.maxY > visibleFrame.maxY {
++                frame.origin.y = visibleFrame.maxY - frame.height
++            }
++            if frame.minY < visibleFrame.minY {
++                frame.origin.y = visibleFrame.minY
++            }
++        }
++        window.setFrame(frame, display: true, animate: animate)
+     }
+ }
+ 
+diff --git a/app/Phoenix/PhoenixApp.swift b/app/Phoenix/PhoenixApp.swift
+index 11b63e2f..5dbe041f 100644
+--- a/app/Phoenix/PhoenixApp.swift
++++ b/app/Phoenix/PhoenixApp.swift
+@@ -150,7 +150,18 @@ final class InstallerWindowController: NSObject, NSWindowDelegate {
+                 Task { @MainActor in client.openMessagesPromptToManagedPhone() }
+             }
+         )
+-        let hostingView = NSHostingView(rootView: view)
++        // SelfSizingHostingView keeps the window frame in sync with the
++        // SwiftUI tree's intrinsic size — InstallerView pins that via its
++        // outer `.frame(width: 680, height: installerWindowHeight(...))`,
++        // so the window grows/shrinks declaratively as the active screen
++        // and its measured content change. Replaces the prior imperative
++        // `setFrame` path that fought AppKit's intrinsic re-pinning.
++        let hostingView = SelfSizingHostingView(rootView: view)
++        hostingView.animatesWindowResize = true
++        // The installer is `window.center()`-ed at open; without clamping,
++        // top-edge-pinned growth past the visible frame can slide its
++        // bottom edge under the Dock on smaller displays.
++        hostingView.clampsToScreen = true
+ 
+         NSApp.setActivationPolicy(.regular)
+ 
+@@ -161,7 +172,6 @@ final class InstallerWindowController: NSObject, NSWindowDelegate {
+             defer: false
+         )
+         window.contentView = hostingView
+-        window.setContentSize(NSSize(width: 680, height: 530))
+         window.backgroundColor = NSColor(red: 0.07, green: 0.08, blue: 0.07, alpha: 1)
+         // Pin the window (and any NSPopover it hosts) to dark appearance so popovers/alerts
+         // don't render with light system material when the user is in Light Mode.
+diff --git a/app/Phoenix/SettingsView.swift b/app/Phoenix/SettingsView.swift
+
+exec
+/bin/bash -lc "sed -n '1,220p' .codex-scratch/inferred-intent.md" in /tmp/tmp.jy1OGKWBWx/repo
+ succeeded in 0ms:
+Inferred intent: It appears @swagatpatel is working towards making the Phoenix installer feel correctly sized during setup, especially on the connectors screen where settings rows and retry/download bar states can otherwise be clipped or pushed off-screen, by wiring `InstallerView`/`SettingsView` height measurements into `SelfSizingHostingView` in `PhoenixApp.swift` and covering the sizing rules in `InstallerWindowSizeTests`.
+exec
+/bin/bash -lc "sed -n '1,220p' .codex-scratch/author-intent.md" in /tmp/tmp.jy1OGKWBWx/repo
+ succeeded in 0ms:
+exec
+/bin/bash -lc "test -f .codex-scratch/trigger-comment.md && sed -n '1,220p' .codex-scratch/trigger-comment.md || true" in /tmp/tmp.jy1OGKWBWx/repo
+ succeeded in 0ms:
+exec
+/bin/bash -lc "sed -n '1,220p' .codex-scratch/file-history.md" in /tmp/tmp.jy1OGKWBWx/repo
+exec
+/bin/bash -lc "sed -n '261,520p' .codex-scratch/diff.patch" in /tmp/tmp.jy1OGKWBWx/repo
+ succeeded in 0ms:
+ succeeded in 0ms:
+index 0947b1ea..24947fb1 100644
+--- a/app/Phoenix/SettingsView.swift
++++ b/app/Phoenix/SettingsView.swift
+@@ -27,6 +27,14 @@ struct SettingsView: View {
+             .padding(.horizontal, 40)
+             .padding(.top, 40)
+             .padding(.bottom, 50)
++            .background(
++                GeometryReader { geo in
++                    Color.clear.preference(
++                        key: InstallerContentHeightKey.self,
++                        value: geo.size.height
++                    )
++                }
++            )
+         }
+         .alert("Not Available", isPresented: $showNotBuiltAlert) {
+             Button("OK") {}
+diff --git a/app/PhoenixTests/InstallerStateTests.swift b/app/PhoenixTests/InstallerStateTests.swift
+index 43fa4e96..9869d332 100644
+--- a/app/PhoenixTests/InstallerStateTests.swift
++++ b/app/PhoenixTests/InstallerStateTests.swift
+@@ -114,3 +114,81 @@ final class InstallerStateTests: XCTestCase {
+         )
+     }
+ }
++
++// MARK: - Installer window sizing
++
++/// Covers `installerWindowHeight(for:contentHeight:overlayHeight:cap:)` —
++/// the pure helper that drives the installer NSWindow's height. Splash
++/// screens must always render at the design height (530); the connectors
++/// screen must size to its measured intrinsic content (plus the
++/// download-bar overlay when present), capped to the available screen so
++/// the existing ScrollView fallback re-engages on overflow.
++final class InstallerWindowSizeTests: XCTestCase {
++
++    private let designHeight: CGFloat = 530
++    private let cap: CGFloat = 800
++
++    func testSplashScreensUseDesignHeight() {
++        for screen in [InstallerScreen.welcomeInstall, .welcomeFDA, .activation, .connectContext] {
++            XCTAssertEqual(
++                installerWindowHeight(for: screen, contentHeight: 1200, overlayHeight: 200, cap: cap),
++                designHeight,
++                "splash screen \(screen) must ignore measured content and stay at design height"
++            )
++        }
++    }
++
++    func testConnectorsWithoutMeasurementFallsBackToDesignHeight() {
++        XCTAssertEqual(
++            installerWindowHeight(for: .connectors, contentHeight: 0, overlayHeight: 0, cap: cap),
++            designHeight,
++            "before content measures, render at the splash height — never zero"
++        )
++    }
++
++    func testConnectorsSizesToMeasuredContentBelowCap() {
++        XCTAssertEqual(
++            installerWindowHeight(for: .connectors, contentHeight: 480, overlayHeight: 0, cap: cap),
++            480
++        )
++    }
++
++    func testConnectorsAddsOverlayHeightToContent() {
++        // The DownloadBarView overlays the bottom of the ZStack — add its
++        // measured height so settings rows aren't hidden behind it.
++        XCTAssertEqual(
++            installerWindowHeight(for: .connectors, contentHeight: 480, overlayHeight: 70, cap: cap),
++            550
++        )
++    }
++
++    func testConnectorsCapsAtVisibleScreen() {
++        // Content + overlay would push past the cap → cap wins so the
++        // existing ScrollView fallback inside SettingsView re-engages.
++        XCTAssertEqual(
++            installerWindowHeight(for: .connectors, contentHeight: 1500, overlayHeight: 100, cap: cap),
++            cap
++        )
++    }
++
++    func testConnectorsRetryStateGrowsWindowWithBar() {
++        // The retry state grows the DownloadBarView (extra Retry button row)
++        // — the window must grow with it so settings content stays visible.
++        // Assert exact values so a sign-flip in the helper still trips.
++        let normal = installerWindowHeight(for: .connectors, contentHeight: 480, overlayHeight: 60, cap: cap)
++        let retry = installerWindowHeight(for: .connectors, contentHeight: 480, overlayHeight: 100, cap: cap)
++        XCTAssertEqual(normal, 540)
++        XCTAssertEqual(retry, 580)
++    }
++
++    func testSplashIsCappedOnDegenerateVisibleFrame() {
++        // If the visibleFrame collapses (multi-display reconfig, sidecar
++        // with a tiny secondary display), the cap may drop below the 530
++        // splash design height. Splash must respect the cap so it doesn't
++        // overflow the visible screen.
++        XCTAssertEqual(
++            installerWindowHeight(for: .welcomeInstall, contentHeight: 0, overlayHeight: 0, cap: 400),
++            400
++        )
++    }
++}
+
+exec
+/bin/bash -lc "sed -n '1,220p' .codex-scratch/commits.md" in /tmp/tmp.jy1OGKWBWx/repo
+ succeeded in 0ms:
+exec
+/bin/bash -lc "sed -n '1,220p' .codex-scratch/product-context.md 2>/dev/null || true" in /tmp/tmp.jy1OGKWBWx/repo
+ succeeded in 0ms:
+codex
+The patch itself is small and focused on Phoenix installer sizing: SwiftUI height preferences, shared `SelfSizingHostingView`, and pure sizing tests. Several scratch context files are empty, including author intent, file history, commits, prior reviews, previous review, LOC trend, and review priority, so there is no carry-forward or decline evidence to apply.
+exec
+/bin/bash -lc 'wc -c .codex-scratch/standards.md .codex-scratch/author-intent.md .codex-scratch/file-history.md .codex-scratch/commits.md .codex-scratch/loc-trend.md .codex-scratch/prior-reviews.md .codex-scratch/decline-history.md .codex-scratch/previous-review.md .codex-scratch/review-priority.md' in /tmp/tmp.jy1OGKWBWx/repo
+ succeeded in 0ms:
+0 .codex-scratch/standards.md
+0 .codex-scratch/author-intent.md
+0 .codex-scratch/file-history.md
+0 .codex-scratch/commits.md
+0 .codex-scratch/loc-trend.md
+0 .codex-scratch/prior-reviews.md
+0 .codex-scratch/decline-history.md
+0 .codex-scratch/previous-review.md
+0 .codex-scratch/review-priority.md
+0 total
+
+exec
+/bin/bash -lc "nl -ba app/Phoenix/InstallerView.swift | sed -n '500,680p'" in /tmp/tmp.jy1OGKWBWx/repo
+ succeeded in 0ms:
+   500	            startPoint: .topLeading,
+   501	            endPoint: .bottomTrailing
+   502	        )
+   503	    }
+   504	
+   505	    private var installerPanel: Color { PlowTheme.panel }
+   506	    private var installerChrome: Color { PlowTheme.chrome }
+   507	    private var installerMutedText: Color { PlowTheme.mutedText }
+   508	    private var installerAccent: Color { PlowTheme.accent }
+   509	    private var installerSuccess: Color { PlowTheme.success }
+   510	    private var installerWarning: Color { PlowTheme.warning }
+   511	
+   512	    private func animateWelcomeRows() {
+   513	        showWelcomeRows = false
+   514	        DispatchQueue.main.async {
+   515	            showWelcomeRows = true
+   516	        }
+   517	    }
+   518	
+   519	    private func installerHeightCap() -> CGFloat {
+   520	        // Leave 80pt of slack so a maximally-grown window doesn't touch the
+   521	        // menu bar or Dock. The 420pt floor protects against degenerate
+   522	        // visibleFrame values (multi-display reconfigurations, etc.).
+   523	        max(420, (NSScreen.main?.visibleFrame.height ?? 900) - 80)
+   524	    }
+   525	}
+   526	
+   527	/// Pure mapping from screen state + measured intrinsic heights → desired
+   528	/// installer window height. Splash screens (welcomeInstall / welcomeFDA /
+   529	/// activation / connectContext) keep the design height of 530 because they
+   530	/// fill via `Spacer`s rather than intrinsic content. The connectors screen
+   531	/// sizes to its inner SettingsView content (reported via
+   532	/// `InstallerContentHeightKey`) plus the bottom-anchored DownloadBarView's
+   533	/// height (reported via `InstallerOverlayHeightKey`, zero when absent), and
+   534	/// is capped so a long settings list falls back to scrolling inside
+   535	/// SettingsView's existing ScrollView rather than pushing the window
+   536	/// off-screen.
+   537	///
+   538	/// Returns 530 (the splash height) for connectors when no measurement has
+   539	/// arrived yet — better to render at the design height for one frame than
+   540	/// flash a degenerate window.
+   541	///
+   542	/// The cap applies to *all* screens, including splash: on a degenerate
+   543	/// `visibleFrame` (multi-display reconfiguration, sidecar with a tiny
+   544	/// secondary display, etc.) the cap may drop below 530, in which case
+   545	/// fitting the visible frame matters more than honoring the design height.
+   546	func installerWindowHeight(
+   547	    for screen: InstallerScreen,
+   548	    contentHeight: CGFloat,
+   549	    overlayHeight: CGFloat,
+   550	    cap: CGFloat
+   551	) -> CGFloat {
+   552	    let splashHeight: CGFloat = 530
+   553	    let unclamped: CGFloat = {
+   554	        guard screen == .connectors, contentHeight > 0 else { return splashHeight }
+   555	        return contentHeight + overlayHeight
+   556	    }()
+   557	    return min(unclamped, cap)
+   558	}
+   559	
+   560	/// SwiftUI preference key carrying the measured intrinsic height of the
+   561	/// active installer screen up to `InstallerView`, which feeds it into the
+   562	/// outer `.frame(height:)` and from there into the hosting view's
+   563	/// intrinsicContentSize. Emitted by `SettingsView` (the only screen whose
+   564	/// content can grow as connectors/containers come and go); unspecified for
+   565	/// the splash screens, which use a design-set fixed height.
+   566	struct InstallerContentHeightKey: PreferenceKey {
+   567	    static var defaultValue: CGFloat = 0
+   568	    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+   569	        value = nextValue()
+   570	    }
+   571	}
+   572	
+   573	/// Carries the bottom-anchored `DownloadBarView`'s measured height up to
+   574	/// `InstallerView` so the connectors-screen window can grow to keep the
+   575	/// settings content above the bar (including the taller "retry" state).
+   576	/// Reverts to zero when the bar isn't in the view tree (post-install).
+   577	struct InstallerOverlayHeightKey: PreferenceKey {
+   578	    static var defaultValue: CGFloat = 0
+   579	    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+   580	        value = nextValue()
+   581	    }
+   582	}
+   583	
+   584	struct InstallPrimaryButtonStyle: ButtonStyle {
+   585	    func makeBody(configuration: Configuration) -> some View {
+   586	        configuration.label
+   587	            .font(.system(size: 14, weight: .bold))
+   588	            .foregroundColor(Color.black.opacity(0.84))
+   589	            .padding(.horizontal, 28)
+   590	            .frame(height: 46)
+   591	            .background(
+   592	                RoundedRectangle(cornerRadius: 10, style: .continuous)
+   593	                    .fill(PlowTheme.accent)
+   594	                    .brightness(configuration.isPressed ? -0.04 : 0)
+   595	            )
+   596	            .scaleEffect(configuration.isPressed ? 0.985 : 1.0)
+   597	            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+   598	    }
+   599	}
+
+exec
+/bin/bash -lc "nl -ba app/Phoenix/InstallerView.swift | sed -n '1,170p'" in /tmp/tmp.jy1OGKWBWx/repo
+ succeeded in 0ms:
+     1	import AppKit
+     2	import SwiftUI
+     3	
+     4	struct InstallerView: View {
+     5	    let downloadManager: RuntimeDownloadManager
+     6	    let client: DaemonClient
+     7	    var onDismiss: () -> Void
+     8	
+     9	    @State private var started = false
+    10	    @State private var showWelcomeRows = false
+    11	    @State private var connectorPollTimer: Timer?
+    12	    @State private var fdaBubblesVisible = false
+    13	    @State private var measuredContentHeight: CGFloat = 0
+    14	    @State private var measuredOverlayHeight: CGFloat = 0
+    15	
+    16	    private var screen: InstallerScreen {
+    17	        let s = resolveInstallerScreen(
+    18	            started: started,
+    19	            hasCompletedInstall: client.hasCompletedInstall,
+    20	            hasCompletedOnboarding: client.hasCompletedOnboarding,
+    21	            hasFullDiskAccess: client.hasFullDiskAccess,
+    22	            activationState: client.activationState,
+    23	            hasLocalActivationToken: client.hasLocalActivationToken,
+    24	            activationErrorMessage: client.activationErrorMessage
+    25	        )
+    26	        #if DEBUG
+    27	        NSLog("[Installer] screen=%@ (activationState=%@, errorMsg=%@, hasToken=%d, started=%d)",
+    28	              "\(s)", "\(client.activationState)",
+    29	              client.activationErrorMessage ?? "nil",
+    30	              client.hasLocalActivationToken ? 1 : 0,
+    31	              started ? 1 : 0)
+    32	        #endif
+    33	        return s
+    34	    }
+    35	
+    36	    var body: some View {
+    37	        ZStack(alignment: .bottom) {
+    38	            Group {
+    39	                switch screen {
+    40	                case .welcomeInstall:
+    41	                    installScreen
+    42	                case .welcomeFDA:
+    43	                    fdaScreen
+    44	                case .activation:
+    45	                    activationScreen
+    46	                case .connectContext:
+    47	                    ConnectorInterstitialView(
+    48	                        progressDotIndex: screen.progressDotIndex ?? 0,
+    49	                        progressDotCount: InstallerScreen.progressDotCount
+    50	                    ) {
+    51	                        client.completeOnboarding()
+    52	                    }
+    53	                case .connectors:
+    54	                    SettingsView(
+    55	                        client: client,
+    56	                        downloadManager: downloadManager,
+    57	                        onDismiss: onDismiss
+    58	                    )
+    59	                }
+    60	            }
+    61	            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    62	            .background(installerBackground)
+    63	
+    64	            if started && !client.hasCompletedInstall {
+    65	                DownloadBarView(
+    66	                    state: client.headerState,
+    67	                    subLabel: client.headerSubLabel,
+    68	                    downloadManager: downloadManager
+    69	                )
+    70	                .background(
+    71	                    GeometryReader { geo in
+    72	                        Color.clear.preference(
+    73	                            key: InstallerOverlayHeightKey.self,
+    74	                            value: geo.size.height
+    75	                        )
+    76	                    }
+    77	                )
+    78	            }
+    79	        }
+    80	        .frame(
+    81	            width: 680,
+    82	            height: installerWindowHeight(
+    83	                for: screen,
+    84	                contentHeight: measuredContentHeight,
+    85	                overlayHeight: measuredOverlayHeight,
+    86	                cap: installerHeightCap()
+    87	            )
+    88	        )
+    89	        // No SwiftUI implicit animation on the height plumbing — AppKit's
+    90	        // setFrame animator (driven by SelfSizingHostingView when
+    91	        // animatesWindowResize is true) owns the resize animation. Stacking
+    92	        // both engines was restarting the AppKit animator on every SwiftUI
+    93	        // intermediate frame, producing visible jitter mid-resize.
+    94	        .onAppear {
+    95	            refreshInstallerState()
+    96	            finalizePermissionsIfNeeded()
+    97	            updateConnectorPolling()
+    98	            if screen == .welcomeInstall && !showWelcomeRows {
+    99	                animateWelcomeRows()
+   100	            }
+   101	        }
+   102	        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+   103	            refreshInstallerState()
+   104	            finalizePermissionsIfNeeded()
+   105	        }
+   106	        .onChange(of: screen) {
+   107	            finalizePermissionsIfNeeded()
+   108	            updateConnectorPolling()
+   109	        }
+   110	        // 1pt deadband on the measured-height inputs — sub-pixel layout
+   111	        // jitter during the settle pass would otherwise re-trigger the
+   112	        // AppKit setFrame animator and produce a visible micro-shimmy after
+   113	        // every screen transition.
+   114	        .onPreferenceChange(InstallerContentHeightKey.self) { newHeight in
+   115	            if abs(measuredContentHeight - newHeight) > 1 { measuredContentHeight = newHeight }
+   116	        }
+   117	        .onPreferenceChange(InstallerOverlayHeightKey.self) { newHeight in
+   118	            if abs(measuredOverlayHeight - newHeight) > 1 { measuredOverlayHeight = newHeight }
+   119	        }
+   120	        .onChange(of: downloadManager.runtimeLaunchReady) {
+   121	            if agentReady {
+   122	                client.completeInstall()
+   123	            }
+   124	        }
+   125	        .onChange(of: client.isConnected) {
+   126	            if agentReady {
+   127	                client.completeInstall()
+   128	            }
+   129	        }
+   130	        .onChange(of: client.activationState) {
+   131	            finalizePermissionsIfNeeded()
+   132	        }
+   133	        .onDisappear {
+   134	            connectorPollTimer?.invalidate()
+   135	            connectorPollTimer = nil
+   136	        }
+   137	        // The installer window is always dark-themed; pin SwiftUI overlays (popovers,
+   138	        // alerts, menus) to dark so they don't render with light system material when
+   139	        // the user's system is in Light Mode.
+   140	        .preferredColorScheme(.dark)
+   141	    }
+   142	
+   143	    private var installScreen: some View {
+   144	        VStack(spacing: 0) {
+   145	            Spacer()
+   146	
+   147	            plowLogoHero
+   148	                .padding(.bottom, 22)
+   149	
+   150	            Text("The Mac sandbox OpenClaw\nplays nicely in")
+   151	                .font(.custom("Baskerville-Italic", size: 30))
+   152	                .foregroundColor(.white)
+   153	                .multilineTextAlignment(.center)
+   154	                .lineSpacing(4)
+   155	                .padding(.bottom, 8)
+   156	
+   157	            Text("Text your agents. No terminal. No config. No drama.")
+   158	                .font(.system(size: 14, weight: .medium))
+   159	                .foregroundColor(installerMutedText)
+   160	                .multilineTextAlignment(.center)
+   161	                .padding(.bottom, 20)
+   162	
+   163	            VStack(spacing: 8) {
+   164	                storageCheckRow(
+   165	                    passed: true,
+   166	                    content: Text("Needs ") + Text("8.0 GB").fontWeight(.semibold).foregroundColor(.white) + Text(" of free space"),
+   167	                    index: 0
+   168	                )
+   169	                storageCheckRow(
+   170	                    passed: diskSpaceEnough,
+
+exec
+/bin/bash -lc "nl -ba app/Phoenix/MenuBarController.swift | sed -n '360,480p'" in /tmp/tmp.jy1OGKWBWx/repo
+ succeeded in 0ms:
+   360	        // `contentView` directly. Using a view controller makes AppKit pin its
+   361	        // view to `contentLayoutRect`, which excludes the titlebar even with
+   362	        // `.fullSizeContentView` — that pinning is exactly what leaves an
+   363	        // empty titlebar-height strip above the SwiftUI content. As the
+   364	        // contentView, the hosting view fills the entire window frame, and
+   365	        // we size the window from the hosting view's intrinsic size below.
+   366	        // `#if compiler(>=6.2)` gates on the macOS 26 SDK (Xcode 26 / Swift
+   367	        // 6.2): `glassEffect`, `.regular`, and `.rect` aren't declared in the
+   368	        // macOS 15 SDK, so a plain `if #available` wouldn't parse when this
+   369	        // repo is built with Xcode 16. The runtime `if #available` inside
+   370	        // still falls back to `.regularMaterial` on pre-Tahoe when the binary
+   371	        // is compiled with the new SDK.
+   372	        let hosting: NSView
+   373	        #if compiler(>=6.2)
+   374	        if #available(macOS 26.0, *) {
+   375	            hosting = SelfSizingHostingView(rootView: rootView.scrollContentBackground(.hidden).glassEffect(.regular, in: .rect))
+   376	        } else {
+   377	            hosting = SelfSizingHostingView(rootView: rootView.scrollContentBackground(.hidden).background(.regularMaterial))
+   378	        }
+   379	        #else
+   380	        hosting = SelfSizingHostingView(rootView: rootView.scrollContentBackground(.hidden).background(.regularMaterial))
+   381	        #endif
+   382	        contentView = hosting
+   383	    }
+   384	
+   385	    override var canBecomeKey: Bool { true }
+   386	    override var canBecomeMain: Bool { false }
+   387	}
+   388	
+   389	/// NSHostingView that zeroes its safe-area insets (so a hidden titlebar above
+   390	/// doesn't inflate SwiftUI's ideal size) and keeps its hosting window sized
+   391	/// to the SwiftUI content's intrinsic height. We drive the window frame
+   392	/// directly rather than going through `setContentSize`, because the latter
+   393	/// treats the SwiftUI ideal as *content-area* size and then adds the titlebar
+   394	/// back on — producing a window that is taller than the content by exactly
+   395	/// the titlebar height.
+   396	final class SelfSizingHostingView<Content: View>: NSHostingView<Content> {
+   397	    /// When true, intrinsic-driven resizes (after the initial sizing) animate
+   398	    /// via AppKit's setFrame animator. The menu-bar panel keeps this off
+   399	    /// because it has its own fade orchestration; the installer window flips
+   400	    /// it on so screen transitions resize smoothly instead of snapping.
+   401	    var animatesWindowResize: Bool = false
+   402	
+   403	    /// When true, the post-resize frame is clamped to the host screen's
+   404	    /// `visibleFrame` so growth (which pins the top edge and pushes the
+   405	    /// bottom down) cannot slide the window under the Dock or above the
+   406	    /// menu bar. The menu-bar panel keeps this off because it's anchored
+   407	    /// to the menu bar by construction; floating windows that the user
+   408	    /// repositions (the installer is `window.center()`-ed at open) need
+   409	    /// the clamp because top-edge pinning otherwise compounds with growth
+   410	    /// to march the window off-screen on tall content / small displays.
+   411	    var clampsToScreen: Bool = false
+   412	
+   413	    override var safeAreaInsets: NSEdgeInsets { NSEdgeInsets() }
+   414	
+   415	    override func invalidateIntrinsicContentSize() {
+   416	        super.invalidateIntrinsicContentSize()
+   417	        syncWindowSize(animate: animatesWindowResize)
+   418	    }
+   419	
+   420	    override func viewDidMoveToWindow() {
+   421	        super.viewDidMoveToWindow()
+   422	        // Initial sizing (window just opened) should never animate — there's
+   423	        // no prior frame to animate from.
+   424	        syncWindowSize(animate: false)
+   425	    }
+   426	
+   427	    private func syncWindowSize(animate: Bool) {
+   428	        guard let window else { return }
+   429	        let size = intrinsicContentSize
+   430	        guard size.width > 0, size.height > 0 else { return }
+   431	        if window.frame.size == size { return }
+   432	        // Pin the top edge — both the menu-bar panel and the installer window
+   433	        // anchor visually at the top, so growth must expand downward.
+   434	        var frame = window.frame
+   435	        frame.origin.y += frame.size.height - size.height
+   436	        frame.size = size
+   437	        if clampsToScreen, let visibleFrame = (window.screen ?? NSScreen.main)?.visibleFrame {
+   438	            // Fix the top edge first, then the bottom — order matters so
+   439	            // the bottom adjustment wins when the window is taller than
+   440	            // the visible frame (degenerate; cap is supposed to prevent
+   441	            // it). Result in that case: top pinned to visibleFrame.minY,
+   442	            // bottom may extend above visibleFrame.maxY.
+   443	            if frame.maxY > visibleFrame.maxY {
+   444	                frame.origin.y = visibleFrame.maxY - frame.height
+   445	            }
+   446	            if frame.minY < visibleFrame.minY {
+   447	                frame.origin.y = visibleFrame.minY
+   448	            }
+   449	        }
+   450	        window.setFrame(frame, display: true, animate: animate)
+   451	    }
+   452	}
+   453	
+   454	/// Renders the status-bar glyph with a color-coded state dot, matching the
+   455	/// composition the old MenuBarExtra label view performed. Kept as a namespace
+   456	/// so both the NSStatusItem and any future preview surface can reuse it.
+   457	enum MenuBarIconComposer {
+   458	    static func composite(state: RuntimeHeaderState, isDev: Bool, colorScheme: ColorScheme) -> NSImage {
+   459	        let base = NSImage(named: isDev ? "MenuBarIconDev" : "MenuBarIcon")!
+   460	        let size = base.size
+   461	        let dotDiameter: CGFloat = 5
+   462	        let dotColor: NSColor = state.nsColor
+   463	        // Manual tint rather than isTemplate so the glyph is tinted but the
+   464	        // status dot keeps its green/orange/red.
+   465	        let baseTint: NSColor = colorScheme == .dark ? .white : .black
+   466	
+   467	        let img = NSImage(size: size, flipped: false) { rect in
+   468	            base.draw(in: rect)
+   469	            NSGraphicsContext.current?.compositingOperation = .sourceIn
+   470	            baseTint.setFill()
+   471	            NSBezierPath(rect: rect).fill()
+   472	            let dotRect = NSRect(
+   473	                x: rect.maxX - dotDiameter - 0.5,
+   474	                y: 0.5,
+   475	                width: dotDiameter,
+   476	                height: dotDiameter
+   477	            )
+   478	            NSGraphicsContext.current?.compositingOperation = .clear
+   479	            NSBezierPath(ovalIn: dotRect.insetBy(dx: -1, dy: -1)).fill()
+   480	            NSGraphicsContext.current?.compositingOperation = .sourceOver
+
+exec
+/bin/bash -lc "nl -ba app/Phoenix/SettingsView.swift | sed -n '1,120p'" in /tmp/tmp.jy1OGKWBWx/repo
+exec
+/bin/bash -lc 'rg -n "PLO-35|DEBUG|NSLog|installer" app/Phoenix/InstallerView.swift app/Phoenix/MenuBarController.swift app/Phoenix/PhoenixApp.swift app/Phoenix/SettingsView.swift' in /tmp/tmp.jy1OGKWBWx/repo
+ succeeded in 0ms:
+     1	import SwiftUI
+     2	
+     3	struct SettingsView: View {
+     4	    let client: DaemonClient
+     5	    let downloadManager: RuntimeDownloadManager
+     6	    var onDismiss: () -> Void
+     7	
+     8	    @State private var showNotBuiltAlert = false
+     9	
+    10	    // The hero card animates between a "ready" and "warming up" look. After
+    11	    // the headerState unification, `running` is the canonical "fully up"
+    12	    // signal — it already encodes both runtime launch readiness and
+    13	    // daemon connectivity,
+    14	    // and excludes the `degraded` case (FDA missing) which the previous
+    15	    // formula did not.
+    16	    private var agentReady: Bool {
+    17	        client.headerState == .running
+    18	    }
+    19	
+    20	    var body: some View {
+    21	        ScrollView {
+    22	            VStack(spacing: 12) {
+    23	                plowNumberSection
+    24	                connectorsSection
+    25	                containersSection
+    26	            }
+    27	            .padding(.horizontal, 40)
+    28	            .padding(.top, 40)
+    29	            .padding(.bottom, 50)
+    30	            .background(
+    31	                GeometryReader { geo in
+    32	                    Color.clear.preference(
+    33	                        key: InstallerContentHeightKey.self,
+    34	                        value: geo.size.height
+    35	                    )
+    36	                }
+    37	            )
+    38	        }
+    39	        .alert("Not Available", isPresented: $showNotBuiltAlert) {
+    40	            Button("OK") {}
+    41	        } message: {
+    42	            Text("Sorry, we haven't built that feature yet!")
+    43	        }
+    44	    }
+    45	
+    46	    // MARK: - Plow Number
+    47	
+    48	    private var plowNumberSection: some View {
+    49	        VStack(alignment: .leading, spacing: 7) {
+    50	            sectionLabel(
+    51	                "Plow Number",
+    52	                tooltip: "Text this number anytime to reach your agent. It routes to your main container by default \u{2014} you can change that once you have multiple containers."
+    53	            )
+    54	            heroCard
+    55	        }
+    56	    }
+    57	
+    58	    private var heroCard: some View {
+    59	        VStack(spacing: 0) {
+    60	            HStack {
+    61	                Text(formattedPhoneNumber)
+    62	                    .font(.system(size: 16, weight: .bold))
+    63	                    .foregroundColor(.white)
+    64	                    .monospacedDigit()
+    65	                    .tracking(-0.4)
+    66	                Spacer()
+    67	                routesPill
+    68	            }
+    69	            .padding(.horizontal, 22)
+    70	            .padding(.top, 13)
+    71	            .padding(.bottom, 6)
+    72	            .opacity(agentReady ? 1 : 0.35)
+    73	            .animation(.easeInOut(duration: 0.55), value: agentReady)
+    74	
+    75	            Rectangle()
+    76	                .fill(Color.white.opacity(0.07))
+    77	                .frame(height: 1)
+    78	
+    79	            HStack(spacing: 20) {
+    80	                StatusRing(state: client.headerState)
+    81	
+    82	                VStack(alignment: .leading, spacing: 2) {
+    83	                    Text(client.headerState.label)
+    84	                        .font(.system(size: 14, weight: .bold))
+    85	                        .foregroundColor(agentReady ? PlowTheme.accent : .white)
+    86	                        .animation(.easeInOut(duration: 0.4), value: agentReady)
+    87	                    if let detail = client.headerSubLabel, !detail.isEmpty {
+    88	                        Text(detail)
+    89	                            .font(.system(size: 11))
+    90	                            .foregroundStyle(.secondary)
+    91	                            .lineLimit(2)
+    92	                            .truncationMode(.tail)
+    93	                    }
+    94	                }
+    95	
+    96	                Spacer()
+    97	
+    98	                Text("\u{2192}")
+    99	                    .font(.system(size: 12))
+   100	                    .foregroundColor(PlowTheme.accent)
+   101	                    .opacity(agentReady ? 1 : 0)
+   102	                    .animation(.easeInOut(duration: 0.4).delay(0.25), value: agentReady)
+   103	            }
+   104	            .padding(.horizontal, 22)
+   105	            .padding(.vertical, 14)
+   106	        }
+   107	        .background(
+   108	            RoundedRectangle(cornerRadius: 11, style: .continuous)
+   109	                .fill(agentReady ? PlowTheme.accent.opacity(0.07) : PlowTheme.accent.opacity(0.03))
+   110	        )
+   111	        .overlay(
+   112	            RoundedRectangle(cornerRadius: 11, style: .continuous)
+   113	                .stroke(agentReady ? PlowTheme.accent.opacity(0.22) : PlowTheme.accent.opacity(0.1), lineWidth: 1)
+   114	        )
+   115	        .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+   116	        .shadow(color: agentReady ? PlowTheme.accent.opacity(0.14) : .clear, radius: 16)
+   117	        .contentShape(Rectangle())
+   118	        .onTapGesture { if agentReady { onDismiss() } }
+   119	        .animation(.easeInOut(duration: 0.6), value: agentReady)
+   120	    }
+
+ succeeded in 0ms:
+app/Phoenix/PhoenixApp.swift:26:                // time the installer window is up.
+app/Phoenix/PhoenixApp.swift:43:    let installerController = InstallerWindowController()
+app/Phoenix/PhoenixApp.swift:92:            installerController: installerController,
+app/Phoenix/PhoenixApp.swift:97:        // Always show installer on launch.
+app/Phoenix/PhoenixApp.swift:99:        appendStartupTimingLog("PhoenixApp.init presenting installer window")
+app/Phoenix/PhoenixApp.swift:100:        installerController.show(downloadManager: downloadManager, client: daemonClient)
+app/Phoenix/PhoenixApp.swift:109:        if installerController.isVisible {
+app/Phoenix/PhoenixApp.swift:110:            installerController.show(downloadManager: downloadManager, client: daemonClient)
+app/Phoenix/PhoenixApp.swift:120:        installerController.show(downloadManager: downloadManager, client: daemonClient)
+app/Phoenix/PhoenixApp.swift:155:        // outer `.frame(width: 680, height: installerWindowHeight(...))`,
+app/Phoenix/PhoenixApp.swift:161:        // The installer is `window.center()`-ed at open; without clamping,
+app/Phoenix/PhoenixApp.swift:181:        window.identifier = NSUserInterfaceItemIdentifier("installer")
+app/Phoenix/PhoenixApp.swift:211:            NSLog("[LocalBridgeController] imessages permission ENABLED — starting MessageStoreBridge + ContactsStoreBridge")
+app/Phoenix/PhoenixApp.swift:215:            NSLog("[LocalBridgeController] imessages permission DISABLED — stopping MessageStoreBridge + ContactsStoreBridge")
+app/Phoenix/PhoenixApp.swift:254:                NSLog("[LegacyCleanup] removed stale VZ artifact path=%@ size=%lld", url.path, size)
+app/Phoenix/PhoenixApp.swift:256:                NSLog("[LegacyCleanup] failed to remove path=%@ error=%@", url.path, error.localizedDescription)
+app/Phoenix/InstallerView.swift:26:        #if DEBUG
+app/Phoenix/InstallerView.swift:27:        NSLog("[Installer] screen=%@ (activationState=%@, errorMsg=%@, hasToken=%d, started=%d)",
+app/Phoenix/InstallerView.swift:62:            .background(installerBackground)
+app/Phoenix/InstallerView.swift:82:            height: installerWindowHeight(
+app/Phoenix/InstallerView.swift:86:                cap: installerHeightCap()
+app/Phoenix/InstallerView.swift:137:        // The installer window is always dark-themed; pin SwiftUI overlays (popovers,
+app/Phoenix/InstallerView.swift:159:                .foregroundColor(installerMutedText)
+app/Phoenix/InstallerView.swift:172:                        ? Text("You have ") + Text(gb(freeBytes)).fontWeight(.semibold).foregroundColor(installerAccent) + Text(" free — you're all set")
+app/Phoenix/InstallerView.swift:173:                        : Text("You have ") + Text(gb(freeBytes)).fontWeight(.semibold).foregroundColor(installerWarning) + Text(" free, more space is required"),
+app/Phoenix/InstallerView.swift:190:                .foregroundColor(installerMutedText.opacity(0.5))
+app/Phoenix/InstallerView.swift:201:                    .fill(passed ? installerSuccess : installerWarning)
+app/Phoenix/InstallerView.swift:210:                .foregroundColor(installerMutedText)
+app/Phoenix/InstallerView.swift:216:        .background(installerPanel)
+app/Phoenix/InstallerView.swift:219:                .stroke(installerChrome, lineWidth: 1)
+app/Phoenix/InstallerView.swift:243:                    .foregroundColor(installerMutedText)
+app/Phoenix/InstallerView.swift:301:                .background(style == .user ? installerAccent : installerPanel)
+app/Phoenix/InstallerView.swift:318:                    .foregroundColor(installerAccent)
+app/Phoenix/InstallerView.swift:324:            .background(installerPanel)
+app/Phoenix/InstallerView.swift:327:                    .stroke(installerChrome, lineWidth: 1)
+app/Phoenix/InstallerView.swift:348:                    .foregroundColor(installerMutedText)
+app/Phoenix/InstallerView.swift:394:                            installerAccent.opacity(0.2),
+app/Phoenix/InstallerView.swift:405:                .fill(installerAccent.opacity(0.06))
+app/Phoenix/InstallerView.swift:408:                        .stroke(installerAccent.opacity(0.15), lineWidth: 1)
+app/Phoenix/InstallerView.swift:414:                        .foregroundColor(installerAccent)
+app/Phoenix/InstallerView.swift:494:    private var installerBackground: some View {
+app/Phoenix/InstallerView.swift:505:    private var installerPanel: Color { PlowTheme.panel }
+app/Phoenix/InstallerView.swift:506:    private var installerChrome: Color { PlowTheme.chrome }
+app/Phoenix/InstallerView.swift:507:    private var installerMutedText: Color { PlowTheme.mutedText }
+app/Phoenix/InstallerView.swift:508:    private var installerAccent: Color { PlowTheme.accent }
+app/Phoenix/InstallerView.swift:509:    private var installerSuccess: Color { PlowTheme.success }
+app/Phoenix/InstallerView.swift:510:    private var installerWarning: Color { PlowTheme.warning }
+app/Phoenix/InstallerView.swift:519:    private func installerHeightCap() -> CGFloat {
+app/Phoenix/InstallerView.swift:528:/// installer window height. Splash screens (welcomeInstall / welcomeFDA /
+app/Phoenix/InstallerView.swift:546:func installerWindowHeight(
+app/Phoenix/InstallerView.swift:561:/// active installer screen up to `InstallerView`, which feeds it into the
+app/Phoenix/MenuBarController.swift:31:        installerController: InstallerWindowController,
+app/Phoenix/MenuBarController.swift:41:                installerController: installerController,
+app/Phoenix/MenuBarController.swift:399:    /// because it has its own fade orchestration; the installer window flips
+app/Phoenix/MenuBarController.swift:408:    /// repositions (the installer is `window.center()`-ed at open) need
+app/Phoenix/MenuBarController.swift:432:        // Pin the top edge — both the menu-bar panel and the installer window
+
+exec
+/bin/bash -lc "nl -ba app/Phoenix/PhoenixApp.swift | sed -n '130,190p'" in /tmp/tmp.jy1OGKWBWx/repo
+ succeeded in 0ms:
+   130	
+   131	final class InstallerWindowController: NSObject, NSWindowDelegate {
+   132	    private(set) var isVisible: Bool = false
+   133	    private var window: NSWindow?
+   134	
+   135	    func show(downloadManager: RuntimeDownloadManager, client: DaemonClient) {
+   136	        if let window {
+   137	            NSApp.setActivationPolicy(.regular)
+   138	            window.makeKeyAndOrderFront(nil)
+   139	            NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+   140	            NSApp.activate(ignoringOtherApps: true)
+   141	            isVisible = true
+   142	            return
+   143	        }
+   144	
+   145	        let view = InstallerView(
+   146	            downloadManager: downloadManager,
+   147	            client: client,
+   148	            onDismiss: { [weak self] in
+   149	                self?.dismiss()
+   150	                Task { @MainActor in client.openMessagesPromptToManagedPhone() }
+   151	            }
+   152	        )
+   153	        // SelfSizingHostingView keeps the window frame in sync with the
+   154	        // SwiftUI tree's intrinsic size — InstallerView pins that via its
+   155	        // outer `.frame(width: 680, height: installerWindowHeight(...))`,
+   156	        // so the window grows/shrinks declaratively as the active screen
+   157	        // and its measured content change. Replaces the prior imperative
+   158	        // `setFrame` path that fought AppKit's intrinsic re-pinning.
+   159	        let hostingView = SelfSizingHostingView(rootView: view)
+   160	        hostingView.animatesWindowResize = true
+   161	        // The installer is `window.center()`-ed at open; without clamping,
+   162	        // top-edge-pinned growth past the visible frame can slide its
+   163	        // bottom edge under the Dock on smaller displays.
+   164	        hostingView.clampsToScreen = true
+   165	
+   166	        NSApp.setActivationPolicy(.regular)
+   167	
+   168	        let window = NSWindow(
+   169	            contentRect: .zero,
+   170	            styleMask: [.titled, .closable, .fullSizeContentView],
+   171	            backing: .buffered,
+   172	            defer: false
+   173	        )
+   174	        window.contentView = hostingView
+   175	        window.backgroundColor = NSColor(red: 0.07, green: 0.08, blue: 0.07, alpha: 1)
+   176	        // Pin the window (and any NSPopover it hosts) to dark appearance so popovers/alerts
+   177	        // don't render with light system material when the user is in Light Mode.
+   178	        window.appearance = NSAppearance(named: .darkAqua)
+   179	        window.titlebarAppearsTransparent = true
+   180	        window.titleVisibility = .hidden
+   181	        window.identifier = NSUserInterfaceItemIdentifier("installer")
+   182	        window.isMovableByWindowBackground = true
+   183	        window.center()
+   184	        window.delegate = self
+   185	        window.makeKeyAndOrderFront(nil)
+   186	
+   187	        NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+   188	        NSApp.activate(ignoringOtherApps: true)
+   189	        self.window = window
+   190	        self.isVisible = true
+
+exec
+/bin/bash -lc "nl -ba app/PhoenixTests/InstallerStateTests.swift | sed -n '110,250p'" in /tmp/tmp.jy1OGKWBWx/repo
+ succeeded in 0ms:
+   110	    func testCompletedInstallAndOnboardingSkipsInterstitial() {
+   111	        XCTAssertEqual(
+   112	            resolve(started: false, hasCompletedInstall: true, hasCompletedOnboarding: true),
+   113	            .connectors
+   114	        )
+   115	    }
+   116	}
+   117	
+   118	// MARK: - Installer window sizing
+   119	
+   120	/// Covers `installerWindowHeight(for:contentHeight:overlayHeight:cap:)` —
+   121	/// the pure helper that drives the installer NSWindow's height. Splash
+   122	/// screens must always render at the design height (530); the connectors
+   123	/// screen must size to its measured intrinsic content (plus the
+   124	/// download-bar overlay when present), capped to the available screen so
+   125	/// the existing ScrollView fallback re-engages on overflow.
+   126	final class InstallerWindowSizeTests: XCTestCase {
+   127	
+   128	    private let designHeight: CGFloat = 530
+   129	    private let cap: CGFloat = 800
+   130	
+   131	    func testSplashScreensUseDesignHeight() {
+   132	        for screen in [InstallerScreen.welcomeInstall, .welcomeFDA, .activation, .connectContext] {
+   133	            XCTAssertEqual(
+   134	                installerWindowHeight(for: screen, contentHeight: 1200, overlayHeight: 200, cap: cap),
+   135	                designHeight,
+   136	                "splash screen \(screen) must ignore measured content and stay at design height"
+   137	            )
+   138	        }
+   139	    }
+   140	
+   141	    func testConnectorsWithoutMeasurementFallsBackToDesignHeight() {
+   142	        XCTAssertEqual(
+   143	            installerWindowHeight(for: .connectors, contentHeight: 0, overlayHeight: 0, cap: cap),
+   144	            designHeight,
+   145	            "before content measures, render at the splash height — never zero"
+   146	        )
+   147	    }
+   148	
+   149	    func testConnectorsSizesToMeasuredContentBelowCap() {
+   150	        XCTAssertEqual(
+   151	            installerWindowHeight(for: .connectors, contentHeight: 480, overlayHeight: 0, cap: cap),
+   152	            480
+   153	        )
+   154	    }
+   155	
+   156	    func testConnectorsAddsOverlayHeightToContent() {
+   157	        // The DownloadBarView overlays the bottom of the ZStack — add its
+   158	        // measured height so settings rows aren't hidden behind it.
+   159	        XCTAssertEqual(
+   160	            installerWindowHeight(for: .connectors, contentHeight: 480, overlayHeight: 70, cap: cap),
+   161	            550
+   162	        )
+   163	    }
+   164	
+   165	    func testConnectorsCapsAtVisibleScreen() {
+   166	        // Content + overlay would push past the cap → cap wins so the
+   167	        // existing ScrollView fallback inside SettingsView re-engages.
+   168	        XCTAssertEqual(
+   169	            installerWindowHeight(for: .connectors, contentHeight: 1500, overlayHeight: 100, cap: cap),
+   170	            cap
+   171	        )
+   172	    }
+   173	
+   174	    func testConnectorsRetryStateGrowsWindowWithBar() {
+   175	        // The retry state grows the DownloadBarView (extra Retry button row)
+   176	        // — the window must grow with it so settings content stays visible.
+   177	        // Assert exact values so a sign-flip in the helper still trips.
+   178	        let normal = installerWindowHeight(for: .connectors, contentHeight: 480, overlayHeight: 60, cap: cap)
+   179	        let retry = installerWindowHeight(for: .connectors, contentHeight: 480, overlayHeight: 100, cap: cap)
+   180	        XCTAssertEqual(normal, 540)
+   181	        XCTAssertEqual(retry, 580)
+   182	    }
+   183	
+   184	    func testSplashIsCappedOnDegenerateVisibleFrame() {
+   185	        // If the visibleFrame collapses (multi-display reconfig, sidecar
+   186	        // with a tiny secondary display), the cap may drop below the 530
+   187	        // splash design height. Splash must respect the cap so it doesn't
+   188	        // overflow the visible screen.
+   189	        XCTAssertEqual(
+   190	            installerWindowHeight(for: .welcomeInstall, contentHeight: 0, overlayHeight: 0, cap: 400),
+   191	            400
+   192	        )
+   193	    }
+   194	}
+
+codex
+A key calibration point: the DEBUG-instrumentation findings don’t match the current patch or files. `rg` finds no `PLO-35-DEBUG` probes, and the only `#if DEBUG` installer log appears outside the diff, so I’m treating those as non-surviving unless the aggregator has a different patch snapshot.
+codex
+## Critic counterarguments
+
+### [data-integrity] Finding 1 — AGREE
+The failing path is real in the current patch: `installerHeightCap()` uses `NSScreen.main` at `app/Phoenix/InstallerView.swift:519`, while `SelfSizingHostingView` clamps against `window.screen` at `app/Phoenix/MenuBarController.swift:437`. A moved installer on a shorter secondary display can still be sized from the taller main display.
+**Estimated remedy LOC:** ~40 LOC across 2 files.
+**Calibration questions for go-deep investigation:**
+- Will users at this pre-PMF stage commonly drag the installer to a shorter secondary display while connector/download content grows, or are there no observed instances beyond display-edge cases?
+- Can the cap be derived from the active installer window’s screen through the existing hosting/window path, instead of adding separate display notification state?
+
+### [architecture] Finding 1 — FALSE POSITIVE
+The cited `PLO-35-DEBUG` probes are absent from the current patch and files; `rg "PLO-35"` returns nothing. The only installer `#if DEBUG` log is pre-existing at `app/Phoenix/InstallerView.swift:26`, so this finding is grading stale or different code.
+
+### [simplification] Finding 1 — REFRAME-AS-QUESTION
+The concern is real, but the finding asserts shared-file discoverability as settled when this is currently a two-caller internal type.
+Reframe:
+> Will `SelfSizingHostingView` be reused enough that discoverability outside `MenuBarController.swift` matters now? If yes, move it to `SelfSizingHostingView.swift`. If not, consider cutting the file move — adds complexity and makes PMF iteration harder.
+**Estimated remedy LOC:** ~40 LOC across 2 files.
+**Calibration questions for go-deep investigation:**
+- Will another Phoenix surface consume this hosting view soon, or is the current reuse limited to menu bar plus installer?
+- Can a plain file move preserve behavior without introducing any new abstraction or policy surface?
+
+### [tests] Finding 1 — MISCALIBRATED
+The gap is legitimate, but `[blocking]` is over-called: the patch already adds behavior tests for the sizing policy at `app/PhoenixTests/InstallerStateTests.swift:126`, and adding a SwiftUI hosting harness or extracted `AutoSizingScrollView` is extra machinery for one geometry seam. Better as a non-blocking question unless there is a reproduced regression in measurement propagation.
+**Estimated remedy LOC:** ~40 LOC across 2 files.
+**Calibration questions for go-deep investigation:**
+- Will users hit a regression where `SettingsView.swift:30` stops publishing height while the pure sizing tests still pass, or is there no observed instance in this PR round?
+- Can this be covered by one focused hosted-view behavior test without extracting a new production wrapper type?
+
+### [tests] Finding 2 — FALSE POSITIVE
+The finding cites `NSWindow.didChangeScreenNotification`, `NSApplication.didChangeScreenParametersNotification`, and `visibleFrameHeight`, but none exist in the current patch; `app/Phoenix/InstallerView.swift:106` is only `onChange(of: screen)`. The surviving display concern is data-integrity Finding 1, not a missing test for nonexistent observers.
+
+### [shape] Finding 1 — FALSE POSITIVE
+Same stale-code problem as architecture Finding 1: no `PLO-35-DEBUG` or installer-keyed debug branches exist in `SelfSizingHostingView` or the current diff. The cited shape cost is not present in this snapshot.
+
+## Missed findings (if any)
+
+None identified.
+tokens used
+39,644
+## Critic counterarguments
+
+### [data-integrity] Finding 1 — AGREE
+The failing path is real in the current patch: `installerHeightCap()` uses `NSScreen.main` at `app/Phoenix/InstallerView.swift:519`, while `SelfSizingHostingView` clamps against `window.screen` at `app/Phoenix/MenuBarController.swift:437`. A moved installer on a shorter secondary display can still be sized from the taller main display.
+**Estimated remedy LOC:** ~40 LOC across 2 files.
+**Calibration questions for go-deep investigation:**
+- Will users at this pre-PMF stage commonly drag the installer to a shorter secondary display while connector/download content grows, or are there no observed instances beyond display-edge cases?
+- Can the cap be derived from the active installer window’s screen through the existing hosting/window path, instead of adding separate display notification state?
+
+### [architecture] Finding 1 — FALSE POSITIVE
+The cited `PLO-35-DEBUG` probes are absent from the current patch and files; `rg "PLO-35"` returns nothing. The only installer `#if DEBUG` log is pre-existing at `app/Phoenix/InstallerView.swift:26`, so this finding is grading stale or different code.
+
+### [simplification] Finding 1 — REFRAME-AS-QUESTION
+The concern is real, but the finding asserts shared-file discoverability as settled when this is currently a two-caller internal type.
+Reframe:
+> Will `SelfSizingHostingView` be reused enough that discoverability outside `MenuBarController.swift` matters now? If yes, move it to `SelfSizingHostingView.swift`. If not, consider cutting the file move — adds complexity and makes PMF iteration harder.
+**Estimated remedy LOC:** ~40 LOC across 2 files.
+**Calibration questions for go-deep investigation:**
+- Will another Phoenix surface consume this hosting view soon, or is the current reuse limited to menu bar plus installer?
+- Can a plain file move preserve behavior without introducing any new abstraction or policy surface?
+
+### [tests] Finding 1 — MISCALIBRATED
+The gap is legitimate, but `[blocking]` is over-called: the patch already adds behavior tests for the sizing policy at `app/PhoenixTests/InstallerStateTests.swift:126`, and adding a SwiftUI hosting harness or extracted `AutoSizingScrollView` is extra machinery for one geometry seam. Better as a non-blocking question unless there is a reproduced regression in measurement propagation.
+**Estimated remedy LOC:** ~40 LOC across 2 files.
+**Calibration questions for go-deep investigation:**
+- Will users hit a regression where `SettingsView.swift:30` stops publishing height while the pure sizing tests still pass, or is there no observed instance in this PR round?
+- Can this be covered by one focused hosted-view behavior test without extracting a new production wrapper type?
+
+### [tests] Finding 2 — FALSE POSITIVE
+The finding cites `NSWindow.didChangeScreenNotification`, `NSApplication.didChangeScreenParametersNotification`, and `visibleFrameHeight`, but none exist in the current patch; `app/Phoenix/InstallerView.swift:106` is only `onChange(of: screen)`. The surviving display concern is data-integrity Finding 1, not a missing test for nonexistent observers.
+
+### [shape] Finding 1 — FALSE POSITIVE
+Same stale-code problem as architecture Finding 1: no `PLO-35-DEBUG` or installer-keyed debug branches exist in `SelfSizingHostingView` or the current diff. The cited shape cost is not present in this snapshot.
+
+## Missed findings (if any)
+
+None identified.
+[15:44:31] agent=critic exit=0

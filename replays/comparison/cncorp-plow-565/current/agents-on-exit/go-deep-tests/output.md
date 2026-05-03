@@ -1,0 +1,22 @@
+### Investigation of Finding 1
+
+**Calibration answers:**
+
+**Q1: Will users hit a regression where `SettingsView.swift:30` stops publishing height while the pure sizing tests still pass, or is there no observed instance in this PR round?**
+A: No observed instance in this PR round. The real user-facing state is plausible because `SettingsView` is the only content-height emitter (`app/Phoenix/SettingsView.swift:31`, `app/Phoenix/SettingsView.swift:33`) and `InstallerView` falls back to the splash height when `contentHeight <= 0` (`app/Phoenix/InstallerView.swift:552`, `app/Phoenix/InstallerView.swift:554`), while the added tests inject synthetic heights directly (`app/PhoenixTests/InstallerStateTests.swift:143`, `app/PhoenixTests/InstallerStateTests.swift:151`). But the firing-rate evidence points to a different prior failure: the 90-day `git log --stat` entry for `2dd8753f` says the reverted PR #563 used the same PreferenceKey measurement pipeline and failed because imperative `window.animator().setFrame(...)` fought hosting-view intrinsic sizing / hit a window-identifier startup race, not because `SettingsView` stopped publishing. Confidence: high.
+
+**Q2: Can this be covered by one focused hosted-view behavior test without extracting a new production wrapper type?**
+A: Probably yes in principle, but not with an existing local pattern. A test-only SwiftUI wrapper could host `SettingsView` and observe `InstallerContentHeightKey`, so no production `AutoSizingScrollView` extraction is necessary. However, the current Phoenix tests are pure XCTest modules (`app/PhoenixTests/InstallerStateTests.swift:1`, `app/PhoenixTests/InstallerStateTests.swift:2`), and `grep -rn "NSHostingView\|NSWindow" app/PhoenixTests --include='*.swift'` found no hosted SwiftUI/AppKit test harness. The only existing tests for this PR target the pure policy helper (`app/PhoenixTests/InstallerStateTests.swift:120`, `app/PhoenixTests/InstallerStateTests.swift:126`). Confidence: medium.
+
+**Pattern search:**
+- Existing production pattern for this shape is `StatusView`: it defines a content-height `PreferenceKey` (`app/Phoenix/StatusView.swift:4`), emits it from a `GeometryReader` (`app/Phoenix/StatusView.swift:277`), and consumes it with `.onPreferenceChange` (`app/Phoenix/StatusView.swift:290`). The PR mirrors that pattern in `SettingsView` and `InstallerView` (`app/Phoenix/SettingsView.swift:31`, `app/Phoenix/InstallerView.swift:114`).
+- Existing reusable sizing contract is already the pure `installerWindowHeight` helper (`app/Phoenix/InstallerView.swift:546`) with behavior tests for zero measurement fallback, measured content, overlay, retry growth, and cap (`app/PhoenixTests/InstallerStateTests.swift:141`, `app/PhoenixTests/InstallerStateTests.swift:149`, `app/PhoenixTests/InstallerStateTests.swift:157`, `app/PhoenixTests/InstallerStateTests.swift:176`, `app/PhoenixTests/InstallerStateTests.swift:190`).
+- No existing hosted-view test pattern was found under `app/PhoenixTests`; production `SelfSizingHostingView` reuse is in `PhoenixApp` (`app/Phoenix/PhoenixApp.swift:159`) and `MenuBarController` (`app/Phoenix/MenuBarController.swift:396`).
+- Original remedy ~40 LOC across 2 files per specialist file (`.codex-scratch/specialists/tests.md:25`). A no-extraction test-only wrapper likely cuts production LOC to 0 but still adds a new AppKit/SwiftUI test harness above the Broken-Glass threshold.
+
+**Decline-history check:**
+- No prior decline: `.codex-scratch/decline-history.md` has no nonblank lines (`grep -n "." .codex-scratch/decline-history.md` returned no lines).
+
+**Recommendation:** REFRAME
+- The test gap is real, but blocking on a new hosted SwiftUI/AppKit harness does not clear the Broken-Glass bar here. The observed prior user bug was the hard-coded / imperatively resized window path, and this PR already replaces that with the existing `SelfSizingHostingView` contract plus pure sizing tests. At the PMF-iteration operating point, adding a new harness for an unobserved measurement-publisher regression is more complexity than the firing rate justifies.
+- Will the connectors screen ever render at 530 because `SettingsView` no longer emits `InstallerContentHeightKey` while `installerWindowHeight` tests still pass? If yes, add a focused hosted-view regression test that observes the preference without extracting production UI. If not, consider cutting that test request for now — it adds a new SwiftUI/AppKit test harness and makes PMF iteration harder.

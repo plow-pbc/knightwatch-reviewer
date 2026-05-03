@@ -1,0 +1,2379 @@
+[10:18:54] agent=consumers starting
+Reading additional input from stdin...
+OpenAI Codex v0.128.0 (research preview)
+--------
+workdir: /home/odio/.pr-reviewer/workdirs/cncorp_plow__569
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: high
+reasoning summaries: none
+session id: 019de48c-ed36-7003-9eb2-ac53ff914a04
+--------
+user
+You are one specialist in a multi-specialist code review of a GitHub PR.
+
+**PR:** cncorp/plow#569
+**Title:** PLO-29: drop custom DMG volume icon
+**URL:** https://github.com/cncorp/plow/pull/569
+
+**Working directory:** You are running inside a fresh checkout of the PR branch. You may read any file in the repository. You may run read-only commands (grep, cat, find, git log, git show) to investigate beyond the diff.
+
+**Inputs already prepared for you:**
+- `.codex-scratch/inferred-intent.md` — a tentative one-line statement of the end-user-facing outcome this PR is working toward, derived pre-fan-out from PR title + commits + diff. Use this as the *spirit* you are evaluating against. The architecture and simplification specialists in particular should ask: does the chosen implementation deliver on that intent in a way that scales, or is it brittle?
+- `.codex-scratch/diff.patch` — the diff you are reviewing. For first-time reviews this is the full PR diff. For re-reviews it is normally the *incremental* diff since your prior review — but the opening message (REVIEW_TASK) is authoritative when it says otherwise (e.g. on the silent-fallback path where a force-push or rebase evicted the prior reviewed SHA, `diff.patch` contains the full PR diff instead).
+
+**Attribution for merged-in content.** `diff.patch` is what GitHub considers part of this PR — including any content the branch pulled in via `git merge origin/<base>` commits. If you flag a finding about content that came in via a `Merge ... into <branch>` commit (visible in `commits.md`), attribute it factually as "this PR carries forward [content from the merged-in change]; the merge resolution may need re-checking" rather than as authored-from-scratch by the PR author.
+
+- `.codex-scratch/previous-review.md` — your prior review, if this is a re-review. Empty file on first review.
+- `.codex-scratch/test-results.md` — output summary from `just test` on this PR branch. Always present.
+- `.codex-scratch/prior-art.md` — knightwatch-kid dry-check prior-art surface, if applicable. May be empty.
+- `.codex-scratch/dead-code.md` — structured evidence from the dead-code pre-pass (static tool + LLM grep). Consumed by the `consumers` specialist; other specialists ignore it. Empty when the pre-pass had no tool wired and no modified public symbols, or when both passes failed.
+- `.codex-scratch/standards.md` — coding/testing standards and known review mistakes to avoid.
+- `.codex-scratch/product-context.md` — product stage, distribution model, roadmap. READ THIS before judging architectural tradeoffs.
+- `.codex-scratch/file-history.md` — for each touched file, the 5 most recent commit subjects. Use this to distinguish "stable file being surgically touched" from "churning area where this is the Nth rewrite" — the latter usually means a deeper design problem than any one PR can fix.
+- `.codex-scratch/commits.md` — commit subjects on this branch, one per line. Use this to read the developer's own narrative of their work, beyond the (possibly AI-written) PR description.
+- `.codex-scratch/author-intent.md` — the PR's title + description, plus any linked issues. READ THIS before calling something an oversight — the author may have explicitly explained the tradeoff you're about to criticize. Distinguishes "author missed the invariant" from "author is deliberately changing documented behavior."
+- `.codex-scratch/trigger-comment.md` — present whenever this review was triggered by a trusted-author `/srosro-review` or `/srosro-update-review` comment. Contains the commenter's GitHub login + body. The body may be substantive prose ("I tried to DRY but ended up adding 2k LoC — is the abstraction wrong?") or just the bare slash command (routine "review me again" — no extra framing). When prose is supplied, weight it as the requester's framing of the review goal, especially for architecture and simplification angles. When only the bare command is supplied, ignore it.
+- `.siblings/<owner>/<repo>/` — workdir-internal symlinks to sibling-repo source checkouts the operator has configured, exposed for cross-repo grep by the `consumers` and `dead-code-search` specialists. **Cite files under these as `<owner>/<repo>/<rel-path>:<line>`** — never with the `.siblings/` prefix and never as `/home/...` absolute paths.
+
+**Self-heal:** If any scratch file above is missing or empty, or the PR branch isn't checked out locally, parse cncorp/plow#569 (format `owner/repo#N`) and pull what you need directly via `gh pr diff N --repo owner/repo` and `gh pr view N --repo owner/repo --json title,body`. Don't halt the review — recover and keep going.
+
+**When to dig into git history:** if the intent of a modified line is unclear (e.g. you can't tell whether the original behavior was deliberate or accidental, or whether this PR is fixing a regression or introducing one), run `git blame -L <start>,<end> <file>` or `git show <commit-sha>` on the commit that last touched those lines. This is how you separate "author misunderstood an invariant" from "author is changing a documented behavior on purpose."
+
+**Rules for your output:**
+1. Read `.codex-scratch/diff.patch` first. Then open the touched files themselves and read enough of them to understand context — call sites, definitions, invariants. Do NOT skim the diff and produce a verdict; a good specialist traces how the changes interact with the rest of the codebase.
+2. Focus ONLY on your specialist angle (specified below). Do not duplicate other angles.
+3. Output in this exact shape:
+
+```
+## [consumers] findings
+
+### Surveyed
+- <concrete item, decision, or pattern you examined in this PR> — clean | see Finding N
+- <item> — clean | see Finding N
+- <item> — clean | see Finding N
+(aim for 3–8 bullets, scaled to PR size; this section is how you prove you actually looked rather than skimmed)
+
+### Finding 1 — <severity>
+<one paragraph — what is wrong, why it matters, where>
+Files: path/to/file.ext:LINE (and additional citations as needed)
+
+### Finding 2 — <severity>
+...
+```
+
+4. Severity is exactly one of: `blocking`, `medium`, `low`, `nit`. Use `blocking` ONLY for issues that must be fixed before merge.
+5. The Surveyed section is REQUIRED even if you have zero findings. A specialist that returns only "No findings" has failed to do its job. If after surveying you genuinely have nothing to raise, output the Surveyed section alone, with each bullet marked `clean` and a brief reason.
+6. Be specific. Cite file paths and line numbers. Quote the problematic code in ≤2 lines when it clarifies. **Name the user impact when there is one** — "users retrying a failed payment can be charged twice" beats "this is a race condition." If a finding is purely internal (tech debt, refactoring, DRY), skip the user-impact framing rather than invent one.
+7. Keep each finding under 120 words. No preamble, no conclusion, no verdict. The aggregator will assemble the final review.
+8. **Remedy-cost framing.** When you raise a finding, name the cost of the remedy you'd propose, not just the LOC delta. The cost is **conditionals + special cases + defensive branches + new abstractions** — LOC is a stand-in for those. The user's standards weight engineer time over compute time, so a remedy that adds N branches for a scenario that doesn't happen is bloat regardless of how the line count nets out. **Don't propose:** defensive guards on internal callers, fallback chains for hypothetical state pollution, type validation outside trust boundaries, wrapper dataclasses for one call site, streaming/incremental rewrites of small in-memory operations on theoretical perf grounds, or extra error handling on fail-fast paths. The test for any edge-case handler: *does the edge case actually happen, or will it in the near future?* If neither, drop the remedy and (depending on whether the underlying finding still stands) downgrade severity or omit the finding. Cite `Concise Code` and `Fail-Fast` from the standards when you flag this in your own output.
+
+**Your angle: Internal consumers and call-graph integrity.**
+
+You file findings from the *union* of two sources:
+1. `.codex-scratch/dead-code.md` — pre-pass investigation evidence (static-tool candidates, caller analysis, unreachable conditionals).
+2. Your own walk of the diff.
+
+Don't treat the pre-pass as authoritative — LLMs miss things, static tools have blind spots, and the diff sometimes contains symbols the pre-pass didn't flag as public. Always do both passes, even when `dead-code.md` is rich.
+
+FIRST, read `.codex-scratch/dead-code.md`. When populated, it has three sections:
+
+1. **Static-tool candidates (verified)** — vulture/knip/etc. entries cross-checked for false positives.
+2. **Modified public symbols — caller analysis** — per-symbol: old/new shape, caller list, classification.
+3. **Unreachable conditionals** — branches unreachable due to upstream changes in this PR.
+
+THEN walk the diff yourself, regardless of how rich the pre-pass output is:
+- List every public symbol the PR modified, removed, or renamed (functions, classes, routes, schema fields, model fields, env vars, payload keys, exported types, exception class names). Compare against the pre-pass's "Modified public symbols" section — flag any symbol it missed.
+- For each symbol, `grep -rn "<symbol>"` across this repo and the `included` siblings from `.codex-scratch/search-roots.md`. The `included` value is now a workdir-relative path (e.g. `.siblings/cncorp/plow-content`); grep against that. Compare against the pre-pass's caller list — flag any caller it missed (especially callers the pre-pass classified as matching that actually have a shape mismatch on closer read).
+- Sanity-grep `confirmed-dead` static-tool entries; a false negative here is a runtime crash. For `false-positive` dismissals, accept the pre-pass's specific dynamic-dispatch reason — don't redo that analysis.
+- Walk the diff for unreachable conditionals the pre-pass might have missed (removed feature flags, dropped enum cases, narrowed types, constants now always true/false).
+
+ALSO read: `.codex-scratch/diff.patch`, `.codex-scratch/file-history.md`.
+
+**Search-roots coverage.** First line of `.codex-scratch/search-roots.md` is a `# coverage:` marker. Each subsequent line classifies one whitelisted sibling: `<repo-slug> included .siblings/<repo-slug>` (grep this workdir-relative path) or `<repo-slug> missing` (operator-config gap — checkout absent on this host; treat as a coverage gap for any modified public symbol that plausibly has consumers there). When ANY sibling is `missing` AND a modified public symbol plausibly has consumers in that sibling's domain, downgrade the verdict for that symbol from `dead`/`stale-caller`/`clean` to `uncertain` and name the gap in the finding. Be aware of dynamic dispatch — a zero-grep result is a signal, not proof.
+
+**Citation form (cross-repo).** When you cite a sibling-repo file, write the path as `<owner>/<repo>/<rel-path>:<line>` (e.g. `cncorp/plow-content/plow_content/emit_pr.py:59`). Never include a `.siblings/` prefix or an absolute `/home/...` path in your finding — those leak the operator's filesystem layout into the public PR comment.
+
+**Cross-repo finding framing.** When a sibling repo has a stale caller of a symbol this PR changed, the *user impact* is "this PR's change here will break consumer X" — frame the remedy as "coordinate with X" or "wire X's install of this package", not "fix this in X." The PR author can act on the former; they cannot land code in the sibling repo as part of this PR.
+
+**The failure mode you catch:** PR modifies or removes a public symbol, internal caller no longer matches. Stale-caller → runtime fail (`blocking`); zero callers → dead code (`low`/`medium`).
+
+**External / public-API consumers are NOT your concern** — no external customers yet. Walk *internal* call sites only: this repo plus the `included` sibling source paths.
+
+**Severity:**
+- `blocking` — stale-caller (runtime failure pending), or unreachable conditional that lets bad data through.
+- `medium` — public/exported symbol with no remaining callers, or unreachable non-trivial code block.
+- `low` — private dead helper, unused import.
+- Don't pad with "clean" findings. Surveyed proves you looked.
+
+**Overlap with other specialists:**
+- `simplification` owns DRY / intra-PR duplication / drive-by tidies *within* the touched code. You own *call-graph effects*.
+- `tests` owns "this bug-fix needs a regression test." You own "this regression *is happening now* because a caller wasn't updated."
+- `shape` owns "did the author bypass an existing seam?" You own "did the author break an existing seam by changing it?"
+
+Some duplicate findings are expected — the critic dedupes via `DUPLICATE OF`.
+
+Out of scope: external API breaks, security, performance, architecture fit.
+codex
+I’ll trace the changed symbols through the repo and configured sibling checkouts, starting with the pre-pass evidence and PR diff so the call-graph review stays grounded.
+exec
+/bin/bash -lc "sed -n '1,220p' .codex-scratch/dead-code.md" in /home/odio/.pr-reviewer/workdirs/cncorp_plow__569
+exec
+/bin/bash -lc "sed -n '1,260p' .codex-scratch/diff.patch" in /home/odio/.pr-reviewer/workdirs/cncorp_plow__569
+ succeeded in 0ms:
+## Static-tool candidates (verified)
+
+(none — pre-pass had no tool output)
+
+## Modified public symbols — caller analysis
+
+### `plowd-beta-package-signed` at `app/plowd/scripts/plowd-beta-package-signed:7` (modified)
+Old shape: `plowd-beta-package-signed [options]`; release flow required `app/plowd/dmg/volume.icns`, staged `.VolumeIcon.icns`, created UDRW DMG, wrote FinderInfo, then converted to ULFO.
+New shape: same CLI options; no `volume.icns` requirement or `.VolumeIcon.icns` staging; creates ULFO directly; runs `plowd-verify-dmg --dmg <output>` unless `PLOW_SKIP_DMG_VERIFY=1`.
+Callers found:
+- `app/justfile:219` — matches new shape; invokes existing options only.
+- `app/plowd/tests/test_release_scripts.py:209` — matches new shape; invokes existing options only.
+- `docs/distribution/CODE_SIGNING.md:153` — matches new shape; documented invocation uses existing `--identity` option only.
+Verdict: clean
+
+### `app/plowd/dmg/volume.icns` at `app/plowd/dmg/volume.icns:1` (removed)
+Old shape: source `.icns` asset consumed by `plowd-beta-package-signed` as `${dmg_assets_dir}/volume.icns`.
+New shape: file removed; package script no longer defines or requires `dmg_volume_icon`.
+Callers found:
+- (none; grep for `volume.icns` across same repo and included sibling repos returned no hits)
+Verdict: dead (zero callers)
+
+### `.VolumeIcon.icns` DMG root payload at `app/plowd/scripts/plowd-beta-package-signed:205` (removed)
+Old shape: package script staged `${stage_dir}/.VolumeIcon.icns`, so the final mounted DMG shipped a custom volume icon file.
+New shape: package script omits `.VolumeIcon.icns`; `plowd-verify-dmg` rejects a mounted DMG if `.VolumeIcon.icns` exists.
+Callers found:
+- `app/plowd/scripts/plowd-verify-dmg:82` — matches new shape; production verifier treats `.VolumeIcon.icns` presence as invalid.
+- `app/plowd/tests/test_release_scripts.py:250` — matches new shape; asserts staged source folder omits `.VolumeIcon.icns`.
+- `app/plowd/tests/test_release_scripts.py:304` — matches new shape; regression fixture creates `.VolumeIcon.icns` only to assert verifier rejection.
+Verdict: clean
+
+## Unreachable conditionals
+
+(none)
+ succeeded in 0ms:
+diff --git a/.github/workflows/test.yml b/.github/workflows/test.yml
+index cf56090a2..2cfd9c17a 100644
+--- a/.github/workflows/test.yml
++++ b/.github/workflows/test.yml
+@@ -22,6 +22,14 @@ jobs:
+           restore-keys: xcode-derived-${{ runner.os }}-
+       - name: Run Swift tests
+         run: cd app && just test
++      # The Ubuntu lane already runs the plowd suite via `just test-ci`, but
++      # PLO-29's artifact-level guard
++      # (test_plowd_verify_dmg_rejects_dmg_shipping_volume_icon) needs real
++      # `hdiutil` and is auto-skipped off Darwin. Run plowd tests here so
++      # that guard — and any future Darwin-only plowd test — is exercised
++      # pre-merge instead of silently skipped on every CI lane.
++      - name: Run plowd tests (covers macOS-only artifact guards)
++        run: cd app/plowd && just test
+ 
+   plow-imessage-channel:
+     name: plow-imessage channel (install + typecheck + build + test)
+diff --git a/app/justfile b/app/justfile
+index bea4a0e16..fb43600fb 100644
+--- a/app/justfile
++++ b/app/justfile
+@@ -225,6 +225,11 @@ release configuration="Release" derived="../.build/xcode-derived" output="../.bu
+       --s3-profile "{{s3_profile}}" \
+       --sparkle-account "{{sparkle_account}}"
+ 
++# Mount a Plow DMG and assert no custom volume icon ships at the root
++# (PLO-29). Defaults to ../.build/Plow.dmg.
++dmg-verify dmg="../.build/Plow.dmg":
++    @plowd/scripts/plowd-verify-dmg --dmg "{{dmg}}"
++
+ [private]
+ logs-internal source="all" lines="120" variant="" bundle_id="co.plow.app.dev":
+     @variant_id="$(printf '%s' "{{variant}}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/./g; s/^\.+//; s/\.+$//; s/\.\.+/./g')"; \
+diff --git a/app/plowd/dmg/volume.icns b/app/plowd/dmg/volume.icns
+deleted file mode 100644
+index a983a1e85..000000000
+Binary files a/app/plowd/dmg/volume.icns and /dev/null differ
+diff --git a/app/plowd/scripts/plowd-beta-package-signed b/app/plowd/scripts/plowd-beta-package-signed
+index 915149bfe..690ddc1e3 100755
+--- a/app/plowd/scripts/plowd-beta-package-signed
++++ b/app/plowd/scripts/plowd-beta-package-signed
+@@ -35,7 +35,6 @@ stage_sparkle_script="${repo_root}/app/plowd/scripts/plowd-stage-sparkle-feed"
+ publish_sparkle_script="${repo_root}/app/plowd/scripts/plowd-publish-sparkle-feed"
+ dmg_assets_dir="${repo_root}/app/plowd/dmg"
+ dmg_background="${dmg_assets_dir}/background.tiff"
+-dmg_volume_icon="${dmg_assets_dir}/volume.icns"
+ app_bundle="${repo_root}/.build/xcode-derived/Build/Products/Release/Plow.app"
+ output="${repo_root}/.build/Plow.dmg"
+ entitlements="${repo_root}/app/Phoenix/Phoenix.entitlements"
+@@ -161,7 +160,6 @@ fi
+ [[ -x "${stage_sparkle_script}" ]] || { echo "error: Sparkle stage script not found: ${stage_sparkle_script}" >&2; exit 1; }
+ [[ -x "${publish_sparkle_script}" ]] || { echo "error: Sparkle publish script not found: ${publish_sparkle_script}" >&2; exit 1; }
+ [[ -f "${dmg_background}" ]] || { echo "error: DMG background not found: ${dmg_background}" >&2; exit 1; }
+-[[ -f "${dmg_volume_icon}" ]] || { echo "error: DMG volume icon not found: ${dmg_volume_icon}" >&2; exit 1; }
+ 
+ echo "validating packaged app bundle..."
+ "${validate_script}" --app-bundle "${app_bundle}"
+@@ -200,9 +198,7 @@ ensure_no_mounted_plow_volume
+ 
+ stage_dir="$(mktemp -d /tmp/phoenix-signed-beta.XXXXXX)"
+ stage_app="${stage_dir}/Plow.app"
+-dmg_work_dir="$(mktemp -d /tmp/phoenix-signed-dmg.XXXXXX)"
+ sparkle_stage_dir="$(mktemp -d /tmp/phoenix-sparkle-feed.XXXXXX)"
+-rw_dmg="${dmg_work_dir}/Plow-rw.dmg"
+ mounted_volume=""
+ 
+ cleanup() {
+@@ -210,7 +206,6 @@ cleanup() {
+     hdiutil detach "${mounted_volume}" >/dev/null 2>&1 || true
+   fi
+   rm -rf "${stage_dir}"
+-  rm -rf "${dmg_work_dir}"
+   rm -rf "${sparkle_stage_dir}"
+ }
+ trap cleanup EXIT
+@@ -219,7 +214,6 @@ mkdir -p "$(dirname "${output}")"
+ ditto "${app_bundle}" "${stage_app}"
+ mkdir -p "${stage_dir}/.background"
+ ditto "${dmg_background}" "${stage_dir}/.background/background.tiff"
+-ditto "${dmg_volume_icon}" "${stage_dir}/.VolumeIcon.icns"
+ ln -s /Applications "${stage_dir}/Applications"
+ xattr -cr "${stage_app}"
+ 
+@@ -267,17 +261,8 @@ hdiutil create \
+   -volname "Plow" \
+   -srcfolder "${stage_dir}" \
+   -ov \
+-  -format UDRW \
+-  "${rw_dmg}"
+-
+-attach_output="$(hdiutil attach "${rw_dmg}" -readwrite -noverify -noautoopen)"
+-mounted_volume="$(printf '%s\n' "${attach_output}" | sed -n 's|.*\(/Volumes/.*\)$|\1|p' | head -n 1)"
+-[[ -n "${mounted_volume}" ]] || { echo "error: failed to determine mounted volume for ${rw_dmg}" >&2; exit 1; }
+-xattr -wx com.apple.FinderInfo "0000000000000000040000000000000000000000000000000000000000000000" "${mounted_volume}"
+-hdiutil detach "${mounted_volume}" >/dev/null
+-mounted_volume=""
+-
+-hdiutil convert "${rw_dmg}" -format ULFO -o "${output}" >/dev/null
++  -format ULFO \
++  "${output}"
+ 
+ echo "verifying mounted app from DMG..."
+ attach_output="$(hdiutil attach "${output}" -nobrowse)"
+@@ -306,6 +291,16 @@ if ! spctl --assess --type open -vv "${output}"; then
+   echo "warning: local spctl assessment of the DMG failed; notarization was accepted and the ticket was stapled" >&2
+ fi
+ 
++# PLO-29: verify the final shipping artifact has no custom volume icon and
++# that the volume name is "Plow" before it gets uploaded. plowd-verify-dmg
++# performs a real `hdiutil attach` of the stapled DMG, so this can only run
++# against a real filesystem; the unit-test path that stubs hdiutil sets
++# PLOW_SKIP_DMG_VERIFY=1.
++if [[ "${PLOW_SKIP_DMG_VERIFY:-0}" != "1" ]]; then
++  echo "verifying final DMG against PLO-29 contract..."
++  "${repo_root}/app/plowd/scripts/plowd-verify-dmg" --dmg "${output}"
++fi
++
+ echo "writing checksum..."
+ shasum -a 256 "${output}" > "${output}.sha256"
+ 
+diff --git a/app/plowd/scripts/plowd-verify-dmg b/app/plowd/scripts/plowd-verify-dmg
+new file mode 100755
+index 000000000..13de37644
+--- /dev/null
++++ b/app/plowd/scripts/plowd-verify-dmg
+@@ -0,0 +1,87 @@
++#!/usr/bin/env bash
++# Mount a Plow DMG and assert it has no custom volume icon (PLO-29 regression
++# guard) and that the volume name is "Plow". Detaches before exiting.
++set -euo pipefail
++
++usage() {
++  cat <<'EOF'
++Usage: plowd-verify-dmg [--dmg <path>]
++
++Mounts the given DMG, asserts the mounted volume is named "Plow" and has no
++.VolumeIcon.icns at its root, then detaches. Defaults to .build/Plow.dmg
++relative to the repo root.
++EOF
++}
++
++repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
++dmg_path="${repo_root}/.build/Plow.dmg"
++
++while [[ $# -gt 0 ]]; do
++  case "$1" in
++    --dmg)
++      dmg_path="${2:-}"
++      shift 2
++      ;;
++    -h|--help)
++      usage
++      exit 0
++      ;;
++    *)
++      echo "error: unknown argument: $1" >&2
++      usage >&2
++      exit 1
++      ;;
++  esac
++done
++
++if [[ "${dmg_path}" != /* ]]; then
++  dmg_path="${repo_root}/${dmg_path}"
++fi
++
++[[ -f "${dmg_path}" ]] || { echo "error: DMG not found: ${dmg_path}" >&2; exit 1; }
++
++# Refuse to run when a Plow volume is already mounted: the new mountpoint
++# would be "Plow 1" / "Plow 2" / ..., which would mask a real regression in
++# the volume-name assertion below.
++mounted_plow_volumes="$(hdiutil info 2>/dev/null | grep -Eo '/Volumes/Plow( [0-9]+)?$' || true)"
++mounted_plow_volumes="$(printf '%s\n' "${mounted_plow_volumes}" | sort -u)"
++if [[ -n "${mounted_plow_volumes}" ]]; then
++  echo "error: a Plow volume is already mounted; eject it before verifying:" >&2
++  printf '%s\n' "${mounted_plow_volumes}" >&2
++  exit 1
++fi
++
++mounted_volume=""
++cleanup() {
++  local rc=$?
++  if [[ -n "${mounted_volume}" ]]; then
++    if [[ "${rc}" -eq 0 ]]; then
++      # Success path: detach failure (e.g. volume busy) must be fatal.
++      # Otherwise the next release retry trips ensure_no_mounted_plow_volume
++      # in plowd-beta-package-signed and aborts on a leaked mount.
++      if ! hdiutil detach "${mounted_volume}"; then
++        echo "error: failed to detach ${mounted_volume} after successful verify" >&2
++        exit 1
++      fi
++    else
++      # Failure path: don't let detach noise mask the real error.
++      hdiutil detach "${mounted_volume}" >/dev/null 2>&1 || true
++    fi
++  fi
++  exit "${rc}"
++}
++trap cleanup EXIT
++
++attach_output="$(hdiutil attach "${dmg_path}" -nobrowse -readonly)"
++mounted_volume="$(printf '%s\n' "${attach_output}" | sed -n 's|.*\(/Volumes/.*\)$|\1|p' | head -n 1)"
++[[ -n "${mounted_volume}" ]] || { echo "error: failed to mount ${dmg_path}" >&2; exit 1; }
++
++volume_name="$(basename "${mounted_volume}")"
++[[ "${volume_name}" == "Plow" ]] || { echo "error: mounted volume name is '${volume_name}', expected 'Plow'" >&2; exit 1; }
++
++[[ ! -e "${mounted_volume}/.VolumeIcon.icns" ]] || {
++  echo "error: ${mounted_volume}/.VolumeIcon.icns exists; PLO-29 regression: DMG ships a custom volume icon" >&2
++  exit 1
++}
++
++echo "ok: ${dmg_path} mounts as 'Plow' with no custom volume icon"
+diff --git a/app/plowd/tests/test_release_scripts.py b/app/plowd/tests/test_release_scripts.py
+index b7c1692a0..883c1acf6 100644
+--- a/app/plowd/tests/test_release_scripts.py
++++ b/app/plowd/tests/test_release_scripts.py
+@@ -1,13 +1,17 @@
+ from pathlib import Path
++import platform
+ import re
+ import subprocess
+ import sys
+ import textwrap
+ 
++import pytest
++
+ 
+ REPO_ROOT = Path(__file__).resolve().parents[3]
+ SIGNED_PACKAGE_SCRIPT = REPO_ROOT / "app" / "plowd" / "scripts" / "plowd-beta-package-signed"
+ VALIDATE_PACKAGE_SCRIPT = REPO_ROOT / "app" / "plowd" / "scripts" / "plowd-validate-package"
++VERIFY_DMG_SCRIPT = REPO_ROOT / "app" / "plowd" / "scripts" / "plowd-verify-dmg"
+ GIT_REF_SCRIPT = REPO_ROOT / "app" / "scripts" / "lib" / "git-ref.sh"
+ PROVISION_SCRIPT = REPO_ROOT / "app" / "vm" / "provision-runtime.sh"
+ PLOW_INSTALL_LIB = REPO_ROOT / "scripts" / "plow-install" / "lib.sh"
+@@ -193,6 +197,11 @@ def test_signed_package_script_builds_ulfo_dmg_without_staging_ds_store(tmp_path
+         "FAKE_LOG_DIR": str(fake_log_dir),
+         "PLOW_RUNTIME_UPLOAD_SCRIPT": str(fake_bin / "upload-runtime-artifacts.sh"),
+         "SPARKLE_BIN_DIR": str(fake_bin),
++        # PLO-29: the post-staple verify needs a real hdiutil mount; under
++        # stubbed hdiutil it can't actually attach the fake DMG, so skip.
++        # The artifact-level guard is exercised by
++        # test_plowd_verify_dmg_rejects_dmg_shipping_volume_icon.
++        "PLOW_SKIP_DMG_VERIFY": "1",
+     }
+ 
+     result = subprocess.run(
+@@ -224,19 +233,160 @@ def test_signed_package_script_builds_ulfo_dmg_without_staging_ds_store(tmp_path
+ 
+     hdiutil_log = (fake_log_dir / "hdiutil.log").read_text()
+     assert "create" in hdiutil_log
+-    assert "-format UDRW" in hdiutil_log
+-    assert "convert" in hdiutil_log
+     assert "-format ULFO" in hdiutil_log
++    # PLO-29: DMG is created directly as ULFO; the old UDRW->convert dance
++    # only existed to host a kHasCustomIcon FinderInfo write on a mounted
++    # volume, which we no longer do.
++    assert "-format UDRW" not in hdiutil_log
+
+exec
+/bin/bash -lc "sed -n '1,120p' .codex-scratch/search-roots.md" in /home/odio/.pr-reviewer/workdirs/cncorp_plow__569
+exec
+/bin/bash -lc "sed -n '1,200p' .codex-scratch/file-history.md" in /home/odio/.pr-reviewer/workdirs/cncorp_plow__569
+ succeeded in 0ms:
+# coverage: full
+cncorp/plow-content included .siblings/cncorp/plow-content
+srosro/tkmx-client included .siblings/srosro/tkmx-client
+srosro/tkmx-server included .siblings/srosro/tkmx-server
+srosro/knightwatch-reviewer included .siblings/srosro/knightwatch-reviewer
+srosro/vibe-engineering included .siblings/srosro/vibe-engineering
+plow-pbc/watchmepivot included .siblings/plow-pbc/watchmepivot
+ succeeded in 0ms:
+### app/justfile
+4edb5796 PLO-29: drop custom DMG volume icon
+7dd69f55 Switch release signing from cncorp to The Plow Collective Apple team (#555)
+e247b5bf skills: prefer Plow team signing in plow-{dev,prod}-install, ad-hoc fallback (#521)
+b2be15e3 feat: Slack Participate mode, VMStartupOrchestrator refactor, iMessage debounce, and related fixes (#437)
+f5f9fa2f merge: integrate released-main into main with compatibility fixes (#420)
+
+### app/plowd/dmg/volume.icns
+4edb5796 PLO-29: drop custom DMG volume icon
+06caf4a3 Update macOS app icons and add custom ~/Plow folder icon (#100)
+80e32146 Improve DMG packaging (#10)
+
+### app/plowd/scripts/plowd-beta-package-signed
+f75802c5 PLO-29 r1: wire dmg-verify into the release path
+4edb5796 PLO-29: drop custom DMG volume icon
+7dd69f55 Switch release signing from cncorp to The Plow Collective Apple team (#555)
+b2be15e3 feat: Slack Participate mode, VMStartupOrchestrator refactor, iMessage debounce, and related fixes (#437)
+6d37d484 hotfix(release): drop stale --gatekeeper-manifest flag (#390)
+
+### app/plowd/scripts/plowd-verify-dmg
+dcb80a5a PLO-29 r2: run dmg-verify on macOS CI; fail loud on detach failure
+4edb5796 PLO-29: drop custom DMG volume icon
+
+### app/plowd/tests/test_release_scripts.py
+dcb80a5a PLO-29 r2: run dmg-verify on macOS CI; fail loud on detach failure
+f75802c5 PLO-29 r1: wire dmg-verify into the release path
+4edb5796 PLO-29: drop custom DMG volume icon
+7dd69f55 Switch release signing from cncorp to The Plow Collective Apple team (#555)
+80f5110f test(plow-install): regression coverage for launch_and_wait_ready prod port discovery (#540)
+
+### .github/workflows/test.yml
+dcb80a5a PLO-29 r2: run dmg-verify on macOS CI; fail loud on detach failure
+68b7e25b remove watchmepivot to standalone repo (#564)
+0b0da5e1 feat(tutorials): add tutorial library renderer + Vercel routes (#547)
+7da6f550 Wire up Vercel Analytics on plow.co + add /private-preview alias (#543)
+082f285c watchmepivot.com: per-repo breakdown on Development cards (#520)
+
+
+codex
+The pre-pass only found the DMG script interface, the removed icon asset, and the removed `.VolumeIcon.icns` payload. I’m expanding that with a direct grep of the new command, removed asset names, and public make targets across the repo plus included sibling roots.
+exec
+/bin/bash -lc "sed -n '261,620p' .codex-scratch/diff.patch" in /home/odio/.pr-reviewer/workdirs/cncorp_plow__569
+exec
+/bin/bash -lc "sed -n '1,220p' .codex-scratch/standards.md" in /home/odio/.pr-reviewer/workdirs/cncorp_plow__569
+ succeeded in 0ms:
++    assert "convert" not in hdiutil_log
+ 
+     staged_dir = fake_log_dir / "captured-srcfolder"
+     assert (staged_dir / "Plow.app").is_dir()
+     assert (staged_dir / "Applications").is_symlink()
+     assert not (staged_dir / ".DS_Store").exists()
+     assert (staged_dir / ".background" / "background.tiff").is_file()
+-    assert (staged_dir / ".VolumeIcon.icns").is_file()
++    # PLO-29: the mounted volume must show the default macOS volume icon,
++    # so the staged srcfolder must not ship a .VolumeIcon.icns.
++    assert not (staged_dir / ".VolumeIcon.icns").exists()
+     assert not (staged_dir / "Plow-rw.dmg").exists()
+ 
+ 
++@pytest.mark.skipif(platform.system() != "Darwin", reason="hdiutil is macOS-only")
++def test_plowd_verify_dmg_rejects_dmg_shipping_volume_icon(tmp_path):
++    """PLO-29 artifact-level guard. Catches the failure mode that
++    ``test_signed_package_script_builds_ulfo_dmg_without_staging_ds_store``
++    cannot: a regression that re-attaches the DMG post-``hdiutil create``
++    and re-stages a custom volume icon at the final-image stage. We build
++    three real DMGs with hdiutil and assert plowd-verify-dmg accepts the
++    clean one and rejects each regression shape.
++
++    plowd-verify-dmg is wired into plowd-beta-package-signed between staple
++    and S3 upload, so a rejection here aborts ``just release`` before any
++    artifact ships."""
++    # Refuse to run if a real Plow volume is already mounted: the script
++    # bails on that and our assertions would tag the wrong failure mode.
++    info = subprocess.run(
++        ["hdiutil", "info"], capture_output=True, text=True, check=True,
++    )
++    if re.search(r"/Volumes/Plow( [0-9]+)?$", info.stdout, re.MULTILINE):
++        pytest.skip("a Plow volume is mounted; eject it before running this test")
++
++    stage = tmp_path / "stage"
++    (stage / "Plow.app").mkdir(parents=True)
++    (stage / "Plow.app" / "PlaceHolder").write_text("dummy")
++
++    def make_dmg(dmg_path: Path, *, volname: str) -> None:
++        subprocess.run(
++            [
++                "hdiutil", "create",
++                "-volname", volname,
++                "-srcfolder", str(stage),
++                "-ov",
++                "-format", "ULFO",
++                str(dmg_path),
++            ],
++            check=True, capture_output=True,
++        )
++
++    def run_verify(dmg_path: Path) -> subprocess.CompletedProcess[str]:
++        return subprocess.run(
++            [str(VERIFY_DMG_SCRIPT), "--dmg", str(dmg_path)],
++            capture_output=True, text=True,
++        )
++
++    # Happy path: clean Plow DMG with no .VolumeIcon must pass.
++    clean_dmg = tmp_path / "clean.dmg"
++    make_dmg(clean_dmg, volname="Plow")
++    ok = run_verify(clean_dmg)
++    assert ok.returncode == 0, f"clean DMG rejected: stdout={ok.stdout!r} stderr={ok.stderr!r}"
++
++    # Regression #1: someone re-introduces .VolumeIcon.icns at the volume root.
++    (stage / ".VolumeIcon.icns").write_text("fake-icns")
++    iconed_dmg = tmp_path / "iconed.dmg"
++    make_dmg(iconed_dmg, volname="Plow")
++    fail = run_verify(iconed_dmg)
++    assert fail.returncode != 0, "verify-dmg accepted DMG that ships .VolumeIcon.icns"
++    assert ".VolumeIcon.icns exists" in fail.stderr
++
++    # Regression #2: someone parameterizes -volname to something other than "Plow".
++    (stage / ".VolumeIcon.icns").unlink()
++    misnamed_dmg = tmp_path / "misnamed.dmg"
++    make_dmg(misnamed_dmg, volname="NotPlow")
++    fail2 = run_verify(misnamed_dmg)
++    assert fail2.returncode != 0, "verify-dmg accepted DMG with wrong volume name"
++    assert "expected 'Plow'" in fail2.stderr
++
++
++@pytest.mark.skipif(platform.system() != "Darwin", reason="hdiutil is macOS-only")
++def test_plowd_verify_dmg_propagates_detach_failure_on_success_path(tmp_path):
++    """Round-2: if `hdiutil detach` fails on the success path (e.g. the
++    volume is busy), plowd-verify-dmg must exit non-zero. The previous
++    `|| true` swallowed the failure and returned 0, leaking /Volumes/Plow,
++    which then tripped ensure_no_mounted_plow_volume on the next release
++    retry. This test injects an `hdiutil` wrapper whose `detach` always
++    fails and asserts the script surfaces it."""
++    info = subprocess.run(
++        ["hdiutil", "info"], capture_output=True, text=True, check=True,
++    )
++    if re.search(r"/Volumes/Plow( [0-9]+)?$", info.stdout, re.MULTILINE):
++        pytest.skip("a Plow volume is mounted; eject it before running this test")
++
++    stage = tmp_path / "stage"
++    (stage / "Plow.app").mkdir(parents=True)
++    (stage / "Plow.app" / "PlaceHolder").write_text("dummy")
++    dmg = tmp_path / "Plow.dmg"
++    subprocess.run(
++        [
++            "hdiutil", "create",
++            "-volname", "Plow",
++            "-srcfolder", str(stage),
++            "-ov",
++            "-format", "ULFO",
++            str(dmg),
++        ],
++        check=True, capture_output=True,
++    )
++
++    real_hdiutil = subprocess.run(
++        ["which", "hdiutil"], capture_output=True, text=True, check=True,
++    ).stdout.strip()
++    fake_bin = tmp_path / "bin"
++    fake_bin.mkdir()
++    wrapper = fake_bin / "hdiutil"
++    wrapper.write_text(
++        "#!/usr/bin/env bash\n"
++        f'if [[ "$1" == "detach" ]]; then\n'
++        f'  echo "fake: detach failure (test injection)" >&2\n'
++        f'  exit 16\n'
++        f'fi\n'
++        f'exec "{real_hdiutil}" "$@"\n'
++    )
++    wrapper.chmod(0o755)
++
++    try:
++        result = subprocess.run(
++            [str(VERIFY_DMG_SCRIPT), "--dmg", str(dmg)],
++            capture_output=True, text=True,
++            env={
++                **subprocess.os.environ,
++                "PATH": f"{fake_bin}:{subprocess.os.environ['PATH']}",
++            },
++        )
++        assert result.returncode != 0, (
++            f"verify-dmg returned 0 despite detach failure; mount leaked.\n"
++            f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
++        )
++        assert "failed to detach" in result.stderr, (
++            f"expected 'failed to detach' in stderr, got: {result.stderr!r}"
++        )
++    finally:
++        # Real hdiutil to clean up the leaked mount the wrapper refused to release.
++        subprocess.run(
++            [real_hdiutil, "detach", "/Volumes/Plow"],
++            capture_output=True,
++        )
++
++
+ def test_signed_package_script_rejects_existing_plow_volume_before_packaging(tmp_path):
+     app_bundle = tmp_path / "Plow.app"
+     output = tmp_path / "Plow.dmg"
+ succeeded in 0ms:
+# Coding Standards
+
+Canonical coding principles for my projects. Referenced from `~/.claude/CLAUDE.md` (all coding work) and `~/.claude/REVIEW_PRACTICES.md` (automated + human review). Hand-curated — auto-tuning from `learn-from-replies.sh` targets `COMMENT_REVIEW_MISTAKES.md` only, not this file.
+
+## Team Context
+
+Small team (~3 engineers), ~10 active users, moving fast. Design bias:
+
+- **Elegance > defensive sprawl.** Code that reads cleanly and scales beats code that handles every hypothetical failure mode.
+- **Concise code that fails loudly > verbose, defensive code with brittle special cases.** We prefer short code that captures the *spirit* of the spec or desired UX and crashes when its assumptions break, over long code that bakes in handling for every edge case the author imagined. Each special case calcifies a decision and invites the next one. When the spec seems to require contortions, the right reflex is to question the spec (see "Reframe the Spec" below), not to add branches.
+- **Engineer time > compute time.** When picking between approaches, prefer the one that scales in *engineers' time* — fewer special cases, fewer conditional branches, fewer files to touch when the next variant lands. A solution that costs more compute or runs slower is fine if it eliminates a class of code we'd otherwise have to maintain. Lookup tables, hand-coded heuristics, and per-case branches are brittle in a way the bill-of-materials never reflects.
+- **Loud breaks.** If an assumption is wrong, the code crashes — it does not silently degrade. No swallowed errors, no fallback chains, no softened tests.
+- **Architecture decisions should not accrue tech debt.** A "fine-for-now" choice that the roadmap will force us to unwind in six weeks is a medium-severity finding, not a nit — flag it and propose the seam.
+- **DRY and missing-abstraction findings are first-class.** They are not style polish. A missing abstraction today is tomorrow's bug surface × N.
+
+Reviewers — human and automated — weight findings with these values in mind, not just raw severity.
+
+## Fail-Fast / Offensive Programming
+
+Write fail-fast code. If an assumption is wrong, the code crashes — it does not silently degrade.
+
+- Access data directly: `x["key"]`, not `(x or {}).get("key", default)`
+- No fallback chains: `a or b or c or default` — pick one source of truth
+- No swallowed errors: `try: ... except: pass`
+- Avoid `try/except` / `try/catch` in core logic; catch only at system boundaries (user input, external APIs)
+- When encountering existing defensive code, rip it out and run tests. If they pass, the defense was bloat.
+
+**Review question:** *Is this code non-defensive? Does it crash loudly when its invariants are violated?*
+
+## Concise Code (LOC is a cost)
+
+Every line earns its place. Verbose code is more bugs, more review time, more drift.
+
+- Don't add `if x:` guards when `x` should always be truthy
+- Don't introduce helpers/abstractions for one or two call sites
+- Three similar lines > premature abstraction
+- When I propose verbose code, push back
+- Prefer direct access over fallback chains and nested conditionals
+- Every conditional is a maintenance burden — all things equal, avoid it. Each `if`/`else` branch is a state the next reader has to hold and the next change has to update. When you find yourself adding a special case, ask whether a different seam would let you delete it instead.
+
+**Review question:** *Is this concise and elegant, or is there extra code that doesn't pay for itself?*
+
+## Anti-Bloat — Don't Propose These Remedies
+
+LOC is a stand-in for **conditionals + special cases + defensive branches + new abstractions** — those are the actual cost being managed. Each calcified branch survives every future refactor and shapes the next change. The test for any edge-case handler: *does the edge case actually happen, or will it in the near future?* If neither, the remedy is bloat regardless of how the line count nets out.
+
+When reviewing a PR or applying a bot's suggestion, **don't propose** (or accept) these patterns:
+
+- **assert→raise+log replacements outside trust boundaries.** `Fail-Fast` prefers the assertion crashing loudly on internal-caller bugs.
+- **isinstance / type-validation checks for internal callers.** Validation belongs at trust boundaries (user input, external APIs); internal calls trust their callers.
+- **state-reset / fallback writes** for hypothetical pollution ("set X = default in case prior init left it dirty"). Unless the polluting scenario is observed in production, the fallback locks the surrounding code into preserving both branches forever.
+- **wrapper dataclasses, snapshot views, or new DI seams** for one call site. These are remedies for repeated problems; "Three similar lines > premature abstraction" applies.
+- **streaming / incremental rewrites** of small in-memory operations on theoretical perf or OOM grounds. Cite a measured failure or skip.
+- **companion tests, CI guards, or regression coverage for unreachable scenarios** ("no test for prod re-enable", "no test that this can't happen"). Tests calcify too — a test for a scenario that doesn't occur preserves a contract that may have been wrong, and the next refactor has to keep that contract working forever.
+
+When pushing back on a bot finding whose remedy hits one of these patterns, cite this section by name (`Anti-Bloat`) and apply the LOC-negative or branch-negative version of the fix.
+
+**Review question:** *Does the proposed remedy add a branch / handler / abstraction for a scenario that hasn't been shown to actually occur?*
+
+## Broken-Glass Test
+
+> "For the entire beta period, people practically had to walk over broken glass to start using shared channels: for me to even send you an invitation, I'd first have to find out your 'workspace URL' which very few people knew." — Stewart Butterfield on Slack's shared-channels beta
+
+At our scale (~10 users, pre-PMF — see `.knightwatch/review-priority.md`), the reviewer's job is to catch real bugs and push for elegant code that lets us discover product-market fit. It is *not* to push for handling user types, scale, or behaviors we don't have yet. Architecture complexity for hypothetical scenarios is broken-glass cleanup — calcified branches that have to be preserved through every future refactor — disguised as diligence.
+
+### Voice posture: questions over prescriptions
+
+Default voice on every non-bug finding is **inquisitive**. State the #1 assumption explicitly as a question. The reviewer is the team's "could-this-actually-happen" check, not its "you must address this" enforcer.
+
+Declarative voice is reserved for high-confidence bugs only. The bar: *can you cite the failing path, the user-observable outcome, and the line where the contract breaks?* Examples that meet the bar — reproducible failure, broken contract with concrete user impact, security/data-integrity regression with traceable cause. Examples that don't meet the bar — "this could break if X," "this would scale poorly to N users," "this is missing a guard for Y."
+
+### Question template
+
+```
+Will [user state X / data shape Y / scale Z]?
+- If yes, [proposed action].
+- If not, consider cutting [proposed action] — adds complexity and makes PMF iteration harder.
+[Optional: recommendation given the operating point.]
+```
+
+The phrase **"adds complexity and makes PMF iteration harder"** is load-bearing for scope-creep findings. It names the *cost* of the additive remedy so the author chooses between two visible costs (broken-glass risk vs. complexity), not between "fix the issue" and "ignore the reviewer." Acceptable variants when the cost differs: "calcifies a branch the next refactor must preserve," "trades simple-and-fail-loud for layered defenses."
+
+### Worked-example reframings
+
+**Taxonomy demand for first-instance directory** — declarative version: *"`team-skills/` is a new repo storage class with no taxonomy or guard contract; the taxonomy and guard should name it."* Reframed:
+
+> Will we add a 2nd `team-skills/` bundle in the next month? If yes, the taxonomy row pays for itself now. If not, consider cutting the taxonomy demand — adds complexity and makes PMF iteration harder. The existing protected-path guard already fails loudly if anyone ships `team-skills/` content into the runtime.
+
+**Unrelated guard-update ask** — declarative version: *"`scripts/check_protected_paths.py` still omits `plow-local-token`; add it to the existing `user-state` rule."* Reframed:
+
+> Has any agent task touched `plow-local-token` in the last fortnight? If yes, sweep this in a separate cleanup PR. If not, the guard gap is theoretical; consider cutting it from this PR's scope — adds complexity and makes PMF iteration harder.
+
+**Demand for layer-by-layer regression tests** — declarative version: *"This bug-fix pass still ships without focused regression tests; 1-2 tests pinning `import_csv()`, `import_legacy_log()`, and `next_batch()` would cover the important paths."* Reframed:
+
+> Has the upstream CSV format changed twice in the last quarter? If yes, 1-2 in-memory SQLite tests pinning the import path are worth ~10 LOC each. If not, fail-loud-on-bad-shape is acceptable; consider cutting the layer-by-layer coverage demand — adds complexity and makes PMF iteration harder.
+
+**Review questions:**
+- *Is this remedy solving for a user, user type, or behavior that doesn't yet exist? At our scale, would the failure even be visible in production today?*
+- *Did this finding name its #1 assumption as a question, or was it asserted as if the assumption is settled?*
+- *For scope-creep findings: did the question name the cost (adds complexity / calcifies a branch / makes PMF iteration harder)?*
+
+For per-repo current operating points + concrete contrast pairs, see `.knightwatch/review-priority.md` in each tracked repo.
+
+## Incremental Improvement
+
+Leave each file a little better than you found it. "Better" = fewer LOC, fewer conditionals, fewer special cases, clearer assumptions at the seams it consumes and exposes, and louder failure when those assumptions break. A bit slower at runtime is fine. If you're already editing something and spot an obvious tidy — two nearly-identical mocks that could collapse into a factory, an unused import, a one-line comment that restates the function name — take it.
+
+Split the work: get the business-logic change working and tests passing first, then do the cleanup as a **separate commit**. A reviewer should see the behavioral change cleanly on its own and the cleanup as its own diff.
+
+- Don't block on unrelated cleanup — keep the focused change landable.
+- Don't sneak cleanup into the feature commit — it hides the real change.
+- If the cleanup is big enough that it deserves its own PR, make it its own PR.
+
+**Review question:** *Did the author leave the file measurably better than they found it, without muddying the business-logic diff?*
+
+## DRY: Find Existing Logic Before Adding New
+
+New functions, user-facing strings, and status reports must be grep'd for near-duplicates before approval. Parallel implementations are the single most common LLM defect.
+
+- Grep the repo for similar function names and near-duplicate strings.
+- If a similar implementation exists, unify rather than adding alongside.
+- Duplicate logic with an existing repo site: *blocking: dry* — cite the existing site by path.
+- Intra-PR duplication (N near-identical blocks in the same diff) is a missing abstraction: *medium: dry*.
+
+**Review question:** *Is this DRY with the rest of the codebase? Are we re-using existing functions where we should?*
+
+## Regression Risk
+
+New code must not quietly change existing business logic. Any change to a function's contract, return shape, side effects, or error behavior needs an explicit callout.
+
+- Changed semantics of an existing function without updating call sites: *blocking: regression*.
+- New conditional branch that alters legacy-path behavior: *medium: regression* unless proven safe.
+- A bug fix without a regression test that exercises the old-bug path is *blocking: tests*.
+
+**Review question:** *Does this introduce regressions? How does it change existing business logic, and is that change intentional and covered?*
+
+## Reframe the Spec
+
+Any single new block over ~20 LOC is a smell. Pause and ask whether a spec or UX tweak would delete most of that code. Don't silently accept contorted code to match a literal ask — name the simpler alternative so the author can choose.
+
+- If satisfying a spec detail is adding notable complexity: *low: spec-reframe* with the alternative described in one sentence.
+- If the complexity is structural (not just a spec ask): escalate to *medium*.
+
+**Review question:** *Would a small change to the spec or UX accomplish the spirit of the request while significantly reducing complexity?*
+
+## Name the Shape
+
+Before writing code, name the *class* of problem: parsing, validation, dispatch, retry, auth, serialization, formatting, batching, state, idempotency, audit logging, feature-flag gating. Each is a recurring shape with a preferred home in the codebase. Pick the shape first; the lines come second.
+
+Two failure modes:
+
+- **Wrong shape.** Regex when the upstream could emit structured data. Hand-rolled validation when pydantic/zod is already in use. `if kind == "A": ... elif kind == "B": ...` instead of a dispatch dict. Bool-soup state instead of an enum. The code works on today's input and silently breaks on the next variant. Regex is the canonical example — treat regex on string-typed input as a smell that *structure got discarded upstream*. The fix is usually to make upstream emit data, not to grow the regex.
+- **Five shapes for five similar problems.** Each new feature lands with its own auth check, its own retry loop, its own date format, its own error shape. Each PR looks fine in review; the policy now lives in 17 places. If you are the second instance of a missing shape, *that* is the moment to introduce one — not the fifth.
+
+Before writing: grep for how the codebase already handles this class. If a shape exists, conform. If none exists and you are not the first instance, you have just discovered tech debt — flag it.
+
+**Review question:** *Did the author name the problem class and conform to (or establish) the codebase's shape for it, or did they solve only the literal symptom?*
+
+## Generalize the Fix (Narrow-Fix)
+
+A fix tied to one reported input (regex, string equality, hard-coded special case) is a narrow fix. Ask: what is the next variant of this input, and does this code cover it?
+
+- Narrow fixes that won't survive the obvious next bug are *medium: narrow-fix*.
+- If the root cause is systemic (parsing, state machine, schema), fix the class, not the instance.
+- `Narrow-Fix` is only valid on the FIRST occurrence of a class on a given PR. A second instance of the same class on the same PR escalates to `Bug-Class-Recurrence` (below) — repeating `Narrow-Fix` review after review erodes the tag's signal and traps the author in a local-fix loop.
+
+**Review question:** *Is this a root-cause fix or a patch for one symptom?*
+
+## Bug-Class-Recurrence
+
+When the same class of bug has been flagged 2+ times on the same PR — across reviews, or across multiple findings within a single review — the right finding is structural, not local. Patching individual instances has reached diminishing returns; the right move is to name the architectural shape that would make the entire class impossible (per-session value types, sealed enums for state, single-owner data, registries, dispatch maps) and recommend that.
+
+A `Bug-Class-Recurrence` finding **replaces** — does not append to — the individual local findings of the same class. Listing both anchors the author on the local fix; they will fix the local one and the structural finding becomes background noise.
+
+If you genuinely cannot name the structural alternative, downgrade to `medium` and surface as an Open Question instead. Do NOT fall back to listing local fixes.
+
+- Same class flagged in 2+ prior reviews → *blocking: bug-class-recurrence*.
+- 2+ findings of the same class in the current review draft → *blocking: bug-class-recurrence* (collapse them into one structural finding).
+- Supersedes `Narrow-Fix` after the first occurrence of the class.
+
+**Review question:** *Is this the Nth instance of a recurring shape? If so, what's the structural alternative — the one piece of code that would make every instance disappear?*
+
+## Tests
+
+Tests must fail loudly when something is broken. Never add graceful degradation, skips, or soft failures to tests. A broken test should crash, not pass silently.
+
+- Test **user experience and business logic**, not self-evident language/runtime behavior
+- A change crossing multiple layers (e.g. Swift → plowd → API) needs 1–2 focused behavior tests, not exhaustive layer-by-layer coverage
+- Prefer shared fixtures/factories over inline setup blocks
+- Refactor repeated test payloads, DB rows, and lifecycle setup into helpers
+- Remove low-value helper tests before adding more boilerplate
+- **Run `just test` after every change** — features, fixes, refactors, anything. Don't return to the user with a red bar.
+- **`just test` must pass before merging.** The pre-merge gate is non-negotiable: no merge on a red bar, even if the change is "obviously" safe. If a repo doesn't have a `just test`, add one before landing the first PR that needs gating.
+
+New tests in the plow repo should align with `docs/TEST_PATTERNS.md` and `./tests/README.md` — the repo's own test-writing conventions. Tests that diverge from those patterns without a good reason are a *low: tests* finding.
+
+**Review question:** *Are the tests loud-on-failure, aligned with the repo's test patterns, and focused on behavior rather than implementation details?*
+
+## Migrations
+
+Never hand-write Alembic migrations. Always use `alembic revision --autogenerate` to generate them from model changes.
+
+**Review question:** *Was this migration autogenerated?*
+
+---
+
+## How reviewers should weight these
+
+For any PR, reviewers rank findings by severity first (`blocking` → `medium` → `low` → `nit`), then within a severity band by:
+
+1. **Tech-debt and architectural findings** (missing abstraction, DRY violation, design that won't survive the roadmap) — these compound.
+2. **Broad-correctness findings** that affect many paths or users.
+3. **Surface-area findings** touching many files.
+4. **Localized fixes and style** rank LAST within their band.
+
+If two findings compete and one is "code that won't scale as the team grows" vs. one that is "line-level style," the scalability finding wins the higher slot even at the same severity.
+
+# Review Practices
+
+Coding and review standards for the plow codebase.
+
+exec
+/bin/bash -lc "sed -n '1,180p' .codex-scratch/product-context.md" in /home/odio/.pr-reviewer/workdirs/cncorp_plow__569
+ succeeded in 0ms:
+# Plow — Product Context
+
+**Stage:** Early-stage agent platform, moving fast. Small user base; rigor should match that — favor clean designs over hardening edge cases.
+
+**What it is:** A general wrapper that gives sandboxed agents narrow, permission-gated access to cloud services and on-device capabilities. Three tiers: **Plow API** (`api/`, FastAPI on AWS) + **Phoenix macOS app** (`app/Phoenix/` Swift + `app/plowd/` Python daemon, runs an Alpine VM with the agent runtime inside) + **Plow CLI** (`cli/`, the agent's tool surface). The current agent runtime is OpenClaw, but the wrapper is designed to be runtime-agnostic. Connectors and channels are pluggable and the inventory shifts — read `README.md` for the current list. ClawHub (`clawhub.ai`) is a *separate* service that hosts agent skills; the marketplace UI in this repo calls its API.
+
+**Authoritative guidance lives in two files; read them first:**
+- `AGENTS.md` — coding stance (clean replacement over migration code, no dual-write paths, no compatibility shims, complexity-debt aversion, scheduler-selection rules, issue-filing conventions for `cncorp/plow`).
+- `docs/architecture/file-taxonomy.md` — every file is exactly one of (a) **upstream agent runtime** (currently OpenClaw, pulled in at VM build time; we have no edit access to that source — fixes there mean pinning a different version or PRing upstream, not editing in this tree), (b) **Plow wrapper code we own**, or (c) **per-install user state**. Confusing the categories is "the source of nearly every 'broken on upgrade' or 'shipped user data' incident." A pre-commit guard (`scripts/check_protected_paths.py`) enforces it.
+
+**Architectural commitments worth flagging when a PR breaks them:**
+- The agent never holds raw OAuth tokens — it sees narrow CLI tools only. PRs that leak token material into the agent surface are a security regression.
+- `plowd` is the host/guest control plane. Code that talks to the VM directly (e.g. SSH from a service that already has a plowd dependency) splits authority — route through plowd instead.
+- File-taxonomy violations are blocking. The two recurring failure modes: (i) per-install (c) state shipped inside `Plow.app/Contents/Resources/`, (ii) attempts to "fix" upstream (a) behavior by patching around it in this tree. When (a) is the wrong shape, the answer is to wrap, version-pin, or PR upstream — never edit upstream-owned paths locally. The guard catches the obvious cases; review attention catches the non-obvious ones.
+- Treat `AGENTS.md` "Product Stage" and "Complexity Debt" sections as load-bearing review criteria. Heuristic accretion (one keyword exception, then another) is the canonical failure mode to push back on.
+
+**Review posture:**
+- The architecture specialist is allowed and encouraged to file non-blocking "open an issue before X" findings when a design decision is fine today but will bite at a known transition.
+- For roadmap-flavored findings, link to the relevant doc in `docs/architecture/` or `plans/` rather than asserting the roadmap from memory — specifics drift faster than this file is updated.
+
+**Update cadence:** Edit when a tier moves (e.g. `app/` restructures), the file-taxonomy rules change, or `AGENTS.md` shifts a load-bearing stance.
+exec
+/bin/bash -lc "sed -n '1,180p' .codex-scratch/author-intent.md && sed -n '1,80p' .codex-scratch/inferred-intent.md" in /home/odio/.pr-reviewer/workdirs/cncorp_plow__569
+ succeeded in 0ms:
+## PR Title
+PLO-29: drop custom DMG volume icon
+
+## PR Description (author's own explanation)
+
+## Summary
+
+- The mounted Plow installer DMG showed an icon that looked like the running app, causing confusion in Finder ("Plow" the volume vs "Plow" the app).
+- Strip the custom volume icon from every DMG-producing path; the volume now uses the default macOS removable-volume icon. Volume name remains "Plow" (matches OrbStack / Claude convention).
+- Add a real-`hdiutil` regression guard (`plowd-verify-dmg` / `just app dmg-verify`) wired into `plowd-beta-package-signed` between staple and S3 upload, so a future reintroduction fails the release build. The Darwin-only pytest now runs on the macOS CI lane.
+
+Resolves PLO-29.
+
+## Test plan
+
+- [ ] `just app dmg-verify` passes on a freshly built DMG locally (volume mounts, no `.VolumeIcon.icns` at root, volume name is "Plow").
+- [ ] CI macOS app-build job runs the plowd test suite (25 tests), including the artifact-level guard test that builds clean / `.VolumeIcon`-staged / wrong-`volname` DMGs and asserts the guard's behavior.
+- [ ] Smoke: temporarily reintroduce the icon-staging line locally; the release path fails at the verify step.
+- [ ] `hdiutil detach` failure on the success path now exits the script non-zero with "failed to detach" on stderr (covered by the new injected-failure pytest).
+Inferred intent: It appears @swagatpatel is working towards making the macOS installer DMG present as a standard Plow volume without a custom disk icon by deleting `app/plowd/dmg/volume.icns`, removing `.VolumeIcon.icns` staging and FinderInfo writes from `app/plowd/scripts/plowd-beta-package-signed`, and adding `app/plowd/scripts/plowd-verify-dmg` plus the `app/justfile` `dmg-verify` guard to keep the shipped artifact icon-free.
+exec
+/bin/bash -lc "nl -ba app/plowd/scripts/plowd-beta-package-signed | sed -n '1,360p'" in /home/odio/.pr-reviewer/workdirs/cncorp_plow__569
+ succeeded in 0ms:
+     1	#!/usr/bin/env bash
+     2	# Build, sign, notarize, staple, and upload a Plow DMG.
+     3	set -euo pipefail
+     4	
+     5	usage() {
+     6	  cat <<'EOF'
+     7	Usage: plowd-beta-package-signed [options]
+     8	
+     9	Options:
+    10	  --app-bundle <path>       Built Plow.app bundle to package
+    11	  --output <path>           Output DMG path
+    12	  --entitlements <path>     Entitlements plist for the top-level app signature
+    13	  --identity <value>        Developer ID Application signing identity
+    14	  --notary-profile <name>   notarytool keychain profile name
+    15	  --s3-bucket <name>        S3 bucket for upload
+    16	  --release-prefix <path>   Optional S3 prefix for versioned release artifacts
+    17	  --s3-profile <name>       AWS profile name
+    18	  --sparkle-account <name>  Sparkle keychain account name for generate_appcast
+    19	  -h, --help                Show this help
+    20	
+    21	Environment:
+    22	  PLOW_CODESIGN_IDENTITY    Default signing identity if --identity is omitted
+    23	  PLOW_APPLE_TEAM_ID        Apple team id for identity auto-detection
+    24	  PLOW_NOTARY_PROFILE       Default notary profile if --notary-profile is omitted
+    25	  PLOW_RELEASES_BUCKET      Default S3 bucket (default: releases.plow.co)
+    26	  PLOW_RELEASES_PROFILE     Default AWS profile (default: plow)
+    27	  PLOW_SPARKLE_ACCOUNT      Default Sparkle key account (default: plow-sparkle)
+    28	  PLOW_KEEP_SIGNED_APP      When set to 1, keep a copy of the signed app at .build/Plow-signed.app
+    29	EOF
+    30	}
+    31	
+    32	repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+    33	validate_script="${repo_root}/app/plowd/scripts/plowd-validate-package"
+    34	stage_sparkle_script="${repo_root}/app/plowd/scripts/plowd-stage-sparkle-feed"
+    35	publish_sparkle_script="${repo_root}/app/plowd/scripts/plowd-publish-sparkle-feed"
+    36	dmg_assets_dir="${repo_root}/app/plowd/dmg"
+    37	dmg_background="${dmg_assets_dir}/background.tiff"
+    38	app_bundle="${repo_root}/.build/xcode-derived/Build/Products/Release/Plow.app"
+    39	output="${repo_root}/.build/Plow.dmg"
+    40	entitlements="${repo_root}/app/Phoenix/Phoenix.entitlements"
+    41	limactl_entitlements="${repo_root}/app/Phoenix/Limactl.entitlements"
+    42	identity="${PLOW_CODESIGN_IDENTITY:-}"
+    43	team_id="${PLOW_APPLE_TEAM_ID:-3559PD337Z}"
+    44	notary_profile="${PLOW_NOTARY_PROFILE:-plow-notary}"
+    45	s3_bucket="${PLOW_RELEASES_BUCKET:-releases.plow.co}"
+    46	release_prefix=""
+    47	s3_profile="${PLOW_RELEASES_PROFILE:-plow}"
+    48	sparkle_account="${PLOW_SPARKLE_ACCOUNT:-plow-sparkle}"
+    49	keep_signed_app="${PLOW_KEEP_SIGNED_APP:-0}"
+    50	
+    51	while [[ $# -gt 0 ]]; do
+    52	  case "$1" in
+    53	    --app-bundle)
+    54	      app_bundle="${2:-}"
+    55	      shift 2
+    56	      ;;
+    57	    --output)
+    58	      output="${2:-}"
+    59	      shift 2
+    60	      ;;
+    61	    --entitlements)
+    62	      entitlements="${2:-}"
+    63	      shift 2
+    64	      ;;
+    65	    --identity)
+    66	      identity="${2:-}"
+    67	      shift 2
+    68	      ;;
+    69	    --notary-profile)
+    70	      notary_profile="${2:-}"
+    71	      shift 2
+    72	      ;;
+    73	    --s3-bucket)
+    74	      s3_bucket="${2:-}"
+    75	      shift 2
+    76	      ;;
+    77	    --release-prefix)
+    78	      release_prefix="${2:-}"
+    79	      shift 2
+    80	      ;;
+    81	    --s3-profile)
+    82	      s3_profile="${2:-}"
+    83	      shift 2
+    84	      ;;
+    85	    --sparkle-account)
+    86	      sparkle_account="${2:-}"
+    87	      shift 2
+    88	      ;;
+    89	    -h|--help)
+    90	      usage
+    91	      exit 0
+    92	      ;;
+    93	    *)
+    94	      echo "error: unknown argument: $1" >&2
+    95	      usage >&2
+    96	      exit 1
+    97	      ;;
+    98	  esac
+    99	done
+   100	
+   101	resolve_path() {
+   102	  local path="$1"
+   103	  if [[ "${path}" = /* ]]; then
+   104	    echo "${path}"
+   105	  else
+   106	    echo "${repo_root}/${path}"
+   107	  fi
+   108	}
+   109	
+   110	plist_read() {
+   111	    local plist_path="$1"
+   112	    local key="$2"
+   113	    /usr/bin/python3 -c "
+   114	import plistlib, sys
+   115	try:
+   116	    with open(sys.argv[1], 'rb') as f:
+   117	        d = plistlib.load(f)
+   118	    print(d.get(sys.argv[2], ''), end='')
+   119	except Exception:
+   120	    pass
+   121	" "${plist_path}" "${key}" 2>/dev/null || true
+   122	}
+   123	
+   124	ensure_no_mounted_plow_volume() {
+   125	  local mounted_plow_volumes
+   126	  mounted_plow_volumes="$(
+   127	    hdiutil info 2>/dev/null \
+   128	      | grep -Eo '/Volumes/Plow( [0-9]+)?$' || true
+   129	  )"
+   130	  mounted_plow_volumes="$(
+   131	    printf '%s\n' "${mounted_plow_volumes}" \
+   132	      | sort -u
+   133	  )"
+   134	  [[ -z "${mounted_plow_volumes}" ]] && return
+   135	
+   136	  echo "error: a Plow disk image is already mounted; eject it before packaging:" >&2
+   137	  printf '%s\n' "${mounted_plow_volumes}" >&2
+   138	  exit 1
+   139	}
+   140	
+   141	app_bundle="$(resolve_path "${app_bundle}")"
+   142	output="$(resolve_path "${output}")"
+   143	entitlements="$(resolve_path "${entitlements}")"
+   144	limactl_entitlements="$(resolve_path "${limactl_entitlements}")"
+   145	
+   146	if [[ -z "${identity}" ]]; then
+   147	  [[ -n "${team_id}" ]] || { echo "error: PLOW_APPLE_TEAM_ID is required when --identity is not provided" >&2; exit 1; }
+   148	  identity="$(security find-identity -v -p codesigning 2>/dev/null | sed -n "s/.*\"\\(Developer ID Application:.*(${team_id})\\)\"/\\1/p" | head -n 1)"
+   149	fi
+   150	
+   151	[[ -n "${identity}" ]] || { echo "error: no Developer ID Application identity found for team ${team_id}; install one for that team before running release" >&2; exit 1; }
+   152	if [[ -n "${team_id}" && "${identity}" != *"(${team_id})"* ]]; then
+   153	  echo "error: selected signing identity does not match required Apple team ${team_id}: ${identity}" >&2
+   154	  exit 1
+   155	fi
+   156	[[ -d "${app_bundle}" ]] || { echo "error: app bundle not found: ${app_bundle}" >&2; exit 1; }
+   157	[[ -f "${entitlements}" ]] || { echo "error: entitlements file not found: ${entitlements}" >&2; exit 1; }
+   158	[[ -f "${limactl_entitlements}" ]] || { echo "error: limactl entitlements file not found: ${limactl_entitlements}" >&2; exit 1; }
+   159	[[ -x "${validate_script}" ]] || { echo "error: package validator not found: ${validate_script}" >&2; exit 1; }
+   160	[[ -x "${stage_sparkle_script}" ]] || { echo "error: Sparkle stage script not found: ${stage_sparkle_script}" >&2; exit 1; }
+   161	[[ -x "${publish_sparkle_script}" ]] || { echo "error: Sparkle publish script not found: ${publish_sparkle_script}" >&2; exit 1; }
+   162	[[ -f "${dmg_background}" ]] || { echo "error: DMG background not found: ${dmg_background}" >&2; exit 1; }
+   163	
+   164	echo "validating packaged app bundle..."
+   165	"${validate_script}" --app-bundle "${app_bundle}"
+   166	
+   167	version="$(plist_read "${app_bundle}/Contents/Info.plist" CFBundleShortVersionString)"
+   168	build_number="$(plist_read "${app_bundle}/Contents/Info.plist" CFBundleVersion)"
+   169	sparkle_feed_url="$(plist_read "${app_bundle}/Contents/Info.plist" SUFeedURL)"
+   170	sparkle_public_key="$(plist_read "${app_bundle}/Contents/Info.plist" SUPublicEDKey)"
+   171	
+   172	[[ -n "${version}" ]] || { echo "error: missing CFBundleShortVersionString in ${app_bundle}/Contents/Info.plist" >&2; exit 1; }
+   173	[[ -n "${build_number}" ]] || { echo "error: missing CFBundleVersion in ${app_bundle}/Contents/Info.plist" >&2; exit 1; }
+   174	[[ -n "${sparkle_feed_url}" ]] || { echo "error: missing SUFeedURL in ${app_bundle}/Contents/Info.plist" >&2; exit 1; }
+   175	[[ -n "${sparkle_public_key}" ]] || { echo "error: missing SUPublicEDKey in ${app_bundle}/Contents/Info.plist" >&2; exit 1; }
+   176	
+   177	release_prefix="${release_prefix#/}"
+   178	release_prefix="${release_prefix%/}"
+   179	prefix_with_slash=""
+   180	if [[ -n "${release_prefix}" ]]; then
+   181	  prefix_with_slash="${release_prefix}/"
+   182	fi
+   183	dmg_key="${prefix_with_slash}downloads/Plow-${version}-${build_number}.dmg"
+   184	dmg_sha_key="${dmg_key}.sha256"
+   185	sparkle_appcast_key="${prefix_with_slash}appcasts/Plow-${version}-${build_number}.xml"
+   186	sparkle_archive_prefix="${prefix_with_slash}updates"
+   187	sparkle_download_url_prefix="https://s3.us-west-2.amazonaws.com/${s3_bucket}/${sparkle_archive_prefix}"
+   188	
+   189	echo "using signing identity: ${identity}"
+   190	echo "preferred Apple team id: ${team_id}"
+   191	echo "using notary profile: ${notary_profile}"
+   192	
+   193	for cmd in aws codesign ditto file find hdiutil shasum xattr xcrun; do
+   194	  command -v "${cmd}" >/dev/null 2>&1 || { echo "error: required command not found: ${cmd}" >&2; exit 1; }
+   195	done
+   196	
+   197	ensure_no_mounted_plow_volume
+   198	
+   199	stage_dir="$(mktemp -d /tmp/phoenix-signed-beta.XXXXXX)"
+   200	stage_app="${stage_dir}/Plow.app"
+   201	sparkle_stage_dir="$(mktemp -d /tmp/phoenix-sparkle-feed.XXXXXX)"
+   202	mounted_volume=""
+   203	
+   204	cleanup() {
+   205	  if [[ -n "${mounted_volume}" ]]; then
+   206	    hdiutil detach "${mounted_volume}" >/dev/null 2>&1 || true
+   207	  fi
+   208	  rm -rf "${stage_dir}"
+   209	  rm -rf "${sparkle_stage_dir}"
+   210	}
+   211	trap cleanup EXIT
+   212	
+   213	mkdir -p "$(dirname "${output}")"
+   214	ditto "${app_bundle}" "${stage_app}"
+   215	mkdir -p "${stage_dir}/.background"
+   216	ditto "${dmg_background}" "${stage_dir}/.background/background.tiff"
+   217	ln -s /Applications "${stage_dir}/Applications"
+   218	xattr -cr "${stage_app}"
+   219	
+   220	while IFS= read -r -d '' file_path; do
+   221	  file_desc="$(file -b "${file_path}" 2>/dev/null || true)"
+   222	  if [[ "${file_desc}" == *"Mach-O"* ]]; then
+   223	    sign_args=(--force --sign "${identity}" --timestamp)
+   224	    if [[ "${file_desc}" == *"executable"* ]]; then
+   225	      sign_args+=(--options runtime)
+   226	    fi
+   227	    if [[ "${file_path}" == "${stage_app}/Contents/Resources/bin/limactl" ]]; then
+   228	      sign_args+=(--entitlements "${limactl_entitlements}")
+   229	    fi
+   230	    codesign "${sign_args[@]}" "${file_path}"
+   231	  fi
+   232	done < <(find "${stage_app}" -type f -print0)
+   233	
+   234	codesign \
+   235	  --force \
+   236	  --sign "${identity}" \
+   237	  --timestamp \
+   238	  --options runtime \
+   239	  --entitlements "${entitlements}" \
+   240	  "${stage_app}"
+   241	
+   242	codesign --verify --deep --strict --verbose=4 "${stage_app}"
+   243	
+   244	if [[ "${keep_signed_app}" == "1" ]]; then
+   245	  preserved_app="${repo_root}/.build/Plow-signed.app"
+   246	  rm -rf "${preserved_app}"
+   247	  ditto "${stage_app}" "${preserved_app}"
+   248	  codesign --verify --deep --strict --verbose=4 "${preserved_app}"
+   249	  echo "preserved signed app for inspection: ${preserved_app}"
+   250	fi
+   251	
+   252	"${stage_sparkle_script}" \
+   253	  --app-bundle "${stage_app}" \
+   254	  --archives-dir "${sparkle_stage_dir}" \
+   255	  --download-url-prefix "${sparkle_download_url_prefix}" \
+   256	  --account "${sparkle_account}"
+   257	
+   258	rm -f "${output}" "${output}.sha256"
+   259	echo "creating DMG..."
+   260	hdiutil create \
+   261	  -volname "Plow" \
+   262	  -srcfolder "${stage_dir}" \
+   263	  -ov \
+   264	  -format ULFO \
+   265	  "${output}"
+   266	
+   267	echo "verifying mounted app from DMG..."
+   268	attach_output="$(hdiutil attach "${output}" -nobrowse)"
+   269	mounted_volume="$(printf '%s\n' "${attach_output}" | sed -n 's|.*\(/Volumes/.*\)$|\1|p' | head -n 1)"
+   270	[[ -n "${mounted_volume}" ]] || { echo "error: failed to determine mounted volume for ${output}" >&2; exit 1; }
+   271	codesign --verify --deep --strict --verbose=4 "${mounted_volume}/Plow.app"
+   272	hdiutil detach "${mounted_volume}" >/dev/null
+   273	mounted_volume=""
+   274	
+   275	echo "submitting DMG to Apple notarization..."
+   276	submit_output="$(xcrun notarytool submit "${output}" --keychain-profile "${notary_profile}" --wait --output-format json)"
+   277	submit_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))' <<<"${submit_output}")"
+   278	submit_status="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))' <<<"${submit_output}")"
+   279	if [[ "${submit_status}" != "Accepted" ]]; then
+   280	  echo "notarization failed with status: ${submit_status:-unknown}" >&2
+   281	  if [[ -n "${submit_id}" ]]; then
+   282	    echo "submission id: ${submit_id}" >&2
+   283	    xcrun notarytool log "${submit_id}" --keychain-profile "${notary_profile}" || true
+   284	  fi
+   285	  exit 1
+   286	fi
+   287	echo "stapling notarization ticket..."
+   288	xcrun stapler staple "${output}"
+   289	echo "checking local Gatekeeper assessment for the DMG..."
+   290	if ! spctl --assess --type open -vv "${output}"; then
+   291	  echo "warning: local spctl assessment of the DMG failed; notarization was accepted and the ticket was stapled" >&2
+   292	fi
+   293	
+   294	# PLO-29: verify the final shipping artifact has no custom volume icon and
+   295	# that the volume name is "Plow" before it gets uploaded. plowd-verify-dmg
+   296	# performs a real `hdiutil attach` of the stapled DMG, so this can only run
+   297	# against a real filesystem; the unit-test path that stubs hdiutil sets
+   298	# PLOW_SKIP_DMG_VERIFY=1.
+   299	if [[ "${PLOW_SKIP_DMG_VERIFY:-0}" != "1" ]]; then
+   300	  echo "verifying final DMG against PLO-29 contract..."
+   301	  "${repo_root}/app/plowd/scripts/plowd-verify-dmg" --dmg "${output}"
+   302	fi
+   303	
+   304	echo "writing checksum..."
+   305	shasum -a 256 "${output}" > "${output}.sha256"
+   306	
+   307	echo "signed distribution image created: ${output}"
+   308	echo "sha256 file: ${output}.sha256"
+   309	profile_args=()
+   310	if [[ -n "${s3_profile}" ]]; then
+   311	  profile_args=(--profile "${s3_profile}")
+   312	fi
+   313	
+   314	echo "uploading versioned DMG artifacts to S3..."
+   315	aws s3 cp "${output}" "s3://${s3_bucket}/${dmg_key}" ${profile_args[@]+"${profile_args[@]}"}
+   316	aws s3 cp "${output}.sha256" "s3://${s3_bucket}/${dmg_sha_key}" ${profile_args[@]+"${profile_args[@]}"}
+   317	
+   318	echo "uploading Sparkle archives to S3..."
+   319	publish_args=(
+   320	  --archives-dir "${sparkle_stage_dir}"
+   321	  --s3-bucket "${s3_bucket}"
+   322	  --appcast-key "${sparkle_appcast_key}"
+   323	  --archive-prefix "${sparkle_archive_prefix}"
+   324	)
+   325	publish_args+=(--profile "${s3_profile}")
+   326	"${publish_sparkle_script}" "${publish_args[@]}"
+   327	
+   328	echo "published versioned release artifacts:"
+   329	echo "  DMG: https://s3.us-west-2.amazonaws.com/${s3_bucket}/${dmg_key}"
+   330	echo "  Appcast: https://s3.us-west-2.amazonaws.com/${s3_bucket}/${sparkle_appcast_key}"
+
+exec
+/bin/bash -lc "nl -ba app/plowd/scripts/plowd-verify-dmg | sed -n '1,140p'" in /home/odio/.pr-reviewer/workdirs/cncorp_plow__569
+ succeeded in 0ms:
+     1	#!/usr/bin/env bash
+     2	# Mount a Plow DMG and assert it has no custom volume icon (PLO-29 regression
+     3	# guard) and that the volume name is "Plow". Detaches before exiting.
+     4	set -euo pipefail
+     5	
+     6	usage() {
+     7	  cat <<'EOF'
+     8	Usage: plowd-verify-dmg [--dmg <path>]
+     9	
+    10	Mounts the given DMG, asserts the mounted volume is named "Plow" and has no
+    11	.VolumeIcon.icns at its root, then detaches. Defaults to .build/Plow.dmg
+    12	relative to the repo root.
+    13	EOF
+    14	}
+    15	
+    16	repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+    17	dmg_path="${repo_root}/.build/Plow.dmg"
+    18	
+    19	while [[ $# -gt 0 ]]; do
+    20	  case "$1" in
+    21	    --dmg)
+    22	      dmg_path="${2:-}"
+    23	      shift 2
+    24	      ;;
+    25	    -h|--help)
+    26	      usage
+    27	      exit 0
+    28	      ;;
+    29	    *)
+    30	      echo "error: unknown argument: $1" >&2
+    31	      usage >&2
+    32	      exit 1
+    33	      ;;
+    34	  esac
+    35	done
+    36	
+    37	if [[ "${dmg_path}" != /* ]]; then
+    38	  dmg_path="${repo_root}/${dmg_path}"
+    39	fi
+    40	
+    41	[[ -f "${dmg_path}" ]] || { echo "error: DMG not found: ${dmg_path}" >&2; exit 1; }
+    42	
+    43	# Refuse to run when a Plow volume is already mounted: the new mountpoint
+    44	# would be "Plow 1" / "Plow 2" / ..., which would mask a real regression in
+    45	# the volume-name assertion below.
+    46	mounted_plow_volumes="$(hdiutil info 2>/dev/null | grep -Eo '/Volumes/Plow( [0-9]+)?$' || true)"
+    47	mounted_plow_volumes="$(printf '%s\n' "${mounted_plow_volumes}" | sort -u)"
+    48	if [[ -n "${mounted_plow_volumes}" ]]; then
+    49	  echo "error: a Plow volume is already mounted; eject it before verifying:" >&2
+    50	  printf '%s\n' "${mounted_plow_volumes}" >&2
+    51	  exit 1
+    52	fi
+    53	
+    54	mounted_volume=""
+    55	cleanup() {
+    56	  local rc=$?
+    57	  if [[ -n "${mounted_volume}" ]]; then
+    58	    if [[ "${rc}" -eq 0 ]]; then
+    59	      # Success path: detach failure (e.g. volume busy) must be fatal.
+    60	      # Otherwise the next release retry trips ensure_no_mounted_plow_volume
+    61	      # in plowd-beta-package-signed and aborts on a leaked mount.
+    62	      if ! hdiutil detach "${mounted_volume}"; then
+    63	        echo "error: failed to detach ${mounted_volume} after successful verify" >&2
+    64	        exit 1
+    65	      fi
+    66	    else
+    67	      # Failure path: don't let detach noise mask the real error.
+    68	      hdiutil detach "${mounted_volume}" >/dev/null 2>&1 || true
+    69	    fi
+    70	  fi
+    71	  exit "${rc}"
+    72	}
+    73	trap cleanup EXIT
+    74	
+    75	attach_output="$(hdiutil attach "${dmg_path}" -nobrowse -readonly)"
+    76	mounted_volume="$(printf '%s\n' "${attach_output}" | sed -n 's|.*\(/Volumes/.*\)$|\1|p' | head -n 1)"
+    77	[[ -n "${mounted_volume}" ]] || { echo "error: failed to mount ${dmg_path}" >&2; exit 1; }
+    78	
+    79	volume_name="$(basename "${mounted_volume}")"
+    80	[[ "${volume_name}" == "Plow" ]] || { echo "error: mounted volume name is '${volume_name}', expected 'Plow'" >&2; exit 1; }
+    81	
+    82	[[ ! -e "${mounted_volume}/.VolumeIcon.icns" ]] || {
+    83	  echo "error: ${mounted_volume}/.VolumeIcon.icns exists; PLO-29 regression: DMG ships a custom volume icon" >&2
+    84	  exit 1
+    85	}
+    86	
+    87	echo "ok: ${dmg_path} mounts as 'Plow' with no custom volume icon"
+
+exec
+/bin/bash -lc "rg -n \"plowd-verify-dmg|dmg-verify|plowd-beta-package-signed|volume\\.icns|\\.VolumeIcon\\.icns|PLOW_SKIP_DMG_VERIFY|hdiutil create|hdiutil convert|FinderInfo\" . .siblings/cncorp/plow-content .siblings/srosro/tkmx-client .siblings/srosro/tkmx-server .siblings/srosro/knightwatch-reviewer .siblings/srosro/vibe-engineering .siblings/plow-pbc/watchmepivot" in /home/odio/.pr-reviewer/workdirs/cncorp_plow__569
+ succeeded in 0ms:
+./app/justfile:219:    plowd/scripts/plowd-beta-package-signed \
+./app/justfile:230:dmg-verify dmg="../.build/Plow.dmg":
+./app/justfile:231:    @plowd/scripts/plowd-verify-dmg --dmg "{{dmg}}"
+./app/plowd/tests/test_release_scripts.py:12:SIGNED_PACKAGE_SCRIPT = REPO_ROOT / "app" / "plowd" / "scripts" / "plowd-beta-package-signed"
+./app/plowd/tests/test_release_scripts.py:14:VERIFY_DMG_SCRIPT = REPO_ROOT / "app" / "plowd" / "scripts" / "plowd-verify-dmg"
+./app/plowd/tests/test_release_scripts.py:204:        "PLOW_SKIP_DMG_VERIFY": "1",
+./app/plowd/tests/test_release_scripts.py:238:    # only existed to host a kHasCustomIcon FinderInfo write on a mounted
+./app/plowd/tests/test_release_scripts.py:249:    # so the staged srcfolder must not ship a .VolumeIcon.icns.
+./app/plowd/tests/test_release_scripts.py:250:    assert not (staged_dir / ".VolumeIcon.icns").exists()
+./app/plowd/tests/test_release_scripts.py:258:    cannot: a regression that re-attaches the DMG post-``hdiutil create``
+./app/plowd/tests/test_release_scripts.py:260:    three real DMGs with hdiutil and assert plowd-verify-dmg accepts the
+./app/plowd/tests/test_release_scripts.py:263:    plowd-verify-dmg is wired into plowd-beta-package-signed between staple
+./app/plowd/tests/test_release_scripts.py:303:    # Regression #1: someone re-introduces .VolumeIcon.icns at the volume root.
+./app/plowd/tests/test_release_scripts.py:304:    (stage / ".VolumeIcon.icns").write_text("fake-icns")
+./app/plowd/tests/test_release_scripts.py:308:    assert fail.returncode != 0, "verify-dmg accepted DMG that ships .VolumeIcon.icns"
+./app/plowd/tests/test_release_scripts.py:309:    assert ".VolumeIcon.icns exists" in fail.stderr
+./app/plowd/tests/test_release_scripts.py:312:    (stage / ".VolumeIcon.icns").unlink()
+./app/plowd/tests/test_release_scripts.py:323:    volume is busy), plowd-verify-dmg must exit non-zero. The previous
+./app/plowd/tests/test_release_scripts.py:785:    release_script = (REPO_ROOT / "app" / "plowd" / "scripts" / "plowd-beta-package-signed").read_text(encoding="utf-8")
+./app/plowd/tests/test_runtime_distribution.py:11:SIGNED_RELEASE_SCRIPT = REPO_ROOT / "app" / "plowd" / "scripts" / "plowd-beta-package-signed"
+./app/plowd/scripts/plowd-beta-package-signed:7:Usage: plowd-beta-package-signed [options]
+./app/plowd/scripts/plowd-beta-package-signed:260:hdiutil create \
+./app/plowd/scripts/plowd-beta-package-signed:295:# that the volume name is "Plow" before it gets uploaded. plowd-verify-dmg
+./app/plowd/scripts/plowd-beta-package-signed:298:# PLOW_SKIP_DMG_VERIFY=1.
+./app/plowd/scripts/plowd-beta-package-signed:299:if [[ "${PLOW_SKIP_DMG_VERIFY:-0}" != "1" ]]; then
+./app/plowd/scripts/plowd-beta-package-signed:301:  "${repo_root}/app/plowd/scripts/plowd-verify-dmg" --dmg "${output}"
+./app/plowd/scripts/plowd-verify-dmg:8:Usage: plowd-verify-dmg [--dmg <path>]
+./app/plowd/scripts/plowd-verify-dmg:11:.VolumeIcon.icns at its root, then detaches. Defaults to .build/Plow.dmg
+./app/plowd/scripts/plowd-verify-dmg:61:      # in plowd-beta-package-signed and aborts on a leaked mount.
+./app/plowd/scripts/plowd-verify-dmg:82:[[ ! -e "${mounted_volume}/.VolumeIcon.icns" ]] || {
+./app/plowd/scripts/plowd-verify-dmg:83:  echo "error: ${mounted_volume}/.VolumeIcon.icns exists; PLO-29 regression: DMG ships a custom volume icon" >&2
+./scripts/plow-install/lib.sh:293:  # (plowd-beta-package-signed, CODE_SIGNING.md) treats as authoritative.
+./docs/distribution/CODE_SIGNING.md:153:app/plowd/scripts/plowd-beta-package-signed --identity "Developer ID Application: Your Name (TEAMID)"
+
+exec
+/bin/bash -lc "nl -ba app/justfile | sed -n '200,245p'" in /home/odio/.pr-reviewer/workdirs/cncorp_plow__569
+ succeeded in 0ms:
+   200	    just up "Debug" "" "" "" "" "" "{{app_name}}" "{{bundle_id}}"
+   201	
+   202	release configuration="Release" derived="../.build/xcode-derived" output="../.build/Plow.dmg" rebuild="1" notary_profile="${PLOW_NOTARY_PROFILE:-plow-notary}" s3_bucket="${PLOW_RELEASES_BUCKET:-releases.plow.co}" release_prefix="" s3_profile="${PLOW_RELEASES_PROFILE-plow}" sparkle_account="${PLOW_SPARKLE_ACCOUNT:-plow-sparkle}":
+   203	    @set -e; \
+   204	    export PLOW_CURRENT_PROJECT_VERSION="${PLOW_CURRENT_PROJECT_VERSION:-$(date -u +%y%j%H%M)}"; \
+   205	    echo "release build number: ${PLOW_CURRENT_PROJECT_VERSION}"; \
+   206	    mounted_plow_volumes="$(hdiutil info 2>/dev/null | grep -Eo '/Volumes/Plow( [0-9]+)?$' || true)"; \
+   207	    mounted_plow_volumes="$(printf '%s\n' "${mounted_plow_volumes}" | sort -u)"; \
+   208	    if [[ -n "${mounted_plow_volumes}" ]]; then \
+   209	      echo "error: a Plow disk image is already mounted; eject it before packaging:" >&2; \
+   210	      printf '%s\n' "${mounted_plow_volumes}" >&2; \
+   211	      exit 1; \
+   212	    fi; \
+   213	    derived_abs="$([[ "{{derived}}" = /* ]] && echo "{{derived}}" || echo "$(pwd)/{{derived}}")"; \
+   214	    app_bundle="$derived_abs/Build/Products/{{configuration}}/Plow.app"; \
+   215	    if [[ "{{rebuild}}" == "1" ]]; then \
+   216	      python3 scripts/generate-runtime-manifest.py --vm-manifest vm/manifest.toml --bucket "{{s3_bucket}}" --prefix runtime --images-output Phoenix/Resources/runtime-images-manifest.json; \
+   217	      just package-build "{{configuration}}" "$derived_abs" "../.build/release-build.log" "" "Plow" "co.plow.app" "plowd/runtime/stage" "plowd/runtime/artifacts" "plowd/runtime/manifest.toml"; \
+   218	    fi; \
+   219	    plowd/scripts/plowd-beta-package-signed \
+   220	      --app-bundle "$app_bundle" \
+   221	      --output "{{output}}" \
+   222	      --notary-profile "{{notary_profile}}" \
+   223	      --s3-bucket "{{s3_bucket}}" \
+   224	      --release-prefix "{{release_prefix}}" \
+   225	      --s3-profile "{{s3_profile}}" \
+   226	      --sparkle-account "{{sparkle_account}}"
+   227	
+   228	# Mount a Plow DMG and assert no custom volume icon ships at the root
+   229	# (PLO-29). Defaults to ../.build/Plow.dmg.
+   230	dmg-verify dmg="../.build/Plow.dmg":
+   231	    @plowd/scripts/plowd-verify-dmg --dmg "{{dmg}}"
+   232	
+   233	[private]
+   234	logs-internal source="all" lines="120" variant="" bundle_id="co.plow.app.dev":
+   235	    @variant_id="$(printf '%s' "{{variant}}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/./g; s/^\.+//; s/\.+$//; s/\.\.+/./g')"; \
+   236	    effective_bundle_id="{{bundle_id}}"; \
+   237	    if [[ -n "$variant_id" ]]; then effective_bundle_id="${effective_bundle_id}.${variant_id}"; fi; \
+   238	    export PLOW_APP_SUPPORT_ROOT="${HOME}/Library/Application Support/${effective_bundle_id}"; \
+   239	    plowd/scripts/plowd-tail-logs --source "{{source}}" --lines "{{lines}}"
+   240	
+   241	logs source="all" lines="120" variant="" bundle_id="co.plow.app.dev":
+   242	    @source="{{source}}"; \
+   243	    effective_variant="{{variant}}"; \
+   244	    if [[ -z "$effective_variant" && "$source" == variant=* ]]; then \
+   245	      effective_variant="${source#variant=}"; \
+
+exec
+/bin/bash -lc "sed -n '1,80p' .codex-scratch/commits.md" in /home/odio/.pr-reviewer/workdirs/cncorp_plow__569
+ succeeded in 0ms:
+4edb579 PLO-29: drop custom DMG volume icon
+f75802c PLO-29 r1: wire dmg-verify into the release path
+dcb80a5 PLO-29 r2: run dmg-verify on macOS CI; fail loud on detach failure
+exec
+/bin/bash -lc "nl -ba app/plowd/tests/test_release_scripts.py | sed -n '170,370p'" in /home/odio/.pr-reviewer/workdirs/cncorp_plow__569
+ succeeded in 0ms:
+   170	            'source "$1"; REPO_ROOT="$2"; compute_git_ref',
+   171	            "bash",
+   172	            str(GIT_REF_SCRIPT),
+   173	            str(repo_root),
+   174	        ],
+   175	        capture_output=True,
+   176	        text=True,
+   177	        cwd=REPO_ROOT,
+   178	    )
+   179	
+   180	    assert result.returncode == 0, result.stderr
+   181	    assert result.stdout.strip() == parent_ref
+   182	
+   183	
+   184	def test_signed_package_script_builds_ulfo_dmg_without_staging_ds_store(tmp_path):
+   185	    app_bundle = tmp_path / "Plow.app"
+   186	    output = tmp_path / "Plow.dmg"
+   187	    fake_log_dir = tmp_path / "fake-logs"
+   188	    fake_log_dir.mkdir()
+   189	    fake_bin = tmp_path / "fake-bin"
+   190	    fake_bin.mkdir()
+   191	    _create_minimal_valid_app_bundle(app_bundle)
+   192	    _write_fake_release_commands(fake_bin)
+   193	
+   194	    env = {
+   195	        **subprocess.os.environ,
+   196	        "PATH": f"{fake_bin}:{subprocess.os.environ['PATH']}",
+   197	        "FAKE_LOG_DIR": str(fake_log_dir),
+   198	        "PLOW_RUNTIME_UPLOAD_SCRIPT": str(fake_bin / "upload-runtime-artifacts.sh"),
+   199	        "SPARKLE_BIN_DIR": str(fake_bin),
+   200	        # PLO-29: the post-staple verify needs a real hdiutil mount; under
+   201	        # stubbed hdiutil it can't actually attach the fake DMG, so skip.
+   202	        # The artifact-level guard is exercised by
+   203	        # test_plowd_verify_dmg_rejects_dmg_shipping_volume_icon.
+   204	        "PLOW_SKIP_DMG_VERIFY": "1",
+   205	    }
+   206	
+   207	    result = subprocess.run(
+   208	        [
+   209	            str(SIGNED_PACKAGE_SCRIPT),
+   210	            "--app-bundle",
+   211	            str(app_bundle),
+   212	            "--output",
+   213	            str(output),
+   214	            "--identity",
+   215	            "Developer ID Application: Example (3559PD337Z)",
+   216	            "--notary-profile",
+   217	            "test-notary",
+   218	            "--s3-bucket",
+   219	            "test-bucket",
+   220	            "--release-prefix",
+   221	            "beta",
+   222	            "--s3-profile",
+   223	            "test-profile",
+   224	        ],
+   225	        capture_output=True,
+   226	        text=True,
+   227	        cwd=REPO_ROOT,
+   228	        env=env,
+   229	    )
+   230	
+   231	    assert result.returncode == 0, result.stderr
+   232	    assert output.exists()
+   233	
+   234	    hdiutil_log = (fake_log_dir / "hdiutil.log").read_text()
+   235	    assert "create" in hdiutil_log
+   236	    assert "-format ULFO" in hdiutil_log
+   237	    # PLO-29: DMG is created directly as ULFO; the old UDRW->convert dance
+   238	    # only existed to host a kHasCustomIcon FinderInfo write on a mounted
+   239	    # volume, which we no longer do.
+   240	    assert "-format UDRW" not in hdiutil_log
+   241	    assert "convert" not in hdiutil_log
+   242	
+   243	    staged_dir = fake_log_dir / "captured-srcfolder"
+   244	    assert (staged_dir / "Plow.app").is_dir()
+   245	    assert (staged_dir / "Applications").is_symlink()
+   246	    assert not (staged_dir / ".DS_Store").exists()
+   247	    assert (staged_dir / ".background" / "background.tiff").is_file()
+   248	    # PLO-29: the mounted volume must show the default macOS volume icon,
+   249	    # so the staged srcfolder must not ship a .VolumeIcon.icns.
+   250	    assert not (staged_dir / ".VolumeIcon.icns").exists()
+   251	    assert not (staged_dir / "Plow-rw.dmg").exists()
+   252	
+   253	
+   254	@pytest.mark.skipif(platform.system() != "Darwin", reason="hdiutil is macOS-only")
+   255	def test_plowd_verify_dmg_rejects_dmg_shipping_volume_icon(tmp_path):
+   256	    """PLO-29 artifact-level guard. Catches the failure mode that
+   257	    ``test_signed_package_script_builds_ulfo_dmg_without_staging_ds_store``
+   258	    cannot: a regression that re-attaches the DMG post-``hdiutil create``
+   259	    and re-stages a custom volume icon at the final-image stage. We build
+   260	    three real DMGs with hdiutil and assert plowd-verify-dmg accepts the
+   261	    clean one and rejects each regression shape.
+   262	
+   263	    plowd-verify-dmg is wired into plowd-beta-package-signed between staple
+   264	    and S3 upload, so a rejection here aborts ``just release`` before any
+   265	    artifact ships."""
+   266	    # Refuse to run if a real Plow volume is already mounted: the script
+   267	    # bails on that and our assertions would tag the wrong failure mode.
+   268	    info = subprocess.run(
+   269	        ["hdiutil", "info"], capture_output=True, text=True, check=True,
+   270	    )
+   271	    if re.search(r"/Volumes/Plow( [0-9]+)?$", info.stdout, re.MULTILINE):
+   272	        pytest.skip("a Plow volume is mounted; eject it before running this test")
+   273	
+   274	    stage = tmp_path / "stage"
+   275	    (stage / "Plow.app").mkdir(parents=True)
+   276	    (stage / "Plow.app" / "PlaceHolder").write_text("dummy")
+   277	
+   278	    def make_dmg(dmg_path: Path, *, volname: str) -> None:
+   279	        subprocess.run(
+   280	            [
+   281	                "hdiutil", "create",
+   282	                "-volname", volname,
+   283	                "-srcfolder", str(stage),
+   284	                "-ov",
+   285	                "-format", "ULFO",
+   286	                str(dmg_path),
+   287	            ],
+   288	            check=True, capture_output=True,
+   289	        )
+   290	
+   291	    def run_verify(dmg_path: Path) -> subprocess.CompletedProcess[str]:
+   292	        return subprocess.run(
+   293	            [str(VERIFY_DMG_SCRIPT), "--dmg", str(dmg_path)],
+   294	            capture_output=True, text=True,
+   295	        )
+   296	
+   297	    # Happy path: clean Plow DMG with no .VolumeIcon must pass.
+   298	    clean_dmg = tmp_path / "clean.dmg"
+   299	    make_dmg(clean_dmg, volname="Plow")
+   300	    ok = run_verify(clean_dmg)
+   301	    assert ok.returncode == 0, f"clean DMG rejected: stdout={ok.stdout!r} stderr={ok.stderr!r}"
+   302	
+   303	    # Regression #1: someone re-introduces .VolumeIcon.icns at the volume root.
+   304	    (stage / ".VolumeIcon.icns").write_text("fake-icns")
+   305	    iconed_dmg = tmp_path / "iconed.dmg"
+   306	    make_dmg(iconed_dmg, volname="Plow")
+   307	    fail = run_verify(iconed_dmg)
+   308	    assert fail.returncode != 0, "verify-dmg accepted DMG that ships .VolumeIcon.icns"
+   309	    assert ".VolumeIcon.icns exists" in fail.stderr
+   310	
+   311	    # Regression #2: someone parameterizes -volname to something other than "Plow".
+   312	    (stage / ".VolumeIcon.icns").unlink()
+   313	    misnamed_dmg = tmp_path / "misnamed.dmg"
+   314	    make_dmg(misnamed_dmg, volname="NotPlow")
+   315	    fail2 = run_verify(misnamed_dmg)
+   316	    assert fail2.returncode != 0, "verify-dmg accepted DMG with wrong volume name"
+   317	    assert "expected 'Plow'" in fail2.stderr
+   318	
+   319	
+   320	@pytest.mark.skipif(platform.system() != "Darwin", reason="hdiutil is macOS-only")
+   321	def test_plowd_verify_dmg_propagates_detach_failure_on_success_path(tmp_path):
+   322	    """Round-2: if `hdiutil detach` fails on the success path (e.g. the
+   323	    volume is busy), plowd-verify-dmg must exit non-zero. The previous
+   324	    `|| true` swallowed the failure and returned 0, leaking /Volumes/Plow,
+   325	    which then tripped ensure_no_mounted_plow_volume on the next release
+   326	    retry. This test injects an `hdiutil` wrapper whose `detach` always
+   327	    fails and asserts the script surfaces it."""
+   328	    info = subprocess.run(
+   329	        ["hdiutil", "info"], capture_output=True, text=True, check=True,
+   330	    )
+   331	    if re.search(r"/Volumes/Plow( [0-9]+)?$", info.stdout, re.MULTILINE):
+   332	        pytest.skip("a Plow volume is mounted; eject it before running this test")
+   333	
+   334	    stage = tmp_path / "stage"
+   335	    (stage / "Plow.app").mkdir(parents=True)
+   336	    (stage / "Plow.app" / "PlaceHolder").write_text("dummy")
+   337	    dmg = tmp_path / "Plow.dmg"
+   338	    subprocess.run(
+   339	        [
+   340	            "hdiutil", "create",
+   341	            "-volname", "Plow",
+   342	            "-srcfolder", str(stage),
+   343	            "-ov",
+   344	            "-format", "ULFO",
+   345	            str(dmg),
+   346	        ],
+   347	        check=True, capture_output=True,
+   348	    )
+   349	
+   350	    real_hdiutil = subprocess.run(
+   351	        ["which", "hdiutil"], capture_output=True, text=True, check=True,
+   352	    ).stdout.strip()
+   353	    fake_bin = tmp_path / "bin"
+   354	    fake_bin.mkdir()
+   355	    wrapper = fake_bin / "hdiutil"
+   356	    wrapper.write_text(
+   357	        "#!/usr/bin/env bash\n"
+   358	        f'if [[ "$1" == "detach" ]]; then\n'
+   359	        f'  echo "fake: detach failure (test injection)" >&2\n'
+   360	        f'  exit 16\n'
+   361	        f'fi\n'
+   362	        f'exec "{real_hdiutil}" "$@"\n'
+   363	    )
+   364	    wrapper.chmod(0o755)
+   365	
+   366	    try:
+   367	        result = subprocess.run(
+   368	            [str(VERIFY_DMG_SCRIPT), "--dmg", str(dmg)],
+   369	            capture_output=True, text=True,
+   370	            env={
+
+exec
+/bin/bash -lc "nl -ba app/plowd/tests/test_release_scripts.py | sed -n '760,805p'" in /home/odio/.pr-reviewer/workdirs/cncorp_plow__569
+ succeeded in 0ms:
+   760	    project = (REPO_ROOT / "app" / "Phoenix.xcodeproj" / "project.pbxproj").read_text(encoding="utf-8")
+   761	
+   762	    assert "Build/Products/{{configuration}}/Plow.app" in app_justfile
+   763	    assert "${effective_app_name}.app" in app_justfile
+   764	    assert 'quit app \\"${effective_app_name}\\"' in app_justfile
+   765	    assert ".build/xcode-derived/Build/Products/Debug/Plow.app" in validate_script
+   766	    assert ".build/xcode-derived/Build/Products/Debug/Plow.app" in package_script
+   767	    assert "~/Applications/Plow.app" in packaged_agent_script
+   768	    assert "path = Plow.app;" in project
+   769	    assert 'PRODUCT_NAME = "$(PLOW_APP_NAME)";' in project
+   770	    assert project.count('PRODUCT_BUNDLE_IDENTIFIER = "$(PLOW_APP_BUNDLE_IDENTIFIER)";') == 2
+   771	    assert project.count('PRODUCT_NAME = "$(PLOW_APP_NAME)";') == 2
+   772	    assert 'CODE_SIGN_IDENTITY = "-";' not in project
+   773	
+   774	
+   775	def test_package_recipe_defaults_release_build_number_from_utc_timestamp():
+   776	    app_justfile = (REPO_ROOT / "app" / "justfile").read_text(encoding="utf-8")
+   777	
+   778	    assert 'PLOW_CURRENT_PROJECT_VERSION="${PLOW_CURRENT_PROJECT_VERSION:-$(date -u +%y%j%H%M)}"' in app_justfile
+   779	    assert "release build number: ${PLOW_CURRENT_PROJECT_VERSION}" in app_justfile
+   780	    assert "a Plow disk image is already mounted; eject it before packaging:" in app_justfile
+   781	
+   782	
+   783	def test_shared_signing_defaults_use_plow_collective_team_and_notary_profile():
+   784	    app_justfile = (REPO_ROOT / "app" / "justfile").read_text(encoding="utf-8")
+   785	    release_script = (REPO_ROOT / "app" / "plowd" / "scripts" / "plowd-beta-package-signed").read_text(encoding="utf-8")
+   786	    app_xcconfig = (REPO_ROOT / "app" / "Phoenix" / "Config" / "App.xcconfig").read_text(encoding="utf-8")
+   787	
+   788	    assert 'notary_profile="${PLOW_NOTARY_PROFILE:-plow-notary}"' in app_justfile
+   789	    assert 'team_id="${PLOW_APPLE_TEAM_ID:-3559PD337Z}"' in release_script
+   790	    assert 'notary_profile="${PLOW_NOTARY_PROFILE:-plow-notary}"' in release_script
+   791	    assert "PLOW_CODESIGN_FALLBACK" not in release_script
+   792	    assert "error: no Developer ID Application identity found for team ${team_id}" in release_script
+   793	    assert "DEVELOPMENT_TEAM = 3559PD337Z" in app_xcconfig
+   794	
+   795	
+   796	def test_release_build_recipe_honors_caller_supplied_signing_identity():
+   797	    """Pin the PLOW_CODE_SIGN_IDENTITY contract introduced in PR #521.
+   798	
+   799	    The Release build path must:
+   800	      1. Default to ad-hoc *only when* the caller hasn't set
+   801	         PLOW_CODE_SIGN_IDENTITY — otherwise the install skills can't
+   802	         opt into a real Developer ID cert.
+   803	      2. Re-sign post-packaging using whatever identity is set, not a
+   804	         hardcoded `-`. plowd-package-runtime rsyncs into
+   805	         Contents/Resources after Xcode signs; without the re-sign,
+
+exec
+/bin/bash -lc "nl -ba scripts/plow-install/lib.sh | sed -n '275,305p'" in /home/odio/.pr-reviewer/workdirs/cncorp_plow__569
+ succeeded in 0ms:
+   275	    if [ "$actual_team" != "${SIGN_TEAM:-}" ]; then
+   276	      echo "verify_codesign: expected team=$SIGN_TEAM, got $actual_team" >&2
+   277	      return 1
+   278	    fi
+   279	  else
+   280	    if ! grep -qE 'Signature=adhoc' <<<"$cs"; then
+   281	      echo "verify_codesign: $BUILT_APP is not ad-hoc signed" >&2
+   282	      return 1
+   283	    fi
+   284	    if [ "$actual_team" != "not set" ]; then
+   285	      echo "verify_codesign: expected ad-hoc, got TeamIdentifier=$actual_team" >&2
+   286	      return 1
+   287	    fi
+   288	  fi
+   289	  # Integrity check — the metadata grep above just confirms the bundle
+   290	  # advertises the right signing label. `codesign --verify --deep --strict`
+   291	  # re-walks the bundle and re-validates every nested signature against
+   292	  # the actual bytes; that's the invariant the rest of the repo
+   293	  # (plowd-beta-package-signed, CODE_SIGNING.md) treats as authoritative.
+   294	  if ! codesign --verify --deep --strict "$BUILT_APP" >/dev/null 2>&1; then
+   295	    echo "verify_codesign: codesign --verify --deep --strict failed for $BUILT_APP" >&2
+   296	    return 1
+   297	  fi
+   298	  if [ "$mode" = "team" ]; then
+   299	    echo "verify_codesign: team=$SIGN_TEAM + co.plow.app + integrity OK"
+   300	  else
+   301	    echo "verify_codesign: adhoc + co.plow.app + integrity OK"
+   302	  fi
+   303	}
+   304	
+   305	# ---------------------------------------------------------------------------
+
+codex
+One call-site mismatch emerged: the new verifier treats relative `--dmg` as repo-root-relative, while the `app/justfile` target passes the existing `../.build/Plow.dmg` value that is app-directory-relative. I’m checking whether that path convention is established elsewhere before deciding severity.
+exec
+/bin/bash -lc "rg -n \"\\.\\./\\.build/Plow\\.dmg|output=\\\"\\.\\./\\.build|Plow\\.dmg\" justfile app/justfile app/plowd/scripts docs .github" in /home/odio/.pr-reviewer/workdirs/cncorp_plow__569
+ succeeded in 0ms:
+app/justfile:202:release configuration="Release" derived="../.build/xcode-derived" output="../.build/Plow.dmg" rebuild="1" notary_profile="${PLOW_NOTARY_PROFILE:-plow-notary}" s3_bucket="${PLOW_RELEASES_BUCKET:-releases.plow.co}" release_prefix="" s3_profile="${PLOW_RELEASES_PROFILE-plow}" sparkle_account="${PLOW_SPARKLE_ACCOUNT:-plow-sparkle}":
+app/justfile:229:# (PLO-29). Defaults to ../.build/Plow.dmg.
+app/justfile:230:dmg-verify dmg="../.build/Plow.dmg":
+app/justfile:354:promote version build s3_bucket="${PLOW_RELEASES_BUCKET:-releases.plow.co}" release_prefix="" stable_dmg_key="Plow.dmg" stable_appcast_key="appcast.xml" profile="${PLOW_RELEASES_PROFILE-plow}":
+.github/workflows/promote-app.yml:4:# Copies versioned S3 artifacts to stable keys (Plow.dmg, appcast.xml)
+.github/workflows/build-release-candidate.yml:215:                echo "Publishing the draft triggers the \`App release\` workflow (\`promote-app.yml\`), which copies the versioned S3 artifacts to the stable \`Plow.dmg\` / \`appcast.xml\` keys so existing users receive the update."
+docs/vm-publish.md:222:- `downloads/Plow-<version>-<build>.dmg` to `Plow.dmg`
+docs/vm-publish.md:223:- `downloads/Plow-<version>-<build>.dmg.sha256` to `Plow.dmg.sha256`
+app/plowd/scripts/plowd-beta-package-signed:39:output="${repo_root}/.build/Plow.dmg"
+docs/phoenix-sparkle-build.md:84:   - `Plow.dmg`
+app/plowd/scripts/plowd-verify-dmg:11:.VolumeIcon.icns at its root, then detaches. Defaults to .build/Plow.dmg
+app/plowd/scripts/plowd-verify-dmg:17:dmg_path="${repo_root}/.build/Plow.dmg"
+app/plowd/scripts/plowd-promote-release:14:  --stable-dmg-key <key>      Stable DMG key to update (default: Plow.dmg)
+app/plowd/scripts/plowd-promote-release:25:stable_dmg_key="Plow.dmg"
+docs/distribution/CODE_SIGNING.md:122:- `.build/Plow.dmg`
+docs/distribution/CODE_SIGNING.md:123:- `.build/Plow.dmg.sha256`
+
+exec
+/bin/bash -lc "nl -ba justfile | sed -n '1,180p'" in /home/odio/.pr-reviewer/workdirs/cncorp_plow__569
+ succeeded in 0ms:
+     1	# Root justfile — dispatches to per-project justfiles.
+     2	
+     3	set shell := ["bash", "-cu"]
+     4	set positional-arguments
+     5	
+     6	# Default: list available commands
+     7	default:
+     8	    @just --list
+     9	
+    10	# ─── testing ─────────────────────────────────────────────────
+    11	
+    12	# Run all tests: fast + scenarios (test-all-scenarios requires real OpenClaw + plowd)
+    13	test: test-fast test-scenarios
+    14	
+    15	# Static checks + unit tests (needs postgres, no Docker builds, no network)
+    16	test-fast:
+    17	    @just lint
+    18	    @just api test-fast
+    19	    @just cli check
+    20	    @echo "── plow-ops unit tests ──"
+    21	    cd cli/plow-ops && uv run pytest tests/ -q
+    22	    @echo "── build_tutorial unit tests ──"
+    23	    cd scripts/build_tutorial && uv run --extra dev pytest tests/ -q
+    24	    @just dtu linq check
+    25	    @just dtu gmail check
+    26	    @just dtu google-oauth check
+    27	    @echo "── plowd source tests ──"
+    28	    cd app/plowd && uv run pytest tests/ -q
+    29	    @just test-openclaw-plugins
+    30	    @if [[ "$(uname)" == "Darwin" ]]; then echo "── swift state tests ──" && just app test; else echo "── swift state tests (skipped: not macOS) ──"; fi
+    31	
+    32	# Run node:test JS suites for every openclaw plugin that ships an
+    33	# index.test.js. Walks app/openclaw/plugins/*/index.test.js so adding a new
+    34	# plugin with tests requires no justfile edit; plugins without an index.test.js
+    35	# are skipped silently. Fail-fast: the first plugin whose tests fail exits the
+    36	# recipe (and therefore test-fast) non-zero.
+    37	test-openclaw-plugins:
+    38	    #!/usr/bin/env bash
+    39	    set -euo pipefail
+    40	    shopt -s nullglob
+    41	    for test_file in app/openclaw/plugins/*/index.test.js; do
+    42	      plugin_dir="$(dirname "$test_file")"
+    43	      echo "── openclaw plugin: $(basename "$plugin_dir") ──"
+    44	      ( cd "$plugin_dir" && node --test index.test.js )
+    45	    done
+    46	
+    47	# E2E scenario tests (Docker Compose + plowd contract + LLM judge)
+    48	test-scenarios:
+    49	    #!/usr/bin/env bash
+    50	    set -euo pipefail
+    51	    root="$(pwd)"
+    52	
+    53	    # Load .env.test-live for credentials
+    54	    source "$root/scripts/load-env.sh" "$root/api/.env.test-live" "$root/cli/.env.test-live"
+    55	
+    56	    # LLM judge tests require a real ANTHROPIC_API_KEY
+    57	    : "${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY must be set (load from api/.env.test-live or export)}"
+    58	
+    59	    # Unique project name + ports per worktree so parallel runs don't collide
+    60	    export COMPOSE_PROJECT_NAME="$(basename "$root")-scenarios"
+    61	    base=$(python3 -c "import hashlib,pathlib; print(30000 + int(hashlib.md5(str(pathlib.Path('$root').resolve()).encode()).hexdigest()[:4], 16) % 10000)")
+    62	    export SCENARIO_DB_PORT=$((base))
+    63	    export SCENARIO_API_PORT=$((base + 1))
+    64	    export SCENARIO_LINQ_PORT=$((base + 2))
+    65	    export SCENARIO_OAUTH_PORT=$((base + 3))
+    66	    export SCENARIO_GMAIL_PORT=$((base + 4))
+    67	    export SCENARIO_API_URL="http://localhost:$SCENARIO_API_PORT"
+    68	    export SCENARIO_TWIN_URL="http://localhost:$SCENARIO_LINQ_PORT"
+    69	    export SCENARIO_OAUTH_TWIN_URL="http://localhost:$SCENARIO_OAUTH_PORT"
+    70	    export SCENARIO_GMAIL_TWIN_URL="http://localhost:$SCENARIO_GMAIL_PORT"
+    71	    export SCENARIO_DB_PORT
+    72	
+    73	    # Tear down orphaned containers from any previous interrupted run
+    74	    docker compose -f compose.test.yaml --profile test down --remove-orphans 2>/dev/null || true
+    75	
+    76	    # Shared dir for token passing between test runner and fake-openclaw container.
+    77	    # Must live under $HOME so Colima's virtiofs propagates host writes into the
+    78	    # VM (and thus into the container's bind mount). macOS's $TMPDIR resolves to
+    79	    # /var/folders/.../T which is *not* in Colima's default mount set — the bind
+    80	    # mount falls through to an empty per-container directory and fake-openclaw's
+    81	    # `resolve_token()` blocks indefinitely on `/shared/token`, so test_*_via_twin
+    82	    # scenarios all time out at pytest's `wait_for_new_reply` deadline. Docker
+    83	    # Desktop shares /var/folders by default which is why this used to work; the
+    84	    # break became visible after switching to Colima. $HOME/.cache lines up with
+    85	    # both Docker Desktop's broad sharing and Colima's $HOME-only default.
+    86	    cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/plow-scenario-shared"
+    87	    mkdir -p "$cache_root"
+    88	    shared_dir="$(mktemp -d "$cache_root/run.XXXXXXXXXX")"
+    89	    export SCENARIO_SHARED_DIR="$shared_dir"
+    90	    # Serialize compose operations to avoid port/volume races on CI
+    91	    export COMPOSE_PARALLEL_LIMIT="${COMPOSE_PARALLEL_LIMIT:-1}"
+    92	
+    93	    cleanup() {
+    94	      cd "$root"
+    95	      docker compose -f compose.test.yaml --profile test down --remove-orphans
+    96	      rm -rf "$shared_dir"
+    97	    }
+    98	    trap cleanup EXIT
+    99	
+   100	    # Build and start the Compose stack
+   101	    if ! docker compose -f compose.test.yaml --profile test up -d --build --wait; then
+   102	      echo "── docker compose up failed — dumping container logs ──" >&2
+   103	      docker compose -f compose.test.yaml --profile test logs --tail=50 >&2
+   104	      exit 1
+   105	    fi
+   106	
+   107	    # Run LINQ tests first (activation creates the session)
+   108	    echo "── LINQ scenarios ──"
+   109	    cd "$root/scenarios" && uv run pytest test_linq.py -v
+   110	
+   111	    # Fan out non-agent scenarios in parallel (no contention for fake-openclaw)
+   112	    echo "── Parallel scenarios (Gmail CLI, Slack CLI, Plowd, LLM) ──"
+   113	    tmpdir="$(mktemp -d)"
+   114	    cd "$root/scenarios" && uv run pytest test_gmail.py -v --deselect test_gmail.py::test_gmail_search_via_twin > "$tmpdir/gmail.log" 2>&1 &
+   115	    gmail_pid=$!
+   116	    cd "$root/scenarios" && uv run pytest test_slack.py -v --deselect test_slack.py::test_slack_channels_via_twin > "$tmpdir/slack.log" 2>&1 &
+   117	    slack_pid=$!
+   118	    cd "$root/app/plowd" && PLOWD_APP_SUPPORT_ROOT="$(mktemp -d)" uv run pytest tests/test_plowd_contract.py -v --noconftest > "$tmpdir/plowd.log" 2>&1 &
+   119	    plowd_pid=$!
+   120	    cd "$root/scenarios" && uv run pytest test_llm.py -v > "$tmpdir/llm.log" 2>&1 &
+   121	    llm_pid=$!
+   122	
+   123	    gmail_rc=0; wait "$gmail_pid" || gmail_rc=$?
+   124	    slack_rc=0; wait "$slack_pid" || slack_rc=$?
+   125	    plowd_rc=0; wait "$plowd_pid" || plowd_rc=$?
+   126	    llm_rc=0; wait "$llm_pid" || llm_rc=$?
+   127	
+   128	    echo "── Gmail (CLI) results ──"
+   129	    cat "$tmpdir/gmail.log"
+   130	    echo "── Slack (CLI) results ──"
+   131	    cat "$tmpdir/slack.log"
+   132	    echo "── Plowd results ──"
+   133	    cat "$tmpdir/plowd.log"
+   134	    echo "── LLM results ──"
+   135	    cat "$tmpdir/llm.log"
+   136	
+   137	    # Run agent-dependent via-twin scenarios sequentially (fake-openclaw is single-threaded).
+   138	    # Note: test_cron.py is NOT included here — it requires real OpenClaw (see test-all-scenarios).
+   139	    echo "── Agent-dependent scenarios (sequential: via-twin) ──"
+   140	    agent_rc=0
+   141	    cd "$root/scenarios" && uv run pytest test_gmail.py::test_gmail_search_via_twin test_slack.py::test_slack_channels_via_twin -v > "$tmpdir/agent.log" 2>&1 || agent_rc=$?
+   142	    echo "── Agent results ──"
+   143	    cat "$tmpdir/agent.log"
+   144	    rm -rf "$tmpdir"
+   145	
+   146	    if [[ $gmail_rc -ne 0 || $slack_rc -ne 0 || $plowd_rc -ne 0 || $llm_rc -ne 0 || $agent_rc -ne 0 ]]; then
+   147	      echo "FAIL: gmail=$gmail_rc slack=$slack_rc plowd=$plowd_rc llm=$llm_rc agent=$agent_rc" >&2
+   148	      exit 1
+   149	    fi
+   150	
+   151	# Full E2E scenarios with real OpenClaw + LLM (slow — merges to main only)
+   152	test-all-scenarios:
+   153	    #!/usr/bin/env bash
+   154	    set -euo pipefail
+   155	    root="$(pwd)"
+   156	
+   157	    # Load credentials (same as test-scenarios + ANTHROPIC_API_KEY)
+   158	    source "$root/scripts/load-env.sh" "$root/api/.env.test-live" "$root/cli/.env.test-live"
+   159	
+   160	    # Unique project name + ports per worktree so parallel runs don't collide
+   161	    export COMPOSE_PROJECT_NAME="$(basename "$root")-e2e"
+   162	    base=$(python3 -c "import hashlib,pathlib; print(30000 + int(hashlib.md5(str(pathlib.Path('$root').resolve()).encode()).hexdigest()[:4], 16) % 10000)")
+   163	    export SCENARIO_DB_PORT=$((base))
+   164	    export SCENARIO_API_PORT=$((base + 1))
+   165	    export SCENARIO_LINQ_PORT=$((base + 2))
+   166	    export SCENARIO_OAUTH_PORT=$((base + 3))
+   167	    export SCENARIO_GMAIL_PORT=$((base + 4))
+   168	    export SCENARIO_PLOWD_PORT=$((base + 5))
+   169	    export SCENARIO_OPENCLAW_PORT=$((base + 6))
+   170	    export SCENARIO_API_URL="http://localhost:$SCENARIO_API_PORT"
+   171	    export SCENARIO_TWIN_URL="http://localhost:$SCENARIO_LINQ_PORT"
+   172	    export SCENARIO_OAUTH_TWIN_URL="http://localhost:$SCENARIO_OAUTH_PORT"
+   173	    export SCENARIO_GMAIL_TWIN_URL="http://localhost:$SCENARIO_GMAIL_PORT"
+   174	    export SCENARIO_DB_PORT
+   175	
+   176	    cleanup() { cd "$root" && docker compose -f compose.test.yaml --profile e2e down --remove-orphans; }
+   177	    trap cleanup EXIT
+   178	
+   179	    docker compose -f compose.test.yaml --profile e2e up -d --build --wait
+   180	    cd "$root/scenarios" && uv run pytest -v
+
+exec
+/bin/bash -lc 'git show HEAD''^:app/plowd/scripts/plowd-beta-package-signed | nl -ba | sed -n '"'95,285p'" in /home/odio/.pr-reviewer/workdirs/cncorp_plow__569
+exec
+/bin/bash -lc 'git show HEAD''^:app/justfile | nl -ba | sed -n '"'195,235p'" in /home/odio/.pr-reviewer/workdirs/cncorp_plow__569
+ succeeded in 0ms:
+   195	    support_dir="${HOME}/Library/Application Support/${effective_bundle_id}"; \
+   196	    if [[ -d "$support_dir" ]]; then \
+   197	      echo "Removing $support_dir"; \
+   198	      rm -rf "$support_dir"; \
+   199	    fi; \
+   200	    just up "Debug" "" "" "" "" "" "{{app_name}}" "{{bundle_id}}"
+   201	
+   202	release configuration="Release" derived="../.build/xcode-derived" output="../.build/Plow.dmg" rebuild="1" notary_profile="${PLOW_NOTARY_PROFILE:-plow-notary}" s3_bucket="${PLOW_RELEASES_BUCKET:-releases.plow.co}" release_prefix="" s3_profile="${PLOW_RELEASES_PROFILE-plow}" sparkle_account="${PLOW_SPARKLE_ACCOUNT:-plow-sparkle}":
+   203	    @set -e; \
+   204	    export PLOW_CURRENT_PROJECT_VERSION="${PLOW_CURRENT_PROJECT_VERSION:-$(date -u +%y%j%H%M)}"; \
+   205	    echo "release build number: ${PLOW_CURRENT_PROJECT_VERSION}"; \
+   206	    mounted_plow_volumes="$(hdiutil info 2>/dev/null | grep -Eo '/Volumes/Plow( [0-9]+)?$' || true)"; \
+   207	    mounted_plow_volumes="$(printf '%s\n' "${mounted_plow_volumes}" | sort -u)"; \
+   208	    if [[ -n "${mounted_plow_volumes}" ]]; then \
+   209	      echo "error: a Plow disk image is already mounted; eject it before packaging:" >&2; \
+   210	      printf '%s\n' "${mounted_plow_volumes}" >&2; \
+   211	      exit 1; \
+   212	    fi; \
+   213	    derived_abs="$([[ "{{derived}}" = /* ]] && echo "{{derived}}" || echo "$(pwd)/{{derived}}")"; \
+   214	    app_bundle="$derived_abs/Build/Products/{{configuration}}/Plow.app"; \
+   215	    if [[ "{{rebuild}}" == "1" ]]; then \
+   216	      python3 scripts/generate-runtime-manifest.py --vm-manifest vm/manifest.toml --bucket "{{s3_bucket}}" --prefix runtime --images-output Phoenix/Resources/runtime-images-manifest.json; \
+   217	      just package-build "{{configuration}}" "$derived_abs" "../.build/release-build.log" "" "Plow" "co.plow.app" "plowd/runtime/stage" "plowd/runtime/artifacts" "plowd/runtime/manifest.toml"; \
+   218	    fi; \
+   219	    plowd/scripts/plowd-beta-package-signed \
+   220	      --app-bundle "$app_bundle" \
+   221	      --output "{{output}}" \
+   222	      --notary-profile "{{notary_profile}}" \
+   223	      --s3-bucket "{{s3_bucket}}" \
+   224	      --release-prefix "{{release_prefix}}" \
+   225	      --s3-profile "{{s3_profile}}" \
+   226	      --sparkle-account "{{sparkle_account}}"
+   227	
+   228	# Mount a Plow DMG and assert no custom volume icon ships at the root
+   229	# (PLO-29). Defaults to ../.build/Plow.dmg.
+   230	dmg-verify dmg="../.build/Plow.dmg":
+   231	    @plowd/scripts/plowd-verify-dmg --dmg "{{dmg}}"
+   232	
+   233	[private]
+   234	logs-internal source="all" lines="120" variant="" bundle_id="co.plow.app.dev":
+   235	    @variant_id="$(printf '%s' "{{variant}}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/./g; s/^\.+//; s/\.+$//; s/\.\.+/./g')"; \
+
+ succeeded in 0ms:
+    95	      usage >&2
+    96	      exit 1
+    97	      ;;
+    98	  esac
+    99	done
+   100	
+   101	resolve_path() {
+   102	  local path="$1"
+   103	  if [[ "${path}" = /* ]]; then
+   104	    echo "${path}"
+   105	  else
+   106	    echo "${repo_root}/${path}"
+   107	  fi
+   108	}
+   109	
+   110	plist_read() {
+   111	    local plist_path="$1"
+   112	    local key="$2"
+   113	    /usr/bin/python3 -c "
+   114	import plistlib, sys
+   115	try:
+   116	    with open(sys.argv[1], 'rb') as f:
+   117	        d = plistlib.load(f)
+   118	    print(d.get(sys.argv[2], ''), end='')
+   119	except Exception:
+   120	    pass
+   121	" "${plist_path}" "${key}" 2>/dev/null || true
+   122	}
+   123	
+   124	ensure_no_mounted_plow_volume() {
+   125	  local mounted_plow_volumes
+   126	  mounted_plow_volumes="$(
+   127	    hdiutil info 2>/dev/null \
+   128	      | grep -Eo '/Volumes/Plow( [0-9]+)?$' || true
+   129	  )"
+   130	  mounted_plow_volumes="$(
+   131	    printf '%s\n' "${mounted_plow_volumes}" \
+   132	      | sort -u
+   133	  )"
+   134	  [[ -z "${mounted_plow_volumes}" ]] && return
+   135	
+   136	  echo "error: a Plow disk image is already mounted; eject it before packaging:" >&2
+   137	  printf '%s\n' "${mounted_plow_volumes}" >&2
+   138	  exit 1
+   139	}
+   140	
+   141	app_bundle="$(resolve_path "${app_bundle}")"
+   142	output="$(resolve_path "${output}")"
+   143	entitlements="$(resolve_path "${entitlements}")"
+   144	limactl_entitlements="$(resolve_path "${limactl_entitlements}")"
+   145	
+   146	if [[ -z "${identity}" ]]; then
+   147	  [[ -n "${team_id}" ]] || { echo "error: PLOW_APPLE_TEAM_ID is required when --identity is not provided" >&2; exit 1; }
+   148	  identity="$(security find-identity -v -p codesigning 2>/dev/null | sed -n "s/.*\"\\(Developer ID Application:.*(${team_id})\\)\"/\\1/p" | head -n 1)"
+   149	fi
+   150	
+   151	[[ -n "${identity}" ]] || { echo "error: no Developer ID Application identity found for team ${team_id}; install one for that team before running release" >&2; exit 1; }
+   152	if [[ -n "${team_id}" && "${identity}" != *"(${team_id})"* ]]; then
+   153	  echo "error: selected signing identity does not match required Apple team ${team_id}: ${identity}" >&2
+   154	  exit 1
+   155	fi
+   156	[[ -d "${app_bundle}" ]] || { echo "error: app bundle not found: ${app_bundle}" >&2; exit 1; }
+   157	[[ -f "${entitlements}" ]] || { echo "error: entitlements file not found: ${entitlements}" >&2; exit 1; }
+   158	[[ -f "${limactl_entitlements}" ]] || { echo "error: limactl entitlements file not found: ${limactl_entitlements}" >&2; exit 1; }
+   159	[[ -x "${validate_script}" ]] || { echo "error: package validator not found: ${validate_script}" >&2; exit 1; }
+   160	[[ -x "${stage_sparkle_script}" ]] || { echo "error: Sparkle stage script not found: ${stage_sparkle_script}" >&2; exit 1; }
+   161	[[ -x "${publish_sparkle_script}" ]] || { echo "error: Sparkle publish script not found: ${publish_sparkle_script}" >&2; exit 1; }
+   162	[[ -f "${dmg_background}" ]] || { echo "error: DMG background not found: ${dmg_background}" >&2; exit 1; }
+   163	
+   164	echo "validating packaged app bundle..."
+   165	"${validate_script}" --app-bundle "${app_bundle}"
+   166	
+   167	version="$(plist_read "${app_bundle}/Contents/Info.plist" CFBundleShortVersionString)"
+   168	build_number="$(plist_read "${app_bundle}/Contents/Info.plist" CFBundleVersion)"
+   169	sparkle_feed_url="$(plist_read "${app_bundle}/Contents/Info.plist" SUFeedURL)"
+   170	sparkle_public_key="$(plist_read "${app_bundle}/Contents/Info.plist" SUPublicEDKey)"
+   171	
+   172	[[ -n "${version}" ]] || { echo "error: missing CFBundleShortVersionString in ${app_bundle}/Contents/Info.plist" >&2; exit 1; }
+   173	[[ -n "${build_number}" ]] || { echo "error: missing CFBundleVersion in ${app_bundle}/Contents/Info.plist" >&2; exit 1; }
+   174	[[ -n "${sparkle_feed_url}" ]] || { echo "error: missing SUFeedURL in ${app_bundle}/Contents/Info.plist" >&2; exit 1; }
+   175	[[ -n "${sparkle_public_key}" ]] || { echo "error: missing SUPublicEDKey in ${app_bundle}/Contents/Info.plist" >&2; exit 1; }
+   176	
+   177	release_prefix="${release_prefix#/}"
+   178	release_prefix="${release_prefix%/}"
+   179	prefix_with_slash=""
+   180	if [[ -n "${release_prefix}" ]]; then
+   181	  prefix_with_slash="${release_prefix}/"
+   182	fi
+   183	dmg_key="${prefix_with_slash}downloads/Plow-${version}-${build_number}.dmg"
+   184	dmg_sha_key="${dmg_key}.sha256"
+   185	sparkle_appcast_key="${prefix_with_slash}appcasts/Plow-${version}-${build_number}.xml"
+   186	sparkle_archive_prefix="${prefix_with_slash}updates"
+   187	sparkle_download_url_prefix="https://s3.us-west-2.amazonaws.com/${s3_bucket}/${sparkle_archive_prefix}"
+   188	
+   189	echo "using signing identity: ${identity}"
+   190	echo "preferred Apple team id: ${team_id}"
+   191	echo "using notary profile: ${notary_profile}"
+   192	
+   193	for cmd in aws codesign ditto file find hdiutil shasum xattr xcrun; do
+   194	  command -v "${cmd}" >/dev/null 2>&1 || { echo "error: required command not found: ${cmd}" >&2; exit 1; }
+   195	done
+   196	
+   197	ensure_no_mounted_plow_volume
+   198	
+   199	stage_dir="$(mktemp -d /tmp/phoenix-signed-beta.XXXXXX)"
+   200	stage_app="${stage_dir}/Plow.app"
+   201	sparkle_stage_dir="$(mktemp -d /tmp/phoenix-sparkle-feed.XXXXXX)"
+   202	mounted_volume=""
+   203	
+   204	cleanup() {
+   205	  if [[ -n "${mounted_volume}" ]]; then
+   206	    hdiutil detach "${mounted_volume}" >/dev/null 2>&1 || true
+   207	  fi
+   208	  rm -rf "${stage_dir}"
+   209	  rm -rf "${sparkle_stage_dir}"
+   210	}
+   211	trap cleanup EXIT
+   212	
+   213	mkdir -p "$(dirname "${output}")"
+   214	ditto "${app_bundle}" "${stage_app}"
+   215	mkdir -p "${stage_dir}/.background"
+   216	ditto "${dmg_background}" "${stage_dir}/.background/background.tiff"
+   217	ln -s /Applications "${stage_dir}/Applications"
+   218	xattr -cr "${stage_app}"
+   219	
+   220	while IFS= read -r -d '' file_path; do
+   221	  file_desc="$(file -b "${file_path}" 2>/dev/null || true)"
+   222	  if [[ "${file_desc}" == *"Mach-O"* ]]; then
+   223	    sign_args=(--force --sign "${identity}" --timestamp)
+   224	    if [[ "${file_desc}" == *"executable"* ]]; then
+   225	      sign_args+=(--options runtime)
+   226	    fi
+   227	    if [[ "${file_path}" == "${stage_app}/Contents/Resources/bin/limactl" ]]; then
+   228	      sign_args+=(--entitlements "${limactl_entitlements}")
+   229	    fi
+   230	    codesign "${sign_args[@]}" "${file_path}"
+   231	  fi
+   232	done < <(find "${stage_app}" -type f -print0)
+   233	
+   234	codesign \
+   235	  --force \
+   236	  --sign "${identity}" \
+   237	  --timestamp \
+   238	  --options runtime \
+   239	  --entitlements "${entitlements}" \
+   240	  "${stage_app}"
+   241	
+   242	codesign --verify --deep --strict --verbose=4 "${stage_app}"
+   243	
+   244	if [[ "${keep_signed_app}" == "1" ]]; then
+   245	  preserved_app="${repo_root}/.build/Plow-signed.app"
+   246	  rm -rf "${preserved_app}"
+   247	  ditto "${stage_app}" "${preserved_app}"
+   248	  codesign --verify --deep --strict --verbose=4 "${preserved_app}"
+   249	  echo "preserved signed app for inspection: ${preserved_app}"
+   250	fi
+   251	
+   252	"${stage_sparkle_script}" \
+   253	  --app-bundle "${stage_app}" \
+   254	  --archives-dir "${sparkle_stage_dir}" \
+   255	  --download-url-prefix "${sparkle_download_url_prefix}" \
+   256	  --account "${sparkle_account}"
+   257	
+   258	rm -f "${output}" "${output}.sha256"
+   259	echo "creating DMG..."
+   260	hdiutil create \
+   261	  -volname "Plow" \
+   262	  -srcfolder "${stage_dir}" \
+   263	  -ov \
+   264	  -format ULFO \
+   265	  "${output}"
+   266	
+   267	echo "verifying mounted app from DMG..."
+   268	attach_output="$(hdiutil attach "${output}" -nobrowse)"
+   269	mounted_volume="$(printf '%s\n' "${attach_output}" | sed -n 's|.*\(/Volumes/.*\)$|\1|p' | head -n 1)"
+   270	[[ -n "${mounted_volume}" ]] || { echo "error: failed to determine mounted volume for ${output}" >&2; exit 1; }
+   271	codesign --verify --deep --strict --verbose=4 "${mounted_volume}/Plow.app"
+   272	hdiutil detach "${mounted_volume}" >/dev/null
+   273	mounted_volume=""
+   274	
+   275	echo "submitting DMG to Apple notarization..."
+   276	submit_output="$(xcrun notarytool submit "${output}" --keychain-profile "${notary_profile}" --wait --output-format json)"
+   277	submit_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))' <<<"${submit_output}")"
+   278	submit_status="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))' <<<"${submit_output}")"
+   279	if [[ "${submit_status}" != "Accepted" ]]; then
+   280	  echo "notarization failed with status: ${submit_status:-unknown}" >&2
+   281	  if [[ -n "${submit_id}" ]]; then
+   282	    echo "submission id: ${submit_id}" >&2
+   283	    xcrun notarytool log "${submit_id}" --keychain-profile "${notary_profile}" || true
+   284	  fi
+   285	  exit 1
+
+exec
+/bin/bash -lc "rg -n \"\\[alias\\]|"'^app |''^app:|app .*just" justfile app/justfile' in /home/odio/.pr-reviewer/workdirs/cncorp_plow__569
+ succeeded in 0ms:
+app/justfile:302:        "  (or: cd app && just fetch-limactl)" \
+app/justfile:385:      || (echo "missing app bundle: $app_bundle" && echo "build first with: just app build {{configuration}}" && exit 1); \
+justfile:394:app *ARGS:
+justfile:395:    @if [[ "$#" -eq 0 ]]; then just --working-directory app --justfile app/justfile --list; else just --working-directory app --justfile app/justfile "$@"; fi
+
+exec
+/bin/bash -lc 'find .. -maxdepth 2 -type d -name .build -print' in /home/odio/.pr-reviewer/workdirs/cncorp_plow__569
+ succeeded in 0ms:
+exec
+/bin/bash -lc 'rg -n "''^app|just app|import|mod app|cd app" justfile .github/workflows docs -g '"'"'!*.patch'"'" in /home/odio/.pr-reviewer/workdirs/cncorp_plow__569
+ succeeded in 0ms:
+justfile:28:    cd app/plowd && uv run pytest tests/ -q
+justfile:30:    @if [[ "$(uname)" == "Darwin" ]]; then echo "── swift state tests ──" && just app test; else echo "── swift state tests (skipped: not macOS) ──"; fi
+justfile:61:    base=$(python3 -c "import hashlib,pathlib; print(30000 + int(hashlib.md5(str(pathlib.Path('$root').resolve()).encode()).hexdigest()[:4], 16) % 10000)")
+justfile:162:    base=$(python3 -c "import hashlib,pathlib; print(30000 + int(hashlib.md5(str(pathlib.Path('$root').resolve()).encode()).hexdigest()[:4], 16) % 10000)")
+justfile:191:      base=$(python3 -c "import hashlib,pathlib; print(18000 + int(hashlib.md5(str(pathlib.Path('$root').resolve()).encode()).hexdigest()[:3], 16) % 1000)")
+justfile:204:        TEST_DB_NAME="$(python3 -c "import hashlib,pathlib; print('plow_'+hashlib.md5(str(pathlib.Path('$root/api').resolve()).encode()).hexdigest()[:8],end='')")"
+justfile:297:    cd app/plowd && uv run pytest tests/ -q
+justfile:320:    # cd app/plowd && uv run basedpyright
+justfile:394:app *ARGS:
+docs/vm-publish.md:46:`build-release-candidate.yml` verifies the two S3 keys from `app/vm/manifest.toml` before it runs `cd app && just release`. If either key is missing, the release job fails before packaging starts.
+docs/vm-publish.md:204:3. runs `cd app && just release`
+.github/workflows/test.yml:24:        run: cd app && just test
+.github/workflows/test.yml:32:        run: cd app/plowd && just test
+.github/workflows/test.yml:47:        run: cd app/plowd && just channel-check-ci
+docs/phoenix-sparkle-build.md:76:2. `just app release`
+docs/phoenix-sparkle-build.md:82:4. `just app promote <version> <build>`
+docs/openclaw-phoenixd-known-behaviors.md:56:just app up
+docs/openclaw-phoenixd-known-behaviors.md:65:just app build
+docs/openclaw-phoenixd-known-behaviors.md:66:just app up
+.github/workflows/build-release-candidate.yml:59:          security import "$CERT_PATH" \
+.github/workflows/build-release-candidate.yml:99:        run: cd app/plowd && uv sync --quiet
+.github/workflows/build-release-candidate.yml:114:          cd app
+.github/workflows/build-release-candidate.yml:139:          cd app && just release
+docs/typing.md:63:from collections.abc import Sequence
+docs/upgrades/openclaw.md:67:1. Run `cd app/plowd && just test`.
+docs/upgrades/openclaw.md:69:2. Run `cd app && just release`.
+docs/upgrades/openclaw.md:73:   Check app logs, plowd logs, and VM/OpenClaw logs via `just app logs` or the bundle support directory.
+docs/phoenix.md:42:cd app/plowd
+docs/phoenix.md:56:just app build
+docs/phoenix.md:62:just app up
+docs/phoenix.md:70:just app build
+docs/phoenix.md:71:just app up
+docs/phoenix.md:74:`just app build` prepares the app bundle, including the VM image and packaged runtime. `just app up` is then the normal fast loop for Swift changes: it rebuilds the app and launches with PlowD from `app/plowd/plowd` using `uvicorn --reload`. Run `just app build` again after changes under `app/plowd/`, `app/vm/`, or packaged OpenClaw/runtime assets.
+docs/phoenix.md:79:cd app/openclaw/channels/plow-imessage && npm run build:watch
+docs/phoenix.md:85:just app build                     # build Swift app + package VM/runtime into the current dev app variant
+docs/phoenix.md:86:just app up
+docs/phoenix.md:87:just app release                   # signed release package under .build/
+docs/phoenix.md:89:just app logs                      # multiplexed app/PlowD/app-vm/openclaw logs
+docs/phoenix.md:96:- use `app/plowd/justfile` only for local daemon tests and internal maintenance; the supported app workflows are the `just app ...` commands above
+docs/runbooks/stripe-go-live.md:47:   cd terraform && just apply
+docs/runbooks/stripe-go-live.md:81:re-run `just apply`. No DB migration needed; no code change to revert.
+docs/runbooks/disaster-recovery.md:40:   - Generate a new key: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`
+docs/spikes/webkit-browser-automation/WKWebViewProbe.swift:1:import AppKit
+docs/spikes/webkit-browser-automation/WKWebViewProbe.swift:2:import Foundation
+docs/spikes/webkit-browser-automation/WKWebViewProbe.swift:3:import WebKit
+docs/architecture/openclaw-phoenix-architecture.md:255:**Build:** `cd app/openclaw/channels/plow-imessage && npm run build` (tsc), then `just build`
+docs/architecture/openclaw-phoenix-architecture.md:493:approval.
+docs/architecture/openclaw-phoenix-architecture.md:558:just app build         # Compile Swift app only (xcodebuild)
+docs/architecture/openclaw-phoenix-architecture.md:561:cd app/openclaw/channels/plow-imessage && npm run build
+docs/architecture/openclaw-phoenix-architecture.md:564:cd app/plowd && uv run pytest tests/ -v
+docs/architecture/openclaw-phoenix-architecture.md:609:- Binary must be a **symlink**: `ln -sf ../lib/node_modules/openclaw/openclaw.mjs /usr/local/bin/openclaw`. A copied file breaks relative imports.
+docs/distribution/CODE_SIGNING.md:6:just app release
+docs/distribution/CODE_SIGNING.md:27:`just app build` and `just app up` already use Xcode automatic signing.
+docs/distribution/CODE_SIGNING.md:33:3. run `just app build`
+docs/distribution/CODE_SIGNING.md:43:You should see one usable `Apple Development` identity for the org-managed Plow app. Apple may show a team member identifier in the certificate name instead of the team ID; the practical check is that Xcode is able to sign `just app build` for `The Plow Collective, Inc`.
+docs/distribution/CODE_SIGNING.md:48:2. run `just app build`
+docs/distribution/CODE_SIGNING.md:50:4. run `just app up`
+docs/distribution/CODE_SIGNING.md:80:The release path is intentionally narrower than the dev path. Local development uses `Apple Development`; `just app release` requires `Developer ID Application` for team `3559PD337Z` and will fail closed if only an old or unrelated Developer ID identity is installed.
+docs/distribution/CODE_SIGNING.md:102:2. import that identity into the CI macOS keychain during the release job
+docs/distribution/CODE_SIGNING.md:104:4. run `just app release` in CI with the same team-locked defaults used locally
+docs/distribution/CODE_SIGNING.md:105:5. keep local developer machines on `Apple Development` for normal `just app build` / `just app up`
+docs/distribution/CODE_SIGNING.md:117:just app release
+docs/distribution/CODE_SIGNING.md:130:The release rebuilds and repackages local runtime/VM assets into the app bundle, but does **not** publish runtime artifacts to S3 or rewrite the committed `runtime-manifest.json`. Runtime artifacts are managed separately via `just app runtime`.
+docs/distribution/CODE_SIGNING.md:134:The release script treats these as the important success signals:
+docs/distribution/CODE_SIGNING.md:147:just app release notary_profile=my-profile s3_bucket=my-bucket
+docs/distribution/CODE_SIGNING.md:153:app/plowd/scripts/plowd-beta-package-signed --identity "Developer ID Application: Your Name (TEAMID)"
+docs/architecture/2026-03-17-macos-dev-prod-side-by-side-plan.md:116:- maybe imported user content
+docs/architecture/2026-03-17-macos-dev-prod-side-by-side-plan.md:253:The exact split can be refined during implementation, but the important thing is to remove `PHOENIX_*` from the public configuration surface and make `plowd` the explicit daemon identity.
+docs/architecture/2026-03-17-macos-dev-prod-side-by-side-plan.md:372:2. Existing installs can get a one-time import from `~/.phoenix`.
+docs/architecture/2026-03-17-macos-dev-prod-side-by-side-plan.md:373:3. After import, run exclusively from the new location.
+docs/architecture/2026-03-17-macos-dev-prod-side-by-side-plan.md:408:### Phase 5: One-time import
+docs/architecture/2026-03-17-macos-dev-prod-side-by-side-plan.md:410:1. If old `~/.phoenix` state exists and new state does not, offer or perform a one-time import.
+
+exec
+/bin/bash -lc "nl -ba docs/distribution/CODE_SIGNING.md | sed -n '110,160p'" in /home/odio/.pr-reviewer/workdirs/cncorp_plow__569
+ succeeded in 0ms:
+   110	- release automation should not depend on personal Apple accounts or old `@odio` / unrelated team assets
+   111	
+   112	## Release Command
+   113	
+   114	After the one-time setup:
+   115	
+   116	```bash
+   117	just app release
+   118	```
+   119	
+   120	Default output:
+   121	
+   122	- `.build/Plow.dmg`
+   123	- `.build/Plow.dmg.sha256`
+   124	
+   125	The command uploads versioned artifacts to S3:
+   126	
+   127	- `s3://releases.plow.co/downloads/Plow-<version>-<build>.dmg`
+   128	- `s3://releases.plow.co/downloads/Plow-<version>-<build>.dmg.sha256`
+   129	
+   130	The release rebuilds and repackages local runtime/VM assets into the app bundle, but does **not** publish runtime artifacts to S3 or rewrite the committed `runtime-manifest.json`. Runtime artifacts are managed separately via `just app runtime`.
+   131	
+   132	## Validation Notes
+   133	
+   134	The release script treats these as the important success signals:
+   135	
+   136	- `codesign --verify --deep --strict` passes on the staged app before DMG creation
+   137	- Apple notarization status is `Accepted`
+   138	- `xcrun stapler staple` succeeds on the DMG
+   139	
+   140	The script also performs a local `spctl --assess --type open` check on the DMG, but that check is advisory only. On some machines, `spctl` can be noisy or context-sensitive for DMGs even when notarization and stapling succeeded.
+   141	
+   142	## Overrides
+   143	
+   144	If needed, you can still override the defaults:
+   145	
+   146	```bash
+   147	just app release notary_profile=my-profile s3_bucket=my-bucket
+   148	```
+   149	
+   150	Or call the script directly:
+   151	
+   152	```bash
+   153	app/plowd/scripts/plowd-beta-package-signed --identity "Developer ID Application: Your Name (TEAMID)"
+   154	```
+   155	
+   156	Use an explicit `--identity` only if auto-detection picks the wrong certificate.
+
+exec
+/bin/bash -lc "nl -ba docs/phoenix.md | sed -n '80,100p'" in /home/odio/.pr-reviewer/workdirs/cncorp_plow__569
+ succeeded in 0ms:
+    80	```
+    81	
+    82	## Daily Commands
+    83	
+    84	```bash
+    85	just app build                     # build Swift app + package VM/runtime into the current dev app variant
+    86	just app up
+    87	just app release                   # signed release package under .build/
+    88	
+    89	just app logs                      # multiplexed app/PlowD/app-vm/openclaw logs
+    90	```
+    91	
+    92	Workflow split:
+    93	
+    94	- run the repo from the root `justfile`
+    95	- use `app/justfile` only for local Swift app commands
+    96	- use `app/plowd/justfile` only for local daemon tests and internal maintenance; the supported app workflows are the `just app ...` commands above
+    97	
+    98	## Code Signing
+    99	
+   100	Local app builds are signed by default with the shared Apple team configured in [`app/Phoenix/Config/App.xcconfig`](../app/Phoenix/Config/App.xcconfig). That keeps dev builds closer to production identity and is the preferred path for avoiding repeated Full Disk Access prompts during normal rebuilds.
+
+exec
+/bin/bash -lc 'find . -maxdepth 3 -type d -name .build -print' in /home/odio/.pr-reviewer/workdirs/cncorp_plow__569
+ succeeded in 0ms:
+exec
+/bin/bash -lc "rg -n \"\\.build/Plow\\.dmg|\\.build/\" docs app -g '*.md' -g 'justfile' | head -80" in /home/odio/.pr-reviewer/workdirs/cncorp_plow__569
+ succeeded in 0ms:
+docs/ci-cost-optimization.md:29:- **SPM packages:** Cache `.build/xcode-derived/SourcePackages` between runs
+docs/phoenix.md:87:just app release                   # signed release package under .build/
+app/justfile:21:        derived_path="../.build/xcode-derived"; \
+app/justfile:23:        derived_path="../.build/xcode-derived-${variant_id}"; \
+app/justfile:25:        derived_path="../.build/xcode-derived-dev"; \
+app/justfile:77:        derived_path="../.build/xcode-derived"; \
+app/justfile:79:        derived_path="../.build/xcode-derived-${variant_id}"; \
+app/justfile:81:        derived_path="../.build/xcode-derived-dev"; \
+app/justfile:87:        log_path="../.build/release-build.log"; \
+app/justfile:121:        derived_path="../.build/xcode-derived"; \
+app/justfile:123:        derived_path="../.build/xcode-derived-${variant_id}"; \
+app/justfile:125:        derived_path="../.build/xcode-derived-dev"; \
+app/justfile:158:      if [[ -n "$variant_id" ]]; then derived_path="../.build/xcode-derived-${variant_id}"; else derived_path="../.build/xcode-derived-dev"; fi; \
+app/justfile:202:release configuration="Release" derived="../.build/xcode-derived" output="../.build/Plow.dmg" rebuild="1" notary_profile="${PLOW_NOTARY_PROFILE:-plow-notary}" s3_bucket="${PLOW_RELEASES_BUCKET:-releases.plow.co}" release_prefix="" s3_profile="${PLOW_RELEASES_PROFILE-plow}" sparkle_account="${PLOW_SPARKLE_ACCOUNT:-plow-sparkle}":
+app/justfile:217:      just package-build "{{configuration}}" "$derived_abs" "../.build/release-build.log" "" "Plow" "co.plow.app" "plowd/runtime/stage" "plowd/runtime/artifacts" "plowd/runtime/manifest.toml"; \
+app/justfile:229:# (PLO-29). Defaults to ../.build/Plow.dmg.
+app/justfile:230:dmg-verify dmg="../.build/Plow.dmg":
+app/justfile:318:validate mode="offline" configuration="Debug" derived="../.build/xcode-derived" app_name="Plow":
+app/justfile:330:    derived_path="../.build/xcode-derived-dev-test"; \
+app/justfile:334:      derived_path="../.build/xcode-derived-${variant_id}-test"; \
+app/justfile:379:      if [[ -n "$variant_id" ]]; then derived_path="../.build/xcode-derived-${variant_id}"; else derived_path="../.build/xcode-derived-dev"; fi; \
+docs/distribution/CODE_SIGNING.md:122:- `.build/Plow.dmg`
+docs/distribution/CODE_SIGNING.md:123:- `.build/Plow.dmg.sha256`
+app/plowd/README.md:67:just app release      # signed release package under .build/
+app/SPARKLE.md:33:.build/xcode-011/SourcePackages/artifacts/sparkle/Sparkle/bin/generate_keys
+app/README.md:21:`just app release` is the production packaging step. It keeps all outputs under `.build/` and does not touch your local app runtime state in `~/Library/Application Support/...`.
+
+codex
+## [consumers] findings
+
+### Surveyed
+- `plowd-beta-package-signed` CLI callers in `app/justfile`, plowd tests, and signing docs — clean; existing options still match the script
+- Removed `app/plowd/dmg/volume.icns` asset references across this repo and included sibling roots — clean; no remaining consumers
+- Removed `.VolumeIcon.icns` DMG root payload expectations — clean; tests and verifier now treat presence as invalid
+- New `plowd-verify-dmg --dmg` path contract versus its `app/justfile` caller — see Finding 1
+- Included sibling search roots from `.codex-scratch/search-roots.md` — clean; no cross-repo callers of the changed DMG packaging symbols
+
+### Finding 1 — blocking
+`dmg-verify` passes `../.build/Plow.dmg`, but `plowd-verify-dmg` rewrites every relative `--dmg` as repo-root-relative, so `just app dmg-verify` resolves to `<repo>/../.build/Plow.dmg` instead of the documented `<repo>/.build/Plow.dmg`. The operator-facing guard can fail with “DMG not found” or validate a stale sibling artifact. Remedy cost is low: pass `.build/Plow.dmg` from the target, or omit `--dmg` and use the script default; no fallback branches needed.
+Files: app/justfile:230, app/plowd/scripts/plowd-verify-dmg:37, docs/distribution/CODE_SIGNING.md:120
+tokens used
+58,775
+## [consumers] findings
+
+### Surveyed
+- `plowd-beta-package-signed` CLI callers in `app/justfile`, plowd tests, and signing docs — clean; existing options still match the script
+- Removed `app/plowd/dmg/volume.icns` asset references across this repo and included sibling roots — clean; no remaining consumers
+- Removed `.VolumeIcon.icns` DMG root payload expectations — clean; tests and verifier now treat presence as invalid
+- New `plowd-verify-dmg --dmg` path contract versus its `app/justfile` caller — see Finding 1
+- Included sibling search roots from `.codex-scratch/search-roots.md` — clean; no cross-repo callers of the changed DMG packaging symbols
+
+### Finding 1 — blocking
+`dmg-verify` passes `../.build/Plow.dmg`, but `plowd-verify-dmg` rewrites every relative `--dmg` as repo-root-relative, so `just app dmg-verify` resolves to `<repo>/../.build/Plow.dmg` instead of the documented `<repo>/.build/Plow.dmg`. The operator-facing guard can fail with “DMG not found” or validate a stale sibling artifact. Remedy cost is low: pass `.build/Plow.dmg` from the target, or omit `--dmg` and use the script default; no fallback branches needed.
+Files: app/justfile:230, app/plowd/scripts/plowd-verify-dmg:37, docs/distribution/CODE_SIGNING.md:120
+[10:20:54] agent=consumers exit=0

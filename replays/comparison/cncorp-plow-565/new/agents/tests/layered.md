@@ -1,0 +1,52 @@
+## [tests] findings
+
+### Surveyed
+- Recorded `.codex-scratch/test-results.md` — unavailable in checkout; self-healed with `gh pr checks` and PR body, but no full `just test` tail was present to classify
+- `InstallerWindowSizeTests` pure helper coverage — see Finding 1
+- Host-display cap tests for secondary display and degenerate visible frames — clean, they pin the new cap math
+- Overlay/retry sizing test — clean, now asserts exact normal/retry heights
+- Existing `SettingsViewTests` coverage style — see Finding 1; current tests exercise static helpers, not SwiftUI measurement behavior
+- `SelfSizingHostingView` resize flags and clamp path — clean for this angle; covered indirectly by runtime verification, not enough to raise a separate tests-only finding
+
+### Finding 1 — blocking
+This PR fixes a real regression where helper tests stayed green while the connectors window still rendered at 530 because the SwiftUI measurement path reported/collapsed to zero. The new test block still only calls `installerWindowHeight(...)` with synthetic heights, so it cannot fail if `SettingsView` stops delivering a non-zero height through `onGeometryChange` and users again see the connectors scrollbar / bottom-row overlap. The seam is a focused AppKit/SwiftUI harness: host `SettingsView` in `SelfSizingHostingView` inside an `NSWindow`, pump the main run loop until geometry fires, then assert the resulting intrinsic/window height exceeds the 530 fallback for default connector content. Remedy cost is one UI-sizing harness, not new product conditionals or fallback branches.
+Files: app/Phoenix/SettingsView.swift:69, app/Phoenix/SettingsView.swift:82, app/PhoenixTests/InstallerStateTests.swift:126
+
+---
+
+## Critic counter-arguments
+
+### [tests] Finding 1 — MISCALIBRATED
+Concern survives, severity does not: the new tests only exercise the pure helper (`InstallerStateTests.swift:120-190`) while the core measurement pipeline is `SettingsView.swift:30-37` → `InstallerView.swift:114-118`. But as a tests-only gap with no severe user-data/security path, “blocking” over-calls it; one focused behavior test should be enough.
+**Estimated remedy LOC:** ~45 LOC across 1 file.
+**Calibration questions for go-deep investigation:**
+- Will this SwiftUI preference measurement path regress at the current pre-PMF operating point without a host-window test, given the PR is specifically fixing a prior green-helper/failed-UI sizing path?
+- Is there an existing Phoenix test seam for `NSWindow`/`NSHostingView` sizing, or would this introduce the first AppKit run-loop harness in `app/PhoenixTests`?
+
+
+
+---
+
+## Go-deep tech-lead investigation
+
+### Investigation of Finding 1
+
+**Calibration answers:**
+
+**Q1: Will this SwiftUI preference measurement path regress at the current pre-PMF operating point without a host-window test, given the PR is specifically fixing a prior green-helper/failed-UI sizing path?**
+A: Yes. Current HEAD still routes the operating installer `connectors` screen through `SettingsView` (`app/Phoenix/InstallerView.swift:53`) after onboarding completes (`app/Phoenix/InstallerState.swift:53`), and the measurement chain is still SwiftUI preference plumbing: `SettingsView` emits `InstallerContentHeightKey` from a `GeometryReader` (`app/Phoenix/SettingsView.swift:30`, `app/Phoenix/SettingsView.swift:33`), `InstallerView` observes it (`app/Phoenix/InstallerView.swift:114`), then feeds the pure helper into `.frame(height:)` (`app/Phoenix/InstallerView.swift:80`, `app/Phoenix/InstallerView.swift:82`). The current tests only exercise that pure helper (`app/PhoenixTests/InstallerStateTests.swift:120`, `app/PhoenixTests/InstallerStateTests.swift:126`). Firing-rate evidence is unusually strong: related PLO-35 history records “Three rounds of tested green, doesn't work visually” with the same helper-test gap (`git show a9b238e7`), then a runtime capture where `pref.content` fired once at `0.00` and stayed there for `5+ minutes`, leaving `windowHeight screen=connectors content=0.0 ... result=530.0` (`git show 86978038`). Confidence: high.
+
+**Q2: Is there an existing Phoenix test seam for `NSWindow`/`NSHostingView` sizing, or would this introduce the first AppKit run-loop harness in `app/PhoenixTests`?**
+A: This would introduce the first real AppKit host-window sizing harness in `app/PhoenixTests`. `git grep -n "NSWindow|NSHostingView|RunLoop" -- app/PhoenixTests` found no `NSWindow`/`NSHostingView` test harness; the only `NSWindow` hit is a comment describing the pure helper (`app/PhoenixTests/InstallerStateTests.swift:121`). Existing Phoenix tests are mostly pure XCTest seams (`app/PhoenixTests/InstallerStateTests.swift:4`, `app/PhoenixTests/ActivationStateTests.swift:4`, `app/PhoenixTests/ModelTests.swift:4`) plus async expectations/task yields, not host-window layout. Confidence: high.
+
+**Pattern search:**
+- Existing production sizing pattern: `SelfSizingHostingView` already owns intrinsic-to-window resizing (`app/Phoenix/MenuBarController.swift:396`, `app/Phoenix/MenuBarController.swift:427`, `app/Phoenix/MenuBarController.swift:429`), and the installer reuses it (`app/Phoenix/PhoenixApp.swift:153`, `app/Phoenix/PhoenixApp.swift:159`).
+- Existing SwiftUI content-height pattern: `StatusView` measures scroll content with `GeometryReader` + `PreferenceKey`, then constrains the scroll view locally (`app/Phoenix/StatusView.swift:276`, `app/Phoenix/StatusView.swift:279`, `app/Phoenix/StatusView.swift:283`, `app/Phoenix/StatusView.swift:290`). That is a production pattern, not a test seam.
+- Related history shows the production simplification direction too: `git show 1c9aadaa` says the later fix “mirroring the canonical StatusView pattern” moved ScrollView height management into `SettingsView` and replaced the broken preference path after runtime verification showed `680, 530` before and `680, 637` after.
+- LOC delta: original proposed test remedy is ~45 LOC. No existing test helper reduces that materially; reusing `SelfSizingHostingView` in a test still requires creating an `NSWindow`, hosting the view, and pumping layout.
+
+**Decline-history check:**
+- No prior decline. `.codex-scratch/decline-history.md` is empty, so there is no operator rationale declining this class.
+
+**Recommendation:** KEEP
+- Keep the calibrated tests finding, with critic severity rather than “blocking.” This is above the 20-LOC broken-glass threshold, but the firing-rate evidence is not hypothetical: this exact class escaped pure helper tests across multiple PLO-35 attempts and hits the core onboarding connectors screen. The repo operating point is early-product iteration (`AGENTS.md:111`, `AGENTS.md:113`), so we should avoid broad harness infrastructure, but one focused AppKit/SwiftUI sizing test is justified because the current test contract proves the math while missing the user-visible failure mode.

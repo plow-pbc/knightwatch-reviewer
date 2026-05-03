@@ -1,0 +1,1 @@
+Inferred intent: It appears @swagatpatel is working towards keeping users’ Plow agent reachable when their Mac would otherwise go to sleep by adding a persistent “Keep Mac Awake” toggle in `SettingsView.swift` and `StatusView.swift`, wired through `PhoenixApp.swift` to `KeepMacAwake.swift`’s IOPM sleep-prevention assertion.

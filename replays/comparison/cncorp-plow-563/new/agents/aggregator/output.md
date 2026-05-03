@@ -1,0 +1,22 @@
+_It appears @swagatpatel is working towards letting Plow users keep their Mac from sleeping while the app is running so the agent/OpenClaw VM stays reachable, by adding user-facing “Keep Mac Awake” toggles in `app/Phoenix/SettingsView.swift` and `app/Phoenix/StatusView.swift` backed by `KeepMacAwake`’s persisted `IOPMAssertion` state and teardown on app termination — reviewing against that goal._
+
+**Overview** — The PR adds the right user-facing control surfaces and wires them to one app-owned `KeepMacAwake` object. The main remaining issues are around test coverage and keeping this small enough for Phoenix’s current iteration stage.
+
+**Strengths** — The sleep assertion is owned by a single app-level object, both UI toggles bind to that shared state, and app termination explicitly releases the assertion. Security/data-integrity specialists did not find new trust-boundary or persistence risks.
+
+**Findings**
+1. [medium] Will this persisted IOKit state machine be relied on across launch and termination? If yes, it needs deterministic behavior tests before merge: today there is no `KeepMacAwake` test file in the tree, while the contract spans persisted startup at `init()` and `applyEnabled()`, acquire failure rollback/persistence, and termination release. A small injection seam plus tests for “persisted true acquires on launch” and “failed acquire reverts and persists false” would cover the user-visible contract without broadening the feature. Files: app/Phoenix/KeepMacAwake.swift:23, app/Phoenix/KeepMacAwake.swift:27, app/Phoenix/KeepMacAwake.swift:45, app/Phoenix/KeepMacAwake.swift:53. Standard: Tests.
+
+2. [low] Will this toggle need separate “user requested ON” state versus “macOS granted assertion” state? If not, the recursive `didSet` plus `suppressApply` state machine is extra surface for a single resolved preference; Phoenix already has simpler observable-toggle patterns nearby. Consider making the setter resolve/persist the actual state directly, matching the local toggle shape rather than carrying a re-entry flag. Files: app/Phoenix/KeepMacAwake.swift:19, app/Phoenix/KeepMacAwake.swift:23, app/Phoenix/KeepMacAwake.swift:42, app/Phoenix/LaunchAtLogin.swift:7, app/Phoenix/FinderSidebar.swift:42. Standard: Concise Code.
+
+3. [low] Will installer settings content vary enough across supported displays before PMF to justify shipping auto-sizing machinery here? If not, the new measured heights, preference keys, observation hooks, and titlebar constant are a lot of sizing infrastructure for one added row; this adds complexity and makes PMF iteration harder. A fixed connector-window height keeps the PR easier to review and delete. Files: app/Phoenix/InstallerView.swift:14, app/Phoenix/InstallerView.swift:114, app/Phoenix/InstallerView.swift:537, app/Phoenix/InstallerView.swift:554. Standard: Concise Code.
+
+4. [low] Will installer presentation keep gaining app-owned dependencies? If yes, the new `keepMacAwake` argument shows this should go through the existing/local `showInstaller()` seam instead of repeating raw `installerController.show(...)` calls; if not, consider cutting the repeated argument threading anyway because it is branch-negative and avoids drift. Files: app/Phoenix/StatusView.swift:258, app/Phoenix/StatusView.swift:264, app/Phoenix/StatusView.swift:271, app/Phoenix/StatusView.swift:360, app/Phoenix/PhoenixApp.swift:101, app/Phoenix/PhoenixApp.swift:115, app/Phoenix/PhoenixApp.swift:125. Standard: DRY.
+
+5. [low] Will status-popover users rely on that row as the primary control? If yes, the status panel should carry the same sleep-limit copy as Settings; otherwise users can toggle “Keep Mac Awake” from the popover without seeing the actual OS constraints described in Settings. Files: app/Phoenix/StatusView.swift:431, app/Phoenix/StatusView.swift:434, app/Phoenix/SettingsView.swift:191. Standard: Narrow-Fix.
+
+**Security** — Clean: no new secrets, network input, auth/session surface, shell execution, or privilege-boundary change.
+
+**Test coverage** — Tests specialist found the current coverage gap above; `.codex-scratch/test-results.md` was not present, so I do not have a `just test` outcome to report.
+
+VERDICT: COMMENT

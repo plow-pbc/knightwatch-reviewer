@@ -1,0 +1,2083 @@
+[08:41:54] agent=critic starting
+Reading additional input from stdin...
+OpenAI Codex v0.128.0 (research preview)
+--------
+workdir: /tmp/tmp.s9NGRcpSxH/repo
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: high
+reasoning summaries: none
+session id: 019dee80-d925-7010-bdbb-0c8b6e9916ab
+--------
+user
+You are the devil's advocate in a multi-specialist PR review. Eight specialists have surfaced findings. Before the aggregator synthesizes the final review, your job is to stress-test each finding and surface anything the specialists collectively missed. Your output passes to the aggregator along with the raw specialist outputs.
+
+**Voice posture (apply on every finding you process):** Apply `standards.md` § Broken-Glass Test — every non-bug finding's #1 assumption must be stated as a question. Declarative voice is allowed only when the specialist can cite the failing path, the user-observable outcome, and the line where the contract breaks. For scope-creep findings (asking the PR to update unrelated infra, fix a long-pre-existing gap, expand into adjacent policy), reframe with the cost-naming clause: *"adds complexity and makes PMF iteration harder."*
+
+FIRST, read `.codex-scratch/standards.md` — all of it, but especially the "Comment Review Mistakes" section. It lists calibration corrections the reviewer should apply (e.g. don't over-call blocking on tests when 1-2 behavior tests suffice; don't demand dedup refactors when parity tests cover drift risk). If a specialist finding is about to commit a documented mistake, flag it.
+
+Then read:
+- `.codex-scratch/specialists/security.md`
+- `.codex-scratch/specialists/data-integrity.md`
+- `.codex-scratch/specialists/architecture.md`
+- `.codex-scratch/specialists/simplification.md`
+- `.codex-scratch/specialists/tests.md`
+- `.codex-scratch/specialists/shape.md`
+- `.codex-scratch/specialists/performance.md`
+- `.codex-scratch/specialists/consumers.md`
+- `.codex-scratch/diff.patch` — the actual change
+- `.codex-scratch/file-history.md` — recent commits on touched files
+- `.codex-scratch/commits.md` — commit subjects on this branch, one per line
+- `.codex-scratch/inferred-intent.md` — the pre-fan-out inferred end-user-facing intent. Specialists were told to grade implementation against this; you should too when stress-testing their findings.
+- `.codex-scratch/author-intent.md` — the PR's own description + linked issues (READ THIS — it often explains WHY the author did something a specialist is about to criticize)
+- `.codex-scratch/trigger-comment.md` — present whenever the review was triggered by a trusted-author `/srosro-review` or `/srosro-update-review` comment. Contains the commenter's GitHub login + body. When the body has substantive prose, it's the requester's stated framing of what they want reviewed; specialists were told to weight it, and if a specialist finding is in tension with this framing, decide whether the finding still stands or the specialist over-called. When the body is only the bare slash command, ignore it — no extra framing.
+- `.codex-scratch/product-context.md` — product stage and roadmap
+- `.codex-scratch/review-priority.md` — per-repo operating point + voice posture.
+- `.codex-scratch/loc-trend.md` — per-round LOC trajectory; consulted by the Pre-PMF lens.
+- `.codex-scratch/prior-reviews.md` — concatenated prior aggregator outputs; consulted by the Pre-PMF lens for Bug-Class-Recurrence detection.
+- `.codex-scratch/decline-history.md` — operator's prior decline replies on this PR. Two layers: (a) **Decline replies** are emitted verbatim as context — read the prose and use your judgement on whether a class is recurring (the orchestrator no longer auto-classifies). (b) **Explicit class markers** (`<!-- decline:class=X -->`) are counted; the ≥3-rounds auto-drop rule applies ONLY to classes counted there, not to prose-inferred classes.
+
+**Your job:**
+
+For each finding in the specialist outputs, provide **1–3 lines** of counterargument. Consider:
+
+1. **False positive** — author may have deliberately done this; specialist may have misread the code; the standard being cited may not apply here.
+2. **Over-specific** — the finding is technically correct but describes a one-off case rather than a general pattern worth a reviewer's time.
+3. **Miscalibrated** — check `COMMENT_REVIEW_MISTAKES` for exactly this calibration. A finding labeled `blocking` that lives in the "over-called blocking" mistakes bucket should be downgraded.
+4. **Already addressed** — check `file-history.md`; author may have handled this in a recent commit not reflected in the diff.
+5. **Contradicts author intent** — `author-intent.md` may explain the tradeoff the specialist is assuming was an oversight.
+6. **Duplicate** — two specialists may have raised effectively the same issue from different angles; note the overlap.
+7. **REMEDY-BLOAT** — finding may be valid but the implied fix adds defensive branches, fallback chains, type validation outside trust boundaries, a new abstraction for one call site, or handles a theoretical edge case that doesn't actually occur. The cost is conditionals/special cases that calcify, not just LOC. In your counterargument, name a LOC-negative or branch-negative alternative the aggregator should rewrite the finding to point at — or recommend the aggregator drop it. Cite `Concise Code`, `Fail-Fast`, or the relevant `COMMENT_REVIEW_MISTAKES` entry.
+8. **REFRAME-AS-QUESTION** — applies ONLY when the critic genuinely doubts the underlying assumption. Three required conditions, ALL must hold:
+   (a) the finding's underlying concern is real (not FALSE POSITIVE),
+   (b) the critic can articulate a plausible world-state where the finding would not apply (e.g., "if hdiutil output stays stable across macOS versions, three local parsers are fine") — that articulation IS the reframed Q,
+   (c) the remedy is ADDITIVE (adds defensive code, abstraction, validation, branch, file). REMOVAL findings (DRY-collapse, dead code, unreachable branch, collapse-branches, delete-helper) DO NOT qualify — per `common-header.md` § Broken-Glass is pro-simplification, removal findings stay declarative even at low severity. If the proposed remedy is "delete X" / "collapse Y into one helper" / "remove this guard", REFRAME-AS-QUESTION is the wrong verdict; consider AGREE or MISCALIBRATED instead.
+
+When applied, emit the reframed text inline so the aggregator can drop it directly into Open Questions:
+
+   ```
+   ### [<specialist>] Finding N — REFRAME-AS-QUESTION
+   <one-line reason: what assumption is being asserted as if settled>
+   Reframe:
+   > Will [external state — user behavior, data shape, OS contract, scale, deadline, production observation]? If yes, [Y]. If not, consider cutting [Y] — adds complexity and makes PMF iteration harder.
+   > [Optional recommendation given operating point.]
+   ```
+
+The reframed Q MUST follow `common-header.md` § Q-field shape — state-shaped, NEVER solution-shaped. A reframed Q that asks "should we apply this remedy?" / "can we extract this helper?" / "will we maintain X as one contract?" is malformed; rewrite as a question about external state whose answer dictates whether the remedy pays for itself. Wrong-shape Qs are a pre-merge gate — fix the Q before the verdict ships.
+
+Scope-creep findings (asking the PR to update unrelated infra, fix a pre-existing gap, expand adjacent policy) MUST be REFRAME-AS-QUESTION'd if they survive — they are not bugs, the remedy is additive, and the cost-naming forces the author to weigh in. The reframe MUST include explicit cost language ("adds complexity and makes PMF iteration harder") AND state-shaped Q.
+
+**Pre-PMF lens (conditional).** Apply the lens to *every surviving finding* when ANY of these fire:
+- `prior-reviews.md` shows Bug-Class-Recurrence in **2+ prior rounds** (catches the dynamic where the author held LOC stable but ignored the structural ask), OR
+- `loc-trend.md` shows GROWING **and** Bug-Class-Recurrence has fired in any prior round, OR
+- `prior-reviews.md` indicates **rounds ≥ 4** (regardless of trajectory — by round 4 the author has seen 3 reviews and the marginal value of new prescriptive findings is dropping).
+
+Lens question: would the failure mode the remedy is preventing be observed in production at our scale today? If no AND the remedy is additive without observed need → REMEDY-BLOAT (drop entirely). If no but the underlying concern is real → REFRAME-AS-QUESTION.
+
+**Self-referential spec guard.** If a finding cites the PR's *own* newly-added spec/plan/doc (e.g. `docs/specs/<this-pr-date>-*.md`, `docs/plans/<this-pr-date>-*.md`, or any doc whose first commit on this branch is in `commits.md`) as the contract being violated by the implementation, REMEDY-BLOAT it. Reasoning: the spec is mutable in this same PR, so "implementation doesn't match spec" is solvable by editing the spec — the finding is grading the PR against itself. The exception is when the spec text describes a USER-FACING contract (an external API shape, a documented user flag, a public schema) — in that case the spec is binding because consumers other than this PR will read it. Internal implementation prose ("the parser should recognize marker X", "the ranker should sort findings overall") does NOT meet that bar.
+
+**Decline-history awareness.** Two channels:
+
+*Explicit class markers (mechanical auto-drop):* If a finding's class appears in the **Explicit class markers** section of `.codex-scratch/decline-history.md` with a count ≥3, drop the finding from the published findings. Emit one-line footnote: `Class 'X' marked declined N rounds (see decline-history.md). Not re-raising.` Class names are exact matches against the operator's `<!-- decline:class=X -->` declarations.
+
+*Free-form prose (judgement):* Read the **Decline replies** section as context. If the prose suggests the operator pushed back on a class similar to a surviving finding's class — even though the operator didn't add an explicit marker — cite the operator's reasoning in your counter-argument and ask whether this commit's diff materially changes the prior decline. If yes, keep at original severity; if no, REFRAME-AS-QUESTION with the prior decline reason as the cost-naming. Do NOT auto-drop based on prose inference; only the explicit-marker channel mechanically drops.
+
+**Carry-forward stress-test (re-reviews only).** If `previous-review.md` is non-empty, also stress-test every `[blocking]` and `[medium]` finding from it — those findings will be auto-carried-forward by the aggregator if you don't push back. Specialists only see the incremental diff and won't re-raise findings about unchanged code, so without this pass a finding that survives one critic round becomes immune to challenge for every subsequent round (the aggregator carry-forward path bypasses the critic entirely). For each prior `[blocking]`/`[medium]`, apply the same statuses (FALSE POSITIVE / OVER-SPECIFIC / MISCALIBRATED / REMEDY-BLOAT / REFRAME-AS-QUESTION / ALREADY ADDRESSED).
+
+*Engagement signal — count rounds since author engaged with this finding.* Engagement = (a) a commit on this branch that touched the cited file:lines (visible in `file-history.md` and `commits.md`), OR (b) an author comment that quoted, addressed, or replied to the finding (parse `prior-reviews.md` for round headers and look for matching reply text in adjacent rounds). The author has now seen the finding K times — does that update your read?
+
+- K = 1–2: full severity stands; author is presumably working on it.
+- K ≥ 3 with no engagement: REFRAME-AS-QUESTION is the right default. Either the finding is mis-scoped to this PR, or the author has materially deferred it; silence at K ≥ 3 is signal, not absence of signal. Use the prior decline reason or your own one-liner as the cost-naming. Do NOT auto-DROP — the underlying concern may still be real and worth the author's attention; the reframe just stops compelling it as a merge-blocker.
+- K ≥ 5 with no engagement: REMEDY-BLOAT (drop). Five rounds of silence on the same blocker means the bot is talking past the author; continuing to re-emit costs reviewer signal-to-noise.
+
+**Severe-bug carve-out for K-decay.** The K ≥ 3 (REFRAME-AS-QUESTION) and K ≥ 5 (REMEDY-BLOAT) defaults do NOT apply to carried-forward findings whose body cites a failing path describing a **user-observable severe bug**: secret leak, auth bypass, command injection, path traversal, sandbox escape, data loss / corruption / silent-drop, money-affecting state inconsistency, or PII exfiltration. Silence on a real severe-bug blocker is the bot being right and the author being wrong — keep at `[blocking]` regardless of K. Key on the cited failing-path text in `previous-review.md`, NOT on a specialist tag (carried-forward findings only carry `[severity]`, not `[security]`/`[data-integrity]` — the specialist origin is lost when the aggregator posts). K-decay applies to scope, style, tech-debt, architectural, and DRY/cleanup classes, where author silence is genuinely ambiguous.
+
+If the cited code WAS modified in this round (engagement = K=0), evaluate the new state directly — the finding may be addressed (drop), partially addressed (downgrade), or untouched-by-the-modification (re-stress per its merits).
+
+Separately: surface any findings the specialists **collectively missed**. Read the diff for gaps the specialists would have caught if they'd been more thorough.
+
+**Output format — exactly this:**
+
+```
+## Critic counterarguments
+
+### [security] Finding N — <status: AGREE | FALSE POSITIVE | OVER-SPECIFIC | MISCALIBRATED | REMEDY-BLOAT | REFRAME-AS-QUESTION | ALREADY ADDRESSED | DUPLICATE OF [other-specialist] Finding M>
+1–3 lines of reasoning. Cite specific evidence (file:line, standard name, history commit, author-intent quote).
+
+### [data-integrity] Finding N — <status>
+...
+
+### [architecture] Finding N — <status>
+...
+
+### [simplification] Finding N — <status>
+...
+
+### [tests] Finding N — <status>
+...
+
+### [shape] Finding N — <status>
+...
+
+### [performance] Finding N — <status>
+...
+
+### [consumers] Finding N — <status>
+...
+
+## Carried-forward findings (re-reviews only — omit if previous-review.md is empty)
+
+### [carry-forward] Finding N — <status: same set as specialist findings>
+1–3 lines reasoning, including engagement-K count and whether cited code was modified this round.
+
+## Missed findings (if any)
+- [severity estimate] <concise finding, 1–2 sentences>
+- [severity estimate] <another, ...>
+```
+
+**For each surviving finding, append after your 1–3 line counterargument:**
+
+```
+**Estimated remedy LOC:** ~N LOC across M files.
+```
+
+Estimate by counting `+` lines in any code blocks the specialist proposed; fall back to "if the finding cites K files, estimate K×20 LOC" when no code is shown.
+
+**For findings ≥20 LOC remedy:** generate 1-2 calibration questions targeting the cultural lens from `standards.md` § Broken-Glass Test → 20-LOC remedy threshold. Pattern (LLM generates per-finding, NOT templated):
+
+```
+**Calibration questions for go-deep investigation:**
+- Q1: <will users at <operating-point> hit this state? cite firing-rate evidence if available, or "no observed instances">
+- Q2: <is there a similar pattern in <path/to/lib.sh> or another existing seam we could reuse to avoid adding N LOC?>
+```
+
+The calibration questions ladder up to: *"Is the additional complexity of addressing this issue worth the cost of slowing down PMF iteration?"* (from § Broken-Glass Test). For findings <20 LOC remedy, omit the calibration block entirely. For findings the critic recommends dropping (FALSE POSITIVE, REMEDY-BLOAT-with-no-alternative), omit both blocks.
+
+**Constraints:**
+- Keep each counterargument tight (1–3 lines). One-line AGREE is fine when a finding survives cleanly.
+- Do NOT rewrite or rank the findings. The aggregator does that. You only provide counterarguments + missed findings.
+- Reference specialists' findings in the order they appear within each specialist's file (Finding 1, Finding 2, etc.).
+- If every finding survives and no gaps exist, output exactly this and nothing else:
+  ```
+  ## Critic counterarguments
+
+  All findings survive scrutiny. No missed findings identified.
+  ```
+codex
+I’ll read the review inputs first, including the standards calibration, then inspect the diff and prior context before judging each specialist finding.
+exec
+/bin/bash -lc "sed -n '1,260p' .codex-scratch/standards.md" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+exec
+/bin/bash -lc "sed -n '1,220p' .codex-scratch/specialists/security.md" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+## [security] findings
+
+### Surveyed
+- Final DMG verification before S3 upload in `plowd-beta-package-signed` — clean
+- `plowd-verify-dmg` argument handling, mount parsing, and cleanup path — clean
+- Added macOS CI plowd test step — clean, no new secret-bearing workflow context
+- Removal of custom volume icon staging/FinderInfo mutation — clean
+- Checked-in and shipped Finder `.DS_Store` metadata capture — see Finding 1
+
+### Finding 1 — low
+`plowd-record-dmg-layout` copies Finder’s raw `.DS_Store` into the repo and release artifact, and the PR-head blob contains machine-local metadata visible via `strings`: `/private/tmp/plowd-dmg-record.../layout.dmg`, `Macintosh HD`, and volume UUIDs. That is unnecessary fingerprinting data in both the public repository and the shipped DMG. The low-cost remedy is data minimization around the recorded blob, not a defensive runtime branch: re-record/sanitize the metadata so only the layout contract remains. This is a Broken-Glass Test simplification-aligned fix because it removes accidental metadata without adding release-path complexity.
+Files: app/plowd/scripts/plowd-record-dmg-layout:195, app/plowd/dmg/.DS_Store:1
+exec
+/bin/bash -lc "sed -n '1,220p' .codex-scratch/specialists/architecture.md" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+## [architecture] findings
+
+### Surveyed
+- Release flow boundary: `just app release` is the documented point that packages and uploads the versioned DMG — see Finding 1
+- DMG staging path: custom `.VolumeIcon.icns` staging and UDRW custom-icon mutation are removed — clean
+- Artifact verifier placement: verifier runs after staple and before S3 upload — see Finding 1
+- macOS CI lane: plowd tests now run where real `hdiutil` exists — clean
+- Deleted DMG volume icon asset: removes an orphaned release asset rather than adding another conditional path — clean
+
+### Finding 1 — medium
+The release verifier is not actually a single mandatory release contract because `PLOW_SKIP_DMG_VERIFY=1` skips it in the production packaging script. The documented release flow says `just app release` packages and uploads the versioned DMG (`docs/phoenix-sparkle-build.md:73`, `docs/vm-publish.md:208`), and this PR’s intent is to block releases that ship the confusing custom volume icon. But line 299 lets any inherited release environment bypass the guard, and the script still uploads at lines 315-316. Broken-Glass Test, Concise Code, and Fail-Fast all point the same way here: removing the env bypass reduces branch count and makes the verifier the one release path.
+Files: app/plowd/scripts/plowd-beta-package-signed:299, app/plowd/scripts/plowd-beta-package-signed:315, docs/vm-publish.md:208
+exec
+/bin/bash -lc "sed -n '1,220p' .codex-scratch/specialists/data-integrity.md" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+## [data-integrity] findings
+
+### Surveyed
+- Direct ULFO DMG creation and removal of `.VolumeIcon.icns` staging in the release path — clean
+- Final PLO-29 verifier runs before checksum generation and S3 upload, so rejected artifacts do not publish — clean
+- Success-path detach handling now fails loud instead of returning green with a leaked mount — clean
+- Existing `/Volumes/Plow` collision preflight before packaging/verifying — clean for the intended `Plow` volume name
+- Mount-path parsing from `hdiutil attach` output — see Finding 1
+- Stubbed and real-`hdiutil` verifier coverage for clean, iconed, and wrong-name DMGs — clean
+
+### Finding 1 — low
+`plowd-verify-dmg` can leak a successfully attached regression DMG when the bad volume name contains spaces. The parser assumes the mount point is `$NF`; for `hdiutil attach` output ending `/Volumes/Plow Installer`, `$NF` is `Installer`, so `mounted_volume` stays empty and the script exits before cleanup has a path to detach. The release still aborts before upload, but repeated verification of a bad spaced-name DMG leaves stale mounts that the existing `/Volumes/Plow( [0-9]+)?` preflight does not report. Fix cost should stay small: one robust mount-path parser, not per-name exceptions.
+Files: app/plowd/scripts/plowd-verify-dmg:89, app/plowd/scripts/plowd-verify-dmg:90
+exec
+/bin/bash -lc "sed -n '1,220p' .codex-scratch/specialists/simplification.md" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+## [simplification] findings
+
+### Surveyed
+- Kid/prior-art surface — clean: `.codex-scratch/prior-art.md` is empty, so there were no score ≥ 0.75 hits to keep or dismiss.
+- DMG packaging path in `plowd-beta-package-signed` — clean: the PR deletes the old UDRW/custom-icon staging path and creates ULFO directly.
+- New `plowd-verify-dmg` script — see Finding 1
+- New Darwin `hdiutil` tests — see Finding 2
+- Existing release-script fake command table touched by this test module — see Finding 3
+- `just app dmg-verify` wrapper and macOS CI step — clean: both are thin entrypoints without meaningful duplicated logic beyond invoking the verifier.
+
+### Finding 1 — low
+Will `hdiutil info` keep reporting mounted Plow volumes with the same `/Volumes/Plow( N)?` suffix across the macOS versions this release lane supports? If that OS contract is important enough to gate releases, carrying the same parser in three places makes future drift fixes harder than a single helper in `app/plowd/scripts/_lib.sh`. Broken-Glass Test and Concise Code favor collapsing this duplicate shell into one `plowd_mounted_plow_volumes` helper; the remedy cost is one sourced helper and fewer regex copies, not new branching.
+Files: app/plowd/scripts/plowd-verify-dmg:46, app/plowd/scripts/plowd-beta-package-signed:124, app/justfile:206
+
+### Finding 2 — low
+Will macOS-only artifact guards keep expanding as release packaging changes before the release lane settles? These two new tests repeat the same “skip if Plow is mounted” preflight and real-DMG staging/creation setup, with only the scenario assertions changing. A module-level `_skip_if_plow_volume_mounted()` plus `_make_real_dmg(stage, path, volname)` would delete the repeated setup while keeping the test intent sharper; the remedy cost is two small helpers, no new conditionals or defensive behavior.
+Files: app/plowd/tests/test_release_scripts.py:268, app/plowd/tests/test_release_scripts.py:278, app/plowd/tests/test_release_scripts.py:328, app/plowd/tests/test_release_scripts.py:338
+
+### Finding 3 — nit
+This touched test module still has a duplicate `generate_appcast` key in the fake command table, so the earlier entry is silently overwritten and `_fake_generate_appcast_script()` is dead code. Since this PR is already editing the release-script tests, deleting the first mapping and the unused helper is a zero-abstraction Concise Code cleanup that leaves the file easier to inspect.
+Files: app/plowd/tests/test_release_scripts.py:865, app/plowd/tests/test_release_scripts.py:880, app/plowd/tests/test_release_scripts.py:933
+codex
+I’ve got the first half of the specialist notes. Next I’m reading the remaining specialists plus branch intent and history so the counterarguments can account for prior reviewer guidance rather than just the patch.
+exec
+/bin/bash -lc "sed -n '1,240p' .codex-scratch/specialists/tests.md" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+## [tests] findings
+
+### Surveyed
+- PR check rollup from GitHub, because `.codex-scratch/test-results.md` was missing — clean: all visible checks succeeded
+- macOS CI wiring for Darwin-only plowd DMG tests — clean
+- Real-`hdiutil` verifier tests for clean, `.VolumeIcon.icns`, wrong volume name, and detach failure paths — clean
+- Cross-platform fake-`hdiutil` verifier tests — clean
+- Release packaging test coverage for mandatory verifier wiring — see Finding 1
+
+### Finding 1 — blocking
+The release-path regression test does not actually prove `plowd-beta-package-signed` invoked `plowd-verify-dmg`. It asserts the banner and `attach {output}` in the `hdiutil` log, but the script already attaches the DMG earlier for codesign verification, before the PLO-29 verifier call. A future edit that leaves the banner but removes `"${repo_root}/app/plowd/scripts/plowd-verify-dmg" "${output}"` would still pass, letting the exact “release verifier silently bypassed” bug recur. Remedy cost is one tighter assertion, no new abstraction: assert the verifier’s distinct `attach ${output} -nobrowse -readonly` line or two attach calls.
+Files: app/plowd/tests/test_release_scripts.py:438, app/plowd/tests/test_release_scripts.py:439, app/plowd/scripts/plowd-beta-package-signed:270, app/plowd/scripts/plowd-beta-package-signed:305
+exec
+/bin/bash -lc "sed -n '1,220p' .codex-scratch/specialists/shape.md" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+## shape findings
+
+### Surveyed
+- Volume icon removal from staging and direct `ULFO` DMG creation — clean
+- Mandatory final-artifact verifier before upload — clean
+- `just app dmg-verify` as a thin verifier alias — clean
+- Cross-platform fake-`hdiutil` verifier tests plus Darwin real-`hdiutil` guard — clean
+- Finder layout recorder introduced with checked-in `.DS_Store` — see Finding 1
+- Mountpoint parsing shape across release, verifier, and recorder scripts — see Finding 1
+
+### Finding 1 — medium
+Will `hdiutil attach` output stay stable enough across macOS versions for this PR to maintain multiple independent parsers? The PR establishes the `awk '$NF ~ /^\//'` parser in both the release script and verifier, but the new recorder immediately uses the older `sed -n 's|.*\(/Volumes/.*\)$|\1|p'` shape in both mount passes. Under `Name the Shape`, this is a same-problem parallel construct; Broken-Glass Test favors collapsing duplicate parsing. Remedy cost is a small shared shell helper or one parser shape, not extra defensive branches.
+Files: app/plowd/scripts/plowd-record-dmg-layout:160, app/plowd/scripts/plowd-record-dmg-layout:186, app/plowd/scripts/plowd-verify-dmg:89, app/plowd/scripts/plowd-beta-package-signed:276
+exec
+/bin/bash -lc "sed -n '1,220p' .codex-scratch/specialists/consumers.md" in /tmp/tmp.s9NGRcpSxH/repo
+exec
+/bin/bash -lc "sed -n '1,220p' .codex-scratch/specialists/performance.md" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+## [consumers] findings
+
+### Surveyed
+- `plowd-beta-package-signed` CLI shape and existing callers — clean
+- Removed `app/plowd/dmg/volume.icns` and `.VolumeIcon.icns` staging contract — clean
+- New `plowd-verify-dmg --dmg` call sites — see Finding 1
+- Darwin-only plowd CI invocation from `.github/workflows/test.yml` — clean
+- Same-repo greps for `volume.icns`, `.VolumeIcon.icns`, `plowd-verify-dmg`, and `dmg-verify` — see Finding 1
+
+### Finding 1 — blocking
+The new app recipe’s default is stale for the verifier’s path contract. `just app ...` dispatches into the `app/` working directory, and `dmg-verify` passes `../.build/Plow.dmg`; then `plowd-verify-dmg` rewrites every relative `--dmg` as `${repo_root}/${dmg_path}`, so the default resolves to `<repo>/../.build/Plow.dmg` instead of the documented `<repo>/.build/Plow.dmg`. Users running `just app dmg-verify` after a release get `DMG not found`. Remedy cost is just aligning this one caller/default, with no new fallback branch.
+Files: justfile:394, app/justfile:230, app/plowd/scripts/plowd-verify-dmg:37, docs/distribution/CODE_SIGNING.md:122
+ succeeded in 0ms:
+## [performance] findings
+
+### Surveyed
+- Direct ULFO DMG creation in `app/plowd/scripts/plowd-beta-package-signed:263` — clean; removes the older writable-DMG/convert pass, so release I/O goes down overall.
+- Mandatory final artifact verification in `app/plowd/scripts/plowd-beta-package-signed:301` — clean; one extra `hdiutil attach`/detach on a release-only path before upload.
+- `plowd-verify-dmg` mount detection and checks in `app/plowd/scripts/plowd-verify-dmg:53` and `app/plowd/scripts/plowd-verify-dmg:82` — clean; bounded by mounted volume count and a single DMG mount.
+- macOS CI plowd test wiring in `.github/workflows/test.yml:31` — clean for this PR; it duplicates the daemon suite on macOS, but that is CI-only and not a current timeout/OOM risk from the diff.
+- Real-`hdiutil` regression tests in `app/plowd/tests/test_release_scripts.py:456` and `app/plowd/tests/test_release_scripts.py:522` — clean; they create a handful of tiny DMGs and do not scale with user data.
+- Interactive layout recorder in `app/plowd/scripts/plowd-record-dmg-layout:154` — clean; expensive app copy and writable DMG creation are manual authoring steps, not request/release hot paths.
+exec
+/bin/bash -lc "sed -n '1,240p' .codex-scratch/author-intent.md" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+exec
+/bin/bash -lc "sed -n '1,220p' .codex-scratch/inferred-intent.md" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+Inferred intent: It appears @swagatpatel is working towards making the Plow installer DMG mount with the default macOS volume icon while preserving the normal “Plow” volume name by removing `app/plowd/dmg/volume.icns`, stopping `plowd-beta-package-signed` from staging `.VolumeIcon.icns`/FinderInfo custom-icon metadata, and adding `app/plowd/scripts/plowd-verify-dmg` plus macOS CI coverage to block releases that ship the custom icon again.
+exec
+/bin/bash -lc "sed -n '1,260p' .codex-scratch/review-priority.md" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+exec
+/bin/bash -lc "sed -n '1,260p' .codex-scratch/product-context.md" in /tmp/tmp.s9NGRcpSxH/repo
+ exited 2 in 0ms:
+sed: can't read .codex-scratch/product-context.md: No such file or directory
+
+exec
+/bin/bash -lc "sed -n '1,260p' .codex-scratch/loc-trend.md" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+exec
+/bin/bash -lc "sed -n '1,260p' .codex-scratch/decline-history.md" in /tmp/tmp.s9NGRcpSxH/repo
+exec
+/bin/bash -lc "sed -n '1,300p' .codex-scratch/prior-reviews.md" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+ succeeded in 0ms:
+exec
+/bin/bash -lc "if [ -f .codex-scratch/previous-review.md ]; then sed -n '1,300p' .codex-scratch/previous-review.md; fi" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+codex
+Some context files are empty or absent, so there’s no prior-review or decline signal to apply. I’m going into the patch now and will verify the line-level claims directly.
+exec
+/bin/bash -lc 'wc -l .codex-scratch/standards.md .codex-scratch/diff.patch .codex-scratch/file-history.md .codex-scratch/commits.md .codex-scratch/trigger-comment.md 2>/dev/null' in /tmp/tmp.s9NGRcpSxH/repo
+ exited 1 in 0ms:
+    0 .codex-scratch/standards.md
+  413 .codex-scratch/diff.patch
+    0 .codex-scratch/file-history.md
+    0 .codex-scratch/commits.md
+  413 total
+
+exec
+/bin/bash -lc "sed -n '1,320p' .codex-scratch/diff.patch" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+diff --git a/.github/workflows/test.yml b/.github/workflows/test.yml
+index cf56090a..2cfd9c17 100644
+--- a/.github/workflows/test.yml
++++ b/.github/workflows/test.yml
+@@ -22,6 +22,14 @@ jobs:
+           restore-keys: xcode-derived-${{ runner.os }}-
+       - name: Run Swift tests
+         run: cd app && just test
++      # The Ubuntu lane already runs the plowd suite via `just test-ci`, but
++      # PLO-29's artifact-level guard
++      # (test_plowd_verify_dmg_rejects_dmg_shipping_volume_icon) needs real
++      # `hdiutil` and is auto-skipped off Darwin. Run plowd tests here so
++      # that guard — and any future Darwin-only plowd test — is exercised
++      # pre-merge instead of silently skipped on every CI lane.
++      - name: Run plowd tests (covers macOS-only artifact guards)
++        run: cd app/plowd && just test
+ 
+   plow-imessage-channel:
+     name: plow-imessage channel (install + typecheck + build + test)
+diff --git a/app/justfile b/app/justfile
+index bea4a0e1..fb43600f 100644
+--- a/app/justfile
++++ b/app/justfile
+@@ -225,6 +225,11 @@ release configuration="Release" derived="../.build/xcode-derived" output="../.bu
+       --s3-profile "{{s3_profile}}" \
+       --sparkle-account "{{sparkle_account}}"
+ 
++# Mount a Plow DMG and assert no custom volume icon ships at the root
++# (PLO-29). Defaults to ../.build/Plow.dmg.
++dmg-verify dmg="../.build/Plow.dmg":
++    @plowd/scripts/plowd-verify-dmg --dmg "{{dmg}}"
++
+ [private]
+ logs-internal source="all" lines="120" variant="" bundle_id="co.plow.app.dev":
+     @variant_id="$(printf '%s' "{{variant}}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/./g; s/^\.+//; s/\.+$//; s/\.\.+/./g')"; \
+diff --git a/app/plowd/dmg/volume.icns b/app/plowd/dmg/volume.icns
+deleted file mode 100644
+index a983a1e8..00000000
+Binary files a/app/plowd/dmg/volume.icns and /dev/null differ
+diff --git a/app/plowd/scripts/plowd-beta-package-signed b/app/plowd/scripts/plowd-beta-package-signed
+index 915149bf..690ddc1e 100755
+--- a/app/plowd/scripts/plowd-beta-package-signed
++++ b/app/plowd/scripts/plowd-beta-package-signed
+@@ -35,7 +35,6 @@ stage_sparkle_script="${repo_root}/app/plowd/scripts/plowd-stage-sparkle-feed"
+ publish_sparkle_script="${repo_root}/app/plowd/scripts/plowd-publish-sparkle-feed"
+ dmg_assets_dir="${repo_root}/app/plowd/dmg"
+ dmg_background="${dmg_assets_dir}/background.tiff"
+-dmg_volume_icon="${dmg_assets_dir}/volume.icns"
+ app_bundle="${repo_root}/.build/xcode-derived/Build/Products/Release/Plow.app"
+ output="${repo_root}/.build/Plow.dmg"
+ entitlements="${repo_root}/app/Phoenix/Phoenix.entitlements"
+@@ -161,7 +160,6 @@ fi
+ [[ -x "${stage_sparkle_script}" ]] || { echo "error: Sparkle stage script not found: ${stage_sparkle_script}" >&2; exit 1; }
+ [[ -x "${publish_sparkle_script}" ]] || { echo "error: Sparkle publish script not found: ${publish_sparkle_script}" >&2; exit 1; }
+ [[ -f "${dmg_background}" ]] || { echo "error: DMG background not found: ${dmg_background}" >&2; exit 1; }
+-[[ -f "${dmg_volume_icon}" ]] || { echo "error: DMG volume icon not found: ${dmg_volume_icon}" >&2; exit 1; }
+ 
+ echo "validating packaged app bundle..."
+ "${validate_script}" --app-bundle "${app_bundle}"
+@@ -200,9 +198,7 @@ ensure_no_mounted_plow_volume
+ 
+ stage_dir="$(mktemp -d /tmp/phoenix-signed-beta.XXXXXX)"
+ stage_app="${stage_dir}/Plow.app"
+-dmg_work_dir="$(mktemp -d /tmp/phoenix-signed-dmg.XXXXXX)"
+ sparkle_stage_dir="$(mktemp -d /tmp/phoenix-sparkle-feed.XXXXXX)"
+-rw_dmg="${dmg_work_dir}/Plow-rw.dmg"
+ mounted_volume=""
+ 
+ cleanup() {
+@@ -210,7 +206,6 @@ cleanup() {
+     hdiutil detach "${mounted_volume}" >/dev/null 2>&1 || true
+   fi
+   rm -rf "${stage_dir}"
+-  rm -rf "${dmg_work_dir}"
+   rm -rf "${sparkle_stage_dir}"
+ }
+ trap cleanup EXIT
+@@ -219,7 +214,6 @@ mkdir -p "$(dirname "${output}")"
+ ditto "${app_bundle}" "${stage_app}"
+ mkdir -p "${stage_dir}/.background"
+ ditto "${dmg_background}" "${stage_dir}/.background/background.tiff"
+-ditto "${dmg_volume_icon}" "${stage_dir}/.VolumeIcon.icns"
+ ln -s /Applications "${stage_dir}/Applications"
+ xattr -cr "${stage_app}"
+ 
+@@ -267,17 +261,8 @@ hdiutil create \
+   -volname "Plow" \
+   -srcfolder "${stage_dir}" \
+   -ov \
+-  -format UDRW \
+-  "${rw_dmg}"
+-
+-attach_output="$(hdiutil attach "${rw_dmg}" -readwrite -noverify -noautoopen)"
+-mounted_volume="$(printf '%s\n' "${attach_output}" | sed -n 's|.*\(/Volumes/.*\)$|\1|p' | head -n 1)"
+-[[ -n "${mounted_volume}" ]] || { echo "error: failed to determine mounted volume for ${rw_dmg}" >&2; exit 1; }
+-xattr -wx com.apple.FinderInfo "0000000000000000040000000000000000000000000000000000000000000000" "${mounted_volume}"
+-hdiutil detach "${mounted_volume}" >/dev/null
+-mounted_volume=""
+-
+-hdiutil convert "${rw_dmg}" -format ULFO -o "${output}" >/dev/null
++  -format ULFO \
++  "${output}"
+ 
+ echo "verifying mounted app from DMG..."
+ attach_output="$(hdiutil attach "${output}" -nobrowse)"
+@@ -306,6 +291,16 @@ if ! spctl --assess --type open -vv "${output}"; then
+   echo "warning: local spctl assessment of the DMG failed; notarization was accepted and the ticket was stapled" >&2
+ fi
+ 
++# PLO-29: verify the final shipping artifact has no custom volume icon and
++# that the volume name is "Plow" before it gets uploaded. plowd-verify-dmg
++# performs a real `hdiutil attach` of the stapled DMG, so this can only run
++# against a real filesystem; the unit-test path that stubs hdiutil sets
++# PLOW_SKIP_DMG_VERIFY=1.
++if [[ "${PLOW_SKIP_DMG_VERIFY:-0}" != "1" ]]; then
++  echo "verifying final DMG against PLO-29 contract..."
++  "${repo_root}/app/plowd/scripts/plowd-verify-dmg" --dmg "${output}"
++fi
++
+ echo "writing checksum..."
+ shasum -a 256 "${output}" > "${output}.sha256"
+ 
+diff --git a/app/plowd/scripts/plowd-verify-dmg b/app/plowd/scripts/plowd-verify-dmg
+new file mode 100755
+index 00000000..13de3764
+--- /dev/null
++++ b/app/plowd/scripts/plowd-verify-dmg
+@@ -0,0 +1,87 @@
++#!/usr/bin/env bash
++# Mount a Plow DMG and assert it has no custom volume icon (PLO-29 regression
++# guard) and that the volume name is "Plow". Detaches before exiting.
++set -euo pipefail
++
++usage() {
++  cat <<'EOF'
++Usage: plowd-verify-dmg [--dmg <path>]
++
++Mounts the given DMG, asserts the mounted volume is named "Plow" and has no
++.VolumeIcon.icns at its root, then detaches. Defaults to .build/Plow.dmg
++relative to the repo root.
++EOF
++}
++
++repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
++dmg_path="${repo_root}/.build/Plow.dmg"
++
++while [[ $# -gt 0 ]]; do
++  case "$1" in
++    --dmg)
++      dmg_path="${2:-}"
++      shift 2
++      ;;
++    -h|--help)
++      usage
++      exit 0
++      ;;
++    *)
++      echo "error: unknown argument: $1" >&2
++      usage >&2
++      exit 1
++      ;;
++  esac
++done
++
++if [[ "${dmg_path}" != /* ]]; then
++  dmg_path="${repo_root}/${dmg_path}"
++fi
++
++[[ -f "${dmg_path}" ]] || { echo "error: DMG not found: ${dmg_path}" >&2; exit 1; }
++
++# Refuse to run when a Plow volume is already mounted: the new mountpoint
++# would be "Plow 1" / "Plow 2" / ..., which would mask a real regression in
++# the volume-name assertion below.
++mounted_plow_volumes="$(hdiutil info 2>/dev/null | grep -Eo '/Volumes/Plow( [0-9]+)?$' || true)"
++mounted_plow_volumes="$(printf '%s\n' "${mounted_plow_volumes}" | sort -u)"
++if [[ -n "${mounted_plow_volumes}" ]]; then
++  echo "error: a Plow volume is already mounted; eject it before verifying:" >&2
++  printf '%s\n' "${mounted_plow_volumes}" >&2
++  exit 1
++fi
++
++mounted_volume=""
++cleanup() {
++  local rc=$?
++  if [[ -n "${mounted_volume}" ]]; then
++    if [[ "${rc}" -eq 0 ]]; then
++      # Success path: detach failure (e.g. volume busy) must be fatal.
++      # Otherwise the next release retry trips ensure_no_mounted_plow_volume
++      # in plowd-beta-package-signed and aborts on a leaked mount.
++      if ! hdiutil detach "${mounted_volume}"; then
++        echo "error: failed to detach ${mounted_volume} after successful verify" >&2
++        exit 1
++      fi
++    else
++      # Failure path: don't let detach noise mask the real error.
++      hdiutil detach "${mounted_volume}" >/dev/null 2>&1 || true
++    fi
++  fi
++  exit "${rc}"
++}
++trap cleanup EXIT
++
++attach_output="$(hdiutil attach "${dmg_path}" -nobrowse -readonly)"
++mounted_volume="$(printf '%s\n' "${attach_output}" | sed -n 's|.*\(/Volumes/.*\)$|\1|p' | head -n 1)"
++[[ -n "${mounted_volume}" ]] || { echo "error: failed to mount ${dmg_path}" >&2; exit 1; }
++
++volume_name="$(basename "${mounted_volume}")"
++[[ "${volume_name}" == "Plow" ]] || { echo "error: mounted volume name is '${volume_name}', expected 'Plow'" >&2; exit 1; }
++
++[[ ! -e "${mounted_volume}/.VolumeIcon.icns" ]] || {
++  echo "error: ${mounted_volume}/.VolumeIcon.icns exists; PLO-29 regression: DMG ships a custom volume icon" >&2
++  exit 1
++}
++
++echo "ok: ${dmg_path} mounts as 'Plow' with no custom volume icon"
+diff --git a/app/plowd/tests/test_release_scripts.py b/app/plowd/tests/test_release_scripts.py
+index b7c1692a..883c1acf 100644
+--- a/app/plowd/tests/test_release_scripts.py
++++ b/app/plowd/tests/test_release_scripts.py
+@@ -1,13 +1,17 @@
+ from pathlib import Path
++import platform
+ import re
+ import subprocess
+ import sys
+ import textwrap
+ 
++import pytest
++
+ 
+ REPO_ROOT = Path(__file__).resolve().parents[3]
+ SIGNED_PACKAGE_SCRIPT = REPO_ROOT / "app" / "plowd" / "scripts" / "plowd-beta-package-signed"
+ VALIDATE_PACKAGE_SCRIPT = REPO_ROOT / "app" / "plowd" / "scripts" / "plowd-validate-package"
++VERIFY_DMG_SCRIPT = REPO_ROOT / "app" / "plowd" / "scripts" / "plowd-verify-dmg"
+ GIT_REF_SCRIPT = REPO_ROOT / "app" / "scripts" / "lib" / "git-ref.sh"
+ PROVISION_SCRIPT = REPO_ROOT / "app" / "vm" / "provision-runtime.sh"
+ PLOW_INSTALL_LIB = REPO_ROOT / "scripts" / "plow-install" / "lib.sh"
+@@ -193,6 +197,11 @@ def test_signed_package_script_builds_ulfo_dmg_without_staging_ds_store(tmp_path
+         "FAKE_LOG_DIR": str(fake_log_dir),
+         "PLOW_RUNTIME_UPLOAD_SCRIPT": str(fake_bin / "upload-runtime-artifacts.sh"),
+         "SPARKLE_BIN_DIR": str(fake_bin),
++        # PLO-29: the post-staple verify needs a real hdiutil mount; under
++        # stubbed hdiutil it can't actually attach the fake DMG, so skip.
++        # The artifact-level guard is exercised by
++        # test_plowd_verify_dmg_rejects_dmg_shipping_volume_icon.
++        "PLOW_SKIP_DMG_VERIFY": "1",
+     }
+ 
+     result = subprocess.run(
+@@ -224,19 +233,160 @@ def test_signed_package_script_builds_ulfo_dmg_without_staging_ds_store(tmp_path
+ 
+     hdiutil_log = (fake_log_dir / "hdiutil.log").read_text()
+     assert "create" in hdiutil_log
+-    assert "-format UDRW" in hdiutil_log
+-    assert "convert" in hdiutil_log
+     assert "-format ULFO" in hdiutil_log
++    # PLO-29: DMG is created directly as ULFO; the old UDRW->convert dance
++    # only existed to host a kHasCustomIcon FinderInfo write on a mounted
++    # volume, which we no longer do.
++    assert "-format UDRW" not in hdiutil_log
++    assert "convert" not in hdiutil_log
+ 
+     staged_dir = fake_log_dir / "captured-srcfolder"
+     assert (staged_dir / "Plow.app").is_dir()
+     assert (staged_dir / "Applications").is_symlink()
+     assert not (staged_dir / ".DS_Store").exists()
+     assert (staged_dir / ".background" / "background.tiff").is_file()
+-    assert (staged_dir / ".VolumeIcon.icns").is_file()
++    # PLO-29: the mounted volume must show the default macOS volume icon,
++    # so the staged srcfolder must not ship a .VolumeIcon.icns.
++    assert not (staged_dir / ".VolumeIcon.icns").exists()
+     assert not (staged_dir / "Plow-rw.dmg").exists()
+ 
+ 
++@pytest.mark.skipif(platform.system() != "Darwin", reason="hdiutil is macOS-only")
++def test_plowd_verify_dmg_rejects_dmg_shipping_volume_icon(tmp_path):
++    """PLO-29 artifact-level guard. Catches the failure mode that
++    ``test_signed_package_script_builds_ulfo_dmg_without_staging_ds_store``
++    cannot: a regression that re-attaches the DMG post-``hdiutil create``
++    and re-stages a custom volume icon at the final-image stage. We build
++    three real DMGs with hdiutil and assert plowd-verify-dmg accepts the
++    clean one and rejects each regression shape.
++
++    plowd-verify-dmg is wired into plowd-beta-package-signed between staple
++    and S3 upload, so a rejection here aborts ``just release`` before any
++    artifact ships."""
++    # Refuse to run if a real Plow volume is already mounted: the script
++    # bails on that and our assertions would tag the wrong failure mode.
++    info = subprocess.run(
++        ["hdiutil", "info"], capture_output=True, text=True, check=True,
++    )
++    if re.search(r"/Volumes/Plow( [0-9]+)?$", info.stdout, re.MULTILINE):
++        pytest.skip("a Plow volume is mounted; eject it before running this test")
++
++    stage = tmp_path / "stage"
++    (stage / "Plow.app").mkdir(parents=True)
++    (stage / "Plow.app" / "PlaceHolder").write_text("dummy")
++
++    def make_dmg(dmg_path: Path, *, volname: str) -> None:
++        subprocess.run(
++            [
++                "hdiutil", "create",
++                "-volname", volname,
++                "-srcfolder", str(stage),
++                "-ov",
++                "-format", "ULFO",
++                str(dmg_path),
++            ],
++            check=True, capture_output=True,
++        )
++
++    def run_verify(dmg_path: Path) -> subprocess.CompletedProcess[str]:
++        return subprocess.run(
++            [str(VERIFY_DMG_SCRIPT), "--dmg", str(dmg_path)],
++            capture_output=True, text=True,
++        )
++
++    # Happy path: clean Plow DMG with no .VolumeIcon must pass.
++    clean_dmg = tmp_path / "clean.dmg"
++    make_dmg(clean_dmg, volname="Plow")
+
+exec
+/bin/bash -lc "sed -n '1,260p' .codex-scratch/file-history.md" in /tmp/tmp.s9NGRcpSxH/repo
+exec
+/bin/bash -lc "sed -n '1,200p' .codex-scratch/commits.md" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+ succeeded in 0ms:
+exec
+/bin/bash -lc "sed -n '1,200p' .codex-scratch/trigger-comment.md 2>/dev/null" in /tmp/tmp.s9NGRcpSxH/repo
+ exited 2 in 0ms:
+exec
+/bin/bash -lc "nl -ba app/plowd/scripts/plowd-verify-dmg | sed -n '1,140p'" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+     1	#!/usr/bin/env bash
+     2	# Mount a Plow DMG and assert it has no custom volume icon (PLO-29 regression
+     3	# guard) and that the volume name is "Plow". Detaches before exiting.
+     4	set -euo pipefail
+     5	
+     6	usage() {
+     7	  cat <<'EOF'
+     8	Usage: plowd-verify-dmg [--dmg <path>]
+     9	
+    10	Mounts the given DMG, asserts the mounted volume is named "Plow" and has no
+    11	.VolumeIcon.icns at its root, then detaches. Defaults to .build/Plow.dmg
+    12	relative to the repo root.
+    13	EOF
+    14	}
+    15	
+    16	repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+    17	dmg_path="${repo_root}/.build/Plow.dmg"
+    18	
+    19	while [[ $# -gt 0 ]]; do
+    20	  case "$1" in
+    21	    --dmg)
+    22	      dmg_path="${2:-}"
+    23	      shift 2
+    24	      ;;
+    25	    -h|--help)
+    26	      usage
+    27	      exit 0
+    28	      ;;
+    29	    *)
+    30	      echo "error: unknown argument: $1" >&2
+    31	      usage >&2
+    32	      exit 1
+    33	      ;;
+    34	  esac
+    35	done
+    36	
+    37	if [[ "${dmg_path}" != /* ]]; then
+    38	  dmg_path="${repo_root}/${dmg_path}"
+    39	fi
+    40	
+    41	[[ -f "${dmg_path}" ]] || { echo "error: DMG not found: ${dmg_path}" >&2; exit 1; }
+    42	
+    43	# Refuse to run when a Plow volume is already mounted: the new mountpoint
+    44	# would be "Plow 1" / "Plow 2" / ..., which would mask a real regression in
+    45	# the volume-name assertion below.
+    46	mounted_plow_volumes="$(hdiutil info 2>/dev/null | grep -Eo '/Volumes/Plow( [0-9]+)?$' || true)"
+    47	mounted_plow_volumes="$(printf '%s\n' "${mounted_plow_volumes}" | sort -u)"
+    48	if [[ -n "${mounted_plow_volumes}" ]]; then
+    49	  echo "error: a Plow volume is already mounted; eject it before verifying:" >&2
+    50	  printf '%s\n' "${mounted_plow_volumes}" >&2
+    51	  exit 1
+    52	fi
+    53	
+    54	mounted_volume=""
+    55	cleanup() {
+    56	  local rc=$?
+    57	  if [[ -n "${mounted_volume}" ]]; then
+    58	    if [[ "${rc}" -eq 0 ]]; then
+    59	      # Success path: detach failure (e.g. volume busy) must be fatal.
+    60	      # Otherwise the next release retry trips ensure_no_mounted_plow_volume
+    61	      # in plowd-beta-package-signed and aborts on a leaked mount.
+    62	      if ! hdiutil detach "${mounted_volume}"; then
+    63	        echo "error: failed to detach ${mounted_volume} after successful verify" >&2
+    64	        exit 1
+    65	      fi
+    66	    else
+    67	      # Failure path: don't let detach noise mask the real error.
+    68	      hdiutil detach "${mounted_volume}" >/dev/null 2>&1 || true
+    69	    fi
+    70	  fi
+    71	  exit "${rc}"
+    72	}
+    73	trap cleanup EXIT
+    74	
+    75	attach_output="$(hdiutil attach "${dmg_path}" -nobrowse -readonly)"
+    76	mounted_volume="$(printf '%s\n' "${attach_output}" | sed -n 's|.*\(/Volumes/.*\)$|\1|p' | head -n 1)"
+    77	[[ -n "${mounted_volume}" ]] || { echo "error: failed to mount ${dmg_path}" >&2; exit 1; }
+    78	
+    79	volume_name="$(basename "${mounted_volume}")"
+    80	[[ "${volume_name}" == "Plow" ]] || { echo "error: mounted volume name is '${volume_name}', expected 'Plow'" >&2; exit 1; }
+    81	
+    82	[[ ! -e "${mounted_volume}/.VolumeIcon.icns" ]] || {
+    83	  echo "error: ${mounted_volume}/.VolumeIcon.icns exists; PLO-29 regression: DMG ships a custom volume icon" >&2
+    84	  exit 1
+    85	}
+    86	
+    87	echo "ok: ${dmg_path} mounts as 'Plow' with no custom volume icon"
+
+exec
+/bin/bash -lc "sed -n '321,700p' .codex-scratch/diff.patch" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
++    ok = run_verify(clean_dmg)
++    assert ok.returncode == 0, f"clean DMG rejected: stdout={ok.stdout!r} stderr={ok.stderr!r}"
++
++    # Regression #1: someone re-introduces .VolumeIcon.icns at the volume root.
++    (stage / ".VolumeIcon.icns").write_text("fake-icns")
++    iconed_dmg = tmp_path / "iconed.dmg"
++    make_dmg(iconed_dmg, volname="Plow")
++    fail = run_verify(iconed_dmg)
++    assert fail.returncode != 0, "verify-dmg accepted DMG that ships .VolumeIcon.icns"
++    assert ".VolumeIcon.icns exists" in fail.stderr
++
++    # Regression #2: someone parameterizes -volname to something other than "Plow".
++    (stage / ".VolumeIcon.icns").unlink()
++    misnamed_dmg = tmp_path / "misnamed.dmg"
++    make_dmg(misnamed_dmg, volname="NotPlow")
++    fail2 = run_verify(misnamed_dmg)
++    assert fail2.returncode != 0, "verify-dmg accepted DMG with wrong volume name"
++    assert "expected 'Plow'" in fail2.stderr
++
++
++@pytest.mark.skipif(platform.system() != "Darwin", reason="hdiutil is macOS-only")
++def test_plowd_verify_dmg_propagates_detach_failure_on_success_path(tmp_path):
++    """Round-2: if `hdiutil detach` fails on the success path (e.g. the
++    volume is busy), plowd-verify-dmg must exit non-zero. The previous
++    `|| true` swallowed the failure and returned 0, leaking /Volumes/Plow,
++    which then tripped ensure_no_mounted_plow_volume on the next release
++    retry. This test injects an `hdiutil` wrapper whose `detach` always
++    fails and asserts the script surfaces it."""
++    info = subprocess.run(
++        ["hdiutil", "info"], capture_output=True, text=True, check=True,
++    )
++    if re.search(r"/Volumes/Plow( [0-9]+)?$", info.stdout, re.MULTILINE):
++        pytest.skip("a Plow volume is mounted; eject it before running this test")
++
++    stage = tmp_path / "stage"
++    (stage / "Plow.app").mkdir(parents=True)
++    (stage / "Plow.app" / "PlaceHolder").write_text("dummy")
++    dmg = tmp_path / "Plow.dmg"
++    subprocess.run(
++        [
++            "hdiutil", "create",
++            "-volname", "Plow",
++            "-srcfolder", str(stage),
++            "-ov",
++            "-format", "ULFO",
++            str(dmg),
++        ],
++        check=True, capture_output=True,
++    )
++
++    real_hdiutil = subprocess.run(
++        ["which", "hdiutil"], capture_output=True, text=True, check=True,
++    ).stdout.strip()
++    fake_bin = tmp_path / "bin"
++    fake_bin.mkdir()
++    wrapper = fake_bin / "hdiutil"
++    wrapper.write_text(
++        "#!/usr/bin/env bash\n"
++        f'if [[ "$1" == "detach" ]]; then\n'
++        f'  echo "fake: detach failure (test injection)" >&2\n'
++        f'  exit 16\n'
++        f'fi\n'
++        f'exec "{real_hdiutil}" "$@"\n'
++    )
++    wrapper.chmod(0o755)
++
++    try:
++        result = subprocess.run(
++            [str(VERIFY_DMG_SCRIPT), "--dmg", str(dmg)],
++            capture_output=True, text=True,
++            env={
++                **subprocess.os.environ,
++                "PATH": f"{fake_bin}:{subprocess.os.environ['PATH']}",
++            },
++        )
++        assert result.returncode != 0, (
++            f"verify-dmg returned 0 despite detach failure; mount leaked.\n"
++            f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
++        )
++        assert "failed to detach" in result.stderr, (
++            f"expected 'failed to detach' in stderr, got: {result.stderr!r}"
++        )
++    finally:
++        # Real hdiutil to clean up the leaked mount the wrapper refused to release.
++        subprocess.run(
++            [real_hdiutil, "detach", "/Volumes/Plow"],
++            capture_output=True,
++        )
++
++
+ def test_signed_package_script_rejects_existing_plow_volume_before_packaging(tmp_path):
+     app_bundle = tmp_path / "Plow.app"
+     output = tmp_path / "Plow.dmg"
+
+exec
+/bin/bash -lc "nl -ba app/plowd/scripts/plowd-beta-package-signed | sed -n '110,330p'" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+   110	plist_read() {
+   111	    local plist_path="$1"
+   112	    local key="$2"
+   113	    /usr/bin/python3 -c "
+   114	import plistlib, sys
+   115	try:
+   116	    with open(sys.argv[1], 'rb') as f:
+   117	        d = plistlib.load(f)
+   118	    print(d.get(sys.argv[2], ''), end='')
+   119	except Exception:
+   120	    pass
+   121	" "${plist_path}" "${key}" 2>/dev/null || true
+   122	}
+   123	
+   124	ensure_no_mounted_plow_volume() {
+   125	  local mounted_plow_volumes
+   126	  mounted_plow_volumes="$(
+   127	    hdiutil info 2>/dev/null \
+   128	      | grep -Eo '/Volumes/Plow( [0-9]+)?$' || true
+   129	  )"
+   130	  mounted_plow_volumes="$(
+   131	    printf '%s\n' "${mounted_plow_volumes}" \
+   132	      | sort -u
+   133	  )"
+   134	  [[ -z "${mounted_plow_volumes}" ]] && return
+   135	
+   136	  echo "error: a Plow disk image is already mounted; eject it before packaging:" >&2
+   137	  printf '%s\n' "${mounted_plow_volumes}" >&2
+   138	  exit 1
+   139	}
+   140	
+   141	app_bundle="$(resolve_path "${app_bundle}")"
+   142	output="$(resolve_path "${output}")"
+   143	entitlements="$(resolve_path "${entitlements}")"
+   144	limactl_entitlements="$(resolve_path "${limactl_entitlements}")"
+   145	
+   146	if [[ -z "${identity}" ]]; then
+   147	  [[ -n "${team_id}" ]] || { echo "error: PLOW_APPLE_TEAM_ID is required when --identity is not provided" >&2; exit 1; }
+   148	  identity="$(security find-identity -v -p codesigning 2>/dev/null | sed -n "s/.*\"\\(Developer ID Application:.*(${team_id})\\)\"/\\1/p" | head -n 1)"
+   149	fi
+   150	
+   151	[[ -n "${identity}" ]] || { echo "error: no Developer ID Application identity found for team ${team_id}; install one for that team before running release" >&2; exit 1; }
+   152	if [[ -n "${team_id}" && "${identity}" != *"(${team_id})"* ]]; then
+   153	  echo "error: selected signing identity does not match required Apple team ${team_id}: ${identity}" >&2
+   154	  exit 1
+   155	fi
+   156	[[ -d "${app_bundle}" ]] || { echo "error: app bundle not found: ${app_bundle}" >&2; exit 1; }
+   157	[[ -f "${entitlements}" ]] || { echo "error: entitlements file not found: ${entitlements}" >&2; exit 1; }
+   158	[[ -f "${limactl_entitlements}" ]] || { echo "error: limactl entitlements file not found: ${limactl_entitlements}" >&2; exit 1; }
+   159	[[ -x "${validate_script}" ]] || { echo "error: package validator not found: ${validate_script}" >&2; exit 1; }
+   160	[[ -x "${stage_sparkle_script}" ]] || { echo "error: Sparkle stage script not found: ${stage_sparkle_script}" >&2; exit 1; }
+   161	[[ -x "${publish_sparkle_script}" ]] || { echo "error: Sparkle publish script not found: ${publish_sparkle_script}" >&2; exit 1; }
+   162	[[ -f "${dmg_background}" ]] || { echo "error: DMG background not found: ${dmg_background}" >&2; exit 1; }
+   163	
+   164	echo "validating packaged app bundle..."
+   165	"${validate_script}" --app-bundle "${app_bundle}"
+   166	
+   167	version="$(plist_read "${app_bundle}/Contents/Info.plist" CFBundleShortVersionString)"
+   168	build_number="$(plist_read "${app_bundle}/Contents/Info.plist" CFBundleVersion)"
+   169	sparkle_feed_url="$(plist_read "${app_bundle}/Contents/Info.plist" SUFeedURL)"
+   170	sparkle_public_key="$(plist_read "${app_bundle}/Contents/Info.plist" SUPublicEDKey)"
+   171	
+   172	[[ -n "${version}" ]] || { echo "error: missing CFBundleShortVersionString in ${app_bundle}/Contents/Info.plist" >&2; exit 1; }
+   173	[[ -n "${build_number}" ]] || { echo "error: missing CFBundleVersion in ${app_bundle}/Contents/Info.plist" >&2; exit 1; }
+   174	[[ -n "${sparkle_feed_url}" ]] || { echo "error: missing SUFeedURL in ${app_bundle}/Contents/Info.plist" >&2; exit 1; }
+   175	[[ -n "${sparkle_public_key}" ]] || { echo "error: missing SUPublicEDKey in ${app_bundle}/Contents/Info.plist" >&2; exit 1; }
+   176	
+   177	release_prefix="${release_prefix#/}"
+   178	release_prefix="${release_prefix%/}"
+   179	prefix_with_slash=""
+   180	if [[ -n "${release_prefix}" ]]; then
+   181	  prefix_with_slash="${release_prefix}/"
+   182	fi
+   183	dmg_key="${prefix_with_slash}downloads/Plow-${version}-${build_number}.dmg"
+   184	dmg_sha_key="${dmg_key}.sha256"
+   185	sparkle_appcast_key="${prefix_with_slash}appcasts/Plow-${version}-${build_number}.xml"
+   186	sparkle_archive_prefix="${prefix_with_slash}updates"
+   187	sparkle_download_url_prefix="https://s3.us-west-2.amazonaws.com/${s3_bucket}/${sparkle_archive_prefix}"
+   188	
+   189	echo "using signing identity: ${identity}"
+   190	echo "preferred Apple team id: ${team_id}"
+   191	echo "using notary profile: ${notary_profile}"
+   192	
+   193	for cmd in aws codesign ditto file find hdiutil shasum xattr xcrun; do
+   194	  command -v "${cmd}" >/dev/null 2>&1 || { echo "error: required command not found: ${cmd}" >&2; exit 1; }
+   195	done
+   196	
+   197	ensure_no_mounted_plow_volume
+   198	
+   199	stage_dir="$(mktemp -d /tmp/phoenix-signed-beta.XXXXXX)"
+   200	stage_app="${stage_dir}/Plow.app"
+   201	sparkle_stage_dir="$(mktemp -d /tmp/phoenix-sparkle-feed.XXXXXX)"
+   202	mounted_volume=""
+   203	
+   204	cleanup() {
+   205	  if [[ -n "${mounted_volume}" ]]; then
+   206	    hdiutil detach "${mounted_volume}" >/dev/null 2>&1 || true
+   207	  fi
+   208	  rm -rf "${stage_dir}"
+   209	  rm -rf "${sparkle_stage_dir}"
+   210	}
+   211	trap cleanup EXIT
+   212	
+   213	mkdir -p "$(dirname "${output}")"
+   214	ditto "${app_bundle}" "${stage_app}"
+   215	mkdir -p "${stage_dir}/.background"
+   216	ditto "${dmg_background}" "${stage_dir}/.background/background.tiff"
+   217	ln -s /Applications "${stage_dir}/Applications"
+   218	xattr -cr "${stage_app}"
+   219	
+   220	while IFS= read -r -d '' file_path; do
+   221	  file_desc="$(file -b "${file_path}" 2>/dev/null || true)"
+   222	  if [[ "${file_desc}" == *"Mach-O"* ]]; then
+   223	    sign_args=(--force --sign "${identity}" --timestamp)
+   224	    if [[ "${file_desc}" == *"executable"* ]]; then
+   225	      sign_args+=(--options runtime)
+   226	    fi
+   227	    if [[ "${file_path}" == "${stage_app}/Contents/Resources/bin/limactl" ]]; then
+   228	      sign_args+=(--entitlements "${limactl_entitlements}")
+   229	    fi
+   230	    codesign "${sign_args[@]}" "${file_path}"
+   231	  fi
+   232	done < <(find "${stage_app}" -type f -print0)
+   233	
+   234	codesign \
+   235	  --force \
+   236	  --sign "${identity}" \
+   237	  --timestamp \
+   238	  --options runtime \
+   239	  --entitlements "${entitlements}" \
+   240	  "${stage_app}"
+   241	
+   242	codesign --verify --deep --strict --verbose=4 "${stage_app}"
+   243	
+   244	if [[ "${keep_signed_app}" == "1" ]]; then
+   245	  preserved_app="${repo_root}/.build/Plow-signed.app"
+   246	  rm -rf "${preserved_app}"
+   247	  ditto "${stage_app}" "${preserved_app}"
+   248	  codesign --verify --deep --strict --verbose=4 "${preserved_app}"
+   249	  echo "preserved signed app for inspection: ${preserved_app}"
+   250	fi
+   251	
+   252	"${stage_sparkle_script}" \
+   253	  --app-bundle "${stage_app}" \
+   254	  --archives-dir "${sparkle_stage_dir}" \
+   255	  --download-url-prefix "${sparkle_download_url_prefix}" \
+   256	  --account "${sparkle_account}"
+   257	
+   258	rm -f "${output}" "${output}.sha256"
+   259	echo "creating DMG..."
+   260	hdiutil create \
+   261	  -volname "Plow" \
+   262	  -srcfolder "${stage_dir}" \
+   263	  -ov \
+   264	  -format ULFO \
+   265	  "${output}"
+   266	
+   267	echo "verifying mounted app from DMG..."
+   268	attach_output="$(hdiutil attach "${output}" -nobrowse)"
+   269	mounted_volume="$(printf '%s\n' "${attach_output}" | sed -n 's|.*\(/Volumes/.*\)$|\1|p' | head -n 1)"
+   270	[[ -n "${mounted_volume}" ]] || { echo "error: failed to determine mounted volume for ${output}" >&2; exit 1; }
+   271	codesign --verify --deep --strict --verbose=4 "${mounted_volume}/Plow.app"
+   272	hdiutil detach "${mounted_volume}" >/dev/null
+   273	mounted_volume=""
+   274	
+   275	echo "submitting DMG to Apple notarization..."
+   276	submit_output="$(xcrun notarytool submit "${output}" --keychain-profile "${notary_profile}" --wait --output-format json)"
+   277	submit_id="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))' <<<"${submit_output}")"
+   278	submit_status="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))' <<<"${submit_output}")"
+   279	if [[ "${submit_status}" != "Accepted" ]]; then
+   280	  echo "notarization failed with status: ${submit_status:-unknown}" >&2
+   281	  if [[ -n "${submit_id}" ]]; then
+   282	    echo "submission id: ${submit_id}" >&2
+   283	    xcrun notarytool log "${submit_id}" --keychain-profile "${notary_profile}" || true
+   284	  fi
+   285	  exit 1
+   286	fi
+   287	echo "stapling notarization ticket..."
+   288	xcrun stapler staple "${output}"
+   289	echo "checking local Gatekeeper assessment for the DMG..."
+   290	if ! spctl --assess --type open -vv "${output}"; then
+   291	  echo "warning: local spctl assessment of the DMG failed; notarization was accepted and the ticket was stapled" >&2
+   292	fi
+   293	
+   294	# PLO-29: verify the final shipping artifact has no custom volume icon and
+   295	# that the volume name is "Plow" before it gets uploaded. plowd-verify-dmg
+   296	# performs a real `hdiutil attach` of the stapled DMG, so this can only run
+   297	# against a real filesystem; the unit-test path that stubs hdiutil sets
+   298	# PLOW_SKIP_DMG_VERIFY=1.
+   299	if [[ "${PLOW_SKIP_DMG_VERIFY:-0}" != "1" ]]; then
+   300	  echo "verifying final DMG against PLO-29 contract..."
+   301	  "${repo_root}/app/plowd/scripts/plowd-verify-dmg" --dmg "${output}"
+   302	fi
+   303	
+   304	echo "writing checksum..."
+   305	shasum -a 256 "${output}" > "${output}.sha256"
+   306	
+   307	echo "signed distribution image created: ${output}"
+   308	echo "sha256 file: ${output}.sha256"
+   309	profile_args=()
+   310	if [[ -n "${s3_profile}" ]]; then
+   311	  profile_args=(--profile "${s3_profile}")
+   312	fi
+   313	
+   314	echo "uploading versioned DMG artifacts to S3..."
+   315	aws s3 cp "${output}" "s3://${s3_bucket}/${dmg_key}" ${profile_args[@]+"${profile_args[@]}"}
+   316	aws s3 cp "${output}.sha256" "s3://${s3_bucket}/${dmg_sha_key}" ${profile_args[@]+"${profile_args[@]}"}
+   317	
+   318	echo "uploading Sparkle archives to S3..."
+   319	publish_args=(
+   320	  --archives-dir "${sparkle_stage_dir}"
+   321	  --s3-bucket "${s3_bucket}"
+   322	  --appcast-key "${sparkle_appcast_key}"
+   323	  --archive-prefix "${sparkle_archive_prefix}"
+   324	)
+   325	publish_args+=(--profile "${s3_profile}")
+   326	"${publish_sparkle_script}" "${publish_args[@]}"
+   327	
+   328	echo "published versioned release artifacts:"
+   329	echo "  DMG: https://s3.us-west-2.amazonaws.com/${s3_bucket}/${dmg_key}"
+   330	echo "  Appcast: https://s3.us-west-2.amazonaws.com/${s3_bucket}/${sparkle_appcast_key}"
+
+exec
+/bin/bash -lc "nl -ba justfile | sed -n '380,405p'" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+   380	
+   381	# ─── api / cli ────────────────────────────────────────────────
+   382	
+   383	api *ARGS:
+   384	    @if [[ "$#" -eq 0 ]]; then just --working-directory api --justfile api/justfile --list; else just --working-directory api --justfile api/justfile "$@"; fi
+   385	
+   386	cli *ARGS:
+   387	    @if [[ "$#" -eq 0 ]]; then just --working-directory cli --justfile cli/justfile --list; else just --working-directory cli --justfile cli/justfile "$@"; fi
+   388	
+   389	dtu *ARGS:
+   390	    @if [[ "$#" -eq 0 ]]; then just --working-directory dtu --justfile dtu/justfile --list; else just --working-directory dtu --justfile dtu/justfile "$@"; fi
+   391	
+   392	# ─── phoenix ──────────────────────────────────────────────────
+   393	
+   394	app *ARGS:
+   395	    @if [[ "$#" -eq 0 ]]; then just --working-directory app --justfile app/justfile --list; else just --working-directory app --justfile app/justfile "$@"; fi
+
+exec
+/bin/bash -lc "nl -ba app/justfile | sed -n '198,240p'" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+   198	      rm -rf "$support_dir"; \
+   199	    fi; \
+   200	    just up "Debug" "" "" "" "" "" "{{app_name}}" "{{bundle_id}}"
+   201	
+   202	release configuration="Release" derived="../.build/xcode-derived" output="../.build/Plow.dmg" rebuild="1" notary_profile="${PLOW_NOTARY_PROFILE:-plow-notary}" s3_bucket="${PLOW_RELEASES_BUCKET:-releases.plow.co}" release_prefix="" s3_profile="${PLOW_RELEASES_PROFILE-plow}" sparkle_account="${PLOW_SPARKLE_ACCOUNT:-plow-sparkle}":
+   203	    @set -e; \
+   204	    export PLOW_CURRENT_PROJECT_VERSION="${PLOW_CURRENT_PROJECT_VERSION:-$(date -u +%y%j%H%M)}"; \
+   205	    echo "release build number: ${PLOW_CURRENT_PROJECT_VERSION}"; \
+   206	    mounted_plow_volumes="$(hdiutil info 2>/dev/null | grep -Eo '/Volumes/Plow( [0-9]+)?$' || true)"; \
+   207	    mounted_plow_volumes="$(printf '%s\n' "${mounted_plow_volumes}" | sort -u)"; \
+   208	    if [[ -n "${mounted_plow_volumes}" ]]; then \
+   209	      echo "error: a Plow disk image is already mounted; eject it before packaging:" >&2; \
+   210	      printf '%s\n' "${mounted_plow_volumes}" >&2; \
+   211	      exit 1; \
+   212	    fi; \
+   213	    derived_abs="$([[ "{{derived}}" = /* ]] && echo "{{derived}}" || echo "$(pwd)/{{derived}}")"; \
+   214	    app_bundle="$derived_abs/Build/Products/{{configuration}}/Plow.app"; \
+   215	    if [[ "{{rebuild}}" == "1" ]]; then \
+   216	      python3 scripts/generate-runtime-manifest.py --vm-manifest vm/manifest.toml --bucket "{{s3_bucket}}" --prefix runtime --images-output Phoenix/Resources/runtime-images-manifest.json; \
+   217	      just package-build "{{configuration}}" "$derived_abs" "../.build/release-build.log" "" "Plow" "co.plow.app" "plowd/runtime/stage" "plowd/runtime/artifacts" "plowd/runtime/manifest.toml"; \
+   218	    fi; \
+   219	    plowd/scripts/plowd-beta-package-signed \
+   220	      --app-bundle "$app_bundle" \
+   221	      --output "{{output}}" \
+   222	      --notary-profile "{{notary_profile}}" \
+   223	      --s3-bucket "{{s3_bucket}}" \
+   224	      --release-prefix "{{release_prefix}}" \
+   225	      --s3-profile "{{s3_profile}}" \
+   226	      --sparkle-account "{{sparkle_account}}"
+   227	
+   228	# Mount a Plow DMG and assert no custom volume icon ships at the root
+   229	# (PLO-29). Defaults to ../.build/Plow.dmg.
+   230	dmg-verify dmg="../.build/Plow.dmg":
+   231	    @plowd/scripts/plowd-verify-dmg --dmg "{{dmg}}"
+   232	
+   233	[private]
+   234	logs-internal source="all" lines="120" variant="" bundle_id="co.plow.app.dev":
+   235	    @variant_id="$(printf '%s' "{{variant}}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/./g; s/^\.+//; s/\.+$//; s/\.\.+/./g')"; \
+   236	    effective_bundle_id="{{bundle_id}}"; \
+   237	    if [[ -n "$variant_id" ]]; then effective_bundle_id="${effective_bundle_id}.${variant_id}"; fi; \
+   238	    export PLOW_APP_SUPPORT_ROOT="${HOME}/Library/Application Support/${effective_bundle_id}"; \
+   239	    plowd/scripts/plowd-tail-logs --source "{{source}}" --lines "{{lines}}"
+   240	
+
+exec
+/bin/bash -lc "nl -ba app/plowd/scripts/plowd-record-dmg-layout | sed -n '1,240p'" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+nl: app/plowd/scripts/plowd-record-dmg-layout: No such file or directory
+
+exec
+/bin/bash -lc "nl -ba app/plowd/tests/test_release_scripts.py | sed -n '250,470p'" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+   250	    assert not (staged_dir / ".VolumeIcon.icns").exists()
+   251	    assert not (staged_dir / "Plow-rw.dmg").exists()
+   252	
+   253	
+   254	@pytest.mark.skipif(platform.system() != "Darwin", reason="hdiutil is macOS-only")
+   255	def test_plowd_verify_dmg_rejects_dmg_shipping_volume_icon(tmp_path):
+   256	    """PLO-29 artifact-level guard. Catches the failure mode that
+   257	    ``test_signed_package_script_builds_ulfo_dmg_without_staging_ds_store``
+   258	    cannot: a regression that re-attaches the DMG post-``hdiutil create``
+   259	    and re-stages a custom volume icon at the final-image stage. We build
+   260	    three real DMGs with hdiutil and assert plowd-verify-dmg accepts the
+   261	    clean one and rejects each regression shape.
+   262	
+   263	    plowd-verify-dmg is wired into plowd-beta-package-signed between staple
+   264	    and S3 upload, so a rejection here aborts ``just release`` before any
+   265	    artifact ships."""
+   266	    # Refuse to run if a real Plow volume is already mounted: the script
+   267	    # bails on that and our assertions would tag the wrong failure mode.
+   268	    info = subprocess.run(
+   269	        ["hdiutil", "info"], capture_output=True, text=True, check=True,
+   270	    )
+   271	    if re.search(r"/Volumes/Plow( [0-9]+)?$", info.stdout, re.MULTILINE):
+   272	        pytest.skip("a Plow volume is mounted; eject it before running this test")
+   273	
+   274	    stage = tmp_path / "stage"
+   275	    (stage / "Plow.app").mkdir(parents=True)
+   276	    (stage / "Plow.app" / "PlaceHolder").write_text("dummy")
+   277	
+   278	    def make_dmg(dmg_path: Path, *, volname: str) -> None:
+   279	        subprocess.run(
+   280	            [
+   281	                "hdiutil", "create",
+   282	                "-volname", volname,
+   283	                "-srcfolder", str(stage),
+   284	                "-ov",
+   285	                "-format", "ULFO",
+   286	                str(dmg_path),
+   287	            ],
+   288	            check=True, capture_output=True,
+   289	        )
+   290	
+   291	    def run_verify(dmg_path: Path) -> subprocess.CompletedProcess[str]:
+   292	        return subprocess.run(
+   293	            [str(VERIFY_DMG_SCRIPT), "--dmg", str(dmg_path)],
+   294	            capture_output=True, text=True,
+   295	        )
+   296	
+   297	    # Happy path: clean Plow DMG with no .VolumeIcon must pass.
+   298	    clean_dmg = tmp_path / "clean.dmg"
+   299	    make_dmg(clean_dmg, volname="Plow")
+   300	    ok = run_verify(clean_dmg)
+   301	    assert ok.returncode == 0, f"clean DMG rejected: stdout={ok.stdout!r} stderr={ok.stderr!r}"
+   302	
+   303	    # Regression #1: someone re-introduces .VolumeIcon.icns at the volume root.
+   304	    (stage / ".VolumeIcon.icns").write_text("fake-icns")
+   305	    iconed_dmg = tmp_path / "iconed.dmg"
+   306	    make_dmg(iconed_dmg, volname="Plow")
+   307	    fail = run_verify(iconed_dmg)
+   308	    assert fail.returncode != 0, "verify-dmg accepted DMG that ships .VolumeIcon.icns"
+   309	    assert ".VolumeIcon.icns exists" in fail.stderr
+   310	
+   311	    # Regression #2: someone parameterizes -volname to something other than "Plow".
+   312	    (stage / ".VolumeIcon.icns").unlink()
+   313	    misnamed_dmg = tmp_path / "misnamed.dmg"
+   314	    make_dmg(misnamed_dmg, volname="NotPlow")
+   315	    fail2 = run_verify(misnamed_dmg)
+   316	    assert fail2.returncode != 0, "verify-dmg accepted DMG with wrong volume name"
+   317	    assert "expected 'Plow'" in fail2.stderr
+   318	
+   319	
+   320	@pytest.mark.skipif(platform.system() != "Darwin", reason="hdiutil is macOS-only")
+   321	def test_plowd_verify_dmg_propagates_detach_failure_on_success_path(tmp_path):
+   322	    """Round-2: if `hdiutil detach` fails on the success path (e.g. the
+   323	    volume is busy), plowd-verify-dmg must exit non-zero. The previous
+   324	    `|| true` swallowed the failure and returned 0, leaking /Volumes/Plow,
+   325	    which then tripped ensure_no_mounted_plow_volume on the next release
+   326	    retry. This test injects an `hdiutil` wrapper whose `detach` always
+   327	    fails and asserts the script surfaces it."""
+   328	    info = subprocess.run(
+   329	        ["hdiutil", "info"], capture_output=True, text=True, check=True,
+   330	    )
+   331	    if re.search(r"/Volumes/Plow( [0-9]+)?$", info.stdout, re.MULTILINE):
+   332	        pytest.skip("a Plow volume is mounted; eject it before running this test")
+   333	
+   334	    stage = tmp_path / "stage"
+   335	    (stage / "Plow.app").mkdir(parents=True)
+   336	    (stage / "Plow.app" / "PlaceHolder").write_text("dummy")
+   337	    dmg = tmp_path / "Plow.dmg"
+   338	    subprocess.run(
+   339	        [
+   340	            "hdiutil", "create",
+   341	            "-volname", "Plow",
+   342	            "-srcfolder", str(stage),
+   343	            "-ov",
+   344	            "-format", "ULFO",
+   345	            str(dmg),
+   346	        ],
+   347	        check=True, capture_output=True,
+   348	    )
+   349	
+   350	    real_hdiutil = subprocess.run(
+   351	        ["which", "hdiutil"], capture_output=True, text=True, check=True,
+   352	    ).stdout.strip()
+   353	    fake_bin = tmp_path / "bin"
+   354	    fake_bin.mkdir()
+   355	    wrapper = fake_bin / "hdiutil"
+   356	    wrapper.write_text(
+   357	        "#!/usr/bin/env bash\n"
+   358	        f'if [[ "$1" == "detach" ]]; then\n'
+   359	        f'  echo "fake: detach failure (test injection)" >&2\n'
+   360	        f'  exit 16\n'
+   361	        f'fi\n'
+   362	        f'exec "{real_hdiutil}" "$@"\n'
+   363	    )
+   364	    wrapper.chmod(0o755)
+   365	
+   366	    try:
+   367	        result = subprocess.run(
+   368	            [str(VERIFY_DMG_SCRIPT), "--dmg", str(dmg)],
+   369	            capture_output=True, text=True,
+   370	            env={
+   371	                **subprocess.os.environ,
+   372	                "PATH": f"{fake_bin}:{subprocess.os.environ['PATH']}",
+   373	            },
+   374	        )
+   375	        assert result.returncode != 0, (
+   376	            f"verify-dmg returned 0 despite detach failure; mount leaked.\n"
+   377	            f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+   378	        )
+   379	        assert "failed to detach" in result.stderr, (
+   380	            f"expected 'failed to detach' in stderr, got: {result.stderr!r}"
+   381	        )
+   382	    finally:
+   383	        # Real hdiutil to clean up the leaked mount the wrapper refused to release.
+   384	        subprocess.run(
+   385	            [real_hdiutil, "detach", "/Volumes/Plow"],
+   386	            capture_output=True,
+   387	        )
+   388	
+   389	
+   390	def test_signed_package_script_rejects_existing_plow_volume_before_packaging(tmp_path):
+   391	    app_bundle = tmp_path / "Plow.app"
+   392	    output = tmp_path / "Plow.dmg"
+   393	    fake_log_dir = tmp_path / "fake-logs"
+   394	    fake_log_dir.mkdir()
+   395	    fake_bin = tmp_path / "fake-bin"
+   396	    fake_bin.mkdir()
+   397	    _create_minimal_valid_app_bundle(app_bundle)
+   398	    _write_fake_release_commands(fake_bin)
+   399	
+   400	    env = {
+   401	        **subprocess.os.environ,
+   402	        "PATH": f"{fake_bin}:{subprocess.os.environ['PATH']}",
+   403	        "FAKE_LOG_DIR": str(fake_log_dir),
+   404	        "FAKE_HDIUTIL_INFO": "/dev/disk25s1 Apple_APFS /Volumes/Plow\n",
+   405	        "PLOW_RUNTIME_UPLOAD_SCRIPT": str(fake_bin / "upload-runtime-artifacts.sh"),
+   406	        "SPARKLE_BIN_DIR": str(fake_bin),
+   407	    }
+   408	
+   409	    result = subprocess.run(
+   410	        [
+   411	            str(SIGNED_PACKAGE_SCRIPT),
+   412	            "--app-bundle",
+   413	            str(app_bundle),
+   414	            "--output",
+   415	            str(output),
+   416	            "--identity",
+   417	            "Developer ID Application: Example (3559PD337Z)",
+   418	            "--notary-profile",
+   419	            "test-notary",
+   420	            "--s3-bucket",
+   421	            "test-bucket",
+   422	            "--release-prefix",
+   423	            "beta",
+   424	            "--s3-profile",
+   425	            "test-profile",
+   426	        ],
+   427	        capture_output=True,
+   428	        text=True,
+   429	        cwd=REPO_ROOT,
+   430	        env=env,
+   431	    )
+   432	
+   433	    assert result.returncode != 0
+   434	    assert "a Plow disk image is already mounted" in result.stderr
+   435	    assert "/Volumes/Plow" in result.stderr
+   436	    assert not output.exists()
+   437	
+   438	    hdiutil_log = (fake_log_dir / "hdiutil.log").read_text()
+   439	    assert hdiutil_log.strip() == "info"
+   440	
+   441	
+   442	def test_build_runtime_artifacts_rebuilds_when_manifest_version_bumps_but_tarball_is_stale(tmp_path):
+   443	    app_root = tmp_path / "app"
+   444	    scripts_dir = app_root / "scripts"
+   445	    lib_dir = scripts_dir / "lib"
+   446	    vm_dir = app_root / "vm"
+   447	    output_dir = vm_dir / "output"
+   448	    scripts_dir.mkdir(parents=True)
+   449	    lib_dir.mkdir(parents=True)
+   450	    output_dir.mkdir(parents=True)
+   451	
+   452	    (scripts_dir / "build-runtime-artifacts.sh").write_text(
+   453	        (REPO_ROOT / "app" / "scripts" / "build-runtime-artifacts.sh").read_text(encoding="utf-8"),
+   454	        encoding="utf-8",
+   455	    )
+   456	    (scripts_dir / "build-runtime-artifacts.sh").chmod(0o755)
+   457	    (lib_dir / "git-ref.sh").write_text(
+   458	        "#!/usr/bin/env bash\ncompute_git_ref() { printf '%s\\n' same123; }\n",
+   459	        encoding="utf-8",
+   460	    )
+   461	    (lib_dir / "git-ref.sh").chmod(0o755)
+   462	
+   463	    manifest_path = vm_dir / "manifest.toml"
+   464	    manifest_path.write_text(
+   465	        textwrap.dedent(
+   466	            """
+   467	            openclaw_version = "2026.4.22"
+   468	            openclaw_artifact = "openclaw-agent-2026.4.21.same123.tar.zst"
+   469	            openclaw_sha256 = "old-openclaw"
+   470	            openclaw_size = 1
+
+exec
+/bin/bash -lc 'strings app/plowd/dmg/.DS_Store | head -n 80' in /tmp/tmp.s9NGRcpSxH/repo
+exec
+/bin/bash -lc "nl -ba app/plowd/tests/test_release_scripts.py | sed -n '820,950p'" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+Bud1
+DSDB
+.BKGDblob
+PctB
+.ICVObool
+.fwi0blob
+ icnv
+.fwswlong
+.fwvhshor
+.icvoblob
+ icv4
+nonebotm
+.icvtshor
+.pictblob
+Plow Gatekeeper
+dmgcanvas_bg.tiff
+.background
+7/:Volumes:Plow Gatekeeper:.background:dmgcanvas_bg.tiff
+/.background/dmgcanvas_bg.tiff
+/Volumes/Plow Gatekeeper
+Macintosh HD
+DMGCanvasTemp_Plo#FFFFFFFF.dmg
+devrddsk
+[/:private:var:folders:zw:jlvjtk1x68d4m6vfnwdlcs9c0000gn:T:DMGCanvasTemp_Plow Gatekeeper.dmg
+Yprivate/var/folders/zw/jlvjtk1x68d4m6vfnwdlcs9c0000gn/T/DMGCanvasTemp_Plow Gatekeeper.dmg
+dIlocblob
+eIlocblob
+sIlocblob
+dIlocblob
+0Ilocblob
+sIlocblob
+sIlocblob
+sIlocblob
+pIlocblob
+
+ succeeded in 0ms:
+   820	    assert (
+   821	        'codesign --force --sign "${PLOW_CODE_SIGN_IDENTITY}" --deep --entitlements'
+   822	        in app_justfile
+   823	    ), "post-package re-sign must honor any PLOW_CODE_SIGN_IDENTITY, not a hardcoded `-`"
+   824	
+   825	
+   826	def _write_fake_release_commands(fake_bin: Path) -> None:
+   827	    commands = {
+   828	        "aws": _fake_command_script("#!/usr/bin/env bash\nexit 0\n"),
+   829	        "codesign": _fake_command_script("#!/usr/bin/env bash\nexit 0\n"),
+   830	        "curl": _fake_command_script("#!/usr/bin/env bash\nexit 0\n"),
+   831	        "ditto": _fake_command_script(
+   832	            """#!/usr/bin/env bash
+   833	set -euo pipefail
+   834	is_archive_mode=false
+   835	src=""
+   836	dst=""
+   837	for arg in "$@"; do
+   838	    if [[ "$arg" == "-c" ]]; then
+   839	        is_archive_mode=true
+   840	    elif [[ "$arg" == -* ]]; then
+   841	        continue
+   842	    else
+   843	        if [[ -z "$src" ]]; then
+   844	            src="$arg"
+   845	        else
+   846	            dst="$arg"
+   847	            break
+   848	        fi
+   849	    fi
+   850	done
+   851	if [[ "$is_archive_mode" == true ]]; then
+   852	    mkdir -p "$(dirname "$dst")"
+   853	    tar -cjf "$dst" -C "$(dirname "$src")" "$(basename "$src")"
+   854	else
+   855	    if [[ -d "$src" ]]; then
+   856	        cp -r "$src" "$dst"
+   857	    else
+   858	        mkdir -p "$(dirname "$dst")"
+   859	        cp -f "$src" "$dst"
+   860	    fi
+   861	fi
+   862	"""
+   863	        ),
+   864	        "upload-runtime-artifacts.sh": _fake_command_script("#!/usr/bin/env bash\nexit 0\n"),
+   865	        "generate_appcast": _fake_generate_appcast_script(),
+   866	        "osascript": _fake_command_script(
+   867	            """#!/usr/bin/env bash
+   868	set -euo pipefail
+   869	cat >> "${FAKE_LOG_DIR}/osascript.log"
+   870	"""
+   871	        ),
+   872	        "spctl": _fake_command_script("#!/usr/bin/env bash\nexit 0\n"),
+   873	        "swift": _fake_command_script(
+   874	            """#!/usr/bin/env bash
+   875	set -euo pipefail
+   876	target="${@: -1}"
+   877	ln -s /Applications "${target}"
+   878	"""
+   879	        ),
+   880	        "generate_appcast": _fake_command_script(
+   881	            """#!/usr/bin/env bash
+   882	set -euo pipefail
+   883	output_path=""
+   884	download_prefix=""
+   885	while [[ $# -gt 0 ]]; do
+   886	  case "$1" in
+   887	    --download-url-prefix)
+   888	      download_prefix="$2"
+   889	      shift 2
+   890	      ;;
+   891	    -o)
+   892	      output_path="$2"
+   893	      shift 2
+   894	      ;;
+   895	    --account)
+   896	      shift 2
+   897	      ;;
+   898	    *)
+   899	      shift
+   900	      ;;
+   901	  esac
+   902	done
+   903	mkdir -p "$(dirname "${output_path}")"
+   904	printf '<appcast prefix="%s"/>\n' "$download_prefix" > "${output_path}"
+   905	"""
+   906	        ),
+   907	        "xattr": _fake_command_script("#!/usr/bin/env bash\nexit 0\n"),
+   908	        "xcrun": _fake_command_script(
+   909	            """#!/usr/bin/env bash
+   910	set -euo pipefail
+   911	if [[ "${1:-}" == "notarytool" && "${2:-}" == "submit" ]]; then
+   912	  printf '{"id":"fake-submit","status":"Accepted"}\n'
+   913	  exit 0
+   914	fi
+   915	if [[ "${1:-}" == "stapler" && "${2:-}" == "staple" ]]; then
+   916	  exit 0
+   917	fi
+   918	exit 0
+   919	"""
+   920	        ),
+   921	        "hdiutil": _fake_hdiutil_script(),
+   922	    }
+   923	    for name, contents in commands.items():
+   924	        script_path = fake_bin / name
+   925	        script_path.write_text(textwrap.dedent(contents))
+   926	        script_path.chmod(0o755)
+   927	
+   928	
+   929	def _fake_command_script(contents: str) -> str:
+   930	    return contents
+   931	
+   932	
+   933	def _fake_generate_appcast_script() -> str:
+   934	    return """#!/usr/bin/env python3
+   935	import sys
+   936	from pathlib import Path
+   937	
+   938	
+   939	args = sys.argv[1:]
+   940	output = Path(args[args.index("-o") + 1])
+   941	output.parent.mkdir(parents=True, exist_ok=True)
+   942	output.write_text("<appcast></appcast>\\n", encoding="utf-8")
+   943	"""
+   944	
+   945	
+   946	def _fake_hdiutil_script() -> str:
+   947	    return """#!/usr/bin/env python3
+   948	import hashlib
+   949	import json
+   950	import os
+
+exec
+/bin/bash -lc "rg -n \"PLOW_SKIP_DMG_VERIFY|plowd-verify-dmg|dmg-verify|\\.DS_Store|VolumeIcon|/Volumes/Plow|generate_appcast\" app justfile docs .github -S" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+docs/phoenix-sparkle-build.md:68:3. access to the matching Sparkle private key in the macOS keychain used for `generate_appcast`
+app/Phoenix/DiagnosticsBundler.swift:540:    private static let alwaysExcludedFileNames: Set<String> = [".DS_Store"]
+app/Phoenix/DiagnosticsBundler.swift:1058:        - `.DS_Store` files (Finder metadata) at any depth
+app/plowd/tests/test_release_scripts.py:14:VERIFY_DMG_SCRIPT = REPO_ROOT / "app" / "plowd" / "scripts" / "plowd-verify-dmg"
+app/plowd/tests/test_release_scripts.py:204:        "PLOW_SKIP_DMG_VERIFY": "1",
+app/plowd/tests/test_release_scripts.py:246:    assert not (staged_dir / ".DS_Store").exists()
+app/plowd/tests/test_release_scripts.py:249:    # so the staged srcfolder must not ship a .VolumeIcon.icns.
+app/plowd/tests/test_release_scripts.py:250:    assert not (staged_dir / ".VolumeIcon.icns").exists()
+app/plowd/tests/test_release_scripts.py:260:    three real DMGs with hdiutil and assert plowd-verify-dmg accepts the
+app/plowd/tests/test_release_scripts.py:263:    plowd-verify-dmg is wired into plowd-beta-package-signed between staple
+app/plowd/tests/test_release_scripts.py:271:    if re.search(r"/Volumes/Plow( [0-9]+)?$", info.stdout, re.MULTILINE):
+app/plowd/tests/test_release_scripts.py:297:    # Happy path: clean Plow DMG with no .VolumeIcon must pass.
+app/plowd/tests/test_release_scripts.py:303:    # Regression #1: someone re-introduces .VolumeIcon.icns at the volume root.
+app/plowd/tests/test_release_scripts.py:304:    (stage / ".VolumeIcon.icns").write_text("fake-icns")
+app/plowd/tests/test_release_scripts.py:308:    assert fail.returncode != 0, "verify-dmg accepted DMG that ships .VolumeIcon.icns"
+app/plowd/tests/test_release_scripts.py:309:    assert ".VolumeIcon.icns exists" in fail.stderr
+app/plowd/tests/test_release_scripts.py:312:    (stage / ".VolumeIcon.icns").unlink()
+app/plowd/tests/test_release_scripts.py:323:    volume is busy), plowd-verify-dmg must exit non-zero. The previous
+app/plowd/tests/test_release_scripts.py:324:    `|| true` swallowed the failure and returned 0, leaking /Volumes/Plow,
+app/plowd/tests/test_release_scripts.py:331:    if re.search(r"/Volumes/Plow( [0-9]+)?$", info.stdout, re.MULTILINE):
+app/plowd/tests/test_release_scripts.py:385:            [real_hdiutil, "detach", "/Volumes/Plow"],
+app/plowd/tests/test_release_scripts.py:404:        "FAKE_HDIUTIL_INFO": "/dev/disk25s1 Apple_APFS /Volumes/Plow\n",
+app/plowd/tests/test_release_scripts.py:435:    assert "/Volumes/Plow" in result.stderr
+app/plowd/tests/test_release_scripts.py:865:        "generate_appcast": _fake_generate_appcast_script(),
+app/plowd/tests/test_release_scripts.py:880:        "generate_appcast": _fake_command_script(
+app/plowd/tests/test_release_scripts.py:933:def _fake_generate_appcast_script() -> str:
+app/plowd/tests/test_sparkle_release_scripts.py:108:    fake_generate_appcast = sparkle_bin_dir / "generate_appcast"
+app/plowd/tests/test_sparkle_release_scripts.py:109:    fake_generate_appcast.write_text(
+app/plowd/tests/test_sparkle_release_scripts.py:138:    fake_generate_appcast.chmod(0o755)
+app/plowd/tests/test_gateway.py:630:    """Dot-prefix dirs (`.git`, `.DS_Store`-style) must never enter the manifest.
+app/justfile:206:    mounted_plow_volumes="$(hdiutil info 2>/dev/null | grep -Eo '/Volumes/Plow( [0-9]+)?$' || true)"; \
+app/justfile:230:dmg-verify dmg="../.build/Plow.dmg":
+app/justfile:231:    @plowd/scripts/plowd-verify-dmg --dmg "{{dmg}}"
+app/PhoenixTests/DiagnosticsBundlerTests.swift:93:        // Seed .DS_Store files at multiple depths to verify they are excluded at any depth.
+app/PhoenixTests/DiagnosticsBundlerTests.swift:94:        try Data("DS_STORE_ROOT".utf8).write(to: root.appendingPathComponent(".DS_Store"))
+app/PhoenixTests/DiagnosticsBundlerTests.swift:95:        try Data("DS_STORE_VMLOGS".utf8).write(to: vmLogs.appendingPathComponent(".DS_Store"))
+app/PhoenixTests/DiagnosticsBundlerTests.swift:707:                url.lastPathComponent, ".DS_Store",
+app/PhoenixTests/DiagnosticsBundlerTests.swift:708:                ".DS_Store found at \(url.path); should be excluded at every depth"
+app/plowd/scripts/plowd-verify-dmg:8:Usage: plowd-verify-dmg [--dmg <path>]
+app/plowd/scripts/plowd-verify-dmg:11:.VolumeIcon.icns at its root, then detaches. Defaults to .build/Plow.dmg
+app/plowd/scripts/plowd-verify-dmg:46:mounted_plow_volumes="$(hdiutil info 2>/dev/null | grep -Eo '/Volumes/Plow( [0-9]+)?$' || true)"
+app/plowd/scripts/plowd-verify-dmg:82:[[ ! -e "${mounted_volume}/.VolumeIcon.icns" ]] || {
+app/plowd/scripts/plowd-verify-dmg:83:  echo "error: ${mounted_volume}/.VolumeIcon.icns exists; PLO-29 regression: DMG ships a custom volume icon" >&2
+app/plowd/scripts/plowd-beta-package-signed:18:  --sparkle-account <name>  Sparkle keychain account name for generate_appcast
+app/plowd/scripts/plowd-beta-package-signed:128:      | grep -Eo '/Volumes/Plow( [0-9]+)?$' || true
+app/plowd/scripts/plowd-beta-package-signed:295:# that the volume name is "Plow" before it gets uploaded. plowd-verify-dmg
+app/plowd/scripts/plowd-beta-package-signed:298:# PLOW_SKIP_DMG_VERIFY=1.
+app/plowd/scripts/plowd-beta-package-signed:299:if [[ "${PLOW_SKIP_DMG_VERIFY:-0}" != "1" ]]; then
+app/plowd/scripts/plowd-beta-package-signed:301:  "${repo_root}/app/plowd/scripts/plowd-verify-dmg" --dmg "${output}"
+app/plowd/scripts/plowd-stage-sparkle-feed:85:    if [[ -x "${candidate}/generate_appcast" ]]; then
+app/plowd/scripts/plowd-stage-sparkle-feed:111:generate_appcast="${sparkle_bin_dir}/generate_appcast"
+app/plowd/scripts/plowd-stage-sparkle-feed:125:[[ -x "${generate_appcast}" ]] || {
+app/plowd/scripts/plowd-stage-sparkle-feed:126:  echo "error: generate_appcast not found; set SPARKLE_BIN_DIR or build the app target once to fetch Sparkle tools" >&2
+app/plowd/scripts/plowd-stage-sparkle-feed:148:"${generate_appcast}" \
+
+exec
+/bin/bash -lc "rg --files app/plowd | rg 'dmg|record|layout|DS_Store'" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+app/plowd/scripts/plowd-verify-dmg
+app/plowd/dmg/background.tiff
+
+exec
+/bin/bash -lc 'git status --short' in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+?? .codex-scratch/
+
+exec
+/bin/bash -lc 'git ls-files app/plowd/dmg' in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+app/plowd/dmg/.DS_Store
+app/plowd/dmg/background.tiff
+
+exec
+/bin/bash -lc 'git diff --stat -- app/plowd/dmg app/plowd/scripts app/justfile justfile .github/workflows/test.yml app/plowd/tests/test_release_scripts.py' in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+exec
+/bin/bash -lc "nl -ba docs/phoenix-sparkle-build.md | sed -n '60,80p'" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+    60	
+    61	CI should treat the Git tag or release metadata as the source of truth for `MARKETING_VERSION`,
+    62	and inject a monotonic `CURRENT_PROJECT_VERSION` at package time.
+    63	
+    64	Required CI inputs:
+    65	
+    66	1. `MARKETING_VERSION`
+    67	2. `CURRENT_PROJECT_VERSION`
+    68	3. access to the matching Sparkle private key in the macOS keychain used for `generate_appcast`
+    69	4. Apple Developer ID signing identity
+    70	5. Apple notarization profile/credentials
+    71	6. AWS credentials for publishing release artifacts
+    72	
+    73	Recommended release order:
+    74	
+    75	1. build signed `Plow.app`
+    76	2. `just app release`
+    77	   - uploads immutable versioned artifacts only:
+    78	   - `downloads/Plow-<version>-<build>.dmg`
+    79	   - `updates/Plow-<version>-<build>.zip`
+    80	   - `appcasts/Plow-<version>-<build>.xml`
+
+exec
+/bin/bash -lc "nl -ba docs/distribution/CODE_SIGNING.md | sed -n '105,135p'" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+   105	5. keep local developer machines on `Apple Development` for normal `just app build` / `just app up`
+   106	
+   107	Operational rule:
+   108	
+   109	- day-to-day development machines should not need the org release certificate
+   110	- release automation should not depend on personal Apple accounts or old `@odio` / unrelated team assets
+   111	
+   112	## Release Command
+   113	
+   114	After the one-time setup:
+   115	
+   116	```bash
+   117	just app release
+   118	```
+   119	
+   120	Default output:
+   121	
+   122	- `.build/Plow.dmg`
+   123	- `.build/Plow.dmg.sha256`
+   124	
+   125	The command uploads versioned artifacts to S3:
+   126	
+   127	- `s3://releases.plow.co/downloads/Plow-<version>-<build>.dmg`
+   128	- `s3://releases.plow.co/downloads/Plow-<version>-<build>.dmg.sha256`
+   129	
+   130	The release rebuilds and repackages local runtime/VM assets into the app bundle, but does **not** publish runtime artifacts to S3 or rewrite the committed `runtime-manifest.json`. Runtime artifacts are managed separately via `just app runtime`.
+   131	
+   132	## Validation Notes
+   133	
+   134	The release script treats these as the important success signals:
+   135	
+
+exec
+/bin/bash -lc "nl -ba docs/vm-publish.md | sed -n '200,214p'" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+   200	What happens in `build-release-candidate.yml`:
+   201	
+   202	1. checks out `main`
+   203	2. verifies the two runtime S3 keys from `app/vm/manifest.toml`
+   204	3. runs `cd app && just release`
+   205	4. creates a versioned DMG and appcast
+   206	5. drafts a GitHub release tagged `deploy/app/v<version>-build.<build>`
+   207	
+   208	`just release` does **not** upload runtime OCI tarballs. It only:
+   209	
+   210	- regenerates `runtime-manifest.json` from `app/vm/manifest.toml`
+   211	- packages the signed/notarized app
+   212	- uploads the versioned DMG and appcast for that app release
+   213	
+   214	The runtime artifact upload must already have happened before this point.
+
+exec
+/bin/bash -lc "find .codex-scratch -maxdepth 2 -type f -printf '%p %s bytes\\n' | sort" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+.codex-scratch/author-intent.md 0 bytes
+.codex-scratch/commits.md 0 bytes
+.codex-scratch/dead-code-static.md 0 bytes
+.codex-scratch/decline-history.md 0 bytes
+.codex-scratch/diff.patch 17393 bytes
+.codex-scratch/file-history.md 0 bytes
+.codex-scratch/loc-trend.md 0 bytes
+.codex-scratch/previous-review.md 0 bytes
+.codex-scratch/prior-art.md 0 bytes
+.codex-scratch/prior-reviews.md 0 bytes
+.codex-scratch/review-priority.md 0 bytes
+.codex-scratch/search-roots.md 0 bytes
+.codex-scratch/standards.md 0 bytes
+
+exec
+/bin/bash -lc "nl -ba app/plowd/tests/test_release_scripts.py | sed -n '150,250p'" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+   150	        )
+   151	        return result.stdout.strip()
+   152	
+   153	    git("init")
+   154	    git("config", "user.name", "Test User")
+   155	    git("config", "user.email", "test@example.com")
+   156	
+   157	    tracked_file = repo_root / "tracked.txt"
+   158	    tracked_file.write_text("first\n", encoding="utf-8")
+   159	    git("add", "tracked.txt")
+   160	    git("commit", "-m", "first")
+   161	    parent_ref = git("rev-parse", "--short=7", "HEAD")
+   162	
+   163	    tracked_file.write_text("second\n", encoding="utf-8")
+   164	    git("commit", "-am", "second")
+   165	
+   166	    result = subprocess.run(
+   167	        [
+   168	            "bash",
+   169	            "-lc",
+   170	            'source "$1"; REPO_ROOT="$2"; compute_git_ref',
+   171	            "bash",
+   172	            str(GIT_REF_SCRIPT),
+   173	            str(repo_root),
+   174	        ],
+   175	        capture_output=True,
+   176	        text=True,
+   177	        cwd=REPO_ROOT,
+   178	    )
+   179	
+   180	    assert result.returncode == 0, result.stderr
+   181	    assert result.stdout.strip() == parent_ref
+   182	
+   183	
+   184	def test_signed_package_script_builds_ulfo_dmg_without_staging_ds_store(tmp_path):
+   185	    app_bundle = tmp_path / "Plow.app"
+   186	    output = tmp_path / "Plow.dmg"
+   187	    fake_log_dir = tmp_path / "fake-logs"
+   188	    fake_log_dir.mkdir()
+   189	    fake_bin = tmp_path / "fake-bin"
+   190	    fake_bin.mkdir()
+   191	    _create_minimal_valid_app_bundle(app_bundle)
+   192	    _write_fake_release_commands(fake_bin)
+   193	
+   194	    env = {
+   195	        **subprocess.os.environ,
+   196	        "PATH": f"{fake_bin}:{subprocess.os.environ['PATH']}",
+   197	        "FAKE_LOG_DIR": str(fake_log_dir),
+   198	        "PLOW_RUNTIME_UPLOAD_SCRIPT": str(fake_bin / "upload-runtime-artifacts.sh"),
+   199	        "SPARKLE_BIN_DIR": str(fake_bin),
+   200	        # PLO-29: the post-staple verify needs a real hdiutil mount; under
+   201	        # stubbed hdiutil it can't actually attach the fake DMG, so skip.
+   202	        # The artifact-level guard is exercised by
+   203	        # test_plowd_verify_dmg_rejects_dmg_shipping_volume_icon.
+   204	        "PLOW_SKIP_DMG_VERIFY": "1",
+   205	    }
+   206	
+   207	    result = subprocess.run(
+   208	        [
+   209	            str(SIGNED_PACKAGE_SCRIPT),
+   210	            "--app-bundle",
+   211	            str(app_bundle),
+   212	            "--output",
+   213	            str(output),
+   214	            "--identity",
+   215	            "Developer ID Application: Example (3559PD337Z)",
+   216	            "--notary-profile",
+   217	            "test-notary",
+   218	            "--s3-bucket",
+   219	            "test-bucket",
+   220	            "--release-prefix",
+   221	            "beta",
+   222	            "--s3-profile",
+   223	            "test-profile",
+   224	        ],
+   225	        capture_output=True,
+   226	        text=True,
+   227	        cwd=REPO_ROOT,
+   228	        env=env,
+   229	    )
+   230	
+   231	    assert result.returncode == 0, result.stderr
+   232	    assert output.exists()
+   233	
+   234	    hdiutil_log = (fake_log_dir / "hdiutil.log").read_text()
+   235	    assert "create" in hdiutil_log
+   236	    assert "-format ULFO" in hdiutil_log
+   237	    # PLO-29: DMG is created directly as ULFO; the old UDRW->convert dance
+   238	    # only existed to host a kHasCustomIcon FinderInfo write on a mounted
+   239	    # volume, which we no longer do.
+   240	    assert "-format UDRW" not in hdiutil_log
+   241	    assert "convert" not in hdiutil_log
+   242	
+   243	    staged_dir = fake_log_dir / "captured-srcfolder"
+   244	    assert (staged_dir / "Plow.app").is_dir()
+   245	    assert (staged_dir / "Applications").is_symlink()
+   246	    assert not (staged_dir / ".DS_Store").exists()
+   247	    assert (staged_dir / ".background" / "background.tiff").is_file()
+   248	    # PLO-29: the mounted volume must show the default macOS volume icon,
+   249	    # so the staged srcfolder must not ship a .VolumeIcon.icns.
+   250	    assert not (staged_dir / ".VolumeIcon.icns").exists()
+
+exec
+/bin/bash -lc "rg -n \"verifying final|attach \\{output\\}|readonly|PLOW_SKIP_DMG_VERIFY|plowd-verify-dmg\" app/plowd/tests/test_release_scripts.py" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+14:VERIFY_DMG_SCRIPT = REPO_ROOT / "app" / "plowd" / "scripts" / "plowd-verify-dmg"
+204:        "PLOW_SKIP_DMG_VERIFY": "1",
+260:    three real DMGs with hdiutil and assert plowd-verify-dmg accepts the
+263:    plowd-verify-dmg is wired into plowd-beta-package-signed between staple
+323:    volume is busy), plowd-verify-dmg must exit non-zero. The previous
+
+exec
+/bin/bash -lc "nl -ba app/plowd/tests/test_release_scripts.py | sed -n '946,1045p'" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+   946	def _fake_hdiutil_script() -> str:
+   947	    return """#!/usr/bin/env python3
+   948	import hashlib
+   949	import json
+   950	import os
+   951	from pathlib import Path
+   952	import shutil
+   953	import sys
+   954	
+   955	
+   956	log_dir = Path(os.environ["FAKE_LOG_DIR"])
+   957	map_path = log_dir / "hdiutil-map.json"
+   958	if map_path.exists():
+   959	    image_map = json.loads(map_path.read_text())
+   960	else:
+   961	    image_map = {}
+   962	
+   963	
+   964	def save_map() -> None:
+   965	    map_path.write_text(json.dumps(image_map))
+   966	
+   967	
+   968	def image_dir_for(image_path: str) -> Path:
+   969	    digest = hashlib.sha256(image_path.encode()).hexdigest()
+   970	    return log_dir / "images" / digest
+   971	
+   972	
+   973	def copy_tree(src: Path, dest: Path) -> None:
+   974	    if dest.exists():
+   975	        shutil.rmtree(dest)
+   976	    dest.parent.mkdir(parents=True, exist_ok=True)
+   977	    shutil.copytree(src, dest, symlinks=True)
+   978	
+   979	
+   980	def find_value(flag: str, args: list[str]) -> str:
+   981	    return args[args.index(flag) + 1]
+   982	
+   983	
+   984	with (log_dir / "hdiutil.log").open("a") as fh:
+   985	    fh.write(" ".join(sys.argv[1:]) + "\\n")
+   986	
+   987	command = sys.argv[1]
+   988	args = sys.argv[2:]
+   989	
+   990	if command == "create":
+   991	    srcfolder = Path(find_value("-srcfolder", args))
+   992	    output = Path(args[-1])
+   993	    output.parent.mkdir(parents=True, exist_ok=True)
+   994	    output.write_text("fake dmg")
+   995	    captured = log_dir / "captured-srcfolder"
+   996	    copy_tree(srcfolder, captured)
+   997	    image_dir = image_dir_for(str(output))
+   998	    copy_tree(srcfolder, image_dir)
+   999	    image_map[str(output)] = str(image_dir)
+  1000	    save_map()
+  1001	    sys.exit(0)
+  1002	
+  1003	if command == "attach":
+  1004	    image = next(arg for arg in args if not arg.startswith("-"))
+  1005	    mount_dir = Path("/Volumes") / f"fake-{hashlib.sha256(image.encode()).hexdigest()[:12]}"
+  1006	    image_map[f"mount::{mount_dir}"] = image
+  1007	    save_map()
+  1008	    print(f"/dev/disk9s1 Apple_APFS {mount_dir}")
+  1009	    sys.exit(0)
+  1010	
+  1011	if command == "detach":
+  1012	    mount_dir = Path(args[0])
+  1013	    sys.exit(0)
+  1014	
+  1015	if command == "convert":
+  1016	    source_image = next(arg for arg in args if not arg.startswith("-"))
+  1017	    output = Path(find_value("-o", args))
+  1018	    output.parent.mkdir(parents=True, exist_ok=True)
+  1019	    output.write_text("fake compressed dmg")
+  1020	    source_dir = Path(image_map[source_image])
+  1021	    output_dir = image_dir_for(str(output))
+  1022	    copy_tree(source_dir, output_dir)
+  1023	    image_map[str(output)] = str(output_dir)
+  1024	    save_map()
+  1025	    sys.exit(0)
+  1026	
+  1027	if command == "info":
+  1028	    sys.stdout.write(os.environ.get("FAKE_HDIUTIL_INFO", ""))
+  1029	    sys.exit(0)
+  1030	
+  1031	sys.exit(0)
+  1032	"""
+  1033	
+  1034	
+  1035	def _write_fake_runtime_child_builder(
+  1036	    script_path: Path,
+  1037	    build_log: Path,
+  1038	    role: str,
+  1039	    artifact_key: str,
+  1040	    contents: str,
+  1041	) -> None:
+  1042	    script_path.write_text(
+  1043	        textwrap.dedent(
+  1044	            f"""#!/usr/bin/env bash
+  1045	set -euo pipefail
+
+exec
+/bin/bash -lc "rg -n '"'^test|test-ci|plowd'"' app/justfile | head -n 80" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+66:package-build configuration="Debug" derived="" log="" variant="" app_name="Plow Dev" bundle_id="co.plow.app.dev" stage_dir="plowd/runtime/stage" artifacts_dir="plowd/runtime/artifacts" manifest="plowd/runtime/manifest.toml":
+95:    plowd/scripts/plowd-stage-runtime --manifest "{{manifest}}" --artifacts-dir "{{artifacts_dir}}" --stage-dir "{{stage_dir}}"; \
+97:    plowd/scripts/plowd-package-runtime --runtime-dir "$stage_dir_abs" --app-bundle "$app_bundle"
+112:    (cd plowd && uv sync --quiet); \
+113:    just package-build "$configuration" "{{derived}}" "{{log}}" "$effective_variant" "{{app_name}}" "{{bundle_id}}" "plowd/runtime/stage" "plowd/runtime/artifacts" "plowd/runtime/manifest.toml"; \
+171:    if [[ ! -d "$app_bundle/Contents/Resources/runtime/plowd" ]]; then \
+176:    cd plowd && uv sync; \
+217:      just package-build "{{configuration}}" "$derived_abs" "../.build/release-build.log" "" "Plow" "co.plow.app" "plowd/runtime/stage" "plowd/runtime/artifacts" "plowd/runtime/manifest.toml"; \
+219:    plowd/scripts/plowd-beta-package-signed \
+231:    @plowd/scripts/plowd-verify-dmg --dmg "{{dmg}}"
+239:    plowd/scripts/plowd-tail-logs --source "{{source}}" --lines "{{lines}}"
+319:    plowd/scripts/plowd-validate-package --mode "{{mode}}" --app-bundle "{{derived}}/Build/Products/{{configuration}}/{{app_name}}.app"
+321:test variant="": fetch-limactl
+351:    @(cd plowd && uv sync --quiet)
+355:    plowd/scripts/plowd-promote-release \
+375:    plowd_port="$([[ -f "$envf" ]] && _p PLOW_PLOWD_PORT || echo 18800)"; \
+389:    printf '[%s] plowd=%s gateway=%s api=%s\n' \
+390:      "$effective_bundle_id" "$plowd_port" "$gateway_port" "{{plow_api_url}}"; \
+392:    echo "PlowD log: ${support_root}/plowd.log"; \
+399:      for cport in "$plowd_port" "$gateway_port"; do \
+411:    env_args+=(--env "PLOW_PLOWD_PORT=$plowd_port"); \
+432:    echo "Tailing logs (app + plowd). Ctrl-C to stop."; \
+434:    plowd/scripts/plowd-tail-logs --source all --lines 20 & \
+
+exec
+/bin/bash -lc "nl -ba app/justfile | sed -n '321,350p'" in /tmp/tmp.s9NGRcpSxH/repo
+ succeeded in 0ms:
+   321	test variant="": fetch-limactl
+   322	    @effective_variant="{{variant}}"; \
+   323	    if [[ -z "$effective_variant" && -f "../.env.local" ]]; then \
+   324	      effective_variant="$(grep -E '^PLOW_VARIANT=' "../.env.local" 2>/dev/null | cut -d= -f2- || true)"; \
+   325	    fi; \
+   326	    variant_id="$(printf '%s' "$effective_variant" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/./g; s/^\.+//; s/\.+$//; s/\.\.+/./g')"; \
+   327	    variant_name="$(printf '%s' "$effective_variant" | sed -E 's/[^A-Za-z0-9]+/ /g; s/^ +//; s/ +$//; s/ +/ /g')"; \
+   328	    effective_app_name="Plow Dev Test"; \
+   329	    effective_bundle_id="co.plow.app.dev.test"; \
+   330	    derived_path="../.build/xcode-derived-dev-test"; \
+   331	    if [[ -n "$variant_id" ]]; then \
+   332	      effective_bundle_id="co.plow.app.dev.${variant_id}.test"; \
+   333	      effective_app_name="Plow Dev ${variant_name} Test"; \
+   334	      derived_path="../.build/xcode-derived-${variant_id}-test"; \
+   335	    fi; \
+   336	    mkdir -p "$derived_path"; \
+   337	    echo "── Phoenix tests (variant=${effective_variant:-none} bundle=$effective_bundle_id derived=$derived_path) ──"; \
+   338	    xcodebuild test \
+   339	        -project Phoenix.xcodeproj \
+   340	        -scheme Phoenix \
+   341	        -destination 'platform=macOS' \
+   342	        -only-testing PhoenixTests \
+   343	        -derivedDataPath "$derived_path" \
+   344	        -quiet \
+   345	        CODE_SIGN_IDENTITY=- \
+   346	        CODE_SIGNING_REQUIRED=NO \
+   347	        PLOW_APP_NAME="$effective_app_name" \
+   348	        PLOW_APP_BUNDLE_IDENTIFIER="$effective_bundle_id"
+   349	
+   350	oss-licenses:
+
+codex
+## Critic counterarguments
+
+### [security] Finding 1 — FALSE POSITIVE
+The cited recorder script is not present in this repo (`app/plowd/scripts/plowd-record-dmg-layout` is absent), and the diff does not add or copy `app/plowd/dmg/.DS_Store` into the staged DMG; `plowd-beta-package-signed` only copies `background.tiff` into `stage_dir` at `app/plowd/scripts/plowd-beta-package-signed:215-216`.
+
+### [data-integrity] Finding 1 — FALSE POSITIVE
+The parser is not `$NF`; current code uses `sed -n 's|.*\(/Volumes/.*\)$|\1|p'` at `app/plowd/scripts/plowd-verify-dmg:76`, which preserves `/Volumes/Plow Installer` including spaces, so cleanup still has a mount path.
+
+### [architecture] Finding 1 — AGREE
+This has a concrete bypass path: `PLOW_SKIP_DMG_VERIFY=1` skips the verifier at `app/plowd/scripts/plowd-beta-package-signed:299-302`, then the script uploads at `:315-316`. Removing the env bypass makes the release path simpler and mandatory.
+**Estimated remedy LOC:** ~0 LOC across 1 file.
+
+### [simplification] Finding 1 — REMEDY-BLOAT
+Will this tiny `hdiutil info | grep -Eo '/Volumes/Plow( [0-9]+)?$'` shape drift often enough to justify sourcing shared shell across a just recipe and scripts? With no observed drift, extracting `_lib.sh` plumbing for three one-liners adds complexity and makes PMF iteration harder.
+
+### [simplification] Finding 2 — REMEDY-BLOAT
+Will these two Darwin-only tests expand into enough cases that helper indirection pays for itself? Right now the duplication is local test setup at `app/plowd/tests/test_release_scripts.py:268-338`; adding helpers for two tests is cleanup theater and adds complexity and makes PMF iteration harder.
+
+### [simplification] Finding 3 — AGREE
+Is cleanup in scope because this PR already touches the fake release command table? Yes: the duplicate `generate_appcast` key at `app/plowd/tests/test_release_scripts.py:865` and `:880` makes `_fake_generate_appcast_script()` at `:933` dead code; deletion is branch-negative.
+**Estimated remedy LOC:** ~0 LOC across 1 file.
+
+### [tests] Finding 1 — MISCALIBRATED
+The cited test behavior does not exist: `rg` finds no assertion for the verifier banner or `attach {output}`; the current release test explicitly sets `PLOW_SKIP_DMG_VERIFY=1` at `app/plowd/tests/test_release_scripts.py:200-204`. Keep only the narrower concern: there is no non-skip wiring test proving packaging invokes `plowd-verify-dmg`, but that is a small assertion/fake adjustment, not a blocking finding as written.
+**Estimated remedy LOC:** ~8 LOC across 1 file.
+
+### [shape] Finding 1 — FALSE POSITIVE
+The factual premise is stale: `plowd-record-dmg-layout` is absent, and both live parsers in the package script and verifier use the same `sed` shape at `app/plowd/scripts/plowd-beta-package-signed:269` and `app/plowd/scripts/plowd-verify-dmg:76`, not parallel `awk`/`sed` constructs.
+
+### [consumers] Finding 1 — AGREE
+This is a direct user-visible break: root `just app` runs with `--working-directory app` at `justfile:394-395`, `app/justfile:230-231` passes `../.build/Plow.dmg`, and `plowd-verify-dmg:37-39` resolves it under repo root as `<repo>/../.build/Plow.dmg`.
+**Estimated remedy LOC:** ~1 LOC across 1 file.
+
+## Missed findings (if any)
+None.
+tokens used
+56,267
+## Critic counterarguments
+
+### [security] Finding 1 — FALSE POSITIVE
+The cited recorder script is not present in this repo (`app/plowd/scripts/plowd-record-dmg-layout` is absent), and the diff does not add or copy `app/plowd/dmg/.DS_Store` into the staged DMG; `plowd-beta-package-signed` only copies `background.tiff` into `stage_dir` at `app/plowd/scripts/plowd-beta-package-signed:215-216`.
+
+### [data-integrity] Finding 1 — FALSE POSITIVE
+The parser is not `$NF`; current code uses `sed -n 's|.*\(/Volumes/.*\)$|\1|p'` at `app/plowd/scripts/plowd-verify-dmg:76`, which preserves `/Volumes/Plow Installer` including spaces, so cleanup still has a mount path.
+
+### [architecture] Finding 1 — AGREE
+This has a concrete bypass path: `PLOW_SKIP_DMG_VERIFY=1` skips the verifier at `app/plowd/scripts/plowd-beta-package-signed:299-302`, then the script uploads at `:315-316`. Removing the env bypass makes the release path simpler and mandatory.
+**Estimated remedy LOC:** ~0 LOC across 1 file.
+
+### [simplification] Finding 1 — REMEDY-BLOAT
+Will this tiny `hdiutil info | grep -Eo '/Volumes/Plow( [0-9]+)?$'` shape drift often enough to justify sourcing shared shell across a just recipe and scripts? With no observed drift, extracting `_lib.sh` plumbing for three one-liners adds complexity and makes PMF iteration harder.
+
+### [simplification] Finding 2 — REMEDY-BLOAT
+Will these two Darwin-only tests expand into enough cases that helper indirection pays for itself? Right now the duplication is local test setup at `app/plowd/tests/test_release_scripts.py:268-338`; adding helpers for two tests is cleanup theater and adds complexity and makes PMF iteration harder.
+
+### [simplification] Finding 3 — AGREE
+Is cleanup in scope because this PR already touches the fake release command table? Yes: the duplicate `generate_appcast` key at `app/plowd/tests/test_release_scripts.py:865` and `:880` makes `_fake_generate_appcast_script()` at `:933` dead code; deletion is branch-negative.
+**Estimated remedy LOC:** ~0 LOC across 1 file.
+
+### [tests] Finding 1 — MISCALIBRATED
+The cited test behavior does not exist: `rg` finds no assertion for the verifier banner or `attach {output}`; the current release test explicitly sets `PLOW_SKIP_DMG_VERIFY=1` at `app/plowd/tests/test_release_scripts.py:200-204`. Keep only the narrower concern: there is no non-skip wiring test proving packaging invokes `plowd-verify-dmg`, but that is a small assertion/fake adjustment, not a blocking finding as written.
+**Estimated remedy LOC:** ~8 LOC across 1 file.
+
+### [shape] Finding 1 — FALSE POSITIVE
+The factual premise is stale: `plowd-record-dmg-layout` is absent, and both live parsers in the package script and verifier use the same `sed` shape at `app/plowd/scripts/plowd-beta-package-signed:269` and `app/plowd/scripts/plowd-verify-dmg:76`, not parallel `awk`/`sed` constructs.
+
+### [consumers] Finding 1 — AGREE
+This is a direct user-visible break: root `just app` runs with `--working-directory app` at `justfile:394-395`, `app/justfile:230-231` passes `../.build/Plow.dmg`, and `plowd-verify-dmg:37-39` resolves it under repo root as `<repo>/../.build/Plow.dmg`.
+**Estimated remedy LOC:** ~1 LOC across 1 file.
+
+## Missed findings (if any)
+None.
+[08:45:02] agent=critic exit=0

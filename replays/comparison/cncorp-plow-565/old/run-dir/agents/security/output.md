@@ -1,0 +1,9 @@
+## [security] findings
+
+### Surveyed
+- `InstallerView`'s new `GeometryReader` and preference-key plumbing only propagates `CGFloat` layout measurements into local `@State`; it does not log, persist, or transmit any connector/account data already rendered on the screen. Clean. Files: `app/Phoenix/InstallerView.swift:64`, `app/Phoenix/InstallerView.swift:114`
+- `SettingsView` is the only new measurement source, and the added background reader observes container height only; existing sensitive-ish UI values like `managedPhoneNumber` and connector account labels remain display-only. Clean. Files: `app/Phoenix/SettingsView.swift:21`, `app/Phoenix/SettingsView.swift:141`, `app/Phoenix/SettingsView.swift:237`
+- `DownloadBarView`'s overlay height is measured from an already-visible status bar; no new exposure of `headerSubLabel` or download state crosses a process, network, or storage boundary. Clean. Files: `app/Phoenix/InstallerView.swift:64`, `app/Phoenix/DownloadBarView.swift:3`
+- `SelfSizingHostingView` now resizes/clamps the AppKit window, but the added behavior is limited to frame math on the local `NSWindow`; it does not introduce new file access, IPC, URL handling, or auth state changes. Clean. Files: `app/Phoenix/MenuBarController.swift:396`
+- `InstallerWindowController.show()` still constructs the same installer flow and the same `openMessagesPromptToManagedPhone()` callback; this PR does not change phone-number handling, dashboard URL composition, or connector toggling logic. Clean. Files: `app/Phoenix/PhoenixApp.swift:145`, `app/Phoenix/DaemonClient.swift:1744`, `app/Phoenix/DaemonClient.swift:987`, `app/Phoenix/DaemonClient.swift:820`
+- The PR surface is Swift UI code plus pure sizing tests only; no new dependencies, entitlements, HTTP routes, auth checks, or secret-bearing configuration were added. Clean. Files: `app/PhoenixTests/InstallerStateTests.swift:120`

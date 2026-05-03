@@ -1,0 +1,364 @@
+diff --git a/app/Phoenix/InstallerView.swift b/app/Phoenix/InstallerView.swift
+index 537ed1e7..49cdca0d 100644
+--- a/app/Phoenix/InstallerView.swift
++++ b/app/Phoenix/InstallerView.swift
+@@ -10,6 +10,8 @@ struct InstallerView: View {
+     @State private var showWelcomeRows = false
+     @State private var connectorPollTimer: Timer?
+     @State private var fdaBubblesVisible = false
++    @State private var measuredContentHeight: CGFloat = 0
++    @State private var measuredOverlayHeight: CGFloat = 0
+ 
+     private var screen: InstallerScreen {
+         let s = resolveInstallerScreen(
+@@ -65,14 +67,34 @@ struct InstallerView: View {
+                     subLabel: client.headerSubLabel,
+                     downloadManager: downloadManager
+                 )
++                .background(
++                    GeometryReader { geo in
++                        Color.clear.preference(
++                            key: InstallerOverlayHeightKey.self,
++                            value: geo.size.height
++                        )
++                    }
++                )
+             }
+         }
+-        .frame(width: 680)
++        .frame(
++            width: 680,
++            height: installerWindowHeight(
++                for: screen,
++                contentHeight: measuredContentHeight,
++                overlayHeight: measuredOverlayHeight,
++                cap: installerHeightCap()
++            )
++        )
++        // No SwiftUI implicit animation on the height plumbing — AppKit's
++        // setFrame animator (driven by SelfSizingHostingView when
++        // animatesWindowResize is true) owns the resize animation. Stacking
++        // both engines was restarting the AppKit animator on every SwiftUI
++        // intermediate frame, producing visible jitter mid-resize.
+         .onAppear {
+             refreshInstallerState()
+             finalizePermissionsIfNeeded()
+             updateConnectorPolling()
+-            updateWindowHeight(for: screen)
+             if screen == .welcomeInstall && !showWelcomeRows {
+                 animateWelcomeRows()
+             }
+@@ -84,7 +106,16 @@ struct InstallerView: View {
+         .onChange(of: screen) {
+             finalizePermissionsIfNeeded()
+             updateConnectorPolling()
+-            updateWindowHeight(for: screen)
++        }
++        // 1pt deadband on the measured-height inputs — sub-pixel layout
++        // jitter during the settle pass would otherwise re-trigger the
++        // AppKit setFrame animator and produce a visible micro-shimmy after
++        // every screen transition.
++        .onPreferenceChange(InstallerContentHeightKey.self) { newHeight in
++            if abs(measuredContentHeight - newHeight) > 1 { measuredContentHeight = newHeight }
++        }
++        .onPreferenceChange(InstallerOverlayHeightKey.self) { newHeight in
++            if abs(measuredOverlayHeight - newHeight) > 1 { measuredOverlayHeight = newHeight }
+         }
+         .onChange(of: downloadManager.runtimeLaunchReady) {
+             if agentReady {
+@@ -485,23 +516,68 @@ struct InstallerView: View {
+         }
+     }
+ 
+-    private func updateWindowHeight(for screen: InstallerScreen) {
+-        guard let window = NSApp.windows.first(where: { $0.identifier?.rawValue == "installer" }) else { return }
+-        let targetHeight: CGFloat = screen == .connectors ? 610 : 530
+-        let currentFrame = window.frame
+-        guard abs(currentFrame.height - targetHeight) > 1 else { return }
+-        let newOriginY = currentFrame.origin.y + (currentFrame.height - targetHeight)
+-        let newFrame = NSRect(
+-            x: currentFrame.origin.x,
+-            y: newOriginY,
+-            width: currentFrame.width,
+-            height: targetHeight
+-        )
+-        NSAnimationContext.runAnimationGroup { context in
+-            context.duration = 0.45
+-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+-            window.animator().setFrame(newFrame, display: true)
+-        }
++    private func installerHeightCap() -> CGFloat {
++        // Leave 80pt of slack so a maximally-grown window doesn't touch the
++        // menu bar or Dock. The 420pt floor protects against degenerate
++        // visibleFrame values (multi-display reconfigurations, etc.).
++        max(420, (NSScreen.main?.visibleFrame.height ?? 900) - 80)
++    }
++}
++
++/// Pure mapping from screen state + measured intrinsic heights → desired
++/// installer window height. Splash screens (welcomeInstall / welcomeFDA /
++/// activation / connectContext) keep the design height of 530 because they
++/// fill via `Spacer`s rather than intrinsic content. The connectors screen
++/// sizes to its inner SettingsView content (reported via
++/// `InstallerContentHeightKey`) plus the bottom-anchored DownloadBarView's
++/// height (reported via `InstallerOverlayHeightKey`, zero when absent), and
++/// is capped so a long settings list falls back to scrolling inside
++/// SettingsView's existing ScrollView rather than pushing the window
++/// off-screen.
++///
++/// Returns 530 (the splash height) for connectors when no measurement has
++/// arrived yet — better to render at the design height for one frame than
++/// flash a degenerate window.
++///
++/// The cap applies to *all* screens, including splash: on a degenerate
++/// `visibleFrame` (multi-display reconfiguration, sidecar with a tiny
++/// secondary display, etc.) the cap may drop below 530, in which case
++/// fitting the visible frame matters more than honoring the design height.
++func installerWindowHeight(
++    for screen: InstallerScreen,
++    contentHeight: CGFloat,
++    overlayHeight: CGFloat,
++    cap: CGFloat
++) -> CGFloat {
++    let splashHeight: CGFloat = 530
++    let unclamped: CGFloat = {
++        guard screen == .connectors, contentHeight > 0 else { return splashHeight }
++        return contentHeight + overlayHeight
++    }()
++    return min(unclamped, cap)
++}
++
++/// SwiftUI preference key carrying the measured intrinsic height of the
++/// active installer screen up to `InstallerView`, which feeds it into the
++/// outer `.frame(height:)` and from there into the hosting view's
++/// intrinsicContentSize. Emitted by `SettingsView` (the only screen whose
++/// content can grow as connectors/containers come and go); unspecified for
++/// the splash screens, which use a design-set fixed height.
++struct InstallerContentHeightKey: PreferenceKey {
++    static var defaultValue: CGFloat = 0
++    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
++        value = nextValue()
++    }
++}
++
++/// Carries the bottom-anchored `DownloadBarView`'s measured height up to
++/// `InstallerView` so the connectors-screen window can grow to keep the
++/// settings content above the bar (including the taller "retry" state).
++/// Reverts to zero when the bar isn't in the view tree (post-install).
++struct InstallerOverlayHeightKey: PreferenceKey {
++    static var defaultValue: CGFloat = 0
++    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
++        value = nextValue()
+     }
+ }
+ 
+diff --git a/app/Phoenix/MenuBarController.swift b/app/Phoenix/MenuBarController.swift
+index 709dfb63..ed06eb34 100644
+--- a/app/Phoenix/MenuBarController.swift
++++ b/app/Phoenix/MenuBarController.swift
+@@ -393,30 +393,61 @@ final class MenuBarPanel: NSPanel {
+ /// treats the SwiftUI ideal as *content-area* size and then adds the titlebar
+ /// back on — producing a window that is taller than the content by exactly
+ /// the titlebar height.
+-private final class SelfSizingHostingView<Content: View>: NSHostingView<Content> {
++final class SelfSizingHostingView<Content: View>: NSHostingView<Content> {
++    /// When true, intrinsic-driven resizes (after the initial sizing) animate
++    /// via AppKit's setFrame animator. The menu-bar panel keeps this off
++    /// because it has its own fade orchestration; the installer window flips
++    /// it on so screen transitions resize smoothly instead of snapping.
++    var animatesWindowResize: Bool = false
++
++    /// When true, the post-resize frame is clamped to the host screen's
++    /// `visibleFrame` so growth (which pins the top edge and pushes the
++    /// bottom down) cannot slide the window under the Dock or above the
++    /// menu bar. The menu-bar panel keeps this off because it's anchored
++    /// to the menu bar by construction; floating windows that the user
++    /// repositions (the installer is `window.center()`-ed at open) need
++    /// the clamp because top-edge pinning otherwise compounds with growth
++    /// to march the window off-screen on tall content / small displays.
++    var clampsToScreen: Bool = false
++
+     override var safeAreaInsets: NSEdgeInsets { NSEdgeInsets() }
+ 
+     override func invalidateIntrinsicContentSize() {
+         super.invalidateIntrinsicContentSize()
+-        syncWindowSize()
++        syncWindowSize(animate: animatesWindowResize)
+     }
+ 
+     override func viewDidMoveToWindow() {
+         super.viewDidMoveToWindow()
+-        syncWindowSize()
++        // Initial sizing (window just opened) should never animate — there's
++        // no prior frame to animate from.
++        syncWindowSize(animate: false)
+     }
+ 
+-    private func syncWindowSize() {
++    private func syncWindowSize(animate: Bool) {
+         guard let window else { return }
+         let size = intrinsicContentSize
+         guard size.width > 0, size.height > 0 else { return }
+         if window.frame.size == size { return }
+-        // Pin the top edge — the menu-bar anchor is at the top of the panel,
+-        // so growth must expand downward rather than upward.
++        // Pin the top edge — both the menu-bar panel and the installer window
++        // anchor visually at the top, so growth must expand downward.
+         var frame = window.frame
+         frame.origin.y += frame.size.height - size.height
+         frame.size = size
+-        window.setFrame(frame, display: true, animate: false)
++        if clampsToScreen, let visibleFrame = (window.screen ?? NSScreen.main)?.visibleFrame {
++            // Fix the top edge first, then the bottom — order matters so
++            // the bottom adjustment wins when the window is taller than
++            // the visible frame (degenerate; cap is supposed to prevent
++            // it). Result in that case: top pinned to visibleFrame.minY,
++            // bottom may extend above visibleFrame.maxY.
++            if frame.maxY > visibleFrame.maxY {
++                frame.origin.y = visibleFrame.maxY - frame.height
++            }
++            if frame.minY < visibleFrame.minY {
++                frame.origin.y = visibleFrame.minY
++            }
++        }
++        window.setFrame(frame, display: true, animate: animate)
+     }
+ }
+ 
+diff --git a/app/Phoenix/PhoenixApp.swift b/app/Phoenix/PhoenixApp.swift
+index 11b63e2f..5dbe041f 100644
+--- a/app/Phoenix/PhoenixApp.swift
++++ b/app/Phoenix/PhoenixApp.swift
+@@ -150,7 +150,18 @@ final class InstallerWindowController: NSObject, NSWindowDelegate {
+                 Task { @MainActor in client.openMessagesPromptToManagedPhone() }
+             }
+         )
+-        let hostingView = NSHostingView(rootView: view)
++        // SelfSizingHostingView keeps the window frame in sync with the
++        // SwiftUI tree's intrinsic size — InstallerView pins that via its
++        // outer `.frame(width: 680, height: installerWindowHeight(...))`,
++        // so the window grows/shrinks declaratively as the active screen
++        // and its measured content change. Replaces the prior imperative
++        // `setFrame` path that fought AppKit's intrinsic re-pinning.
++        let hostingView = SelfSizingHostingView(rootView: view)
++        hostingView.animatesWindowResize = true
++        // The installer is `window.center()`-ed at open; without clamping,
++        // top-edge-pinned growth past the visible frame can slide its
++        // bottom edge under the Dock on smaller displays.
++        hostingView.clampsToScreen = true
+ 
+         NSApp.setActivationPolicy(.regular)
+ 
+@@ -161,7 +172,6 @@ final class InstallerWindowController: NSObject, NSWindowDelegate {
+             defer: false
+         )
+         window.contentView = hostingView
+-        window.setContentSize(NSSize(width: 680, height: 530))
+         window.backgroundColor = NSColor(red: 0.07, green: 0.08, blue: 0.07, alpha: 1)
+         // Pin the window (and any NSPopover it hosts) to dark appearance so popovers/alerts
+         // don't render with light system material when the user is in Light Mode.
+diff --git a/app/Phoenix/SettingsView.swift b/app/Phoenix/SettingsView.swift
+index 0947b1ea..24947fb1 100644
+--- a/app/Phoenix/SettingsView.swift
++++ b/app/Phoenix/SettingsView.swift
+@@ -27,6 +27,14 @@ struct SettingsView: View {
+             .padding(.horizontal, 40)
+             .padding(.top, 40)
+             .padding(.bottom, 50)
++            .background(
++                GeometryReader { geo in
++                    Color.clear.preference(
++                        key: InstallerContentHeightKey.self,
++                        value: geo.size.height
++                    )
++                }
++            )
+         }
+         .alert("Not Available", isPresented: $showNotBuiltAlert) {
+             Button("OK") {}
+diff --git a/app/PhoenixTests/InstallerStateTests.swift b/app/PhoenixTests/InstallerStateTests.swift
+index 43fa4e96..9869d332 100644
+--- a/app/PhoenixTests/InstallerStateTests.swift
++++ b/app/PhoenixTests/InstallerStateTests.swift
+@@ -114,3 +114,81 @@ final class InstallerStateTests: XCTestCase {
+         )
+     }
+ }
++
++// MARK: - Installer window sizing
++
++/// Covers `installerWindowHeight(for:contentHeight:overlayHeight:cap:)` —
++/// the pure helper that drives the installer NSWindow's height. Splash
++/// screens must always render at the design height (530); the connectors
++/// screen must size to its measured intrinsic content (plus the
++/// download-bar overlay when present), capped to the available screen so
++/// the existing ScrollView fallback re-engages on overflow.
++final class InstallerWindowSizeTests: XCTestCase {
++
++    private let designHeight: CGFloat = 530
++    private let cap: CGFloat = 800
++
++    func testSplashScreensUseDesignHeight() {
++        for screen in [InstallerScreen.welcomeInstall, .welcomeFDA, .activation, .connectContext] {
++            XCTAssertEqual(
++                installerWindowHeight(for: screen, contentHeight: 1200, overlayHeight: 200, cap: cap),
++                designHeight,
++                "splash screen \(screen) must ignore measured content and stay at design height"
++            )
++        }
++    }
++
++    func testConnectorsWithoutMeasurementFallsBackToDesignHeight() {
++        XCTAssertEqual(
++            installerWindowHeight(for: .connectors, contentHeight: 0, overlayHeight: 0, cap: cap),
++            designHeight,
++            "before content measures, render at the splash height — never zero"
++        )
++    }
++
++    func testConnectorsSizesToMeasuredContentBelowCap() {
++        XCTAssertEqual(
++            installerWindowHeight(for: .connectors, contentHeight: 480, overlayHeight: 0, cap: cap),
++            480
++        )
++    }
++
++    func testConnectorsAddsOverlayHeightToContent() {
++        // The DownloadBarView overlays the bottom of the ZStack — add its
++        // measured height so settings rows aren't hidden behind it.
++        XCTAssertEqual(
++            installerWindowHeight(for: .connectors, contentHeight: 480, overlayHeight: 70, cap: cap),
++            550
++        )
++    }
++
++    func testConnectorsCapsAtVisibleScreen() {
++        // Content + overlay would push past the cap → cap wins so the
++        // existing ScrollView fallback inside SettingsView re-engages.
++        XCTAssertEqual(
++            installerWindowHeight(for: .connectors, contentHeight: 1500, overlayHeight: 100, cap: cap),
++            cap
++        )
++    }
++
++    func testConnectorsRetryStateGrowsWindowWithBar() {
++        // The retry state grows the DownloadBarView (extra Retry button row)
++        // — the window must grow with it so settings content stays visible.
++        // Assert exact values so a sign-flip in the helper still trips.
++        let normal = installerWindowHeight(for: .connectors, contentHeight: 480, overlayHeight: 60, cap: cap)
++        let retry = installerWindowHeight(for: .connectors, contentHeight: 480, overlayHeight: 100, cap: cap)
++        XCTAssertEqual(normal, 540)
++        XCTAssertEqual(retry, 580)
++    }
++
++    func testSplashIsCappedOnDegenerateVisibleFrame() {
++        // If the visibleFrame collapses (multi-display reconfig, sidecar
++        // with a tiny secondary display), the cap may drop below the 530
++        // splash design height. Splash must respect the cap so it doesn't
++        // overflow the visible screen.
++        XCTAssertEqual(
++            installerWindowHeight(for: .welcomeInstall, contentHeight: 0, overlayHeight: 0, cap: 400),
++            400
++        )
++    }
++}

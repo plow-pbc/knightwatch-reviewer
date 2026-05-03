@@ -1,0 +1,1662 @@
+[15:49:34] agent=aggregator starting
+Reading additional input from stdin...
+OpenAI Codex v0.128.0 (research preview)
+--------
+workdir: /tmp/tmp.xNLg23mTYM/repo
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: high
+reasoning summaries: none
+session id: 019deae2-0600-7482-87cf-544305bcb8b1
+--------
+user
+You are the aggregator in a multi-specialist PR review. Eight specialists produced raw findings; a critic then stress-tested each one and may have flagged missed findings. Your job: evaluate the critic's counterarguments, merge/dedupe the surviving findings, rank, and produce ONE posted review.
+
+**Voice posture (apply across published findings):** Apply `standards.md` § Broken-Glass Test on every published finding. Declarative voice is allowed only when the specialist (after critic stress-test) can cite the failing path, the user-observable outcome, and the line where the contract breaks. All other surviving findings lead with their #1 assumption as a question; scope-creep findings name the cost ("adds complexity and makes PMF iteration harder").
+
+**Inputs:**
+- `.codex-scratch/inferred-intent.md` — pre-fan-out inferred end-user-facing intent. Lead the posted review with this line (see formatting rule in step 6).
+- `.codex-scratch/specialists/security.md`
+- `.codex-scratch/specialists/data-integrity.md`
+- `.codex-scratch/specialists/architecture.md`
+- `.codex-scratch/specialists/simplification.md`
+- `.codex-scratch/specialists/tests.md`
+- `.codex-scratch/specialists/shape.md`
+- `.codex-scratch/specialists/performance.md`
+- `.codex-scratch/specialists/consumers.md`
+- `.codex-scratch/critic.md` — **critic counterarguments + missed findings. READ FIRST.**
+- `.codex-scratch/diff.patch` — the diff under review. For re-reviews this is normally the *incremental* diff (since the last reviewed SHA), not the full PR — but the opening message (REVIEW_TASK) is authoritative when it says otherwise (e.g. on the silent-fallback path it contains the full PR diff because the prior reviewed SHA is no longer in local history).
+- `.codex-scratch/full-diff.patch` — present *only* on re-reviews; the full PR diff against base. On the fallback path it contains the same content as `diff.patch`. Use this when judging whether a prior `blocking` finding has actually been addressed: the incremental diff may not touch the criticized code at all (in which case the concern stands), or it may have rewritten it (in which case re-evaluate). You may also `cat`/`grep` the touched files in the workdir to confirm current state.
+- `.codex-scratch/previous-review.md` — your team's prior review, if re-review
+- `.codex-scratch/prior-reviews.md` — present *only* when 1+ prior reviews exist on this PR; concatenated `aggregator/output.md` from every previous run (most recent last). Used by step 5a (Bug-Class-Recurrence) to detect when the same finding class has been flagged across multiple reviews. Distinct from `previous-review.md`, which is just the immediately-prior one.
+- `.codex-scratch/momentum.md` — present *only* on re-reviews; prose-only meta-finding from the momentum specialist. Read this before drafting findings; if Path 2 of the step-back signal fires, this output becomes the structural callout verbatim.
+- `.codex-scratch/loc-trend.md` — per-round LOC trajectory + GROWING/STABLE/SHRINKING classification. Used by Path 2 trigger.
+- `.codex-scratch/trigger-comment.md` — present whenever this review was triggered by a trusted-author `/srosro-review` or `/srosro-update-review` comment. The body may be substantive prose framing the review goal ("they asked us to grade this against DRY and the diff added 2k LoC") or just the bare slash command (routine re-review — no extra framing). When prose is supplied, let it sharpen the review's emphasis. Step 6 below describes how to gate the "step back and ask" mode on prose-vs-bare-command.
+- `.codex-scratch/test-results.md` — `just test` outcome
+- `.codex-scratch/standards.md` — the standards the review is measured against
+- `.codex-scratch/product-context.md` — product stage and roadmap
+- `.codex-scratch/review-priority.md` — per-repo operating point + voice posture.
+- `.codex-scratch/file-history.md` — recent commits for each touched file
+- `.codex-scratch/commits.md` — commit subjects on this branch, one per line.
+- `.codex-scratch/author-intent.md` — the PR's description + linked issues
+- `.codex-scratch/decline-history.md` — operator's prior decline replies on this PR. Two channels: (a) "Decline replies" — free-form prose, used by the critic as context (no mechanical auto-drop); (b) "Explicit class markers" — counts of `<!-- decline:class=X -->` markers; classes counted ≥3 are mechanically dropped by the critic, others are read as context only. Read for context when interpreting why a finding is or isn't carrying forward.
+
+**Note on layered specialist files.** Each `.codex-scratch/specialists/<angle>.md` is now a layered file: original specialist findings → critic counter-arguments (split from `critic.md` by the orchestrator's critic-splitter) → optionally a Go-deep tech-lead investigation (when the finding's remedy was ≥20 LOC, ≤3 instances per review). When integrating findings, prefer the deepest available recommendation:
+- **Go-deep `KEEP`** → publish the finding as the specialist + critic produced it (severity from specialist + critic verdict).
+- **Go-deep `SIMPLIFY-WITH-PATTERN`** → rewrite the finding's remedy to use the cited pattern; severity stays. Cite the pattern's path:line in the published finding.
+- **Go-deep `DROP`** → omit from published findings. If the finding was originally `blocking`/`medium`, emit a one-line footnote: "X was investigated by go-deep tech-lead; decline reason: <one-line>." Otherwise, drop silently.
+- **Go-deep `REFRAME`** → move to **Open Questions** with the go-deep's reframed text verbatim. The reframe carries cost-naming already.
+
+If a specialist file has no Go-deep section, treat it as before (specialist + critic only).
+
+**PR:** cncorp/plow#563
+**Title:** feat(phoenix): keep Mac awake while Plow runs (PLO-30)
+**URL:** https://github.com/cncorp/plow/pull/563
+
+**Your job:**
+
+**Re-review handling — read this before step 1.** If `previous-review.md` is non-empty, you are producing a re-review. The specialists only saw the *incremental* diff and may not re-raise findings about code that's unchanged since last time. **The critic also stress-tested every prior `[blocking]`/`[medium]` finding** under its "Carried-forward findings" section in `critic.md` — read those verdicts FIRST, before deciding whether to carry forward. For each prior `[blocking]`/`[medium]`:
+   - **Apply the critic's carry-forward verdict using the same step-1 verdict table below.** For carry-forwards specifically, AGREE means "carry forward at original severity"; the other verdicts behave exactly as in step 1.
+   - **If the critic flagged K ≥ 3 rounds without engagement**, the default is REFRAME-AS-QUESTION even when the cited code is unchanged — silence at K ≥ 3 means the author has materially deferred and continuing to re-emit as `[blocking]` is talking past them.
+   - For carry-forwards the critic did NOT cover (rare — e.g. the prior finding was `[low]`/`[nit]`, or the previous-review.md content is malformed), fall back to the prior rule: read `full-diff.patch` to check whether the cited code changed; carry forward at original severity if unchanged, evaluate the new state if modified.
+   - The verdict (APPROVE vs. COMMENT) must reflect the *current* state of all prior concerns, not just what shows up in the increment — but it must also reflect the critic's carry-forward verdicts, not just "is the code unchanged."
+
+1. Read the critic output first. For each specialist finding with a critic counterargument, apply the critic's verdict (but **evaluate each counterargument on its own merits** — don't rubber-stamp the critic; if a counterargument is itself unconvincing, keep the original finding and move on):
+   - **AGREE** → keep the finding.
+   - **FALSE POSITIVE** → drop it.
+   - **OVER-SPECIFIC** → either drop, or rewrite to speak to the general pattern; keep only if the generalized version is worth a reviewer's time.
+   - **MISCALIBRATED** → adjust severity (blocking → medium, etc.) per the calibration the critic cited, or drop if the calibration means this shouldn't be raised.
+   - **REMEDY-BLOAT** → drop unless the critic named a LOC-negative or branch-negative alternative; if it did, keep the finding at the original or downgraded severity, rewritten to point at that alternative.
+   - **REFRAME-AS-QUESTION** → lift the critic's reframed text into Open Questions verbatim. Drop the original prescriptive finding from the Findings list; the question replaces it. The reframe carries the cost-naming clause already; preserve it as written.
+   - **ALREADY ADDRESSED** → drop unless the pattern recurs across recent commits.
+   - **DUPLICATE** → keep one framing (the more actionable), drop the other.
+   - **Voice-posture audit:** before publishing each surviving finding, check whether it leads with the assumption-as-question. If declarative-but-not-high-confidence, rewrite the leading sentence as a question (template: *"Will [state X]? If yes, [Y]. If not, consider cutting [Y] — adds complexity and makes PMF iteration harder."*). Keep the file/line citation and standard reference. Do not water down the underlying concern; only the *posture* changes.
+2. Consider each critic-identified missed finding. If it holds up against the diff/standards/specialists, add it with the critic's estimated severity (adjust if warranted). If speculative or speculative-coincident-with-a-dropped-finding, omit.
+3. Rank the surviving findings by severity (blocking → medium → low → nit). **Within a severity band, rank by impact on long-term code health, not by raw order:**
+   a. Tech-debt and architectural findings — missing abstraction, DRY violation, design that won't survive the roadmap. These compound. **Shape-bypass / parallel-pattern findings** (where the PR invented a new pattern instead of extending an existing seam — e.g. a new `os.getenv()` next to a `Config` class, a new `threading.Thread` next to the queue, a new wrapper next to an existing client) belong at the top of this band. They compound the fastest because each bypass calcifies and the next change extends the wrong seam. When a `shape` finding survives the critic, name it explicitly in Findings — "the new X should have gone through Y; extend that seam, don't bypass it" — rather than burying it in generic refactor language. This is the most common, highest-leverage class of LLM defect we catch.
+
+      **Performance findings are only worth the author's time when the fix is small and idiomatic.** A `performance` finding that proposes a one-line idiomatic change (`select_related`, batched fetch, `.exists()` instead of `.count()`) belongs in the standard cost-benefit math. Drop perf findings whose remedy adds infra (Redis, CDN, microservice split), trades readability for throughput (hand-rolled SQL), or restructures storage. Engineer-hours, not CPU — at this stage, "we can scale this later when we hit the wall" is the right answer for almost every non-trivial perf concern.
+
+      **Stale-caller findings from the `consumers` specialist are runtime failures pending — rank them at the top of the blocking band**, alongside data-integrity and security blockers. A modified public symbol with a caller that no longer matches will crash at the next request / cron / message — there is no "fine to ship today" framing for these. Dead-code findings from `consumers` (zero remaining callers) are tech-debt-band — usually `medium` for public symbols, `low` for private helpers — and don't need to block; a follow-up issue is enough.
+   b. Broad-correctness findings affecting many paths or users.
+   c. Surface-area findings touching many files.
+   d. Localized fixes, line-level style, and nits — LAST within their band.
+   Ground this weighting in the "Team Context" section of `.codex-scratch/standards.md`. If two findings are the same severity and one is "code that won't scale as the team grows" vs one that is "line-level style," the scalability finding wins the higher slot.
+4. Drop findings that are weak, duplicative, or that a reader would score as "not worth mentioning." Quality over volume. It is correct to drop nits if there are ≥3 stronger findings — a short review is better than a padded one.
+5. Specialists output a "Surveyed" section even when they have no findings. That section is not posted — it exists so you can verify the specialist actually looked. A specialist with a thin Surveyed section (1-2 bullets) and no findings should lower your confidence; flag in the Overview if multiple specialists look under-engaged.
+
+5a. **Bug-Class-Recurrence detection.** Two distinct signals — they get different treatment because they mean different things.
+
+   **Across-reviews signal (real loop).** If `.codex-scratch/prior-reviews.md` is present, classify each prior review's findings by bug class (atomicity, session-scoping, parsing, dispatch, retry, validation, error-envelope, …) and count occurrences. When a class has appeared in **2+ prior reviews**, the author has seen the class before and the local-patch path isn't converging. Replace this round's individual findings of that class with one Bug-Class-Recurrence finding at `blocking`, ranked at the very top:
+
+   ```
+   1. [blocking] [Bug-Class-Recurrence] This is the Nth instance of <class>: <one-line shape, e.g. "stale data from session N reaching session N+1 on a single-shared mutable">. Patching individual instances has reached diminishing returns. The architectural shape that would eliminate the class entirely is <concrete shape — value type, sealed enum for state, single-owner data, registry, dispatch map>. Recommend addressing the class instead of the instance — without that move, expect another local-fix round on the next variant.
+   Files: <cite ALL the recurring instances across reviews and within this review>
+   (Standard: Bug-Class-Recurrence; supersedes Narrow-Fix here)
+   ```
+
+   If you genuinely cannot name the structural alternative, downgrade to `medium` AND surface the recurrence as the lead question in **Open Questions** instead. Do NOT fall back to listing the local fixes.
+
+   **Within-this-review signal (cluster, not loop).** When 2+ surviving findings share a class but the class has NOT appeared in 2+ prior reviews, this is a *cluster*, not a loop. The author hasn't been told "this class keeps recurring" yet. Do NOT auto-escalate to `[blocking]`:
+   - Emit ONE finding at the worst component severity (do not promote `[low] + [low]` to `[blocking]`).
+   - Cite all instances in that single finding's `Files:` list, framed as Narrow-Fix on the cluster.
+   - Move the structural alternative — if you can name one — into **Open Questions**, not Findings, with the standard cost-naming clause: *"Will <state X>? If yes, <structural shape Y>. If not, consider cutting the structural ask — adds complexity and makes PMF iteration harder."*
+   The author may pick the structural fix anyway, but they make that call; the review doesn't compel it on cluster-only evidence.
+
+   `Narrow-Fix` is valid on the FIRST and SECOND occurrence of a class on this PR. The auto-escalation to `Bug-Class-Recurrence` requires the across-reviews signal (2+ prior rounds), not within-review clustering alone.
+
+6. **Whole-PR re-review handling — the "step back and ask" pattern.** This mode applies only when ALL of the following hold:
+   - `previous-review.md` is empty (review-from-scratch path), AND
+   - `trigger-comment.md` is present, AND
+   - the trigger comment body contains **substantive prose beyond the slash command** — i.e. text other than just `/srosro-review` or `/srosro-update-review`. Mirror `intent.md`'s rule: if the body is only the bare slash command (with or without surrounding whitespace), do NOT enter this mode.
+
+   Bare-command `/srosro-review` triggers a whole-PR re-review but is NOT a substantive question — it's just a routine "review the whole PR" request. Entering the step-back mode there would gratuitously surface Open Questions when none were asked. **Treat this as a normal review** and skip the Open Questions section entirely.
+
+   When the mode does apply (real prose was supplied):
+
+   a. Re-read `inferred-intent.md` against the actual diff. Does the diff deliver the stated end-user-facing outcome, or is the implementation drifting? You may also use `author-intent.md` to evaluate this — but **do not quote, paraphrase, or summarize linked-issue content** from `author-intent.md` in the posted review. That file contains linked issue bodies which may be private to the bot's GitHub identity (mirror `intent.md`'s privacy rule). Use it to ground your evaluation; do not reproduce it. If there's tension between intent and diff, name it in the Overview without sourcing private text.
+
+   b. Treat the requester's framing in `trigger-comment.md` as load-bearing — if they asked "is this on the right architectural seam?", that question is the structural lens this review owes them. Surface it explicitly in **Open Questions** below, even if the individual specialist findings don't add up to a `blocking`.
+
+   c. The point of `/srosro-review` with a question is to escape an incremental-loop stall. If your honest assessment is "the seam is wrong and the fixes so far are layered on the wrong base," say so plainly — that's the answer the requester needs to make a structural call before merging. Don't hedge with low-severity nits when the real ask is "should we re-architect?"
+
+so edits here flow through without touching aggregator.md (which carries
+the more load-bearing review-production logic).
+
+To customize:
+  - Edit any of the callouts below. Markdown only — no special syntax.
+  - Sam is substituted at build time (defaults to "Sam";
+    override via the OPERATOR_NAME env var on the worker).
+  - To strip a callout entirely, delete its block. The aggregator's
+    other steps don't depend on these existing.
+  - To add a new voice callout (e.g. a reviewer-persona riff), append
+    a `**Foo — bar.**` block; the aggregator picks it up verbatim.
+
+Don't add load-bearing review LOGIC here (severity calibration, what
+counts as a finding, ranking rules, output structure). Those live in
+aggregator.md and are not voice — confusing the two leads to operator
+edits silently breaking the review pipeline.
+-->
+
+**Voice — opinionated nudges.** Low / nit findings that reflect Sam's personal preferences (style, naming, structure choices that aren't documented-standard violations but match Sam's opinions for this codebase) can be phrased as "blame Sam, but…" or "Sam would push back on this". This gives the author a "this is opinionated, not gospel" signal and somebody concrete to argue with — and varies the wording across PRs so the bot doesn't sound like a stuck record. Use it sparingly: only on personal-taste-flavored low / nits, never on `blocking` or `medium` findings (which should stand on their merits, not be deflected). Don't force the voice — when a finding fits cleanly without it, leave it alone.
+
+**Tone — self-aware ribbing.** Beyond the deflection above, occasional self-deprecating humor (about your own LLM-ness, the limits of opinionated review, the fact that you might be wrong about taste) and light PR-poking (gently calling out the funny shape of a change — a 300-line fix for a one-line typo, three near-identical try/except blocks within 50 lines, a fallback chain landing in the same PR that adds a "no fallback chains" rule) is welcome on `low` / `nit` findings or in the Overview. Sparingly: at most one beat per review, sometimes none. Anchor every joke in something concrete in the diff or the standards — generic snark falls flat. **Never cross into mean.** Don't imply the author didn't read the codebase, didn't think, or doesn't understand the language; don't roast effort, only shape. The goal is camaraderie, not punching down. If the joke isn't both grounded in the diff *and* obviously self-aware about being from a bot, leave it out. When in doubt, leave it out — a dry, factual review beats a forced joke every time.
+
+**Step-back signal — PR fundamentally not iterable.** Two trigger paths:
+
+**Path 1 (first-review only — existing behavior).** If `previous-review.md` is empty AND surviving findings indicate the PR is too broken to converge through review iteration, switch to redirect mode. Typical signals: 5+ `blocking` findings; 8+ `blocking` + `medium` combined that span multiple subsystems; an architectural seam choice that nullifies most of the diff (e.g. a parallel pattern next to a load-bearing existing seam where extending the seam would delete most of the new code). When triggered:
+
+   a. Lead the **Overview** with a clear "this PR appears too large or scope-broken to converge through review iteration" framing — be direct, not hedged.
+   b. Name the **3 most structural issues** with concrete cites — these are the issues that drive the redirect, not the longest list of findings.
+   c. Recommend the author **close + resubmit as smaller scoped PRs**, with a one-paragraph sketch of how the split could work (e.g. "the auth refactor is its own PR; the new `/api/payments/retry` endpoint is another; the test scaffolding is a third").
+   d. **Skip** the per-finding `[severity]` bullet enumeration that step 7's structure block describes — the structural redirect IS the review. Replace the **Findings** section with the 3 structural issues (still cite Files / standards).
+   e. **Length: 200-400 words**, not 1000. The point is to redirect, not to itemize.
+   f. **Verdict stays `COMMENT`** — don't approve, but also don't `blocking` the author into a multi-round patch loop they're going to lose. They need to close the PR, not iterate it.
+
+   Tone here matters: be honest about why the PR isn't landable as-is, but match the **Tone** rule above — empathetic to the author's effort, factual about the structural reality. "This is too big to land" is more useful than "this is bad." Cite **Bug-Class-Recurrence** or **Spec-Reframe** if either applies.
+
+**Path 2 (re-review loop-breaker — NEW).** Fires when `previous-review.md` is non-empty AND any of:
+
+- `.codex-scratch/loc-trend.md` shows GROWING (≥1.5×) AND Bug-Class-Recurrence has fired in any prior round (visible in `prior-reviews.md`), OR
+- Bug-Class-Recurrence has fired in 2+ prior rounds (regardless of LOC trajectory — catches the dynamic where the author held LOC stable but ignored the structural ask).
+
+(The trigger reads only PRIOR rounds — the momentum specialist runs *before* the critic, so "this round's" Bug-Class-Recurrence finding does not yet exist when momentum is checking the trigger. Naming "this round" here would make the condition unreachable.)
+
+When Path 2 fires:
+
+1. **Promote the momentum specialist's output verbatim** as a dedicated callout block at the top of the review, immediately after the intent line and before `**Overview**`. Format with visual weight:
+
+   ```
+   > **Why this PR isn't converging?**
+   >
+   > <full momentum specialist prose, including its closing question>
+   ```
+
+2. **Keep the local findings** in the numbered Findings list, ranked by severity, all subject to voice posture (questions over prescriptions). Not dropped — but the structural callout has eaten the visual real estate.
+3. **Add a closing question** in the Overview: *"Are we ready to commit to the structural direction in the callout above, or is continuing to patch leaves the better trade given X? Addressing the local findings below before the direction is settled is how PRs balloon."*
+4. **Verdict stays `COMMENT`.**
+
+7. Produce the final posted review in EXACTLY this structure. Target 300-500 words for typical PRs. For large diffs (>500 KB) or PRs with many substantive findings, you may flex up to 1000 words — but only if the extra length carries real content. Quality over length: don't pad to hit the floor, and don't drop important findings to hit the ceiling. **Step-back signal mode (above) overrides this length contract** — a redirect review is 200-400 words even when the underlying PR has 20 findings, because the redirect is the review.
+
+```
+_<intent line, italicized — see formatting rule below>_
+
+**Overview** — 2-3 sentences on what the PR does.
+
+**Strengths** — non-obvious things done right so the author repeats them. Omit this section if none.
+
+**Findings**
+1. [blocking|medium|low|nit] <one paragraph, cite Files: path:line, cite the standard violated where applicable (Fail-Fast, Tests, Concise Code, DRY, Narrow-Fix, Spec-Reframe, Migrations)>
+2. ...
+
+**Open Questions** — homes for legitimate concerns whose remedy is additive enough that the author should answer rather than absorb. Includes critic REFRAME-AS-QUESTION outputs verbatim. Format:
+
+- **Q: <name the choice in 5-10 words>** — <state-trigger sentence>. <If-yes branch.> <If-not branch with cost-naming.> <Optional: recommendation given operating point.>
+
+Example:
+
+- **Q: Permanent fourth taxonomy class, or one-off?** — Will we add a 2nd `team-skills/` bundle in the next month? If yes, the taxonomy row pays for itself now. If not, consider cutting the taxonomy demand — adds complexity and makes PMF iteration harder.
+
+Open Questions is no longer "padding" — it's the home for reviewer pushback that doesn't rise to a Finding. Don't drop these to keep the review short; questions are the unit of pushback. Cap at quality, not volume — questions that don't meet the template (state-trigger + if-not-branch with cost-naming + optional recommendation) get dropped, same bar as Findings.
+
+**Security** — one sentence summary of the security specialist's take, or "None" if clean.
+
+**Test coverage** — summary of the tests specialist's take plus the `just test` outcome. If tests failed, call it out. If the failure is caused by our reviewer sandbox (e.g. read-only filesystem error creating `/home/odio/.docker/*`), note it as a reviewer-side issue, not a PR-related test failure.
+```
+
+8. **Intent-line formatting** (rule for the leading italicized line):
+   a. Read the contents of `.codex-scratch/inferred-intent.md`.
+   b. Strip the literal prefix `Inferred intent: ` from the start.
+   c. If the result does not already end with a clause like "— reviewing against that goal" or similar, append ` — reviewing against that goal.`
+   d. Wrap the whole result in single underscores (italics).
+   e. Place it as the first line of the posted review, followed by a blank line, then the existing `**Overview**` section.
+
+   Example. If `.codex-scratch/inferred-intent.md` contains:
+
+   ```
+   Inferred intent: It appears @plucas is working towards letting users retry failed payments without re-entering card details by adding a `/api/payments/retry` endpoint.
+   ```
+
+   the leading line of the posted review is:
+
+   ```
+   _It appears @plucas is working towards letting users retry failed payments without re-entering card details by adding a `/api/payments/retry` endpoint — reviewing against that goal._
+   ```
+
+   You do NOT re-infer or paraphrase the intent. Copy, strip, italicize.
+
+9. On the VERY LAST LINE of your output, put exactly one of:
+   - `VERDICT: APPROVE` — no findings, or findings are low/nit only.
+   - `VERDICT: APPROVE — pending: <short comma-separated nit/low items>` — approvable but worth noting.
+   - `VERDICT: COMMENT` — one or more `blocking` findings must be addressed before merge.
+
+No other content after the VERDICT line.
+codex
+I’ll aggregate the review from the scratch artifacts, starting with the critic as requested, then I’ll verify the surviving claims against the diff/current files before drafting the single posted review.
+exec
+/bin/bash -lc "sed -n '1,260p' .codex-scratch/critic.md" in /tmp/tmp.xNLg23mTYM/repo
+ succeeded in 0ms:
+## Critic counterarguments
+
+### [simplification] Finding 1 — REFRAME-AS-QUESTION
+The finding assumes the Settings and status-popover controls should share one product contract; the live code uses different chrome/copy in [SettingsView.swift](/tmp/tmp.xNLg23mTYM/repo/app/Phoenix/SettingsView.swift:181) vs [StatusView.swift](/tmp/tmp.xNLg23mTYM/repo/app/Phoenix/StatusView.swift:431), and the cited tooltip divergence is not present in the diff.
+Reframe:
+> Will both Keep Mac Awake surfaces stay intentionally identical in copy and affordance? If yes, extract a tiny shared row. If not, leave the rows local — a shared component adds complexity and makes PMF iteration harder.
+
+**Estimated remedy LOC:** ~25 LOC across 2 files.
+
+**Calibration questions for go-deep investigation:**
+- Will users at this early-product operating point hit inconsistent behavior here, or is the only evidence potential future copy drift with no observed instances?
+- Could this be handled by deleting one duplicate surface or aligning copy inline, instead of adding a shared view component?
+
+### [simplification] Finding 2 — AGREE
+Can `StatusView` route the four installer-opening actions through one local helper? Yes: all four calls are identical at [StatusView.swift](/tmp/tmp.xNLg23mTYM/repo/app/Phoenix/StatusView.swift:258), :264, :271, and :360, and a file-local helper is branch-negative cleanup.
+
+**Estimated remedy LOC:** ~5 LOC across 1 file.
+
+### [tests] Finding 1 — AGREE
+Will automated coverage accept a new OS assertion owner with no success/release behavior test? The concern survives, but the evidence is stale: current tree has no `app/PhoenixTests/KeepMacAwakeTests.swift`, so failure rollback is also untested, not just release/teardown.
+
+**Estimated remedy LOC:** ~80 LOC across 3 files.
+
+**Calibration questions for go-deep investigation:**
+- Will this feature’s core failures be user-visible at launch/toggle time? Yes: a missed release or stale assertion state maps directly to the Mac sleeping or an assertion lingering.
+- Can the remedy stay to 1-2 behavior tests plus one small assertion/defaults seam, instead of broad test-target or UI automation churn?
+
+### [tests] Finding 2 — FALSE POSITIVE
+The cited `CountingUserDefaults` helper and line references do not exist in the current tree; `rg` finds no `KeepMacAwakeTests.swift` at all. This should not be raised as a brittle-test cleanup.
+
+### [shape] Finding 1 — AGREE
+Does PLO-30 need a second installer layout-sizing system? The live diff does add measured height state and preference keys in [InstallerView.swift](/tmp/tmp.xNLg23mTYM/repo/app/Phoenix/InstallerView.swift:14) and [SettingsView.swift](/tmp/tmp.xNLg23mTYM/repo/app/Phoenix/SettingsView.swift:32), which is adjacent to the stated keep-awake intent and adds complexity and makes PMF iteration harder.
+
+**Estimated remedy LOC:** ~0 added LOC across 2 files; likely removes ~55 LOC.
+
+## Missed findings (if any)
+- [low] Will the UI promise reachability in states the implementation explicitly cannot control? [KeepMacAwake.swift](/tmp/tmp.xNLg23mTYM/repo/app/Phoenix/KeepMacAwake.swift:5) documents battery downgrade and clamshell sleep limits, but [SettingsView.swift](/tmp/tmp.xNLg23mTYM/repo/app/Phoenix/SettingsView.swift:191) says “so your agent stays reachable,” which can overpromise the feature’s actual contract.
+exec
+/bin/bash -lc 'ls -la .codex-scratch' in /tmp/tmp.xNLg23mTYM/repo
+exec
+/bin/bash -lc "sed -n '1,220p' .codex-scratch/inferred-intent.md" in /tmp/tmp.xNLg23mTYM/repo
+ succeeded in 0ms:
+Inferred intent: It appears @swagatpatel is working towards keeping users’ Plow agent reachable when their Mac would otherwise go to sleep by adding a persistent “Keep Mac Awake” toggle in `SettingsView.swift` and `StatusView.swift`, wired through `PhoenixApp.swift` to `KeepMacAwake.swift`’s IOPM sleep-prevention assertion.
+ succeeded in 0ms:
+total 32
+drwxrwxr-x  3 odio odio  4096 May  2 15:46 .
+drwxrwxr-x 25 odio odio  4096 May  2 15:38 ..
+-rw-rw-r--  1 odio odio     0 May  2 15:38 author-intent.md
+-rw-rw-r--  1 odio odio     0 May  2 15:38 commits.md
+lrwxrwxrwx  1 odio odio    47 May  2 15:46 critic.md -> /tmp/tmp.xNLg23mTYM/run/agents/critic/output.md
+-rw-rw-r--  1 odio odio     0 May  2 15:38 dead-code-static.md
+lrwxrwxrwx  1 odio odio    57 May  2 15:40 dead-code.md -> /tmp/tmp.xNLg23mTYM/run/agents/dead-code-search/output.md
+-rw-rw-r--  1 odio odio     0 May  2 15:38 decline-history.md
+-rw-rw-r--  1 odio odio 18115 May  2 15:38 diff.patch
+-rw-rw-r--  1 odio odio     0 May  2 15:38 file-history.md
+lrwxrwxrwx  1 odio odio    47 May  2 15:38 inferred-intent.md -> /tmp/tmp.xNLg23mTYM/run/agents/intent/output.md
+-rw-rw-r--  1 odio odio     0 May  2 15:38 loc-trend.md
+-rw-rw-r--  1 odio odio     0 May  2 15:38 previous-review.md
+-rw-rw-r--  1 odio odio     0 May  2 15:38 prior-art.md
+-rw-rw-r--  1 odio odio     0 May  2 15:38 prior-reviews.md
+-rw-rw-r--  1 odio odio     0 May  2 15:38 review-priority.md
+-rw-rw-r--  1 odio odio     0 May  2 15:38 search-roots.md
+drwxrwxr-x  2 odio odio  4096 May  2 15:46 specialists
+-rw-rw-r--  1 odio odio     0 May  2 15:38 standards.md
+
+codex
+The critic leaves three concrete candidates plus one open question: missing keep-awake behavior coverage, a shape issue around installer sizing, and repeated installer-opening calls. I’m checking the specialist layers and the diff now so the final review only carries claims that survive against the actual patch.
+exec
+/bin/bash -lc "sed -n '1,260p' .codex-scratch/diff.patch" in /tmp/tmp.xNLg23mTYM/repo
+ succeeded in 0ms:
+diff --git a/app/Phoenix/InstallerView.swift b/app/Phoenix/InstallerView.swift
+index 537ed1e7..5df324a4 100644
+--- a/app/Phoenix/InstallerView.swift
++++ b/app/Phoenix/InstallerView.swift
+@@ -4,12 +4,15 @@ import SwiftUI
+ struct InstallerView: View {
+     let downloadManager: RuntimeDownloadManager
+     let client: DaemonClient
++    let keepMacAwake: KeepMacAwake
+     var onDismiss: () -> Void
+ 
+     @State private var started = false
+     @State private var showWelcomeRows = false
+     @State private var connectorPollTimer: Timer?
+     @State private var fdaBubblesVisible = false
++    @State private var measuredContentHeight: CGFloat = 0
++    @State private var measuredOverlayHeight: CGFloat = 0
+ 
+     private var screen: InstallerScreen {
+         let s = resolveInstallerScreen(
+@@ -52,6 +55,7 @@ struct InstallerView: View {
+                     SettingsView(
+                         client: client,
+                         downloadManager: downloadManager,
++                        keepMacAwake: keepMacAwake,
+                         onDismiss: onDismiss
+                     )
+                 }
+@@ -65,6 +69,14 @@ struct InstallerView: View {
+                     subLabel: client.headerSubLabel,
+                     downloadManager: downloadManager
+                 )
++                .background(
++                    GeometryReader { geo in
++                        Color.clear.preference(
++                            key: InstallerOverlayHeightKey.self,
++                            value: geo.size.height
++                        )
++                    }
++                )
+             }
+         }
+         .frame(width: 680)
+@@ -99,6 +111,18 @@ struct InstallerView: View {
+         .onChange(of: client.activationState) {
+             finalizePermissionsIfNeeded()
+         }
++        .onPreferenceChange(InstallerContentHeightKey.self) { newHeight in
++            measuredContentHeight = newHeight
++        }
++        .onPreferenceChange(InstallerOverlayHeightKey.self) { newHeight in
++            measuredOverlayHeight = newHeight
++        }
++        .onChange(of: measuredContentHeight) {
++            updateWindowHeight(for: screen)
++        }
++        .onChange(of: measuredOverlayHeight) {
++            updateWindowHeight(for: screen)
++        }
+         .onDisappear {
+             connectorPollTimer?.invalidate()
+             connectorPollTimer = nil
+@@ -487,7 +511,7 @@ struct InstallerView: View {
+ 
+     private func updateWindowHeight(for screen: InstallerScreen) {
+         guard let window = NSApp.windows.first(where: { $0.identifier?.rawValue == "installer" }) else { return }
+-        let targetHeight: CGFloat = screen == .connectors ? 610 : 530
++        let targetHeight = targetWindowHeight(for: screen)
+         let currentFrame = window.frame
+         guard abs(currentFrame.height - targetHeight) > 1 else { return }
+         let newOriginY = currentFrame.origin.y + (currentFrame.height - targetHeight)
+@@ -503,6 +527,47 @@ struct InstallerView: View {
+             window.animator().setFrame(newFrame, display: true)
+         }
+     }
++
++    /// The connectors screen sizes its window to the measured content height
++    /// (reported via `InstallerContentHeightKey`), capped by the visible
++    /// screen so a long settings list falls back to scrolling inside the
++    /// existing `ScrollView` instead of pushing the window off-screen. The
++    /// remaining screens are intentionally taller than their content
++    /// (Spacer-filled splash layouts) and keep the design height of 530.
++    private func targetWindowHeight(for screen: InstallerScreen) -> CGFloat {
++        let cap = max(420, (NSScreen.main?.visibleFrame.height ?? 900) - 80)
++        if screen == .connectors, measuredContentHeight > 0 {
++            // `measuredContentHeight` is the ScrollView's inner content; add
++            // the window's titlebar plus the bottom-anchored DownloadBarView's
++            // measured height (zero when the bar isn't shown) so the bar
++            // doesn't cover the last settings rows.
++            return min(measuredContentHeight + 28 + measuredOverlayHeight, cap)
++        }
++        return 530
++    }
++}
++
++/// Carries the bottom-anchored `DownloadBarView`'s measured height up to
++/// `InstallerView` so the connectors-screen window can grow to keep the
++/// settings content above the bar (including the taller "retry" state).
++/// Reverts to zero when the bar isn't in the view tree (post-install).
++struct InstallerOverlayHeightKey: PreferenceKey {
++    static var defaultValue: CGFloat = 0
++    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
++        value = nextValue()
++    }
++}
++
++/// SwiftUI preference key carrying the measured intrinsic height of the
++/// active installer screen up to `InstallerView`, which drives the hosting
++/// `NSWindow`'s frame. Emitted by `SettingsView` (the only screen whose
++/// content can grow as connectors/containers come and go); unspecified for
++/// the splash screens, which use a design-set fixed height.
++struct InstallerContentHeightKey: PreferenceKey {
++    static var defaultValue: CGFloat = 0
++    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
++        value = nextValue()
++    }
+ }
+ 
+ struct InstallPrimaryButtonStyle: ButtonStyle {
+diff --git a/app/Phoenix/KeepMacAwake.swift b/app/Phoenix/KeepMacAwake.swift
+index ee257fc9..52668392 100644
+--- a/app/Phoenix/KeepMacAwake.swift
++++ b/app/Phoenix/KeepMacAwake.swift
+@@ -10,32 +10,51 @@ import Observation
+ /// Clamshell sleep on a MacBook without an external display is still enforced
+ /// by the kernel and isn't reachable from a public API.
+ @Observable
++@MainActor
+ final class KeepMacAwake {
+     static let preferencesKey = "keepMacAwakeWhileRunning"
+ 
+     private var assertionID: IOPMAssertionID = 0
+     private var hasAssertion = false
++    /// Set true while we're rewriting `isEnabled` from inside `applyEnabled` to
++    /// revert a failed acquire — the recursive `didSet` reads this and bails.
++    private var suppressApply = false
+ 
+-    var isEnabled: Bool {
+-        get { UserDefaults.standard.bool(forKey: Self.preferencesKey) }
+-        set {
+-            UserDefaults.standard.set(newValue, forKey: Self.preferencesKey)
+-            if newValue {
+-                acquireAssertion()
+-            } else {
+-                releaseAssertion()
+-            }
+-        }
++    var isEnabled: Bool = UserDefaults.standard.bool(forKey: KeepMacAwake.preferencesKey) {
++        didSet { applyEnabled() }
+     }
+ 
+     init() {
++        applyEnabled()
++    }
++
++    /// Releases the assertion deterministically before the app exits, so the
++    /// system can coalesce any pending sleep state at logout/shutdown without
++    /// waiting for process reaping. The kernel reclaims the assertion on
++    /// process exit either way; this is a courtesy, not a leak fix.
++    func teardown() {
++        releaseAssertion()
++    }
++
++    /// Brings the held IOPMAssertion in line with `isEnabled` and persists the
++    /// resolved value. If acquire fails, `isEnabled` is reverted to false so
++    /// the toggle UI matches the actual sleep-prevention state.
++    private func applyEnabled() {
++        guard !suppressApply else { return }
+         if isEnabled {
+-            acquireAssertion()
++            if !acquireAssertion() {
++                suppressApply = true
++                isEnabled = false
++                suppressApply = false
++            }
++        } else {
++            releaseAssertion()
+         }
++        UserDefaults.standard.set(isEnabled, forKey: Self.preferencesKey)
+     }
+ 
+-    private func acquireAssertion() {
+-        guard !hasAssertion else { return }
++    private func acquireAssertion() -> Bool {
++        guard !hasAssertion else { return true }
+         var id: IOPMAssertionID = 0
+         let reason = "Plow keeping Mac awake so the OpenClaw VM stays reachable" as CFString
+         let result = IOPMAssertionCreateWithName(
+@@ -44,9 +63,13 @@ final class KeepMacAwake {
+             reason,
+             &id
+         )
+-        guard result == kIOReturnSuccess else { return }
++        guard result == kIOReturnSuccess else {
++            NSLog("[KeepMacAwake] IOPMAssertionCreateWithName failed: %d", result)
++            return false
++        }
+         assertionID = id
+         hasAssertion = true
++        return true
+     }
+ 
+     private func releaseAssertion() {
+diff --git a/app/Phoenix/MenuBarController.swift b/app/Phoenix/MenuBarController.swift
+index 709dfb63..ec52fcec 100644
+--- a/app/Phoenix/MenuBarController.swift
++++ b/app/Phoenix/MenuBarController.swift
+@@ -30,6 +30,7 @@ final class MenuBarController: NSObject, NSWindowDelegate {
+         appUpdater: AppUpdater,
+         installerController: InstallerWindowController,
+         audioRecorder: AudioRecorder,
++        keepMacAwake: KeepMacAwake,
+         isDev: Bool
+     ) {
+         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+@@ -39,7 +40,8 @@ final class MenuBarController: NSObject, NSWindowDelegate {
+                 downloadManager: downloadManager,
+                 appUpdater: appUpdater,
+                 installerController: installerController,
+-                audioRecorder: audioRecorder
++                audioRecorder: audioRecorder,
++                keepMacAwake: keepMacAwake
+             )
+         )
+         self.daemonClient = daemonClient
+diff --git a/app/Phoenix/PhoenixApp.swift b/app/Phoenix/PhoenixApp.swift
+index 11b63e2f..15b7f359 100644
+--- a/app/Phoenix/PhoenixApp.swift
++++ b/app/Phoenix/PhoenixApp.swift
+@@ -91,13 +91,18 @@ final class PhoenixAppDelegate: NSObject, NSApplicationDelegate {
+             appUpdater: appUpdater,
+             installerController: installerController,
+             audioRecorder: audioRecorder,
++            keepMacAwake: keepMacAwake,
+             isDev: Self.isDev
+         )
+ 
+         // Always show installer on launch.
+         NSApp.setActivationPolicy(.regular)
+         appendStartupTimingLog("PhoenixApp.init presenting installer window")
+-        installerController.show(downloadManager: downloadManager, client: daemonClient)
++        installerController.show(downloadManager: downloadManager, client: daemonClient, keepMacAwake: keepMacAwake)
++    }
++
++    func applicationWillTerminate(_ notification: Notification) {
++        keepMacAwake.teardown()
+     }
+ 
+     /// Fires when the user tries to "open" Plow while it's already running:
+@@ -107,7 +112,7 @@ final class PhoenixAppDelegate: NSObject, NSApplicationDelegate {
+     /// away by Bartender, and the user just told us they want to see the app.
+     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+         if installerController.isVisible {
+-            installerController.show(downloadManager: downloadManager, client: daemonClient)
++            installerController.show(downloadManager: downloadManager, client: daemonClient, keepMacAwake: keepMacAwake)
+         } else {
+             menuBarController?.showPanel()
+         }
+@@ -117,7 +122,7 @@ final class PhoenixAppDelegate: NSObject, NSApplicationDelegate {
+     // MARK: - Menu command targets
+
+exec
+/bin/bash -lc "for f in .codex-scratch/specialists/*.md; do printf '\\n===== %s =====\\n' \""'$f"; sed -n '"'1,240p' \""'$f"; done' in /tmp/tmp.xNLg23mTYM/repo
+ succeeded in 0ms:
+
+===== .codex-scratch/specialists/architecture.md =====
+## [architecture] findings
+
+### Surveyed
+- App-wide `KeepMacAwake` ownership in `PhoenixAppDelegate` — clean; matches the current Swift app + plowd host split rather than introducing a daemon/runtime dependency.
+- IOKit power assertion wrapper and persistent `UserDefaults` state — clean; no new external dependency or hard-to-reverse data shape.
+- Constructor threading through `InstallerView`, `SettingsView`, `MenuBarController`, and `StatusView` — clean; single shared model, no parallel wake-state sources.
+- UI placement in installer Settings and connected status popover — clean; the feature is exposed where users already manage local app/runtime controls.
+- Current PR diff versus earlier auto-sizing commits — clean; the unrelated installer window sizing path is not present in the live PR diff.
+- Phoenix/OpenClaw architecture docs and roadmap boundaries — clean; the change stays in the macOS app layer and does not cross gateway, plowd policy, or VM management boundaries.
+===== .codex-scratch/specialists/consumers.md =====
+## [consumers] findings
+
+### Surveyed
+- `InstallerView` constructor now requires `keepMacAwake`; repo-wide callers resolve to `PhoenixApp.swift` and pass the singleton — clean
+- `SettingsView` constructor now requires `keepMacAwake`; only `InstallerView` constructs it and passes the new dependency — clean
+- `MenuBarController.init` and `StatusView` constructor both gained `keepMacAwake`; the only construction path is updated through `PhoenixAppDelegate` — clean
+- `InstallerWindowController.show(downloadManager:client:keepMacAwake:)` signature changed; all internal call sites in `PhoenixApp.swift` and `StatusView.swift` pass the new argument — clean
+- `KeepMacAwake` / `KeepMacAwake.isEnabled` changed to `@MainActor` observable stored state; internal consumers are SwiftUI toggles and the app delegate singleton lifecycle — clean
+- New `InstallerContentHeightKey` and `InstallerOverlayHeightKey` preference keys are consumed by `InstallerView` and emitted by the matching SwiftUI subtrees — clean
+- `.codex-scratch/search-roots.md` is empty and no `.siblings` source tree is present; these touched symbols are Phoenix app-internal with no plausible sibling consumers found in this checkout — clean
+===== .codex-scratch/specialists/data-integrity.md =====
+## [data-integrity] findings
+
+### Surveyed
+- Live PR diff vs stale scratch diff — clean; GitHub’s current PR has reverted the installer auto-sizing work, so I did not review the stale sizing patch as part of the final correctness surface.
+- `KeepMacAwake.applyEnabled()` acquire/revert/persist flow — clean; failed assertion acquire reverts `isEnabled` and writes the resolved value to `UserDefaults` on the main actor.
+- Assertion ID lifecycle in `acquireAssertion()` / `releaseAssertion()` — clean; synchronous, guarded, and no shared mutable state is accessed off-main.
+- Shared wiring through `PhoenixAppDelegate`, `InstallerView`, `SettingsView`, and `StatusView` — clean; both toggles bind to the same `KeepMacAwake` instance rather than diverging persisted state.
+- Quit path via `applicationWillTerminate` → `teardown()` — clean; release is deterministic without changing the persisted opt-in, so relaunch reacquires as intended.
+- Failed-acquire tests in `KeepMacAwakeTests` — clean; toggle-time and init-time rollback paths are covered for the data correctness invariant.
+===== .codex-scratch/specialists/performance.md =====
+## [performance] findings
+
+### Surveyed
+- `KeepMacAwake` launch and toggle path (`UserDefaults`, IOKit assertion acquire/release) — clean | runs once at launch and only on user toggle, no realistic hot-path cost.
+- Failed-acquire rollback via `suppressApply` — clean | bounded to one attempted assertion and one persisted resolved value.
+- `StatusView` keep-awake toggle wiring — clean | adds a small observed row to an existing local SwiftUI panel; no per-record or request-scale work.
+- `SettingsView` System section toggle — clean | static UI addition with no loop, fetch, or synchronous external I/O.
+- Installer/menu-bar plumbing of the shared `KeepMacAwake` instance — clean | passes one object through existing view construction without adding repeated work.
+- New `KeepMacAwakeTests` injected assertion/defaults helpers — clean | deterministic unit-only overhead, no production-path scale concern.
+===== .codex-scratch/specialists/security.md =====
+## [security] findings
+
+### Surveyed
+- `KeepMacAwake` persistence through `UserDefaults` — clean; stores only a local boolean preference, no secrets or PII.
+- IOKit assertion acquisition and failure logging — clean; logs only numeric `IOReturn`, not user data, tokens, paths, or connector state.
+- Toggle surfaces in `SettingsView` and `StatusView` — clean; local UI state only, no new HTTP route, auth bypass, or cross-user control path.
+- `InstallerWindowController.show(...)` and view-tree threading of `KeepMacAwake` — clean; dependency is passed in-process and does not widen a trust boundary.
+- Test injection points for `UserDefaults` and `AssertionCreator` — clean; scoped to local construction and do not expose runtime command execution or external input handling.
+- New Xcode test target wiring — clean; no new third-party dependency or vulnerable package surface.
+- Physical-security angle of keeping the Mac awake — clean under the Broken-Glass Test; this is an explicit local opt-in and not a failing auth/session/privacy contract.
+===== .codex-scratch/specialists/shape.md =====
+## [shape] findings
+
+### Surveyed
+- `KeepMacAwake` as the single OS assertion owner — clean; novel domain object, no existing power-management seam to bypass.
+- `UserDefaults` persistence for the toggle — clean; Phoenix already uses direct `UserDefaults` for app-local preferences.
+- `NSLog` on assertion failure — clean; conforms to the existing Phoenix logging style.
+- Passing the observable model into `SettingsView` and `StatusView` with `@Bindable` — clean; keeps the toggle state centralized.
+- Installer window height measurement added around the settings row — see Finding 1.
+
+### Finding 1 — medium
+By `Name the Shape` and the `Broken-Glass Test`, does PLO-30 need to introduce a second installer layout-sizing system? The user-facing intent is “keep the Mac awake while Plow runs,” but this diff also adds measured content state, two `PreferenceKey`s, overlay measurement, and dynamic `NSWindow` resizing. That remedy adds layout conditionals and preference plumbing that future installer changes must reason about, which adds complexity and makes PMF iteration harder. If the new settings row needs space, the simpler shape is to keep the existing fixed installer behavior or handle installer sizing in its own PR.
+Files: app/Phoenix/InstallerView.swift:14, app/Phoenix/InstallerView.swift:72, app/Phoenix/InstallerView.swift:114, app/Phoenix/InstallerView.swift:531, app/Phoenix/InstallerView.swift:554, app/Phoenix/InstallerView.swift:566, app/Phoenix/SettingsView.swift:32
+
+---
+
+## Critic counter-arguments
+
+### [shape] Finding 1 — AGREE
+Does PLO-30 need a second installer layout-sizing system? The live diff does add measured height state and preference keys in [InstallerView.swift](/tmp/tmp.xNLg23mTYM/repo/app/Phoenix/InstallerView.swift:14) and [SettingsView.swift](/tmp/tmp.xNLg23mTYM/repo/app/Phoenix/SettingsView.swift:32), which is adjacent to the stated keep-awake intent and adds complexity and makes PMF iteration harder.
+
+**Estimated remedy LOC:** ~0 added LOC across 2 files; likely removes ~55 LOC.
+
+
+
+===== .codex-scratch/specialists/simplification.md =====
+## [simplification] findings
+
+### Surveyed
+- `kid` prior-art surface — clean; `.codex-scratch/prior-art.md` was empty and repo grep found no existing `KeepMacAwake`/IOPM utility to reuse
+- `KeepMacAwake` assertion acquisition, failure rollback, and test injection points — clean; the extra seams are tied to deterministic failure tests
+- installer auto-sizing code in the stale scratch diff — clean; current PR head has reverted it and only keeps `keepMacAwake` pass-through
+- Phoenix project file addition for `KeepMacAwakeTests.swift` — clean; the final IDs are isolated to the test file entry
+- duplicated Keep Mac Awake UI rows — see Finding 1
+- repeated installer-opening calls in `StatusView` — see Finding 2
+
+### Finding 1 — low
+Under the Broken-Glass Test, can the Keep Mac Awake control stay single-source? The PR adds two hand-copied controls with the same title, binding, empty-label `Toggle`, switch style, and tint; the later accuracy tooltip only landed on the Settings version, so the duplicate has already diverged. A small shared view/helper for the label+toggle, with each surface keeping its own chrome, would avoid conditionals and special cases while satisfying Concise Code.
+Files: app/Phoenix/SettingsView.swift:170, app/Phoenix/SettingsView.swift:176, app/Phoenix/SettingsView.swift:186, app/Phoenix/SettingsView.swift:191, app/Phoenix/StatusView.swift:433, app/Phoenix/StatusView.swift:437, app/Phoenix/StatusView.swift:440
+
+### Finding 2 — nit
+Can `StatusView` collapse the repeated installer-opening command before the dependency bundle grows further? The exact `installerController.show(downloadManager: client: keepMacAwake:)` call now appears in four button/menu actions, and this PR had to touch each one just to thread the new dependency. A file-local `showInstaller()` helper is a low-cost Concise Code cleanup: one method, no defensive branches, no new abstraction outside the view.
+Files: app/Phoenix/StatusView.swift:258, app/Phoenix/StatusView.swift:264, app/Phoenix/StatusView.swift:271, app/Phoenix/StatusView.swift:363
+
+---
+
+## Critic counter-arguments
+
+### [simplification] Finding 1 — REFRAME-AS-QUESTION
+The finding assumes the Settings and status-popover controls should share one product contract; the live code uses different chrome/copy in [SettingsView.swift](/tmp/tmp.xNLg23mTYM/repo/app/Phoenix/SettingsView.swift:181) vs [StatusView.swift](/tmp/tmp.xNLg23mTYM/repo/app/Phoenix/StatusView.swift:431), and the cited tooltip divergence is not present in the diff.
+Reframe:
+> Will both Keep Mac Awake surfaces stay intentionally identical in copy and affordance? If yes, extract a tiny shared row. If not, leave the rows local — a shared component adds complexity and makes PMF iteration harder.
+
+**Estimated remedy LOC:** ~25 LOC across 2 files.
+
+**Calibration questions for go-deep investigation:**
+- Will users at this early-product operating point hit inconsistent behavior here, or is the only evidence potential future copy drift with no observed instances?
+- Could this be handled by deleting one duplicate surface or aligning copy inline, instead of adding a shared view component?
+
+### [simplification] Finding 2 — AGREE
+Can `StatusView` route the four installer-opening actions through one local helper? Yes: all four calls are identical at [StatusView.swift](/tmp/tmp.xNLg23mTYM/repo/app/Phoenix/StatusView.swift:258), :264, :271, and :360, and a file-local helper is branch-negative cleanup.
+
+**Estimated remedy LOC:** ~5 LOC across 1 file.
+
+
+
+---
+
+## Go-deep tech-lead investigation
+
+### Investigation of Finding 1
+
+**Calibration answers:**
+
+**Q1: Will users at this early-product operating point hit inconsistent behavior here, or is the only evidence potential future copy drift with no observed instances?**
+A: Users can hit two presentations of the same control, but the current code does not show inconsistent behavior: both surfaces bind to `$keepMacAwake.isEnabled` and use the same switch/tint at `app/Phoenix/SettingsView.swift:198` and `app/Phoenix/StatusView.swift:437`. The copy/chrome is intentionally different today: Settings has icon + subtitle at `app/Phoenix/SettingsView.swift:185` and `app/Phoenix/SettingsView.swift:191`, while Status has only a compact `HStack` label at `app/Phoenix/StatusView.swift:433`. The claimed tooltip drift is not present: tooltip/help grep finds Settings tooltips elsewhere and only `StatusView`’s Tools help at `app/Phoenix/StatusView.swift:414`, not a Keep Mac Awake tooltip. Firing-rate evidence for an actual user-visible inconsistency is therefore zero observed instances; the evidence is future drift risk. Confidence: high.
+
+**Q2: Could this be handled by deleting one duplicate surface or aligning copy inline, instead of adding a shared view component?**
+A: Yes. The simpler contract is “one shared `KeepMacAwake` model, local UI chrome per surface.” That is already what the code does: `PhoenixApp` owns one model at `app/Phoenix/PhoenixApp.swift:42`, Settings receives it at `app/Phoenix/SettingsView.swift:6`, and Status receives it at `app/Phoenix/StatusView.swift:177`. Deleting one surface would change the inferred product intent, which explicitly says the PR adds a persistent toggle in both `SettingsView.swift` and `StatusView.swift` (`.codex-scratch/inferred-intent.md:1`). If exact copy matters, inline alignment is smaller than a shared component: add/remove the one subtitle line cluster around `app/Phoenix/SettingsView.swift:191`, or add matching copy near `app/Phoenix/StatusView.swift:434`. Confidence: high.
+
+**Pattern search:**
+- Existing Phoenix UI patterns favor local helpers inside the owning surface: `SettingsView` keeps `settingsRow` local at `app/Phoenix/SettingsView.swift:416`, and `StatusView` keeps `toolsMenu` and `statusHeaderView` local at `app/Phoenix/StatusView.swift:326` and `app/Phoenix/StatusView.swift:418`.
+- `git grep -n "Keep Mac Awake" -- app app/PhoenixTests` returns only the two UI labels at `app/Phoenix/SettingsView.swift:188` and `app/Phoenix/StatusView.swift:434`; there are no tests documenting a requirement that the two rows remain text-identical.
+- Related history shows the two surfaces were added separately: commit `e0b51774347e324a735abe4f322ee9cd803fe0cb` added the Settings System section, and commit `48419b4b1a2ce3a375b84570c38e8da9729b9611` added the Status panel toggle. The existing extraction precedent is intra-file reuse, not cross-surface components.
+- Original remedy is ~25 LOC across 2 files; inline copy alignment would be ~1-4 LOC, and leaving local chrome unchanged is 0 LOC.
+
+**Decline-history check:**
+- No prior decline. `.codex-scratch/decline-history.md` has no non-empty lines.
+
+**Recommendation:** REFRAME
+- The duplicate is real, but under the early-product operating point it is not broken glass users are currently cutting themselves on. The current shared contract is the important one: both rows drive the same observable model. A cross-file shared component would make the UI harder to iterate while the product is still discovering where this toggle belongs.
+- Will both Keep Mac Awake surfaces stay intentionally identical in copy and affordance? If yes, align the copy inline first and extract only after observed drift or a third surface appears. If not, consider cutting the shared component request — it adds complexity and makes PMF iteration harder.
+===== .codex-scratch/specialists/tests.md =====
+## [tests] findings
+
+### Surveyed
+- Prepared `just test` result artifact — missing locally; GitHub PR checks are passing, so no PR-related failure classification was available from scratch output
+- `KeepMacAwakeTests` target wiring in `PhoenixTests` — clean
+- Failed runtime toggle-on rollback coverage — clean
+- Failed launch-from-persisted-true rollback coverage — clean
+- Successful acquire, toggle-off release, and teardown coverage — see Finding 1
+- `CountingUserDefaults` write-count assertions — see Finding 2
+
+### Finding 1 — medium
+Could the tests cover the success/release state transition, not just acquisition failure? Current tests exercise only `kIOReturnError`, while the feature’s core contract lives in successful `acquireAssertion`, `releaseAssertion`, and `teardown`. A regression that stops recording the returned assertion ID, never calls `IOPMAssertionRelease`, or leaves `hasAssertion` stale would pass automated tests and show up as the Mac still sleeping or an assertion lingering until process exit. Concrete seam: inject an `AssertionReleaser` closure or small assertion-client value beside `AssertionCreator`, then assert toggle-on and toggle-off/teardown behavior. Cost is one symmetric test seam, not conditionals or special cases.
+Files: app/Phoenix/KeepMacAwake.swift:53, app/Phoenix/KeepMacAwake.swift:74, app/Phoenix/KeepMacAwake.swift:86, app/PhoenixTests/KeepMacAwakeTests.swift:28
+
+### Finding 2 — nit
+Under the Broken-Glass Test, can these tests assert the user-visible state instead of exact `UserDefaults` write counts? The assertions at lines 61 and 95 make a private implementation detail part of the contract; final `isEnabled`, final persisted value, and `acquireCallCount` already cover rollback plus no repeated acquire. Keeping the write-count contract makes harmless refactors fail and carries a custom `CountingUserDefaults` helper for one internal choreography check. The Concise Code remedy is to drop the exact write-count assertions/helper unless a single-write behavior is itself a product requirement.
+Files: app/PhoenixTests/KeepMacAwakeTests.swift:61, app/PhoenixTests/KeepMacAwakeTests.swift:95, app/PhoenixTests/KeepMacAwakeTests.swift:106
+
+---
+
+## Critic counter-arguments
+
+### [tests] Finding 1 — AGREE
+Will automated coverage accept a new OS assertion owner with no success/release behavior test? The concern survives, but the evidence is stale: current tree has no `app/PhoenixTests/KeepMacAwakeTests.swift`, so failure rollback is also untested, not just release/teardown.
+
+**Estimated remedy LOC:** ~80 LOC across 3 files.
+
+**Calibration questions for go-deep investigation:**
+- Will this feature’s core failures be user-visible at launch/toggle time? Yes: a missed release or stale assertion state maps directly to the Mac sleeping or an assertion lingering.
+- Can the remedy stay to 1-2 behavior tests plus one small assertion/defaults seam, instead of broad test-target or UI automation churn?
+
+### [tests] Finding 2 — FALSE POSITIVE
+The cited `CountingUserDefaults` helper and line references do not exist in the current tree; `rg` finds no `KeepMacAwakeTests.swift` at all. This should not be raised as a brittle-test cleanup.
+
+
+
+---
+
+## Go-deep tech-lead investigation
+
+### Investigation of Finding 1
+
+**Calibration answers:**
+
+**Q1: Will this feature’s core failures be user-visible at launch/toggle time? Yes: a missed release or stale assertion state maps directly to the Mac sleeping or an assertion lingering.**
+A: Yes, for users who opt into the feature. The object is created at app launch (`app/Phoenix/PhoenixApp.swift:42`), `init()` immediately applies the persisted state (`app/Phoenix/KeepMacAwake.swift:27`, `app/Phoenix/KeepMacAwake.swift:28`), and both Settings and status popover expose toggles bound directly to `isEnabled` (`app/Phoenix/SettingsView.swift:198`, `app/Phoenix/StatusView.swift:437`). The core side effects are exactly the IOKit acquire/release calls (`app/Phoenix/KeepMacAwake.swift:60`, `app/Phoenix/KeepMacAwake.swift:77`), so a stale `hasAssertion` or missed `assertionID` write breaks the user-facing contract. Firing-rate evidence: every persisted-enabled launch and every toggle-on/toggle-off fires this path (`app/Phoenix/KeepMacAwake.swift:23`, `app/Phoenix/KeepMacAwake.swift:24`, `app/Phoenix/KeepMacAwake.swift:42`, `app/Phoenix/KeepMacAwake.swift:53`). Confidence: high.
+
+**Q2: Can the remedy stay to 1-2 behavior tests plus one small assertion/defaults seam, instead of broad test-target or UI automation churn?**
+A: Yes. The current tree has no `KeepMacAwakeTests.swift`; the Phoenix test target already uses direct model/service tests via `@testable import Phoenix` (`app/PhoenixTests/ActivationStateTests.swift:1`, `app/PhoenixTests/ActivationStateTests.swift:2`) and `@MainActor` unit tests for app-state code (`app/PhoenixTests/DaemonClientLaunchStateTests.swift:25`, `app/PhoenixTests/DaemonClientLaunchStateTests.swift:46`). Existing patterns support a small injected seam: `DaemonClient` accepts an optional `LimaVMManaging` dependency and tests pass `FakeVMManager` (`app/Phoenix/DaemonClient.swift:436`, `app/PhoenixTests/DaemonClientLaunchStateTests.swift:74`, `app/PhoenixTests/DaemonClientLaunchStateTests.swift:86`), while startup timing uses a narrow test writer hook for one side effect (`app/Phoenix/ActivationState.swift:7`, `app/Phoenix/ActivationState.swift:54`, `app/Phoenix/ActivationState.swift:64`). Confidence: high.
+
+**Pattern search:**
+- `git grep -n "KeepMacAwake"` shows production wiring only and no existing tests for this class (`app/Phoenix/KeepMacAwake.swift:14`, `app/Phoenix/PhoenixApp.swift:42`, `app/Phoenix/SettingsView.swift:6`, `app/Phoenix/StatusView.swift:177`).
+- `git grep -n "IOPMAssertion"` shows the assertion acquire/release surface is single-owner and isolated to `KeepMacAwake.swift` (`app/Phoenix/KeepMacAwake.swift:60`, `app/Phoenix/KeepMacAwake.swift:77`).
+- Existing lightweight dependency seams: optional injected VM manager plus fake (`app/Phoenix/DaemonClient.swift:436`, `app/PhoenixTests/DaemonClientLaunchStateTests.swift:74`, `app/PhoenixTests/DaemonClientLaunchStateTests.swift:86`); module-level writer hook for one side effect (`app/Phoenix/ActivationState.swift:54`, `app/Phoenix/ActivationState.swift:64`).
+- `git log --stat --since='90 days ago' -- app/Phoenix/KeepMacAwake.swift` shows the feature was introduced in `684de1d3` and then touched twice on Apr 30 for review fixes and acquire-failure rollback (`e0b5177`, `74908ca`), so this code path is already review-churned despite being small.
+
+**Decline-history check:**
+- no prior decline; `.codex-scratch/decline-history.md` has no line-bearing content.
+
+**Recommendation:** KEEP
+- This is above the broken-glass comfort zone, but it protects the feature’s central operating contract: keeping the agent reachable while Plow runs. The fix should stay narrowly scoped: one tiny assertion client/closure seam, injected defaults or a test suite defaults instance, and 1-2 `@MainActor` behavior tests for successful acquire, toggle-off release, and teardown release. Do not expand this into UI automation, broader window/controller tests, or exact write-count assertions.
+exec
+/bin/bash -lc 'for f in .codex-scratch/test-results.md .codex-scratch/trigger-comment.md .codex-scratch/product-context.md .codex-scratch/standards.md .codex-scratch/review-priority.md .codex-scratch/previous-review.md .codex-scratch/prior-reviews.md .codex-scratch/momentum.md; do if [ -e "$f" ]; then printf '"'\\n===== %s =====\\n' \""'$f"; sed -n '"'1,220p' \""'$f"; fi; done' in /tmp/tmp.xNLg23mTYM/repo
+ succeeded in 0ms:
+
+===== .codex-scratch/standards.md =====
+
+===== .codex-scratch/review-priority.md =====
+
+===== .codex-scratch/previous-review.md =====
+
+===== .codex-scratch/prior-reviews.md =====
+
+exec
+/bin/bash -lc "sed -n '260,620p' .codex-scratch/diff.patch" in /tmp/tmp.xNLg23mTYM/repo
+ succeeded in 0ms:
+     // MARK: - Menu command targets
+ 
+     func showInstaller() {
+-        installerController.show(downloadManager: downloadManager, client: daemonClient)
++        installerController.show(downloadManager: downloadManager, client: daemonClient, keepMacAwake: keepMacAwake)
+     }
+ 
+     func showDiagnostics() {
+@@ -132,7 +137,7 @@ final class InstallerWindowController: NSObject, NSWindowDelegate {
+     private(set) var isVisible: Bool = false
+     private var window: NSWindow?
+ 
+-    func show(downloadManager: RuntimeDownloadManager, client: DaemonClient) {
++    func show(downloadManager: RuntimeDownloadManager, client: DaemonClient, keepMacAwake: KeepMacAwake) {
+         if let window {
+             NSApp.setActivationPolicy(.regular)
+             window.makeKeyAndOrderFront(nil)
+@@ -145,6 +150,7 @@ final class InstallerWindowController: NSObject, NSWindowDelegate {
+         let view = InstallerView(
+             downloadManager: downloadManager,
+             client: client,
++            keepMacAwake: keepMacAwake,
+             onDismiss: { [weak self] in
+                 self?.dismiss()
+                 Task { @MainActor in client.openMessagesPromptToManagedPhone() }
+diff --git a/app/Phoenix/SettingsView.swift b/app/Phoenix/SettingsView.swift
+index 0947b1ea..6110a09c 100644
+--- a/app/Phoenix/SettingsView.swift
++++ b/app/Phoenix/SettingsView.swift
+@@ -3,6 +3,7 @@ import SwiftUI
+ struct SettingsView: View {
+     let client: DaemonClient
+     let downloadManager: RuntimeDownloadManager
++    let keepMacAwake: KeepMacAwake
+     var onDismiss: () -> Void
+ 
+     @State private var showNotBuiltAlert = false
+@@ -22,11 +23,20 @@ struct SettingsView: View {
+             VStack(spacing: 12) {
+                 plowNumberSection
+                 connectorsSection
++                systemSection
+                 containersSection
+             }
+             .padding(.horizontal, 40)
+             .padding(.top, 40)
+             .padding(.bottom, 50)
++            .background(
++                GeometryReader { geo in
++                    Color.clear.preference(
++                        key: InstallerContentHeightKey.self,
++                        value: geo.size.height
++                    )
++                }
++            )
+         }
+         .alert("Not Available", isPresented: $showNotBuiltAlert) {
+             Button("OK") {}
+@@ -156,6 +166,42 @@ struct SettingsView: View {
+         }
+     }
+ 
++    // MARK: - System
++
++    private var systemSection: some View {
++        VStack(alignment: .leading, spacing: 7) {
++            sectionLabel("System")
++
++            settingsCard {
++                keepMacAwakeRow(showDivider: false)
++            }
++        }
++    }
++
++    @ViewBuilder
++    private func keepMacAwakeRow(showDivider: Bool = true) -> some View {
++        @Bindable var keepMacAwake = keepMacAwake
++        settingsRow(showDivider: showDivider) {
++            connectorIcon(symbolName: "moon.zzz")
++
++            VStack(alignment: .leading, spacing: 1) {
++                Text("Keep Mac Awake")
++                    .font(.system(size: 13, weight: .semibold))
++                    .foregroundColor(.white)
++                Text("Prevent system sleep so your agent stays reachable.")
++                    .font(.system(size: 11))
++                    .foregroundColor(PlowTheme.mutedText.opacity(0.55))
++            }
++
++            Spacer()
++
++            Toggle("", isOn: $keepMacAwake.isEnabled)
++                .labelsHidden()
++                .toggleStyle(.switch)
++                .tint(PlowTheme.accent)
++        }
++    }
++
+     private func connectorRow(id: String) -> some View {
+         let item = permissionItems.first(where: { $0.id == id })!
+         let isConnector = id == "gmail" || id == "slack"
+diff --git a/app/Phoenix/StatusView.swift b/app/Phoenix/StatusView.swift
+index 3c73030a..3bf61f84 100644
+--- a/app/Phoenix/StatusView.swift
++++ b/app/Phoenix/StatusView.swift
+@@ -174,6 +174,7 @@ struct StatusView: View {
+     let appUpdater: AppUpdater
+     let installerController: InstallerWindowController
+     let audioRecorder: AudioRecorder
++    let keepMacAwake: KeepMacAwake
+     @State private var runtimeToolsMessage: String?
+     private static let transcriptionStatusDismissDelay: Duration = .seconds(10)
+     @State private var transcriptionStatus: String?
+@@ -254,20 +255,20 @@ struct StatusView: View {
+                     }
+                     .buttonStyle(.borderedProminent)
+                     Button("Continue Setup") {
+-                        installerController.show(downloadManager: downloadManager, client: client)
++                        installerController.show(downloadManager: downloadManager, client: client, keepMacAwake: keepMacAwake)
+                     }
+                 } else if isInstallInProgress {
+                     statusHeaderView
+                     Divider()
+                     Button("Continue Setup") {
+-                        installerController.show(downloadManager: downloadManager, client: client)
++                        installerController.show(downloadManager: downloadManager, client: client, keepMacAwake: keepMacAwake)
+                     }
+                     .buttonStyle(.borderedProminent)
+                 } else {
+                     statusHeaderView
+                     Divider()
+                     Button("Install the OpenClaw Sandbox") {
+-                        installerController.show(downloadManager: downloadManager, client: client)
++                        installerController.show(downloadManager: downloadManager, client: client, keepMacAwake: keepMacAwake)
+                     }
+                     .buttonStyle(.borderedProminent)
+                 }
+@@ -356,7 +357,7 @@ struct StatusView: View {
+             Divider()
+ 
+             Button("Settings") {
+-                installerController.show(downloadManager: downloadManager, client: client)
++                installerController.show(downloadManager: downloadManager, client: client, keepMacAwake: keepMacAwake)
+             }
+ 
+             Toggle("Launch at Login", isOn: $launchAtLogin.isEnabled)
+@@ -426,6 +427,20 @@ struct StatusView: View {
+         }
+     }
+ 
++    @ViewBuilder
++    private var keepMacAwakeRow: some View {
++        @Bindable var keepMacAwake = keepMacAwake
++        HStack {
++            Text("Keep Mac Awake")
++                .font(.subheadline)
++            Spacer()
++            Toggle("", isOn: $keepMacAwake.isEnabled)
++                .labelsHidden()
++                .toggleStyle(.switch)
++                .tint(PlowTheme.accent)
++        }
++    }
++
+     @ViewBuilder
+     private var connectedView: some View {
+         statusHeaderView
+@@ -500,6 +515,8 @@ struct StatusView: View {
+             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+         }
+ 
++        keepMacAwakeRow
++
+         Divider()
+ 
+         VStack(alignment: .leading, spacing: 8) {
+
+exec
+/bin/bash -lc 'find .codex-scratch -maxdepth 2 -type f -o -type l | sort' in /tmp/tmp.xNLg23mTYM/repo
+ succeeded in 0ms:
+.codex-scratch/author-intent.md
+.codex-scratch/commits.md
+.codex-scratch/critic.md
+.codex-scratch/dead-code-static.md
+.codex-scratch/dead-code.md
+.codex-scratch/decline-history.md
+.codex-scratch/diff.patch
+.codex-scratch/file-history.md
+.codex-scratch/inferred-intent.md
+.codex-scratch/loc-trend.md
+.codex-scratch/previous-review.md
+.codex-scratch/prior-art.md
+.codex-scratch/prior-reviews.md
+.codex-scratch/review-priority.md
+.codex-scratch/search-roots.md
+.codex-scratch/specialists/architecture.md
+.codex-scratch/specialists/consumers.md
+.codex-scratch/specialists/data-integrity.md
+.codex-scratch/specialists/performance.md
+.codex-scratch/specialists/security.md
+.codex-scratch/specialists/shape.md
+.codex-scratch/specialists/simplification.md
+.codex-scratch/specialists/tests.md
+.codex-scratch/standards.md
+
+exec
+/bin/bash -lc "rg -n \"KeepMacAwake|InstallerContentHeightKey|InstallerOverlayHeightKey|installerController.show|show\\(downloadManager\" app/Phoenix app/PhoenixTests 2>/dev/null" in /tmp/tmp.xNLg23mTYM/repo
+ succeeded in 0ms:
+app/Phoenix/MenuBarController.swift:33:        keepMacAwake: KeepMacAwake,
+app/Phoenix/KeepMacAwake.swift:14:final class KeepMacAwake {
+app/Phoenix/KeepMacAwake.swift:23:    var isEnabled: Bool = UserDefaults.standard.bool(forKey: KeepMacAwake.preferencesKey) {
+app/Phoenix/KeepMacAwake.swift:67:            NSLog("[KeepMacAwake] IOPMAssertionCreateWithName failed: %d", result)
+app/Phoenix/SettingsView.swift:6:    let keepMacAwake: KeepMacAwake
+app/Phoenix/SettingsView.swift:35:                        key: InstallerContentHeightKey.self,
+app/Phoenix/StatusView.swift:177:    let keepMacAwake: KeepMacAwake
+app/Phoenix/StatusView.swift:258:                        installerController.show(downloadManager: downloadManager, client: client, keepMacAwake: keepMacAwake)
+app/Phoenix/StatusView.swift:264:                        installerController.show(downloadManager: downloadManager, client: client, keepMacAwake: keepMacAwake)
+app/Phoenix/StatusView.swift:271:                        installerController.show(downloadManager: downloadManager, client: client, keepMacAwake: keepMacAwake)
+app/Phoenix/StatusView.swift:360:                installerController.show(downloadManager: downloadManager, client: client, keepMacAwake: keepMacAwake)
+app/Phoenix/InstallerView.swift:7:    let keepMacAwake: KeepMacAwake
+app/Phoenix/InstallerView.swift:75:                            key: InstallerOverlayHeightKey.self,
+app/Phoenix/InstallerView.swift:114:        .onPreferenceChange(InstallerContentHeightKey.self) { newHeight in
+app/Phoenix/InstallerView.swift:117:        .onPreferenceChange(InstallerOverlayHeightKey.self) { newHeight in
+app/Phoenix/InstallerView.swift:532:    /// (reported via `InstallerContentHeightKey`), capped by the visible
+app/Phoenix/InstallerView.swift:554:struct InstallerOverlayHeightKey: PreferenceKey {
+app/Phoenix/InstallerView.swift:566:struct InstallerContentHeightKey: PreferenceKey {
+app/Phoenix/PhoenixApp.swift:42:    let keepMacAwake = KeepMacAwake()
+app/Phoenix/PhoenixApp.swift:101:        installerController.show(downloadManager: downloadManager, client: daemonClient, keepMacAwake: keepMacAwake)
+app/Phoenix/PhoenixApp.swift:115:            installerController.show(downloadManager: downloadManager, client: daemonClient, keepMacAwake: keepMacAwake)
+app/Phoenix/PhoenixApp.swift:125:        installerController.show(downloadManager: downloadManager, client: daemonClient, keepMacAwake: keepMacAwake)
+app/Phoenix/PhoenixApp.swift:140:    func show(downloadManager: RuntimeDownloadManager, client: DaemonClient, keepMacAwake: KeepMacAwake) {
+
+exec
+/bin/bash -lc "nl -ba app/Phoenix/KeepMacAwake.swift | sed -n '1,130p'" in /tmp/tmp.xNLg23mTYM/repo
+ succeeded in 0ms:
+     1	import Foundation
+     2	import IOKit.pwr_mgt
+     3	import Observation
+     4	
+     5	/// Holds `kIOPMAssertionTypePreventSystemSleep` while the user has opted in, so
+     6	/// the system stays in Dark Wake and the OpenClaw VM keeps serving through
+     7	/// display sleep. On battery the kernel effectively downgrades the assertion to
+     8	/// idle-sleep-prevention, so a single assertion works in both power states;
+     9	/// draining the battery is the user's explicit choice when they toggle this on.
+    10	/// Clamshell sleep on a MacBook without an external display is still enforced
+    11	/// by the kernel and isn't reachable from a public API.
+    12	@Observable
+    13	@MainActor
+    14	final class KeepMacAwake {
+    15	    static let preferencesKey = "keepMacAwakeWhileRunning"
+    16	
+    17	    private var assertionID: IOPMAssertionID = 0
+    18	    private var hasAssertion = false
+    19	    /// Set true while we're rewriting `isEnabled` from inside `applyEnabled` to
+    20	    /// revert a failed acquire — the recursive `didSet` reads this and bails.
+    21	    private var suppressApply = false
+    22	
+    23	    var isEnabled: Bool = UserDefaults.standard.bool(forKey: KeepMacAwake.preferencesKey) {
+    24	        didSet { applyEnabled() }
+    25	    }
+    26	
+    27	    init() {
+    28	        applyEnabled()
+    29	    }
+    30	
+    31	    /// Releases the assertion deterministically before the app exits, so the
+    32	    /// system can coalesce any pending sleep state at logout/shutdown without
+    33	    /// waiting for process reaping. The kernel reclaims the assertion on
+    34	    /// process exit either way; this is a courtesy, not a leak fix.
+    35	    func teardown() {
+    36	        releaseAssertion()
+    37	    }
+    38	
+    39	    /// Brings the held IOPMAssertion in line with `isEnabled` and persists the
+    40	    /// resolved value. If acquire fails, `isEnabled` is reverted to false so
+    41	    /// the toggle UI matches the actual sleep-prevention state.
+    42	    private func applyEnabled() {
+    43	        guard !suppressApply else { return }
+    44	        if isEnabled {
+    45	            if !acquireAssertion() {
+    46	                suppressApply = true
+    47	                isEnabled = false
+    48	                suppressApply = false
+    49	            }
+    50	        } else {
+    51	            releaseAssertion()
+    52	        }
+    53	        UserDefaults.standard.set(isEnabled, forKey: Self.preferencesKey)
+    54	    }
+    55	
+    56	    private func acquireAssertion() -> Bool {
+    57	        guard !hasAssertion else { return true }
+    58	        var id: IOPMAssertionID = 0
+    59	        let reason = "Plow keeping Mac awake so the OpenClaw VM stays reachable" as CFString
+    60	        let result = IOPMAssertionCreateWithName(
+    61	            kIOPMAssertionTypePreventSystemSleep as CFString,
+    62	            IOPMAssertionLevel(kIOPMAssertionLevelOn),
+    63	            reason,
+    64	            &id
+    65	        )
+    66	        guard result == kIOReturnSuccess else {
+    67	            NSLog("[KeepMacAwake] IOPMAssertionCreateWithName failed: %d", result)
+    68	            return false
+    69	        }
+    70	        assertionID = id
+    71	        hasAssertion = true
+    72	        return true
+    73	    }
+    74	
+    75	    private func releaseAssertion() {
+    76	        guard hasAssertion else { return }
+    77	        IOPMAssertionRelease(assertionID)
+    78	        hasAssertion = false
+    79	        assertionID = 0
+    80	    }
+    81	}
+
+exec
+/bin/bash -lc "nl -ba app/Phoenix/InstallerView.swift | sed -n '1,140p' && nl -ba app/Phoenix/InstallerView.swift | sed -n '510,580p'" in /tmp/tmp.xNLg23mTYM/repo
+ succeeded in 0ms:
+     1	import AppKit
+     2	import SwiftUI
+     3	
+     4	struct InstallerView: View {
+     5	    let downloadManager: RuntimeDownloadManager
+     6	    let client: DaemonClient
+     7	    let keepMacAwake: KeepMacAwake
+     8	    var onDismiss: () -> Void
+     9	
+    10	    @State private var started = false
+    11	    @State private var showWelcomeRows = false
+    12	    @State private var connectorPollTimer: Timer?
+    13	    @State private var fdaBubblesVisible = false
+    14	    @State private var measuredContentHeight: CGFloat = 0
+    15	    @State private var measuredOverlayHeight: CGFloat = 0
+    16	
+    17	    private var screen: InstallerScreen {
+    18	        let s = resolveInstallerScreen(
+    19	            started: started,
+    20	            hasCompletedInstall: client.hasCompletedInstall,
+    21	            hasCompletedOnboarding: client.hasCompletedOnboarding,
+    22	            hasFullDiskAccess: client.hasFullDiskAccess,
+    23	            activationState: client.activationState,
+    24	            hasLocalActivationToken: client.hasLocalActivationToken,
+    25	            activationErrorMessage: client.activationErrorMessage
+    26	        )
+    27	        #if DEBUG
+    28	        NSLog("[Installer] screen=%@ (activationState=%@, errorMsg=%@, hasToken=%d, started=%d)",
+    29	              "\(s)", "\(client.activationState)",
+    30	              client.activationErrorMessage ?? "nil",
+    31	              client.hasLocalActivationToken ? 1 : 0,
+    32	              started ? 1 : 0)
+    33	        #endif
+    34	        return s
+    35	    }
+    36	
+    37	    var body: some View {
+    38	        ZStack(alignment: .bottom) {
+    39	            Group {
+    40	                switch screen {
+    41	                case .welcomeInstall:
+    42	                    installScreen
+    43	                case .welcomeFDA:
+    44	                    fdaScreen
+    45	                case .activation:
+    46	                    activationScreen
+    47	                case .connectContext:
+    48	                    ConnectorInterstitialView(
+    49	                        progressDotIndex: screen.progressDotIndex ?? 0,
+    50	                        progressDotCount: InstallerScreen.progressDotCount
+    51	                    ) {
+    52	                        client.completeOnboarding()
+    53	                    }
+    54	                case .connectors:
+    55	                    SettingsView(
+    56	                        client: client,
+    57	                        downloadManager: downloadManager,
+    58	                        keepMacAwake: keepMacAwake,
+    59	                        onDismiss: onDismiss
+    60	                    )
+    61	                }
+    62	            }
+    63	            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    64	            .background(installerBackground)
+    65	
+    66	            if started && !client.hasCompletedInstall {
+    67	                DownloadBarView(
+    68	                    state: client.headerState,
+    69	                    subLabel: client.headerSubLabel,
+    70	                    downloadManager: downloadManager
+    71	                )
+    72	                .background(
+    73	                    GeometryReader { geo in
+    74	                        Color.clear.preference(
+    75	                            key: InstallerOverlayHeightKey.self,
+    76	                            value: geo.size.height
+    77	                        )
+    78	                    }
+    79	                )
+    80	            }
+    81	        }
+    82	        .frame(width: 680)
+    83	        .onAppear {
+    84	            refreshInstallerState()
+    85	            finalizePermissionsIfNeeded()
+    86	            updateConnectorPolling()
+    87	            updateWindowHeight(for: screen)
+    88	            if screen == .welcomeInstall && !showWelcomeRows {
+    89	                animateWelcomeRows()
+    90	            }
+    91	        }
+    92	        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+    93	            refreshInstallerState()
+    94	            finalizePermissionsIfNeeded()
+    95	        }
+    96	        .onChange(of: screen) {
+    97	            finalizePermissionsIfNeeded()
+    98	            updateConnectorPolling()
+    99	            updateWindowHeight(for: screen)
+   100	        }
+   101	        .onChange(of: downloadManager.runtimeLaunchReady) {
+   102	            if agentReady {
+   103	                client.completeInstall()
+   104	            }
+   105	        }
+   106	        .onChange(of: client.isConnected) {
+   107	            if agentReady {
+   108	                client.completeInstall()
+   109	            }
+   110	        }
+   111	        .onChange(of: client.activationState) {
+   112	            finalizePermissionsIfNeeded()
+   113	        }
+   114	        .onPreferenceChange(InstallerContentHeightKey.self) { newHeight in
+   115	            measuredContentHeight = newHeight
+   116	        }
+   117	        .onPreferenceChange(InstallerOverlayHeightKey.self) { newHeight in
+   118	            measuredOverlayHeight = newHeight
+   119	        }
+   120	        .onChange(of: measuredContentHeight) {
+   121	            updateWindowHeight(for: screen)
+   122	        }
+   123	        .onChange(of: measuredOverlayHeight) {
+   124	            updateWindowHeight(for: screen)
+   125	        }
+   126	        .onDisappear {
+   127	            connectorPollTimer?.invalidate()
+   128	            connectorPollTimer = nil
+   129	        }
+   130	        // The installer window is always dark-themed; pin SwiftUI overlays (popovers,
+   131	        // alerts, menus) to dark so they don't render with light system material when
+   132	        // the user's system is in Light Mode.
+   133	        .preferredColorScheme(.dark)
+   134	    }
+   135	
+   136	    private var installScreen: some View {
+   137	        VStack(spacing: 0) {
+   138	            Spacer()
+   139	
+   140	            plowLogoHero
+   510	    }
+   511	
+   512	    private func updateWindowHeight(for screen: InstallerScreen) {
+   513	        guard let window = NSApp.windows.first(where: { $0.identifier?.rawValue == "installer" }) else { return }
+   514	        let targetHeight = targetWindowHeight(for: screen)
+   515	        let currentFrame = window.frame
+   516	        guard abs(currentFrame.height - targetHeight) > 1 else { return }
+   517	        let newOriginY = currentFrame.origin.y + (currentFrame.height - targetHeight)
+   518	        let newFrame = NSRect(
+   519	            x: currentFrame.origin.x,
+   520	            y: newOriginY,
+   521	            width: currentFrame.width,
+   522	            height: targetHeight
+   523	        )
+   524	        NSAnimationContext.runAnimationGroup { context in
+   525	            context.duration = 0.45
+   526	            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+   527	            window.animator().setFrame(newFrame, display: true)
+   528	        }
+   529	    }
+   530	
+   531	    /// The connectors screen sizes its window to the measured content height
+   532	    /// (reported via `InstallerContentHeightKey`), capped by the visible
+   533	    /// screen so a long settings list falls back to scrolling inside the
+   534	    /// existing `ScrollView` instead of pushing the window off-screen. The
+   535	    /// remaining screens are intentionally taller than their content
+   536	    /// (Spacer-filled splash layouts) and keep the design height of 530.
+   537	    private func targetWindowHeight(for screen: InstallerScreen) -> CGFloat {
+   538	        let cap = max(420, (NSScreen.main?.visibleFrame.height ?? 900) - 80)
+   539	        if screen == .connectors, measuredContentHeight > 0 {
+   540	            // `measuredContentHeight` is the ScrollView's inner content; add
+   541	            // the window's titlebar plus the bottom-anchored DownloadBarView's
+   542	            // measured height (zero when the bar isn't shown) so the bar
+   543	            // doesn't cover the last settings rows.
+   544	            return min(measuredContentHeight + 28 + measuredOverlayHeight, cap)
+   545	        }
+   546	        return 530
+   547	    }
+   548	}
+   549	
+   550	/// Carries the bottom-anchored `DownloadBarView`'s measured height up to
+   551	/// `InstallerView` so the connectors-screen window can grow to keep the
+   552	/// settings content above the bar (including the taller "retry" state).
+   553	/// Reverts to zero when the bar isn't in the view tree (post-install).
+   554	struct InstallerOverlayHeightKey: PreferenceKey {
+   555	    static var defaultValue: CGFloat = 0
+   556	    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+   557	        value = nextValue()
+   558	    }
+   559	}
+   560	
+   561	/// SwiftUI preference key carrying the measured intrinsic height of the
+   562	/// active installer screen up to `InstallerView`, which drives the hosting
+   563	/// `NSWindow`'s frame. Emitted by `SettingsView` (the only screen whose
+   564	/// content can grow as connectors/containers come and go); unspecified for
+   565	/// the splash screens, which use a design-set fixed height.
+   566	struct InstallerContentHeightKey: PreferenceKey {
+   567	    static var defaultValue: CGFloat = 0
+   568	    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+   569	        value = nextValue()
+   570	    }
+   571	}
+   572	
+   573	struct InstallPrimaryButtonStyle: ButtonStyle {
+   574	    func makeBody(configuration: Configuration) -> some View {
+   575	        configuration.label
+   576	            .font(.system(size: 14, weight: .bold))
+   577	            .foregroundColor(Color.black.opacity(0.84))
+   578	            .padding(.horizontal, 28)
+   579	            .frame(height: 46)
+   580	            .background(
+
+exec
+/bin/bash -lc "nl -ba app/Phoenix/SettingsView.swift | sed -n '1,60p' && nl -ba app/Phoenix/SettingsView.swift | sed -n '166,210p' && nl -ba app/Phoenix/StatusView.swift | sed -n '248,276p' && nl -ba app/Phoenix/StatusView.swift | sed -n '352,366p' && nl -ba app/Phoenix/StatusView.swift | sed -n '426,444p'" in /tmp/tmp.xNLg23mTYM/repo
+ succeeded in 0ms:
+     1	import SwiftUI
+     2	
+     3	struct SettingsView: View {
+     4	    let client: DaemonClient
+     5	    let downloadManager: RuntimeDownloadManager
+     6	    let keepMacAwake: KeepMacAwake
+     7	    var onDismiss: () -> Void
+     8	
+     9	    @State private var showNotBuiltAlert = false
+    10	
+    11	    // The hero card animates between a "ready" and "warming up" look. After
+    12	    // the headerState unification, `running` is the canonical "fully up"
+    13	    // signal — it already encodes both runtime launch readiness and
+    14	    // daemon connectivity,
+    15	    // and excludes the `degraded` case (FDA missing) which the previous
+    16	    // formula did not.
+    17	    private var agentReady: Bool {
+    18	        client.headerState == .running
+    19	    }
+    20	
+    21	    var body: some View {
+    22	        ScrollView {
+    23	            VStack(spacing: 12) {
+    24	                plowNumberSection
+    25	                connectorsSection
+    26	                systemSection
+    27	                containersSection
+    28	            }
+    29	            .padding(.horizontal, 40)
+    30	            .padding(.top, 40)
+    31	            .padding(.bottom, 50)
+    32	            .background(
+    33	                GeometryReader { geo in
+    34	                    Color.clear.preference(
+    35	                        key: InstallerContentHeightKey.self,
+    36	                        value: geo.size.height
+    37	                    )
+    38	                }
+    39	            )
+    40	        }
+    41	        .alert("Not Available", isPresented: $showNotBuiltAlert) {
+    42	            Button("OK") {}
+    43	        } message: {
+    44	            Text("Sorry, we haven't built that feature yet!")
+    45	        }
+    46	    }
+    47	
+    48	    // MARK: - Plow Number
+    49	
+    50	    private var plowNumberSection: some View {
+    51	        VStack(alignment: .leading, spacing: 7) {
+    52	            sectionLabel(
+    53	                "Plow Number",
+    54	                tooltip: "Text this number anytime to reach your agent. It routes to your main container by default \u{2014} you can change that once you have multiple containers."
+    55	            )
+    56	            heroCard
+    57	        }
+    58	    }
+    59	
+    60	    private var heroCard: some View {
+   166	        }
+   167	    }
+   168	
+   169	    // MARK: - System
+   170	
+   171	    private var systemSection: some View {
+   172	        VStack(alignment: .leading, spacing: 7) {
+   173	            sectionLabel("System")
+   174	
+   175	            settingsCard {
+   176	                keepMacAwakeRow(showDivider: false)
+   177	            }
+   178	        }
+   179	    }
+   180	
+   181	    @ViewBuilder
+   182	    private func keepMacAwakeRow(showDivider: Bool = true) -> some View {
+   183	        @Bindable var keepMacAwake = keepMacAwake
+   184	        settingsRow(showDivider: showDivider) {
+   185	            connectorIcon(symbolName: "moon.zzz")
+   186	
+   187	            VStack(alignment: .leading, spacing: 1) {
+   188	                Text("Keep Mac Awake")
+   189	                    .font(.system(size: 13, weight: .semibold))
+   190	                    .foregroundColor(.white)
+   191	                Text("Prevent system sleep so your agent stays reachable.")
+   192	                    .font(.system(size: 11))
+   193	                    .foregroundColor(PlowTheme.mutedText.opacity(0.55))
+   194	            }
+   195	
+   196	            Spacer()
+   197	
+   198	            Toggle("", isOn: $keepMacAwake.isEnabled)
+   199	                .labelsHidden()
+   200	                .toggleStyle(.switch)
+   201	                .tint(PlowTheme.accent)
+   202	        }
+   203	    }
+   204	
+   205	    private func connectorRow(id: String) -> some View {
+   206	        let item = permissionItems.first(where: { $0.id == id })!
+   207	        let isConnector = id == "gmail" || id == "slack"
+   208	        let state = isConnector ? (client.connectorStates[id] ?? .disconnected) : nil
+   209	        let isOn = isConnector
+   210	            ? (state?.isConnected == true || state == .connecting)
+   248	                        .buttonStyle(.borderedProminent)
+   249	                    }
+   250	                } else if shouldShowRuntimeRetry {
+   251	                    statusHeaderView
+   252	                    Divider()
+   253	                    Button("Retry Download") {
+   254	                        downloadManager.retry()
+   255	                    }
+   256	                    .buttonStyle(.borderedProminent)
+   257	                    Button("Continue Setup") {
+   258	                        installerController.show(downloadManager: downloadManager, client: client, keepMacAwake: keepMacAwake)
+   259	                    }
+   260	                } else if isInstallInProgress {
+   261	                    statusHeaderView
+   262	                    Divider()
+   263	                    Button("Continue Setup") {
+   264	                        installerController.show(downloadManager: downloadManager, client: client, keepMacAwake: keepMacAwake)
+   265	                    }
+   266	                    .buttonStyle(.borderedProminent)
+   267	                } else {
+   268	                    statusHeaderView
+   269	                    Divider()
+   270	                    Button("Install the OpenClaw Sandbox") {
+   271	                        installerController.show(downloadManager: downloadManager, client: client, keepMacAwake: keepMacAwake)
+   272	                    }
+   273	                    .buttonStyle(.borderedProminent)
+   274	                }
+   275	            }
+   276	            .padding()
+   352	            Button("Restart Plow") {
+   353	                Task { await client.restartRuntime() }
+   354	            }
+   355	            .disabled(restartDisabled)
+   356	
+   357	            Divider()
+   358	
+   359	            Button("Settings") {
+   360	                installerController.show(downloadManager: downloadManager, client: client, keepMacAwake: keepMacAwake)
+   361	            }
+   362	
+   363	            Toggle("Launch at Login", isOn: $launchAtLogin.isEnabled)
+   364	            Toggle("Show Plow Folder in Finder Sidebar", isOn: $finderSidebarFavorite.isEnabled)
+   365	
+   366	            Divider()
+   426	            toolsMenu
+   427	        }
+   428	    }
+   429	
+   430	    @ViewBuilder
+   431	    private var keepMacAwakeRow: some View {
+   432	        @Bindable var keepMacAwake = keepMacAwake
+   433	        HStack {
+   434	            Text("Keep Mac Awake")
+   435	                .font(.subheadline)
+   436	            Spacer()
+   437	            Toggle("", isOn: $keepMacAwake.isEnabled)
+   438	                .labelsHidden()
+   439	                .toggleStyle(.switch)
+   440	                .tint(PlowTheme.accent)
+   441	        }
+   442	    }
+   443	
+   444	    @ViewBuilder
+
+exec
+/bin/bash -lc "rg --files app | rg 'PhoenixTests|KeepMacAwake|project.pbxproj'" in /tmp/tmp.xNLg23mTYM/repo
+ succeeded in 0ms:
+app/Phoenix/KeepMacAwake.swift
+app/PhoenixTests/VMStartupOrchestratorTests.swift
+app/PhoenixTests/AppPathsTests.swift
+app/PhoenixTests/BundleFingerprintTests.swift
+app/PhoenixTests/ActivationStateTests.swift
+app/PhoenixTests/ModelTests.swift
+app/PhoenixTests/ServiceURLsTests.swift
+app/PhoenixTests/DaemonClientMissingRuntimePathsTests.swift
+app/PhoenixTests/TimestampTests.swift
+app/PhoenixTests/DaemonClientLaunchStateTests.swift
+app/PhoenixTests/LimaVMManagerTests.swift
+app/PhoenixTests/InstallerStateTests.swift
+app/PhoenixTests/RuntimeDigestsTests.swift
+app/PhoenixTests/StartupPhaseTests.swift
+app/PhoenixTests/DiagnosticsBundlerTests.swift
+app/PhoenixTests/RuntimeDownloadManagerTests.swift
+app/Phoenix.xcodeproj/project.pbxproj
+
+exec
+/bin/bash -lc 'rg -n "PhoenixTests|KeepMacAwakeTests|@testable import Phoenix|PBXNativeTarget|XCTest" app/Phoenix.xcodeproj app/PhoenixTests 2>/dev/null' in /tmp/tmp.xNLg23mTYM/repo
+ succeeded in 0ms:
+app/PhoenixTests/VMStartupOrchestratorTests.swift:1:import XCTest
+app/PhoenixTests/VMStartupOrchestratorTests.swift:2:@testable import Phoenix
+app/PhoenixTests/VMStartupOrchestratorTests.swift:10:final class VMStartupOrchestratorTests: XCTestCase {
+app/PhoenixTests/AppPathsTests.swift:1:import XCTest
+app/PhoenixTests/AppPathsTests.swift:2:@testable import Phoenix
+app/PhoenixTests/AppPathsTests.swift:4:final class AppPathsTests: XCTestCase {
+app/PhoenixTests/BundleFingerprintTests.swift:1:import XCTest
+app/PhoenixTests/BundleFingerprintTests.swift:2:@testable import Phoenix
+app/PhoenixTests/BundleFingerprintTests.swift:4:final class BundleFingerprintTests: XCTestCase {
+app/PhoenixTests/ActivationStateTests.swift:1:import XCTest
+app/PhoenixTests/ActivationStateTests.swift:2:@testable import Phoenix
+app/PhoenixTests/ActivationStateTests.swift:4:final class RootScreenPhaseTests: XCTestCase {
+app/PhoenixTests/ActivationStateTests.swift:35:final class RuntimeHeaderStateTests: XCTestCase {
+app/PhoenixTests/ActivationStateTests.swift:241:final class PolicySnapshotTests: XCTestCase {
+app/PhoenixTests/ActivationStateTests.swift:265:final class StartupTimingLogTests: XCTestCase {
+app/PhoenixTests/ActivationStateTests.swift:274:        // the test writer after tearDown destroyed its captured XCTestExpectations,
+app/PhoenixTests/ActivationStateTests.swift:296:        // these expectations and `[XCTestExpectation fulfill]` would throw NSException out
+app/PhoenixTests/ActivationStateTests.swift:321:final class DaemonLaunchEnvironmentTests: XCTestCase {
+app/PhoenixTests/ModelTests.swift:1:import XCTest
+app/PhoenixTests/ModelTests.swift:2:@testable import Phoenix
+app/PhoenixTests/ModelTests.swift:4:final class ConnectorStateTests: XCTestCase {
+app/PhoenixTests/ModelTests.swift:28:final class SetupStateTests: XCTestCase {
+app/PhoenixTests/ServiceURLsTests.swift:1:import XCTest
+app/PhoenixTests/ServiceURLsTests.swift:2:@testable import Phoenix
+app/PhoenixTests/ServiceURLsTests.swift:4:final class ServiceURLsTests: XCTestCase {
+app/PhoenixTests/DaemonClientMissingRuntimePathsTests.swift:1:import XCTest
+app/PhoenixTests/DaemonClientMissingRuntimePathsTests.swift:2:@testable import Phoenix
+app/PhoenixTests/DaemonClientMissingRuntimePathsTests.swift:13:final class DaemonClientMissingRuntimePathsTests: XCTestCase {
+app/Phoenix.xcodeproj/xcshareddata/xcschemes/Phoenix.xcscheme:32:               BuildableName = "PhoenixTests.xctest"
+app/Phoenix.xcodeproj/xcshareddata/xcschemes/Phoenix.xcscheme:33:               BlueprintName = "PhoenixTests"
+app/Phoenix.xcodeproj/xcshareddata/xcschemes/Phoenix.xcscheme:50:               BuildableName = "PhoenixTests.xctest"
+app/Phoenix.xcodeproj/xcshareddata/xcschemes/Phoenix.xcscheme:51:               BlueprintName = "PhoenixTests"
+app/PhoenixTests/TimestampTests.swift:1:import XCTest
+app/PhoenixTests/TimestampTests.swift:2:@testable import Phoenix
+app/PhoenixTests/TimestampTests.swift:4:final class ISO8601ParsingTests: XCTestCase {
+app/PhoenixTests/TimestampTests.swift:66:final class AgeDescriptionTests: XCTestCase {
+app/PhoenixTests/TimestampTests.swift:100:final class ResolutionDescriptionTests: XCTestCase {
+app/PhoenixTests/TimestampTests.swift:135:final class TimestampDescriptionTests: XCTestCase {
+app/PhoenixTests/DaemonClientLaunchStateTests.swift:1:import XCTest
+app/PhoenixTests/DaemonClientLaunchStateTests.swift:2:@testable import Phoenix
+app/PhoenixTests/DaemonClientLaunchStateTests.swift:18:final class DaemonClientLaunchStateTests: XCTestCase {
+app/Phoenix.xcodeproj/project.pbxproj:120:		8A1B2C3D00000000000000BF /* PhoenixTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PhoenixTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+app/Phoenix.xcodeproj/project.pbxproj:210:				8A1B2C3D00000000000000BA /* PhoenixTests */,
+app/Phoenix.xcodeproj/project.pbxproj:215:		8A1B2C3D00000000000000BA /* PhoenixTests */ = {
+app/Phoenix.xcodeproj/project.pbxproj:234:			path = PhoenixTests;
+app/Phoenix.xcodeproj/project.pbxproj:296:				8A1B2C3D00000000000000BF /* PhoenixTests.xctest */,
+app/Phoenix.xcodeproj/project.pbxproj:303:/* Begin PBXNativeTarget section */
+app/Phoenix.xcodeproj/project.pbxproj:305:			isa = PBXNativeTarget;
+app/Phoenix.xcodeproj/project.pbxproj:306:			buildConfigurationList = 8A1B2C3D0000000000000061 /* Build configuration list for PBXNativeTarget "Phoenix" */;
+app/Phoenix.xcodeproj/project.pbxproj:325:		8A1B2C3D00000000000000BD /* PhoenixTests */ = {
+app/Phoenix.xcodeproj/project.pbxproj:326:			isa = PBXNativeTarget;
+app/Phoenix.xcodeproj/project.pbxproj:327:			buildConfigurationList = 8A1B2C3D00000000000000C3 /* Build configuration list for PBXNativeTarget "PhoenixTests" */;
+app/Phoenix.xcodeproj/project.pbxproj:337:			name = PhoenixTests;
+app/Phoenix.xcodeproj/project.pbxproj:338:			productName = PhoenixTests;
+app/Phoenix.xcodeproj/project.pbxproj:339:			productReference = 8A1B2C3D00000000000000BF /* PhoenixTests.xctest */;
+app/Phoenix.xcodeproj/project.pbxproj:342:/* End PBXNativeTarget section */
+app/Phoenix.xcodeproj/project.pbxproj:369:				8A1B2C3D00000000000000BD /* PhoenixTests */,
+app/Phoenix.xcodeproj/project.pbxproj:628:				PRODUCT_BUNDLE_IDENTIFIER = "co.plow.PhoenixTests";
+app/Phoenix.xcodeproj/project.pbxproj:646:				PRODUCT_BUNDLE_IDENTIFIER = "co.plow.PhoenixTests";
+app/Phoenix.xcodeproj/project.pbxproj:666:		8A1B2C3D0000000000000061 /* Build configuration list for PBXNativeTarget "Phoenix" */ = {
+app/Phoenix.xcodeproj/project.pbxproj:675:		8A1B2C3D00000000000000C3 /* Build configuration list for PBXNativeTarget "PhoenixTests" */ = {
+app/PhoenixTests/LimaVMManagerTests.swift:1:import XCTest
+app/PhoenixTests/LimaVMManagerTests.swift:2:@testable import Phoenix
+app/PhoenixTests/LimaVMManagerTests.swift:4:final class LimaInstanceListParserTests: XCTestCase {
+app/PhoenixTests/LimaVMManagerTests.swift:33:final class LimaSingleInstanceLookupParserTests: XCTestCase {
+app/PhoenixTests/LimaVMManagerTests.swift:49:final class LimaConfigLocatorTests: XCTestCase {
+app/PhoenixTests/LimaVMManagerTests.swift:159:            .deletingLastPathComponent()  // PhoenixTests/
+app/PhoenixTests/LimaVMManagerTests.swift:191:            .deletingLastPathComponent()  // PhoenixTests/
+app/PhoenixTests/LimaVMManagerTests.swift:221:final class LimaStartStrategyTests: XCTestCase {
+app/PhoenixTests/LimaVMManagerTests.swift:248:final class BundleRecreateDecisionTests: XCTestCase {
+app/PhoenixTests/LimaVMManagerTests.swift:308:final class LimactlLocatorTests: XCTestCase {
+app/PhoenixTests/LimaVMManagerTests.swift:360:final class LegacyVZArtifactCleanupTests: XCTestCase {
+app/PhoenixTests/StartupPhaseTests.swift:1:import XCTest
+app/PhoenixTests/StartupPhaseTests.swift:2:@testable import Phoenix
+app/PhoenixTests/StartupPhaseTests.swift:4:final class StartupPhaseTests: XCTestCase {
+app/PhoenixTests/InstallerStateTests.swift:1:import XCTest
+app/PhoenixTests/InstallerStateTests.swift:2:@testable import Phoenix
+app/PhoenixTests/InstallerStateTests.swift:4:final class InstallerStateTests: XCTestCase {
+app/PhoenixTests/RuntimeDigestsTests.swift:1:import XCTest
+app/PhoenixTests/RuntimeDigestsTests.swift:2:@testable import Phoenix
+app/PhoenixTests/RuntimeDigestsTests.swift:4:final class RuntimeDigestPlannerTests: XCTestCase {
+app/PhoenixTests/DiagnosticsBundlerTests.swift:1:import XCTest
+app/PhoenixTests/DiagnosticsBundlerTests.swift:2:@testable import Phoenix
+app/PhoenixTests/DiagnosticsBundlerTests.swift:12:final class DiagnosticsBundlerTests: XCTestCase {
+app/PhoenixTests/RuntimeDownloadManagerTests.swift:3:import XCTest
+app/PhoenixTests/RuntimeDownloadManagerTests.swift:4:@testable import Phoenix
+app/PhoenixTests/RuntimeDownloadManagerTests.swift:6:final class RuntimeArtifactDecodingTests: XCTestCase {
+app/PhoenixTests/RuntimeDownloadManagerTests.swift:39:final class RuntimeDownloadManagerInstanceCleanupTests: XCTestCase {
+app/PhoenixTests/RuntimeDownloadManagerTests.swift:78:final class RuntimeDownloadManagerTests: XCTestCase {
+app/PhoenixTests/RuntimeDownloadManagerTests.swift:311:final class RuntimeCacheCleanerTests: XCTestCase {
+
+exec
+/bin/bash -lc 'git status --short && git diff --stat' in /tmp/tmp.xNLg23mTYM/repo
+ succeeded in 0ms:
+?? .codex-scratch/
+
+codex
+_It appears @swagatpatel is working towards keeping users’ Plow agent reachable when their Mac would otherwise go to sleep by adding a persistent “Keep Mac Awake” toggle in `SettingsView.swift` and `StatusView.swift`, wired through `PhoenixApp.swift` to `KeepMacAwake.swift`’s IOPM sleep-prevention assertion — reviewing against that goal._
+
+**Overview** — The core feature shape is straightforward: one `@MainActor` `KeepMacAwake` owner, shared through the installer/settings/status UI, acquires an IOPM assertion when enabled and releases it on teardown. The main concerns are that the PR also pulls in installer window auto-sizing work, and the new OS assertion owner lacks behavior tests for the success/release path.
+
+**Strengths** — The toggles bind to the same observable `KeepMacAwake` instance, so Settings and the status popover do not create competing sleep-prevention state. The failed-acquire rollback also keeps persisted state aligned with what the system actually accepted.
+
+**Findings**
+1. [medium] Does PLO-30 need to introduce a second installer layout-sizing system? The end-user goal is the keep-awake toggle, but this diff also adds measured content/overlay state, two `PreferenceKey`s, and dynamic `NSWindow` resizing for the installer. That makes future installer changes reason about two sizing paths for a feature that only needs another settings row; keeping the fixed installer behavior or moving sizing into its own focused PR would avoid scope creep that adds complexity and makes PMF iteration harder. Files: `app/Phoenix/InstallerView.swift:14`, `app/Phoenix/InstallerView.swift:114`, `app/Phoenix/InstallerView.swift:537`, `app/Phoenix/InstallerView.swift:554`, `app/Phoenix/SettingsView.swift:32`. Standard: Narrow-Fix / Concise Code.
+2. [medium] Will automated coverage accept a new OS assertion owner with no success/release behavior test? `KeepMacAwake`’s contract depends on recording the returned assertion ID, releasing it on toggle-off, and releasing it again on app termination; a regression in any of those paths would make the Mac sleep despite opt-in or leave an assertion around until process exit. There is no `KeepMacAwakeTests.swift` in the current tree, so add a narrow assertion-client/defaults seam and 1-2 `@MainActor` behavior tests for successful acquire, toggle-off release, and teardown release. Files: `app/Phoenix/KeepMacAwake.swift:56`, `app/Phoenix/KeepMacAwake.swift:75`, `app/Phoenix/PhoenixApp.swift:104`. Standard: Tests.
+3. [low] Will “your agent stays reachable” be true in the states this implementation explicitly cannot control? The code documents battery downgrade and clamshell limits, but the Settings copy promises reachability without that qualifier. If the product promise is best-effort sleep prevention, soften the copy so the UI does not overstate the system contract. Files: `app/Phoenix/KeepMacAwake.swift:5`, `app/Phoenix/SettingsView.swift:191`. Standard: Spec-Reframe.
+
+**Open Questions**
+- **Q: Shared row or local chrome?** — Will both Keep Mac Awake surfaces stay intentionally identical in copy and affordance? If yes, align the copy inline first and extract only after observed drift or a third surface appears. If not, consider cutting the shared component request — it adds complexity and makes PMF iteration harder.
+
+**Security** — Clean: the security specialist found only a local boolean preference, in-process IOKit use, and no widened trust boundary.
+
+**Test coverage** — The tests specialist flagged missing `KeepMacAwake` behavior coverage for successful acquire/release/teardown. No `.codex-scratch/test-results.md` artifact was present, so I cannot report a local `just test` outcome from this review bundle.
+
+VERDICT: COMMENT
+tokens used
+39,409
+_It appears @swagatpatel is working towards keeping users’ Plow agent reachable when their Mac would otherwise go to sleep by adding a persistent “Keep Mac Awake” toggle in `SettingsView.swift` and `StatusView.swift`, wired through `PhoenixApp.swift` to `KeepMacAwake.swift`’s IOPM sleep-prevention assertion — reviewing against that goal._
+
+**Overview** — The core feature shape is straightforward: one `@MainActor` `KeepMacAwake` owner, shared through the installer/settings/status UI, acquires an IOPM assertion when enabled and releases it on teardown. The main concerns are that the PR also pulls in installer window auto-sizing work, and the new OS assertion owner lacks behavior tests for the success/release path.
+
+**Strengths** — The toggles bind to the same observable `KeepMacAwake` instance, so Settings and the status popover do not create competing sleep-prevention state. The failed-acquire rollback also keeps persisted state aligned with what the system actually accepted.
+
+**Findings**
+1. [medium] Does PLO-30 need to introduce a second installer layout-sizing system? The end-user goal is the keep-awake toggle, but this diff also adds measured content/overlay state, two `PreferenceKey`s, and dynamic `NSWindow` resizing for the installer. That makes future installer changes reason about two sizing paths for a feature that only needs another settings row; keeping the fixed installer behavior or moving sizing into its own focused PR would avoid scope creep that adds complexity and makes PMF iteration harder. Files: `app/Phoenix/InstallerView.swift:14`, `app/Phoenix/InstallerView.swift:114`, `app/Phoenix/InstallerView.swift:537`, `app/Phoenix/InstallerView.swift:554`, `app/Phoenix/SettingsView.swift:32`. Standard: Narrow-Fix / Concise Code.
+2. [medium] Will automated coverage accept a new OS assertion owner with no success/release behavior test? `KeepMacAwake`’s contract depends on recording the returned assertion ID, releasing it on toggle-off, and releasing it again on app termination; a regression in any of those paths would make the Mac sleep despite opt-in or leave an assertion around until process exit. There is no `KeepMacAwakeTests.swift` in the current tree, so add a narrow assertion-client/defaults seam and 1-2 `@MainActor` behavior tests for successful acquire, toggle-off release, and teardown release. Files: `app/Phoenix/KeepMacAwake.swift:56`, `app/Phoenix/KeepMacAwake.swift:75`, `app/Phoenix/PhoenixApp.swift:104`. Standard: Tests.
+3. [low] Will “your agent stays reachable” be true in the states this implementation explicitly cannot control? The code documents battery downgrade and clamshell limits, but the Settings copy promises reachability without that qualifier. If the product promise is best-effort sleep prevention, soften the copy so the UI does not overstate the system contract. Files: `app/Phoenix/KeepMacAwake.swift:5`, `app/Phoenix/SettingsView.swift:191`. Standard: Spec-Reframe.
+
+**Open Questions**
+- **Q: Shared row or local chrome?** — Will both Keep Mac Awake surfaces stay intentionally identical in copy and affordance? If yes, align the copy inline first and extract only after observed drift or a third surface appears. If not, consider cutting the shared component request — it adds complexity and makes PMF iteration harder.
+
+**Security** — Clean: the security specialist found only a local boolean preference, in-process IOKit use, and no widened trust boundary.
+
+**Test coverage** — The tests specialist flagged missing `KeepMacAwake` behavior coverage for successful acquire/release/teardown. No `.codex-scratch/test-results.md` artifact was present, so I cannot report a local `just test` outcome from this review bundle.
+
+VERDICT: COMMENT
+[15:50:45] agent=aggregator exit=0
