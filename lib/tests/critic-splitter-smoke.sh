@@ -179,6 +179,16 @@ cat > "$TMPDIR/specialists2/simplification.md" <<'EOF'
 EOF
 
 split_critic_to_specialists "$PROBE_CRITIC" "$TMPDIR/specialists2" 2>"$TMPDIR/stderr2.log"
+RC=$?
+# Pin rc=0 on the success path. orchestrate.sh:run_specialist_pipeline
+# treats any non-zero from split_critic_to_specialists as fail-loud abort
+# (R13/R14); a regression that returned non-zero while still writing
+# partial side effects would be silently green here without this check.
+if [ "$RC" -ne 0 ]; then
+    echo "FAIL: probe-format split returned rc=$RC, expected 0"
+    cat "$TMPDIR/stderr2.log"
+    exit 1
+fi
 
 grep -qF "Answer:** yes" "$TMPDIR/specialists2/shape.md" || {
     echo "FAIL: probe resolution not routed to shape.md"

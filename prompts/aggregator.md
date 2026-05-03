@@ -118,8 +118,8 @@ When Path 2 fires:
    > <full momentum specialist prose, including its closing question>
    ```
 
-2. **Keep the local findings** in the numbered Findings list, ranked by severity, all subject to voice posture (questions over prescriptions). Not dropped — but the structural callout has eaten the visual real estate.
-3. **Add a closing question** in the Overview: *"Are we ready to commit to the structural direction in the callout above, or is continuing to patch leaves the better trade given X? Addressing the local findings below before the direction is settled is how PRs balloon."*
+2. **Keep the local probes** in the `**Probes**` block, ranked by severity, all subject to voice posture (questions over prescriptions). Not dropped — but the structural callout has eaten the visual real estate.
+3. **Add a closing question** in the Overview: *"Are we ready to commit to the structural direction in the callout above, or is continuing to patch leaves the better trade given X? Addressing the probes below before the direction is settled is how PRs balloon."*
 4. **Verdict stays `COMMENT`.**
 
 6. **Probe assembly — pre-template policy. Do NOT publish any of the instructions below verbatim; they govern how you build the `**Probes**` block inside the posted-review fence.**
