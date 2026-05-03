@@ -19,6 +19,13 @@ PROBE_ENUM_SEVERITY=(blocking medium low nit)
 PROBE_ENUM_ANSWER=(yes no unknown)
 
 probe_validate() {
+    # Optional first arg: expected `From:` value. When set, every full
+    # probe block (### Probe N) must have `- **From:** <expected>`.
+    # Catches a specialist that emits a probe with the wrong attribution
+    # — e.g. shape's output emitting `From: security`, which would
+    # corrupt the aggregator's per-specialist Security/Test summaries.
+    # Critic isn't pinned (it emits multiple `From:` values legitimately).
+    local expected_from="${1:-}"
     local input
     input="$(cat)"
     [ -z "$input" ] && return 0
@@ -33,41 +40,77 @@ probe_validate() {
     fi
 
     # Require at least ONE of: full probe block, critic resolved-probe
-    # delta block (`### [from: <angle>] Probe N`), or a `## Surveyed`
-    # section. Bare `No probes.` with no Surveyed evidence means the
-    # specialist failed to prove it looked — same fail-loud as
-    # common-header rule 3.
-    if ! grep -qE '^### Probe |^### \[from: [a-z][a-z-]+\] Probe |^## Surveyed|^### Surveyed' <<<"$input"; then
-        echo "no probe blocks AND no Surveyed section — specialist must emit probes or prove it looked via Surveyed" >&2
+    # delta block, `## Surveyed` section, or critic-shape section
+    # headers (`## Resolved probes` / `## Generated probes`). The
+    # critic-shape headers are valid even with empty bodies — a clean
+    # PR with no specialist probes legitimately has no resolved or
+    # generated content. Bare `No probes.` with none of the above
+    # means the agent failed to prove it looked.
+    if ! grep -qE '^### Probe |^### \[from: [a-z][a-z-]+\] Probe |^## Surveyed|^### Surveyed|^## Resolved probes|^## Generated probes' <<<"$input"; then
+        echo "no probe blocks, Surveyed section, or critic-shape headers — agent must emit one of these" >&2
         return 1
     fi
 
     local missing=0 field
 
     # Validate critic resolved-probe delta blocks (header form
-    # `### [from: <angle>] Probe N`). These don't contain full probes;
-    # they carry `Answer:` / `Evidence:` / optional `Severity if yes:`
-    # only. Enum-check `Answer:` so off-contract values
-    # (e.g. `Answer: maybe`) trip the validator.
-    local resolved_answers
-    resolved_answers="$(awk '
-        /^### \[from: [a-z][a-z-]+\] Probe / { in_block = 1; next }
-        in_block && /^- \*\*Answer:\*\* / { print; in_block = 0; next }
-        in_block && /^### |^## / { in_block = 0 }
+    # `### [from: <angle>] Probe N`). Each delta MUST carry an
+    # `Answer:` line with a valid enum value — otherwise a specialist
+    # blocker the critic claimed to resolve actually has no override
+    # and falls back to specialist's `Answer: unknown` (rendered as
+    # `[open]`, demoting the blocker). Each delta ALSO must carry an
+    # `Evidence:` line.
+    local resolved_blocks
+    resolved_blocks="$(awk '
+        /^### \[from: [a-z][a-z-]+\] Probe / {
+            if (in_block) print block "\n---DELTA-SPLIT---";
+            block = $0;
+            in_block = 1;
+            next
+        }
+        /^### |^## / && in_block {
+            print block "\n---DELTA-SPLIT---";
+            in_block = 0;
+            next
+        }
+        { if (in_block) block = block "\n" $0 }
+        END { if (in_block) print block }
     ' <<<"$input")"
-    if [ -n "$resolved_answers" ]; then
-        local ans_line val v ok
-        while IFS= read -r ans_line; do
-            val=$(printf '%s' "$ans_line" | sed 's/^- \*\*Answer:\*\* //;s/[[:space:]]*$//')
+    if [ -n "$resolved_blocks" ]; then
+        local delta_block="" line val v ok
+        _validate_delta() {
+            local block="$1"
+            local hdr=$(printf '%s' "$block" | head -1)
+            # Required fields on every resolved delta
+            grep -q "^- \*\*Answer:\*\*" <<<"$block" || {
+                echo "resolved-probe delta missing Answer field: '$hdr'" >&2
+                missing=1
+                return
+            }
+            grep -q "^- \*\*Evidence:\*\*" <<<"$block" || {
+                echo "resolved-probe delta missing Evidence field: '$hdr'" >&2
+                missing=1
+            }
+            # Answer enum
+            val=$(grep '^- \*\*Answer:\*\*' <<<"$block" | head -1 | sed 's/^- \*\*Answer:\*\* //;s/[[:space:]]*$//')
             ok=0
             for v in "${PROBE_ENUM_ANSWER[@]}"; do
                 [ "$val" = "$v" ] && { ok=1; break; }
             done
             if [ "$ok" -eq 0 ]; then
-                echo "invalid Answer enum in resolved-probe delta: '$val' (expected: ${PROBE_ENUM_ANSWER[*]})" >&2
+                echo "invalid Answer enum in resolved-probe delta '$hdr': '$val' (expected: ${PROBE_ENUM_ANSWER[*]})" >&2
                 missing=1
             fi
-        done <<<"$resolved_answers"
+        }
+        while IFS= read -r line; do
+            if [ "$line" = "---DELTA-SPLIT---" ]; then
+                _validate_delta "$delta_block"
+                delta_block=""
+            else
+                delta_block="$delta_block"$'\n'"$line"
+            fi
+        done <<<"$resolved_blocks"
+        [ -n "$delta_block" ] && _validate_delta "$delta_block"
     fi
 
     # Skip content before the first `### Probe` header (specialists' shared
@@ -123,6 +166,19 @@ probe_validate() {
         _check_enum "Confidence" "${PROBE_ENUM_CONFIDENCE[@]}"
         _check_enum "Severity if yes" "${PROBE_ENUM_SEVERITY[@]}"
         _check_enum "Answer" "${PROBE_ENUM_ANSWER[@]}"
+        # If caller pinned the expected From value, enforce it. R9 added
+        # this so a specialist whose probe emits a wrong From value
+        # (e.g. shape's output saying `From: security`) trips the
+        # validator. Skipped when expected_from is empty (critic case —
+        # critic legitimately emits multiple From values per round).
+        if [ -n "$expected_from" ]; then
+            local from_val
+            from_val=$(grep "^- \*\*From:\*\*" <<<"$block" | head -1 | sed 's/^- \*\*From:\*\* //;s/[[:space:]]*$//')
+            if [ -n "$from_val" ] && [ "$from_val" != "$expected_from" ]; then
+                echo "wrong From: '$from_val' (expected '$expected_from')" >&2
+                missing=1
+            fi
+        fi
     }
 
     local probe_block="" line
