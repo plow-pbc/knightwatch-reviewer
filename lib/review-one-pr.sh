@@ -91,7 +91,9 @@ WORKDIRS_DIR="${WORKDIRS_DIR:-$STATE_DIR/workdirs}"
 . "$_LIB_DIR_EARLY/tracked-repos.sh"
 BOT_USER="${BOT_USER:-srosro}"
 BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
-BOT_AI_AUTHOR_MARKER="${BOT_AI_AUTHOR_MARKER:-<!-- knightwatch-reviewer:ai-author note=load-bearing-probes operating-point=pre-pmf prefer=cut-loc-over-add -->}"
+# BOT_AI_AUTHOR_MARKER is defined in lib/run-dir.sh (single source of truth);
+# this worker sources run-dir.sh below at $_LIB_DIR/run-dir.sh and consumes
+# the var when posting the review body.
 
 # Source helpers. Prefer REVIEWER_LIB_DIR if caller set it (smoke-test
 # isolation); fall back to the worker's own directory.

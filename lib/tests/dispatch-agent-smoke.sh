@@ -208,23 +208,47 @@ if [ -s "$RUN_SPECIALIST_LOG" ]; then
     exit 1
 fi
 
-# ---- pipeline abort: critic non-zero must skip aggregator dispatch ---
+# ---- pipeline abort cases: critic non-zero, splitter missing-target ----
 # R6 introduced fail-loud on critic non-zero (orchestrate.sh:215+). Pre-R6
 # the worker fell back to an empty-critic placeholder which let
 # Answer: unknown probes silently render as [open], demoting real
-# blockers. Fence the abort path by stubbing dispatch_agent so every
-# upstream agent succeeds, critic returns non-zero, and asserting
-# (a) run_specialist_pipeline exits non-zero, (b) aggregator was never
-# called.
-echo "  critic non-zero → run_specialist_pipeline aborts before aggregator..."
+# blockers. R13 added the same fail-loud at the critic-splitter; R14
+# noted the helper smoke alone didn't fence orchestrate.sh's integration
+# — restoring `|| true` at the splitter call would keep `just test` green
+# while production silently dropped critic resolutions again.
+#
+# Both cases share the same shape: stub every agent to succeed except
+# critic, which the per-case CRITIC_BEHAVIOR function controls; assert
+# run_specialist_pipeline exits non-zero AND aggregator was never called.
+# The only thing that varies is what critic does (return non-zero vs.
+# emit an unknown-angle block that the splitter rejects).
 
 # Stub log() since state-io.sh isn't sourced in this smoke
 log() { :; }
 
-# Override dispatch_agent at the smoke level. Each agent writes a stub
-# output.md to its expected path and returns 0, except critic which
-# returns non-zero.
 AGGREGATOR_CALLED_FLAG="$TMPDIR/aggregator-called"
+
+# Per-case critic stubs. Each takes the agent's output.md path and
+# returns the exit code dispatch_agent should propagate for critic.
+critic_fail_with_exit_7() {
+    return 7
+}
+critic_emit_unknown_angle() {
+    # Splitter will fail-loud on the missing specialists/unknown-ghost-angle.md.
+    cat > "$1" <<'CRITIC_EOF'
+## Resolved probes
+
+### [from: unknown-ghost-angle] Probe 1
+Stub critic resolution for an angle that was never staged.
+CRITIC_EOF
+    return 0
+}
+
+# Single dispatch_agent stub for both cases. Routes critic through
+# whichever CRITIC_BEHAVIOR function the scenario selected; every other
+# agent stubs success. rm -rf "$REPO_DIR" inside run_specialist_pipeline
+# kills our tree on abort — callers wrap the pipeline call in a subshell
+# so the smoke can recover the exit code without losing test state.
 dispatch_agent() {
     local name="$1"
     mkdir -p "$RUN_DIR/agents/$name"
@@ -236,7 +260,8 @@ dispatch_agent() {
             printf 'stub dead-code output\n' > "$RUN_DIR/agents/$name/output.md"
             return 0 ;;
         critic)
-            return 7 ;;
+            "$CRITIC_BEHAVIOR" "$RUN_DIR/agents/$name/output.md"
+            return $? ;;
         aggregator)
             : > "$AGGREGATOR_CALLED_FLAG"
             printf 'aggregator-stub\n' > "$RUN_DIR/agents/$name/output.md"
@@ -248,89 +273,36 @@ dispatch_agent() {
     esac
 }
 
-# rm -rf "$REPO_DIR" inside run_specialist_pipeline kills our tree on
-# abort — wrap the call in a subshell so the smoke can recover the
-# exit code without losing test state. REPO_DIR is recreated below.
-mkdir -p "$REPO_DIR/.codex-scratch/specialists"
-rm -f "$AGGREGATOR_CALLED_FLAG"
-(
-    # Empty previous-review.md → first-review path (skips momentum).
-    mkdir -p "$RUN_DIR/inputs"
+# run_pipeline_abort_case <label>
+#   Reset run/repo state, run the pipeline (with an empty
+#   previous-review.md → first-review path, skips momentum), assert
+#   non-zero exit + aggregator never reached.
+run_pipeline_abort_case() {
+    local label="$1"
+    rm -rf "$REPO_DIR" "$RUN_DIR" "$AGGREGATOR_CALLED_FLAG"
+    mkdir -p "$REPO_DIR/.codex-scratch/specialists" "$RUN_DIR/agents" "$RUN_DIR/inputs"
     : > "$RUN_DIR/inputs/previous-review.md"
-    LOG_FILE=/dev/null run_specialist_pipeline
-)
-PIPE_EXIT=$?
-
-if [ "$PIPE_EXIT" -eq 0 ]; then
-    echo "FAIL: run_specialist_pipeline must abort on critic non-zero (got exit 0)"
-    exit 1
-fi
-if [ -e "$AGGREGATOR_CALLED_FLAG" ]; then
-    echo "FAIL: aggregator was dispatched after critic failure (must abort before)"
-    exit 1
-fi
-echo "  OK: critic non-zero → pipeline aborts (exit $PIPE_EXIT), aggregator never reached"
-
-# ---- pipeline abort: splitter missing-target must skip aggregator -----
-# R13 made critic-splitter fail-loud on missing specialist files; R14
-# noted that the helper smoke alone doesn't fence orchestrate.sh's
-# integration — restoring `|| true` at the splitter call would keep
-# `just test` green while production silently dropped critic
-# resolutions again. Fence the pipeline-level fail-through:
-# critic emits an unknown-angle resolution, splitter returns non-zero,
-# orchestrate aborts, aggregator is never called.
-echo "  splitter missing-target → run_specialist_pipeline aborts before aggregator..."
-
-# Override dispatch_agent: critic now succeeds with output that targets
-# an unstaged angle. The 8 specialists still succeed; the 'critic.md'
-# stub will hold the unknown-angle delta block.
-dispatch_agent() {
-    local name="$1"
-    mkdir -p "$RUN_DIR/agents/$name"
-    case "$name" in
-        intent)
-            printf 'Inferred intent: stub intent line\n' > "$RUN_DIR/agents/$name/output.md"
-            return 0 ;;
-        dead-code-search)
-            printf 'stub dead-code output\n' > "$RUN_DIR/agents/$name/output.md"
-            return 0 ;;
-        critic)
-            # Resolve a probe targeting an unstaged angle — splitter will
-            # fail-loud on the missing specialists/unknown-ghost-angle.md.
-            cat > "$RUN_DIR/agents/$name/output.md" <<'CRITIC_EOF'
-## Resolved probes
-
-### [from: unknown-ghost-angle] Probe 1
-Stub critic resolution for an angle that was never staged.
-CRITIC_EOF
-            return 0 ;;
-        aggregator)
-            : > "$AGGREGATOR_CALLED_FLAG"
-            printf 'aggregator-stub\n' > "$RUN_DIR/agents/$name/output.md"
-            return 0 ;;
-        *)
-            printf '## [%s] probes\n\nNo probes.\n' "$name" > "$RUN_DIR/agents/$name/output.md"
-            return 0 ;;
-    esac
+    (
+        LOG_FILE=/dev/null run_specialist_pipeline
+    )
+    local exit_code=$?
+    if [ "$exit_code" -eq 0 ]; then
+        echo "FAIL: run_specialist_pipeline must abort on $label (got exit 0)"
+        exit 1
+    fi
+    if [ -e "$AGGREGATOR_CALLED_FLAG" ]; then
+        echo "FAIL: aggregator was dispatched after $label (must abort before)"
+        exit 1
+    fi
+    echo "  OK: $label → pipeline aborts (exit $exit_code), aggregator never reached"
 }
 
-# Reset state and re-run
-rm -rf "$REPO_DIR" "$RUN_DIR" "$AGGREGATOR_CALLED_FLAG"
-mkdir -p "$REPO_DIR/.codex-scratch/specialists" "$RUN_DIR/agents" "$RUN_DIR/inputs"
-: > "$RUN_DIR/inputs/previous-review.md"
-(
-    LOG_FILE=/dev/null run_specialist_pipeline
-)
-PIPE_EXIT=$?
+echo "  critic non-zero → run_specialist_pipeline aborts before aggregator..."
+CRITIC_BEHAVIOR=critic_fail_with_exit_7
+run_pipeline_abort_case "critic non-zero"
 
-if [ "$PIPE_EXIT" -eq 0 ]; then
-    echo "FAIL: run_specialist_pipeline must abort on splitter missing-target (got exit 0)"
-    exit 1
-fi
-if [ -e "$AGGREGATOR_CALLED_FLAG" ]; then
-    echo "FAIL: aggregator was dispatched after splitter failure (must abort before)"
-    exit 1
-fi
-echo "  OK: splitter missing-target → pipeline aborts (exit $PIPE_EXIT), aggregator never reached"
+echo "  splitter missing-target → run_specialist_pipeline aborts before aggregator..."
+CRITIC_BEHAVIOR=critic_emit_unknown_angle
+run_pipeline_abort_case "splitter missing-target"
 
 echo "  PASS (5 contract groups: standalone × 3, raw critic, aggregator stitch + failure path, specialist default × 3, critic fail-loud abort, splitter fail-loud abort)"

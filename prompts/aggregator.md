@@ -180,8 +180,8 @@ _<intent line, italicized — see formatting rule below>_
    You do NOT re-infer or paraphrase the intent. Copy, strip, italicize.
 
 9. On the VERY LAST LINE of your output, put exactly one of:
-   - `VERDICT: APPROVE` — no findings, or findings are low/nit only.
+   - `VERDICT: APPROVE` — no surviving probes, or all surviving probes are low/nit only.
    - `VERDICT: APPROVE — pending: <short comma-separated nit/low items>` — approvable but worth noting.
-   - `VERDICT: COMMENT` — one or more `blocking` findings must be addressed before merge.
+   - `VERDICT: COMMENT` — one or more `blocking` probes must be addressed before merge.
 
 No other content after the VERDICT line.

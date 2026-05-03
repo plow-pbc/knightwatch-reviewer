@@ -42,6 +42,33 @@ echo "  asserting probe-resolver job description in critic.md..."
 assert_grep "critic.md should describe probe resolution job" \
     "probe resolution" prompts/critic.md
 
+# Negative fence: the legacy critic opening said "Eight specialists have
+# surfaced findings" — that wording predates the probe-as-unit refactor
+# and primes the model to emit Findings instead of resolving probes.
+# Reject the literal phrase so a regression that re-introduces it trips
+# this smoke.
+echo "  asserting critic.md has no 'have surfaced findings' regression..."
+if grep -qF "have surfaced findings" prompts/critic.md; then
+    echo "FAIL: critic.md regressed to legacy 'have surfaced findings' wording — probe-as-unit opening was rolled back"
+    exit 1
+fi
+
+# Negative fence: the VERDICT line at the very end of aggregator.md
+# previously said "no findings" / "blocking findings". Probe-as-unit
+# vocabulary uses "surviving probes" / "blocking probes". Reject the
+# literal phrases on the VERDICT line so a regression to the old wording
+# trips the smoke.
+echo "  asserting aggregator.md VERDICT lines use probe vocabulary..."
+verdict_block=$(grep -A 3 '^9\. On the VERY LAST LINE' prompts/aggregator.md)
+if printf '%s' "$verdict_block" | grep -qF "no findings"; then
+    echo "FAIL: aggregator.md VERDICT regressed to 'no findings' wording — probe-as-unit verdict was rolled back"
+    exit 1
+fi
+if printf '%s' "$verdict_block" | grep -qF "blocking findings"; then
+    echo "FAIL: aggregator.md VERDICT regressed to 'blocking findings' wording — probe-as-unit verdict was rolled back"
+    exit 1
+fi
+
 echo "  asserting voice-posture pointer in critic.md..."
 assert_grep "critic.md should cite Broken-Glass Test" \
     "Broken-Glass Test" prompts/critic.md
@@ -154,20 +181,12 @@ echo "  asserting legacy finding-format carry-forward bucket in critic.md..."
 assert_grep "critic.md should describe Legacy finding-format conversion path" \
     "Legacy finding-format" prompts/critic.md
 
-# Allowlist constants must agree between worker (BOT_AI_AUTHOR_MARKER in
-# lib/review-one-pr.sh) and the prepend_review_header allowlist in
-# lib/run-dir.sh. R8 caught that the previous prefix-match left a gap;
-# this fence catches drift between the two strings going forward.
-echo "  asserting marker constants agree between review-one-pr.sh and run-dir.sh..."
-worker_marker=$(grep -E '^BOT_AI_AUTHOR_MARKER=' lib/review-one-pr.sh | sed -E 's/^[^"]*"([^"]*)".*/\1/')
-allow_marker=$(grep -E "^[[:space:]]*local AI_AUTHOR_LINE=" lib/run-dir.sh | sed -E "s/^[^']*'([^']*)'.*/\1/")
-# strip the ${BOT_AI_AUTHOR_MARKER:-...} default-syntax wrapper if present
-worker_marker=${worker_marker#\${BOT_AI_AUTHOR_MARKER:-}
-worker_marker=${worker_marker%\}}
-[ "$worker_marker" = "$allow_marker" ] || {
-    echo "FAIL: BOT_AI_AUTHOR_MARKER ('$worker_marker') != prepend_review_header AI_AUTHOR_LINE ('$allow_marker')"
-    exit 1
-}
+# Single source of truth: BOT_AI_AUTHOR_MARKER lives in lib/run-dir.sh
+# (where prepend_review_header consumes it); lib/review-one-pr.sh sources
+# run-dir.sh and reads the same var when building the posted body. The
+# previous agreement fence between two duplicated string literals went
+# away with the dedup — there's nothing to keep in sync anymore.
+
 echo "  asserting re-review loop-breaker (Path 2) in aggregator.md..."
 assert_grep "aggregator.md should reference loc-trend.md trigger" \
     "loc-trend.md" prompts/aggregator.md
