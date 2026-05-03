@@ -237,3 +237,9 @@ replays/comparison/**/agents/*/log.txt
 replays/comparison/**/agents-on-exit/
 replays/comparison/**/run-dir/agents/*/prompt.txt
 replays/comparison/**/run-dir/agents/*/log.txt
+
+# Untracked workspace artifacts (created during prompt-quality investigation,
+# kept on disk for reference but not committed).
+docs/comparison-2026-05-02.md
+docs/plans/2026-05-02-three-way-review-comparison.md
+prompts.new-design/
