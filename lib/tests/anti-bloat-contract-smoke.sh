@@ -133,6 +133,18 @@ echo "  asserting unified complexity-cost expectation in common-header.md..."
 assert_grep "common-header.md should describe complexity-cost probe expectation" \
     "Complexity-cost probe expectation" prompts/common-header.md
 
+# R9 + R10 data-minimized linked-issue staging: dropped body fetch (R9)
+# then dropped title fetch (R10). A regression that reintroduces
+# `gh issue view --json title` or `--json title,body` would silently
+# leak private repo/issue titles into author-intent.md → specialists →
+# public PR comment. Fence the absence; the regression-fix is to keep
+# only owner/repo#num + URL.
+echo "  asserting linked-issue staging does NOT call 'gh issue view'..."
+if grep -nE '^[[:space:]]*[A-Z_]+=\$\(gh issue view |^[[:space:]]*gh issue view ' lib/review-one-pr.sh; then
+    echo "FAIL: lib/review-one-pr.sh calls 'gh issue view' — linked-issue title/body minimization regressed (R9 + R10)"
+    exit 1
+fi
+
 echo "  asserting legacy finding-format carry-forward bucket in critic.md..."
 assert_grep "critic.md should describe Legacy finding-format conversion path" \
     "Legacy finding-format" prompts/critic.md
