@@ -52,15 +52,6 @@ else
     echo "FAIL: empty input rejected"; exit 1
 fi
 
-# Test probe_extract_field
-EXTRACTED_FROM="$(probe_extract_field "From" <<<"$FIXTURE_OK")"
-[ "$EXTRACTED_FROM" = "shape" ] || { echo "FAIL: expected From=shape, got '$EXTRACTED_FROM'"; exit 1; }
-echo "OK: probe_extract_field From"
-
-EXTRACTED_CLASS="$(probe_extract_field "Class" <<<"$FIXTURE_OK")"
-[ "$EXTRACTED_CLASS" = "complexity-cost" ] || { echo "FAIL: expected Class=complexity-cost, got '$EXTRACTED_CLASS'"; exit 1; }
-echo "OK: probe_extract_field Class"
-
 # Fixture: specialist output with ### Surveyed prose before the first probe.
 # The shared specialist header still requires a Surveyed section even when
 # probes are present; the parser must skip pre-probe content rather than

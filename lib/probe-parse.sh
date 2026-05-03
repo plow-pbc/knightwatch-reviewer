@@ -5,8 +5,6 @@
 #                       probes have required fields, exit 1 otherwise. Logs
 #                       missing-field names to stderr. Empty input is
 #                       vacuously valid (exit 0).
-#   probe_extract_field FIELD — read on stdin, print the value of FIELD
-#                       per probe (one line per probe, in document order).
 
 REQUIRED_PROBE_FIELDS=(From Class Q Files "If yes, edit" "If no, cost" Confidence "Severity if yes" Answer Evidence)
 
@@ -195,7 +193,3 @@ probe_validate() {
     return "$missing"
 }
 
-probe_extract_field() {
-    local field="$1"
-    grep "^- \*\*${field}:\*\*" | sed "s/^- \*\*${field}:\*\* //"
-}
