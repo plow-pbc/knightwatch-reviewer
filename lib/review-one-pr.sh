@@ -1125,13 +1125,14 @@ while IFS=$'\t' read -r IS_OWNER IS_NAME IS_NUM; do
     # Title + repo+number is metadata the PR author can already see; the
     # body is fetched and discarded. Replaces R8/R9's instruction-based
     # privacy guard with a hard data-minimization fix at the source.
-    IS_TITLE=$(gh issue view "$IS_NUM" --repo "$IS_OWNER/$IS_NAME" --json title --jq '.title // empty' 2>/dev/null)
-    if [ -n "$IS_TITLE" ]; then
-        [ "$ISSUE_COUNT" -eq 0 ] && AUTHOR_INTENT+=$'\n## Linked issues (this PR closes)\n\n'
-        AUTHOR_INTENT+="- $IS_OWNER/$IS_NAME#$IS_NUM: $IS_TITLE (https://github.com/$IS_OWNER/$IS_NAME/issues/$IS_NUM)
+    # R10 F#3: drop title too — titles can leak from private repos /
+    # private issues whose titles the public PR audience cannot read.
+    # Stage only owner/repo#num + URL, which is metadata GitHub already
+    # exposes via `closingIssuesReferences` to anyone who can see the PR.
+    [ "$ISSUE_COUNT" -eq 0 ] && AUTHOR_INTENT+=$'\n## Linked issues (this PR closes)\n\n'
+    AUTHOR_INTENT+="- $IS_OWNER/$IS_NAME#$IS_NUM (https://github.com/$IS_OWNER/$IS_NAME/issues/$IS_NUM)
 "
-        ISSUE_COUNT=$((ISSUE_COUNT+1))
-    fi
+    ISSUE_COUNT=$((ISSUE_COUNT+1))
 done < <(printf '%s' "$PR_DATA" | jq -r '.closingIssuesReferences[]? | [.owner.login, .repo.name, (.number|tostring)] | @tsv' 2>/dev/null)
 write_scratch "$REPO_DIR" "author-intent.md" "$AUTHOR_INTENT"
 
