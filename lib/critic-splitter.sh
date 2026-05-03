@@ -8,14 +8,15 @@
 # split_critic_to_specialists CRITIC_MD SPECIALISTS_DIR
 #   reads:  $CRITIC_MD
 #   writes: $SPECIALISTS_DIR/<angle>.md (replaces with original + critic
-#           counter-arguments H2 + per-angle critic block)
-#           $SPECIALISTS_DIR/missed.md ("## Missed findings" section
-#           if present in critic.md; written verbatim)
+#           per-angle resolution H2 + per-angle critic block)
+#           $SPECIALISTS_DIR/critic.md (Generated probes from critic, routed here so
+#           the aggregator picks them up alongside angle-specialist files)
 #
 # Section grammar in critic.md:
-#   ### [<angle>] Finding N — <status>     ← per-angle finding section
-#   ## Missed findings (if any)            ← global missed-findings sink
-#   ## <anything else>                     ← treated as section terminator
+#   ### [<angle>] Finding N — <status>           ← legacy per-angle finding (back-compat)
+#   ### [from: <angle>] Probe N                  ← new per-angle probe resolution
+#   ## Generated probes                          ← critic-originated probes sink
+#   ## <anything else>                           ← treated as section terminator
 
 split_critic_to_specialists() {
     local critic_md="$1" specialists_dir="$2"
@@ -41,12 +42,13 @@ split_critic_to_specialists() {
                 buf = ""
             }
         }
-        # Per-angle finding section
-        /^### \[[a-z][a-z-]*\] Finding/ {
+        # Per-angle finding/probe section (legacy Finding or new Probe, with optional "from: " prefix)
+        /^### \[(from: )?[a-z][a-z-]*\] (Finding|Probe)/ {
             flush()
             line = $0
             sub(/^### \[/, "", line)
             sub(/\].*/, "", line)
+            sub(/^from: /, "", line)
             current_angle = line
             buf = $0
             next
@@ -65,30 +67,46 @@ split_critic_to_specialists() {
             }
         }
         END { flush() }
-    ' "$critic_md"
+    ' "$critic_md" || return 1
+
+    # Pass 1.5: extract "## Generated probes" section to specialists/critic.md.
+    awk -v out_file="$specialists_dir/critic.md" '
+        /^## Generated probes/ { in_gen = 1; next }
+        /^## / && in_gen { in_gen = 0 }
+        in_gen { print > out_file }
+    ' "$critic_md" || return 1
 
     # Pass 2: for each .angle-buf, append to specialists/<angle>.md under
     # a "## Critic counter-arguments" H2. Replaces the file (which is
     # typically a symlink to the agent's output.md) with a regular file
-    # containing original + critic-block. Skip + warn when the specialist
-    # file is absent.
+    # containing original + critic-block. Fail-loud when ANY target is
+    # absent — return non-zero at end of pass. Production-wise the
+    # partial state is unreachable (orchestrator aborts + rm -rf's
+    # REPO_DIR on the non-zero return), but the smoke depends on
+    # deterministic "valid splits process regardless of which angle
+    # missed" semantics across alphabetic glob order, so we run the
+    # whole loop. Net: 3 LOC of counter for deterministic smoke
+    # behavior — pragmatic trade despite R14's Concise-Code framing.
+    local missing_targets=0
     local f angle target original
     for f in "$specialists_dir"/*.angle-buf; do
         [ -e "$f" ] || continue
         angle=$(basename "$f" .angle-buf)
         target="$specialists_dir/${angle}.md"
         if [ ! -e "$target" ]; then
-            echo "split_critic_to_specialists: no specialist file for [$angle] — skipping" >&2
+            echo "split_critic_to_specialists: no specialist file for [$angle] — fail-loud (critic resolved an unknown angle)" >&2
             rm -f "$f"
+            missing_targets=$((missing_targets + 1))
             continue
         fi
-        original=$(cat "$target")
+        original=$(cat "$target") || return 1
         rm -f "$target"
         {
             printf '%s\n\n---\n\n## Critic counter-arguments\n\n' "$original"
             cat "$f"
             printf '\n'
-        } > "$target"
+        } > "$target" || return 1
         rm -f "$f"
     done
+    [ "$missing_targets" -eq 0 ]
 }

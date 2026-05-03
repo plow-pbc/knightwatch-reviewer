@@ -74,16 +74,12 @@ test:
     bash lib/tests/build-specialist-prompt-smoke.sh
 
     echo ""
-    echo "=== anti-bloat contract smoke test ==="
-    bash lib/tests/anti-bloat-contract-smoke.sh
+    echo "=== prompt-contracts smoke (anti-bloat + momentum-wire, folded) ==="
+    bash lib/tests/prompt-contracts-smoke.sh
 
     echo ""
     echo "=== loc-trend smoke ==="
     bash lib/tests/loc-trend-smoke.sh
-
-    echo ""
-    echo "=== momentum-wire smoke ==="
-    bash lib/tests/momentum-wire-smoke.sh
 
     echo ""
     echo "=== decline-history smoke ==="
@@ -108,10 +104,6 @@ test:
     echo ""
     echo "=== dispatch-agent smoke test ==="
     bash lib/tests/dispatch-agent-smoke.sh
-
-    echo ""
-    echo "=== critic-fallback smoke test ==="
-    bash lib/tests/critic-fallback-smoke.sh
 
     echo ""
     echo "=== run-dir smoke test ==="
@@ -160,6 +152,14 @@ test:
     echo ""
     echo "=== install smoke test ==="
     bash lib/tests/install-smoke.sh
+
+    echo ""
+    echo "=== replay smoke test ==="
+    bash lib/tests/replay-smoke.sh
+
+    echo ""
+    echo "=== replay-source-chain smoke test ==="
+    bash lib/tests/replay-source-chain-smoke.sh
 
     echo ""
     echo "all checks passed"

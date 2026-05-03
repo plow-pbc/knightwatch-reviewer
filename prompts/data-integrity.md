@@ -35,19 +35,21 @@ FIRST, read `.codex-scratch/diff.patch` and `.codex-scratch/file-history.md`. Tr
 - **theoretical** — only fires under contrived simultaneous failures or unusual race windows. Note in Surveyed; do NOT elevate unless the consequence is severe (silent corruption).
 - **already-guarded** — the diff has the lock / transaction / retry decorator / idempotency key in place. Clean.
 
-**Severity tuning:**
-- Data corruption / loss / silent wrong output → **blocking**.
-- Visible failure user can retry → **medium**.
-- Edge case requiring contrived conditions → **low** (or note in Surveyed).
-
 **Boundary with other specialists:**
 - `security` — trust boundaries / auth / secrets / injection. Not data correctness.
 - `shape` — pattern conformance (canonical Config helper, retry decorator). Not whether the code itself is right.
 - `tests` — coverage gaps. Not whether the bug exists.
 - `architecture` — layering / strategic / roadmap fit. Not "this code does the wrong thing."
 
-When the same data-integrity shape recurs (same race in three handlers, same commit-vs-emit ordering on three webhooks), prefer one structural finding over three local fixes — see `standards.md` § Bug-Class-Recurrence.
+When the same data-integrity shape recurs (same race in three handlers, same commit-vs-emit ordering on three webhooks), prefer one structural probe over three local fixes — see `standards.md` § Bug-Class-Recurrence.
 
 Out of scope: security-only, style, test coverage, product-fit.
 
-Look beyond the diff: grep for OTHER call sites of touched functions to verify new behavior is consistent with existing invariants. Grep sibling state-mutation sites to find unjustified divergence (e.g. "this handler awaits cancellation but the new one doesn't"). Grep transaction patterns in the same module for the canonical commit-vs-side-effect ordering.
+Look beyond the diff: grep for OTHER call sites of touched functions to verify new behavior is consistent with existing invariants. Grep sibling state-mutation sites to find unjustified divergence. Grep transaction patterns in the same module for the canonical commit-vs-side-effect ordering.
+
+**Emission format:**
+
+Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. **Classes emitted: `bug`, `complexity-cost`.** Severity rubric + edit/cost convention live in probe-schema.md § Class options. Domain examples for `bug` in this angle: data corruption, lost writes, silent drops, race condition, transaction-boundary violation, half-applied writes, missing rollback, idempotency hole, state-machine gap, off-by-one, pagination terminator bug, money-in-float, timezone naivety, async-cancellation hazard, migration-safety failure. Domain examples for `complexity-cost`: defensive transactional wrappers, retry layers, idempotency machinery added without observed need at the operating point.
+
+When the failing path is fully cited, set `Confidence: high` — the critic will confirm `Answer: yes` and the aggregator renders that as a declarative `[blocking]` line.
+

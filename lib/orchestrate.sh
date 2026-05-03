@@ -7,7 +7,7 @@
 #   2. dead-code-search pre-pass (sequential, fail-soft → degraded mode)
 #   3. 8 angle specialists (parallel, fail-loud on any)
 #   4. momentum specialist (re-reviews only, fail-loud)
-#   5. critic pass (fail-soft → placeholder via critic_fallback)
+#   5. critic pass (fail-loud — probe-resolver is load-bearing)
 #   6. aggregator (fail-loud)
 #
 # Inputs (read from caller's environment):
@@ -29,7 +29,7 @@
 #
 # Requires the following helpers already sourced in the caller's shell:
 #   log, write_scratch, substitute_placeholders, build_specialist_prompt,
-#   build_aggregator_prompt, critic_fallback.
+#   build_aggregator_prompt.
 
 # `dispatch_agent NAME`: build the prompt for NAME (using the right builder
 # for its contract) and run it through run-specialist.sh. Reads $REPO_DIR,
@@ -58,7 +58,7 @@ persist_layered_specialists() {
 
 dispatch_agent() {
     local name="$1"
-    local file="$HOME/.pr-reviewer/prompts/${name}.md"
+    local file="${PROMPTS_DIR:-$HOME/.pr-reviewer/prompts}/${name}.md"
     local prompt
     case "$name" in
         intent|dead-code-search|momentum)
@@ -72,7 +72,7 @@ dispatch_agent() {
             # the specialist common-header, same way intent / momentum do.
             local angle="${name#go-deep-}"
             prompt=$(substitute_placeholders \
-                "$HOME/.pr-reviewer/prompts/go-deep.md" \
+                "${PROMPTS_DIR:-$HOME/.pr-reviewer/prompts}/go-deep.md" \
                 "$PR_ID" "$PR_TITLE" "$PR_URL" "$PR_AUTHOR" "$angle") ;;
         critic)
             prompt=$(cat "$file") ;;
@@ -207,25 +207,36 @@ run_specialist_pipeline() {
     local CRITIC_EXIT=$?
     local CRITIC_OUT="$RUN_DIR/agents/critic/output.md"
 
-    # Log the failure mode for the run.log narrative; critic_fallback in
-    # lib/agent-fallback.sh handles the actual file substitution and is the
-    # regression-fenced path (see lib/tests/critic-fallback-smoke.sh).
-    # Empty-output is reported as exit 3 by run-specialist.sh, so it lands
-    # here as a non-zero CRITIC_EXIT — there's no separate elif branch.
+    # Fail-fast on critic failure. Pre-Phase-4 the aggregator could
+    # render a review without critic counterarguments (the verdict-token
+    # mapping treated absent critic output as "keep all findings as-is").
+    # Post-Phase-4, the critic IS the path that flips Answer: unknown →
+    # Answer: yes for high-confidence specialist probes; without it,
+    # every probe stays unknown and renders as `[open]`, silently
+    # demoting real `[blocking]` security/data-integrity probes to open
+    # questions. Mirror momentum's fail-loud abort below — the next
+    # timer tick retries.
     if [ "$CRITIC_EXIT" -ne 0 ]; then
-        log "$PR_ID: critic exited $CRITIC_EXIT — discarding any partial/empty output, falling back to placeholder (see agents/critic/log.txt)"
+        log "$PR_ID: critic failed (exit $CRITIC_EXIT) — aborting review (probe-resolver depends on critic Answer fills; silent degrade to all-Answer:unknown demotes blockers to open questions)"
+        rm -rf "$REPO_DIR"
+        exit 1
     fi
-    critic_fallback "$CRITIC_EXIT" "$CRITIC_OUT"
     ln -sfn "$CRITIC_OUT" "$REPO_DIR/.codex-scratch/critic.md"
 
     # Split the critic's per-finding output by [<angle>] section and append
     # each section to the corresponding specialists/<angle>.md, so the
     # aggregator + go-deep tech-leads see one layered file per specialist
     # (specialist findings → critic counter-arguments). Single writer per
-    # phase per file — no race. Fail-soft (logs per-angle warnings; never
-    # aborts — the aggregator can still read critic.md directly).
+    # phase per file — no race. Fail-loud on missing targets: a critic
+    # resolution for an unknown angle silently disappearing from the
+    # layered file demotes a real blocker to nothing in the rendered
+    # review (R13 finding). Mirrors critic fail-loud above.
     log "$PR_ID: splitting critic output into specialist files..."
-    split_critic_to_specialists "$CRITIC_OUT" "$SPECIALISTS_DIR" 2>>"$LOG_FILE" || true
+    if ! split_critic_to_specialists "$CRITIC_OUT" "$SPECIALISTS_DIR" 2>>"$LOG_FILE"; then
+        log "$PR_ID: critic-splitter failed (missing target, awk write, or specialist rewrite — see stderr in $LOG_FILE) — aborting review (silent drop would demote a critic-resolved blocker)"
+        rm -rf "$REPO_DIR"
+        exit 1
+    fi
 
     # ---- go-deep tech-leads (Phase 2) ----
     # Hot specialist files = those whose layered file contains a critic-
@@ -236,11 +247,21 @@ run_specialist_pipeline() {
     # appends to specialists/<angle>.md after wait. Auto-scales to 0 on
     # simple PRs: empty hot-list → no go-deep runs. Selection logic lives
     # in lib/go-deep-rank.sh (sourceable seam, behavior-tested).
+    #
+    # Probes-as-unit transition: the critic stopped emitting the
+    # "Calibration questions for go-deep" markers in Phase 4 (the
+    # probe-resolver replaces calibration with per-probe Answer +
+    # Evidence). rank_hot_angles will return empty under probe-format
+    # input, making this block a no-op until Phase 6 re-keys it to
+    # rank high-cost unresolved probes (Severity if yes ≥ medium AND
+    # Answer: unknown). High-cost calibration today happens in the
+    # critic's Resolved-probes pass — go-deep is intentionally idle
+    # here, not silently skipped.
     declare -a HOT_ANGLES=()
     mapfile -t HOT_ANGLES < <(rank_hot_angles "$SPECIALISTS_DIR" "${ANGLES[@]}")
 
     if [ "${#HOT_ANGLES[@]}" -eq 0 ]; then
-        log "$PR_ID: no findings ≥20 LOC remedy — skipping go-deep tech-leads"
+        log "$PR_ID: no high-cost calibration markers in specialists — go-deep idle (probe-format pipeline; Phase 6 re-keys lib/go-deep-rank.sh to scan unresolved probes)"
     else
         log "$PR_ID: launching ${#HOT_ANGLES[@]} go-deep tech-lead(s): ${HOT_ANGLES[*]}"
         declare -A GD_PIDS=()

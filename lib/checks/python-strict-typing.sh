@@ -3,7 +3,7 @@
 #
 # Usage: python-strict-typing.sh [PROJECT_DIR]
 #   PROJECT_DIR: optional subdir relative to cwd; defaults to ".". Set
-#   per-repo in repos.conf::STRICT_TYPING_CMDS for nested project roots
+#   per-repo in <repo>/.knightwatch/strict-typing.sh for nested project roots
 #   (e.g. plow's strict config lives in api/pyproject.toml, not at root).
 #
 # Tri-state contract (worker treats each exit code distinctly):

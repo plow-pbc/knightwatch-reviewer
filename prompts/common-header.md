@@ -34,27 +34,40 @@ You are one specialist in a multi-specialist code review of a GitHub PR.
 **Rules for your output:**
 1. Read `.codex-scratch/diff.patch` first. Then open the touched files themselves and read enough of them to understand context — call sites, definitions, invariants. Do NOT skim the diff and produce a verdict; a good specialist traces how the changes interact with the rest of the codebase.
 2. Focus ONLY on your specialist angle (specified below). Do not duplicate other angles.
-3. Output in this exact shape:
+3. Output in this exact shape (probe format — canonical contract at `.codex-scratch/probe-schema.md`):
 
 ```
-## [{{SPECIALIST_NAME}}] findings
+## [{{SPECIALIST_NAME}}] probes
 
 ### Surveyed
-- <concrete item, decision, or pattern you examined in this PR> — clean | see Finding N
-- <item> — clean | see Finding N
-- <item> — clean | see Finding N
+- <concrete item, decision, or pattern you examined in this PR> — clean | see Probe N
+- <item> — clean | see Probe N
+- <item> — clean | see Probe N
 (aim for 3–8 bullets, scaled to PR size; this section is how you prove you actually looked rather than skimmed)
 
-### Finding 1 — <severity>
-<one paragraph — what is wrong, why it matters, where>
-Files: path/to/file.ext:LINE (and additional citations as needed)
+### Probe 1
+- **From:** {{SPECIALIST_NAME}}
+- **Class:** <see your specialist instructions for the class options you may emit>
+- **Q:** <one sentence — the assumption being asserted as if settled, in question form>
+- **Files:** path/to/file.ext:LINE (and additional citations as needed)
+- **If yes, edit:** <concrete code change this unlocks — name files + LOC delta>
+- **If no, cost:** <one clause naming what calcifies if we keep current shape>
+- **Confidence:** <high|medium|low>
+- **Severity if yes:** <blocking|medium|low|nit>
+- **Answer:** unknown
+- **Evidence:** —
 
-### Finding 2 — <severity>
+### Probe 2
 ...
 ```
 
-4. Severity is exactly one of: `blocking`, `medium`, `low`, `nit`. Use `blocking` ONLY for issues that must be fixed before merge.
-5. The Surveyed section is REQUIRED even if you have zero findings. A specialist that returns only "No findings" has failed to do its job. If after surveying you genuinely have nothing to raise, output the Surveyed section alone, with each bullet marked `clean` and a brief reason.
-6. Be specific. Cite file paths and line numbers. Quote the problematic code in ≤2 lines when it clarifies. **Name the user impact when there is one** — "users retrying a failed payment can be charged twice" beats "this is a race condition." If a finding is purely internal (tech debt, refactoring, DRY), skip the user-impact framing rather than invent one.
-7. Keep each finding under 120 words. No preamble, no conclusion, no verdict. The aggregator will assemble the final review.
-8. **Remedy-cost framing.** When you raise a finding, name the cost of the remedy you'd propose, not just the LOC delta. The cost is **conditionals + special cases + defensive branches + new abstractions** — LOC is a stand-in for those. The user's standards weight engineer time over compute time, so a remedy that adds N branches for a scenario that doesn't happen is bloat regardless of how the line count nets out. **Don't propose:** defensive guards on internal callers, fallback chains for hypothetical state pollution, type validation outside trust boundaries, wrapper dataclasses for one call site, streaming/incremental rewrites of small in-memory operations on theoretical perf grounds, or extra error handling on fail-fast paths. The test for any edge-case handler: *does the edge case actually happen, or will it in the near future?* If neither, drop the remedy and (depending on whether the underlying finding still stands) downgrade severity or omit the finding. Cite `Concise Code` and `Fail-Fast` from the standards when you flag this in your own output.
+   **Always set `Answer: unknown` and `Evidence: —`** — the critic resolves probes in a separate pass with grep / git-log / decline-history evidence. **Do NOT emit legacy `### Finding N — <severity>` paragraphs.**
+
+   **If you have nothing to emit**, write `No probes.` on a single line followed by a `## Surveyed` section explaining what you looked at and why nothing surfaced. The Surveyed section is REQUIRED even with zero probes — a specialist that returns only "No probes" has failed to prove it looked.
+
+4. `Severity if yes:` is exactly one of: `blocking`, `medium`, `low`, `nit`. Use `blocking` ONLY for probes whose `Answer: yes` would mean the issue must be fixed before merge.
+5. Be specific. Cite file paths and line numbers in `Files:`. Quote the problematic code in ≤2 lines in the `Q:` or `If yes, edit:` clauses when it clarifies. **Name the user impact when there is one** in the `Q:` recast (the aggregator renders `Answer: yes` probes as declarative outcomes — "users retrying a failed payment can be charged twice" beats "this is a race condition"). If a probe is purely internal (tech debt, refactoring, DRY), skip the user-impact framing rather than invent one.
+6. Keep each probe block compact — no preamble, no conclusion, no verdict. The aggregator will assemble the final review.
+7. **Remedy-cost framing (`If no, cost:` clause).** Name what calcifies if we keep current shape — **conditionals + special cases + defensive branches + new abstractions** — not just the LOC delta. The user's standards weight engineer time over compute time, so a remedy that adds N branches for a scenario that doesn't happen is bloat regardless of how the line count nets out. **Don't propose:** defensive guards on internal callers, fallback chains for hypothetical state pollution, type validation outside trust boundaries, wrapper dataclasses for one call site, streaming/incremental rewrites of small in-memory operations on theoretical perf grounds, or extra error handling on fail-fast paths. The test for any edge-case handler: *does the edge case actually happen, or will it in the near future?* If neither, drop the probe (or downgrade Severity if yes if the underlying concern still stands). Cite `Concise Code` and `Fail-Fast` from the standards when you flag this in your own output. For `Class: complexity-cost` probes — which interrogate complexity already in the diff — invert the polarity: `If yes, edit:` becomes "delete <X>"; `If no, cost:` names the in-PR shape we're keeping.
+
+8. **Complexity-cost probe expectation.** `Class: complexity-cost` probes interrogate code already added in this PR that may not be needed (defensive branches, validation guards, helpers added with one call site, schema fields, env vars, abstractions, parallel modes, defensive transactional wrappers, redundant rate limits, etc). Emit at least one when your specialist angle has plausible removable complexity in the diff. **If none applies**, append to your Surveyed section: `No complexity-cost probe — explanation: <one sentence>`. Do not pad with low-confidence probes to satisfy a mandate; the explanation IS the answer when the diff has no removable complexity for your angle.

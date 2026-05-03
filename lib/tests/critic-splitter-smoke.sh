@@ -5,11 +5,20 @@
 #   1. Per-angle [<angle>] sections in critic.md are appended to the
 #      corresponding specialists/<angle>.md file under a "## Critic
 #      counter-arguments" H2 (so the layered file flows specialist-then-critic).
-#   2. The "## Missed findings" section from critic.md is preserved
-#      and written to specialists/missed.md.
-#   3. Missing specialist file for a section that the critic produced is
-#      a fail-soft warn (log line; don't abort) — handles a future angle
-#      removed without prompt sync.
+#   2. The "## Missed findings" section is NOT written to a separate
+#      specialists/missed.md sink — the aggregator reads missed findings
+#      directly from critic.md, so a sink with no runtime reader was
+#      dead surface. Smoke asserts the absence below.
+#   3. Missing specialist file for a section that the critic produced
+#      is fail-loud: function returns non-zero at first miss. The
+#      orchestrator aborts the review on this and rm -rf's REPO_DIR,
+#      so partial state from earlier splits in the same pass is
+#      unreachable downstream. R13 fixed the silent drop; R14 dropped
+#      the missing-target counter (since partial state was unreachable
+#      anyway). The smoke fixture below uses an `[architecture]` valid
+#      target before the bad `[removed-angle]` target — both R13's
+#      "valid splits before the failure point" assertion and R14's
+#      "any miss returns nonzero" assertion are exercised.
 #   4. Each specialists/<angle>.md keeps its original content UNCHANGED
 #      ahead of the critic block (specialist's own findings preserved).
 
@@ -60,6 +69,12 @@ Some other thing — the specialist file was removed though.
 EOF
 
 split_critic_to_specialists "$CRITIC" "$SPECIALISTS_DIR" 2>"$TMPDIR/stderr.log"
+SPLIT_RC=$?
+if [ "$SPLIT_RC" -eq 0 ]; then
+    echo "FAIL: split_critic_to_specialists returned 0 with a missing-target [removed-angle] section — should fail-loud"
+    cat "$TMPDIR/stderr.log"
+    exit 1
+fi
 
 echo "  asserting critic block appended to security.md..."
 grep -qF "## Critic counter-arguments" "$SPECIALISTS_DIR/security.md" || {
@@ -103,9 +118,14 @@ echo "  asserting missed findings stay in critic.md (no separate sink)..."
     exit 1
 }
 
-echo "  asserting fail-soft warn on missing specialist file..."
+echo "  asserting fail-loud message on missing specialist file..."
 grep -qF "removed-angle" "$TMPDIR/stderr.log" || {
-    echo "FAIL: missing-specialist warn not emitted on stderr"
+    echo "FAIL: missing-specialist message not emitted on stderr"
+    cat "$TMPDIR/stderr.log"
+    exit 1
+}
+grep -qF "fail-loud" "$TMPDIR/stderr.log" || {
+    echo "FAIL: stderr should mention fail-loud (not fail-soft warn)"
     cat "$TMPDIR/stderr.log"
     exit 1
 }
@@ -113,5 +133,113 @@ grep -qF "removed-angle" "$TMPDIR/stderr.log" || {
     echo "FAIL: should not have created specialists/removed-angle.md"
     exit 1
 }
+
+echo "  asserting probe-format critic resolution routes to per-angle file..."
+PROBE_CRITIC="$TMPDIR/probe-critic.md"
+cat > "$PROBE_CRITIC" <<'EOF'
+## Resolved probes
+
+### [from: shape] Probe 1
+- **Answer:** yes
+- **Evidence:** grep showed two callsites in app/handlers.py
+- **Severity if yes:** blocking
+
+### [from: simplification] Probe 1
+- **Answer:** unknown
+- **Evidence:** could not confirm whether the helper has a third caller
+
+## Generated probes
+
+### Probe 1
+- **From:** critic
+- **Class:** complexity-cost
+- **Q:** Is the new error envelope necessary at our operating point?
+- **Files:** app/api.py:30
+- **If yes, edit:** keep
+- **If no, cost:** calcifies a wrap-once-then-wrap layer
+- **Confidence:** medium
+- **Severity if yes:** low
+- **Answer:** unknown
+- **Evidence:** —
+EOF
+
+# Pre-stage the specialists for the probe pass
+mkdir -p "$TMPDIR/specialists2"
+cat > "$TMPDIR/specialists2/shape.md" <<'EOF'
+### Probe 1
+- **From:** shape
+- **Class:** bypass
+- **Q:** Does the diff sidestep Config.load?
+EOF
+cat > "$TMPDIR/specialists2/simplification.md" <<'EOF'
+### Probe 1
+- **From:** simplification
+- **Class:** DRY
+- **Q:** Three near-identical helpers in this PR?
+EOF
+
+split_critic_to_specialists "$PROBE_CRITIC" "$TMPDIR/specialists2" 2>"$TMPDIR/stderr2.log"
+RC=$?
+# Pin rc=0 on the success path. orchestrate.sh:run_specialist_pipeline
+# treats any non-zero from split_critic_to_specialists as fail-loud abort
+# (R13/R14); a regression that returned non-zero while still writing
+# partial side effects would be silently green here without this check.
+if [ "$RC" -ne 0 ]; then
+    echo "FAIL: probe-format split returned rc=$RC, expected 0"
+    cat "$TMPDIR/stderr2.log"
+    exit 1
+fi
+
+grep -qF "Answer:** yes" "$TMPDIR/specialists2/shape.md" || {
+    echo "FAIL: probe resolution not routed to shape.md"
+    cat "$TMPDIR/specialists2/shape.md"
+    exit 1
+}
+grep -qF "Answer:** unknown" "$TMPDIR/specialists2/simplification.md" || {
+    echo "FAIL: probe resolution not routed to simplification.md"
+    cat "$TMPDIR/specialists2/simplification.md"
+    exit 1
+}
+[ -s "$TMPDIR/specialists2/critic.md" ] || {
+    echo "FAIL: generated probes not routed to specialists/critic.md"
+    exit 1
+}
+grep -qF "From:** critic" "$TMPDIR/specialists2/critic.md" || {
+    echo "FAIL: generated probe missing 'From: critic' marker"
+    cat "$TMPDIR/specialists2/critic.md"
+    exit 1
+}
+
+# Write-failure path: R22 F#1 added `|| return 1` to the awk + target
+# rewrite paths so the function fails loud on disk-full / EPERM /
+# read-only-target instead of returning 0 with partial state. Exercise
+# the Pass-2 rewrite failure by making the target file un-writable +
+# the parent dir un-writable so the redirect can't replace the file.
+# A non-zero rc is the contract; any green path here means production
+# would silently post a review with dropped probe resolutions.
+echo "  asserting write-failure on Pass-2 rewrite returns non-zero..."
+RO_DIR="$TMPDIR/specialists-readonly"
+mkdir -p "$RO_DIR"
+# Stage one valid specialist target + a critic probe targeting it.
+cat > "$RO_DIR/security.md" <<'EOF'
+- security probe content
+EOF
+RO_CRITIC="$TMPDIR/critic-readonly.md"
+cat > "$RO_CRITIC" <<'EOF'
+## Resolved probes
+
+### [from: security] Probe 1
+- **Answer:** yes
+- **Evidence:** test
+EOF
+chmod 555 "$RO_DIR"  # make dir un-writable so redirect can't replace files
+split_critic_to_specialists "$RO_CRITIC" "$RO_DIR" 2>"$TMPDIR/stderr-readonly.log"
+RO_RC=$?
+chmod 755 "$RO_DIR"  # restore for cleanup
+if [ "$RO_RC" -eq 0 ]; then
+    echo "FAIL: split returned 0 with read-only target dir — write failure should return non-zero (R22 F#1 regression)"
+    cat "$TMPDIR/stderr-readonly.log"
+    exit 1
+fi
 
 echo "  PASS"

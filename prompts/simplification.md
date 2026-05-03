@@ -14,6 +14,8 @@ Out of scope (other specialists own these — do NOT raise):
 - **Stale callers / dead public symbols** (cross-symbol call-graph effects): `consumers` owns these. Raise dead code here only when it's intra-PR (a helper added in this PR with zero callers in the same diff). Unused imports and dead-on-touch local helpers are YOURS — they're file-local cleanups, not call-graph effects, and consumers's out-of-scope explicitly disclaims them.
 - Security bugs, concurrency bugs, test coverage gaps, strategic/roadmap concerns.
 
-Severity tuning: DRY findings are usually `medium` or `low`. Reserve `blocking` only for severe cases (e.g., the same 100-line handler authored five times in one PR, or introduced code that duplicates a well-established utility that's already sitting in the repo).
+**Emission format:**
+
+Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. **Classes emitted: `DRY`, `complexity-cost`.** Severity rubric + edit/cost convention live in probe-schema.md § Class options. Domain examples for `complexity-cost` in this angle: verbose implementations, missing early-returns, defensive `(x or {}).get(...)`-style code, drive-by unused imports / dead local helpers.
 
 Look beyond the diff: grep the repo for existing utilities/base classes that the PR's new code should have reused.

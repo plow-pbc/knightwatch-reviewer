@@ -62,10 +62,15 @@ COUNTER=$(cat "$COUNTER_FILE" 2>/dev/null || echo 0)
 NEXT_COUNTER=$((COUNTER + 1))
 echo "$NEXT_COUNTER" > "$COUNTER_FILE"
 TS=$((BASELINE + COUNTER * 100))
+
+iso_from_epoch() {
+    python3 -c "import datetime; print(datetime.datetime.fromtimestamp(int('$1'), tz=datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))"
+}
+
 # Honor only the two formats the production code uses: `+%s` (epoch)
 # and `-u -d "@<epoch>" +"%Y-%m-%dT%H:%M:%SZ"` (ISO 8601 from epoch).
 # The `-u +%Y-%m-%dT%H:%M:%SZ` form (no -d) is the round-11-bug shape
-# we explicitly want to detect — fall through to /usr/bin/date for
+# we explicitly want to detect — fall through to the real date binary for
 # anything else, which gives realistic behavior for log-line dates etc.
 if [ "$1" = "+%s" ]; then
     echo "$TS"
@@ -73,7 +78,7 @@ if [ "$1" = "+%s" ]; then
 fi
 if [ "$1" = "-u" ] && [ "${2:-}" = "-d" ] && [[ "${3:-}" =~ ^@[0-9]+$ ]]; then
     EPOCH="${3#@}"
-    /usr/bin/date -u -d "@$EPOCH" "${4:-+%Y-%m-%dT%H:%M:%SZ}"
+    iso_from_epoch "$EPOCH"
     exit 0
 fi
 if [ "$1" = "-u" ] && [ "${2:-}" = "+%Y-%m-%dT%H:%M:%SZ" ]; then
@@ -81,10 +86,16 @@ if [ "$1" = "-u" ] && [ "${2:-}" = "+%Y-%m-%dT%H:%M:%SZ" ]; then
     # NEXT-counter clock reading, so a regression that calls `date -u
     # +%Y-%m-%dT%H:%M:%SZ` for started_at lands 100s after the captured
     # REVIEW_START_TS and the assertion below catches it.
-    /usr/bin/date -u -d "@$TS" +%Y-%m-%dT%H:%M:%SZ
+    iso_from_epoch "$TS"
     exit 0
 fi
-exec /usr/bin/date "$@"
+# Fall through to the real date binary. /bin/date works on both
+# macOS and Linux; /usr/bin/date is Linux-only.
+if [ -x /bin/date ]; then
+    exec /bin/date "$@"
+else
+    exec /usr/bin/date "$@"
+fi
 SHIM
 chmod +x "$SHIMDIR/date"
 
@@ -127,7 +138,7 @@ bash -c '
 '
 
 EXPECTED_TS=$(cat "$RUN_DIR/expected-ts")
-EXPECTED_ISO=$(/usr/bin/date -u -d "@$EXPECTED_TS" +"%Y-%m-%dT%H:%M:%SZ")
+EXPECTED_ISO=$(python3 -c "import datetime; print(datetime.datetime.fromtimestamp(int('$EXPECTED_TS'), tz=datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))")
 GOT_ISO=$(jq -r '.started_at' "$RUN_DIR/meta.json")
 if [ "$GOT_ISO" != "$EXPECTED_ISO" ]; then
     echo "FAIL scenario 2: meta.json.started_at = $GOT_ISO, expected $EXPECTED_ISO (REVIEW_START_TS=$EXPECTED_TS)"

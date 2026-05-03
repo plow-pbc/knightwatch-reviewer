@@ -9,7 +9,10 @@ User=odio
 Group=odio
 WorkingDirectory=/home/odio/.pr-reviewer
 Environment=HOME=/home/odio
-Environment=PATH=/home/odio/.local/bin:/home/odio/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# PATH: system dirs FIRST (see pr-reviewer.service for rationale —
+# ReadWritePaths grants write to ~/.local; without this order an
+# attacker-placed ~/.local/bin/<command> would shadow system tools).
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/odio/.local/bin:/home/odio/.npm-global/bin
 ExecStart=/home/odio/.pr-reviewer/learn-from-replies.sh
 TimeoutStartSec=15min
 StandardOutput=journal

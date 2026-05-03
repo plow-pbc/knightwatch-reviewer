@@ -5,6 +5,14 @@
 #
 # Caller must already have LOG_FILE + PR_ID set up so log() works.
 
+# Single source of truth for the ai-author HTML marker. Both
+# review-one-pr.sh (which posts the body) and prepend_review_header
+# (which allowlists the marker as a leading line) consume this var.
+# Pre-PMF stance: the marker tells reading bots to weight load-bearing
+# probes and prefer LOC-cuts over additions. Override via env var if a
+# downstream consumer needs a different posture.
+BOT_AI_AUTHOR_MARKER="${BOT_AI_AUTHOR_MARKER:-<!-- knightwatch-reviewer:ai-author note=load-bearing-probes operating-point=pre-pmf prefer=cut-loc-over-add -->}"
+
 # allocate_run_dir RUN_DIR
 #
 # Creates RUN_DIR (and agents/, inputs/) as a unit, or fails loud:
@@ -214,6 +222,63 @@ classify_just_test_outcome() {
     fi
 }
 
+# format_tests_note TESTS_RAN TEST_SUMMARY
+#
+# Maps the (TESTS_RAN, TEST_SUMMARY) pair from classify_just_test_outcome
+# into the deterministic header fragment. Symmetric with format_kid_note
+# and the strict-typing note: every pre-check emits exactly one fragment
+# describing its outcome, so a clean PR's header reads as "everything
+# checked, all green" instead of collapsing to scope-only and leaving
+# the reader guessing whether the checks ran at all.
+#
+# Pure function. Returns 1 on unrecognized inputs (fail-fast — silent
+# fallback would publish a wrong outcome to the author).
+format_tests_note() {
+    local tests_ran="$1" summary="$2"
+    if [ "$tests_ran" = "false" ]; then
+        printf '🧪 Tests not run'
+        return
+    fi
+    if [ "$tests_ran" != "true" ]; then
+        printf 'format_tests_note: tests_ran must be "true"/"false", got "%s"\n' "$tests_ran" >&2
+        return 1
+    fi
+    case "$summary" in
+        PASSED)           printf '✅ Tests passed' ;;
+        "TIMED OUT"*)     printf '🧪 Tests timed out (%s' "${summary#TIMED OUT (}" ;;
+        "FAILED (exit "*) printf '🧪 Tests failed (exit %s' "${summary#FAILED (exit }" ;;
+        *)
+            printf 'format_tests_note: unrecognized TEST_SUMMARY for tests_ran=true: "%s"\n' "$summary" >&2
+            return 1
+            ;;
+    esac
+}
+
+# format_kid_note KID_RAN
+#
+# Symmetric with format_tests_note: emits one fragment whether KID ran
+# or was skipped, so the header surfaces the prior-art check on every
+# review instead of going silent on the success path.
+#
+# "unavailable" (not "not run") on the false path: KID_RAN=false covers
+# both operational states the worker compresses into one boolean — KID
+# never invoked (no per-repo KID config / no .keepitdry / no diff input)
+# AND invoked-but-errored (KID_EXIT != 0, KID_FLAG written). Either way,
+# prior-art context did not inform the review; the public header reflects
+# that without mis-stating the error path as a skip. Operator-facing
+# diagnostics still go to the worker log + KID_FLAG.
+format_kid_note() {
+    local kid_ran="$1"
+    case "$kid_ran" in
+        true)  printf '✅ Prior-art (KID) checked' ;;
+        false) printf '🔍 Prior-art (KID) unavailable' ;;
+        *)
+            printf 'format_kid_note: kid_ran must be "true"/"false", got "%s"\n' "$kid_ran" >&2
+            return 1
+            ;;
+    esac
+}
+
 # prepend_review_header COMMENT_BODY NOTE [NOTE...]
 #
 # Renders the unified deterministic registry as one blockquote line right
@@ -251,10 +316,26 @@ prepend_review_header() {
         fi
     done
     joined="$joined."
-    local first_line rest
-    first_line=$(printf '%s' "$comment_body" | head -1)
-    rest=$(printf '%s' "$comment_body" | tail -n +2)
-    printf '%s\n> %s\n\n%s' "$first_line" "$joined" "$rest"
+    # Preserve ONLY the two exact-match knightwatch-reviewer markers
+    # (auto-post + ai-author, both invisible in rendered Markdown).
+    # Exact match — not prefix — because R8 caught that prefix matching
+    # on the ai-author line lets an attacker craft a different content
+    # suffix that gets preserved as if trusted. The auto-post string is
+    # also pinned in lib/decline-history.sh under the same env-var
+    # default; both consume BOT_AI_AUTHOR_MARKER (defined at top of this
+    # file) for the ai-author line so there's a single source of truth.
+    local AUTO_POST_LINE="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
+    local n_leading
+    n_leading=$(printf '%s' "$comment_body" | awk -v auto="$AUTO_POST_LINE" -v ai="$BOT_AI_AUTHOR_MARKER" '
+        $0 == auto { n++; next }
+        $0 == ai   { n++; next }
+        { exit }
+        END { print n+0 }')
+    [ "$n_leading" -lt 1 ] && n_leading=1
+    local leading rest
+    leading=$(printf '%s' "$comment_body" | sed -n "1,${n_leading}p")
+    rest=$(printf '%s' "$comment_body" | sed -n "$((n_leading + 1)),\$p")
+    printf '%s\n> %s\n\n%s' "$leading" "$joined" "$rest"
 }
 
 # is_run_author_visible <run_dir>

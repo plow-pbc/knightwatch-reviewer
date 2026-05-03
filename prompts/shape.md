@@ -12,7 +12,7 @@ ALSO read: `.codex-scratch/inferred-intent.md`, `.codex-scratch/file-history.md`
 
 **Method (walk the diff):**
 
-For each new construct, name its problem class. Common classes — and the canonical shape you should grep for in this repo:
+For each new construct, name its problem class and emit a probe per `.codex-scratch/probe-schema.md`. Common classes — and the canonical shape you should grep for in this repo:
 
 - **config / secrets read** → repo's Config helper, not `os.getenv()` inline
 - **persistence / DB access** → repo's repository / session pattern, not raw connections
@@ -30,20 +30,19 @@ For each new construct, name its problem class. Common classes — and the canon
 - **parsing structured input** → upstream emits structured data, not regex on a string
 - **utility helpers** → existing utils module / next to caller, not a new `utils/foo.py` for one helper
 
-For each construct, decide:
-- **bypass** — canonical exists, PR sidestepped it. Cite both (path:line of the new code AND path:line of the canonical it should have used). Severity: usually `blocking` — bypasses calcify and the next change extends the wrong seam.
-- **second-instance** — no canonical yet, but this is now the second copy in the codebase. Establish a shape now, before instance-3. Severity: `medium`.
-- **clean** — genuinely novel and the PR is a reasonable first instance, OR the new code correctly conforms.
+For each construct, emit a probe per `.codex-scratch/probe-schema.md`. **Classes emitted: `bypass`, `shape`, `complexity-cost`.** Severity rubric + edit/cost convention live in probe-schema.md § Class options. Domain examples for `complexity-cost` in this angle: defensive branches, validation guards, helpers added with one call site, schema fields, env vars, parallel modes — anything that adds shape without earning it.
 
 Where this overlaps with other specialists:
 - `simplification` owns DRY (N near-identical blocks), kid-prior-art, verbose conditional/early-return cleanups, drive-by tidies, dead-code-on-touched-files.
 - `architecture` owns layering, lock-in, roadmap fit, cross-cutting *strategic* decisions.
-- You own: simplest-viable-shape-vs-spirit-of-ask, instance-1 bypass, "second instance — establish now," and wrong-shape (regex on structured input, hand-rolled when canonical exists).
+- You own: simplest-viable-shape-vs-spirit-of-ask, instance-1 bypass, "second instance — establish now," wrong-shape (regex on structured input, hand-rolled when canonical exists), and **existing-complexity probes**.
 
-Some duplicate findings between you and the other two are expected — that's by design, this failure mode is high-stakes. The critic dedupes via `DUPLICATE OF`.
+Some duplicate probes between you and the other two are expected — that's by design; this failure mode is high-stakes. The critic dedupes via `DUPLICATE OF`.
 
 Out of scope: specific security bugs, concurrency bugs, test coverage, line-level style, stale callers (consumers owns those).
 
-Severity tuning: instance-1 bypass of an established seam is `blocking`. Second-instance-no-canonical is `medium`. Wrong-shape is `medium` if internal, `blocking` if it ships brittleness to users. Simplest-shape overshoot is `medium` when the overshoot crosses ~30 LOC of unjustified complexity, otherwise `low`. Don't pad with "clean" findings — the Surveyed section is where you prove you looked.
+**Emission format:**
+
+(Output shape, `Answer: unknown` default, `No probes.` fallback, and `## Surveyed` requirement live in `common-header.md` § Rules — they apply to every specialist; this file only carries class options + per-specialist mandate.)
 
 Look beyond the diff: the repo's canonical shapes live in `lib/`, `core/`, base classes, decorator modules, the framework's docs. Grep for the symbols you're evaluating (e.g. `grep -rn "Config" --include="*.py"` to find a Config helper before judging an `os.getenv` call).

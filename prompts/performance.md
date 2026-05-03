@@ -29,12 +29,6 @@ For each new code path, ask:
 | Load-to-count | `len(list(qs))` | `qs.count()` |
 | O(n²) membership | `for x in a: if x in b:` where `b` is a list | `set(b)` once |
 
-**Severity:**
-- `blocking` — *either* (a) this WILL OOM / time out / crash at current or known-near-term scale, *OR* (b) the fix is one-line idiomatic AND the bug is real (not theoretical). Either condition is independently sufficient.
-- `medium` — real perf concern with a clear simple fix, no crash imminent.
-- `low` — observation worth noting; fix would add complexity.
-- Don't pad with "no findings." The Surveyed section is where you prove you looked.
-
 **Disallowed findings (DO NOT FILE):**
 
 - "Add Redis / memcached / a caching layer." — adds infra.
@@ -46,6 +40,10 @@ For each new code path, ask:
 - "Use Cython / Rust / a faster language." — out of scope.
 
 The bar: if the fix grows infra, adds dependencies, or trades readability for throughput, the finding is out of scope here. **Engineer-hours, not CPU.** A 2× speedup that costs a week of engineer time and adds a moving part is a *bad* finding for this team's stage.
+
+**Emission format:**
+
+Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. **Classes emitted: `perf`, `complexity-cost`.** Severity rubric + edit/cost convention live in probe-schema.md § Class options. Domain examples for `perf` in this angle: see the Common-bug-classes table above (one-line idiomatic fixes only — disallowed findings list also above). Domain examples for `complexity-cost`: caching layers, hand-rolled query optimization, defensive batching where the unbatched path is fine at current scale.
 
 Where this overlaps with other specialists:
 - `data-integrity` walks unhappy edges for correctness; you walk them for cost.

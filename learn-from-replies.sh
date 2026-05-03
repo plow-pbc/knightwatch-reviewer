@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Hourly: maintain ~/.claude/COMMENT_REVIEW_MISTAKES.md as a ranked top-48
 # list of calibration rules, and post acks to humans whose feedback shaped
 # the list.

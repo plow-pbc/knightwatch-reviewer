@@ -132,7 +132,7 @@ run_install "$PROJECT_ROOT/install.sh" || { echo "FAIL scenario 1: install.sh ex
 for s in "${PROD_SCRIPTS[@]}"; do
     [ -L "$INSTALL_DIR/$s" ] || { echo "FAIL scenario 1: $INSTALL_DIR/$s not a symlink"; exit 1; }
 done
-for d in lib contexts docs prompts; do
+for d in lib docs prompts; do
     [ -L "$INSTALL_DIR/$d" ] || { echo "FAIL scenario 1: $INSTALL_DIR/$d not a symlink"; exit 1; }
 done
 
