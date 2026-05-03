@@ -72,6 +72,14 @@ if printf '%s' "$verdict_block" | grep -qF "blocking findings"; then
     echo "FAIL: aggregator.md VERDICT regressed to 'blocking findings' wording — probe-as-unit verdict was rolled back"
     exit 1
 fi
+# Positive fence: COMMENT verdict must trigger on `medium` OR `blocking`
+# probes (R23 F#5). Without the `medium` token, a regression that
+# narrowed COMMENT back to blocking-only would silently let medium-only
+# PRs APPROVE — bypassing the bot's standard pushback path.
+if ! printf '%s' "$verdict_block" | grep -qF "\`medium\` or \`blocking\`"; then
+    echo "FAIL: aggregator.md VERDICT lost the 'medium or blocking' COMMENT trigger — medium-only probes would silently APPROVE"
+    exit 1
+fi
 
 echo "  asserting voice-posture pointer in critic.md..."
 assert_grep "critic.md should cite Broken-Glass Test" \
