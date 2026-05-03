@@ -43,10 +43,7 @@ The bar: if the fix grows infra, adds dependencies, or trades readability for th
 
 **Emission format:**
 
-Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. Class options for this specialist:
-
-- `Class: perf` — N+1 ORM, unbounded fetch, sync-in-async, count-instead-of-exists, re-compile-in-loop, load-to-count, O(n²) membership, or any other one-line idiomatic fix that prevents OOM / timeout / crash. `Confidence: high` when the failing path is fully cited; `medium` when the trigger is plausible at near-term scale. `Severity if yes: blocking` if WILL crash at current/known-near-term scale OR fix is one-line idiomatic AND bug is real; `medium` for real concerns with simple fixes; `low` for observations whose fix adds complexity. `If yes, edit:` name the canonical fix shape with file:line. `If no, cost:` "—" for high-confidence perf bugs; otherwise name the scale assumption that argues against the fix.
-- `Class: complexity-cost` — premature optimization in this PR (caching layers, hand-rolled query optimization, defensive batching where the unbatched path is fine at current scale). `Confidence: medium`. `Severity if yes: low|medium`. `If yes, edit:` "delete <optimization> — N LOC, restore simpler path". `If no, cost:` name the scale-driven necessity for the optimization.
+Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. **Classes emitted: `perf`, `complexity-cost`.** Severity rubric + edit/cost convention live in probe-schema.md § Class options. Domain examples for `perf` in this angle: see the Common-bug-classes table above (one-line idiomatic fixes only — disallowed findings list also above). Domain examples for `complexity-cost`: caching layers, hand-rolled query optimization, defensive batching where the unbatched path is fine at current scale.
 
 Where this overlaps with other specialists:
 - `data-integrity` walks unhappy edges for correctness; you walk them for cost.

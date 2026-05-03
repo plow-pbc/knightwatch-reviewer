@@ -18,9 +18,6 @@ Out of scope: specific security bugs, concurrency bugs, test coverage. Also: pro
 
 **Emission format:**
 
-Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. Class options for this specialist:
-
-- `Class: shape` — architectural seam violation, layering issue, premature generalization, or under-engineering for imminent roadmap needs. `Confidence: medium|high`. `Severity if yes: medium` (or `blocking` for hard architectural lock-in that the roadmap will force a refactor of within weeks). `If yes, edit:` name the structural change with LOC/file impact. `If no, cost:` name the architectural decision that calcifies.
-- `Class: complexity-cost` — over-engineering at this stage (premature abstraction, framework where a function would do, multi-tenant scaffolding when only one tenant exists, defensive layers added without observed need). `Confidence: low|medium`. `Severity if yes: low|medium`. `If yes, edit:` "delete <abstraction> — N LOC, N seams". `If no, cost:` name the specific architectural shape kept and what makes it earn its keep.
+Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. **Classes emitted: `shape`, `complexity-cost`.** Severity rubric + edit/cost convention live in probe-schema.md § Class options. Domain examples for `complexity-cost` in this angle: premature abstractions, frameworks where a function would do, multi-tenant scaffolding when only one tenant exists, defensive layers added without observed need.
 
 Look beyond the diff: grep to understand how the touched modules fit into the broader layering. Read the top-level module structure before making layering claims.

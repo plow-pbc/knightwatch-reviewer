@@ -30,11 +30,7 @@ For each new construct, name its problem class and emit a probe per `.codex-scra
 - **parsing structured input** → upstream emits structured data, not regex on a string
 - **utility helpers** → existing utils module / next to caller, not a new `utils/foo.py` for one helper
 
-For each construct, emit a probe with:
-
-- `Class: bypass` — canonical exists, PR sidestepped it. Cite both files (new code + canonical it should have used). `Confidence: high`, `Severity if yes: blocking`. `If yes, edit:` "rewrite to call the canonical at <path:line>". `If no, cost:` "establishes a parallel seam future routes must reckon with".
-- `Class: shape` — second-instance, no canonical yet. `Confidence: medium`, `Severity if yes: medium`. `If yes, edit:` "extract <name> at <path:line> as the canonical shape". `If no, cost:` "third instance will be cheaper to write than to refactor — pattern established by inertia".
-- `Class: complexity-cost` — existing complexity in the diff that may not be needed (defensive branches, validation guards, helpers added with one call site, schema fields, env vars, abstractions, parallel modes). `Confidence: low|medium`. `If yes, edit:` "delete <specific code> — fewer LOC, fewer seams". `If no, cost:` name the specific shape that calcifies if kept.
+For each construct, emit a probe per `.codex-scratch/probe-schema.md`. **Classes emitted: `bypass`, `shape`, `complexity-cost`.** Severity rubric + edit/cost convention live in probe-schema.md § Class options. Domain examples for `complexity-cost` in this angle: defensive branches, validation guards, helpers added with one call site, schema fields, env vars, parallel modes — anything that adds shape without earning it.
 
 Where this overlaps with other specialists:
 - `simplification` owns DRY (N near-identical blocks), kid-prior-art, verbose conditional/early-return cleanups, drive-by tidies, dead-code-on-touched-files.

@@ -18,8 +18,5 @@ Look beyond the diff: grep `tests/` for existing patterns the PR should have fol
 
 **Emission format:**
 
-Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. Class options for this specialist:
-
-- `Class: tests` — coverage gap (missing test for a bug fix or new branch), test-shape problem (mock-vs-real divergence, asserting implementation instead of behavior), or PR-related `just test` failure. `Confidence: high` for explicit test failures; `medium` for missing-coverage cases; `low` for test-quality observations. `Severity if yes: blocking` for failing tests caused by this PR or for bug fixes without regression tests; `medium` for non-blocking coverage gaps with named seams; `low|nit` for test-quality observations. `If yes, edit:` name the test file + the seam (function extraction / dependency injection) when applicable. `If no, cost:` name the runtime risk that would emerge if the test isn't added.
-- `Class: complexity-cost` — over-tested edge cases, mocks that pre-empt the real implementation, helpers added with one call site, fixture machinery that's heavier than the test it supports. `Confidence: low|medium`. `Severity if yes: low|nit`. `If yes, edit:` "delete <test/helper> — N LOC, replaced by <simpler shape>". `If no, cost:` name the test-protection invariant being preserved.
+Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. **Classes emitted: `tests`, `complexity-cost`.** Severity rubric + edit/cost convention live in probe-schema.md § Class options. Domain examples for `complexity-cost` in this angle: over-tested edge cases, mocks that pre-empt the real implementation, helpers added with one call site, fixture machinery heavier than the test it supports.
 

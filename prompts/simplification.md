@@ -16,9 +16,6 @@ Out of scope (other specialists own these — do NOT raise):
 
 **Emission format:**
 
-Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. Class options for this specialist:
-
-- `Class: DRY` — kid-hit or intra-PR duplication that should collapse into a helper. `Confidence: medium|high`. `Severity if yes: medium` (or `blocking` for the well-established-utility-was-already-there case). `If yes, edit:` name the shared helper with LOC delta. `If no, cost:` name the third-copy threshold this PR is approaching.
-- `Class: complexity-cost` — verbose implementation, missing early-return, defensive `(x or {}).get(...)`-style code, drive-by-tidy unused import / dead local helper. `Confidence: medium`. `Severity if yes: low|nit`. `If yes, edit:` "delete <code> / collapse to <shorter shape> — N LOC delta". `If no, cost:` name the specific defensive shape that calcifies.
+Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. **Classes emitted: `DRY`, `complexity-cost`.** Severity rubric + edit/cost convention live in probe-schema.md § Class options. Domain examples for `complexity-cost` in this angle: verbose implementations, missing early-returns, defensive `(x or {}).get(...)`-style code, drive-by unused imports / dead local helpers.
 
 Look beyond the diff: grep the repo for existing utilities/base classes that the PR's new code should have reused.

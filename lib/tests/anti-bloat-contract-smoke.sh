@@ -1,22 +1,10 @@
 #!/usr/bin/env bash
 # Smoke: anti-bloat prompt-contract sync.
 #
-# Token-level sync check between prompts/common-header.md, prompts/critic.md,
-# and prompts/aggregator.md — ensures the REMEDY-BLOAT handshake stays
-# intact across edits to either side, and Rule 8 (Remedy-cost framing)
-# survives in common-header.md.
-#
-# Deliberately NOT a content-pinning test. Rule 8 itself forbids tests
-# that calcify prompt prose; what we fence here is contract integrity
-# (token presence, branch-negative alternative still allowed), not literal
-# wording.
-#
-# Failure modes this catches:
-#   - REMEDY-BLOAT removed from critic.md but not aggregator.md (or vice versa)
-#   - Rule 8 deleted entirely from common-header.md
-#   - aggregator handler narrowed back to LOC-only (loses the branch-negative
-#     framing aligned with Rule 8's cost model — conditionals + special cases
-#     + defensive branches + new abstractions)
+# Token-level checks across prompts/{common-header,critic,aggregator,probe-schema}.md
+# and the per-specialist files — fences contract integrity (wiring, token
+# presence, probe-as-unit vocabulary) without calcifying prose. Rule 8
+# (Remedy-cost framing) itself bars literal-wording pinning.
 
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
@@ -101,19 +89,10 @@ assert_grep "go-deep.md should fence the 20-LOC remedy threshold reference" \
 assert_grep "go-deep.md should fence the four recommendation tokens" \
     "KEEP | SIMPLIFY-WITH-PATTERN | DROP | REFRAME" prompts/go-deep.md
 
-# Legacy critic-verdict-token fences (REMEDY-BLOAT in aggregator,
-# branch-negative alternative phrasing) were removed once the aggregator's
-# probe-resolver path replaced the verdict-token mapping. The critic still
-# emits REMEDY-BLOAT on the critic side (legacy bucket retained for
-# back-compat); aggregator no longer consumes it as a token — the
-# probe Answer: no/Severity-if-yes path subsumes it.
-
-# ----- new specialist + scratch wiring (PR#25) ----------------------
-# Token-level fence that the performance + consumers specialists are
-# wired into the critic and aggregator read lists, and that
-# common-header documents the dead-code.md scratch the consumers
-# specialist consumes. Catches the "added a prompt file but forgot
-# to register it" omission class.
+# Specialist + scratch wiring — every specialist must be referenced by
+# the critic + aggregator read lists, and common-header must document
+# any per-specialist scratch input. Catches the "added a prompt file
+# but forgot to register it" omission class.
 
 echo "  asserting performance specialist registered in critic.md..."
 assert_grep "critic.md should reference performance specialist" \
@@ -152,28 +131,26 @@ assert_grep "aggregator.md should fence Answer: yes ordering" \
     "Answer: yes" prompts/aggregator.md
 for specialist in shape simplification architecture consumers tests performance security data-integrity; do
     echo "  asserting complexity-cost probe class in ${specialist}.md..."
+    # Each specialist must register complexity-cost as one of its emitted
+    # classes. After the Class-options hoist (probe-schema.md § Class
+    # options), specialists list classes inline rather than per-class
+    # blocks, so match the bare token instead of the old `Class: ...` form.
     assert_grep "${specialist}.md should list complexity-cost as a probe class" \
-        "Class: complexity-cost" "prompts/${specialist}.md"
+        "complexity-cost" "prompts/${specialist}.md"
 done
 
 echo "  asserting unified complexity-cost expectation in common-header.md..."
 assert_grep "common-header.md should describe complexity-cost probe expectation" \
     "Complexity-cost probe expectation" prompts/common-header.md
 
-# R9 + R10 data-minimized linked-issue staging: dropped body fetch (R9)
-# then dropped title fetch (R10). A regression that reintroduces
-# `gh issue view --json title` or `--json title,body` would silently
-# leak private repo/issue titles into author-intent.md → specialists →
-# public PR comment. Fence the absence; the regression-fix is to keep
-# only owner/repo#num + URL.
+# Privacy: linked-issue staging must NOT fetch issue body or title from
+# `gh issue view` — they may be private and would leak into the public PR
+# comment via author-intent.md → specialists. Keep only owner/repo#num +
+# URL. Fixed-string match catches any executable form (regex variants
+# missed lowercase assignments + interpolated `$(...)` quoting).
 echo "  asserting linked-issue staging does NOT call 'gh issue view'..."
-# Plain fixed-string match — catches any executable form (with/without
-# quotes, casing, whitespace, $(...) vs backticks). The earlier regex
-# (R11) only caught `TITLE=$(gh issue view ...)` and missed common
-# variants like `TITLE="$(gh issue view ...)"` or lowercase
-# assignments — bot R12 caught the gap.
 if grep -nF 'gh issue view' lib/review-one-pr.sh; then
-    echo "FAIL: lib/review-one-pr.sh calls 'gh issue view' — linked-issue title/body minimization regressed (R9 + R10)"
+    echo "FAIL: lib/review-one-pr.sh calls 'gh issue view' — linked-issue privacy regressed"
     exit 1
 fi
 
@@ -181,25 +158,15 @@ echo "  asserting legacy finding-format carry-forward bucket in critic.md..."
 assert_grep "critic.md should describe Legacy finding-format conversion path" \
     "Legacy finding-format" prompts/critic.md
 
-# Single source of truth: BOT_AI_AUTHOR_MARKER lives in lib/run-dir.sh
-# (where prepend_review_header consumes it); lib/review-one-pr.sh sources
-# run-dir.sh and reads the same var when building the posted body. The
-# previous agreement fence between two duplicated string literals went
-# away with the dedup — there's nothing to keep in sync anymore.
-
 echo "  asserting re-review loop-breaker (Path 2) in aggregator.md..."
 assert_grep "aggregator.md should reference loc-trend.md trigger" \
     "loc-trend.md" prompts/aggregator.md
 assert_grep "aggregator.md should reference momentum specialist output" \
     "momentum.md" prompts/aggregator.md
 
-# Path 2 trigger semantics — fence the actual SHAPE of the trigger, not
-# just the token presence. Round-5 finding: an earlier smoke only checked
-# "loc-trend.md" appears, which is satisfied even if the file is mentioned
-# without naming the threshold (≥1.5×) or the prior-rounds-only condition
-# (the gotcha is real — momentum runs before the critic, so "this round's"
-# Bug-Class-Recurrence isn't visible to it yet). Token-level fences below;
-# Rule 8 still bars pinning prose.
+# Path 2 trigger — fence the trigger SHAPE (threshold + prior-rounds-only),
+# not just file references. Momentum runs before the critic, so this-round
+# signals aren't visible to it yet — the trigger must be prior-rounds-only.
 echo "  asserting Path 2 trigger phrases in aggregator.md..."
 assert_grep "aggregator.md should fence the 1.5× LOC threshold" \
     "1.5×" prompts/aggregator.md
@@ -218,16 +185,10 @@ if grep -qF "this round or any prior round" prompts/aggregator.md; then
     exit 1
 fi
 
-# Pre-PMF lens (critic.md) — the probe-resolver model uses an always-on
-# Pre-PMF lens; the old "any prior round" trigger phrase no longer applies.
-# Fence the new pre-pmf lens token instead.
 echo "  asserting Pre-PMF lens (always-on) in critic.md..."
 assert_grep "critic.md should fence Pre-PMF lens (always-on)" \
     "Pre-PMF lens (always-on)" prompts/critic.md
 
-# ----- carry-forward stress-test contract (PR#45, updated PR#48) ----------
-# Probe-resolver model: carry-forward is now a probe-resolution pass (not a
-# finding-level stress-test). Fence the new probe-model tokens.
 echo "  asserting carry-forward stress-test pass in critic.md..."
 assert_grep "critic.md should fence Carry-forward stress-test pass" \
     "Carry-forward stress-test" prompts/critic.md
@@ -249,11 +210,10 @@ assert_grep "critic.md should carve severe-bug probes out of decay/Pre-PMF" \
 assert_grep "critic.md severe-bug carve-out should cover data-loss class" \
     "data loss" prompts/critic.md
 
+# Carry-forward must route through the specialists/critic.md sink (single
+# channel, single render path); union-verdict rule must hold across
+# current + carried-forward probes.
 echo "  asserting aggregator reads carry-forward via specialists/critic.md sink..."
-# Probe-era carry-forward routes prior probes through the same
-# specialists/critic.md sink as critic-generated probes (single channel,
-# single render path). Fence both the routing claim and the union-verdict
-# rule so a regression that splits the sink trips here.
 assert_grep "aggregator.md should reference specialists/critic.md as the carry-forward sink" \
     "specialists/critic.md" prompts/aggregator.md
 assert_grep "aggregator.md should fence the union-of-current-and-carried-forward verdict rule" \

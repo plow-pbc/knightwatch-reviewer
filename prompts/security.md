@@ -16,10 +16,7 @@ If the diff touches auth, sessions, credential handling, or any HTTP surface are
 
 **Emission format:**
 
-Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. Class options for this specialist:
+Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. **Classes emitted: `bug`, `complexity-cost`.** Severity rubric + edit/cost convention live in probe-schema.md § Class options. Domain examples for `bug` in this angle: secret leak, auth bypass, command injection, path traversal, sandbox escape, credential logging, IDOR, prototype pollution, weak crypto, missing CSRF/origin checks. Domain examples for `complexity-cost`: extra signature checks, defense-in-depth not requested, wrap-once-then-wrap-again validation, redundant rate limits.
 
-- `Class: bug` — security defect: secret leak, auth bypass, command injection, path traversal, sandbox escape, exposed control plane, credential logging, IDOR, prototype pollution, weak crypto, missing CSRF/origin checks. `Confidence: high` when you can cite the failing path; `medium` when the trigger requires a configuration the diff doesn't change but the repo permits. `Severity if yes: blocking` for high-confidence + user-observable; `medium` for hardening notes. `If yes, edit:` name the specific code change. `If no, cost:` "—" (security probes don't take an inverted-cost stance when the bug is real).
-- `Class: complexity-cost` — security-defensive code in this PR that may be overkill at the operating point: extra signature checks, defense-in-depth not requested, wrap-once-then-wrap-again validation, redundant rate limits. `Confidence: low|medium`. `Severity if yes: low|medium`. `If yes, edit:` "delete <code> — N LOC". `If no, cost:` name the threat model that justifies keeping it.
-
-When the failing path is fully cited (you saw the bug), set `Confidence: high` — the critic will likely confirm `Answer: yes` immediately and the aggregator renders that as a declarative `[blocking]` line per `.codex-scratch/probe-schema.md` § Rendering.
+When the failing path is fully cited, set `Confidence: high` — the critic will confirm `Answer: yes` immediately and the aggregator renders that as a declarative `[blocking]` line.
 
