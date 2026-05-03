@@ -23,7 +23,7 @@ Environment=HOME=/home/odio
 # ~/.local/bin/<command> would shadow the system tool. User-installed
 # tools (codex via npm-global, pipx, etc.) remain reachable via the
 # trailing user-writable dirs.
-Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/odio/.local/bin:/home/odio/.npm-global/bin
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/odio/.npm-global/bin:/home/odio/.local/bin
 ExecStart=/home/odio/.pr-reviewer/review.sh
 TimeoutStartSec=90min
 StandardOutput=journal

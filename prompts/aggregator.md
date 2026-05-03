@@ -192,6 +192,6 @@ _<intent line, italicized — see formatting rule below>_
 9. On the VERY LAST LINE of your output, put exactly one of:
    - `VERDICT: APPROVE` — no surviving probes, or all surviving probes are low/nit only.
    - `VERDICT: APPROVE — pending: <short comma-separated nit/low items>` — approvable but worth noting.
-   - `VERDICT: COMMENT` — one or more `medium` or `blocking` probes must be addressed before merge.
+   - `VERDICT: COMMENT` — one or more `medium` or `blocking` probes (including `[open]` probes whose `Severity if yes` is `medium` or `blocking`) must be addressed before merge. An unanswered load-bearing assumption is a merge blocker just like a confirmed bug.
 
 No other content after the VERDICT line.

@@ -13,7 +13,7 @@ Environment=HOME=/home/odio
 # This unit's ReadWritePaths is narrower (~/.pr-reviewer only), but
 # keeping the same PATH order across all services makes the security
 # stance uniform and survives future ReadWritePaths widenings.
-Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/odio/.local/bin:/home/odio/.npm-global/bin
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/odio/.npm-global/bin:/home/odio/.local/bin
 ExecStart=/home/odio/.pr-reviewer/approve-from-replies.sh
 TimeoutStartSec=5min
 StandardOutput=journal

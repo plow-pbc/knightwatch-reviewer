@@ -317,6 +317,25 @@ for unit in systemd/pr-reviewer.service systemd/pr-reviewer-learn.service \
     esac
 done
 
+# Authenticated tools (codex) must resolve from .npm-global before .local.
+# `just test` runs PR-controlled code with write access to /home/odio/.local;
+# if .local were searched first, a malicious PR could plant ~/.local/bin/codex
+# and shadow the real codex when the worker later calls `codex exec` by bare
+# name. Fence the order for every unit that runs codex.
+echo "  asserting .npm-global precedes .local in units that run codex..."
+for unit in systemd/pr-reviewer.service systemd/pr-reviewer-learn.service \
+            systemd/pr-reviewer-approve.service \
+            systemd/pr-reviewer-re-request.service; do
+    path_line=$(grep -E '^Environment=PATH=' "$unit")
+    case "$path_line" in
+        *.npm-global/bin*.local/bin*) : ;;  # OK — npm-global first
+        *.local/bin*.npm-global/bin*)
+            echo "FAIL: $unit PATH has .local/bin BEFORE .npm-global/bin — PR-controlled just test could plant ~/.local/bin/codex shadowing the real codex install"
+            echo "  got: $path_line"
+            exit 1 ;;
+    esac
+done
+
 # ====================================================================
 # Section 2: orchestrator wiring (formerly momentum-wire-smoke.sh)
 # ====================================================================
