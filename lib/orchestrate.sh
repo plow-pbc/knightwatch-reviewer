@@ -227,10 +227,16 @@ run_specialist_pipeline() {
     # each section to the corresponding specialists/<angle>.md, so the
     # aggregator + go-deep tech-leads see one layered file per specialist
     # (specialist findings → critic counter-arguments). Single writer per
-    # phase per file — no race. Fail-soft (logs per-angle warnings; never
-    # aborts — the aggregator can still read critic.md directly).
+    # phase per file — no race. Fail-loud on missing targets: a critic
+    # resolution for an unknown angle silently disappearing from the
+    # layered file demotes a real blocker to nothing in the rendered
+    # review (R13 finding). Mirrors critic fail-loud above.
     log "$PR_ID: splitting critic output into specialist files..."
-    split_critic_to_specialists "$CRITIC_OUT" "$SPECIALISTS_DIR" 2>>"$LOG_FILE" || true
+    if ! split_critic_to_specialists "$CRITIC_OUT" "$SPECIALISTS_DIR" 2>>"$LOG_FILE"; then
+        log "$PR_ID: critic-splitter reported missing specialist target(s) — aborting review (silent drop would demote a critic-resolved blocker)"
+        rm -rf "$REPO_DIR"
+        exit 1
+    fi
 
     # ---- go-deep tech-leads (Phase 2) ----
     # Hot specialist files = those whose layered file contains a critic-

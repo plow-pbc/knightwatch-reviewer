@@ -7,9 +7,12 @@
 #      counter-arguments" H2 (so the layered file flows specialist-then-critic).
 #   2. The "## Missed findings" section from critic.md is preserved
 #      and written to specialists/missed.md.
-#   3. Missing specialist file for a section that the critic produced is
-#      a fail-soft warn (log line; don't abort) — handles a future angle
-#      removed without prompt sync.
+#   3. Missing specialist file for a section that the critic produced
+#      is fail-loud: function returns non-zero, valid per-angle splits
+#      still happen on the way through (so we can assert them), but the
+#      orchestrator aborts the review on the non-zero return rather
+#      than silently dropping the critic resolution. R13 finding —
+#      previous fail-soft behavior demoted resolved blockers.
 #   4. Each specialists/<angle>.md keeps its original content UNCHANGED
 #      ahead of the critic block (specialist's own findings preserved).
 
@@ -60,6 +63,12 @@ Some other thing — the specialist file was removed though.
 EOF
 
 split_critic_to_specialists "$CRITIC" "$SPECIALISTS_DIR" 2>"$TMPDIR/stderr.log"
+SPLIT_RC=$?
+if [ "$SPLIT_RC" -eq 0 ]; then
+    echo "FAIL: split_critic_to_specialists returned 0 with a missing-target [removed-angle] section — should fail-loud"
+    cat "$TMPDIR/stderr.log"
+    exit 1
+fi
 
 echo "  asserting critic block appended to security.md..."
 grep -qF "## Critic counter-arguments" "$SPECIALISTS_DIR/security.md" || {
@@ -103,9 +112,14 @@ echo "  asserting missed findings stay in critic.md (no separate sink)..."
     exit 1
 }
 
-echo "  asserting fail-soft warn on missing specialist file..."
+echo "  asserting fail-loud message on missing specialist file..."
 grep -qF "removed-angle" "$TMPDIR/stderr.log" || {
-    echo "FAIL: missing-specialist warn not emitted on stderr"
+    echo "FAIL: missing-specialist message not emitted on stderr"
+    cat "$TMPDIR/stderr.log"
+    exit 1
+}
+grep -qF "fail-loud" "$TMPDIR/stderr.log" || {
+    echo "FAIL: stderr should mention fail-loud (not fail-soft warn)"
     cat "$TMPDIR/stderr.log"
     exit 1
 }

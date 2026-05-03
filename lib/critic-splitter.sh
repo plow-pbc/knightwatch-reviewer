@@ -79,16 +79,22 @@ split_critic_to_specialists() {
     # Pass 2: for each .angle-buf, append to specialists/<angle>.md under
     # a "## Critic counter-arguments" H2. Replaces the file (which is
     # typically a symlink to the agent's output.md) with a regular file
-    # containing original + critic-block. Skip + warn when the specialist
-    # file is absent.
+    # containing original + critic-block. Fail-loud when the specialist
+    # file is absent — a missing target means the critic emitted a
+    # resolution for an angle whose specialist file we never staged
+    # (typo, hallucinated angle, mis-routed splitter), and silently
+    # skipping demotes a real critic resolution to nothing. Mirrors the
+    # critic fail-loud pattern at orchestrate.sh:215. R13 finding.
+    local missing_targets=0
     local f angle target original
     for f in "$specialists_dir"/*.angle-buf; do
         [ -e "$f" ] || continue
         angle=$(basename "$f" .angle-buf)
         target="$specialists_dir/${angle}.md"
         if [ ! -e "$target" ]; then
-            echo "split_critic_to_specialists: no specialist file for [$angle] — skipping" >&2
+            echo "split_critic_to_specialists: no specialist file for [$angle] — fail-loud (critic resolved an unknown angle)" >&2
             rm -f "$f"
+            missing_targets=$((missing_targets + 1))
             continue
         fi
         original=$(cat "$target")
@@ -100,4 +106,8 @@ split_critic_to_specialists() {
         } > "$target"
         rm -f "$f"
     done
+
+    # Return non-zero if any target was missing; the orchestrator aborts
+    # the review on this rather than masking with `|| true`.
+    [ "$missing_targets" -eq 0 ]
 }
