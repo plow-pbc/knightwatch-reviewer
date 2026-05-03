@@ -1,10 +1,27 @@
 #!/usr/bin/env bash
-# Smoke: anti-bloat prompt-contract sync.
+# Smoke: cross-file prompt + orchestrator-wire contract sync.
 #
-# Token-level checks across prompts/{common-header,critic,aggregator,probe-schema}.md
-# and the per-specialist files — fences contract integrity (wiring, token
-# presence, probe-as-unit vocabulary) without calcifying prose. Rule 8
-# (Remedy-cost framing) itself bars literal-wording pinning.
+# Cheap (millisec) token-presence checks against tracked files.
+# Catches "renamed token on one side, forgot the other" omission class.
+# Behavior-side tests (does the pipeline actually USE these tokens
+# correctly?) belong to the replay harness; this stays as the cheap
+# pre-flight tier.
+#
+# Folded from anti-bloat-contract-smoke.sh + momentum-wire-smoke.sh —
+# both used the same assert_grep shape against tracked files, no
+# behavior loss in the merge. 2 justfile entries → 1.
+#
+# This file's ASSERTIONS ARE THE CONTRACT — when you remove an
+# assertion, you remove a token fence. Don't drop assertions to
+# "clean up"; the K-decay paired tokens, the negative fences, and the
+# specialist-registration tokens are all load-bearing and were each
+# written in response to a specific regression. See PR #25, PR #38,
+# PR #42, PR #45, PR #47 review history if uncertain about a fence.
+#
+# Deliberately NOT a content-pinning test. Rule 8 (Remedy-cost framing)
+# itself forbids tests that calcify prompt prose; what we fence here is
+# contract integrity (token presence, branch-negative alternative still
+# allowed), not literal wording.
 
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
@@ -13,6 +30,10 @@ assert_grep() {
     local label="$1" pattern="$2" file="$3"
     grep -qF -- "$pattern" "$file" || { echo "FAIL: $label"; exit 1; }
 }
+
+# ====================================================================
+# Section 1: prompt-contract sync (formerly anti-bloat-contract-smoke.sh)
+# ====================================================================
 
 echo "  asserting Rule 8 (Remedy-cost framing) in common-header.md..."
 assert_grep "Rule 8 missing from prompts/common-header.md" \
@@ -33,19 +54,14 @@ assert_grep "critic.md should describe probe resolution job" \
 # Negative fence: the legacy critic opening said "Eight specialists have
 # surfaced findings" — that wording predates the probe-as-unit refactor
 # and primes the model to emit Findings instead of resolving probes.
-# Reject the literal phrase so a regression that re-introduces it trips
-# this smoke.
 echo "  asserting critic.md has no 'have surfaced findings' regression..."
 if grep -qF "have surfaced findings" prompts/critic.md; then
     echo "FAIL: critic.md regressed to legacy 'have surfaced findings' wording — probe-as-unit opening was rolled back"
     exit 1
 fi
 
-# Negative fence: the VERDICT line at the very end of aggregator.md
-# previously said "no findings" / "blocking findings". Probe-as-unit
-# vocabulary uses "surviving probes" / "blocking probes". Reject the
-# literal phrases on the VERDICT line so a regression to the old wording
-# trips the smoke.
+# Negative fence: VERDICT lines previously said "no findings"/"blocking
+# findings". Probe-as-unit uses "surviving probes"/"blocking probes".
 echo "  asserting aggregator.md VERDICT lines use probe vocabulary..."
 verdict_block=$(grep -A 3 '^9\. On the VERY LAST LINE' prompts/aggregator.md)
 if printf '%s' "$verdict_block" | grep -qF "no findings"; then
@@ -65,12 +81,10 @@ echo "  asserting Pre-PMF lens reference in critic.md..."
 assert_grep "critic.md should reference loc-trend.md (Pre-PMF lens)" \
     "loc-trend.md" prompts/critic.md
 
-# ----- Phase 1: decline-history awareness + remedy-LOC + calibration ----
 echo "  asserting decline-history input in critic.md..."
 assert_grep "critic.md should reference decline-history.md" \
     "decline-history.md" prompts/critic.md
 
-# ----- Phase 2: go-deep tech-lead specialist + aggregator integration ----
 echo "  asserting decline-history input in aggregator.md..."
 assert_grep "aggregator.md should reference decline-history.md" \
     "decline-history.md" prompts/aggregator.md
@@ -93,7 +107,6 @@ assert_grep "go-deep.md should fence the four recommendation tokens" \
 # the critic + aggregator read lists, and common-header must document
 # any per-specialist scratch input. Catches the "added a prompt file
 # but forgot to register it" omission class.
-
 echo "  asserting performance specialist registered in critic.md..."
 assert_grep "critic.md should reference performance specialist" \
     "specialists/performance.md" prompts/critic.md
@@ -114,6 +127,9 @@ echo "  asserting common-header documents dead-code.md scratch..."
 assert_grep "common-header.md should document dead-code.md" \
     "dead-code.md" prompts/common-header.md
 
+# Probe-as-unit shape — the unified Probes section, AI-author callout,
+# Q: question template, and per-line specialist attribution are the
+# core surface contract.
 echo "  asserting Open Questions Q: format in aggregator.md..."
 assert_grep "aggregator.md should describe Q: question template" \
     "**Q:" prompts/aggregator.md
@@ -129,6 +145,7 @@ assert_grep "aggregator.md should have **For AI authors** callout" \
 echo "  asserting unified-probes section ordering instructions..."
 assert_grep "aggregator.md should fence Answer: yes ordering" \
     "Answer: yes" prompts/aggregator.md
+
 for specialist in shape simplification architecture consumers tests performance security data-integrity; do
     echo "  asserting complexity-cost probe class in ${specialist}.md..."
     # Each specialist must register complexity-cost as one of its emitted
@@ -175,10 +192,6 @@ assert_grep "aggregator.md should fence the 2+ prior rounds threshold" \
 assert_grep "aggregator.md should fence prior-rounds-only language ('any prior round')" \
     "any prior round" prompts/aggregator.md
 
-# Negative fence: the positive "any prior round" assertion above is
-# satisfied by the bad regression string "this round or any prior round"
-# too (it contains "any prior round" as a substring). Reject the literal
-# bad string so a regression to the Round-5 wording trips this smoke.
 echo "  asserting aggregator.md has no 'this round or any prior round' regression..."
 if grep -qF "this round or any prior round" prompts/aggregator.md; then
     echo "FAIL: aggregator.md regressed to old 'this round or any prior round' wording"
@@ -194,8 +207,9 @@ assert_grep "critic.md should fence Carry-forward stress-test pass" \
     "Carry-forward stress-test" prompts/critic.md
 
 echo "  asserting K-decay thresholds in critic.md..."
-# The probe-resolver model uses "K ≥ 3 with no engagement and Class ≠ bug"
-# and "K ≥ 5 with no engagement and Class ≠ bug" — pair threshold with Class guard.
+# Probe-resolver model: "K ≥ 3 with no engagement and Class ≠ bug" /
+# "K ≥ 5 with no engagement and Class ≠ bug" — pair threshold with Class
+# guard so the severe-bug carve-out remains keyed on the bug class.
 assert_grep "critic.md should fence K >= 3 decay rule with Class guard" \
     "K ≥ 3 with no engagement" prompts/critic.md
 assert_grep "critic.md should fence K >= 5 decay rule with Class guard" \
@@ -218,5 +232,34 @@ assert_grep "aggregator.md should reference specialists/critic.md as the carry-f
     "specialists/critic.md" prompts/aggregator.md
 assert_grep "aggregator.md should fence the union-of-current-and-carried-forward verdict rule" \
     "union of current and carried-forward" prompts/aggregator.md
+
+# ====================================================================
+# Section 2: orchestrator wiring (formerly momentum-wire-smoke.sh)
+# ====================================================================
+
+ORCHESTRATE=lib/orchestrate.sh
+
+echo "  asserting momentum.md invocation in orchestrate.sh..."
+assert_grep "orchestrate.sh missing momentum.md reference" \
+    "momentum.md" "$ORCHESTRATE"
+
+echo "  asserting momentum gate on previous-review.md..."
+# Fence the EXACT guard pattern, not the bare substring "previous-review.md"
+# (which appears in unrelated write_scratch calls + comments and would PASS
+# even if the re-review-only gate around the momentum specialist disappeared).
+assert_grep "orchestrate.sh missing momentum gate (\$RUN_DIR/inputs/previous-review.md)" \
+    'if [ -s "$RUN_DIR/inputs/previous-review.md" ]' "$ORCHESTRATE"
+
+echo "  asserting momentum is dispatched..."
+assert_grep "orchestrate.sh missing dispatch_agent momentum call" \
+    'dispatch_agent momentum' "$ORCHESTRATE"
+
+echo "  asserting momentum output symlink to .codex-scratch/momentum.md..."
+assert_grep "orchestrate.sh missing symlink from RUN_DIR/agents/momentum/output.md to .codex-scratch/momentum.md" \
+    ".codex-scratch/momentum.md" "$ORCHESTRATE"
+
+echo "  asserting orchestrate.sh is sourced from review-one-pr.sh..."
+assert_grep "review-one-pr.sh does not source lib/orchestrate.sh" \
+    'orchestrate.sh' lib/review-one-pr.sh
 
 echo "  PASS"

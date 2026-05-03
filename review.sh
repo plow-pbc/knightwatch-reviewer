@@ -2,6 +2,15 @@
 # Orchestrator: enumerate eligible PRs across all tracked repos and fan out
 # per-PR reviews via lib/review-one-pr.sh. Up to MAX_CONCURRENT reviews run
 # concurrently per service tick. Per-PR locking is handled by the worker.
+#
+# Shebang note: this entrypoint runs only on the production Linux host
+# under pr-reviewer.service. It deliberately uses /bin/bash (NOT
+# /usr/bin/env bash) because the unit puts $HOME/.local/bin first in
+# PATH and grants write access to $HOME/.local — a writable-interpreter
+# resolution path. Hard-coding /bin/bash blocks the writable-PATH
+# attack regardless of $PATH order. The macOS env-bash sweep (e2f7aba)
+# only matters for libraries exercised by smokes; this entrypoint
+# never runs on macOS.
 
 export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
 

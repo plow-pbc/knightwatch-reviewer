@@ -72,8 +72,6 @@ write_probe_repos_conf() {
 REPOS=("test-org/probe-repo")
 declare -A KID_PATHS=()
 declare -A SOURCE_PATHS=()
-declare -A DEAD_CODE_CMDS=()
-declare -A STRICT_TYPING_CMDS=()
 CONF
 }
 

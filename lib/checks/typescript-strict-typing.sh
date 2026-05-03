@@ -1,9 +1,9 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Detects whether the working dir's TypeScript project enforces strict typing.
 #
 # Usage: typescript-strict-typing.sh [PROJECT_DIR]
 #   PROJECT_DIR: optional subdir relative to cwd; defaults to ".". Set
-#   per-repo in repos.conf::STRICT_TYPING_CMDS for nested project roots.
+#   per-repo in <repo>/.knightwatch/strict-typing.sh for nested project roots.
 #
 # Tri-state contract (worker treats each exit code distinctly):
 #   exit 0 — strict mode is enforced.        stdout: empty.

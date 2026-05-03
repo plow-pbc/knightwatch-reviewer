@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Idempotent install / re-install for the knightwatch-reviewer bot host.
 # Run from the repo root: ./install.sh
 #
@@ -87,7 +87,7 @@ while IFS= read -r execstart; do
 done < <(grep -h "^ExecStart=" "${service_units[@]}" | sort -u)
 [[ ${#SCRIPTS[@]} -ge 1 ]] || fail "no scripts discovered from ExecStart= directives — check systemd/*.service shape"
 
-DIRS=(lib contexts docs prompts)
+DIRS=(lib docs prompts)
 # Tracked-repo manifest. Sourced by every script that needs the REPOS
 # array or KID_PATHS map — single source of truth, host-editable.
 CONFIG_FILES=(repos.conf)
