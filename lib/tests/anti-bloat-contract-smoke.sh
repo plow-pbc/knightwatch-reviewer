@@ -151,12 +151,8 @@ for class_val in bug bypass shape DRY tests dead-code perf complexity-cost; do
         "$class_val" prompts/probe-schema.md
 done
 echo "  asserting Answer enum values appear in probe-schema.md..."
-for ans_val in yes no unknown; do
-    grep -qE "(Answer:[^|]*\b${ans_val}\b|<${ans_val}\|)" prompts/probe-schema.md || {
-        echo "FAIL: probe-schema.md missing Answer enum value '$ans_val'"
-        exit 1
-    }
-done
+assert_grep "probe-schema.md should list full Answer enum" \
+    "<yes|no|unknown>" prompts/probe-schema.md
 
 echo "  asserting marker constants agree between review-one-pr.sh and run-dir.sh..."
 worker_marker=$(grep -E '^BOT_AI_AUTHOR_MARKER=' lib/review-one-pr.sh | sed -E 's/^[^"]*"([^"]*)".*/\1/')
