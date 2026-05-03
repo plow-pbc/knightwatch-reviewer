@@ -37,7 +37,10 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 . "$PROJECT_ROOT/lib/run-dir.sh"
 
 MARKER='<!-- knightwatch-reviewer:auto-post -->'
-AI_AUTHOR_MARKER='<!-- knightwatch-reviewer:ai-author note=load-bearing-probes operating-point=pre-pmf prefer=cut-loc-over-add -->'
+# Consume the single source of truth from lib/run-dir.sh (sourced above)
+# instead of copying the literal — keeps the fixture in sync with whatever
+# wording the production code uses.
+AI_AUTHOR_MARKER="$BOT_AI_AUTHOR_MARKER"
 BODY=$(printf '%s\n%s\n_intent line_\n\n**Overview** — text\n\n**Findings**\n1. [medium] something' "$MARKER" "$AI_AUTHOR_MARKER")
 
 SHA_OLD="abc1234567"
