@@ -62,7 +62,13 @@ mkdir -p "$REPO_DIR" "$RUN_DIR"
 # Source prompt-build.sh first so the real builder names exist; then
 # override them with logging stubs. orchestrate.sh's dispatch_agent calls
 # these by name from the enclosing scope, so post-source overrides win.
+# Also source critic-splitter.sh: orchestrate.sh's run_specialist_pipeline
+# calls split_critic_to_specialists, and the splitter-failure scenario
+# below depends on the function actually being defined (otherwise the
+# pipeline aborts because the function is missing, not because the
+# splitter detected an unknown angle — false-positive smoke per R15 F#1).
 . "$PROJECT_ROOT/lib/prompt-build.sh"
+. "$PROJECT_ROOT/lib/critic-splitter.sh"
 . "$PROJECT_ROOT/lib/orchestrate.sh"
 
 BUILDER_LOG="$TMPDIR/builder.log"
