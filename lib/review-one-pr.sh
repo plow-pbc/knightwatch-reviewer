@@ -1117,14 +1117,18 @@ ISSUE_COUNT=0
 while IFS=$'\t' read -r IS_OWNER IS_NAME IS_NUM; do
     [ -z "$IS_NUM" ] && continue
     [ "$ISSUE_COUNT" -ge 5 ] && break
-    ISSUE_DATA=$(gh issue view "$IS_NUM" --repo "$IS_OWNER/$IS_NAME" --json title,body 2>/dev/null)
-    IS_TITLE=$(printf '%s' "$ISSUE_DATA" | jq -r '.title // empty')
-    IS_BODY=$(printf '%s' "$ISSUE_DATA" | jq -r '.body // empty')
+    # Data-minimization: stage ONLY title + URL, never body. Linked-issue
+    # bodies may be private to consumers other than the public PR (the
+    # bot's GitHub identity has read access the PR author may not). A
+    # specialist or critic that quoted/paraphrased a private body would
+    # leak it into the public PR comment via the aggregator render path.
+    # Title + repo+number is metadata the PR author can already see; the
+    # body is fetched and discarded. Replaces R8/R9's instruction-based
+    # privacy guard with a hard data-minimization fix at the source.
+    IS_TITLE=$(gh issue view "$IS_NUM" --repo "$IS_OWNER/$IS_NAME" --json title --jq '.title // empty' 2>/dev/null)
     if [ -n "$IS_TITLE" ]; then
         [ "$ISSUE_COUNT" -eq 0 ] && AUTHOR_INTENT+=$'\n## Linked issues (this PR closes)\n\n'
-        AUTHOR_INTENT+="### $IS_OWNER/$IS_NAME#$IS_NUM: $IS_TITLE
-$IS_BODY
-
+        AUTHOR_INTENT+="- $IS_OWNER/$IS_NAME#$IS_NUM: $IS_TITLE (https://github.com/$IS_OWNER/$IS_NAME/issues/$IS_NUM)
 "
         ISSUE_COUNT=$((ISSUE_COUNT+1))
     fi
