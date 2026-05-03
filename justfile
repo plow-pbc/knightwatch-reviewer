@@ -94,10 +94,6 @@ test:
     bash lib/tests/critic-splitter-smoke.sh
 
     echo ""
-    echo "=== probe-schema smoke test ==="
-    bash lib/tests/probe-schema-smoke.sh
-
-    echo ""
     echo "=== go-deep-fanout smoke ==="
     bash lib/tests/go-deep-fanout-smoke.sh
 

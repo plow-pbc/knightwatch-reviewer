@@ -300,7 +300,7 @@ dispatch_agent() {
             cat > "$RUN_DIR/agents/$name/output.md" <<'CRITIC_EOF'
 ## Resolved probes
 
-### [unknown-ghost-angle] Finding 1 — AGREE
+### [from: unknown-ghost-angle] Probe 1
 Stub critic resolution for an angle that was never staged.
 CRITIC_EOF
             return 0 ;;
