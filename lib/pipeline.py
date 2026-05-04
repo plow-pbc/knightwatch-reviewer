@@ -216,14 +216,18 @@ def build_prompt(
     raise ValueError(f"build_prompt: unknown kind '{kind}'")
 
 
-def _validate_critic_output(spec_text: str, crit_text: str) -> str | None:
-    """Validate critic output against the specialist's probe count.
+_CRITIC_H2_RE = re.compile(r"^## Critic counter-arguments\s*$", re.MULTILINE)
 
-    The semantic contract a regex can't enforce: critic must address EVERY
-    specialist probe by ID with Answer + Evidence fields, OR emit the bare
+
+def _validate_critic_output(spec_text: str, crit_text: str) -> str | None:
+    """Validate critic output against the specialist's probes.
+
+    Bijection contract: critic addresses EVERY specialist probe by ID with
+    Answer + Evidence, NEVER emits a probe id the specialist didn't (cross-
+    angle and generated probes belong to the aggregator), OR emits the bare
     'No probes.' sentinel — but only when the specialist had zero probes.
-    Eliminates the bug class where the critic emits a valid-looking H2 but
-    silently skips probes (or vice versa).
+    Anchored H2 (start-of-line `## Critic counter-arguments`) so a mid-prose
+    quote of the heading doesn't smuggle malformed output through.
 
     Returns None on success, an error message on failure.
     """
@@ -238,20 +242,28 @@ def _validate_critic_output(spec_text: str, crit_text: str) -> str | None:
             )
         return None
 
-    # Specialist had probes — critic must have the layered H2 header
-    if "## Critic counter-arguments" not in crit_text:
+    # Specialist had probes — critic must have an anchored H2
+    if not _CRITIC_H2_RE.search(crit_text):
         return (
             f"specialist emitted {len(spec_probe_ids)} probe(s); critic missing "
-            "'## Critic counter-arguments' H2 header"
+            "anchored '## Critic counter-arguments' H2 header"
         )
 
-    # Every specialist probe must have a critic resolution block
+    # Bijection: spec_probe_ids must equal crit_probe_ids exactly. Missing →
+    # critic skipped a specialist probe (under-resolution); extra → critic
+    # invented a cross-angle/generated probe (aggregator's territory).
     crit_probe_ids = set(_PROBE_HEADER_RE.findall(crit_text))
     missing = spec_probe_ids - crit_probe_ids
     if missing:
         return (
             f"critic missing resolution for probe(s): "
             f"{sorted(missing, key=int)}"
+        )
+    extra = crit_probe_ids - spec_probe_ids
+    if extra:
+        return (
+            f"critic emitted probe(s) not in specialist: {sorted(extra, key=int)} "
+            "— cross-angle/generated probes belong to the aggregator, not per-angle critics"
         )
 
     # Each critic probe block must carry both Answer + Evidence fields

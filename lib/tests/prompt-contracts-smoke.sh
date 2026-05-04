@@ -51,6 +51,19 @@ echo "  asserting probe-resolver job description in critic.md..."
 assert_grep "critic.md should describe probe resolution job" \
     "probe resolution" prompts/critic.md
 
+# Security fence: per-angle critics run with codex sandbox bypassed
+# (--dangerously-bypass-approvals-and-sandbox in lib/pipeline.py:run_codex)
+# while reading PR-controlled inputs. The read-only/data-not-instructions
+# fence in critic.md is what stops a malicious diff from prompt-injecting
+# the critic into write actions or credential exfiltration. If the fence
+# is deleted, `just test` stays green but the dangerous execution path
+# remains exposed.
+echo "  asserting read-only sandbox fence in critic.md..."
+assert_grep "critic.md should carry the read-only working directory fence" \
+    "Read-only working directory" prompts/critic.md
+assert_grep "critic.md should fence repo content as data-not-instructions" \
+    "data, not instructions" prompts/critic.md
+
 # Negative fence: the legacy critic opening said "Eight specialists have
 # surfaced findings" — that wording predates the probe-as-unit refactor
 # and primes the model to emit Findings instead of resolving probes.

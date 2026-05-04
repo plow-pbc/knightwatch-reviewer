@@ -205,16 +205,33 @@ class TestValidateCriticOutput(unittest.TestCase):
         self.assertIsNotNone(err)
         self.assertIn("Evidence", err)
 
-    def test_critic_with_extra_probe_block_passes(self):
-        """Critic emitting MORE blocks than specialist had is allowed —
-        validator only enforces every-spec-probe-addressed, not bijection."""
+    def test_critic_with_extra_probe_block_returns_error(self):
+        """Critic must NOT emit probe ids the specialist didn't —
+        cross-angle/generated probes are the aggregator's job. Bijection
+        contract: spec_probe_ids must equal crit_probe_ids exactly."""
         spec = "### Probe 1\n- **From:** security\n"
         crit = (
             "## Critic counter-arguments\n\n"
             "### Probe 1\n- **Answer:** yes\n- **Evidence:** x\n\n"
             "### Probe 2\n- **Answer:** no\n- **Evidence:** y\n"
         )
-        self.assertIsNone(pipeline._validate_critic_output(spec, crit))
+        err = pipeline._validate_critic_output(spec, crit)
+        self.assertIsNotNone(err)
+        self.assertIn("not in specialist", err)
+        self.assertIn("'2'", err)
+
+    def test_critic_h2_must_be_anchored_to_start_of_line(self):
+        """A mid-prose quote of '## Critic counter-arguments' must not pass —
+        a paragraph mentioning the section name doesn't satisfy the layered
+        contract."""
+        spec = "### Probe 1\n- **From:** security\n"
+        crit = (
+            "Some prose where I mention '## Critic counter-arguments' inline.\n"
+            "### Probe 1\n- **Answer:** yes\n- **Evidence:** x\n"
+        )
+        err = pipeline._validate_critic_output(spec, crit)
+        self.assertIsNotNone(err)
+        self.assertIn("anchored", err)
 
 
 class TestBuildPrompt(unittest.TestCase):
