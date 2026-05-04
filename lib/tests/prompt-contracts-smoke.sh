@@ -47,6 +47,16 @@ assert_grep "common-header.md should mandate cost-naming" \
 assert_grep "common-header.md should reference review-priority.md scratch input" \
     "review-priority.md" prompts/common-header.md
 
+echo "  asserting Bug 1+2 prompt contracts in common-header.md + critic.md..."
+assert_grep "common-header.md should fence Q-field shape rule" \
+    "Q-field shape" prompts/common-header.md
+assert_grep "common-header.md should anchor Q-shape rule on additive scale (~20 LOC)" \
+    "20 LOC" prompts/common-header.md
+assert_grep "common-header.md should fence Broken-Glass-is-pro-simplification rule" \
+    "Broken-Glass is pro-simplification" prompts/common-header.md
+assert_grep "critic.md should fence security-controls exception in the Pre-PMF lens" \
+    "security or data-integrity controls" prompts/critic.md
+
 echo "  asserting probe-resolver job description in critic.md..."
 assert_grep "critic.md should describe probe resolution job" \
     "probe resolution" prompts/critic.md
@@ -150,18 +160,13 @@ assert_grep "aggregator.md should fence Answer: yes ordering" \
     "Answer: yes" prompts/aggregator.md
 
 for specialist in shape simplification architecture consumers tests performance security data-integrity; do
-    echo "  asserting complexity-cost probe class in ${specialist}.md..."
-    # Each specialist must register complexity-cost as one of its emitted
-    # classes. After the Class-options hoist (probe-schema.md § Class
-    # options), specialists list classes inline rather than per-class
-    # blocks, so match the bare token instead of the old `Class: ...` form.
-    assert_grep "${specialist}.md should list complexity-cost as a probe class" \
-        "complexity-cost" "prompts/${specialist}.md"
+    echo "  asserting simplification probe class in ${specialist}.md..."
+    # After collapsing DRY + dead-code + complexity-cost → simplification,
+    # every specialist must register simplification as one of its emitted
+    # classes (it's the universal removal-shaped class).
+    assert_grep "${specialist}.md should list simplification as a probe class" \
+        "simplification" "prompts/${specialist}.md"
 done
-
-echo "  asserting unified complexity-cost expectation in common-header.md..."
-assert_grep "common-header.md should describe complexity-cost probe expectation" \
-    "Complexity-cost probe expectation" prompts/common-header.md
 
 # Privacy: linked-issue staging must NOT fetch issue body or title from
 # `gh issue view` — they may be private and would leak into the public PR
@@ -201,14 +206,14 @@ echo "  asserting Pre-PMF lens (always-on) in critic.md..."
 assert_grep "critic.md should fence Pre-PMF lens (always-on)" \
     "Pre-PMF lens (always-on)" prompts/critic.md
 
-# Probe-as-unit polarity contract (R23 F#2): complexity-cost is
-# deletion-oriented per probe-schema.md § Class options; Pre-PMF lens
-# defaults to Answer: yes (delete) at this scale.
-echo "  asserting Pre-PMF deletion-default for complexity-cost in critic.md..."
-assert_grep "critic.md should mark complexity-cost as deletion-oriented" \
-    "deletion-oriented" prompts/critic.md
-assert_grep "critic.md should default complexity-cost probes to Answer: yes (delete) at pre-PMF" \
-    'default to `Answer: yes` (delete)' prompts/critic.md
+# Probe-as-unit polarity contract (R23 F#2): simplification is
+# removal-shaped per probe-schema.md § Class options; Pre-PMF lens
+# defaults to Answer: yes (apply the removal) at this scale.
+echo "  asserting Pre-PMF removal-default for simplification in critic.md..."
+assert_grep "critic.md should mark simplification as removal-shaped" \
+    "removal-shaped" prompts/critic.md
+assert_grep "critic.md should default simplification probes to Answer: yes at pre-PMF" \
+    'default to `Answer: yes`' prompts/critic.md
 
 echo "  asserting K-decay thresholds in critic.md..."
 # Probe-resolver model: "K ≥ 3 with no engagement and Class ≠ bug" /

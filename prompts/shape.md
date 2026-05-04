@@ -30,7 +30,7 @@ For each new construct, name its problem class and emit a probe per `.codex-scra
 - **parsing structured input** → upstream emits structured data, not regex on a string
 - **utility helpers** → existing utils module / next to caller, not a new `utils/foo.py` for one helper
 
-For each construct, emit a probe per `.codex-scratch/probe-schema.md`. **Classes emitted: `bypass`, `shape`, `complexity-cost`.** Severity rubric + edit/cost convention live in probe-schema.md § Class options. Domain examples for `complexity-cost` in this angle: defensive branches, validation guards, helpers added with one call site, schema fields, env vars, parallel modes — anything that adds shape without earning it.
+For each construct, emit a probe per `.codex-scratch/probe-schema.md`. **Classes emitted: `bypass`, `shape`, `simplification`.** Severity rubric + edit/cost convention live in probe-schema.md § Class options. Domain examples for `simplification` in this angle: defensive branches, validation guards, helpers added with one call site, schema fields, env vars, parallel modes — anything that adds shape without earning it.
 
 Where this overlaps with other specialists:
 - `simplification` owns DRY (N near-identical blocks), kid-prior-art, verbose conditional/early-return cleanups, drive-by tidies, dead-code-on-touched-files.
