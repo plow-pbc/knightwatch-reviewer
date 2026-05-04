@@ -28,6 +28,15 @@ split_critic_to_specialists() {
         echo "split_critic_to_specialists: $specialists_dir does not exist" >&2
         return 1
     fi
+    # Empty-output sentinel: the critic prompt instructs the model to
+    # emit `No probes.` on its own line when every specialist returned
+    # nothing AND the generation pass surfaced nothing. Recognized here
+    # as a valid clean-empty critic so aggregation proceeds; without
+    # this carve-out, the probe-content gate below would abort an
+    # all-clean review.
+    if grep -qE '^No probes\.$' "$critic_md"; then
+        return 0
+    fi
 
     # Pass 1: walk critic.md, accumulate per-angle blocks into <angle>.angle-buf
     # files. The "## Missed findings" section in critic.md stays in critic.md —

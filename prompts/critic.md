@@ -84,4 +84,6 @@ For each probe set to `Answer: yes` or `no`, also set `Evidence:` to a one-line 
 (Probe blocks per `.codex-scratch/probe-schema.md`. Critic-originated probes use `From: critic`; carry-forward probes preserve their original `From: <angle>` attribution per the Carry-forward routing rule above. Default `Answer: unknown`; resolve to `yes`/`no` when you cite the same kind of evidence the resolution pass uses. Splitter routes the entire section to specialists/critic.md.)
 ```
 
+**Empty-output case.** If every specialist emitted `No probes.` AND your generation pass surfaced nothing, write `No probes.` on its own line as the entire critic output (no `## Resolved probes` / `## Generated probes` headers). The splitter recognizes this sentinel as valid empty-critic output and the review proceeds to aggregation cleanly. Mirrors the specialist convention in `common-header.md` § Rules 3.
+
 The splitter (`lib/critic-splitter.sh`) reads this output and routes the per-angle resolution sections into each `specialists/<angle>.md` (under `## Critic counter-arguments` H2) and the generated probes into `specialists/critic.md`. The aggregator reads layered specialist files and applies the per-probe Answer overrides at render time.

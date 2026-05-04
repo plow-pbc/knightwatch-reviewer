@@ -271,4 +271,25 @@ if [ "$WS_RC" -eq 0 ]; then
     exit 1
 fi
 
+# No-probes sentinel (R36 #1): when all specialists return No probes.
+# AND the critic generates nothing, the prompt instructs `No probes.`
+# as the whole critic output. Splitter must accept that as valid
+# empty-critic so aggregation proceeds; without this carve-out, the
+# meaningful-empty gate would abort an all-clean review.
+echo "  asserting 'No probes.' sentinel passes the empty-critic gate..."
+SENTINEL_DIR="$TMPDIR/specialists-sentinel"
+mkdir -p "$SENTINEL_DIR"
+for angle in security shape; do
+    echo "## $angle stub" > "$SENTINEL_DIR/$angle.md"
+done
+SENTINEL_CRITIC="$TMPDIR/critic-sentinel.md"
+printf 'No probes.\n' > "$SENTINEL_CRITIC"
+split_critic_to_specialists "$SENTINEL_CRITIC" "$SENTINEL_DIR" 2>"$TMPDIR/stderr-sentinel.log"
+SENTINEL_RC=$?
+if [ "$SENTINEL_RC" -ne 0 ]; then
+    echo "FAIL: split returned non-zero for 'No probes.' sentinel — clean-empty critic must pass (R36 #1)"
+    cat "$TMPDIR/stderr-sentinel.log"
+    exit 1
+fi
+
 echo "  PASS"
