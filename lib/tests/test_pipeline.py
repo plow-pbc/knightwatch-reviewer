@@ -324,5 +324,158 @@ class TestRunAngle(unittest.TestCase):
         )
 
 
+class TestRunPipeline(unittest.TestCase):
+    """run_pipeline orchestrates the full review."""
+
+    def setUp(self):
+        self.tmp = TemporaryDirectory()
+        self.repo_dir = Path(self.tmp.name) / "repo"
+        (self.repo_dir / ".git").mkdir(parents=True)
+        (self.repo_dir / ".codex-scratch" / "specialists").mkdir(parents=True)
+        self.run_dir = Path(self.tmp.name) / "run"
+        (self.run_dir / "agents").mkdir(parents=True)
+        (self.run_dir / "inputs").mkdir(parents=True)
+
+        # Minimal prompts dir
+        self.prompts = Path(self.tmp.name) / "prompts"
+        self.prompts.mkdir()
+        (self.prompts / "common-header.md").write_text("H {{SPECIALIST_NAME}}\n")
+        for angle in pipeline.ANGLES:
+            (self.prompts / f"{angle}.md").write_text(f"BODY {angle}\n")
+        (self.prompts / "intent.md").write_text("intent prompt\n")
+        (self.prompts / "dead-code-search.md").write_text("dc prompt\n")
+        (self.prompts / "momentum.md").write_text("momentum prompt\n")
+        (self.prompts / "critic.md").write_text("critic prompt\n")
+        (self.prompts / "voice.md").write_text("Voice: {{OPERATOR_NAME}}\n")
+        (self.prompts / "aggregator.md").write_text("# Agg\n<!-- INSERT_VOICE_HERE -->\nAgg body\n")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _make_codex_stub(self, plan, default=(0, "### Probe 1\nstub\n")):
+        def side_effect(argv, **kwargs):
+            out_idx = argv.index("-o")
+            out_path = Path(argv[out_idx + 1])
+            agent_name = out_path.parent.name
+            ec, out = plan.get(agent_name, default)
+            # Special-case intent so the validation matcher passes
+            if agent_name == "intent" and ec == 0 and out == default[1]:
+                out = "Inferred intent: stub.\n"
+            out_path.write_text(out)
+            return FakeCompletedProcess(ec)
+        return side_effect
+
+    @patch("pipeline.subprocess.run")
+    def test_first_review_runs_intent_dc_angles_aggregator(self, mock_run):
+        mock_run.side_effect = self._make_codex_stub({
+            "intent": (0, "Inferred intent: stub.\n"),
+            "dead-code-search": (0, "dc evidence\n"),
+            "aggregator": (0, "# Review\nVERDICT: APPROVE\n"),
+        })
+        rc = pipeline.run_pipeline(
+            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
+            prompts_dir=str(self.prompts),
+            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
+        )
+        self.assertEqual(rc, 0)
+        # All 8 angles ran
+        for angle in pipeline.ANGLES:
+            self.assertTrue((self.run_dir / "agents" / angle / "output.md").exists())
+            self.assertTrue((self.run_dir / "agents" / f"critic-{angle}" / "output.md").exists())
+        # Aggregator ran
+        self.assertTrue((self.run_dir / "agents" / "aggregator" / "output.md").exists())
+        # Momentum did NOT run (no previous-review.md)
+        self.assertFalse((self.run_dir / "agents" / "momentum" / "output.md").exists())
+
+    @patch("pipeline.subprocess.run")
+    def test_re_review_runs_momentum(self, mock_run):
+        (self.run_dir / "inputs" / "previous-review.md").write_text("prior review body\n")
+        mock_run.side_effect = self._make_codex_stub({
+            "intent": (0, "Inferred intent: stub.\n"),
+            "dead-code-search": (0, "dc\n"),
+            "momentum": (0, "momentum body\n"),
+            "aggregator": (0, "# Review\nVERDICT: APPROVE\n"),
+        })
+        rc = pipeline.run_pipeline(
+            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
+            prompts_dir=str(self.prompts),
+            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
+        )
+        self.assertEqual(rc, 0)
+        self.assertTrue((self.run_dir / "agents" / "momentum" / "output.md").exists())
+
+    @patch("pipeline.subprocess.run")
+    def test_intent_failure_aborts(self, mock_run):
+        mock_run.side_effect = self._make_codex_stub({
+            "intent": (7, ""),
+        })
+        rc = pipeline.run_pipeline(
+            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
+            prompts_dir=str(self.prompts),
+            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
+        )
+        self.assertNotEqual(rc, 0)
+        # Repo dir should be cleaned up
+        self.assertFalse(self.repo_dir.exists())
+
+    @patch("pipeline.subprocess.run")
+    def test_dead_code_failure_aborts_loud(self, mock_run):
+        """dead-code-search becomes fail-loud (was fail-soft in shell pipeline)."""
+        mock_run.side_effect = self._make_codex_stub({
+            "intent": (0, "Inferred intent: stub.\n"),
+            "dead-code-search": (7, ""),
+        })
+        rc = pipeline.run_pipeline(
+            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
+            prompts_dir=str(self.prompts),
+            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
+        )
+        self.assertNotEqual(rc, 0)
+        self.assertFalse(self.repo_dir.exists())
+
+    @patch("pipeline.subprocess.run")
+    def test_one_angle_failure_aborts_pipeline(self, mock_run):
+        mock_run.side_effect = self._make_codex_stub({
+            "intent": (0, "Inferred intent: stub.\n"),
+            "dead-code-search": (0, "dc\n"),
+            "shape": (5, ""),  # one angle fails
+        })
+        rc = pipeline.run_pipeline(
+            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
+            prompts_dir=str(self.prompts),
+            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
+        )
+        self.assertNotEqual(rc, 0)
+        self.assertFalse(self.repo_dir.exists())
+
+    @patch("pipeline.subprocess.run")
+    def test_aggregator_failure_aborts(self, mock_run):
+        mock_run.side_effect = self._make_codex_stub({
+            "intent": (0, "Inferred intent: stub.\n"),
+            "dead-code-search": (0, "dc\n"),
+            "aggregator": (8, ""),
+        })
+        rc = pipeline.run_pipeline(
+            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
+            prompts_dir=str(self.prompts),
+            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
+        )
+        self.assertNotEqual(rc, 0)
+        self.assertFalse(self.repo_dir.exists())
+
+    @patch("pipeline.subprocess.run")
+    def test_intent_must_have_inferred_intent_prefix(self, mock_run):
+        mock_run.side_effect = self._make_codex_stub({
+            "intent": (0, "wrong prefix\n"),  # missing "Inferred intent: "
+        })
+        rc = pipeline.run_pipeline(
+            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
+            prompts_dir=str(self.prompts),
+            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
+        )
+        self.assertNotEqual(rc, 0)
+        self.assertFalse(self.repo_dir.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

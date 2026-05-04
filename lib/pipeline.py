@@ -270,3 +270,167 @@ def run_angle(
     scratch_path.write_text(layered)
 
     return 0
+
+
+def _abort(repo_dir: Path, msg: str) -> int:
+    """Log + clean up REPO_DIR + return non-zero exit. Caller exits."""
+    log(msg)
+    if repo_dir.exists():
+        # Match orchestrate.sh's `rm -rf "$REPO_DIR"` cleanup.
+        import shutil
+        shutil.rmtree(repo_dir, ignore_errors=True)
+    return 1
+
+
+def _validate_intent(intent_out: Path, pr_id: str) -> str | None:
+    """Return None on success, error message on validation failure."""
+    if not intent_out.exists() or intent_out.stat().st_size == 0:
+        return f"{pr_id}: intent inference failed (empty output)"
+    text = intent_out.read_text()
+    nonblank = [ln for ln in text.splitlines() if ln.strip()]
+    if len(nonblank) != 1:
+        return (
+            f"{pr_id}: intent output has {len(nonblank)} non-blank lines, "
+            "expected exactly 1 — aborting"
+        )
+    if not text.startswith("Inferred intent: ") and not any(
+        ln.startswith("Inferred intent: ") for ln in nonblank
+    ):
+        return f"{pr_id}: intent output missing 'Inferred intent: ' prefix — aborting"
+    return None
+
+
+def run_pipeline(
+    repo_dir: str,
+    run_dir: str,
+    prompts_dir: str,
+    pr_id: str,
+    pr_title: str,
+    pr_url: str,
+    pr_author: str,
+) -> int:
+    """Run the full LLM review pipeline. Returns 0 on success, non-zero on
+    any-stage failure. Aggregator output lands at
+    <run_dir>/agents/aggregator/output.md; the caller posts it.
+
+    Every stage fails loud. dead-code-search aborts on failure (no
+    soft-degrade path).
+    """
+    repo = Path(repo_dir)
+    run = Path(run_dir)
+
+    common_kwargs = dict(
+        prompts_dir=prompts_dir,
+        pr_id=pr_id, pr_title=pr_title, pr_url=pr_url, pr_author=pr_author,
+    )
+
+    # 1. Intent (sequential, fail-loud)
+    log(f"{pr_id}: inferring developer intent...")
+    intent_prompt = build_prompt(kind="standalone", agent="intent", **common_kwargs)
+    intent_dir = run / "agents" / "intent"
+    rc = run_codex("intent", str(repo), intent_prompt, str(intent_dir))
+    if rc != 0:
+        return _abort(repo, f"{pr_id}: intent inference failed (exit={rc}) — aborting")
+    err = _validate_intent(intent_dir / "output.md", pr_id)
+    if err:
+        return _abort(repo, err)
+    # Symlink so prompt-cited paths resolve
+    scratch = repo / ".codex-scratch"
+    scratch.mkdir(parents=True, exist_ok=True)
+    intent_link = scratch / "inferred-intent.md"
+    if intent_link.exists() or intent_link.is_symlink():
+        intent_link.unlink()
+    intent_link.symlink_to(intent_dir / "output.md")
+    log(f"{pr_id}: intent inference complete: {(intent_dir / 'output.md').read_text().splitlines()[0]}")
+
+    # 2. Dead-code-search (sequential, fail-loud — no soft-degrade)
+    log(f"{pr_id}: dead-code search...")
+    dc_prompt = build_prompt(kind="standalone", agent="dead-code-search", **common_kwargs)
+    dc_dir = run / "agents" / "dead-code-search"
+    rc = run_codex("dead-code-search", str(repo), dc_prompt, str(dc_dir))
+    if rc != 0:
+        return _abort(repo, f"{pr_id}: dead-code search failed (exit={rc}) — aborting")
+    dc_link = scratch / "dead-code.md"
+    if dc_link.exists() or dc_link.is_symlink():
+        dc_link.unlink()
+    dc_link.symlink_to(dc_dir / "output.md")
+    log(f"{pr_id}: dead-code search complete")
+
+    # 3. 8 angle pipelines in parallel (each = specialist → critic)
+    log(f"{pr_id}: launching {len(ANGLES)} per-angle pipelines in parallel...")
+    angle_kwargs = dict(
+        repo_dir=repo_dir, run_dir=run_dir,
+        **common_kwargs,
+    )
+    angle_failure: str | None = None
+    with ThreadPoolExecutor(max_workers=len(ANGLES)) as ex:
+        futures = {ex.submit(run_angle, angle=a, **angle_kwargs): a for a in ANGLES}
+        for fut in as_completed(futures):
+            angle = futures[fut]
+            try:
+                rc = fut.result()
+            except Exception as exc:
+                angle_failure = (
+                    f"{pr_id}: angle {angle} raised {type(exc).__name__}: {exc} — aborting"
+                )
+                break
+            if rc != 0:
+                angle_failure = (
+                    f"{pr_id}: angle {angle} exited non-zero (rc={rc}, see "
+                    f"{run}/agents/{angle}/log.txt or {run}/agents/critic-{angle}/log.txt) "
+                    "— aborting"
+                )
+                break
+    # Outside the `with` block: executor.shutdown(wait=True) has finished, so
+    # no in-flight angle thread can re-create repo_dir between rmtree and now.
+    if angle_failure is not None:
+        return _abort(repo, angle_failure)
+    log(f"{pr_id}: all {len(ANGLES)} angle pipelines completed")
+
+    # 4. Momentum (re-reviews only)
+    prev_review = run / "inputs" / "previous-review.md"
+    if prev_review.exists() and prev_review.stat().st_size > 0:
+        log(f"{pr_id}: launching momentum specialist (re-review)...")
+        m_prompt = build_prompt(kind="standalone", agent="momentum", **common_kwargs)
+        m_dir = run / "agents" / "momentum"
+        rc = run_codex("momentum", str(repo), m_prompt, str(m_dir))
+        if rc != 0:
+            return _abort(repo, f"{pr_id}: momentum specialist failed (exit={rc}) — aborting")
+        m_link = scratch / "momentum.md"
+        if m_link.exists() or m_link.is_symlink():
+            m_link.unlink()
+        m_link.symlink_to(m_dir / "output.md")
+    else:
+        log(f"{pr_id}: skipping momentum specialist (first review)")
+
+    # 5. Aggregator
+    log(f"{pr_id}: aggregator...")
+    agg_prompt = build_prompt(kind="aggregator", agent="aggregator", **common_kwargs)
+    agg_dir = run / "agents" / "aggregator"
+    rc = run_codex("aggregator", str(repo), agg_prompt, str(agg_dir))
+    if rc != 0:
+        return _abort(repo, f"{pr_id}: aggregator failed (exit={rc}) — aborting")
+    if not (agg_dir / "output.md").exists() or (agg_dir / "output.md").stat().st_size == 0:
+        return _abort(repo, f"{pr_id}: aggregator produced empty output — aborting")
+    log(f"{pr_id}: aggregator complete")
+    return 0
+
+
+def main() -> int:
+    if len(sys.argv) != 3:
+        sys.stderr.write(f"usage: {sys.argv[0]} REPO_DIR RUN_DIR\n")
+        return 2
+    repo_dir, run_dir = sys.argv[1], sys.argv[2]
+    prompts_dir = os.environ.get("PROMPTS_DIR", os.path.expanduser("~/.pr-reviewer/prompts"))
+    pr_id = os.environ["PR_ID"]
+    pr_title = os.environ["PR_TITLE"]
+    pr_url = os.environ["PR_URL"]
+    pr_author = os.environ["PR_AUTHOR"]
+    return run_pipeline(
+        repo_dir=repo_dir, run_dir=run_dir, prompts_dir=prompts_dir,
+        pr_id=pr_id, pr_title=pr_title, pr_url=pr_url, pr_author=pr_author,
+    )
+
+
+if __name__ == "__main__":
+    sys.exit(main())
