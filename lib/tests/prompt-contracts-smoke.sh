@@ -377,10 +377,8 @@ assert_grep "review-priority.md should cite the canonical Broken-Glass section" 
 echo "  asserting simplification.md anchors on inferred-intent for refactor PRs..."
 assert_grep "simplification.md should grade diff against stated intent" \
     "grade the diff against stated intent" prompts/simplification.md
-assert_grep "simplification.md should call out net-additive refactor PRs" \
-    "net-additive >100 LOC" prompts/simplification.md
-assert_grep "simplification.md should target deletion of existing code, not just the new additions" \
-    "existing code" prompts/simplification.md
+assert_grep "simplification.md should reference the schema's substrate-replacement-target seam" \
+    "substrate-replacement target" prompts/simplification.md
 assert_grep "probe-schema.md should canonicalize net-additive refactor as blocking simplification" \
     "net-additive refactor" prompts/probe-schema.md
 
