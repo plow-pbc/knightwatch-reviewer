@@ -21,7 +21,7 @@ description — summarize deltas in the score table instead.
 
 ## Performance — before / after
 
-**REQUIRED** for any change under `prompts/` or `lib/` (except `lib/tests/` smoke-only changes — those are gated by the smoke check above). The `lib/` rule is broad on purpose: scratch staging (`scratch.sh`, `diff-build.sh`, `state-io.sh`), pipeline orchestration (`pipeline.py`, `review-one-pr.sh`, `replay*.sh`), and config helpers (`knightwatch-config.sh`, `search-roots.sh`, `sibling-symlinks.sh`, `decline-history.sh`, `loc-trend.sh`) all change codex inputs, so all of them count.
+**REQUIRED** for any change under `prompts/` or `lib/` (except `lib/tests/` smoke-only changes — those are gated by the smoke check above). Broad on purpose: anything else under `lib/` can change codex inputs, so all of it counts.
 
 **N/A** for: docs / README / CI / smoke-only / packaging / `.github/` — anything that demonstrably can't change codex output. If N/A, fill in the **N/A explanation** at the bottom and skip the rest of this section.
 
@@ -49,10 +49,12 @@ Pick PRs whose R1 (first reviewed) SHA had findings the OLD bot caught well — 
 The template's required-when scope covers `prompts/` AND `lib/`, so both sides must run from their own checkout (each side's `replay.sh` / `pipeline.py` / scratch helpers can differ). Two sequential batch invocations:
 
 ```bash
-OUT="replays/perf-$(date +%Y-%m-%d)"
+set -euo pipefail
+OUT="$HOME/.pr-reviewer/replays/perf-$(date +%Y-%m-%d)"
 
 # Side 1: baseline (main) — main's lib/ + main's prompts/
-git switch main && git pull --ff-only
+git switch main
+git pull --ff-only
 ./lib/replay-batch.sh \
   --prs ~/.pr-reviewer/canaries.csv \
   --prompts "$(pwd)/prompts" \
@@ -69,6 +71,8 @@ git switch -
 echo "=== baseline ==="; cat "$OUT/baseline/index.md"
 echo "=== experiment ==="; cat "$OUT/experiment/index.md"
 ```
+
+Output goes under `~/.pr-reviewer/replays/` so private canary identifiers + replay artifacts never land as commit-ready files in the public worktree. `set -euo pipefail` aborts on any failure (e.g. `git switch main` in a dirty tree) so a bad checkout can't silently produce a false no-delta comparison.
 
 `lib/replay-batch.sh` runs cells sequentially. Wall time is roughly `canaries × 10 min × 2 sides` — for 3 canaries that's ~60 min total. Each cell burns ~17 codex calls (1 intent + 1 dead-code + 8 specialists + 7 critics + 1 momentum + 1 aggregator). Logged-in `codex` CLI required.
 
