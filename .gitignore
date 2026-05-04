@@ -231,11 +231,6 @@ plow-kid-refresh.log
 kid-last-failure
 .keepitdry/
 
-# Operator-private canary list for the PR template's perf-analysis
-# section. Points at private PRs in target repos (e.g. cncorp/plow);
-# must not land in this public repo.
-.knightwatch/canaries.csv
-
 # Replay-tool artifacts: keep aggregator/specialist/critic outputs,
 # drop agent prompt.txt + log.txt (regenerable + huge) and agents-on-exit/
 # (debug-only, mirror of agents/). Pattern matches both the comparison/

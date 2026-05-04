@@ -27,7 +27,7 @@ description — summarize deltas in the score table instead.
 
 ### Canary list (operator-local)
 
-Maintain your canary set at `.knightwatch/canaries.csv` — gitignored, kept off this public repo. Format is what `lib/replay-batch.sh` consumes:
+Maintain your canary set at `~/.pr-reviewer/canaries.csv` — operator state, outside any repo checkout (the in-repo `.knightwatch/` directory is base-branch policy per `README.md:55`, not the place for operator-private state). Format is what `lib/replay-batch.sh` consumes:
 
 ```
 # repo,pr,sha   (one per non-blank, non-comment line)
@@ -46,24 +46,31 @@ Pick PRs whose R1 (first reviewed) SHA had findings the OLD bot caught well — 
 
 ### Run replays — both sides
 
+The template's required-when scope covers `prompts/` AND `lib/`, so both sides must run from their own checkout (each side's `replay.sh` / `pipeline.py` / scratch helpers can differ). Two sequential batch invocations:
+
 ```bash
-# Stage baseline (main) and experiment (this PR) prompt directories
+OUT="replays/perf-$(date +%Y-%m-%d)"
+
+# Side 1: baseline (main) — main's lib/ + main's prompts/
 git switch main && git pull --ff-only
-cp -r prompts /tmp/prompts-baseline
-git switch -
-cp -r prompts /tmp/prompts-experiment
-
-# Cross-product replay: canaries × {baseline, experiment}
 ./lib/replay-batch.sh \
-  --prs .knightwatch/canaries.csv \
-  --prompts /tmp/prompts-baseline,/tmp/prompts-experiment \
-  --output-dir "replays/perf-$(date +%Y-%m-%d)"
+  --prs ~/.pr-reviewer/canaries.csv \
+  --prompts "$(pwd)/prompts" \
+  --output-dir "$OUT/baseline"
 
-# Read the side-by-side index
-cat "replays/perf-$(date +%Y-%m-%d)/index.md"
+# Side 2: experiment (this PR) — PR's lib/ + PR's prompts/
+git switch -
+./lib/replay-batch.sh \
+  --prs ~/.pr-reviewer/canaries.csv \
+  --prompts "$(pwd)/prompts" \
+  --output-dir "$OUT/experiment"
+
+# Compare side-by-side — read both index files
+echo "=== baseline ==="; cat "$OUT/baseline/index.md"
+echo "=== experiment ==="; cat "$OUT/experiment/index.md"
 ```
 
-`lib/replay-batch.sh` runs cells sequentially. Wall time is roughly `(canaries × prompt sets) × 10 min` — for 3 canaries × 2 sets that's ~60 min. Each cell burns ~17 codex calls (1 intent + 1 dead-code + 8 specialists + 7 critics + 1 momentum + 1 aggregator). Logged-in `codex` CLI required.
+`lib/replay-batch.sh` runs cells sequentially. Wall time is roughly `canaries × 10 min × 2 sides` — for 3 canaries that's ~60 min total. Each cell burns ~17 codex calls (1 intent + 1 dead-code + 8 specialists + 7 critics + 1 momentum + 1 aggregator). Logged-in `codex` CLI required.
 
 ### Score table — fill in (summarize, don't paste full output)
 
