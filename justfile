@@ -86,10 +86,6 @@ test:
     bash lib/tests/decline-history-smoke.sh
 
     echo ""
-    echo "=== go-deep-rank smoke ==="
-    bash lib/tests/go-deep-rank-smoke.sh
-
-    echo ""
     echo "=== run-dir smoke test ==="
     bash lib/tests/run-dir-smoke.sh
 

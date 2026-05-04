@@ -27,7 +27,7 @@ You are the aggregator in a multi-specialist PR review. Eight specialists produc
 - `.codex-scratch/author-intent.md` — the PR's description + linked issues
 - `.codex-scratch/decline-history.md` — operator's prior decline replies on this PR. Two channels: (a) "Decline replies" — free-form prose, used by the critic as context (no mechanical auto-drop); (b) "Explicit class markers" — counts of `<!-- decline:class=X -->` markers; classes counted ≥3 are mechanically dropped by the critic, others are read as context only. Read for context when interpreting why a finding is or isn't carrying forward.
 
-**Note on layered specialist files.** Each `.codex-scratch/specialists/<angle>.md` is a layered file: original specialist probes → `## Critic counter-arguments` H2 with per-probe `Answer:`/`Evidence:` resolutions appended by that angle's per-angle critic (no central critic, no splitter — the per-angle critic writes directly to the file). Go-deep tech-leads are **idle** (Phase 6 will re-key `lib/go-deep-rank.sh`); if a Go-deep section exists on a layered file from a transitional run, treat its `KEEP`/`SIMPLIFY-WITH-PATTERN`/`DROP`/`REFRAME` recommendations as severity/remedy hints that override the specialist's prior, then drop the recommendation prose from the published probe.
+**Note on layered specialist files.** Each `.codex-scratch/specialists/<angle>.md` is a layered file: original specialist probes → `## Critic counter-arguments` H2 with per-probe `Answer:`/`Evidence:` resolutions appended by that angle's per-angle critic (no central critic, no splitter — the per-angle critic writes directly to the file).
 
 **PR:** {{PR_ID}}
 **Title:** {{PR_TITLE}}

@@ -20,7 +20,7 @@ from pathlib import Path
 
 # Roles that must emit at least one `### Probe N` block or the literal
 # `No probes.` sentinel — matches lib/run-specialist.sh:76-83 contract.
-# Critics, intent, aggregator, momentum, dead-code-search, go-deep-* have
+# Critics, intent, aggregator, momentum, and dead-code-search have
 # different output shapes and are exempt; per-angle critics are validated
 # semantically against the specialist's probe count by run_angle (not via
 # a regex at run_codex), so a critic that emits the right H2 but skips
@@ -173,9 +173,7 @@ def build_prompt(
         )
 
     if kind == "standalone":
-        # intent, dead-code-search, momentum. (go-deep dispatch was orchestrate.sh's
-        # responsibility and is dropped here per the plan note above; if Phase 6
-        # reintroduces go-deep, add the agent.startswith("go-deep-") branch back.)
+        # intent, dead-code-search, momentum.
         body = (pdir / f"{agent}.md").read_text()
         subs = dict(base_subs, specialist_name="")
         return _substitute_placeholders(body, **subs)

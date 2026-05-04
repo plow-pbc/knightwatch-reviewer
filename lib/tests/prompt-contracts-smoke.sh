@@ -114,16 +114,6 @@ echo "  asserting layered-file note in aggregator.md..."
 assert_grep "aggregator.md should describe layered specialist files" \
     "layered specialist files" prompts/aggregator.md
 
-echo "  asserting go-deep recommendation handlers in aggregator.md..."
-assert_grep "aggregator.md should reference SIMPLIFY-WITH-PATTERN go-deep recommendation" \
-    "SIMPLIFY-WITH-PATTERN" prompts/aggregator.md
-
-echo "  asserting go-deep prompt exists with 20-LOC threshold reference..."
-assert_grep "go-deep.md should fence the 20-LOC remedy threshold reference" \
-    "20-LOC remedy threshold" prompts/go-deep.md
-assert_grep "go-deep.md should fence the four recommendation tokens" \
-    "KEEP | SIMPLIFY-WITH-PATTERN | DROP | REFRAME" prompts/go-deep.md
-
 # Specialist + scratch wiring — every specialist must be referenced by
 # the critic + aggregator read lists, and common-header must document
 # any per-specialist scratch input. Catches the "added a prompt file

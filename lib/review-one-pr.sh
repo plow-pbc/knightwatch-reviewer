@@ -137,12 +137,6 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # internally; multi-source is idempotent.
 . "$_LIB_DIR/decline-history.sh"
 
-# --- go-deep ranker (rank_hot_angles) — selects which specialist files
-# become "hot" (≥20 LOC remedy → go-deep investigation). Sourced as a
-# helper so the smoke exercises the selection logic with synthetic
-# specialist files, not just token-greps the regex.
-. "$_LIB_DIR/go-deep-rank.sh"
-
 # --- per-run dir -------------------------------------------------------------
 # Every worker invocation gets its own runs/<RUN_ID>/ dir holding the run log,
 # input scratch, and one subdir per agent (prompt + output + log). The git
@@ -1053,7 +1047,7 @@ write_scratch "$REPO_DIR" "loc-trend.md" "$LOC_TREND"
 if [ "$FORCE_WHOLE_PR" = "true" ]; then
     log "$PR_ID: FORCE_WHOLE_PR=true — staging decline-history.md sentinel (whole-PR re-review evaluates from scratch)"
     # Sentinel keeps the prompt-input contract intact for critic.md /
-    # go-deep.md / aggregator.md, which all list .codex-scratch/decline-history.md
+    # aggregator.md, which list .codex-scratch/decline-history.md
     # as a required input. Empty/absent file would tempt those agents to
     # explore the filesystem; the sentinel makes the "from scratch"
     # decision explicit.
