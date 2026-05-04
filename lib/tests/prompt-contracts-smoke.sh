@@ -380,4 +380,27 @@ assert_grep "common-header.md should mandate 'No probes.' marker" \
 assert_grep "pipeline.py should grep for the same 'No probes.' marker" \
     'No probes\.' "$PIPELINE"
 
+# ====================================================================
+# Section: subtractive-priority tokens (added 2026-05-04)
+# ====================================================================
+# Pins the subtractive-by-default tightening in this repo's
+# .knightwatch/review-priority.md and the canonical worked example in
+# the consumed standards. If these tokens drift away, every specialist
+# loses the operating-point signal that drives PR#47-style structural
+# loops to surface the substrate-replacement move.
+
+echo "  asserting subtractive-priority tokens in .knightwatch/review-priority.md..."
+assert_grep "review-priority.md should name SIMPLIFY at all costs" \
+    "SIMPLIFY at all costs" .knightwatch/review-priority.md
+assert_grep "review-priority.md should cite cumulative additive LOC" \
+    "Cumulative additive LOC" .knightwatch/review-priority.md
+assert_grep "review-priority.md should cite the canonical Broken-Glass section" \
+    "Broken-Glass Test" .knightwatch/review-priority.md
+
+echo "  asserting simplification.md anchors on inferred-intent for refactor PRs..."
+assert_grep "simplification.md should grade diff against stated intent" \
+    "grade the diff against stated intent" prompts/simplification.md
+assert_grep "simplification.md should call out net-additive refactor PRs" \
+    "net-additive >100 LOC" prompts/simplification.md
+
 echo "  PASS"
