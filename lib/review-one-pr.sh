@@ -638,7 +638,14 @@ if [ -z "$JUST_FILE" ]; then
     : > "$TEST_LOG"
 else
     log "$PR_ID: running \`just --justfile $JUST_FILE test\` (timeout ${TEST_TIMEOUT})..."
-    timeout "$TEST_TIMEOUT" just --justfile "$JUST_FILE" --working-directory "$REPO_DIR" test > "$TEST_LOG" 2>&1
+    # Scrub LOG_FILE from the test subprocess's env. Otherwise this repo's
+    # own lib/tests/test_pipeline.py — which calls pipeline.run_pipeline()
+    # via the unittest discover — picks up our LOG_FILE through inheritance
+    # and pipeline.log() tees test-fixture chatter ('r#1: launching ...')
+    # into the production orchestrator log alongside the real review trace.
+    # Cosmetic only (review correctness was unaffected) but makes
+    # post-mortem grepping clean.
+    timeout "$TEST_TIMEOUT" env -u LOG_FILE just --justfile "$JUST_FILE" --working-directory "$REPO_DIR" test > "$TEST_LOG" 2>&1
     TEST_EXIT=$?
     IFS=$'\t' read -r TESTS_RAN TEST_SUMMARY < <(classify_just_test_outcome "$TEST_EXIT" "$TEST_LOG" "$TEST_TIMEOUT")
 fi
