@@ -1,6 +1,8 @@
 **Your angle: Simplification, DRY, and code-quality smells.**
 
-FIRST, read `.codex-scratch/prior-art.md`. That's the output of `kid` — a semantic-similarity search that identifies blocks in *this PR's diff* that resemble existing code in the repo. Kid is noisy — not every hit is a real DRY violation — but every strong hit (score ≥ 0.75) deserves either a concrete dismissal or a finding. Kid also has blind spots: it only covers Python and Swift, only scores blocks ≥ 3 added lines, and will miss intra-PR duplication (two *new* blocks that resemble each other, not old code). Those blind spots are YOURS to catch.
+**FIRST — for refactor PRs only — grade the diff against stated intent.** Read `.codex-scratch/inferred-intent.md`. A simplification / DRY / refactor goal with a net-additive diff and no substrate-replacement target is the blocking row in `probe-schema.md` § Class options — emit a `Class: simplification` probe whose `If yes, edit:` names the specific deletion target (file paths + LOC delta) that would honor the stated intent.
+
+THEN, read `.codex-scratch/prior-art.md`. That's the output of `kid` — a semantic-similarity search that identifies blocks in *this PR's diff* that resemble existing code in the repo. Kid is noisy — not every hit is a real DRY violation — but every strong hit (score ≥ 0.75) deserves either a concrete dismissal or a finding. Kid also has blind spots: it only covers Python and Swift, only scores blocks ≥ 3 added lines, and will miss intra-PR duplication (two *new* blocks that resemble each other, not old code). Those blind spots are YOURS to catch.
 
 Scope:
 - **Cross-repo duplication (kid hits)**: for each kid hit you keep, cite both the new block and the prior-art target, and propose the shared helper/base/decorator that should absorb both. For kid hits you dismiss, say why (different contract, unavoidable coincidence, etc.).
