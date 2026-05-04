@@ -58,14 +58,9 @@ fi
 PY_VERSION=$(python3 --version 2>&1 | awk '{print $2}')
 ok "python3: $PY_VERSION"
 
-# gh CLI version check. lib/review-one-pr.sh:296 requests the
-# `closingIssuesReferences` field from `gh pr view --json`, which was
-# added in gh 2.65.0. Older gh versions fail the entire `gh pr view`
-# call (gh treats unknown JSON fields as fatal), making PR_DATA empty
-# and aborting every review tick before pipeline.py even runs. Caught
-# in production once when wakeup drifted to gh 2.45.0; this check
-# catches the same drift at install-time instead of letting silent
-# gh-pr-view failures spam placeholder comments on tracked PRs.
+# gh CLI: review-one-pr.sh requests the `closingIssuesReferences` field
+# (added in gh 2.65); older gh exits on unknown JSON fields and aborts
+# the entire pr-view call.
 if ! command -v gh >/dev/null 2>&1; then
     fail "gh not on PATH — required by review-one-pr.sh / review.sh / etc. (apt install gh)"
 fi

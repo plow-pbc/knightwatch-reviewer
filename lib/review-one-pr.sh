@@ -212,6 +212,20 @@ finalize_run() {
 
 log "Reviewing $PR_ID (force_whole_pr=$FORCE_WHOLE_PR)"
 
+# Resolve PR metadata BEFORE the placeholder post: if `gh pr view` fails
+# (e.g. closingIssuesReferences-bearing gh that the host can't speak),
+# abort cleanly without leaving a "👀 reviewing" placeholder + abort-PATCH
+# pair on every tick. Metadata is consumed downstream for BASE_REF (canonical
+# fetch), PR_AUTHOR (env-mirror trust gate), title/body/linked-issues
+# (AUTHOR_INTENT) — single gh call covers all.
+PR_DATA=$(gh pr view "$PR_NUM" --repo "$REPO" --json baseRefName,title,body,author,closingIssuesReferences 2>/dev/null)
+BASE_REF=$(printf '%s' "$PR_DATA" | jq -r '.baseRefName // empty')
+PR_AUTHOR=$(printf '%s' "$PR_DATA" | jq -r '.author.login // empty')
+if [ -z "$BASE_REF" ] || [ -z "$PR_AUTHOR" ]; then
+    log "$PR_ID: gh pr view returned no baseRefName / author (PR_DATA=${PR_DATA:0:80}) — aborting before placeholder post"
+    exit 1
+fi
+
 # Post a "reviewing" placeholder immediately so the PR author sees the bot
 # picked up the work — the full run (`just test` up to 30m + 6 specialists +
 # critic + aggregator) can take many minutes. We keep the comment ID so we
@@ -283,23 +297,10 @@ if [ ! -d "$CANONICAL_DIR/.git" ]; then
     fi
 fi
 
-# Resolve PR metadata up front. baseRefName must be known BEFORE the
-# canonical fetch — we need it to fetch the PR's actual upstream
-# (was `defaultBranchRef`, which silently mis-fetched repo-default for
-# non-default-base PRs). Combined with the rest of the PR_DATA blob
-# the worker uses later (PR_AUTHOR for the env-mirror trust gate +
-# title/body/linked-issues for AUTHOR_INTENT — commits are sourced
-# from local git later, post-checkout, to stay in sync with REVIEWED_SHA)
-# so a single gh
-# call covers all consumers — fewer API hits, no partial state if a
-# later resolve raced a closed PR.
-PR_DATA=$(gh pr view "$PR_NUM" --repo "$REPO" --json baseRefName,title,body,author,closingIssuesReferences 2>/dev/null)
-BASE_REF=$(printf '%s' "$PR_DATA" | jq -r '.baseRefName // empty')
-PR_AUTHOR=$(printf '%s' "$PR_DATA" | jq -r '.author.login // empty')
-if [ -z "$BASE_REF" ] || [ -z "$PR_AUTHOR" ]; then
-    log "$PR_ID: gh pr view returned no baseRefName / author (PR_DATA=${PR_DATA:0:80}) — aborting"
-    exit 1
-fi
+# PR_DATA + BASE_REF + PR_AUTHOR were resolved before the placeholder
+# post above so a `gh pr view` failure aborts cleanly without leaving
+# a placeholder. They flow through here to the canonical fetch + the
+# downstream env-mirror trust gate / AUTHOR_INTENT staging unchanged.
 
 # Fetch latest refs into the canonical clone. We fetch the PR head via
 # `refs/pull/N/head` rather than by branch name, so fork PRs work
