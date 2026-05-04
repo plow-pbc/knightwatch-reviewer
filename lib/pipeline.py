@@ -44,14 +44,16 @@ def _log_file() -> Path | None:
 
 
 def log(msg: str) -> None:
-    """Append a timestamped line to $LOG_FILE; matches the shell `log` helper."""
-    logf = _log_file()
+    """Tee a timestamped line to stdout AND $LOG_FILE — matches state-io.sh's
+    `echo ... | tee -a "$LOG_FILE"` so the systemd journal (stdout) and a
+    `tail -f` of LOG_FILE both reflect every event."""
     line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n"
+    sys.stdout.write(line)
+    sys.stdout.flush()
+    logf = _log_file()
     if logf:
         with logf.open("a") as f:
             f.write(line)
-    else:
-        sys.stderr.write(line)
 
 
 def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
