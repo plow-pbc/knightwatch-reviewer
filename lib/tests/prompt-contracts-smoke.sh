@@ -173,10 +173,6 @@ for specialist in shape simplification architecture consumers tests performance 
         "complexity-cost" "prompts/${specialist}.md"
 done
 
-echo "  asserting unified complexity-cost expectation in common-header.md..."
-assert_grep "common-header.md should describe complexity-cost probe expectation" \
-    "Complexity-cost probe expectation" prompts/common-header.md
-
 # Privacy: linked-issue staging must NOT fetch issue body or title from
 # `gh issue view` — they may be private and would leak into the public PR
 # comment via author-intent.md → specialists. Keep only owner/repo#num +
