@@ -317,8 +317,8 @@ for unit in "${SYSTEMD_UNITS[@]}"; do
     if [[ "$unit" != *kid-refresh* ]]; then
         case "$path_line" in
             *.npm-global/bin*.local/bin*) ;;
-            *.local/bin*.npm-global/bin*)
-                echo "FAIL: $unit PATH has .local/bin BEFORE .npm-global/bin — PR-controlled just test could plant ~/.local/bin/codex shadowing the real codex install"
+            *.local/bin*)
+                echo "FAIL: $unit PATH has .local/bin without .npm-global/bin preceding it — PR-controlled just test could plant ~/.local/bin/codex shadowing the real codex install"
                 echo "  got: $path_line"
                 exit 1 ;;
         esac
@@ -386,5 +386,9 @@ assert_grep "simplification.md should grade diff against stated intent" \
     "grade the diff against stated intent" prompts/simplification.md
 assert_grep "simplification.md should call out net-additive refactor PRs" \
     "net-additive >100 LOC" prompts/simplification.md
+assert_grep "simplification.md should pin the load-bearing severity for the substrate-replacement probe" \
+    "Severity if yes: blocking" prompts/simplification.md
+assert_grep "simplification.md should target deletion of existing code, not just the new additions" \
+    "existing code" prompts/simplification.md
 
 echo "  PASS"
