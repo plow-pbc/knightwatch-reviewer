@@ -77,14 +77,20 @@ split_critic_to_specialists() {
     ' "$critic_md" || return 1
 
     # Probe-contract gate: critic_md was non-empty (checked at top), but if
-    # pass-1 produced no .angle-buf files AND pass-1.5 produced no
-    # generated-probes content, the critic returned malformed output that
-    # doesn't match any recognized [from: <angle>] Probe block or
-    # ## Generated probes section. Silent pass-through would demote a
-    # critic-resolved blocker to nothing in the rendered review.
+    # pass-1 produced no .angle-buf files AND pass-1.5 produced no real
+    # probe block in specialists/critic.md, the critic returned malformed
+    # output. Silent pass-through would demote a critic-resolved blocker
+    # to nothing in the rendered review.
+    #
+    # Why grep `^### Probe ` instead of `[ -s ... ]`: an empty
+    # `## Generated probes` section (header only, blank line under it)
+    # writes a whitespace-only critic.md via awk's `print > out_file`.
+    # Byte-non-empty would let that pass the gate; meaningful-empty
+    # requires a real probe header. Same shape token used in
+    # probe-schema.md § Generated probes (`### Probe N`).
     local angle_bufs=( "$specialists_dir"/*.angle-buf )
-    if [ ! -e "${angle_bufs[0]}" ] && [ ! -s "$specialists_dir/critic.md" ]; then
-        echo "split_critic_to_specialists: critic output non-empty but produced no [from: <angle>] Probe blocks and no '## Generated probes' section — fail-loud (silent drop would demote critic-resolved blockers)" >&2
+    if [ ! -e "${angle_bufs[0]}" ] && ! grep -qE '^### Probe ' "$specialists_dir/critic.md" 2>/dev/null; then
+        echo "split_critic_to_specialists: critic output non-empty but produced no [from: <angle>] Probe blocks and no '### Probe N' generated-probe blocks — fail-loud (silent drop would demote critic-resolved blockers)" >&2
         return 1
     fi
 

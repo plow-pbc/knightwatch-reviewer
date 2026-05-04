@@ -262,10 +262,11 @@ assert_grep "aggregator.md should fence the union-of-current-and-carried-forward
 # ====================================================================
 # Security fence: scripts launched directly by systemd ExecStart, or
 # exec'd from those scripts, MUST use the absolute `#!/bin/bash`
-# shebang — NOT `#!/usr/bin/env bash`. The reviewer service grants
-# write access to /home/odio/.local and puts it first in PATH; an
-# attacker-placed `~/.local/bin/bash` would be exec'd via env-bash
-# resolution. Sourced helpers (lib/orchestrate.sh, lib/critic-splitter.sh,
+# shebang — NOT `#!/usr/bin/env bash`. Defense-in-depth: even though
+# /home/odio/.local is no longer in any unit's ReadWritePaths (so PR
+# can't plant ~/.local/bin/bash), the absolute shebang blocks the
+# env-bash PATH-attack class regardless of any future ReadWritePaths
+# drift. Sourced helpers (lib/orchestrate.sh, lib/critic-splitter.sh,
 # lib/run-dir.sh, etc.) have no exec-time shebang lookup, so their
 # shebang is documentation only and not fenced here.
 echo "  asserting systemd-chain scripts use absolute /bin/bash shebang..."
@@ -342,10 +343,13 @@ for unit in systemd/pr-reviewer.service systemd/pr-reviewer-learn.service \
 done
 
 # Authenticated tools (codex) must resolve from .npm-global before .local.
-# `just test` runs PR-controlled code with write access to /home/odio/.local;
-# if .local were searched first, a malicious PR could plant ~/.local/bin/codex
-# and shadow the real codex when the worker later calls `codex exec` by bare
-# name. Fence the order for every unit that runs codex.
+# Defense-in-depth: /home/odio/.local is no longer in any unit's
+# ReadWritePaths (the prior fence asserts that), so PR-controlled code
+# can't write to .local/bin in the first place. PATH ordering here is the
+# layered fence — if a future ReadWritePaths widening re-allowed writes
+# to .local, ordering still resolves codex from the read-only npm-global
+# install before any user-writable shadow. Fence the order for every
+# unit that runs codex.
 echo "  asserting .npm-global precedes .local in units that run codex..."
 for unit in systemd/pr-reviewer.service systemd/pr-reviewer-learn.service \
             systemd/pr-reviewer-approve.service \

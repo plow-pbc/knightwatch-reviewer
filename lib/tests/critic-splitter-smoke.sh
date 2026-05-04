@@ -242,4 +242,33 @@ if [ "$RO_RC" -eq 0 ]; then
     exit 1
 fi
 
+# Probe-contract gate (R35 F#1): critic output that is byte-non-empty
+# but contains no real probe blocks must fail loud. Whitespace-only
+# `## Generated probes` writes a non-empty critic.md via awk's
+# `print > out_file`; the prior `[ -s ... ]` gate let that pass and
+# aggregation proceeded with no critic resolution, leaving real probes
+# stuck on Answer: unknown.
+echo "  asserting whitespace-only ## Generated probes returns non-zero..."
+WS_DIR="$TMPDIR/specialists-ws"
+mkdir -p "$WS_DIR"
+# Stage minimal valid specialist files so the gate is the only trigger.
+for angle in security shape; do
+    echo "## $angle stub" > "$WS_DIR/$angle.md"
+done
+WS_CRITIC="$TMPDIR/critic-whitespace.md"
+cat > "$WS_CRITIC" <<'CRITIC_WS'
+## Resolved probes
+
+## Generated probes
+
+
+CRITIC_WS
+split_critic_to_specialists "$WS_CRITIC" "$WS_DIR" 2>"$TMPDIR/stderr-ws.log"
+WS_RC=$?
+if [ "$WS_RC" -eq 0 ]; then
+    echo "FAIL: split returned 0 for critic with whitespace-only ## Generated probes — gate must require actual probe content (R35 F#1)"
+    cat "$TMPDIR/stderr-ws.log"
+    exit 1
+fi
+
 echo "  PASS"
