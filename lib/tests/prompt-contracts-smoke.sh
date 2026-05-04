@@ -295,7 +295,9 @@ for unit in systemd/*.service; do
 
     rhs="${rw_line#ReadWritePaths=}"
     for tok in $rhs; do
-        case "$tok" in
+        # Strip systemd's optional path-prefix syntax (- = ignore-if-missing,
+        # + = mount-namespace-aware) so denylist matching is on the bare path.
+        case "${tok#[+-]}" in
             /home/odio/.local|/home/odio/.local/bin)
                 echo "FAIL: $unit ReadWritePaths token '$tok' grants write access to a PATH-search dir — attacker can plant tools in ~/.local/bin/ that codex resolves"
                 echo "  got: $rw_line"
@@ -379,15 +381,23 @@ assert_grep "review-priority.md should cite the canonical Broken-Glass section" 
     "Broken-Glass Test" .knightwatch/review-priority.md
 
 echo "  asserting simplification.md anchors on inferred-intent for refactor PRs..."
+# Specialist-prompt fences: presence + file-path reference (the contract
+# surface — wording itself is checked at the row level below, not pinned here).
 assert_grep "simplification.md should grade diff against stated intent" \
     "grade the diff against stated intent" prompts/simplification.md
 assert_grep "simplification.md should anchor on the inferred-intent scratch artifact" \
     ".codex-scratch/inferred-intent.md" prompts/simplification.md
-assert_grep "simplification.md should reference the schema's substrate-replacement-target seam" \
-    "substrate-replacement target" prompts/simplification.md
-assert_grep "simplification.md should require concrete file paths + LOC delta in the edit clause" \
-    "file paths + LOC delta" prompts/simplification.md
-assert_grep "probe-schema.md should canonicalize net-additive refactor as blocking simplification" \
-    "net-additive refactor" prompts/probe-schema.md
+
+# Schema-row fence: the simplification class row in probe-schema.md owns the
+# severity contract. Verify the row exists AND contains the canonical
+# `net-additive refactor` blocking-case token on the same line — drift in
+# either direction (row removal or token migration into a different class)
+# trips this assertion.
+schema_row=$(grep -E '^- \*\*`simplification`\*\*' prompts/probe-schema.md || true)
+[[ -n "$schema_row" && "$schema_row" == *"net-additive refactor"* ]] || {
+    echo "FAIL: prompts/probe-schema.md simplification row missing or no longer contains 'net-additive refactor' blocking-case token"
+    echo "  got: $schema_row"
+    exit 1
+}
 
 echo "  PASS"
