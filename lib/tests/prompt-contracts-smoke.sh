@@ -47,7 +47,7 @@ assert_grep "common-header.md should mandate cost-naming" \
 assert_grep "common-header.md should reference review-priority.md scratch input" \
     "review-priority.md" prompts/common-header.md
 
-echo "  asserting Bug 1+2 prompt contracts in common-header.md + critic.md..."
+echo "  asserting Bug 1+2 prompt contracts in common-header.md + critic.md + aggregator.md..."
 assert_grep "common-header.md should fence Q-field shape rule" \
     "Q-field shape" prompts/common-header.md
 assert_grep "common-header.md should anchor Q-shape rule on additive scale (~20 LOC)" \
@@ -56,6 +56,10 @@ assert_grep "common-header.md should fence Broken-Glass-is-pro-simplification ru
     "Broken-Glass is pro-simplification" prompts/common-header.md
 assert_grep "critic.md should fence Removal-class carve-out" \
     "Removal-class carve-out" prompts/critic.md
+assert_grep "critic.md should fence security-controls exception in Removal-class carve-out" \
+    "security controls" prompts/critic.md
+assert_grep "aggregator.md should apply Removal-class carve-out to cross-angle probes" \
+    "Removal-class carve-out" prompts/aggregator.md
 
 echo "  asserting probe-resolver job description in critic.md..."
 assert_grep "critic.md should describe probe resolution job" \
