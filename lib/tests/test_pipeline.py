@@ -13,6 +13,27 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pipeline  # noqa: E402
 
 
+def _write_minimal_prompts(prompts_dir: Path) -> None:
+    """Write the full minimal prompt tree run_pipeline + the CLI smoke need.
+
+    Shared between TestRunPipeline and TestPipelineCLI so adding a required
+    prompt file or marker only needs one update site. TestRunAngle uses a
+    smaller tree (only common-header / one specialist / critic) because it
+    doesn't exercise the full pipeline — kept inline there.
+    """
+    (prompts_dir / "common-header.md").write_text("H {{SPECIALIST_NAME}}\n")
+    for angle in pipeline.ANGLES:
+        (prompts_dir / f"{angle}.md").write_text(f"BODY {angle}\n")
+    (prompts_dir / "intent.md").write_text("intent prompt\n")
+    (prompts_dir / "dead-code-search.md").write_text("dc prompt\n")
+    (prompts_dir / "momentum.md").write_text("momentum prompt\n")
+    (prompts_dir / "critic.md").write_text("critic prompt\n")
+    (prompts_dir / "voice.md").write_text("Voice: {{OPERATOR_NAME}}\n")
+    (prompts_dir / "aggregator.md").write_text(
+        "# Agg\n<!-- INSERT_VOICE_HERE -->\nAgg body\n"
+    )
+
+
 class FakeCompletedProcess:
     """Minimal stand-in for subprocess.CompletedProcess."""
     def __init__(self, returncode):
@@ -95,11 +116,33 @@ class TestRunCodex(unittest.TestCase):
         self.assertEqual(rc, 0)
 
     @patch("pipeline.subprocess.run")
-    def test_critic_per_angle_exempt_from_probe_gate(self, mock_run):
-        """Per-angle critics (critic-security, critic-shape, ...) emit Answer/Evidence prose."""
-        mock_run.side_effect = self._stub_codex(0, "- **Answer:** yes\n- **Evidence:** cited\n")
+    def test_critic_per_angle_with_h2_passes(self, mock_run):
+        """Per-angle critics must emit '## Critic counter-arguments' H2."""
+        mock_run.side_effect = self._stub_codex(
+            0,
+            "## Critic counter-arguments\n\n### Probe 1\n"
+            "- **Answer:** yes\n- **Evidence:** cited\n",
+        )
         rc = pipeline.run_codex("critic-security", str(self.repo_dir), "PROMPT", str(self.agent_dir))
         self.assertEqual(rc, 0)
+
+    @patch("pipeline.subprocess.run")
+    def test_critic_no_probes_sentinel_passes(self, mock_run):
+        """Per-angle critic emits 'No probes.' when its specialist had none."""
+        mock_run.side_effect = self._stub_codex(0, "No probes.\n")
+        rc = pipeline.run_codex("critic-shape", str(self.repo_dir), "PROMPT", str(self.agent_dir))
+        self.assertEqual(rc, 0)
+
+    @patch("pipeline.subprocess.run")
+    def test_critic_malformed_output_returns_4(self, mock_run):
+        """Answer-only output (no '## Critic counter-arguments' H2 and no
+        'No probes.' sentinel) is malformed — return 4 so it doesn't reach
+        aggregation as if it were a valid resolution."""
+        mock_run.side_effect = self._stub_codex(
+            0, "- **Answer:** yes\n- **Evidence:** cited\n"
+        )
+        rc = pipeline.run_codex("critic-security", str(self.repo_dir), "PROMPT", str(self.agent_dir))
+        self.assertEqual(rc, 4)
 
 
 class TestBuildPrompt(unittest.TestCase):
@@ -386,18 +429,9 @@ class TestRunPipeline(unittest.TestCase):
         (self.run_dir / "agents").mkdir(parents=True)
         (self.run_dir / "inputs").mkdir(parents=True)
 
-        # Minimal prompts dir
         self.prompts = Path(self.tmp.name) / "prompts"
         self.prompts.mkdir()
-        (self.prompts / "common-header.md").write_text("H {{SPECIALIST_NAME}}\n")
-        for angle in pipeline.ANGLES:
-            (self.prompts / f"{angle}.md").write_text(f"BODY {angle}\n")
-        (self.prompts / "intent.md").write_text("intent prompt\n")
-        (self.prompts / "dead-code-search.md").write_text("dc prompt\n")
-        (self.prompts / "momentum.md").write_text("momentum prompt\n")
-        (self.prompts / "critic.md").write_text("critic prompt\n")
-        (self.prompts / "voice.md").write_text("Voice: {{OPERATOR_NAME}}\n")
-        (self.prompts / "aggregator.md").write_text("# Agg\n<!-- INSERT_VOICE_HERE -->\nAgg body\n")
+        _write_minimal_prompts(self.prompts)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -411,6 +445,19 @@ class TestRunPipeline(unittest.TestCase):
             # Special-case intent so the validation matcher passes
             if agent_name == "intent" and ec == 0 and out == default[1]:
                 out = "Inferred intent: stub.\n"
+            # Per-angle critics must emit '## Critic counter-arguments' H2
+            # (or 'No probes.' sentinel) per the contract enforced by
+            # run_codex's _CRITIC_BLOCK_RE gate. Default tests that don't
+            # override the critic output need a contract-valid stub.
+            if (
+                agent_name.startswith("critic-")
+                and ec == 0
+                and out == default[1]
+            ):
+                out = (
+                    "## Critic counter-arguments\n\n"
+                    "### Probe 1\n- **Answer:** yes\n- **Evidence:** stub\n"
+                )
             out_path.write_text(out)
             return FakeCompletedProcess(ec)
         return side_effect
@@ -547,17 +594,7 @@ class TestPipelineCLI(unittest.TestCase):
 
         self.prompts = root / "prompts"
         self.prompts.mkdir()
-        (self.prompts / "common-header.md").write_text("H {{SPECIALIST_NAME}}\n")
-        for angle in pipeline.ANGLES:
-            (self.prompts / f"{angle}.md").write_text(f"BODY {angle}\n")
-        (self.prompts / "intent.md").write_text("intent prompt\n")
-        (self.prompts / "dead-code-search.md").write_text("dc prompt\n")
-        (self.prompts / "momentum.md").write_text("momentum prompt\n")
-        (self.prompts / "critic.md").write_text("critic prompt\n")
-        (self.prompts / "voice.md").write_text("Voice: {{OPERATOR_NAME}}\n")
-        (self.prompts / "aggregator.md").write_text(
-            "# Agg\n<!-- INSERT_VOICE_HERE -->\nAgg body\n"
-        )
+        _write_minimal_prompts(self.prompts)
 
         # Fake codex on PATH. Mirrors the real argv shape:
         #   codex exec -C <repo> --dangerously-bypass-approvals-and-sandbox \
@@ -655,6 +692,44 @@ class TestPipelineCLI(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 2)
         self.assertIn("usage:", proc.stderr)
+
+
+class TestRealPromptsCompose(unittest.TestCase):
+    """Compose-time fence against the production prompts/ tree.
+
+    The other tests use synthetic prompt fixtures, which means the
+    INSERT_VOICE_HERE marker, common-header references, and per-angle
+    body files in the real `prompts/` directory aren't exercised by
+    unit tests. One real-prompts compose test catches drift like a
+    renamed marker, a deleted prompt file, or a regression in
+    voice.md's leading-comment shape.
+    """
+
+    def setUp(self):
+        self.real_prompts = Path(pipeline.__file__).resolve().parent.parent / "prompts"
+
+    def test_aggregator_stitch_against_real_prompts(self):
+        out = pipeline.build_prompt(
+            kind="aggregator", agent="aggregator",
+            prompts_dir=str(self.real_prompts),
+            pr_id="owner/repo#42", pr_title="Add X",
+            pr_url="https://example/pull/42", pr_author="alice",
+        )
+        self.assertNotIn("INSERT_VOICE_HERE", out, "voice stitch failed")
+        self.assertIn("owner/repo#42", out, "PR_ID substitution failed")
+
+    def test_specialist_compose_against_real_prompts(self):
+        """common-header.md + each angle's body file must compose without error."""
+        for angle in pipeline.ANGLES:
+            out = pipeline.build_prompt(
+                kind="specialist", agent=angle,
+                prompts_dir=str(self.real_prompts),
+                pr_id="owner/repo#42", pr_title="Add X",
+                pr_url="https://example/pull/42", pr_author="alice",
+            )
+            self.assertNotIn("{{PR_ID}}", out, f"{angle}: PR_ID placeholder leaked")
+            self.assertNotIn("{{SPECIALIST_NAME}}", out, f"{angle}: specialist name leaked")
+            self.assertIn(angle, out, f"{angle}: specialist name missing")
 
 
 if __name__ == "__main__":

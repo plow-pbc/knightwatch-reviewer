@@ -21,17 +21,20 @@ from pathlib import Path
 # Roles that must emit at least one `### Probe N` block or the literal
 # `No probes.` sentinel — matches lib/run-specialist.sh:76-83 contract.
 # Critics, intent, aggregator, momentum, dead-code-search, go-deep-* have
-# different output shapes and are exempt.
-_PROBE_GATED_ROLES = {
-    "security", "data-integrity", "architecture",
-    "simplification", "tests", "shape", "performance", "consumers",
-}
-_PROBE_BLOCK_RE = re.compile(r"^### Probe |^No probes\.$", re.MULTILINE)
-
+# different output shapes and are exempt (per-angle critics get their own
+# gate below — _CRITIC_BLOCK_RE).
 ANGLES = (
     "security", "data-integrity", "architecture", "simplification",
     "tests", "shape", "performance", "consumers",
 )
+_PROBE_GATED_ROLES = frozenset(ANGLES)
+_PROBE_BLOCK_RE = re.compile(r"^### Probe |^No probes\.$", re.MULTILINE)
+
+# Per-angle critic output contract: either a '## Critic counter-arguments'
+# H2 (when the specialist had probes to resolve) or the bare 'No probes.'
+# sentinel (when the specialist's file had zero probes). Anything else is
+# malformed and would let an under-informed resolution reach aggregation.
+_CRITIC_BLOCK_RE = re.compile(r"^## Critic counter-arguments$|^No probes\.$", re.MULTILINE)
 
 
 def _ts() -> str:
@@ -110,6 +113,20 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
                 lf.write(
                     f"[{_ts()}] agent={name} produced output that doesn't follow "
                     "probe contract (no '### Probe' block, no 'No probes.' sentinel)\n"
+                )
+            return 4
+
+    # Per-angle critic output gate: '## Critic counter-arguments' H2 or
+    # bare 'No probes.' sentinel. Without this, malformed answer-only
+    # critic output reaches aggregation as if it were a valid resolution.
+    if name.startswith("critic-"):
+        text = out_file.read_text()
+        if not _CRITIC_BLOCK_RE.search(text):
+            with log_file.open("a") as lf:
+                lf.write(
+                    f"[{_ts()}] agent={name} produced output that doesn't follow "
+                    "critic contract (no '## Critic counter-arguments' H2, "
+                    "no 'No probes.' sentinel)\n"
                 )
             return 4
 

@@ -17,6 +17,7 @@ Then read:
 - `.codex-scratch/loc-trend.md` — per-round LOC trajectory (consulted by the Pre-PMF lens below)
 - `.codex-scratch/decline-history.md` — operator's prior decline replies on this PR (read prose for context; explicit `<!-- decline:class=X -->` markers are counted toward the K-decay rule below)
 - `.codex-scratch/previous-review.md` — present on re-reviews; the prior posted review
+- `.codex-scratch/prior-reviews.md` — present when 1+ prior reviews exist on this PR; concatenated `aggregator/output.md` from every previous run (most recent last). Used by K-decay below to count rounds since the author engaged with each probe.
 
 **Your job — probe resolution.**
 
@@ -43,7 +44,7 @@ For each probe, also set `Evidence:` to a one-line citation. For `Answer: yes`, 
 - *Explicit class markers* (`<!-- decline:class=X -->` count ≥ 3): set `Answer: no`, `Evidence: declined N rounds, class=X`.
 - *Free-form prose*: read for context; if the operator's prose pushes back on a class similar to a probe's Class, cite the prior decline reason in `Evidence:` and set `Answer: unknown` (operator's reasoning is the evidence; this PR's diff may or may not change the calculus).
 
-**Self-referential spec guard.** If a probe cites the PR's own newly-added spec/plan/doc (any doc whose first commit on this branch is in `commits.md`) as the contract being violated, set `Answer: no` with `Evidence: self-referential — spec is mutable in this PR`.
+**Self-referential spec guard.** If a probe cites a PR-added doc under `docs/specs/` or `docs/plans/` (a mutable implementation plan or design note added by this PR — first commit on this branch is in `commits.md`) as the contract being violated, set `Answer: no` with `Evidence: self-referential — implementation spec is mutable in this PR`. **Exception**: this guard does NOT apply to user-facing contracts added by the PR (public API schemas, JSON schemas under `prompts/probe-schema.md`, OpenAPI specs, README contract sections, anything outside `docs/specs/`/`docs/plans/`). A PR that ships a new public contract and immediately violates it is a real regression — keep the probe at its specialist-set severity.
 
 **Output format — exactly this:**
 
