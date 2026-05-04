@@ -21,20 +21,17 @@ from pathlib import Path
 # Roles that must emit at least one `### Probe N` block or the literal
 # `No probes.` sentinel — matches lib/run-specialist.sh:76-83 contract.
 # Critics, intent, aggregator, momentum, dead-code-search, go-deep-* have
-# different output shapes and are exempt (per-angle critics get their own
-# gate below — _CRITIC_BLOCK_RE).
+# different output shapes and are exempt; per-angle critics are validated
+# semantically against the specialist's probe count by run_angle (not via
+# a regex at run_codex), so a critic that emits the right H2 but skips
+# probe resolutions is still caught.
 ANGLES = (
     "security", "data-integrity", "architecture", "simplification",
     "tests", "shape", "performance", "consumers",
 )
 _PROBE_GATED_ROLES = frozenset(ANGLES)
 _PROBE_BLOCK_RE = re.compile(r"^### Probe |^No probes\.$", re.MULTILINE)
-
-# Per-angle critic output contract: either a '## Critic counter-arguments'
-# H2 (when the specialist had probes to resolve) or the bare 'No probes.'
-# sentinel (when the specialist's file had zero probes). Anything else is
-# malformed and would let an under-informed resolution reach aggregation.
-_CRITIC_BLOCK_RE = re.compile(r"^## Critic counter-arguments$|^No probes\.$", re.MULTILINE)
+_PROBE_HEADER_RE = re.compile(r"^### Probe (\d+)\b", re.MULTILINE)
 
 
 def _ts() -> str:
@@ -105,7 +102,9 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
             lf.write(f"[{_ts()}] agent={name} produced empty output\n")
         return 3
 
-    # Probe-contract gate for the 8 angle specialists.
+    # Probe-contract gate for the 8 angle specialists. Per-angle critics are
+    # validated semantically against the specialist's output by run_angle —
+    # not here — so this gate covers specialists only.
     if name in _PROBE_GATED_ROLES:
         text = out_file.read_text()
         if not _PROBE_BLOCK_RE.search(text):
@@ -113,20 +112,6 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
                 lf.write(
                     f"[{_ts()}] agent={name} produced output that doesn't follow "
                     "probe contract (no '### Probe' block, no 'No probes.' sentinel)\n"
-                )
-            return 4
-
-    # Per-angle critic output gate: '## Critic counter-arguments' H2 or
-    # bare 'No probes.' sentinel. Without this, malformed answer-only
-    # critic output reaches aggregation as if it were a valid resolution.
-    if name.startswith("critic-"):
-        text = out_file.read_text()
-        if not _CRITIC_BLOCK_RE.search(text):
-            with log_file.open("a") as lf:
-                lf.write(
-                    f"[{_ts()}] agent={name} produced output that doesn't follow "
-                    "critic contract (no '## Critic counter-arguments' H2, "
-                    "no 'No probes.' sentinel)\n"
                 )
             return 4
 
@@ -231,6 +216,61 @@ def build_prompt(
     raise ValueError(f"build_prompt: unknown kind '{kind}'")
 
 
+def _validate_critic_output(spec_text: str, crit_text: str) -> str | None:
+    """Validate critic output against the specialist's probe count.
+
+    The semantic contract a regex can't enforce: critic must address EVERY
+    specialist probe by ID with Answer + Evidence fields, OR emit the bare
+    'No probes.' sentinel — but only when the specialist had zero probes.
+    Eliminates the bug class where the critic emits a valid-looking H2 but
+    silently skips probes (or vice versa).
+
+    Returns None on success, an error message on failure.
+    """
+    spec_probe_ids = set(_PROBE_HEADER_RE.findall(spec_text))
+
+    if not spec_probe_ids:
+        # Specialist had no probes — critic must emit exactly 'No probes.'
+        if crit_text.strip() != "No probes.":
+            return (
+                "specialist emitted 0 probes; critic must respond with bare "
+                f"'No probes.' sentinel (got first 80 chars: {crit_text[:80]!r})"
+            )
+        return None
+
+    # Specialist had probes — critic must have the layered H2 header
+    if "## Critic counter-arguments" not in crit_text:
+        return (
+            f"specialist emitted {len(spec_probe_ids)} probe(s); critic missing "
+            "'## Critic counter-arguments' H2 header"
+        )
+
+    # Every specialist probe must have a critic resolution block
+    crit_probe_ids = set(_PROBE_HEADER_RE.findall(crit_text))
+    missing = spec_probe_ids - crit_probe_ids
+    if missing:
+        return (
+            f"critic missing resolution for probe(s): "
+            f"{sorted(missing, key=int)}"
+        )
+
+    # Each critic probe block must carry both Answer + Evidence fields
+    for probe_id in sorted(spec_probe_ids, key=int):
+        section_match = re.search(
+            rf"^### Probe {probe_id}\b(.*?)(?=^### Probe |\Z)",
+            crit_text, re.MULTILINE | re.DOTALL,
+        )
+        if not section_match:
+            return f"critic missing block for probe {probe_id}"
+        section = section_match.group(1)
+        if "**Answer:**" not in section:
+            return f"critic probe {probe_id} missing **Answer:** field"
+        if "**Evidence:**" not in section:
+            return f"critic probe {probe_id} missing **Evidence:** field"
+
+    return None
+
+
 def run_angle(
     angle: str,
     repo_dir: str,
@@ -282,6 +322,20 @@ def run_angle(
         log(f"{pr_id}: critic-{angle} exited non-zero (see {crit_agent_dir}/log.txt)")
         return crit_rc
     crit_out = (crit_agent_dir / "output.md").read_text()
+
+    # Semantic contract validation: critic must address every specialist
+    # probe by ID with Answer + Evidence, or emit the bare 'No probes.'
+    # sentinel matching a zero-probe specialist. Catches malformed critic
+    # output before it reaches aggregation. (run_codex's regex gate covers
+    # specialist output only — critic correctness depends on cross-file
+    # state and lives here.)
+    err = _validate_critic_output(spec_out, crit_out)
+    if err:
+        log(
+            f"{pr_id}: critic-{angle} contract violation: {err} "
+            f"(see {crit_agent_dir}/output.md)"
+        )
+        return 4
 
     # 3. Compose layered file. The critic's own '## Critic counter-arguments'
     # H2 owns its section; pipeline only adds the '---' separator so the H2

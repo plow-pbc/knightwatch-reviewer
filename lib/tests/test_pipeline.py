@@ -116,33 +116,105 @@ class TestRunCodex(unittest.TestCase):
         self.assertEqual(rc, 0)
 
     @patch("pipeline.subprocess.run")
-    def test_critic_per_angle_with_h2_passes(self, mock_run):
-        """Per-angle critics must emit '## Critic counter-arguments' H2."""
-        mock_run.side_effect = self._stub_codex(
-            0,
-            "## Critic counter-arguments\n\n### Probe 1\n"
-            "- **Answer:** yes\n- **Evidence:** cited\n",
-        )
+    def test_critic_per_angle_exempt_from_run_codex_gate(self, mock_run):
+        """Per-angle critic correctness is validated at the run_angle boundary
+        (where both specialist + critic outputs are available), not here.
+        run_codex passes any critic output through; the semantic checks in
+        TestValidateCriticOutput cover the contract."""
+        mock_run.side_effect = self._stub_codex(0, "anything goes through run_codex\n")
         rc = pipeline.run_codex("critic-security", str(self.repo_dir), "PROMPT", str(self.agent_dir))
         self.assertEqual(rc, 0)
 
-    @patch("pipeline.subprocess.run")
-    def test_critic_no_probes_sentinel_passes(self, mock_run):
-        """Per-angle critic emits 'No probes.' when its specialist had none."""
-        mock_run.side_effect = self._stub_codex(0, "No probes.\n")
-        rc = pipeline.run_codex("critic-shape", str(self.repo_dir), "PROMPT", str(self.agent_dir))
-        self.assertEqual(rc, 0)
 
-    @patch("pipeline.subprocess.run")
-    def test_critic_malformed_output_returns_4(self, mock_run):
-        """Answer-only output (no '## Critic counter-arguments' H2 and no
-        'No probes.' sentinel) is malformed — return 4 so it doesn't reach
-        aggregation as if it were a valid resolution."""
-        mock_run.side_effect = self._stub_codex(
-            0, "- **Answer:** yes\n- **Evidence:** cited\n"
+class TestValidateCriticOutput(unittest.TestCase):
+    """The semantic contract: critic must address every specialist probe by
+    ID with Answer + Evidence, or emit bare 'No probes.' when the specialist
+    had zero probes. Eliminates the bug class where the critic emits a
+    valid-looking H2 but silently skips probes."""
+
+    def test_zero_specialist_probes_accepts_no_probes_sentinel(self):
+        spec = "Surveyed code paths.\n\nNo probes.\n\n## Surveyed\n- looked at X\n"
+        crit = "No probes.\n"
+        self.assertIsNone(pipeline._validate_critic_output(spec, crit))
+
+    def test_zero_specialist_probes_rejects_h2_output(self):
+        spec = "No probes.\n\n## Surveyed\n- nothing\n"
+        crit = "## Critic counter-arguments\n\n### Probe 1\n- **Answer:** yes\n- **Evidence:** x\n"
+        err = pipeline._validate_critic_output(spec, crit)
+        self.assertIsNotNone(err)
+        self.assertIn("0 probes", err)
+
+    def test_specialist_probes_with_full_resolutions_passes(self):
+        spec = (
+            "### Probe 1\n- **From:** security\n- **Q:** Is X broken?\n\n"
+            "### Probe 2\n- **From:** security\n- **Q:** Is Y broken?\n"
         )
-        rc = pipeline.run_codex("critic-security", str(self.repo_dir), "PROMPT", str(self.agent_dir))
-        self.assertEqual(rc, 4)
+        crit = (
+            "## Critic counter-arguments\n\n"
+            "### Probe 1\n- **Answer:** yes\n- **Evidence:** cited\n\n"
+            "### Probe 2\n- **Answer:** no\n- **Evidence:** zero call-sites\n"
+        )
+        self.assertIsNone(pipeline._validate_critic_output(spec, crit))
+
+    def test_specialist_probes_but_critic_missing_h2_returns_error(self):
+        spec = "### Probe 1\n- **From:** security\n"
+        crit = "### Probe 1\n- **Answer:** yes\n- **Evidence:** x\n"
+        err = pipeline._validate_critic_output(spec, crit)
+        self.assertIsNotNone(err)
+        self.assertIn("Critic counter-arguments", err)
+
+    def test_specialist_probes_but_critic_emits_no_probes_returns_error(self):
+        spec = "### Probe 1\n- **From:** security\n"
+        crit = "No probes.\n"
+        err = pipeline._validate_critic_output(spec, crit)
+        self.assertIsNotNone(err)
+        self.assertIn("Critic counter-arguments", err)
+
+    def test_critic_skips_a_probe_returns_error(self):
+        spec = (
+            "### Probe 1\n- **From:** security\n\n"
+            "### Probe 2\n- **From:** security\n"
+        )
+        crit = (
+            "## Critic counter-arguments\n\n"
+            "### Probe 1\n- **Answer:** yes\n- **Evidence:** x\n"
+            # Probe 2 missing
+        )
+        err = pipeline._validate_critic_output(spec, crit)
+        self.assertIsNotNone(err)
+        self.assertIn("missing resolution", err)
+        self.assertIn("'2'", err)
+
+    def test_critic_missing_answer_field_returns_error(self):
+        spec = "### Probe 1\n- **From:** security\n"
+        crit = (
+            "## Critic counter-arguments\n\n"
+            "### Probe 1\n- **Evidence:** cited but no answer\n"
+        )
+        err = pipeline._validate_critic_output(spec, crit)
+        self.assertIsNotNone(err)
+        self.assertIn("Answer", err)
+
+    def test_critic_missing_evidence_field_returns_error(self):
+        spec = "### Probe 1\n- **From:** security\n"
+        crit = (
+            "## Critic counter-arguments\n\n"
+            "### Probe 1\n- **Answer:** yes\n"
+        )
+        err = pipeline._validate_critic_output(spec, crit)
+        self.assertIsNotNone(err)
+        self.assertIn("Evidence", err)
+
+    def test_critic_with_extra_probe_block_passes(self):
+        """Critic emitting MORE blocks than specialist had is allowed —
+        validator only enforces every-spec-probe-addressed, not bijection."""
+        spec = "### Probe 1\n- **From:** security\n"
+        crit = (
+            "## Critic counter-arguments\n\n"
+            "### Probe 1\n- **Answer:** yes\n- **Evidence:** x\n\n"
+            "### Probe 2\n- **Answer:** no\n- **Evidence:** y\n"
+        )
+        self.assertIsNone(pipeline._validate_critic_output(spec, crit))
 
 
 class TestBuildPrompt(unittest.TestCase):
@@ -393,6 +465,33 @@ class TestRunAngle(unittest.TestCase):
         self.assertFalse(
             (self.repo_dir / ".codex-scratch" / "specialists" / "security.md").exists()
         )
+
+    @patch("pipeline.subprocess.run")
+    def test_critic_contract_violation_returns_4(self, mock_run):
+        """Critic returns 0 from codex but its output skips a specialist
+        probe — the run_angle validator catches it and returns 4 before the
+        layered file is written, so malformed critic output never reaches
+        aggregation."""
+        mock_run.side_effect = self._make_codex_stub({
+            "security": (0, "### Probe 1\nspec body\n\n### Probe 2\nmore\n"),
+            # Critic addresses Probe 1 but skips Probe 2 — semantic violation.
+            "critic-security": (0,
+                "## Critic counter-arguments\n\n### Probe 1\n"
+                "- **Answer:** yes\n- **Evidence:** cited\n"),
+        })
+        rc = pipeline.run_angle(
+            angle="security",
+            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
+            prompts_dir=str(self.prompts),
+            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
+        )
+        self.assertEqual(rc, 4)
+        # Layered file NOT written (validation failed before compose step).
+        # Scratch holds raw spec output (staged pre-critic), not layered.
+        scratch = (
+            self.repo_dir / ".codex-scratch" / "specialists" / "security.md"
+        ).read_text()
+        self.assertNotIn("## Critic counter-arguments", scratch)
 
     @patch("pipeline.subprocess.run")
     def test_specialist_success_critic_failure_returns_critic_rc(self, mock_run):
