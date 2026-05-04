@@ -16,8 +16,10 @@ eggs/
 .eggs/
 lib/*
 !lib/*.sh
+!lib/*.py
 !lib/tests/
 !lib/tests/*.sh
+!lib/tests/*.py
 !lib/checks/
 !lib/checks/*.sh
 lib64/
