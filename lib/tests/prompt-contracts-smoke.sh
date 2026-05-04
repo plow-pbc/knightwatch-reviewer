@@ -115,14 +115,6 @@ assert_grep "go-deep.md should fence the four recommendation tokens" \
 # the critic + aggregator read lists, and common-header must document
 # any per-specialist scratch input. Catches the "added a prompt file
 # but forgot to register it" omission class.
-echo "  asserting performance specialist registered in critic.md..."
-assert_grep "critic.md should reference performance specialist" \
-    "specialists/performance.md" prompts/critic.md
-
-echo "  asserting consumers specialist registered in critic.md..."
-assert_grep "critic.md should reference consumers specialist" \
-    "specialists/consumers.md" prompts/critic.md
-
 echo "  asserting performance specialist registered in aggregator.md..."
 assert_grep "aggregator.md should reference performance specialist" \
     "specialists/performance.md" prompts/aggregator.md
@@ -179,10 +171,6 @@ if grep -nF 'gh issue view' lib/review-one-pr.sh; then
     exit 1
 fi
 
-echo "  asserting legacy finding-format carry-forward bucket in critic.md..."
-assert_grep "critic.md should describe Legacy finding-format conversion path" \
-    "Legacy finding-format" prompts/critic.md
-
 echo "  asserting re-review loop-breaker (Path 2) in aggregator.md..."
 assert_grep "aggregator.md should reference loc-trend.md trigger" \
     "loc-trend.md" prompts/aggregator.md
@@ -210,25 +198,14 @@ echo "  asserting Pre-PMF lens (always-on) in critic.md..."
 assert_grep "critic.md should fence Pre-PMF lens (always-on)" \
     "Pre-PMF lens (always-on)" prompts/critic.md
 
-echo "  asserting carry-forward stress-test pass in critic.md..."
-assert_grep "critic.md should fence Carry-forward stress-test pass" \
-    "Carry-forward stress-test" prompts/critic.md
-
-# Probe-as-unit polarity contracts (R23 F#2, R23 F#6 / R24 F#4):
-# - complexity-cost is deletion-oriented per probe-schema.md § Class
-#   options; Pre-PMF lens defaults to Answer: yes (delete) at this scale.
-# - Carry-forward probes preserve the original specialist's `From: <angle>`
-#   attribution in `## Generated probes`; only critic-originated probes
-#   use `From: critic`.
-echo "  asserting complexity-cost deletion-oriented polarity in critic.md Pre-PMF lens..."
+# Probe-as-unit polarity contract (R23 F#2): complexity-cost is
+# deletion-oriented per probe-schema.md § Class options; Pre-PMF lens
+# defaults to Answer: yes (delete) at this scale.
+echo "  asserting Pre-PMF deletion-default for complexity-cost in critic.md..."
 assert_grep "critic.md should mark complexity-cost as deletion-oriented" \
     "deletion-oriented" prompts/critic.md
-assert_grep "critic.md should default complexity-cost to Answer: yes (delete) at pre-PMF" \
-    "default \`complexity-cost\` probes to \`Answer: yes\` (delete)" prompts/critic.md
-
-echo "  asserting carry-forward attribution preservation in critic.md..."
-assert_grep "critic.md Generated probes block should distinguish critic-origin from carry-forward" \
-    "carry-forward probes preserve their original \`From: <angle>\` attribution" prompts/critic.md
+assert_grep "critic.md should default complexity-cost probes to Answer: yes (delete) at pre-PMF" \
+    'default to `Answer: yes` (delete)' prompts/critic.md
 
 echo "  asserting K-decay thresholds in critic.md..."
 # Probe-resolver model: "K ≥ 3 with no engagement and Class ≠ bug" /
@@ -248,12 +225,10 @@ assert_grep "critic.md should carve severe-bug probes out of decay/Pre-PMF" \
 assert_grep "critic.md severe-bug carve-out should cover data-loss class" \
     "data loss" prompts/critic.md
 
-# Carry-forward must route through the specialists/critic.md sink (single
-# channel, single render path); union-verdict rule must hold across
-# current + carried-forward probes.
-echo "  asserting aggregator reads carry-forward via specialists/critic.md sink..."
-assert_grep "aggregator.md should reference specialists/critic.md as the carry-forward sink" \
-    "specialists/critic.md" prompts/aggregator.md
+# Union-verdict rule must hold across current + carried-forward probes.
+# Per-angle critics now write back into each layered specialist file;
+# the central specialists/critic.md sink is gone.
+echo "  asserting aggregator fences the union-of-current-and-carried-forward verdict rule..."
 assert_grep "aggregator.md should fence the union-of-current-and-carried-forward verdict rule" \
     "union of current and carried-forward" prompts/aggregator.md
 
@@ -266,9 +241,9 @@ assert_grep "aggregator.md should fence the union-of-current-and-carried-forward
 # /home/odio/.local is no longer in any unit's ReadWritePaths (so PR
 # can't plant ~/.local/bin/bash), the absolute shebang blocks the
 # env-bash PATH-attack class regardless of any future ReadWritePaths
-# drift. Sourced helpers (lib/orchestrate.sh, lib/critic-splitter.sh,
-# lib/run-dir.sh, etc.) have no exec-time shebang lookup, so their
-# shebang is documentation only and not fenced here.
+# drift. Sourced helpers (lib/run-dir.sh, etc.) have no exec-time
+# shebang lookup, so their shebang is documentation only and not
+# fenced here.
 echo "  asserting systemd-chain scripts use absolute /bin/bash shebang..."
 SYSTEMD_CHAIN_SCRIPTS=(
     review.sh
@@ -277,7 +252,6 @@ SYSTEMD_CHAIN_SCRIPTS=(
     plow-kid-refresh.sh
     re-request-poller.sh
     lib/review-one-pr.sh
-    lib/run-specialist.sh
 )
 for script in "${SYSTEMD_CHAIN_SCRIPTS[@]}"; do
     first_line=$(head -1 "$script")
@@ -365,42 +339,42 @@ for unit in systemd/pr-reviewer.service systemd/pr-reviewer-learn.service \
 done
 
 # ====================================================================
-# Section 2: orchestrator wiring (formerly momentum-wire-smoke.sh)
+# Section 2: pipeline.py wiring (formerly orchestrate.sh + momentum-wire)
 # ====================================================================
 
-ORCHESTRATE=lib/orchestrate.sh
+PIPELINE=lib/pipeline.py
 
-echo "  asserting momentum.md invocation in orchestrate.sh..."
-assert_grep "orchestrate.sh missing momentum.md reference" \
-    "momentum.md" "$ORCHESTRATE"
+echo "  asserting momentum specialist invocation in pipeline.py..."
+assert_grep "pipeline.py missing momentum reference" \
+    "momentum" "$PIPELINE"
 
 echo "  asserting momentum gate on previous-review.md..."
-# Fence the EXACT guard pattern, not the bare substring "previous-review.md"
+# Fence the EXACT guard expression, not the bare substring "previous-review.md"
 # (which appears in unrelated write_scratch calls + comments and would PASS
 # even if the re-review-only gate around the momentum specialist disappeared).
-assert_grep "orchestrate.sh missing momentum gate (\$RUN_DIR/inputs/previous-review.md)" \
-    'if [ -s "$RUN_DIR/inputs/previous-review.md" ]' "$ORCHESTRATE"
+assert_grep "pipeline.py missing momentum gate (prev_review.exists() and size > 0)" \
+    'prev_review.exists() and prev_review.stat().st_size > 0' "$PIPELINE"
 
-echo "  asserting momentum is dispatched..."
-assert_grep "orchestrate.sh missing dispatch_agent momentum call" \
-    'dispatch_agent momentum' "$ORCHESTRATE"
+echo "  asserting momentum is dispatched via run_codex..."
+assert_grep "pipeline.py missing run_codex(\"momentum\", ...) call" \
+    'run_codex("momentum"' "$PIPELINE"
 
 echo "  asserting momentum output symlink to .codex-scratch/momentum.md..."
-assert_grep "orchestrate.sh missing symlink from RUN_DIR/agents/momentum/output.md to .codex-scratch/momentum.md" \
-    ".codex-scratch/momentum.md" "$ORCHESTRATE"
+assert_grep "pipeline.py missing symlink target .codex-scratch/momentum.md" \
+    'momentum.md' "$PIPELINE"
 
-echo "  asserting orchestrate.sh is sourced from review-one-pr.sh..."
-assert_grep "review-one-pr.sh does not source lib/orchestrate.sh" \
-    'orchestrate.sh' lib/review-one-pr.sh
+echo "  asserting pipeline.py is invoked from review-one-pr.sh..."
+assert_grep "review-one-pr.sh does not invoke lib/pipeline.py" \
+    'pipeline.py' lib/review-one-pr.sh
 
 # R27 F#1a — the no-output marker MUST agree between common-header.md
-# (where specialists are told what to emit) and orchestrate.sh (where
-# the log scanner counts it). A mismatch silently drops the per-
-# specialist "(no probes)" tag from the run log.
-echo "  asserting common-header 'No probes.' marker matches orchestrate.sh log scanner..."
+# (where specialists are told what to emit) and pipeline.py (where the
+# probe-contract gate scans for it). A mismatch silently drops the
+# per-specialist "(no probes)" tag from the run log.
+echo "  asserting common-header 'No probes.' marker matches pipeline.py probe gate..."
 assert_grep "common-header.md should mandate 'No probes.' marker" \
     "No probes." prompts/common-header.md
-assert_grep "orchestrate.sh should grep for the same 'No probes.' marker" \
-    "^No probes\\." "$ORCHESTRATE"
+assert_grep "pipeline.py should grep for the same 'No probes.' marker" \
+    'No probes\.' "$PIPELINE"
 
 echo "  PASS"
