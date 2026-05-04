@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Reviews one PR end-to-end. Invoked by review.sh as:
 #   TRIGGER_COMMENT_FILE=<path> lib/review-one-pr.sh REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR
 # where FORCE_WHOLE_PR is "true" or "false". TRIGGER_COMMENT_FILE is
@@ -7,7 +7,10 @@
 # the worker slurps it and rm -fs the file early.
 
 set -u
-export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
+# Inherit PATH from the systemd unit (system dirs first, writable user
+# dirs trailing). Do NOT prepend $HOME/.local/bin here — it would let
+# an attacker-placed ~/.local/bin/<command> shadow system tools that
+# this worker invokes by name. See review.sh's PATH note.
 
 REPO="$1"
 PR_NUM="$2"
@@ -43,7 +46,10 @@ fi
 # /srosro-review trigger landing in that drift window would be silently
 # filtered out by review.sh's cutoff (created_at > meta.json.started_at).
 REVIEW_START_TS=$(date +%s)
-REVIEW_START_ISO=$(date -u -d "@$REVIEW_START_TS" +"%Y-%m-%dT%H:%M:%SZ")
+# Portable epoch→ISO conversion — `date -u -d "@<epoch>"` is GNU-only and
+# breaks on macOS BSD date. Use python3 (already a project dep) for both
+# platforms. Same fix as lib/tests/divergent-clock-smoke.sh.
+REVIEW_START_ISO=$(python3 -c "import datetime; print(datetime.datetime.fromtimestamp(int('$REVIEW_START_TS'), tz=datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))")
 
 # --- per-PR advisory lock ----------------------------------------------------
 # Prevents two concurrent invocations from stepping on each other for the same
@@ -91,15 +97,15 @@ WORKDIRS_DIR="${WORKDIRS_DIR:-$STATE_DIR/workdirs}"
 . "$_LIB_DIR_EARLY/tracked-repos.sh"
 BOT_USER="${BOT_USER:-srosro}"
 BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
+# BOT_AI_AUTHOR_MARKER is defined in lib/run-dir.sh (single source of truth);
+# this worker sources run-dir.sh below at $_LIB_DIR/run-dir.sh and consumes
+# the var when posting the review body.
 
 # Source helpers. Prefer REVIEWER_LIB_DIR if caller set it (smoke-test
 # isolation); fall back to the worker's own directory.
 _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 . "$_LIB_DIR/state-io.sh"
 . "$_LIB_DIR/auth.sh"
-
-# --- prompt-build helpers (sourced from lib/prompt-build.sh) ---
-. "$_LIB_DIR/prompt-build.sh"
 
 # --- knightwatch-config helper (per-repo .knightwatch/ reads) ---
 . "$_LIB_DIR/knightwatch-config.sh"
@@ -117,13 +123,7 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 . "$_LIB_DIR/path-scrub.sh"
 
 # --- agent-failure + run-dir helpers ---
-. "$_LIB_DIR/agent-fallback.sh"
 . "$_LIB_DIR/run-dir.sh"
-
-# --- LLM specialist pipeline (intent → dead-code → 8 angles → momentum →
-# critic → aggregator). Sourced after agent-fallback so critic_fallback is
-# in scope for the function body. ---
-. "$_LIB_DIR/orchestrate.sh"
 
 # --- loc-trend computation (compute_loc_trend / _loc_trend_display) ---
 # Sources run-dir.sh internally for is_run_author_visible /
@@ -136,17 +136,6 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # findings the operator has pushed back on ≥3 times. Sources gh-comments.sh
 # internally; multi-source is idempotent.
 . "$_LIB_DIR/decline-history.sh"
-
-# --- critic-splitter (split_critic_to_specialists) — co-locates per-angle
-# critic counter-arguments in specialists/<angle>.md so the aggregator
-# (and Phase 2's go-deep tech-leads) read a layered file per specialist.
-. "$_LIB_DIR/critic-splitter.sh"
-
-# --- go-deep ranker (rank_hot_angles) — selects which specialist files
-# become "hot" (≥20 LOC remedy → go-deep investigation). Sourced as a
-# helper so the smoke exercises the selection logic with synthetic
-# specialist files, not just token-greps the regex.
-. "$_LIB_DIR/go-deep-rank.sh"
 
 # --- per-run dir -------------------------------------------------------------
 # Every worker invocation gets its own runs/<RUN_ID>/ dir holding the run log,
@@ -241,6 +230,7 @@ log "Reviewing $PR_ID (force_whole_pr=$FORCE_WHOLE_PR)"
 EYES_COMMENT_ID=$(gh api "repos/$REPO/issues/$PR_NUM/comments" \
     --method POST \
     -f body="$BOT_AUTO_POST_MARKER
+$BOT_AI_AUTHOR_MARKER
 👀 reviewing — [sam's ai review bot](https://github.com/srosro/knightwatch-reviewer)" \
     --jq '.id' 2>/dev/null) || EYES_COMMENT_ID=""
 
@@ -251,6 +241,7 @@ cleanup_eyes() {
     fi
     gh api "repos/$REPO/issues/comments/$EYES_COMMENT_ID" --method PATCH \
         -f body="$BOT_AUTO_POST_MARKER
+$BOT_AI_AUTHOR_MARKER
 review aborted before completion — see knightwatch-reviewer logs; will retry on the next tick if the PR head hasn't moved." \
         >/dev/null 2>&1 || true
 }
@@ -939,6 +930,21 @@ write_scratch "$REPO_DIR" "prior-art.md"       "${PRIOR_ART:-}"
 write_scratch "$REPO_DIR" "dead-code-static.md" "${DEAD_CODE_STATIC:-}"
 write_scratch "$REPO_DIR" "search-roots.md"    "${SEARCH_ROOTS:-}"
 write_scratch "$REPO_DIR" "standards.md"       "$STANDARDS"
+
+# ---- probe schema ----
+# probe-schema.md ships in prompts/ and is symlinked into ~/.pr-reviewer/prompts
+# at install time. Specialists + per-angle critics + aggregator (Phases 2+)
+# reference .codex-scratch/probe-schema.md as the canonical contract. Missing
+# on disk is fail-fast — same shape as the prompt loader in lib/pipeline.py;
+# a missing prompt means an incomplete deploy, not "operator opted out."
+PROBE_SCHEMA_PATH="${PROMPTS_DIR:-$HOME/.pr-reviewer/prompts}/probe-schema.md"
+if [ ! -f "$PROBE_SCHEMA_PATH" ]; then
+    log "$PR_ID: probe-schema.md missing at $PROBE_SCHEMA_PATH — incomplete install — aborting"
+    rm -rf "$REPO_DIR"
+    exit 1
+fi
+write_scratch "$REPO_DIR" "probe-schema.md" "$(cat "$PROBE_SCHEMA_PATH")"
+
 [ -n "${FULL_PR_DIFF:-}" ] && \
     write_scratch "$REPO_DIR" "full-diff.patch" "$FULL_PR_DIFF"
 [ -n "$TRIGGER_COMMENT_BODY" ] && \
@@ -1041,7 +1047,7 @@ write_scratch "$REPO_DIR" "loc-trend.md" "$LOC_TREND"
 if [ "$FORCE_WHOLE_PR" = "true" ]; then
     log "$PR_ID: FORCE_WHOLE_PR=true — staging decline-history.md sentinel (whole-PR re-review evaluates from scratch)"
     # Sentinel keeps the prompt-input contract intact for critic.md /
-    # go-deep.md / aggregator.md, which all list .codex-scratch/decline-history.md
+    # aggregator.md, which list .codex-scratch/decline-history.md
     # as a required input. Empty/absent file would tempt those agents to
     # explore the filesystem; the sentinel makes the "from scratch"
     # decision explicit.
@@ -1083,17 +1089,22 @@ ISSUE_COUNT=0
 while IFS=$'\t' read -r IS_OWNER IS_NAME IS_NUM; do
     [ -z "$IS_NUM" ] && continue
     [ "$ISSUE_COUNT" -ge 5 ] && break
-    ISSUE_DATA=$(gh issue view "$IS_NUM" --repo "$IS_OWNER/$IS_NAME" --json title,body 2>/dev/null)
-    IS_TITLE=$(printf '%s' "$ISSUE_DATA" | jq -r '.title // empty')
-    IS_BODY=$(printf '%s' "$ISSUE_DATA" | jq -r '.body // empty')
-    if [ -n "$IS_TITLE" ]; then
-        [ "$ISSUE_COUNT" -eq 0 ] && AUTHOR_INTENT+=$'\n## Linked issues (this PR closes)\n\n'
-        AUTHOR_INTENT+="### $IS_OWNER/$IS_NAME#$IS_NUM: $IS_TITLE
-$IS_BODY
-
+    # Data-minimization: stage ONLY title + URL, never body. Linked-issue
+    # bodies may be private to consumers other than the public PR (the
+    # bot's GitHub identity has read access the PR author may not). A
+    # specialist or critic that quoted/paraphrased a private body would
+    # leak it into the public PR comment via the aggregator render path.
+    # Title + repo+number is metadata the PR author can already see; the
+    # body is fetched and discarded. Replaces R8/R9's instruction-based
+    # privacy guard with a hard data-minimization fix at the source.
+    # R10 F#3: drop title too — titles can leak from private repos /
+    # private issues whose titles the public PR audience cannot read.
+    # Stage only owner/repo#num + URL, which is metadata GitHub already
+    # exposes via `closingIssuesReferences` to anyone who can see the PR.
+    [ "$ISSUE_COUNT" -eq 0 ] && AUTHOR_INTENT+=$'\n## Linked issues (this PR closes)\n\n'
+    AUTHOR_INTENT+="- $IS_OWNER/$IS_NAME#$IS_NUM (https://github.com/$IS_OWNER/$IS_NAME/issues/$IS_NUM)
 "
-        ISSUE_COUNT=$((ISSUE_COUNT+1))
-    fi
+    ISSUE_COUNT=$((ISSUE_COUNT+1))
 done < <(printf '%s' "$PR_DATA" | jq -r '.closingIssuesReferences[]? | [.owner.login, .repo.name, (.number|tostring)] | @tsv' 2>/dev/null)
 write_scratch "$REPO_DIR" "author-intent.md" "$AUTHOR_INTENT"
 
@@ -1113,18 +1124,29 @@ if [ -z "$COMMITS" ]; then
 fi
 write_scratch "$REPO_DIR" "commits.md" "$COMMITS"
 
-# Run the LLM review pipeline (intent → dead-code → 8 angles → momentum →
-# critic → critic-splitter → go-deep tech-leads (≤3) → aggregator). Sets
-# AGG_EXIT and AGG_OUT in this shell; aborts on any fail-loud error. Body
-# lives in lib/orchestrate.sh.
-run_specialist_pipeline
+# Run the LLM review pipeline (intent → dead-code → 8 angles parallel →
+# momentum (re-reviews only) → aggregator). Implementation in lib/pipeline.py.
+# Per-angle critics run inline within each angle pipeline; no central
+# critic, no splitter. Aggregator output written to a deterministic path
+# we read after.
+PR_ID="$PR_ID" \
+PR_TITLE="$PR_TITLE" \
+PR_URL="$PR_URL" \
+PR_AUTHOR="$PR_AUTHOR" \
+PROMPTS_DIR="${PROMPTS_DIR:-$HOME/.pr-reviewer/prompts}" \
+LOG_FILE="$LOG_FILE" \
+OPERATOR_NAME="${OPERATOR_NAME:-Sam}" \
+    python3 "$_LIB_DIR/pipeline.py" "$REPO_DIR" "$RUN_DIR"
+PIPELINE_EXIT=$?
+AGG_OUT="$RUN_DIR/agents/aggregator/output.md"
 
-# Aggregator output is what gets posted to GitHub — abort on any codex error
-# even if a partial output happens to be non-empty, so a truncated review
-# never ships.
-if [ "$AGG_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
-    log "$PR_ID: aggregator failed (exit=$AGG_EXIT, output empty=$([ ! -s "$AGG_OUT" ] && echo true || echo false)) — aborting"
-    rm -rf "$REPO_DIR"
+# Aggregator output is what gets posted to GitHub — abort on any pipeline
+# error even if a partial output happens to be non-empty, so a truncated
+# review never ships. pipeline.py rm -rf's REPO_DIR on its own abort path;
+# the safety-net check below handles any race or unexpected exit.
+if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
+    log "$PR_ID: pipeline failed (exit=$PIPELINE_EXIT, agg empty=$([ ! -s "$AGG_OUT" ] && echo true || echo false)) — aborting"
+    [ -d "$REPO_DIR" ] && rm -rf "$REPO_DIR"
     exit 1
 fi
 REVIEW=$(cat "$AGG_OUT")
@@ -1143,6 +1165,7 @@ fi
 # Leading HTML comment is the orchestrator's discriminator for "this is
 # one of our auto-posts" — see the corresponding jq filter in review.sh.
 COMMENT_BODY="$BOT_AUTO_POST_MARKER
+$BOT_AI_AUTHOR_MARKER
 $COMMENT_BODY
 
 ---

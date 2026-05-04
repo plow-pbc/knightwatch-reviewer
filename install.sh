@@ -49,6 +49,15 @@ if [ "${EUID:-$(id -u)}" -eq 0 ]; then
     fail "run install.sh as the bot user, NOT root. Resolved INSTALL_DIR=$INSTALL_DIR — systemd units are pinned to /home/odio/.pr-reviewer/, so a sudo invocation would write to the wrong tree. The script's internal sudo cp / sudo systemctl handle the privileged bits."
 fi
 
+# pipeline.py runs under python3; fail loud here if unavailable rather
+# than at the first review tick. No pip dependencies — stdlib only —
+# so a `python3 --version` check is sufficient.
+if ! command -v python3 >/dev/null 2>&1; then
+    fail "python3 not on PATH — required by lib/pipeline.py (apt install python3 or pyenv setup)"
+fi
+PY_VERSION=$(python3 --version 2>&1 | awk '{print $2}')
+ok "python3: $PY_VERSION"
+
 # --- 1. Symlinks into $INSTALL_DIR ------------------------------------------
 # Discover the script list from the systemd unit files' ExecStart=
 # directives — the units are the source of truth for what runs in

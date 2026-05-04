@@ -33,6 +33,9 @@ mkdir -p "$STATE_DIR"
 
 export HOME="$TMPDIR/home"
 mkdir -p "$HOME/.local/bin"
+# Production no longer prepends $HOME/.local/bin to PATH (writable-PATH
+# attack vector). Smoke prepends here so its stubs (kid, git) resolve.
+export PATH="$HOME/.local/bin:$PATH"
 
 export STUB_KID_LOG="$STATE_DIR/kid-calls.log"
 export STUB_GIT_LOG="$STATE_DIR/git-calls.log"

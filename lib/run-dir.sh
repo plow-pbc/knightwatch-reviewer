@@ -5,6 +5,14 @@
 #
 # Caller must already have LOG_FILE + PR_ID set up so log() works.
 
+# Single source of truth for the ai-author HTML marker. Both
+# review-one-pr.sh (which posts the body) and prepend_review_header
+# (which allowlists the marker as a leading line) consume this var.
+# Pre-PMF stance: the marker tells reading bots to weight load-bearing
+# probes and prefer LOC-cuts over additions. Override via env var if a
+# downstream consumer needs a different posture.
+BOT_AI_AUTHOR_MARKER="${BOT_AI_AUTHOR_MARKER:-<!-- knightwatch-reviewer:ai-author note=load-bearing-probes operating-point=pre-pmf prefer=cut-loc-over-add -->}"
+
 # allocate_run_dir RUN_DIR
 #
 # Creates RUN_DIR (and agents/, inputs/) as a unit, or fails loud:
@@ -308,10 +316,26 @@ prepend_review_header() {
         fi
     done
     joined="$joined."
-    local first_line rest
-    first_line=$(printf '%s' "$comment_body" | head -1)
-    rest=$(printf '%s' "$comment_body" | tail -n +2)
-    printf '%s\n> %s\n\n%s' "$first_line" "$joined" "$rest"
+    # Preserve ONLY the two exact-match knightwatch-reviewer markers
+    # (auto-post + ai-author, both invisible in rendered Markdown).
+    # Exact match — not prefix — because R8 caught that prefix matching
+    # on the ai-author line lets an attacker craft a different content
+    # suffix that gets preserved as if trusted. The auto-post string is
+    # also pinned in lib/decline-history.sh under the same env-var
+    # default; both consume BOT_AI_AUTHOR_MARKER (defined at top of this
+    # file) for the ai-author line so there's a single source of truth.
+    local AUTO_POST_LINE="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
+    local n_leading
+    n_leading=$(printf '%s' "$comment_body" | awk -v auto="$AUTO_POST_LINE" -v ai="$BOT_AI_AUTHOR_MARKER" '
+        $0 == auto { n++; next }
+        $0 == ai   { n++; next }
+        { exit }
+        END { print n+0 }')
+    [ "$n_leading" -lt 1 ] && n_leading=1
+    local leading rest
+    leading=$(printf '%s' "$comment_body" | sed -n "1,${n_leading}p")
+    rest=$(printf '%s' "$comment_body" | sed -n "$((n_leading + 1)),\$p")
+    printf '%s\n> %s\n\n%s' "$leading" "$joined" "$rest"
 }
 
 # is_run_author_visible <run_dir>

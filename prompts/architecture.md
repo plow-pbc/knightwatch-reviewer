@@ -16,4 +16,8 @@ Scope:
 
 Out of scope: specific security bugs, concurrency bugs, test coverage. Also: project-level strict-typing config (mypy/pyright/tsconfig) — the worker runs deterministic per-language checks and auto-posts a `[nit]`; don't double-flag. Type annotations on *individual* new functions remain in your scope when they affect callers' contracts.
 
+**Emission format:**
+
+Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. **Classes emitted: `shape`, `complexity-cost`.** Severity rubric + edit/cost convention live in probe-schema.md § Class options. Domain examples for `complexity-cost` in this angle: premature abstractions, frameworks where a function would do, multi-tenant scaffolding when only one tenant exists, defensive layers added without observed need.
+
 Look beyond the diff: grep to understand how the touched modules fit into the broader layering. Read the top-level module structure before making layering claims.

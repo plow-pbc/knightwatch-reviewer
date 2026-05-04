@@ -9,7 +9,9 @@ User=odio
 Group=odio
 WorkingDirectory=/home/odio/.pr-reviewer
 Environment=HOME=/home/odio
-Environment=PATH=/home/odio/.local/bin:/home/odio/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# PATH: system dirs FIRST (see pr-reviewer.service for rationale —
+# defense-in-depth on top of the ~/.local-not-in-ReadWritePaths fix).
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/odio/.npm-global/bin:/home/odio/.local/bin
 ExecStart=/home/odio/.pr-reviewer/re-request-poller.sh
 TimeoutStartSec=5min
 StandardOutput=journal
@@ -22,7 +24,8 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 ProtectHome=read-only
-ReadWritePaths=/home/odio/.pr-reviewer /home/odio/.cache /home/odio/.local /home/odio/.config
+# See pr-reviewer.service for the rationale on excluding /home/odio/.local.
+ReadWritePaths=/home/odio/.pr-reviewer /home/odio/.cache /home/odio/.config
 
 [Install]
 WantedBy=multi-user.target

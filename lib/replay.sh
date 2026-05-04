@@ -29,7 +29,7 @@ while [ $# -gt 0 ]; do
         --output-dir) OUT="$2"; shift 2 ;;
         --prompts)
             # Pass through as the PROMPTS_DIR env var consumed by
-            # lib/prompt-build.sh + lib/orchestrate.sh::dispatch_agent.
+            # lib/pipeline.py (intent + specialists + critic + aggregator).
             # Lets the operator A/B-test prompt variants against the same
             # historical PR by pointing replay at an alternate prompts/.
             export PROMPTS_DIR="$2"
@@ -62,26 +62,24 @@ jq -n \
   '{repo: $repo, pr: $pr, sha: $sha, prompts_dir: $prompts_dir, replayed_at: (now | todate)}' \
   > "$OUT/manifest.json"
 
-# Stage the same .codex-scratch inputs run_specialist_pipeline reads,
-# then invoke run_specialist_pipeline against a fresh checkout at $SHA. The post-
+# Stage the same .codex-scratch inputs pipeline.py reads,
+# then invoke pipeline.py against a fresh checkout at $SHA. The post-
 # pipeline gh-posting step is deliberately skipped — we only want the rendered review.
 LIB_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$LIB_DIR/state-io.sh"
-. "$LIB_DIR/prompt-build.sh"
-. "$LIB_DIR/agent-fallback.sh"
 . "$LIB_DIR/run-dir.sh"
-. "$LIB_DIR/critic-splitter.sh"
-. "$LIB_DIR/go-deep-rank.sh"
-. "$LIB_DIR/orchestrate.sh"
 . "$LIB_DIR/scratch.sh"
+# Pipeline (intent → dead-code → 8 angles parallel → momentum → aggregator)
+# is implemented in lib/pipeline.py. Replay invokes it as a subprocess
+# below after staging scratch inputs.
 
 WORK="$(mktemp -d)"
 # On exit, preserve per-agent log.txt files for post-mortem before
-# wiping $WORK. `run_specialist_pipeline` calls `exit 1` directly on
-# codex failure (auth, usage limit, network), which means replay.sh's
-# control flow can't capture stderr from the failing agent inline.
-# The trap captures log tails into $OUT/agents-on-exit/ regardless of
-# how the script exited.
+# wiping $WORK. `python3 lib/pipeline.py` exits non-zero on codex
+# failure (auth, usage limit, network), and replay.sh's control flow
+# can't capture stderr from the failing agent inline. The trap captures
+# log tails into $OUT/agents-on-exit/ regardless of how the script
+# exited.
 cleanup_replay() {
     local rc=$?
     if [ -d "$WORK/run/agents" ]; then
@@ -134,15 +132,24 @@ for f in review-priority.md decline-history.md loc-trend.md \
          product-context.md test-results.md; do
     write_scratch "$REPO_DIR" "$f" "(replay: not staged — upstream pipeline stage skipped)"
 done
-# standards.md gets real content from this repo's prompts/ so the
-# specialists have something to grade against.
-STANDARDS_CONTENT=""
-if [ -f "$LIB_DIR/../prompts/standards.md" ]; then
-    STANDARDS_CONTENT="$(cat "$LIB_DIR/../prompts/standards.md")"
-elif [ -f "$LIB_DIR/../prompts/probe-schema.md" ]; then
-    STANDARDS_CONTENT="$(cat "$LIB_DIR/../prompts/probe-schema.md")"
+# standards.md content lives in operator-private ~/.claude/CODING_STANDARDS.md
+# in production (review-one-pr.sh:677). Replay can't rely on that — try the
+# operator's home tree if available, otherwise mark as unstaged like the
+# other deferred inputs above. The PROBE-SCHEMA fallback was incorrect
+# (probe-schema is shape, not standards content).
+STANDARDS_CONTENT="(replay: not staged — set ~/.claude/CODING_STANDARDS.md to ground specialists)"
+if [ -f "$HOME/.claude/CODING_STANDARDS.md" ]; then
+    STANDARDS_CONTENT="$(cat "$HOME/.claude/CODING_STANDARDS.md")"
 fi
 write_scratch "$REPO_DIR" "standards.md" "$STANDARDS_CONTENT"
+
+# probe-schema.md is the canonical Class-options + render contract; specialists
+# + critic + aggregator all reference .codex-scratch/probe-schema.md by name.
+# Stage from prompts/ so replay sees the same shape production does.
+PROBE_SCHEMA_SRC="${PROMPTS_DIR:-$LIB_DIR/../prompts}/probe-schema.md"
+if [ -f "$PROBE_SCHEMA_SRC" ]; then
+    write_scratch "$REPO_DIR" "probe-schema.md" "$(cat "$PROBE_SCHEMA_SRC")"
+fi
 
 PR_ID="$REPO#$PR"
 PR_TITLE="$(gh pr view "$PR" --repo "$REPO" --json title --jq .title)"
@@ -151,16 +158,21 @@ PR_AUTHOR="$(gh pr view "$PR" --repo "$REPO" --json author --jq .author.login)"
 _LIB_DIR="$LIB_DIR"
 LOG_FILE="$OUT/run.log"
 
-# `run_specialist_pipeline` calls `exit 1` from inside the function on
-# codex failure (intent failure, specialist failure, etc.), which under
-# replay.sh's `set -euo pipefail` would have aborted BEFORE the
-# function's own "intent inference failed" log line ran — silent abort,
-# operator saw only "inferring developer intent..." then nothing. Drop
-# set -e for the pipeline call so the function's own diagnostics surface
-# in $OUT/run.log; re-enable set -e after. Per-agent log.txt files are
-# captured by the EXIT trap regardless of how the script exits.
+# `python3 lib/pipeline.py` returns a non-zero exit on any-stage failure
+# (intent fail, specialist fail, dead-code fail, critic fail, aggregator
+# fail). Under replay.sh's `set -euo pipefail` a non-zero exit would
+# abort the script before we could capture PIPELINE_RC; drop set -e for
+# the call, then re-enable. Per-agent log.txt files are captured by the
+# EXIT trap regardless of how the script exits.
 set +e
-run_specialist_pipeline
+PR_ID="$PR_ID" \
+PR_TITLE="$PR_TITLE" \
+PR_URL="$PR_URL" \
+PR_AUTHOR="$PR_AUTHOR" \
+PROMPTS_DIR="${PROMPTS_DIR:-$LIB_DIR/../prompts}" \
+LOG_FILE="$LOG_FILE" \
+OPERATOR_NAME="${OPERATOR_NAME:-Sam}" \
+    python3 "$LIB_DIR/pipeline.py" "$REPO_DIR" "$RUN_DIR"
 PIPELINE_RC=$?
 set -e
 if [ "$PIPELINE_RC" -ne 0 ]; then

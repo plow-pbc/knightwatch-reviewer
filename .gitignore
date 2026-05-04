@@ -16,8 +16,10 @@ eggs/
 .eggs/
 lib/*
 !lib/*.sh
+!lib/*.py
 !lib/tests/
 !lib/tests/*.sh
+!lib/tests/*.py
 !lib/checks/
 !lib/checks/*.sh
 lib64/
@@ -228,3 +230,21 @@ learn.log*
 plow-kid-refresh.log
 kid-last-failure
 .keepitdry/
+
+# Replay-tool artifacts: keep aggregator/specialist/critic outputs,
+# drop agent prompt.txt + log.txt (regenerable + huge) and agents-on-exit/
+# (debug-only, mirror of agents/). Pattern matches both the comparison/
+# subtree and the default replays/<repo>-<pr>-<sha>-<slug>/ output dir
+# from lib/replay.sh — without this breadth, private standards staged via
+# write_scratch land as commit-ready untracked files.
+replays/**/agents/*/prompt.txt
+replays/**/agents/*/log.txt
+replays/**/agents-on-exit/
+replays/**/run-dir/agents/*/prompt.txt
+replays/**/run-dir/agents/*/log.txt
+
+# Untracked workspace artifacts (created during prompt-quality investigation,
+# kept on disk for reference but not committed).
+docs/comparison-2026-05-02.md
+docs/plans/2026-05-02-three-way-review-comparison.md
+prompts.new-design/

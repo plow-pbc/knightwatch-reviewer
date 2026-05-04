@@ -5,14 +5,16 @@
 #
 # Shebang note: this entrypoint runs only on the production Linux host
 # under pr-reviewer.service. It deliberately uses /bin/bash (NOT
-# /usr/bin/env bash) because the unit puts $HOME/.local/bin first in
-# PATH and grants write access to $HOME/.local — a writable-interpreter
-# resolution path. Hard-coding /bin/bash blocks the writable-PATH
-# attack regardless of $PATH order. The macOS env-bash sweep (e2f7aba)
-# only matters for libraries exercised by smokes; this entrypoint
-# never runs on macOS.
-
-export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
+# /usr/bin/env bash) because $HOME/.local is writable per
+# ReadWritePaths — a writable-interpreter resolution path. Hard-coding
+# /bin/bash blocks the writable-PATH attack regardless of $PATH order.
+# The systemd unit's Environment=PATH puts system dirs FIRST and trails
+# the writable user dirs, so user-installed tools (codex via npm-global,
+# pipx packages in ~/.local/bin) remain reachable without prepending the
+# writable dirs in front of system tools. Do NOT re-add an
+# `export PATH=$HOME/.local/bin:...` here — that would let an attacker
+# place ~/.local/bin/timeout (or gh, git, awk, …) and have it shadow
+# the system tool when this script invokes the command by name.
 
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/orchestrator.log}"

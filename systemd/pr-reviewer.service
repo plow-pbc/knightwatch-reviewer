@@ -17,7 +17,13 @@ User=odio
 Group=odio
 WorkingDirectory=/home/odio/.pr-reviewer
 Environment=HOME=/home/odio
-Environment=PATH=/home/odio/.local/bin:/home/odio/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# PATH: system dirs FIRST so `timeout`, `bash`, `gh`, `git`, etc.
+# resolve to /usr/bin paths regardless of any user-dir ordering.
+# /home/odio/.local is NOT in ReadWritePaths (per the rationale on the
+# ReadWritePaths line below), so ~/.local/bin tool replacements are
+# blocked at the sandbox level too. User-installed tools (codex via
+# npm-global, pipx, etc.) remain reachable via the trailing user dirs.
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/odio/.npm-global/bin:/home/odio/.local/bin
 ExecStart=/home/odio/.pr-reviewer/review.sh
 TimeoutStartSec=90min
 StandardOutput=journal
@@ -43,7 +49,17 @@ ProtectHome=read-only
 # (@KID_RW_PATHS@): review specialists run with Codex's inner sandbox
 # disabled and don't need writes outside the index dir. Do not edit
 # @KID_INDEX_RW_PATHS@ by hand here.
-ReadWritePaths=/home/odio/.pr-reviewer /home/odio/.codex /home/odio/.cache /home/odio/.local /home/odio/.config /home/odio/.docker @KID_INDEX_RW_PATHS@
+# /home/odio/.local is intentionally NOT writable: it contains
+# ~/.local/bin/<tool> symlinks (kid → uv-managed binary) and
+# ~/.local/share/uv/tools/<tool>/bin/<tool> binaries that are PATH-search
+# targets. PR-controlled `just test` runs in this service; if ~/.local
+# were writable, an attacker could plant ~/.local/bin/codex or
+# ~/.local/bin/kid and have the next reviewer/refresh tick exec it.
+# Codex state lives in ~/.codex (separately writable above); claude
+# state writes are from interactive operator sessions, not from this
+# service. Add a narrower subdir if a future reviewer dependency
+# legitimately needs to write under ~/.local.
+ReadWritePaths=/home/odio/.pr-reviewer /home/odio/.codex /home/odio/.cache /home/odio/.config /home/odio/.docker @KID_INDEX_RW_PATHS@
 
 [Install]
 WantedBy=multi-user.target

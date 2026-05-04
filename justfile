@@ -30,6 +30,10 @@ test:
     done < <(git ls-files '*.sh')
 
     echo ""
+    echo "=== python pipeline tests ==="
+    python3 -m unittest discover -s lib/tests -p 'test_*.py' -v
+
+    echo ""
     echo "=== repos.conf smoke test ==="
     bash lib/tests/repos-conf-smoke.sh
 
@@ -70,10 +74,6 @@ test:
     bash lib/tests/path-scrub-smoke.sh
 
     echo ""
-    echo "=== prompt-build smoke test ==="
-    bash lib/tests/build-specialist-prompt-smoke.sh
-
-    echo ""
     echo "=== prompt-contracts smoke (anti-bloat + momentum-wire, folded) ==="
     bash lib/tests/prompt-contracts-smoke.sh
 
@@ -84,30 +84,6 @@ test:
     echo ""
     echo "=== decline-history smoke ==="
     bash lib/tests/decline-history-smoke.sh
-
-    echo ""
-    echo "=== critic-splitter smoke ==="
-    bash lib/tests/critic-splitter-smoke.sh
-
-    echo ""
-    echo "=== go-deep-fanout smoke ==="
-    bash lib/tests/go-deep-fanout-smoke.sh
-
-    echo ""
-    echo "=== go-deep-rank smoke ==="
-    bash lib/tests/go-deep-rank-smoke.sh
-
-    echo ""
-    echo "=== run-specialist smoke test ==="
-    bash lib/tests/run-specialist-smoke.sh
-
-    echo ""
-    echo "=== dispatch-agent smoke test ==="
-    bash lib/tests/dispatch-agent-smoke.sh
-
-    echo ""
-    echo "=== critic-fallback smoke test ==="
-    bash lib/tests/critic-fallback-smoke.sh
 
     echo ""
     echo "=== run-dir smoke test ==="
@@ -160,10 +136,6 @@ test:
     echo ""
     echo "=== replay smoke test ==="
     bash lib/tests/replay-smoke.sh
-
-    echo ""
-    echo "=== replay-source-chain smoke test ==="
-    bash lib/tests/replay-source-chain-smoke.sh
 
     echo ""
     echo "all checks passed"

@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Hourly: maintain ~/.claude/COMMENT_REVIEW_MISTAKES.md as a ranked top-48
 # list of calibration rules, and post acks to humans whose feedback shaped
 # the list.
@@ -21,7 +21,8 @@
 # produces empty input that jq turns into [] without surfacing the
 # failure — silently dropping page-1 comments or a whole fetch.
 set -o pipefail
-export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
+# PATH inherited from systemd unit (system dirs first; writable user dirs
+# trailing). See review.sh for the writable-PATH security context.
 
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 REPLIES_SEEN_FILE="${REPLIES_SEEN_FILE:-$STATE_DIR/replies-seen.json}"
@@ -92,7 +93,11 @@ for REPO in "${REPOS[@]}"; do
             BODY=$(echo "$COMMENT" | jq -r '.body')
             ID=$(echo "$COMMENT" | jq -r '.id')
             CREATED=$(echo "$COMMENT" | jq -r '.created_at')
-            TS=$(date -d "$CREATED" +%s 2>/dev/null || echo 0)
+            # Portable ISO→epoch via jq's fromdateiso8601 — already invoked
+            # per-iteration above, so zero new process startup cost. (Earlier
+            # python3 fix shipped per-comment subprocess; bot caught the
+            # cost on PR #47 R32 and pointed at the jq-native one-liner.)
+            TS=$(jq -nr --arg ts "$CREATED" '$ts | fromdateiso8601' 2>/dev/null || echo 0)
 
             if [ "$USER" = "$BOT_USER" ]; then
                 LAST_OUR_TS=$TS

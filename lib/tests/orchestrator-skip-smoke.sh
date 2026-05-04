@@ -55,14 +55,13 @@ REPOS=("cncorp/plow")
 declare -A KID_PATHS=()
 CONF
 
-# Sandbox HOME. review.sh's first action is `export PATH="$HOME/.local/bin:
-# $HOME/.npm-global/bin:$PATH"`, so to make our stubbed `gh` actually
-# resolve we have to either (a) put the stub at $HOME/.local/bin/gh under
-# a fake HOME, or (b) accept that the real gh in the user's $HOME wins.
-# Option (a). We point HOME at a fresh dir, then drop the stub into the
-# .local/bin/ slot review.sh prepends.
+# Sandbox HOME and prepend its bin dir to PATH so the stubbed `gh`
+# resolves. Production no longer prepends $HOME/.local/bin to PATH
+# (writable-PATH attack vector — d42946b / R26 F#1); the smoke handles
+# it itself with a deliberate test-owned PATH export.
 export HOME="$TMPDIR/home"
 mkdir -p "$HOME/.local/bin"
+export PATH="$HOME/.local/bin:$PATH"
 
 # Prepend the stub bin to PATH for every child this smoke spawns. Most
 # scenarios spawn `bash review.sh`, which does its own

@@ -40,9 +40,13 @@ mkdir -p "$STATE_DIR"
 export BOT_USER="srosro"
 export BOT_AUTO_POST_MARKER="<!-- knightwatch-reviewer:auto-post -->"
 
-# Sandbox HOME so the script's PATH prepend resolves to our stubs.
+# Sandbox HOME and prepend its bin dir to PATH so the script's command
+# resolution (gh, etc.) hits our stubs. Production no longer prepends
+# $HOME/.local/bin (writable-PATH attack vector); the smoke handles it
+# itself.
 export HOME="$TMPDIR/home"
 mkdir -p "$HOME/.local/bin"
+export PATH="$HOME/.local/bin:$PATH"
 
 # Stubbed gh. Inputs:
 #   MOCK_COMMENTS_FILE — JSON array of issue comments

@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Translates GitHub "Re-request review" button events into /srosro-review
 # comments so the existing review.sh force-review path picks them up. Runs
 # every 2 min via systemd timer.
@@ -10,7 +10,8 @@
 # ~/.pr-reviewer/re-request-seen.json so we never double-post.
 
 set -u
-export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
+# PATH inherited from systemd unit (system dirs first; writable user dirs
+# trailing). See review.sh for the writable-PATH security context.
 
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/re-request.log}"

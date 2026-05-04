@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Translates `/srosro-approve` PR comments from trusted (push-access)
 # collaborators into a posted APPROVED review on the PR.
 #
@@ -40,7 +40,8 @@
 # produces empty input that jq turns into [] without surfacing the
 # failure — silently dropping page-1 comments or a whole fetch.
 set -o pipefail
-export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
+# PATH inherited from systemd unit (system dirs first; writable user dirs
+# trailing). See review.sh for the writable-PATH security context.
 
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 APPROVES_SEEN_FILE="${APPROVES_SEEN_FILE:-$STATE_DIR/approves-seen.json}"
