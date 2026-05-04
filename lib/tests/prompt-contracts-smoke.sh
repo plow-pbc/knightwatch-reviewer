@@ -296,8 +296,11 @@ for unit in systemd/*.service; do
     rhs="${rw_line#ReadWritePaths=}"
     for tok in $rhs; do
         # Strip systemd's optional path-prefix syntax (- = ignore-if-missing,
-        # + = mount-namespace-aware) so denylist matching is on the bare path.
-        case "${tok#[+-]}" in
+        # + = mount-namespace-aware; can combine as -+ or +-) so denylist
+        # matching is on the bare path. Strip both prefixes via a tight loop.
+        bare="$tok"
+        while [[ "$bare" == [+-]* ]]; do bare="${bare#[+-]}"; done
+        case "$bare" in
             /home/odio/.local|/home/odio/.local/bin)
                 echo "FAIL: $unit ReadWritePaths token '$tok' grants write access to a PATH-search dir — attacker can plant tools in ~/.local/bin/ that codex resolves"
                 echo "  got: $rw_line"
@@ -394,8 +397,10 @@ assert_grep "simplification.md should anchor on the inferred-intent scratch arti
 # either direction (row removal or token migration into a different class)
 # trips this assertion.
 schema_row=$(grep -E '^- \*\*`simplification`\*\*' prompts/probe-schema.md || true)
-[[ -n "$schema_row" && "$schema_row" == *"net-additive refactor"* ]] || {
-    echo "FAIL: prompts/probe-schema.md simplification row missing or no longer contains 'net-additive refactor' blocking-case token"
+[[ -n "$schema_row" \
+   && "$schema_row" == *"net-additive refactor"* \
+   && "$schema_row" == *"Severity if yes: blocking"* ]] || {
+    echo "FAIL: prompts/probe-schema.md simplification row missing or no longer pairs 'net-additive refactor' with 'Severity if yes: blocking'"
     echo "  got: $schema_row"
     exit 1
 }
