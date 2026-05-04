@@ -112,3 +112,101 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
             return 4
 
     return 0
+
+
+def _substitute_placeholders(template: str, **subs: str) -> str:
+    """Replace {{KEY}} tokens. Caller passes pr_id, pr_title, pr_url, pr_author,
+    specialist_name (optional), operator_name."""
+    for key, val in subs.items():
+        token = "{{" + key.upper() + "}}"
+        template = template.replace(token, val)
+    return template
+
+
+def _strip_leading_html_comment(text: str) -> str:
+    """Drop a leading <!-- ... --> block (operator docs in voice.md)."""
+    if not text.lstrip().startswith("<!--"):
+        return text
+    # Find closing --> after the first <!--
+    start = text.index("<!--")
+    end = text.find("-->", start)
+    if end < 0:
+        return text  # malformed; pass through
+    # Skip past --> and any trailing newline
+    after = text[end + 3:]
+    return after.lstrip("\n")
+
+
+def build_prompt(
+    kind: str,
+    agent: str,
+    prompts_dir: str,
+    pr_id: str,
+    pr_title: str,
+    pr_url: str,
+    pr_author: str,
+) -> str:
+    """Build the prompt string for one codex call.
+
+    `kind` is one of: 'standalone' (intent, dead-code-search, momentum),
+    'specialist' (the 8 angles), 'critic' (per-angle critic-<angle>), 'aggregator'.
+    """
+    pdir = Path(prompts_dir)
+    operator_name = os.environ.get("OPERATOR_NAME", "Sam")
+    base_subs = dict(
+        pr_id=pr_id, pr_title=pr_title, pr_url=pr_url,
+        pr_author=pr_author, operator_name=operator_name,
+    )
+
+    if kind == "specialist":
+        common = (pdir / "common-header.md").read_text()
+        body = (pdir / f"{agent}.md").read_text()
+        subs = dict(base_subs, specialist_name=agent)
+        return (
+            _substitute_placeholders(common, **subs)
+            + "\n"
+            + _substitute_placeholders(body, **subs)
+        )
+
+    if kind == "standalone":
+        # intent, dead-code-search, momentum. (go-deep dispatch was orchestrate.sh's
+        # responsibility and is dropped here per the plan note above; if Phase 6
+        # reintroduces go-deep, add the agent.startswith("go-deep-") branch back.)
+        body = (pdir / f"{agent}.md").read_text()
+        subs = dict(base_subs, specialist_name="")
+        return _substitute_placeholders(body, **subs)
+
+    if kind == "critic":
+        # Per-angle critic: critic-<angle>. Body cites
+        # .codex-scratch/specialists/{{ANGLE}}.md; ANGLE substitution happens here.
+        body = (pdir / "critic.md").read_text()
+        angle = agent[len("critic-"):] if agent.startswith("critic-") else ""
+        subs = dict(base_subs, angle=angle, specialist_name=angle)
+        return _substitute_placeholders(body, **subs)
+
+    if kind == "aggregator":
+        agg = (pdir / "aggregator.md").read_text()
+        voice_path = pdir / "voice.md"
+        if not voice_path.exists():
+            raise FileNotFoundError(
+                f"build_prompt: voice.md missing at {voice_path} — incomplete install"
+            )
+        if "INSERT_VOICE_HERE" not in agg:
+            raise ValueError(
+                "build_prompt: aggregator.md missing INSERT_VOICE_HERE marker — stitch contract violated"
+            )
+        voice_body = _strip_leading_html_comment(voice_path.read_text())
+        # Replace the line containing INSERT_VOICE_HERE with the voice body.
+        # Match the same shape as the prior awk: any line containing the marker.
+        out_lines: list[str] = []
+        for line in agg.splitlines(keepends=True):
+            if "INSERT_VOICE_HERE" in line:
+                out_lines.append(voice_body)
+                if not voice_body.endswith("\n"):
+                    out_lines.append("\n")
+            else:
+                out_lines.append(line)
+        stitched = "".join(out_lines)
+        return _substitute_placeholders(stitched, **base_subs)
+
+    raise ValueError(f"build_prompt: unknown kind '{kind}'")
