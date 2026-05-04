@@ -18,6 +18,6 @@ Out of scope: specific security bugs, concurrency bugs, test coverage. Also: pro
 
 **Emission format:**
 
-Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. **Classes emitted: `shape`, `complexity-cost`.** Severity rubric + edit/cost convention live in probe-schema.md § Class options. Domain examples for `complexity-cost` in this angle: premature abstractions, frameworks where a function would do, multi-tenant scaffolding when only one tenant exists, defensive layers added without observed need.
+Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. **Classes emitted: `shape`, `simplification`.** Severity rubric + edit/cost convention live in probe-schema.md § Class options. Domain examples for `simplification` in this angle: premature abstractions, frameworks where a function would do, multi-tenant scaffolding when only one tenant exists, defensive layers added without observed need.
 
 Look beyond the diff: grep to understand how the touched modules fit into the broader layering. Read the top-level module structure before making layering claims.

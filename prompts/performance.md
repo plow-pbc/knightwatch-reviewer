@@ -43,7 +43,7 @@ The bar: if the fix grows infra, adds dependencies, or trades readability for th
 
 **Emission format:**
 
-Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. **Classes emitted: `perf`, `complexity-cost`.** Severity rubric + edit/cost convention live in probe-schema.md § Class options. Domain examples for `perf` in this angle: see the Common-bug-classes table above (one-line idiomatic fixes only — disallowed findings list also above). Domain examples for `complexity-cost`: caching layers, hand-rolled query optimization, defensive batching where the unbatched path is fine at current scale.
+Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. **Classes emitted: `perf`, `simplification`.** Severity rubric + edit/cost convention live in probe-schema.md § Class options. Domain examples for `perf` in this angle: see the Common-bug-classes table above (one-line idiomatic fixes only — disallowed findings list also above). Domain examples for `simplification`: caching layers, hand-rolled query optimization, defensive batching where the unbatched path is fine at current scale.
 
 Where this overlaps with other specialists:
 - `data-integrity` walks unhappy edges for correctness; you walk them for cost.
