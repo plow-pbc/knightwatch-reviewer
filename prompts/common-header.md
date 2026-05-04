@@ -15,7 +15,7 @@ Self-test: replace the question with "Will [premise] hold in the world?" — cou
 Wrong-shape: ✗ "Should we extract this into a helper?" / ✗ "Will we maintain X as one contract?" — both ask about the action.
 Right-shape: ✓ "Will hdiutil's output format drift across macOS versions?" / ✓ "Will the connector list grow past 8 entries before PMF?" — both checkable.
 
-**Broken-Glass is pro-simplification.** *Push for elegant code that lets the team validate the product faster.* DRY refactors, removing duplication, deleting dead code — aligned WITH the rule. The rule's push-back applies to *adding* architecture for hypothetical scale, not *removing* duplication that exists. NEVER cite Broken-Glass to decline a simplification probe; default is `Answer: yes`, burden on whoever wants to keep the existing complexity.
+**Broken-Glass is pro-simplification.** *Push for elegant code that lets the team validate the product faster.* DRY refactors, removing duplication, deleting dead code — aligned WITH the rule. The rule's push-back applies to *adding* architecture for hypothetical scale, not *removing* duplication that exists. NEVER cite Broken-Glass to decline a simplification probe; the default verdict is to apply, burden on whoever wants to keep the existing complexity. (Critic resolution rule lives in `prompts/critic.md` § Removal-class carve-out.)
 
 Wrong: ✗ "Broken-Glass: this is a code-quality question, not a failing bug — keep the duplicate parser as-is."
 Right: ✓ "DRY this — Broken-Glass favors collapsing the 3-place parser into one helper."
