@@ -107,9 +107,6 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 . "$_LIB_DIR/state-io.sh"
 . "$_LIB_DIR/auth.sh"
 
-# --- prompt-build helpers (sourced from lib/prompt-build.sh) ---
-. "$_LIB_DIR/prompt-build.sh"
-
 # --- knightwatch-config helper (per-repo .knightwatch/ reads) ---
 . "$_LIB_DIR/knightwatch-config.sh"
 
@@ -128,10 +125,6 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # --- agent-failure + run-dir helpers ---
 . "$_LIB_DIR/run-dir.sh"
 
-# --- LLM specialist pipeline (intent → dead-code → 8 angles → momentum →
-# critic → aggregator). Critic now fail-loud — see orchestrate.sh:215. ---
-. "$_LIB_DIR/orchestrate.sh"
-
 # --- loc-trend computation (compute_loc_trend / _loc_trend_display) ---
 # Sources run-dir.sh internally for is_run_author_visible /
 # author_visible_rounds, but run-dir.sh is sourced just above and
@@ -143,11 +136,6 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # findings the operator has pushed back on ≥3 times. Sources gh-comments.sh
 # internally; multi-source is idempotent.
 . "$_LIB_DIR/decline-history.sh"
-
-# --- critic-splitter (split_critic_to_specialists) — co-locates per-angle
-# critic counter-arguments in specialists/<angle>.md so the aggregator
-# (and Phase 2's go-deep tech-leads) read a layered file per specialist.
-. "$_LIB_DIR/critic-splitter.sh"
 
 # --- go-deep ranker (rank_hot_angles) — selects which specialist files
 # become "hot" (≥20 LOC remedy → go-deep investigation). Sourced as a
@@ -951,11 +939,10 @@ write_scratch "$REPO_DIR" "standards.md"       "$STANDARDS"
 
 # ---- probe schema ----
 # probe-schema.md ships in prompts/ and is symlinked into ~/.pr-reviewer/prompts
-# at install time. Specialists + critic + aggregator (Phases 2+) reference
-# .codex-scratch/probe-schema.md as the canonical contract. Missing on disk
-# is fail-fast — same shape as build_aggregator_prompt's voice.md handling
-# (lib/prompt-build.sh:64); a missing prompt means an incomplete deploy, not
-# "operator opted out."
+# at install time. Specialists + per-angle critics + aggregator (Phases 2+)
+# reference .codex-scratch/probe-schema.md as the canonical contract. Missing
+# on disk is fail-fast — same shape as the prompt loader in lib/pipeline.py;
+# a missing prompt means an incomplete deploy, not "operator opted out."
 PROBE_SCHEMA_PATH="${PROMPTS_DIR:-$HOME/.pr-reviewer/prompts}/probe-schema.md"
 if [ ! -f "$PROBE_SCHEMA_PATH" ]; then
     log "$PR_ID: probe-schema.md missing at $PROBE_SCHEMA_PATH — incomplete install — aborting"
@@ -1143,18 +1130,29 @@ if [ -z "$COMMITS" ]; then
 fi
 write_scratch "$REPO_DIR" "commits.md" "$COMMITS"
 
-# Run the LLM review pipeline (intent → dead-code → 8 angles → momentum →
-# critic → critic-splitter → go-deep tech-leads (≤3) → aggregator). Sets
-# AGG_EXIT and AGG_OUT in this shell; aborts on any fail-loud error. Body
-# lives in lib/orchestrate.sh.
-run_specialist_pipeline
+# Run the LLM review pipeline (intent → dead-code → 8 angles parallel →
+# momentum (re-reviews only) → aggregator). Implementation in lib/pipeline.py.
+# Per-angle critics run inline within each angle pipeline; no central
+# critic, no splitter. Aggregator output written to a deterministic path
+# we read after.
+PR_ID="$PR_ID" \
+PR_TITLE="$PR_TITLE" \
+PR_URL="$PR_URL" \
+PR_AUTHOR="$PR_AUTHOR" \
+PROMPTS_DIR="${PROMPTS_DIR:-$HOME/.pr-reviewer/prompts}" \
+LOG_FILE="$LOG_FILE" \
+OPERATOR_NAME="${OPERATOR_NAME:-Sam}" \
+    python3 "$_LIB_DIR/pipeline.py" "$REPO_DIR" "$RUN_DIR"
+PIPELINE_EXIT=$?
+AGG_OUT="$RUN_DIR/agents/aggregator/output.md"
 
-# Aggregator output is what gets posted to GitHub — abort on any codex error
-# even if a partial output happens to be non-empty, so a truncated review
-# never ships.
-if [ "$AGG_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
-    log "$PR_ID: aggregator failed (exit=$AGG_EXIT, output empty=$([ ! -s "$AGG_OUT" ] && echo true || echo false)) — aborting"
-    rm -rf "$REPO_DIR"
+# Aggregator output is what gets posted to GitHub — abort on any pipeline
+# error even if a partial output happens to be non-empty, so a truncated
+# review never ships. pipeline.py rm -rf's REPO_DIR on its own abort path;
+# the safety-net check below handles any race or unexpected exit.
+if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
+    log "$PR_ID: pipeline failed (exit=$PIPELINE_EXIT, agg empty=$([ ! -s "$AGG_OUT" ] && echo true || echo false)) — aborting"
+    [ -d "$REPO_DIR" ] && rm -rf "$REPO_DIR"
     exit 1
 fi
 REVIEW=$(cat "$AGG_OUT")
