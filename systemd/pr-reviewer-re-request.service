@@ -25,7 +25,8 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 ProtectHome=read-only
-ReadWritePaths=/home/odio/.pr-reviewer /home/odio/.cache /home/odio/.local /home/odio/.config
+# See pr-reviewer.service for the rationale on excluding /home/odio/.local.
+ReadWritePaths=/home/odio/.pr-reviewer /home/odio/.cache /home/odio/.config
 
 [Install]
 WantedBy=multi-user.target

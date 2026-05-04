@@ -25,7 +25,9 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 ProtectHome=read-only
-ReadWritePaths=/home/odio/.pr-reviewer /home/odio/.codex /home/odio/.claude /home/odio/.cache /home/odio/.local /home/odio/.config /home/odio/Hacking/vibe-engineering
+# See pr-reviewer.service for the rationale on excluding /home/odio/.local
+# (writable-PATH attack vector against ~/.local/bin tool symlinks).
+ReadWritePaths=/home/odio/.pr-reviewer /home/odio/.codex /home/odio/.claude /home/odio/.cache /home/odio/.config /home/odio/Hacking/vibe-engineering
 
 [Install]
 WantedBy=multi-user.target

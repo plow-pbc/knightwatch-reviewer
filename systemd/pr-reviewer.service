@@ -49,7 +49,17 @@ ProtectHome=read-only
 # (@KID_RW_PATHS@): review specialists run with Codex's inner sandbox
 # disabled and don't need writes outside the index dir. Do not edit
 # @KID_INDEX_RW_PATHS@ by hand here.
-ReadWritePaths=/home/odio/.pr-reviewer /home/odio/.codex /home/odio/.cache /home/odio/.local /home/odio/.config /home/odio/.docker @KID_INDEX_RW_PATHS@
+# /home/odio/.local is intentionally NOT writable: it contains
+# ~/.local/bin/<tool> symlinks (kid → uv-managed binary) and
+# ~/.local/share/uv/tools/<tool>/bin/<tool> binaries that are PATH-search
+# targets. PR-controlled `just test` runs in this service; if ~/.local
+# were writable, an attacker could plant ~/.local/bin/codex or
+# ~/.local/bin/kid and have the next reviewer/refresh tick exec it.
+# Codex state lives in ~/.codex (separately writable above); claude
+# state writes are from interactive operator sessions, not from this
+# service. Add a narrower subdir if a future reviewer dependency
+# legitimately needs to write under ~/.local.
+ReadWritePaths=/home/odio/.pr-reviewer /home/odio/.codex /home/odio/.cache /home/odio/.config /home/odio/.docker @KID_INDEX_RW_PATHS@
 
 [Install]
 WantedBy=multi-user.target

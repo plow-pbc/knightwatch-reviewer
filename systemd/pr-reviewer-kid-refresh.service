@@ -30,7 +30,12 @@ ProtectHome=read-only
 # paths). Keeps the sandbox minimal — adding a repo to repos.conf
 # widens ReadWritePaths by exactly that one path on the next install,
 # never the whole parent. Do not edit @KID_RW_PATHS@ by hand here.
-ReadWritePaths=/home/odio/.pr-reviewer @KID_RW_PATHS@ /home/odio/.cache /home/odio/.local /home/odio/.config
+# See pr-reviewer.service for the rationale on excluding /home/odio/.local.
+# kid's binary lives at ~/.local/bin/kid (symlink) and
+# ~/.local/share/uv/tools/keepitdry/bin/kid (target); both must remain
+# read-only so attacker-replaced kid can't be exec'd. kid's data lives
+# under each tracked repo's .keepitdry/ — covered by @KID_RW_PATHS@.
+ReadWritePaths=/home/odio/.pr-reviewer @KID_RW_PATHS@ /home/odio/.cache /home/odio/.config
 
 [Install]
 WantedBy=multi-user.target

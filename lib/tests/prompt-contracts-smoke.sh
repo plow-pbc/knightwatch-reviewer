@@ -299,6 +299,30 @@ for script in "${SYSTEMD_CHAIN_SCRIPTS[@]}"; do
     fi
 done
 
+# Systemd ReadWritePaths must NOT include bare /home/odio/.local. That
+# directory holds PATH-search targets (~/.local/bin/<tool> symlinks +
+# ~/.local/share/uv/tools/<tool>/bin/<tool> binaries). PR-controlled
+# `just test` runs in pr-reviewer.service; if .local were writable an
+# attacker could plant ~/.local/bin/codex or ~/.local/bin/kid and have
+# the next reviewer/refresh tick exec it. Per-subdir writes (e.g.
+# /home/odio/.local/share/claude) are fine — they're not PATH-search
+# targets.
+echo "  asserting systemd units do NOT have bare /home/odio/.local in ReadWritePaths..."
+for unit in systemd/pr-reviewer.service systemd/pr-reviewer-learn.service \
+            systemd/pr-reviewer-approve.service \
+            systemd/pr-reviewer-re-request.service \
+            systemd/pr-reviewer-kid-refresh.service; do
+    rw_line=$(grep -E '^ReadWritePaths=' "$unit")
+    # Bare /home/odio/.local (not followed by /<subdir>) is the attack
+    # vector. Match it as a whitespace-bounded token; subdirs like
+    # /home/odio/.local/share are fine.
+    if printf '%s' "$rw_line" | grep -qE '(^|[[:space:]])/home/odio/\.local([[:space:]]|$)'; then
+        echo "FAIL: $unit ReadWritePaths includes bare /home/odio/.local — attacker can plant tools in ~/.local/bin/ that PATH-search resolves"
+        echo "  got: $rw_line"
+        exit 1
+    fi
+done
+
 # Systemd unit PATH ordering: each unit's `Environment=PATH=...` line
 # MUST start with a system dir (/usr/...) and place writable user dirs
 # (/home/odio/.local/bin, /home/odio/.npm-global/bin) after them.
