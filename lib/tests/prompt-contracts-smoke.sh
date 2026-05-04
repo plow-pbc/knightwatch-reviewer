@@ -386,9 +386,9 @@ assert_grep "simplification.md should grade diff against stated intent" \
     "grade the diff against stated intent" prompts/simplification.md
 assert_grep "simplification.md should call out net-additive refactor PRs" \
     "net-additive >100 LOC" prompts/simplification.md
-assert_grep "simplification.md should pin the load-bearing severity for the substrate-replacement probe" \
-    "Severity if yes: blocking" prompts/simplification.md
 assert_grep "simplification.md should target deletion of existing code, not just the new additions" \
     "existing code" prompts/simplification.md
+assert_grep "probe-schema.md should canonicalize net-additive refactor as blocking simplification" \
+    "net-additive refactor" prompts/probe-schema.md
 
 echo "  PASS"

@@ -2,7 +2,7 @@
 
 **Stage:** The reviewer reviewing itself. Single-operator tool used by one engineer (srosro); runs as systemd timers on one host. Not a product, not a distribution target. Matches `.knightwatch/product-context.md`.
 
-**Cultural emphasis:** SIMPLIFY at all costs — complexity kills PMF iteration. Subtractive remedies (delete, collapse, retire) are higher-leverage than additive ones at any severity. Cumulative additive LOC across review rounds is the structural-failure signal — when the bot has been requesting +20 LOC per round for 3+ rounds, the substrate is the problem; stop adding and look for the deletion that retires the class. Prompt-engineering changes here cascade into every PR review across every tracked repo; favor precise, falsifiable rules over vague guidance. The universal Broken-Glass posture lives in `standards.md` § Broken-Glass Test — apply that here, including the worked PR#47→#50 substrate-replacement example.
+**Cultural emphasis:** SIMPLIFY at all costs — complexity kills PMF iteration. Subtractive remedies (delete, collapse, retire) are higher-leverage than additive ones at any severity. Cumulative additive LOC across review rounds is the structural-failure signal — see PR#47 contrast pair below. Prompt-engineering changes here cascade into every PR review across every tracked repo; favor precise, falsifiable rules over vague guidance. The universal Broken-Glass posture lives in `standards.md` § Broken-Glass Test — apply that here, including the worked PR#47→#50 substrate-replacement example.
 
 **Repo-specific contrast pairs:** beyond the universal set in `standards.md`:
 
