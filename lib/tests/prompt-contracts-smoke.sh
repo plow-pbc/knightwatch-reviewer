@@ -293,11 +293,15 @@ for unit in systemd/*.service; do
     rw_line=$(grep -E '^ReadWritePaths=' "$unit")
     path_line=$(grep -E '^Environment=PATH=' "$unit")
 
-    if printf '%s' "$rw_line" | grep -qE '(^|[[:space:]])/home/odio/\.local([[:space:]]|$)'; then
-        echo "FAIL: $unit ReadWritePaths includes bare /home/odio/.local — attacker can plant tools in ~/.local/bin/ that PATH-search resolves"
-        echo "  got: $rw_line"
-        exit 1
-    fi
+    rhs="${rw_line#ReadWritePaths=}"
+    for tok in $rhs; do
+        case "$tok" in
+            /home/odio/.local|/home/odio/.local/bin)
+                echo "FAIL: $unit ReadWritePaths token '$tok' grants write access to a PATH-search dir — attacker can plant tools in ~/.local/bin/ that codex resolves"
+                echo "  got: $rw_line"
+                exit 1 ;;
+        esac
+    done
 
     case "$path_line" in
         Environment=PATH=/usr/*) ;;
@@ -377,8 +381,12 @@ assert_grep "review-priority.md should cite the canonical Broken-Glass section" 
 echo "  asserting simplification.md anchors on inferred-intent for refactor PRs..."
 assert_grep "simplification.md should grade diff against stated intent" \
     "grade the diff against stated intent" prompts/simplification.md
+assert_grep "simplification.md should anchor on the inferred-intent scratch artifact" \
+    ".codex-scratch/inferred-intent.md" prompts/simplification.md
 assert_grep "simplification.md should reference the schema's substrate-replacement-target seam" \
     "substrate-replacement target" prompts/simplification.md
+assert_grep "simplification.md should require concrete file paths + LOC delta in the edit clause" \
+    "file paths + LOC delta" prompts/simplification.md
 assert_grep "probe-schema.md should canonicalize net-additive refactor as blocking simplification" \
     "net-additive refactor" prompts/probe-schema.md
 
