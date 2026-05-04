@@ -18,5 +18,5 @@ Look beyond the diff: grep `tests/` for existing patterns the PR should have fol
 
 **Emission format:**
 
-Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. **Classes emitted: `tests`, `complexity-cost`.** Severity rubric + edit/cost convention live in probe-schema.md § Class options. Domain examples for `complexity-cost` in this angle: over-tested edge cases, mocks that pre-empt the real implementation, helpers added with one call site, fixture machinery heavier than the test it supports.
+Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. **Classes emitted: `tests`, `simplification`.** Severity rubric + edit/cost convention live in probe-schema.md § Class options. Domain examples for `simplification` in this angle: over-tested edge cases, mocks that pre-empt the real implementation, helpers added with one call site, fixture machinery heavier than the test it supports.
 

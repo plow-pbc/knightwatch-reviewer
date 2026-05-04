@@ -16,6 +16,6 @@ Out of scope (other specialists own these — do NOT raise):
 
 **Emission format:**
 
-Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. **Classes emitted: `DRY`, `complexity-cost`.** Severity rubric + edit/cost convention live in probe-schema.md § Class options. Domain examples for `complexity-cost` in this angle: verbose implementations, missing early-returns, defensive `(x or {}).get(...)`-style code, drive-by unused imports / dead local helpers.
+Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. **Classes emitted: `simplification`.** Severity rubric + edit/cost convention live in probe-schema.md § Class options. Domain examples for `simplification` in this angle: DRY collapses (intra-PR duplication into a helper), verbose implementations, missing early-returns, defensive `(x or {}).get(...)`-style code, drive-by unused imports / dead local helpers.
 
 Look beyond the diff: grep the repo for existing utilities/base classes that the PR's new code should have reused.

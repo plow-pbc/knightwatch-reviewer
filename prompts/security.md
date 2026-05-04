@@ -16,7 +16,7 @@ If the diff touches auth, sessions, credential handling, or any HTTP surface are
 
 **Emission format:**
 
-Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. **Classes emitted: `bug`, `complexity-cost`.** Severity rubric + edit/cost convention live in probe-schema.md § Class options. Domain examples for `bug` in this angle: secret leak, auth bypass, command injection, path traversal, sandbox escape, credential logging, IDOR, prototype pollution, weak crypto, missing CSRF/origin checks. Domain examples for `complexity-cost`: extra signature checks, defense-in-depth not requested, wrap-once-then-wrap-again validation, redundant rate limits.
+Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. **Classes emitted: `bug`, `simplification`.** Severity rubric + edit/cost convention live in probe-schema.md § Class options. Domain examples for `bug` in this angle: secret leak, auth bypass, command injection, path traversal, sandbox escape, credential logging, IDOR, prototype pollution, weak crypto, missing CSRF/origin checks. Domain examples for `simplification`: extra signature checks, defense-in-depth not requested, wrap-once-then-wrap-again validation, redundant rate limits.
 
 When the failing path is fully cited, set `Confidence: high` — the critic will confirm `Answer: yes` immediately and the aggregator renders that as a declarative `[blocking]` line.
 

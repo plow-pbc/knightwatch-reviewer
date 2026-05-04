@@ -49,7 +49,7 @@ Look beyond the diff: grep for OTHER call sites of touched functions to verify n
 
 **Emission format:**
 
-Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. **Classes emitted: `bug`, `complexity-cost`.** Severity rubric + edit/cost convention live in probe-schema.md § Class options. Domain examples for `bug` in this angle: data corruption, lost writes, silent drops, race condition, transaction-boundary violation, half-applied writes, missing rollback, idempotency hole, state-machine gap, off-by-one, pagination terminator bug, money-in-float, timezone naivety, async-cancellation hazard, migration-safety failure. Domain examples for `complexity-cost`: defensive transactional wrappers, retry layers, idempotency machinery added without observed need at the operating point.
+Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. **Classes emitted: `bug`, `simplification`.** Severity rubric + edit/cost convention live in probe-schema.md § Class options. Domain examples for `bug` in this angle: data corruption, lost writes, silent drops, race condition, transaction-boundary violation, half-applied writes, missing rollback, idempotency hole, state-machine gap, off-by-one, pagination terminator bug, money-in-float, timezone naivety, async-cancellation hazard, migration-safety failure. Domain examples for `simplification`: defensive transactional wrappers, retry layers, idempotency machinery added without observed need at the operating point.
 
 When the failing path is fully cited, set `Confidence: high` — the critic will confirm `Answer: yes` and the aggregator renders that as a declarative `[blocking]` line.
 

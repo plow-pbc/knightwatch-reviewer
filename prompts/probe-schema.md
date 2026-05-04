@@ -9,7 +9,7 @@ Every probe is a Markdown block with this exact field set:
 ```
 ### Probe N
 - **From:** <specialist name>          # e.g. shape, security, simplification, critic
-- **Class:** <bug|bypass|shape|DRY|tests|dead-code|perf|complexity-cost>
+- **Class:** <bug|bypass|shape|simplification|tests|perf>
 - **Q:** <one sentence — the assumption being asserted as if settled, in question form>
 - **Files:** <path:line>, <path:line>, …
 - **If yes, edit:** <concrete code change this unlocks — name files + LOC delta>
@@ -30,15 +30,11 @@ The `Class:` field takes exactly one of these tokens. Each class carries its own
 
 - **`shape`** — second-instance pattern with no canonical yet, OR architectural seam / layering violation (`shape`, `architecture`). `Confidence: medium|high`, `Severity if yes: medium` (`blocking` for hard architectural lock-in). `If yes, edit:` "extract <name> at <path:line>" or name the structural change. `If no, cost:` "third instance will be cheaper to write than to refactor — pattern established by inertia".
 
-- **`DRY`** — kid-hit or intra-PR duplication that should collapse into a helper (`simplification`). `Confidence: medium|high`, `Severity if yes: medium` (`blocking` for the well-established-utility-was-already-there case). `If yes, edit:` name the shared helper with LOC delta. `If no, cost:` name the third-copy threshold this PR is approaching.
+- **`simplification`** — removal-shaped finding: `If yes, edit:` is LOC-negative or branch-negative. Covers DRY collapses (kid-hit or intra-PR duplication into a helper), dead-code (stale caller / unreachable conditional / zero-callers symbol / private dead helper), and complexity-cost (defensive branches, helpers with one call site, framework-where-function-would-do, premature optimization, defense-in-depth not requested, over-tested edges, defensive caller-shape adapters, retry layers, idempotency machinery, caching layers, validation guards). `Confidence: medium|high` for clear duplication or stale-caller; `low|medium` for "earns its place?" judgment calls. `Severity if yes: blocking` for stale-caller / unreachable-bad-path / well-established-utility-was-already-there; `medium` for typical DRY collapses or architectural defensive layers; `low|nit` for code-style cases. `If yes, edit:` "delete <code> — N LOC, fewer seams" or "collapse N copies into <helper>". `If no, cost:` name what calcifies at the operating point if we keep the shape (defensive surface, third-copy threshold, dynamic-dispatch argument, etc.).
 
 - **`tests`** — coverage gap, test-shape problem, or PR-related `just test` failure (`tests`). `Confidence: high` for explicit test failures; `medium` for missing-coverage; `low` for test-quality. `Severity if yes: blocking` for failing tests caused by this PR or bug-fixes-without-regression-test; `medium` for non-blocking gaps with named seams; `low|nit` for test-quality observations. `If yes, edit:` name the test file + the seam (function extraction / DI) when applicable. `If no, cost:` name the runtime risk that would emerge if the test isn't added.
 
-- **`dead-code`** — stale caller (runtime fail pending), unreachable conditional, zero-callers public symbol, or private dead helper (`consumers`). `Confidence: high` for stale-caller; `medium` for "no remaining callers" (could be missed dynamic dispatch); `low` for private dead. `Severity if yes: blocking` for stale-caller / unreachable-bad-path; `medium` for stale public symbol; `low` for private dead. `If yes, edit:` name symbol + caller list with file impact. `If no, cost:` `"—"` for high-confidence dead-code; otherwise name the dynamic-dispatch surface arguing against deletion.
-
 - **`perf`** — N+1, unbounded fetch, sync-in-async, count-vs-exists, re-compile-in-loop, O(n²) membership — **one-line idiomatic fixes only** (`performance`). `Confidence: high` when failing path is cited; `medium` for plausible-near-term-scale. `Severity if yes: blocking` if WILL crash at current/known-near-term scale; `medium` for real concerns with simple fixes; `low` for observations whose fix adds complexity. `If yes, edit:` name the canonical fix shape with file:line. `If no, cost:` `"—"` for high-confidence; otherwise name the scale assumption that argues against the fix.
-
-- **`complexity-cost`** — existing complexity in the diff that may not earn its place at the operating point: defensive branches, helpers with one call site, framework-where-function-would-do, premature optimization, defense-in-depth not requested, over-tested edges, defensive caller-shape adapters, etc. **Used by all specialists.** `Confidence: low|medium`. `Severity if yes: low|nit` for code-style / test-quality cases; `low|medium` for architecture / data-integrity defensive layers. `If yes, edit:` "delete <code> — N LOC, fewer seams". `If no, cost:` name the specific shape kept and what makes it earn its keep at this operating point.
 
 ## Critic counter-arguments (per-angle critic only)
 

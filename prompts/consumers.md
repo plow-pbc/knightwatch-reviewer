@@ -32,7 +32,7 @@ ALSO read: `.codex-scratch/diff.patch`, `.codex-scratch/file-history.md`.
 
 **Emission format:**
 
-Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. **Classes emitted: `dead-code`, `complexity-cost`.** Severity rubric + edit/cost convention live in probe-schema.md § Class options. Domain examples for `complexity-cost` in this angle: defensive caller-shape adapters, compatibility wrappers added in this PR (e.g. handling `None` when the caller can't return `None`, supporting old-and-new schema versions when the migration is in-PR).
+Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. **Classes emitted: `simplification`.** Severity rubric + edit/cost convention live in probe-schema.md § Class options. Domain examples for `simplification` in this angle: stale-caller, unreachable conditional, zero-callers public symbol, private dead helper, defensive caller-shape adapters, compatibility wrappers added in this PR (e.g. handling `None` when the caller can't return `None`, supporting old-and-new schema versions when the migration is in-PR).
 
 **Overlap with other specialists:**
 - `simplification` owns DRY / intra-PR duplication / drive-by tidies / unused imports / verbose code *within* touched files. You own *cross-symbol call-graph effects*.
