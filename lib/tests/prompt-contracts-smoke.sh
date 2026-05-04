@@ -247,7 +247,13 @@ assert_grep "aggregator.md should fence the union-of-current-and-carried-forward
 # drift. Sourced helpers (lib/run-dir.sh, etc.) have no exec-time
 # shebang lookup, so their shebang is documentation only and not
 # fenced here.
-echo "  asserting systemd-chain scripts use absolute /bin/bash shebang..."
+# Two fence loops (was five): one over systemd-chain SCRIPTS (shebang +
+# no writable-PATH prepend), one over systemd UNITS (ReadWritePaths +
+# Environment=PATH ordering + .npm-global precedence). Each fence's
+# security rationale is in the per-FAIL message; the section comment
+# above this block carries the overarching "why absolute shebang +
+# system-PATH-first + .local-not-writable" attack-class context.
+echo "  asserting systemd-chain scripts: absolute /bin/bash shebang + no writable-PATH prepend..."
 SYSTEMD_CHAIN_SCRIPTS=(
     review.sh
     learn-from-replies.sh
@@ -258,87 +264,60 @@ SYSTEMD_CHAIN_SCRIPTS=(
 )
 for script in "${SYSTEMD_CHAIN_SCRIPTS[@]}"; do
     first_line=$(head -1 "$script")
-    if [ "$first_line" != "#!/bin/bash" ]; then
+    if [[ "$first_line" != "#!/bin/bash" ]]; then
         echo "FAIL: $script has shebang '$first_line' — must be '#!/bin/bash' (env-bash on systemd-launched/exec'd scripts is a PATH-attack vector via writable ~/.local/bin)"
         exit 1
     fi
-done
-
-# Defense-in-depth: scripts must NOT prepend writable user dirs to
-# PATH. The systemd unit sets PATH with system dirs first and writable
-# user dirs trailing; a script-level `export PATH="$HOME/.local/bin:..."`
-# would re-introduce the writable-PATH attack at the script's own
-# command-resolution boundary (timeout, gh, git, awk, etc.).
-echo "  asserting systemd-chain scripts do NOT prepend writable user PATH..."
-for script in "${SYSTEMD_CHAIN_SCRIPTS[@]}"; do
+    # Defense-in-depth: a script-level `export PATH="$HOME/.local/bin:..."`
+    # would re-introduce the writable-PATH attack at the script's own
+    # command-resolution boundary (timeout, gh, git, awk, etc.).
     if grep -nE '^[[:space:]]*export PATH="\$HOME/' "$script"; then
         echo "FAIL: $script prepends \$HOME/.local/bin to PATH — defeats the systemd PATH ordering and reopens writable-command resolution"
         exit 1
     fi
 done
 
-# Systemd ReadWritePaths must NOT include bare /home/odio/.local. That
-# directory holds PATH-search targets (~/.local/bin/<tool> symlinks +
-# ~/.local/share/uv/tools/<tool>/bin/<tool> binaries). PR-controlled
-# `just test` runs in pr-reviewer.service; if .local were writable an
-# attacker could plant ~/.local/bin/codex or ~/.local/bin/kid and have
-# the next reviewer/refresh tick exec it. Per-subdir writes (e.g.
-# /home/odio/.local/share/claude) are fine — they're not PATH-search
-# targets.
-echo "  asserting systemd units do NOT have bare /home/odio/.local in ReadWritePaths..."
-for unit in systemd/pr-reviewer.service systemd/pr-reviewer-learn.service \
-            systemd/pr-reviewer-approve.service \
-            systemd/pr-reviewer-re-request.service \
-            systemd/pr-reviewer-kid-refresh.service; do
+# Systemd unit fences: ReadWritePaths must NOT include bare /home/odio/.local
+# (it holds PATH-search targets — .local/bin/codex, .local/bin/kid; per-subdir
+# writes like .local/share/claude are fine). Environment=PATH must start with
+# /usr/... so writable user dirs trail. .npm-global must precede .local for
+# units that run codex; kid-refresh doesn't run codex and is exempt from the
+# .npm-global ordering check (still subject to the other two).
+echo "  asserting systemd units: ReadWritePaths + Environment=PATH ordering + .npm-global precedence..."
+SYSTEMD_UNITS=(
+    systemd/pr-reviewer.service
+    systemd/pr-reviewer-learn.service
+    systemd/pr-reviewer-approve.service
+    systemd/pr-reviewer-re-request.service
+    systemd/pr-reviewer-kid-refresh.service
+)
+for unit in "${SYSTEMD_UNITS[@]}"; do
     rw_line=$(grep -E '^ReadWritePaths=' "$unit")
-    # Bare /home/odio/.local (not followed by /<subdir>) is the attack
-    # vector. Match it as a whitespace-bounded token; subdirs like
-    # /home/odio/.local/share are fine.
+    path_line=$(grep -E '^Environment=PATH=' "$unit")
+
     if printf '%s' "$rw_line" | grep -qE '(^|[[:space:]])/home/odio/\.local([[:space:]]|$)'; then
         echo "FAIL: $unit ReadWritePaths includes bare /home/odio/.local — attacker can plant tools in ~/.local/bin/ that PATH-search resolves"
         echo "  got: $rw_line"
         exit 1
     fi
-done
 
-# Systemd unit PATH ordering: each unit's `Environment=PATH=...` line
-# MUST start with a system dir (/usr/...) and place writable user dirs
-# (/home/odio/.local/bin, /home/odio/.npm-global/bin) after them.
-echo "  asserting systemd unit Environment=PATH starts with system dirs..."
-for unit in systemd/pr-reviewer.service systemd/pr-reviewer-learn.service \
-            systemd/pr-reviewer-approve.service \
-            systemd/pr-reviewer-re-request.service \
-            systemd/pr-reviewer-kid-refresh.service; do
-    path_line=$(grep -E '^Environment=PATH=' "$unit")
     case "$path_line" in
-        Environment=PATH=/usr/*) : ;;  # OK — system dir first
+        Environment=PATH=/usr/*) ;;
         *)
             echo "FAIL: $unit Environment=PATH does not start with /usr/... — writable user dirs would be searched first"
             echo "  got: $path_line"
             exit 1 ;;
     esac
-done
 
-# Authenticated tools (codex) must resolve from .npm-global before .local.
-# Defense-in-depth: /home/odio/.local is no longer in any unit's
-# ReadWritePaths (the prior fence asserts that), so PR-controlled code
-# can't write to .local/bin in the first place. PATH ordering here is the
-# layered fence — if a future ReadWritePaths widening re-allowed writes
-# to .local, ordering still resolves codex from the read-only npm-global
-# install before any user-writable shadow. Fence the order for every
-# unit that runs codex.
-echo "  asserting .npm-global precedes .local in units that run codex..."
-for unit in systemd/pr-reviewer.service systemd/pr-reviewer-learn.service \
-            systemd/pr-reviewer-approve.service \
-            systemd/pr-reviewer-re-request.service; do
-    path_line=$(grep -E '^Environment=PATH=' "$unit")
-    case "$path_line" in
-        *.npm-global/bin*.local/bin*) : ;;  # OK — npm-global first
-        *.local/bin*.npm-global/bin*)
-            echo "FAIL: $unit PATH has .local/bin BEFORE .npm-global/bin — PR-controlled just test could plant ~/.local/bin/codex shadowing the real codex install"
-            echo "  got: $path_line"
-            exit 1 ;;
-    esac
+    if [[ "$unit" != *kid-refresh* ]]; then
+        case "$path_line" in
+            *.npm-global/bin*.local/bin*) ;;
+            *.local/bin*.npm-global/bin*)
+                echo "FAIL: $unit PATH has .local/bin BEFORE .npm-global/bin — PR-controlled just test could plant ~/.local/bin/codex shadowing the real codex install"
+                echo "  got: $path_line"
+                exit 1 ;;
+        esac
+    fi
 done
 
 # ====================================================================
