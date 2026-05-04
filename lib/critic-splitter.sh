@@ -76,6 +76,18 @@ split_critic_to_specialists() {
         in_gen { print > out_file }
     ' "$critic_md" || return 1
 
+    # Probe-contract gate: critic_md was non-empty (checked at top), but if
+    # pass-1 produced no .angle-buf files AND pass-1.5 produced no
+    # generated-probes content, the critic returned malformed output that
+    # doesn't match any recognized [from: <angle>] Probe block or
+    # ## Generated probes section. Silent pass-through would demote a
+    # critic-resolved blocker to nothing in the rendered review.
+    local angle_bufs=( "$specialists_dir"/*.angle-buf )
+    if [ ! -e "${angle_bufs[0]}" ] && [ ! -s "$specialists_dir/critic.md" ]; then
+        echo "split_critic_to_specialists: critic output non-empty but produced no [from: <angle>] Probe blocks and no '## Generated probes' section — fail-loud (silent drop would demote critic-resolved blockers)" >&2
+        return 1
+    fi
+
     # Pass 2: for each .angle-buf, append to specialists/<angle>.md under
     # a "## Critic counter-arguments" H2. Replaces the file (which is
     # typically a symlink to the agent's output.md) with a regular file

@@ -93,10 +93,11 @@ for REPO in "${REPOS[@]}"; do
             BODY=$(echo "$COMMENT" | jq -r '.body')
             ID=$(echo "$COMMENT" | jq -r '.id')
             CREATED=$(echo "$COMMENT" | jq -r '.created_at')
-            # Portable ISO→epoch — `date -d` is GNU-only; macOS BSD date doesn't
-            # support it. python3 (already a project dep) handles both. Same
-            # fail-soft semantics as the original `|| echo 0`.
-            TS=$(python3 -c "import datetime,sys; s=sys.argv[1].replace('Z','+00:00'); print(int(datetime.datetime.fromisoformat(s).timestamp()))" "$CREATED" 2>/dev/null || echo 0)
+            # Portable ISO→epoch via jq's fromdateiso8601 — already invoked
+            # per-iteration above, so zero new process startup cost. (Earlier
+            # python3 fix shipped per-comment subprocess; bot caught the
+            # cost on PR #47 R32 and pointed at the jq-native one-liner.)
+            TS=$(jq -nr --arg ts "$CREATED" '$ts | fromdateiso8601' 2>/dev/null || echo 0)
 
             if [ "$USER" = "$BOT_USER" ]; then
                 LAST_OUR_TS=$TS

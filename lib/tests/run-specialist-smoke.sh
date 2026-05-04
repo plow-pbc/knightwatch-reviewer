@@ -49,7 +49,10 @@ while [ "$#" -gt 0 ]; do
         *) shift ;;
     esac
 done
-echo "stub-output-marker" > "$OUT_FILE"
+# Emit probe-contract-compliant output so the security/specialist
+# probe-shape gate at run-specialist.sh:62-74 accepts. The stub-output-
+# marker remains as a downstream-grep anchor for this smoke.
+{ printf '### Probe 1\n'; echo "stub-output-marker"; } > "$OUT_FILE"
 echo "stub-stderr-marker" >&2
 exit 0
 STUB

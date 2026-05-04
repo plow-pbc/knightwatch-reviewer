@@ -208,6 +208,15 @@ fi
 META="$RUN_DIR/meta.json"
 LOG="$RUN_DIR/run.log"
 
+# probe-schema.md staging gate: the worker MUST stage the canonical probe
+# contract under inputs/ — silent omission would let the prompt-build
+# pipeline run without the schema and the smoke wouldn't notice. Asserts
+# write_scratch's probe-schema.md write at lib/review-one-pr.sh:959.
+if [ ! -s "$RUN_DIR/inputs/probe-schema.md" ]; then
+    echo "FAIL: $RUN_DIR/inputs/probe-schema.md not staged — worker skipped probe-schema write_scratch"
+    exit 1
+fi
+
 if [ ! -f "$META" ]; then
     echo "FAIL: $META not written — worker aborted before meta.json"
     [ -f "$LOG" ] && { echo "--- run.log ---"; cat "$LOG"; }

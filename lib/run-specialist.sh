@@ -64,4 +64,22 @@ if [ ! -s "$OUT_FILE" ]; then
     exit 3
 fi
 
+# Probe-contract gate for probe-emitting roles. The 8 specialist angles
+# are required by prompts/probe-schema.md to emit either at least one
+# `### Probe N` block or the literal `No probes.` sentinel. Anything
+# else is malformed agent output that would silently remove this
+# specialist's review units when the splitter/aggregator parse it.
+# Non-probe-emitting roles (intent, critic, aggregator, momentum,
+# dead-code-search, go-deep-*) follow different prompt contracts and
+# are exempt — see prompts/critic.md (`## Resolved probes` / `## Generated
+# probes`) and prompts/intent.md (single `Inferred intent:` line).
+case "$NAME" in
+    intent|critic|aggregator|momentum|dead-code-search|go-deep-*) ;;
+    *)
+        if ! grep -qE '^### Probe |^No probes\.$' "$OUT_FILE"; then
+            echo "[$(date '+%H:%M:%S')] agent=$NAME produced output that doesn't follow probe contract (no '### Probe' block, no 'No probes.' sentinel)" >> "$LOG_FILE"
+            exit 4
+        fi ;;
+esac
+
 exit 0
