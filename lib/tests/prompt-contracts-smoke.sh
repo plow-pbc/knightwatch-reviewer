@@ -289,14 +289,7 @@ done
 # units that run codex; kid-refresh doesn't run codex and is exempt from the
 # .npm-global ordering check (still subject to the other two).
 echo "  asserting systemd units: ReadWritePaths + Environment=PATH ordering + .npm-global precedence..."
-SYSTEMD_UNITS=(
-    systemd/pr-reviewer.service
-    systemd/pr-reviewer-learn.service
-    systemd/pr-reviewer-approve.service
-    systemd/pr-reviewer-re-request.service
-    systemd/pr-reviewer-kid-refresh.service
-)
-for unit in "${SYSTEMD_UNITS[@]}"; do
+for unit in systemd/*.service; do
     rw_line=$(grep -E '^ReadWritePaths=' "$unit")
     path_line=$(grep -E '^Environment=PATH=' "$unit")
 
