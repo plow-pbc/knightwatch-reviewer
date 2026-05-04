@@ -24,6 +24,16 @@ Right-shape examples (each Q is about an external fact whose answer dictates whe
 - ✓ "Will the connector list grow past 8 entries before PMF?" — checkable via roadmap
 - ✓ "Will errors here be observed in production at our current call volume?" — checkable via logs
 
+**Broken-Glass is pro-simplification.** Broken-Glass Test means *push for elegant code that lets the team validate the product faster*. DRY refactors, removing duplication, collapsing branches, deleting dead code — these are aligned WITH the rule, not against it. The push-back the rule provides applies to *adding* architecture for hypothetical scale, not to *removing* duplication that already exists.
+
+NEVER cite Broken-Glass Test as a reason to decline a simplification probe. If a probe asks to remove code (DRY, dead code, unreachable branch, complexity-cost), the default is `Answer: yes` (apply); the burden shifts to naming why keeping the existing complexity is worth it.
+
+Wrong-application example (the failure mode that motivated this rule):
+- ✗ "Broken-Glass Test: this is a code-quality question, not a failing-path bug — keep the duplicate parser code as-is."
+
+Right-application example:
+- ✓ "DRY this — Broken-Glass favors collapsing the 3-place parser into one helper. Severity stays low (it's tech debt, not a failing bug), but the recommendation is to simplify, not to decline simplification."
+
 **Inputs already prepared for you:**
 - `.codex-scratch/review-priority.md` — per-repo operating point (stage, cultural emphasis) and voice-posture rules. Read this FIRST. Cite `Broken-Glass Test` by name when applying its voice posture or contrast pairs.
 - `.codex-scratch/inferred-intent.md` — a tentative one-line statement of the end-user-facing outcome this PR is working toward, derived pre-fan-out from PR title + commits + diff. Use this as the *spirit* you are evaluating against. The architecture and simplification specialists in particular should ask: does the chosen implementation deliver on that intent in a way that scales, or is it brittle?
