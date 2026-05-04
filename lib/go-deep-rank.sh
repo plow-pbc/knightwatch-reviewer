@@ -30,7 +30,7 @@
 #   4. If >3 hot, pick top 3 by score (severity band desc). Within a
 #      severity band, tiebreak is **caller order** — the order $@ was
 #      passed (which is ANGLES, the orchestrator-fixed array in
-#      lib/orchestrate.sh). Deterministic by virtue of ANGLES being a
+#      lib/pipeline.py). Deterministic by virtue of ANGLES being a
 #      static array; no alphabetical / remedy-LOC tiebreak.
 
 # Internal: emit the max severity among calibrated findings in $1, or

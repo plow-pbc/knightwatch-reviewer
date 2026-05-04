@@ -42,7 +42,7 @@ _decline_history_from_json() {
 
     # BOT_USER is the GitHub login seam (review.sh:26, learn-from-replies.sh:36,
     # approve-from-replies.sh:54). Distinct from OPERATOR_NAME (the voice/display
-    # seam at prompt-build.sh:18) — using the wrong one would silently filter
+    # seam in lib/pipeline.py) — using the wrong one would silently filter
     # out real decline replies under a renamed operator.
     local operator="${BOT_USER:-srosro}"
     # Bot auto-posts sign as $operator (kw-reviewer's GH identity is the
