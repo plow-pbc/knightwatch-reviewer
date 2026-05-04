@@ -236,5 +236,93 @@ class TestBuildPrompt(unittest.TestCase):
         self.assertIn(".codex-scratch/specialists/shape.md", out)
 
 
+class TestRunAngle(unittest.TestCase):
+    """run_angle dispatches specialist→critic, composes layered file."""
+
+    def setUp(self):
+        self.tmp = TemporaryDirectory()
+        self.repo_dir = Path(self.tmp.name) / "repo"
+        (self.repo_dir / ".git").mkdir(parents=True)
+        (self.repo_dir / ".codex-scratch" / "specialists").mkdir(parents=True)
+        self.run_dir = Path(self.tmp.name) / "run"
+        (self.run_dir / "agents").mkdir(parents=True)
+
+        # Minimal prompts dir so build_prompt can resolve files
+        self.prompts = Path(self.tmp.name) / "prompts"
+        self.prompts.mkdir()
+        (self.prompts / "common-header.md").write_text("HEADER {{SPECIALIST_NAME}}\n")
+        (self.prompts / "security.md").write_text("BODY for {{SPECIALIST_NAME}}\n")
+        (self.prompts / "critic.md").write_text("Critique {{ANGLE}}.\n")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _make_codex_stub(self, plan):
+        """plan: dict mapping agent name → (exit_code, output_text)."""
+        def side_effect(argv, **kwargs):
+            # Recover agent name from -o argument's parent dir
+            out_idx = argv.index("-o")
+            out_path = Path(argv[out_idx + 1])
+            agent_name = out_path.parent.name
+            ec, out = plan.get(agent_name, (0, "### Probe 1\nstub\n"))
+            out_path.write_text(out)
+            return FakeCompletedProcess(ec)
+        return side_effect
+
+    @patch("pipeline.subprocess.run")
+    def test_specialist_then_critic_writes_layered_file(self, mock_run):
+        mock_run.side_effect = self._make_codex_stub({
+            "security": (0, "### Probe 1\nspecialist body\n"),
+            "critic-security": (0, "- **Answer:** yes\n- **Evidence:** cited\n"),
+        })
+        rc = pipeline.run_angle(
+            angle="security",
+            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
+            prompts_dir=str(self.prompts),
+            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
+        )
+        self.assertEqual(rc, 0)
+        # Layered file in both run-dir + .codex-scratch
+        layered = (self.run_dir / "agents" / "security" / "layered.md").read_text()
+        scratch = (self.repo_dir / ".codex-scratch" / "specialists" / "security.md").read_text()
+        self.assertEqual(layered, scratch)
+        self.assertIn("specialist body", layered)
+        self.assertIn("## Critic counter-arguments", layered)
+        self.assertIn("- **Answer:** yes", layered)
+
+    @patch("pipeline.subprocess.run")
+    def test_specialist_failure_skips_critic(self, mock_run):
+        mock_run.side_effect = self._make_codex_stub({
+            "security": (7, ""),
+        })
+        rc = pipeline.run_angle(
+            angle="security",
+            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
+            prompts_dir=str(self.prompts),
+            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
+        )
+        self.assertEqual(rc, 7)
+        # Critic agent dir should NOT exist (didn't run)
+        self.assertFalse((self.run_dir / "agents" / "critic-security").exists())
+
+    @patch("pipeline.subprocess.run")
+    def test_specialist_success_critic_failure_returns_critic_rc(self, mock_run):
+        mock_run.side_effect = self._make_codex_stub({
+            "security": (0, "### Probe 1\nstub\n"),
+            "critic-security": (5, ""),
+        })
+        rc = pipeline.run_angle(
+            angle="security",
+            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
+            prompts_dir=str(self.prompts),
+            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
+        )
+        self.assertEqual(rc, 5)
+        # Layered file NOT written
+        self.assertFalse(
+            (self.repo_dir / ".codex-scratch" / "specialists" / "security.md").exists()
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

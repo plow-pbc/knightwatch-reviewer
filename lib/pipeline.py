@@ -210,3 +210,63 @@ def build_prompt(
         return _substitute_placeholders(stitched, **base_subs)
 
     raise ValueError(f"build_prompt: unknown kind '{kind}'")
+
+
+def run_angle(
+    angle: str,
+    repo_dir: str,
+    run_dir: str,
+    prompts_dir: str,
+    pr_id: str,
+    pr_title: str,
+    pr_url: str,
+    pr_author: str,
+) -> int:
+    """Run one per-angle pipeline: specialist → critic.
+
+    Returns the codex exit code of whichever stage failed (or 0 on full
+    success). Layered file (`specialist + ## Critic counter-arguments +
+    critic`) is written to both `<run_dir>/agents/<angle>/layered.md` and
+    `<repo_dir>/.codex-scratch/specialists/<angle>.md` only on full success.
+    """
+    run = Path(run_dir)
+    repo = Path(repo_dir)
+
+    # 1. Specialist
+    spec_prompt = build_prompt(
+        kind="specialist", agent=angle, prompts_dir=prompts_dir,
+        pr_id=pr_id, pr_title=pr_title, pr_url=pr_url, pr_author=pr_author,
+    )
+    spec_agent_dir = run / "agents" / angle
+    spec_rc = run_codex(angle, str(repo), spec_prompt, str(spec_agent_dir))
+    if spec_rc != 0:
+        log(f"{pr_id}: specialist {angle} exited non-zero (see {spec_agent_dir}/log.txt)")
+        return spec_rc
+    spec_out = (spec_agent_dir / "output.md").read_text()
+
+    # 2. Per-angle critic
+    crit_prompt = build_prompt(
+        kind="critic", agent=f"critic-{angle}", prompts_dir=prompts_dir,
+        pr_id=pr_id, pr_title=pr_title, pr_url=pr_url, pr_author=pr_author,
+    )
+    # Critic prompt is augmented with the specialist's output as context.
+    crit_full_prompt = (
+        crit_prompt
+        + "\n\n---\n\n## Specialist output to critique\n\n"
+        + spec_out
+    )
+    crit_agent_dir = run / "agents" / f"critic-{angle}"
+    crit_rc = run_codex(f"critic-{angle}", str(repo), crit_full_prompt, str(crit_agent_dir))
+    if crit_rc != 0:
+        log(f"{pr_id}: critic-{angle} exited non-zero (see {crit_agent_dir}/log.txt)")
+        return crit_rc
+    crit_out = (crit_agent_dir / "output.md").read_text()
+
+    # 3. Compose layered file
+    layered = spec_out + "\n\n---\n\n## Critic counter-arguments\n\n" + crit_out
+    (spec_agent_dir / "layered.md").write_text(layered)
+    scratch_path = repo / ".codex-scratch" / "specialists" / f"{angle}.md"
+    scratch_path.parent.mkdir(parents=True, exist_ok=True)
+    scratch_path.write_text(layered)
+
+    return 0
