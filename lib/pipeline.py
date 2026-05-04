@@ -219,6 +219,17 @@ def build_prompt(
 _CRITIC_H2_RE = re.compile(r"^## Critic counter-arguments\s*$", re.MULTILINE)
 
 
+def _duplicate_ids(ids: list[str]) -> list[str]:
+    """Return the IDs that appear more than once, in first-seen order."""
+    seen: set[str] = set()
+    dupes: list[str] = []
+    for pid in ids:
+        if pid in seen and pid not in dupes:
+            dupes.append(pid)
+        seen.add(pid)
+    return dupes
+
+
 def _validate_critic_output(spec_text: str, crit_text: str) -> str | None:
     """Validate critic output against the specialist's probes.
 
@@ -227,11 +238,20 @@ def _validate_critic_output(spec_text: str, crit_text: str) -> str | None:
     angle and generated probes belong to the aggregator), OR emits the bare
     'No probes.' sentinel — but only when the specialist had zero probes.
     Anchored H2 (start-of-line `## Critic counter-arguments`) so a mid-prose
-    quote of the heading doesn't smuggle malformed output through.
+    quote of the heading doesn't smuggle malformed output through. Duplicate
+    probe IDs on either side are rejected up-front so set-equality can't
+    mask unresolved hidden duplicates.
 
     Returns None on success, an error message on failure.
     """
-    spec_probe_ids = set(_PROBE_HEADER_RE.findall(spec_text))
+    spec_probe_id_list = _PROBE_HEADER_RE.findall(spec_text)
+    spec_dupes = _duplicate_ids(spec_probe_id_list)
+    if spec_dupes:
+        return (
+            f"specialist emitted duplicate probe ID(s): {spec_dupes} — each "
+            "probe must have a unique '### Probe N' header"
+        )
+    spec_probe_ids = set(spec_probe_id_list)
 
     if not spec_probe_ids:
         # Specialist had no probes — critic must emit exactly 'No probes.'
@@ -249,10 +269,18 @@ def _validate_critic_output(spec_text: str, crit_text: str) -> str | None:
             "anchored '## Critic counter-arguments' H2 header"
         )
 
+    crit_probe_id_list = _PROBE_HEADER_RE.findall(crit_text)
+    crit_dupes = _duplicate_ids(crit_probe_id_list)
+    if crit_dupes:
+        return (
+            f"critic emitted duplicate probe ID(s): {crit_dupes} — each "
+            "resolution must have a unique '### Probe N' header"
+        )
+    crit_probe_ids = set(crit_probe_id_list)
+
     # Bijection: spec_probe_ids must equal crit_probe_ids exactly. Missing →
     # critic skipped a specialist probe (under-resolution); extra → critic
     # invented a cross-angle/generated probe (aggregator's territory).
-    crit_probe_ids = set(_PROBE_HEADER_RE.findall(crit_text))
     missing = spec_probe_ids - crit_probe_ids
     if missing:
         return (

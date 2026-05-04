@@ -220,6 +220,39 @@ class TestValidateCriticOutput(unittest.TestCase):
         self.assertIn("not in specialist", err)
         self.assertIn("'2'", err)
 
+    def test_specialist_with_duplicate_probe_ids_returns_error(self):
+        """Specialist emitting two `### Probe 1` blocks would let set(...)
+        collapse them so a critic resolving only one passes the equality
+        check while leaving an ambiguous unresolved duplicate. Reject
+        duplicate IDs at the validator boundary instead."""
+        spec = (
+            "### Probe 1\n- **From:** security\n"
+            "### Probe 1\n- **From:** security\n"  # duplicate ID
+        )
+        crit = (
+            "## Critic counter-arguments\n\n"
+            "### Probe 1\n- **Answer:** yes\n- **Evidence:** x\n"
+        )
+        err = pipeline._validate_critic_output(spec, crit)
+        self.assertIsNotNone(err)
+        self.assertIn("specialist emitted duplicate", err)
+        self.assertIn("'1'", err)
+
+    def test_critic_with_duplicate_probe_ids_returns_error(self):
+        """Symmetric check on the critic side — a critic emitting two
+        `### Probe 1` blocks (e.g. from an LLM hallucinating a re-resolution)
+        is also rejected."""
+        spec = "### Probe 1\n- **From:** security\n"
+        crit = (
+            "## Critic counter-arguments\n\n"
+            "### Probe 1\n- **Answer:** yes\n- **Evidence:** x\n\n"
+            "### Probe 1\n- **Answer:** no\n- **Evidence:** y\n"  # duplicate
+        )
+        err = pipeline._validate_critic_output(spec, crit)
+        self.assertIsNotNone(err)
+        self.assertIn("critic emitted duplicate", err)
+        self.assertIn("'1'", err)
+
     def test_critic_h2_must_be_anchored_to_start_of_line(self):
         """A mid-prose quote of '## Critic counter-arguments' must not pass —
         a paragraph mentioning the section name doesn't satisfy the layered
@@ -562,9 +595,10 @@ class TestRunPipeline(unittest.TestCase):
             if agent_name == "intent" and ec == 0 and out == default[1]:
                 out = "Inferred intent: stub.\n"
             # Per-angle critics must emit '## Critic counter-arguments' H2
-            # (or 'No probes.' sentinel) per the contract enforced by
-            # run_codex's _CRITIC_BLOCK_RE gate. Default tests that don't
-            # override the critic output need a contract-valid stub.
+            # + a `### Probe N` block per specialist probe with Answer +
+            # Evidence, per the contract enforced by _validate_critic_output()
+            # at the run_angle() boundary. Default tests that don't override
+            # the critic output need a contract-valid stub.
             if (
                 agent_name.startswith("critic-")
                 and ec == 0
