@@ -60,6 +60,6 @@ Append a single H2 section to your output:
 (Repeat per probe in the specialist file. Header `### Probe N` matches the specialist's probe numbering. Severity-if-yes is omitted unless you're overriding.)
 ```
 
-**Empty case.** If the specialist file ended with `No probes.` (the specialist had nothing to surface), write `No probes.` on its own line as the entire critic output (no `## Critic counter-arguments` header). The pipeline recognizes this as valid empty-critic output.
+**Empty case.** If `.codex-scratch/specialists/{{ANGLE}}.md` contains a `No probes.` line and no `### Probe N` blocks (the specialist had nothing to surface and emitted only its `## Surveyed` justification), write `No probes.` on its own line as the entire critic output (no `## Critic counter-arguments` header). The pipeline recognizes this as valid empty-critic output.
 
 **No cross-angle work.** This critic only resolves probes from the {{ANGLE}} specialist. Cross-angle pattern spotting, generated probes that no specialist found, and carry-forward of probes from prior reviews — all handled by the aggregator (`prompts/aggregator.md`), which sees all 8 specialists' layered files together.

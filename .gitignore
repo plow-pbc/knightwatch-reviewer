@@ -233,12 +233,15 @@ kid-last-failure
 
 # Replay-tool artifacts: keep aggregator/specialist/critic outputs,
 # drop agent prompt.txt + log.txt (regenerable + huge) and agents-on-exit/
-# (debug-only, mirror of agents/).
-replays/comparison/**/agents/*/prompt.txt
-replays/comparison/**/agents/*/log.txt
-replays/comparison/**/agents-on-exit/
-replays/comparison/**/run-dir/agents/*/prompt.txt
-replays/comparison/**/run-dir/agents/*/log.txt
+# (debug-only, mirror of agents/). Pattern matches both the comparison/
+# subtree and the default replays/<repo>-<pr>-<sha>-<slug>/ output dir
+# from lib/replay.sh — without this breadth, private standards staged via
+# write_scratch land as commit-ready untracked files.
+replays/**/agents/*/prompt.txt
+replays/**/agents/*/log.txt
+replays/**/agents-on-exit/
+replays/**/run-dir/agents/*/prompt.txt
+replays/**/run-dir/agents/*/log.txt
 
 # Untracked workspace artifacts (created during prompt-quality investigation,
 # kept on disk for reference but not committed).

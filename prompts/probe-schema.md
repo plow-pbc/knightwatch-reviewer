@@ -40,10 +40,6 @@ The `Class:` field takes exactly one of these tokens. Each class carries its own
 
 - **`complexity-cost`** — existing complexity in the diff that may not earn its place at the operating point: defensive branches, helpers with one call site, framework-where-function-would-do, premature optimization, defense-in-depth not requested, over-tested edges, defensive caller-shape adapters, etc. **Used by all specialists.** `Confidence: low|medium`. `Severity if yes: low|nit` for code-style / test-quality cases; `low|medium` for architecture / data-integrity defensive layers. `If yes, edit:` "delete <code> — N LOC, fewer seams". `If no, cost:` name the specific shape kept and what makes it earn its keep at this operating point.
 
-## Resolved-probe deltas (critic-only)
+## Critic counter-arguments (per-angle critic only)
 
-The critic emits delta blocks under `## Resolved probes`, one per specialist probe it resolves. Header form: `### [from: <angle>] Probe N`. Required fields: `Answer`, `Evidence`. Optional: `Severity if yes` (when the critic overrides the specialist's prior).
-
-## Generated probes (critic-only)
-
-Critic-originated probes go under `## Generated probes` as full probe blocks per the schema above, with `From: critic`.
+Each per-angle critic appends its resolutions as a single H2 section to its specialist's file at `.codex-scratch/specialists/<angle>.md`. Header form: `## Critic counter-arguments`, then one `### Probe N` block per resolved probe with required `Answer:` + `Evidence:` and optional `Severity if yes:` override. Cross-angle generated probes are emitted by the aggregator (attributed `[from: aggregator]`), not by per-angle critics.

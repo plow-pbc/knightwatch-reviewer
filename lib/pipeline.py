@@ -246,29 +246,31 @@ def run_angle(
         return spec_rc
     spec_out = (spec_agent_dir / "output.md").read_text()
 
-    # 2. Per-angle critic
+    # Stage specialist output to .codex-scratch BEFORE the critic runs, so the
+    # per-angle critic can read its canonical input via the path documented in
+    # prompts/critic.md (no inline prompt augmentation needed). The file is
+    # overwritten with the layered content after a successful critic.
+    scratch_path = repo / ".codex-scratch" / "specialists" / f"{angle}.md"
+    scratch_path.parent.mkdir(parents=True, exist_ok=True)
+    scratch_path.write_text(spec_out)
+
+    # 2. Per-angle critic — reads .codex-scratch/specialists/<angle>.md
     crit_prompt = build_prompt(
         kind="critic", agent=f"critic-{angle}", prompts_dir=prompts_dir,
         pr_id=pr_id, pr_title=pr_title, pr_url=pr_url, pr_author=pr_author,
     )
-    # Critic prompt is augmented with the specialist's output as context.
-    crit_full_prompt = (
-        crit_prompt
-        + "\n\n---\n\n## Specialist output to critique\n\n"
-        + spec_out
-    )
     crit_agent_dir = run / "agents" / f"critic-{angle}"
-    crit_rc = run_codex(f"critic-{angle}", str(repo), crit_full_prompt, str(crit_agent_dir))
+    crit_rc = run_codex(f"critic-{angle}", str(repo), crit_prompt, str(crit_agent_dir))
     if crit_rc != 0:
         log(f"{pr_id}: critic-{angle} exited non-zero (see {crit_agent_dir}/log.txt)")
         return crit_rc
     crit_out = (crit_agent_dir / "output.md").read_text()
 
-    # 3. Compose layered file
-    layered = spec_out + "\n\n---\n\n## Critic counter-arguments\n\n" + crit_out
+    # 3. Compose layered file. The critic's own '## Critic counter-arguments'
+    # H2 owns its section; pipeline only adds the '---' separator so the H2
+    # isn't doubled.
+    layered = spec_out + "\n\n---\n\n" + crit_out
     (spec_agent_dir / "layered.md").write_text(layered)
-    scratch_path = repo / ".codex-scratch" / "specialists" / f"{angle}.md"
-    scratch_path.parent.mkdir(parents=True, exist_ok=True)
     scratch_path.write_text(layered)
 
     return 0

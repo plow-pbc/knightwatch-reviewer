@@ -1,5 +1,7 @@
 """Tests for lib/pipeline.py — mocked codex subprocess."""
 import os
+import stat
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -271,9 +273,13 @@ class TestRunAngle(unittest.TestCase):
 
     @patch("pipeline.subprocess.run")
     def test_specialist_then_critic_writes_layered_file(self, mock_run):
+        # Critic owns the '## Critic counter-arguments' H2 — pipeline.py only
+        # adds the '---' separator, so the critic output must include the H2.
         mock_run.side_effect = self._make_codex_stub({
             "security": (0, "### Probe 1\nspecialist body\n"),
-            "critic-security": (0, "- **Answer:** yes\n- **Evidence:** cited\n"),
+            "critic-security": (0,
+                "## Critic counter-arguments\n\n### Probe 1\n"
+                "- **Answer:** yes\n- **Evidence:** cited\n"),
         })
         rc = pipeline.run_angle(
             angle="security",
@@ -287,8 +293,44 @@ class TestRunAngle(unittest.TestCase):
         scratch = (self.repo_dir / ".codex-scratch" / "specialists" / "security.md").read_text()
         self.assertEqual(layered, scratch)
         self.assertIn("specialist body", layered)
-        self.assertIn("## Critic counter-arguments", layered)
+        # Exactly one '## Critic counter-arguments' H2 — not doubled
+        self.assertEqual(layered.count("## Critic counter-arguments"), 1)
         self.assertIn("- **Answer:** yes", layered)
+
+    @patch("pipeline.subprocess.run")
+    def test_scratch_staged_before_critic_runs(self, mock_run):
+        """The per-angle critic prompt cites .codex-scratch/specialists/<angle>.md
+        as input. Verify the file exists with raw spec output at the moment the
+        critic is invoked (not just after the layered overwrite)."""
+        scratch_path = self.repo_dir / ".codex-scratch" / "specialists" / "security.md"
+        captured: dict[str, str] = {}
+
+        def side_effect(argv, **kwargs):
+            out_path = Path(argv[argv.index("-o") + 1])
+            agent_name = out_path.parent.name
+            if agent_name == "critic-security":
+                # Snapshot scratch contents at the moment the critic runs.
+                captured["scratch_at_critic"] = scratch_path.read_text()
+                out_path.write_text(
+                    "## Critic counter-arguments\n\n"
+                    "### Probe 1\n- **Answer:** yes\n- **Evidence:** cited\n"
+                )
+                return FakeCompletedProcess(0)
+            out_path.write_text("### Probe 1\nspecialist body\n")
+            return FakeCompletedProcess(0)
+
+        mock_run.side_effect = side_effect
+        rc = pipeline.run_angle(
+            angle="security",
+            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
+            prompts_dir=str(self.prompts),
+            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
+        )
+        self.assertEqual(rc, 0)
+        # At the moment the critic ran, scratch held the specialist output —
+        # not yet layered (no critic counter-arguments H2 yet).
+        self.assertIn("specialist body", captured["scratch_at_critic"])
+        self.assertNotIn("## Critic counter-arguments", captured["scratch_at_critic"])
 
     @patch("pipeline.subprocess.run")
     def test_specialist_failure_skips_critic(self, mock_run):
@@ -304,6 +346,10 @@ class TestRunAngle(unittest.TestCase):
         self.assertEqual(rc, 7)
         # Critic agent dir should NOT exist (didn't run)
         self.assertFalse((self.run_dir / "agents" / "critic-security").exists())
+        # Scratch file should NOT exist (specialist failed, never staged)
+        self.assertFalse(
+            (self.repo_dir / ".codex-scratch" / "specialists" / "security.md").exists()
+        )
 
     @patch("pipeline.subprocess.run")
     def test_specialist_success_critic_failure_returns_critic_rc(self, mock_run):
@@ -318,10 +364,14 @@ class TestRunAngle(unittest.TestCase):
             pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
         )
         self.assertEqual(rc, 5)
-        # Layered file NOT written
-        self.assertFalse(
-            (self.repo_dir / ".codex-scratch" / "specialists" / "security.md").exists()
+        # Scratch file exists (staged before critic) but is un-layered
+        # (no '## Critic counter-arguments'). run_pipeline aborts on this rc
+        # and rm -rf's REPO_DIR before the aggregator could read the orphan.
+        scratch_path = (
+            self.repo_dir / ".codex-scratch" / "specialists" / "security.md"
         )
+        self.assertTrue(scratch_path.exists())
+        self.assertNotIn("## Critic counter-arguments", scratch_path.read_text())
 
 
 class TestRunPipeline(unittest.TestCase):
@@ -475,6 +525,136 @@ class TestRunPipeline(unittest.TestCase):
         )
         self.assertNotEqual(rc, 0)
         self.assertFalse(self.repo_dir.exists())
+
+
+class TestPipelineCLI(unittest.TestCase):
+    """End-to-end smoke against the real `python3 lib/pipeline.py REPO_DIR
+    RUN_DIR` process boundary. The TestRunPipeline class above mocks
+    subprocess.run inside the same process; this class exercises argv
+    parsing, env-var loading, PATH resolution, and sys.exit() — none of
+    which the in-process tests cover.
+    """
+
+    def setUp(self):
+        self.tmp = TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.repo_dir = root / "repo"
+        (self.repo_dir / ".git").mkdir(parents=True)
+        (self.repo_dir / ".codex-scratch" / "specialists").mkdir(parents=True)
+        self.run_dir = root / "run"
+        (self.run_dir / "agents").mkdir(parents=True)
+        (self.run_dir / "inputs").mkdir(parents=True)
+
+        self.prompts = root / "prompts"
+        self.prompts.mkdir()
+        (self.prompts / "common-header.md").write_text("H {{SPECIALIST_NAME}}\n")
+        for angle in pipeline.ANGLES:
+            (self.prompts / f"{angle}.md").write_text(f"BODY {angle}\n")
+        (self.prompts / "intent.md").write_text("intent prompt\n")
+        (self.prompts / "dead-code-search.md").write_text("dc prompt\n")
+        (self.prompts / "momentum.md").write_text("momentum prompt\n")
+        (self.prompts / "critic.md").write_text("critic prompt\n")
+        (self.prompts / "voice.md").write_text("Voice: {{OPERATOR_NAME}}\n")
+        (self.prompts / "aggregator.md").write_text(
+            "# Agg\n<!-- INSERT_VOICE_HERE -->\nAgg body\n"
+        )
+
+        # Fake codex on PATH. Mirrors the real argv shape:
+        #   codex exec -C <repo> --dangerously-bypass-approvals-and-sandbox \
+        #     -c model=gpt-5.5 -c model_reasoning_effort=high -o <out> <prompt>
+        # Picks output by agent dir name (the parent of the -o target).
+        self.fake_bin = root / "fakebin"
+        self.fake_bin.mkdir()
+        fake_codex = self.fake_bin / "codex"
+        fake_codex.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            "from pathlib import Path\n"
+            "argv = sys.argv\n"
+            "out_idx = argv.index('-o')\n"
+            "out_path = Path(argv[out_idx + 1])\n"
+            "agent = out_path.parent.name\n"
+            "if agent == 'intent':\n"
+            "    out_path.write_text('Inferred intent: stub.\\n')\n"
+            "elif agent == 'aggregator':\n"
+            "    out_path.write_text('# Review\\nVERDICT: APPROVE\\n')\n"
+            "elif agent.startswith('critic-'):\n"
+            "    out_path.write_text('## Critic counter-arguments\\n\\n"
+            "### Probe 1\\n- **Answer:** yes\\n- **Evidence:** stub\\n')\n"
+            "elif agent in ('dead-code-search', 'momentum'):\n"
+            "    out_path.write_text(agent + ' stub\\n')\n"
+            "else:\n"
+            "    out_path.write_text('### Probe 1\\nstub\\n')\n"
+            "sys.exit(0)\n"
+        )
+        fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_real_subprocess_first_review(self):
+        """Run pipeline.py as a subprocess with a fake codex on PATH.
+        Asserts argv, env-var loading, and aggregator output landing
+        at the deterministic path."""
+        pipeline_path = Path(pipeline.__file__).resolve()
+        env = {
+            "PATH": f"{self.fake_bin}:{os.environ.get('PATH', '')}",
+            "PR_ID": "owner/repo#42",
+            "PR_TITLE": "Add X",
+            "PR_URL": "https://example/pull/42",
+            "PR_AUTHOR": "alice",
+            "PROMPTS_DIR": str(self.prompts),
+            "LOG_FILE": str(self.run_dir / "run.log"),
+            "OPERATOR_NAME": "Sam",
+        }
+        proc = subprocess.run(
+            [sys.executable, str(pipeline_path), str(self.repo_dir), str(self.run_dir)],
+            env=env, capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(
+            proc.returncode, 0,
+            f"pipeline exit={proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+        )
+        agg_out = self.run_dir / "agents" / "aggregator" / "output.md"
+        self.assertTrue(agg_out.exists(), "aggregator output.md missing")
+        self.assertIn("VERDICT: APPROVE", agg_out.read_text())
+        for angle in pipeline.ANGLES:
+            self.assertTrue(
+                (self.run_dir / "agents" / angle / "output.md").exists(),
+                f"missing specialist output for {angle}",
+            )
+            self.assertTrue(
+                (self.run_dir / "agents" / f"critic-{angle}" / "output.md").exists(),
+                f"missing critic output for {angle}",
+            )
+
+    def test_missing_required_env_var_fails_loud(self):
+        """PR_ID etc. are required — missing should exit non-zero, not run."""
+        pipeline_path = Path(pipeline.__file__).resolve()
+        env = {
+            "PATH": f"{self.fake_bin}:{os.environ.get('PATH', '')}",
+            # PR_ID intentionally omitted
+            "PR_TITLE": "x",
+            "PR_URL": "x",
+            "PR_AUTHOR": "x",
+            "PROMPTS_DIR": str(self.prompts),
+        }
+        proc = subprocess.run(
+            [sys.executable, str(pipeline_path), str(self.repo_dir), str(self.run_dir)],
+            env=env, capture_output=True, text=True, timeout=10,
+        )
+        self.assertNotEqual(proc.returncode, 0)
+
+    def test_usage_error_when_argv_missing(self):
+        """No REPO_DIR / RUN_DIR args → exit 2 + usage to stderr."""
+        pipeline_path = Path(pipeline.__file__).resolve()
+        proc = subprocess.run(
+            [sys.executable, str(pipeline_path)],
+            env={"PATH": os.environ.get("PATH", "")},
+            capture_output=True, text=True, timeout=10,
+        )
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("usage:", proc.stderr)
 
 
 if __name__ == "__main__":
