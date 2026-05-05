@@ -72,13 +72,14 @@ TMP_AGG3="$LOG_DIR/verdict-mismatch.agg.md"
 sed 's/^VERDICT: COMMENT/VERDICT: APPROVE/' "$FIXTURE_DIR/sample-aggregator-output.md" > "$TMP_AGG3"
 expect_fail "verdict_mismatch" "$TMP_AGG3" "verdict mismatch"
 
-# Privacy fence: when --output-dir is unset, replay-verify.sh must default
-# replay artifacts to ~/.pr-reviewer/replays/, NOT the repo's replays/ tree.
-# A regression here would silently leak private-fixture artifacts into git.
-# The smoke runs only --no-replay (which skips the OUT_DIR derivation entirely),
-# so this is a source-level tripwire, not a behavioral test.
 echo "  test: privacy-default tripwire..."
-grep -qF '${OUT_DIR:-$HOME/.pr-reviewer/replays/' lib/replay-verify.sh || \
-    { echo "FAIL: lib/replay-verify.sh OUT_DIR default no longer points to ~/.pr-reviewer/"; exit 1; }
+# Privacy fence: the replay entrypoints must default to ~/.pr-reviewer/
+# (not repo-local replays/...). lib/replay.sh and lib/replay-batch.sh own
+# this default; the verifier wrapper inherits it. A regression here would
+# silently leak private-fixture artifacts into the repo working tree.
+grep -qF '${OUT:-$HOME/.pr-reviewer/replays/' lib/replay.sh || \
+    { echo "FAIL: lib/replay.sh OUT default no longer points to ~/.pr-reviewer/"; exit 1; }
+grep -qF '${OUT:-$HOME/.pr-reviewer/replays/' lib/replay-batch.sh || \
+    { echo "FAIL: lib/replay-batch.sh OUT default no longer points to ~/.pr-reviewer/"; exit 1; }
 
 echo "  PASS"

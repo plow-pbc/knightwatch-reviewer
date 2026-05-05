@@ -48,7 +48,11 @@ done
 # aggregator-output.md / agents/. Operator-supplied --output-dir is
 # respected verbatim.
 PROMPT_SLUG="$(basename "${PROMPTS_DIR:-default}" | tr -c 'A-Za-z0-9' '_')"
-OUT="${OUT:-replays/${REPO//\//-}-${PR}-${SHA:0:7}-${PROMPT_SLUG}}"
+# Default replay artifacts to the operator-local replay tree (same boundary
+# PULL_REQUEST_TEMPLATE.md uses for ~/.pr-reviewer/replays/). Operators who
+# want repo-local artifacts (e.g. capturing a public-canary's last-known-good
+# snapshot for review) opt in with --output-dir replays/...
+OUT="${OUT:-$HOME/.pr-reviewer/replays/${REPO//\//-}-${PR}-${SHA:0:7}-${PROMPT_SLUG}}"
 mkdir -p "$OUT"
 
 # Manifest captures replay provenance — deterministic spot-check input.

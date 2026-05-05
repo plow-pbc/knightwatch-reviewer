@@ -43,7 +43,8 @@ done
 }
 [ -f "$PRS" ] || { echo "error: PRS_CSV not found: $PRS" >&2; exit 2; }
 
-OUT="${OUT:-replays/batch-$(date +%Y%m%d-%H%M%S)}"
+# Default to operator-local replay tree — see lib/replay.sh for rationale.
+OUT="${OUT:-$HOME/.pr-reviewer/replays/batch-$(date +%Y%m%d-%H%M%S)}"
 mkdir -p "$OUT"
 
 LIB_DIR="$(cd "$(dirname "$0")" && pwd)"

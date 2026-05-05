@@ -25,8 +25,6 @@ A canary fixture is a markdown file with this shape:
 repo: owner/name
 pr: 123
 sha: <40-char-hex-sha>
-exercise: <free-text label, what the canary defends>
-canary_class: <positive|negative|neutral>
 ---
 
 ## Why this PR is in the canary set
@@ -50,21 +48,21 @@ COMMENT
 ````
 
 Field semantics:
-- `expected_verdict`: literal match against the `VERDICT:` line value (`APPROVE` / `COMMENT` / `BLOCK`).
+- `expected_verdict`: literal match against the `VERDICT:` line value (`APPROVE` / `COMMENT`).
 - `expected_contains`: each substring (case-insensitive) MUST appear somewhere in the rendered aggregator-output. Use one entry per concern; the verifier doesn't enforce joint shape ("appears in the SAME probe line").
 - `expected_absent`: each substring (case-insensitive) MUST NOT appear. False-positive guards.
 
-The previous `expected_findings`/`expected_NOT` DSL with `keywords_all`/`keywords_any`/`severity_min`/`class_any` was deprecated in PR #56 — it grew parser foot-guns faster than the operator-bench use case justified. If line-level matching with severity/class gating ever becomes a real need, it can be re-introduced.
-
 ## Where replay artifacts land
 
-By default, `lib/replay-verify.sh` writes replay artifacts (`aggregator-output.md`,
-`diff.patch`, per-agent logs) to `~/.pr-reviewer/replays/<repo>-<pr>-<sha7>-<slug>/`,
-mirroring the existing `~/.pr-reviewer/` operator-local convention. This keeps
-artifacts from private-fixture replays out of the repo working tree.
+By default, `lib/replay.sh`, `lib/replay-batch.sh`, and `lib/replay-verify.sh`
+all write replay artifacts (`aggregator-output.md`, `diff.patch`, per-agent
+logs) to `~/.pr-reviewer/replays/<repo>-<pr>-<sha7>-<slug>/` (or
+`~/.pr-reviewer/replays/batch-<timestamp>/` for batch). This keeps artifacts
+from private-fixture replays out of the repo working tree.
 
-To pin artifacts inside the repo (e.g. capturing a public canary's last-known-good
-output for review), pass `--output-dir replays/<your-path>` explicitly.
+To pin artifacts inside the repo (e.g. capturing a public canary's
+last-known-good output for review), pass `--output-dir replays/<your-path>`
+explicitly to whichever entrypoint you're using.
 
 ## Why no fixtures shipped here
 

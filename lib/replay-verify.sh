@@ -78,19 +78,15 @@ EXPECTED_VERDICT=$(awk '
 # --- Run replay (or skip) --------------------------------------------------
 if [ -z "$NO_REPLAY" ]; then
     LIB_DIR="$(cd "$(dirname "$0")" && pwd)"
-    # Force a known --output-dir so the verifier reads from the same path
-    # replay writes to. Without this, replay.sh derives its OUT path from
-    # PROMPTS_DIR (basename → slug; see replay.sh:50-51) and the two paths
-    # diverge whenever --prompts is non-default.
+    # Both lib/replay.sh and the verifier derive the same default path
+    # ($HOME/.pr-reviewer/replays/<repo>-<pr>-<sha7>-<slug>), so the
+    # verifier can read replay's output without forcing --output-dir.
+    # When --output-dir IS passed, propagate to keep the contract.
     PROMPT_SLUG=$(basename "${PROMPTS:-default}" | tr -c 'A-Za-z0-9' '_')
-    # When --output-dir is unset, default replay artifacts to the operator-
-    # local replay tree. Same privacy boundary PULL_REQUEST_TEMPLATE.md uses
-    # for ~/.pr-reviewer/replays/. Operators who want repo-local artifacts
-    # (e.g. for committing a public-canary's last-known-good snapshot) can
-    # opt in with --output-dir replays/...
     DERIVED_OUT="${OUT_DIR:-$HOME/.pr-reviewer/replays/${REPO//\//-}-${PR}-${SHA:0:7}-${PROMPT_SLUG}}"
-    REPLAY_ARGS=(--repo "$REPO" --pr "$PR" --sha "$SHA" --output-dir "$DERIVED_OUT")
+    REPLAY_ARGS=(--repo "$REPO" --pr "$PR" --sha "$SHA")
     [ -n "$PROMPTS" ] && REPLAY_ARGS+=(--prompts "$PROMPTS")
+    [ -n "$OUT_DIR" ] && REPLAY_ARGS+=(--output-dir "$OUT_DIR")
     "$LIB_DIR/replay.sh" "${REPLAY_ARGS[@]}"
     AGG="$DERIVED_OUT/aggregator-output.md"
 else
@@ -101,9 +97,14 @@ fi
 # --- Verify ---------------------------------------------------------------
 PASS=1
 
-# Verdict check (unchanged)
+# Verdict check — read the LAST VERDICT line to match production
+# (lib/review-one-pr.sh:1166) and the aggregator contract
+# (prompts/aggregator.md:196 — "On the VERY LAST LINE of your output").
+# Rendered reviews can quote earlier verdict-shaped text (e.g. a previous
+# review's "VERDICT: APPROVE"); using head -1 would assert against that
+# quoted line and bypass production's contract.
 if [ -n "$EXPECTED_VERDICT" ]; then
-    actual_verdict=$(grep -E '^VERDICT:' "$AGG" | head -1 | awk '{print $2}' || true)
+    actual_verdict=$(grep -E '^VERDICT:' "$AGG" | tail -1 | awk '{print $2}' || true)
     if [ -z "$actual_verdict" ]; then
         echo "  FAIL: aggregator-output has no VERDICT: line — malformed review" >&2
         PASS=0
