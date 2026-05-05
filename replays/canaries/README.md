@@ -16,19 +16,45 @@ The `lib/replay-verify.sh --fixture <path>` argument accepts either location.
 The replay-batch.sh / replay-verify workflow does not enumerate fixtures
 itself; the operator passes `--fixture` per invocation.
 
-## Fixture-format gotchas
+## Fixture format
 
-The verifier's awk parser is intentionally minimal. Two foot-guns to know about:
+A canary fixture is a markdown file with this shape:
 
-- **Commas inside keyword entries split.** `keywords_all: ["foo, bar"]` is parsed as two
-  AND-required keywords `foo` and `bar`, NOT as the literal substring `foo, bar`. If you
-  need a literal-comma match, split into two `keywords_all` entries instead.
-- **Pipe characters in `name` corrupt parsing.** Names like `- name: race-cond|leak`
-  shift downstream fields. Avoid `|` in fixture names — pick a different separator.
+````markdown
+---
+repo: owner/name
+pr: 123
+sha: <40-char-hex-sha>
+exercise: <free-text label, what the canary defends>
+canary_class: <positive|negative|neutral>
+---
 
-These haven't been fixed in code because the alternative (a real YAML parser, or hand-rolled
-quote-aware split) costs more than it earns at this scale. If a real fixture trips them,
-file an issue and we'll revisit.
+## Why this PR is in the canary set
+
+(prose — humans read this; verifier ignores it)
+
+## expected_verdict
+
+COMMENT
+
+## expected_contains
+
+- simplification
+- NSScreen.main
+- "blocking"
+
+## expected_absent
+
+- credential
+- exfiltration
+````
+
+Field semantics:
+- `expected_verdict`: literal match against the `VERDICT:` line value (`APPROVE` / `COMMENT` / `BLOCK`).
+- `expected_contains`: each substring (case-insensitive) MUST appear somewhere in the rendered aggregator-output. Use one entry per concern; the verifier doesn't enforce joint shape ("appears in the SAME probe line").
+- `expected_absent`: each substring (case-insensitive) MUST NOT appear. False-positive guards.
+
+The previous `expected_findings`/`expected_NOT` DSL with `keywords_all`/`keywords_any`/`severity_min`/`class_any` was deprecated in PR #56 — it grew parser foot-guns faster than the operator-bench use case justified. If line-level matching with severity/class gating ever becomes a real need, it can be re-introduced.
 
 ## Where replay artifacts land
 

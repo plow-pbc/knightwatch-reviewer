@@ -7,7 +7,7 @@
 #
 # In default mode, invokes lib/replay.sh with --repo/--pr/--sha derived from
 # the fixture's frontmatter, then asserts the resulting aggregator-output.md
-# against the fixture's expected_verdict + expected_findings + expected_NOT
+# against the fixture's expected_verdict + expected_contains + expected_absent
 # blocks.
 #
 # In --no-replay mode, skips replay invocation and asserts directly against
@@ -75,166 +75,6 @@ EXPECTED_VERDICT=$(awk '
     in_block && NF > 0 { print; exit }
 ' "$FIXTURE")
 
-# --- Parse expected_findings + expected_NOT --------------------------------
-# Yields one line per finding-block: name|keywords_all|keywords_any|severity_min|class_any
-parse_finding_blocks() {
-    local section="$1" file="$2"
-    awk -v section="$section" '
-        $0 == "## " section { in_section = 1; next }
-        /^## / && in_section { exit }
-        in_section && /^- name:/ {
-            if (cur_name != "") {
-                printf "%s|%s|%s|%s|%s\n", cur_name, cur_all, cur_any, cur_sev, cur_class
-            }
-            sub("^- name:[ ]*", "")
-            cur_name = $0
-            cur_all = ""; cur_any = ""; cur_sev = ""; cur_class = ""
-            next
-        }
-        in_section && /^[ ]+keywords_all:/ {
-            sub(".*keywords_all:[ ]*\\[", ""); sub("\\][ ]*$", "")
-            cur_all = $0
-            next
-        }
-        in_section && /^[ ]+keywords_any:/ {
-            sub(".*keywords_any:[ ]*\\[", ""); sub("\\][ ]*$", "")
-            cur_any = $0
-            next
-        }
-        in_section && /^[ ]+severity_min:/ {
-            sub(".*severity_min:[ ]*", "")
-            cur_sev = $0
-            next
-        }
-        in_section && /^[ ]+class_any:/ {
-            sub(".*class_any:[ ]*\\[", ""); sub("\\][ ]*$", "")
-            cur_class = $0
-            next
-        }
-        END {
-            if (cur_name != "") {
-                printf "%s|%s|%s|%s|%s\n", cur_name, cur_all, cur_any, cur_sev, cur_class
-            }
-        }
-    ' "$file"
-}
-
-# --- Validate severity_min values up front -------------------------------
-# Without this, a typo'd severity_min (e.g. `meidum`) silently falls
-# through `sev_rank`'s `*) echo 0` and disables the severity gate. Fixtures
-# are the contract surface; bad values should fail loud, not silently relax.
-validate_severity_min() {
-    local file="$1" section="$2"
-    local bad_lines=""
-    while IFS='|' read -r name all any sev_min class_set; do
-        [ -z "$name" ] && continue
-        [ -z "$sev_min" ] && continue
-        case "$sev_min" in
-            nit|low|medium|blocking) ;;
-            *) bad_lines="${bad_lines}  ${section} '${name}': severity_min='${sev_min}' (must be one of: nit, low, medium, blocking)\n" ;;
-        esac
-    done < <(parse_finding_blocks "$section" "$file")
-    if [ -n "$bad_lines" ]; then
-        printf "FAIL: invalid severity_min in fixture %s\n%b" "$file" "$bad_lines" >&2
-        exit 2
-    fi
-}
-
-# --- Severity ladder -------------------------------------------------------
-sev_rank() {
-    case "$1" in
-        nit|low) echo 1 ;;
-        medium) echo 2 ;;
-        blocking) echo 3 ;;
-        # `open` falls through to 0 — open probes have no resolved severity.
-        # Canaries that need a confirmed finding at severity_min should fail.
-        *) echo 0 ;;
-    esac
-}
-
-# --- Probe-line matcher ----------------------------------------------------
-# A "probe line" in the rendered aggregator-output looks like:
-#   1. [medium] [from: simplification] [simplification] <prose>. Files: ....
-#   5. [open] [from: shape] [simplification] **Q: ...** — ....
-# (See prompts/aggregator.md:150-153 for the rendering contract.)
-# Match: every keywords_all term + at least one keywords_any term + severity ≥ min + class ∈ class_any (if present).
-# Returns 0 if any probe in the aggregator-output matches; 1 if none.
-probe_matches() {
-    local agg="$1" all="$2" any="$3" sev_min="$4" class_set="$5"
-    local sev_min_rank
-    sev_min_rank=$(sev_rank "$sev_min")
-    [ -z "$sev_min" ] && sev_min_rank=0
-
-    while IFS= read -r line; do
-        # Required: every all-keyword present
-        local ok_all=1
-        if [ -n "$all" ]; then
-            IFS=',' read -ra all_kw <<<"$all"
-            for kw in "${all_kw[@]}"; do
-                kw=$(echo "$kw" | sed 's/^[ "]*//; s/[ "]*$//')
-                [ -z "$kw" ] && continue
-                grep -qiF -- "$kw" <<<"$line" || { ok_all=0; break; }
-            done
-        fi
-        [ "$ok_all" = 1 ] || continue
-
-        # Required: at least one any-keyword present (if list non-empty)
-        local ok_any=1
-        if [ -n "$any" ]; then
-            ok_any=0
-            IFS=',' read -ra any_kw <<<"$any"
-            for kw in "${any_kw[@]}"; do
-                kw=$(echo "$kw" | sed 's/^[ "]*//; s/[ "]*$//')
-                [ -z "$kw" ] && continue
-                if grep -qiF -- "$kw" <<<"$line"; then ok_any=1; break; fi
-            done
-        fi
-        [ "$ok_any" = 1 ] || continue
-
-        # Severity gate. Real probe lines lead with [<severity>] (or [open]
-        # for Answer: unknown, [nit] for low-priority). The token IS the
-        # severity — there's no `Severity: <level>` field anywhere.
-        if [ "$sev_min_rank" -gt 0 ]; then
-            local line_sev=""
-            if [[ "$line" =~ ^[0-9]+\.[[:space:]]+\[(low|medium|blocking|open|nit)\] ]]; then
-                line_sev="${BASH_REMATCH[1]}"
-            fi
-            local line_sev_rank
-            line_sev_rank=$(sev_rank "$line_sev")
-            # [open] probes have no resolved severity — exclude from severity-min gate.
-            # Canaries expecting a resolved finding at severity_min won't match these.
-            [ "$line_sev_rank" -ge "$sev_min_rank" ] || continue
-        fi
-
-        # Class gate. Real probe lines: `N. [<sev>] [from: <name>] [<class>] ...`
-        # Class is the third bracketed token (after severity + from-spec).
-        if [ -n "$class_set" ]; then
-            local line_class=""
-            if [[ "$line" =~ \[from:[[:space:]]+[a-zA-Z-]+\][[:space:]]+\[([a-zA-Z-]+)\] ]]; then
-                line_class="${BASH_REMATCH[1]}"
-            fi
-            local ok_class=0
-            IFS=',' read -ra class_kw <<<"$class_set"
-            for c in "${class_kw[@]}"; do
-                c=$(echo "$c" | sed 's/^[ "]*//; s/[ "]*$//')
-                [ "$line_class" = "$c" ] && { ok_class=1; break; }
-            done
-            [ "$ok_class" = 1 ] || continue
-        fi
-
-        return 0
-    # Real probe lines are: `N. [<severity>] [from: <specialist>] [<class>] <prose>`.
-    # See prompts/aggregator.md:150-153 for the rendering contract.
-    done < <(grep -E '^[0-9]+\.[[:space:]]+\[(low|medium|blocking|open|nit)\][[:space:]]+\[from:' "$agg" || true)
-    return 1
-}
-
-# Fail loud on typo'd severity_min before invoking replay (saves codex
-# time + stops a silently-disabled severity gate from masking real
-# regressions).
-validate_severity_min "$FIXTURE" "expected_findings"
-validate_severity_min "$FIXTURE" "expected_NOT"
-
 # --- Run replay (or skip) --------------------------------------------------
 if [ -z "$NO_REPLAY" ]; then
     LIB_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -261,11 +101,8 @@ fi
 # --- Verify ---------------------------------------------------------------
 PASS=1
 
-# Verdict check
+# Verdict check (unchanged)
 if [ -n "$EXPECTED_VERDICT" ]; then
-    # `|| true` keeps a missing-VERDICT case as a recoverable FAIL: rather
-    # than letting `set -euo pipefail` kill the script before any
-    # diagnostic is emitted.
     actual_verdict=$(grep -E '^VERDICT:' "$AGG" | head -1 | awk '{print $2}' || true)
     if [ -z "$actual_verdict" ]; then
         echo "  FAIL: aggregator-output has no VERDICT: line — malformed review" >&2
@@ -278,27 +115,41 @@ if [ -n "$EXPECTED_VERDICT" ]; then
     fi
 fi
 
-# expected_findings
-while IFS='|' read -r name all any sev_min class_set; do
-    [ -z "$name" ] && continue
-    if probe_matches "$AGG" "$all" "$any" "$sev_min" "$class_set"; then
-        echo "  PASS: expected_finding '$name'"
-    else
-        echo "  FAIL: expected_finding '$name' not satisfied (no probe matched all|any|severity|class criteria)" >&2
-        PASS=0
-    fi
-done < <(parse_finding_blocks "expected_findings" "$FIXTURE")
+# expected_contains: each substring must appear (case-insensitive) somewhere
+# in the rendered aggregator-output. Match is whole-document — use distinct
+# entries for distinct concerns rather than trying to encode joint shape.
+parse_substrings() {
+    local section="$1" file="$2"
+    awk -v section="$section" '
+        $0 == "## " section { in_section = 1; next }
+        /^## / && in_section { exit }
+        in_section && /^- / {
+            sub("^- ", "")
+            sub("[ ]+$", "")
+            if (NF > 0) print
+        }
+    ' "$file"
+}
 
-# expected_NOT
-while IFS='|' read -r name all any sev_min class_set; do
-    [ -z "$name" ] && continue
-    if probe_matches "$AGG" "$all" "$any" "$sev_min" "$class_set"; then
-        echo "  FAIL: expected_NOT triggered — '$name' (a probe matched the bad-pattern criteria)" >&2
+while IFS= read -r kw; do
+    [ -z "$kw" ] && continue
+    if grep -qiF -- "$kw" "$AGG"; then
+        echo "  PASS: expected_contains '$kw'"
+    else
+        echo "  FAIL: expected_contains '$kw' not found in aggregator-output" >&2
+        PASS=0
+    fi
+done < <(parse_substrings "expected_contains" "$FIXTURE")
+
+while IFS= read -r kw; do
+    [ -z "$kw" ] && continue
+    if grep -qiF -- "$kw" "$AGG"; then
+        echo "  FAIL: expected_absent '$kw' found in aggregator-output (false-positive guard tripped)" >&2
         PASS=0
     else
-        echo "  PASS: expected_NOT '$name' clean"
+        echo "  PASS: expected_absent '$kw' not present"
     fi
-done < <(parse_finding_blocks "expected_NOT" "$FIXTURE")
+done < <(parse_substrings "expected_absent" "$FIXTURE")
 
 if [ "$PASS" = 1 ]; then
     echo "verify-replay: ALL PASS"

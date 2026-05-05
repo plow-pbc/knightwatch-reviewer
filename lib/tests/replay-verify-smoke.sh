@@ -13,15 +13,7 @@ FIXTURE_DIR="lib/tests/fixtures/replay-verify"
 [ -f "$FIXTURE_DIR/sample-aggregator-output.md" ] || { echo "FAIL: missing sample-aggregator-output.md"; exit 1; }
 
 LOG_DIR=$(mktemp -d)
-TMP_FILES=()
-trap 'rm -rf "$LOG_DIR" "${TMP_FILES[@]}"' EXIT
-
-new_tmp() {
-    local f
-    f=$(mktemp)
-    TMP_FILES+=("$f")
-    printf '%s\n' "$f"
-}
+trap 'rm -rf "$LOG_DIR"' EXIT
 
 # expect_pass NAME AGG_FILE
 # Verifier should exit 0 against the supplied aggregator-output.
@@ -61,23 +53,32 @@ expect_fail() {
 # Test 1: passing fixture
 expect_pass "passing" "$FIXTURE_DIR/sample-aggregator-output.md"
 
-# Test 2: keyword_all violation — strip required `simplification` keyword
-TMP_AGG=$(new_tmp)
+# Test 2: expected_contains violation — strip required `simplification` substring
+TMP_AGG="$LOG_DIR/keyword-missing.agg.md"
 sed 's/simplification/something-else/g' "$FIXTURE_DIR/sample-aggregator-output.md" > "$TMP_AGG"
-expect_fail "keyword_all_missing" "$TMP_AGG" "FAIL:"
+expect_fail "expected_contains_missing" "$TMP_AGG" "expected_contains 'simplification' not found"
 
-# Test 3: expected_NOT triggered — append a security blocking probe
-TMP_AGG2=$(new_tmp)
+# Test 3: expected_absent triggered — append a security blocking probe
+TMP_AGG2="$LOG_DIR/expected-not.agg.md"
 cat "$FIXTURE_DIR/sample-aggregator-output.md" > "$TMP_AGG2"
 cat >> "$TMP_AGG2" <<'PROBE'
 
 2. [blocking] [from: security] [bug] credential leak in CI. Files: x:1. Edit: rotate the credential.
 PROBE
-expect_fail "expected_NOT_triggered" "$TMP_AGG2" "expected_NOT triggered"
+expect_fail "expected_absent_triggered" "$TMP_AGG2" "expected_absent 'credential' found"
 
 # Test 4: verdict mismatch — flip COMMENT to APPROVE
-TMP_AGG3=$(new_tmp)
+TMP_AGG3="$LOG_DIR/verdict-mismatch.agg.md"
 sed 's/^VERDICT: COMMENT/VERDICT: APPROVE/' "$FIXTURE_DIR/sample-aggregator-output.md" > "$TMP_AGG3"
 expect_fail "verdict_mismatch" "$TMP_AGG3" "verdict mismatch"
+
+# Privacy fence: when --output-dir is unset, replay-verify.sh must default
+# replay artifacts to ~/.pr-reviewer/replays/, NOT the repo's replays/ tree.
+# A regression here would silently leak private-fixture artifacts into git.
+# The smoke runs only --no-replay (which skips the OUT_DIR derivation entirely),
+# so this is a source-level tripwire, not a behavioral test.
+echo "  test: privacy-default tripwire..."
+grep -qF '${OUT_DIR:-$HOME/.pr-reviewer/replays/' lib/replay-verify.sh || \
+    { echo "FAIL: lib/replay-verify.sh OUT_DIR default no longer points to ~/.pr-reviewer/"; exit 1; }
 
 echo "  PASS"

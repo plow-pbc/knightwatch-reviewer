@@ -10,16 +10,12 @@ canary_class: positive
 
 COMMENT
 
-## expected_findings
+## expected_contains
 
-- name: simplification-surfaces
-  keywords_all: [simplification]
-  keywords_any: [substrate, replacement]
-  severity_min: medium
-  class_any: [simplification]
+- simplification
+- substrate
 
-## expected_NOT
+## expected_absent
 
-- name: no-spurious-security-blocking
-  keywords_any: [credential, secret, exfiltration]
-  severity_min: blocking
+- credential
+- exfiltration
