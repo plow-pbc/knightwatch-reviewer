@@ -119,6 +119,27 @@ parse_finding_blocks() {
     ' "$file"
 }
 
+# --- Validate severity_min values up front -------------------------------
+# Without this, a typo'd severity_min (e.g. `meidum`) silently falls
+# through `sev_rank`'s `*) echo 0` and disables the severity gate. Fixtures
+# are the contract surface; bad values should fail loud, not silently relax.
+validate_severity_min() {
+    local file="$1" section="$2"
+    local bad_lines=""
+    while IFS='|' read -r name all any sev_min class_set; do
+        [ -z "$name" ] && continue
+        [ -z "$sev_min" ] && continue
+        case "$sev_min" in
+            nit|low|medium|blocking) ;;
+            *) bad_lines="${bad_lines}  ${section} '${name}': severity_min='${sev_min}' (must be one of: nit, low, medium, blocking)\n" ;;
+        esac
+    done < <(parse_finding_blocks "$section" "$file")
+    if [ -n "$bad_lines" ]; then
+        printf "FAIL: invalid severity_min in fixture %s\n%b" "$file" "$bad_lines" >&2
+        exit 2
+    fi
+}
+
 # --- Severity ladder -------------------------------------------------------
 sev_rank() {
     case "$1" in
@@ -208,6 +229,12 @@ probe_matches() {
     return 1
 }
 
+# Fail loud on typo'd severity_min before invoking replay (saves codex
+# time + stops a silently-disabled severity gate from masking real
+# regressions).
+validate_severity_min "$FIXTURE" "expected_findings"
+validate_severity_min "$FIXTURE" "expected_NOT"
+
 # --- Run replay (or skip) --------------------------------------------------
 if [ -z "$NO_REPLAY" ]; then
     LIB_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -216,7 +243,12 @@ if [ -z "$NO_REPLAY" ]; then
     # PROMPTS_DIR (basename → slug; see replay.sh:50-51) and the two paths
     # diverge whenever --prompts is non-default.
     PROMPT_SLUG=$(basename "${PROMPTS:-default}" | tr -c 'A-Za-z0-9' '_')
-    DERIVED_OUT="${OUT_DIR:-replays/${REPO//\//-}-${PR}-${SHA:0:7}-${PROMPT_SLUG}}"
+    # When --output-dir is unset, default replay artifacts to the operator-
+    # local replay tree. Same privacy boundary PULL_REQUEST_TEMPLATE.md uses
+    # for ~/.pr-reviewer/replays/. Operators who want repo-local artifacts
+    # (e.g. for committing a public-canary's last-known-good snapshot) can
+    # opt in with --output-dir replays/...
+    DERIVED_OUT="${OUT_DIR:-$HOME/.pr-reviewer/replays/${REPO//\//-}-${PR}-${SHA:0:7}-${PROMPT_SLUG}}"
     REPLAY_ARGS=(--repo "$REPO" --pr "$PR" --sha "$SHA" --output-dir "$DERIVED_OUT")
     [ -n "$PROMPTS" ] && REPLAY_ARGS+=(--prompts "$PROMPTS")
     "$LIB_DIR/replay.sh" "${REPLAY_ARGS[@]}"

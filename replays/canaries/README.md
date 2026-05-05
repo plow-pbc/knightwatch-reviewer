@@ -30,6 +30,16 @@ These haven't been fixed in code because the alternative (a real YAML parser, or
 quote-aware split) costs more than it earns at this scale. If a real fixture trips them,
 file an issue and we'll revisit.
 
+## Where replay artifacts land
+
+By default, `lib/replay-verify.sh` writes replay artifacts (`aggregator-output.md`,
+`diff.patch`, per-agent logs) to `~/.pr-reviewer/replays/<repo>-<pr>-<sha7>-<slug>/`,
+mirroring the existing `~/.pr-reviewer/` operator-local convention. This keeps
+artifacts from private-fixture replays out of the repo working tree.
+
+To pin artifacts inside the repo (e.g. capturing a public canary's last-known-good
+output for review), pass `--output-dir replays/<your-path>` explicitly.
+
 ## Why no fixtures shipped here
 
 Even this repo's own historical PRs change shape over time (the bot's
