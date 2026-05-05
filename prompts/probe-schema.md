@@ -38,4 +38,4 @@ The `Class:` field takes exactly one of these tokens. Each class carries its own
 
 ## Critic counter-arguments (per-angle critic only)
 
-Each per-angle critic appends its resolutions as a single H2 section to its specialist's file at `.codex-scratch/specialists/<angle>.md`. Header form: `## Critic counter-arguments`, then one `### Probe N` block per resolved probe with required `Answer:` + `Evidence:` and optional `Severity if yes:` override. Cross-angle generated probes are emitted by the aggregator (attributed `[from: aggregator]`), not by per-angle critics.
+Each per-angle critic appends its resolutions as a single H2 section to its specialist's file at `.codex-scratch/specialists/<angle>.md`. Header form: `## Critic counter-arguments`, then one `### Probe N` block per resolved probe with required `Answer:` + `Evidence:` and optional `Severity if yes:` override. Cross-angle generated probes are emitted by the aggregator, not by per-angle critics — see `prompts/aggregator.md` step 1 for the attribution rule (most load-bearing specialist gets `From:`; `From: aggregator` is the fallback for genuinely emergent patterns).

@@ -175,7 +175,7 @@ _<intent line, italicized — see formatting rule below>_
 
 <the assembled probe list per step 6's policy — one rendered line per probe in the order specified, drop Answer:no probes, optional `Probe dropped:` footnote>
 
-**Security** — one sentence keyed off the highest-severity `Answer: yes` probe whose finding is security-relevant (auth bypass, secret leak, command injection, path traversal, sandbox escape, PII, data loss/corruption), regardless of `From:`. `None` if no such probe is answered yes.
+**Security** — one sentence keyed off the highest-severity `Answer: yes` probe whose finding is security-relevant (auth bypass, secret leak, command injection, path traversal, sandbox escape, PII), regardless of `From:`. `None` if no such probe is answered yes. Generic data-integrity bugs (race conditions, bad serialization) are NOT security-relevant — those are the data-integrity specialist's beat, not Security's.
 
 **Test coverage** — one sentence keyed off the highest-severity `Answer: yes` probe with `Class: tests`, regardless of `From:`. Plus the `just test` outcome — call out failures, but reviewer-sandbox failures (e.g. read-only filesystem error creating `/home/odio/.docker/*`) are noted as reviewer-side, not PR-related.
 
