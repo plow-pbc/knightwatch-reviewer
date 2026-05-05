@@ -81,8 +81,10 @@ Output goes under `~/.pr-reviewer/replays/` so private canary identifiers + repl
 If you maintain canary fixtures at `~/.pr-reviewer/canary-fixtures/` (format: `replays/canaries/README.md` § Fixture format), `lib/replay-verify.sh` lets you assert specific behaviors instead of eyeballing each `aggregator-output.md`:
 
 ```bash
-# Per-fixture pass/fail against the experiment side. --no-replay reads
-# the cell that lib/replay-batch.sh already wrote — no second codex burn.
+# Per-fixture diff between baseline and experiment cells. --no-replay
+# reads what lib/replay-batch.sh already wrote — no second codex burn.
+# Run against BOTH sides so a fixture that fails on baseline (stale or
+# canary drifted) is labeled distinctly from a true PR regression.
 . lib/replay-paths.sh
 for f in ~/.pr-reviewer/canary-fixtures/*.md; do
   fm=$(awk '/^---$/{c++; if (c==2) exit; next} c==1' "$f")
@@ -91,13 +93,18 @@ for f in ~/.pr-reviewer/canary-fixtures/*.md; do
   sha=$(awk  '/^sha:/  {print $2}' <<<"$fm")
   slug=$(replay_prompt_slug "$(pwd)/prompts")
   cell="$(replay_run_dir "$repo" "$pr" "$sha" "$slug")"
-  ./lib/replay-verify.sh --fixture "$f" \
-    --no-replay "$OUT/experiment/$cell/aggregator-output.md" \
-    || echo "FIXTURE FAILED: $(basename "$f")"
+  ./lib/replay-verify.sh --fixture "$f" --no-replay "$OUT/baseline/$cell/aggregator-output.md"   >/dev/null 2>&1; base=$?
+  ./lib/replay-verify.sh --fixture "$f" --no-replay "$OUT/experiment/$cell/aggregator-output.md" >/dev/null 2>&1; expt=$?
+  case "$base $expt" in
+    "0 0") ;;  # both pass — silent (normal)
+    "0 1") echo "REGRESSION: $(basename "$f") — passed baseline, failed experiment" ;;
+    "1 0") echo "RECOVERY:   $(basename "$f") — failed baseline, passed experiment" ;;
+    "1 1") echo "STALE:      $(basename "$f") — failed both sides (fixture or canary needs update)" ;;
+  esac
 done
 ```
 
-A fixture that flipped PASS → FAIL between baseline and experiment is the regression — call it out in **Notable deltas** below. Fixtures encode `expected_verdict` + `expected_contains` + `expected_absent` so a regression surfaces as a clean FAIL line instead of a subtle aggregator-output diff.
+Only the **REGRESSION** lines belong in **Notable deltas** below — STALE fixtures are operator-side cleanup (the canary diverged from the fixture's expectations independent of this PR), and RECOVERY lines are worth mentioning as positive deltas. Fixtures encode `expected_verdict` + `expected_contains` + `expected_absent` so a regression surfaces as a clean FAIL line instead of a subtle aggregator-output diff.
 
 Reviewers asking for "one more substring fence" in a smoke test are usually asking for a fixture instead — encode the behavior as an `expected_contains` / `expected_absent` entry, not as prompt prose pinning. See `replays/canaries/README.md` for the format spec.
 
