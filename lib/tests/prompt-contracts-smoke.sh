@@ -94,7 +94,7 @@ assert_grep "aggregator.md should reference decline-history.md" \
 
 echo "  asserting layered-file note in aggregator.md..."
 assert_grep "aggregator.md should describe layered specialist files" \
-    "layered specialist files" prompts/aggregator.md
+    "layered file" prompts/aggregator.md
 
 # Specialist + scratch wiring — every specialist must be referenced by
 # the critic + aggregator read lists, and common-header must document
@@ -277,5 +277,25 @@ echo "  asserting simplification.md anchors on inferred-intent scratch artifact.
 # (lib/pipeline.py) and the consuming specialist agree on the path.
 assert_grep "simplification.md should anchor on the inferred-intent scratch artifact" \
     ".codex-scratch/inferred-intent.md" prompts/simplification.md
+
+# ====================================================================
+# Section: aggregator attributes cross-angle probes to specialists
+# ====================================================================
+# Pins the attribution rule that replaces the old default `[from: aggregator]`
+# behavior. When the aggregator emits cross-angle or Bug-Class-Recurrence
+# probes, it must attribute to the most load-bearing specialist (or
+# preserve original specialist for carry-forward); aggregator-attribution
+# is the fallback for genuinely emergent patterns. This makes the bake-off
+# table reflect specialist value end-to-end.
+
+echo "  asserting aggregator attributes cross-angle probes to specialists..."
+assert_grep "aggregator.md should carry the new attribution rule for cross-angle probes" \
+    "Attribution rule for cross-angle probes" prompts/aggregator.md
+assert_grep "aggregator.md should require From: be the most load-bearing specialist" \
+    "specialist whose analysis was most load-bearing" prompts/aggregator.md
+assert_grep "aggregator.md should fence Bug-Class-Recurrence attribution to first-raising specialist" \
+    "first raised this class" prompts/aggregator.md
+assert_grep "aggregator.md should preserve original specialist on carry-forward" \
+    "preserving the original specialist attribution from" prompts/aggregator.md
 
 echo "  PASS"
