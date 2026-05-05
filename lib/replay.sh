@@ -161,7 +161,6 @@ PR_ID="$REPO#$PR"
 PR_TITLE="$(gh pr view "$PR" --repo "$REPO" --json title --jq .title)"
 PR_URL="https://github.com/$REPO/pull/$PR"
 PR_AUTHOR="$(gh pr view "$PR" --repo "$REPO" --json author --jq .author.login)"
-_LIB_DIR="$LIB_DIR"
 LOG_FILE="$OUT/run.log"
 
 # `python3 lib/pipeline.py` returns a non-zero exit on any-stage failure

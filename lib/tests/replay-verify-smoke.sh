@@ -82,8 +82,32 @@ grep -qF '${OUT:-$HOME/.pr-reviewer/replays/' lib/replay.sh || \
 grep -qF '${OUT:-$HOME/.pr-reviewer/replays/' lib/replay-batch.sh || \
     { echo "FAIL: lib/replay-batch.sh OUT default no longer points to ~/.pr-reviewer/"; exit 1; }
 
-echo "  test: replay-paths helper sourced by all three scripts..."
+echo "  test: replay-paths naming contract..."
 [ -f lib/replay-paths.sh ] || { echo "FAIL: lib/replay-paths.sh missing"; exit 1; }
+# Source in a subshell so the helper functions don't pollute the smoke's
+# global namespace. Smoke asserts the helper's *observable* naming
+# contract — what callers depend on — not just file presence.
+(
+    . lib/replay-paths.sh
+    # Slug rule: basename of the prompts dir, non-alphanumerics → '_'.
+    # Trailing newline from `basename` becomes a trailing '_' (existing
+    # behavior; cell-dir uniqueness depends on it being deterministic
+    # across all callers, not on it being trim-clean).
+    actual=$(replay_prompt_slug 'default')
+    [ "$actual" = "default_" ] || { echo "FAIL: replay_prompt_slug 'default' = '$actual' (expected 'default_')"; exit 1; }
+    actual=$(replay_prompt_slug '/abs/path/alt-prompts')
+    [ "$actual" = "alt_prompts_" ] || { echo "FAIL: replay_prompt_slug '/abs/path/alt-prompts' = '$actual' (expected 'alt_prompts_')"; exit 1; }
+    actual=$(replay_prompt_slug '')
+    [ "$actual" = "default_" ] || { echo "FAIL: replay_prompt_slug '' = '$actual' (expected 'default_' via fallback)"; exit 1; }
+    # Run-dir rule: <repo-slug>-<pr>-<sha7>-<slug>; '/' in repo → '-'.
+    actual=$(replay_run_dir 'cncorp/plow' '565' '852beef00abc' 'alt_prompts_')
+    [ "$actual" = "cncorp-plow-565-852beef-alt_prompts_" ] || { echo "FAIL: replay_run_dir = '$actual'"; exit 1; }
+)
+
+echo "  test: all three replay scripts source replay-paths.sh..."
+# Cross-file fence: every replay entrypoint must compose the helper above
+# rather than re-deriving locally. A new replay-* script that re-implements
+# the slug or run-dir rule would silently drift.
 for f in lib/replay.sh lib/replay-verify.sh lib/replay-batch.sh; do
     grep -qF 'replay-paths.sh' "$f" || \
         { echo "FAIL: $f does not source lib/replay-paths.sh"; exit 1; }
