@@ -93,8 +93,10 @@ for f in ~/.pr-reviewer/canary-fixtures/*.md; do
   sha=$(awk  '/^sha:/  {print $2}' <<<"$fm")
   slug=$(replay_prompt_slug "$(pwd)/prompts")
   cell="$(replay_run_dir "$repo" "$pr" "$sha" "$slug")"
-  ./lib/replay-verify.sh --fixture "$f" --no-replay "$OUT/baseline/$cell/aggregator-output.md"   >/dev/null 2>&1; base=$?
-  ./lib/replay-verify.sh --fixture "$f" --no-replay "$OUT/experiment/$cell/aggregator-output.md" >/dev/null 2>&1; expt=$?
+  # Errexit-safe status capture: under `set -euo pipefail` from the prior block,
+  # `cmd; base=$?` would exit the shell on the first non-zero before $? is read.
+  if ./lib/replay-verify.sh --fixture "$f" --no-replay "$OUT/baseline/$cell/aggregator-output.md"   >/dev/null 2>&1; then base=0; else base=$?; fi
+  if ./lib/replay-verify.sh --fixture "$f" --no-replay "$OUT/experiment/$cell/aggregator-output.md" >/dev/null 2>&1; then expt=0; else expt=$?; fi
   case "$base $expt" in
     "0 0") ;;  # both pass — silent (normal)
     "0 1") echo "REGRESSION: $(basename "$f") — passed baseline, failed experiment" ;;
@@ -105,6 +107,8 @@ done
 ```
 
 Only the **REGRESSION** lines belong in **Notable deltas** below — STALE fixtures are operator-side cleanup (the canary diverged from the fixture's expectations independent of this PR), and RECOVERY lines are worth mentioning as positive deltas. Fixtures encode `expected_verdict` + `expected_contains` + `expected_absent` so a regression surfaces as a clean FAIL line instead of a subtle aggregator-output diff.
+
+**Sanitize before pasting**: fixture basenames can carry private repo / PR / SHA identifiers (e.g. `cncorp-plow-565-dual-screen.md`). The local console output is for the operator's eyes; in **Notable deltas**, summarize the *behavior* that regressed (e.g. "data-integrity finding lost on the dual-screen-source canary"), not the raw fixture filename.
 
 Reviewers asking for "one more substring fence" in a smoke test are usually asking for a fixture instead — encode the behavior as an `expected_contains` / `expected_absent` entry, not as prompt prose pinning. See `replays/canaries/README.md` for the format spec.
 
