@@ -53,6 +53,7 @@ loved_tmp=$(mktemp)
 trap 'rm -f "$shipped_tmp" "$loved_tmp"' EXIT
 
 review_count=0
+fetch_failures=0
 
 # In-memory trust cache: avoid repeated collaborator API calls for the
 # same user within a single run. Key: "<repo>/<user>", value: "0" or "1".
@@ -81,7 +82,7 @@ for repo in "${REPOS[@]}"; do
     comments_json=$(gh api --paginate \
         "repos/$repo/issues/comments?since=$SINCE_ISO" \
         2>>"$LOG_FILE" | jq -s 'add // []') \
-        || { log "WARN: gh api failed for $repo, skipping"; continue; }
+        || { log "WARN: gh api failed for $repo, skipping"; fetch_failures=$((fetch_failures + 1)); continue; }
 
     # Substantive bot reviews: posted by BOT_USER, contain the auto-post
     # marker, are NOT the 👀 ACK placeholder, and DO contain the final-review
@@ -125,6 +126,12 @@ for repo in "${REPOS[@]}"; do
 done
 
 log "scanned $review_count bot reviews across ${#REPOS[@]} repos"
+
+if [ "$fetch_failures" -gt 0 ]; then
+    log "PARTIAL RUN: $fetch_failures repo(s) failed to fetch — NOT overwriting $OUT_FILE"
+    echo "PARTIAL: $fetch_failures repo(s) failed; $OUT_FILE not updated" >&2
+    exit 1
+fi
 
 # ---- assemble the table ----
 shipped_counts=$(sort "$shipped_tmp" | uniq -c | awk '{print $2"\t"$1}')

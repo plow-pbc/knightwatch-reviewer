@@ -60,6 +60,7 @@ echo "[]" > "$MOCK_COMMENTS_FILE"
 cat > "$STUB_BIN/gh" <<'STUB'
 #!/bin/bash
 if [ "$1" = "api" ]; then
+    echo "$@" >> "${GH_STUB_ARGS_LOG:-/dev/null}"
     endpoint=""
     paginate=""
     for arg in "$@"; do
@@ -68,6 +69,10 @@ if [ "$1" = "api" ]; then
             repos/*)    endpoint="$arg" ;;
         esac
     done
+    if [[ "$endpoint" == */issues/comments* ]] && [ -n "${MOCK_GH_API_FAIL:-}" ]; then
+        echo "gh api: simulated failure" >&2
+        exit 1
+    fi
     # Extract --jq filter if present (gh applies jq inline).
     jq_filter=""
     for arg in "$@"; do
@@ -132,36 +137,55 @@ fi
 
 # ---- scenario 2: substantive review, ACK, untrusted memorize, trusted memorize ----
 echo "    scenario 2: review + ACK + memorize (trusted+untrusted) → aggregator 1|1..."
-# Four comments:
+# Four comments split across two pages — load-bearing comment D is on page 2:
 #   A: substantive bot review — has marker, has footer, has [from: aggregator]
 #   B: same-bot ACK — has marker, NO footer — must NOT count as a review
 #   C: untrusted /srosro-memorize quoting [from: aggregator] — must be ignored
-#   D: trusted /srosro-memorize quoting [from: aggregator] — must count
-REVIEW_BODY="${BOT_AUTO_POST_MARKER}\n\n[from: aggregator] The aggregator logic is overfit.\n\n_How to use: auto-reviews every new PR and re-reviews after an hour of inactivity..._"
-ACK_BODY="${BOT_AUTO_POST_MARKER}\n\n👀 reviewing..."
-UNTRUSTED_MEMO="Thanks! /srosro-memorize I agree with [from: aggregator] finding."
-TRUSTED_MEMO="/srosro-memorize The [from: aggregator] tip was great."
+#   D: (PAGE 2) trusted /srosro-memorize quoting [from: aggregator] — must count
+# A regression that drops --paginate would produce Loved=0, not 1.
+export GH_STUB_ARGS_LOG="$TMPDIR_SMOKE/gh-stub-args.log"
+: > "$GH_STUB_ARGS_LOG"
 
 python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
-import json, sys
+import json
 comments = [
     {"id": 1, "user": {"login": "testbot"},        "body": "${BOT_AUTO_POST_MARKER}\n\n[from: aggregator] The aggregator logic is overfit.\n\n_How to use: auto-reviews every new PR and re-reviews after an hour of inactivity..._"},
     {"id": 2, "user": {"login": "testbot"},        "body": "${BOT_AUTO_POST_MARKER}\n\n\U0001f440 reviewing..."},
     {"id": 3, "user": {"login": "untrusted-user"}, "body": "Thanks! /srosro-memorize I agree with [from: aggregator] finding."},
+]
+print(json.dumps(comments))
+PYEOF
+
+export MOCK_COMMENTS_FILE_PAGE2="$TMPDIR_SMOKE/comments-page2.json"
+python3 - <<PYEOF > "$MOCK_COMMENTS_FILE_PAGE2"
+import json
+comments = [
     {"id": 4, "user": {"login": "trusted-human"},  "body": "/srosro-memorize The [from: aggregator] tip was great."},
 ]
 print(json.dumps(comments))
 PYEOF
+
 run_driver
+unset MOCK_COMMENTS_FILE_PAGE2
+rm -f "$TMPDIR_SMOKE/comments-page2.json"
+
 if ! grep -q '| aggregator |' "$OUT_FILE"; then
     echo "FAIL scenario 2: expected aggregator row in table"
     cat "$OUT_FILE"
     exit 1
 fi
-# Shipped=1 (one substantive review), Loved=1 (one trusted memorize)
+# Shipped=1 (one substantive review), Loved=1 (one trusted memorize from page 2)
 if ! grep -qE '\| aggregator \| +1 \| +1 \|' "$OUT_FILE"; then
-    echo "FAIL scenario 2: expected aggregator | 1 | 1 in table"
+    echo "FAIL scenario 2: expected aggregator | 1 | 1 in table (page-2 memorize not merged)"
     cat "$OUT_FILE"
+    exit 1
+fi
+# Assert --paginate was passed (a regression that drops it would still
+# fetch page 1 only, produce Loved=0, and fail the assertion above — but
+# this check makes the contract explicit).
+if grep -F -- '--paginate' "$GH_STUB_ARGS_LOG" 2>/dev/null | grep -q 'issues/comments'; then : ; else
+    echo "FAIL scenario 2: gh stub issues/comments call did not include --paginate"
+    cat "$GH_STUB_ARGS_LOG" 2>/dev/null || echo "(log empty)"
     exit 1
 fi
 
@@ -178,6 +202,26 @@ run_driver
 if grep -qE '^\| aggregator' "$OUT_FILE"; then
     echo "FAIL scenario 3: spoof marker from non-bot user inflated the table"
     cat "$OUT_FILE"
+    exit 1
+fi
+
+# ---- scenario 4: gh api failure → partial run, OUT_FILE not overwritten ----
+echo "    scenario 4: gh api failure → exit non-zero, OUT_FILE not overwritten..."
+echo "[]" > "$MOCK_COMMENTS_FILE"
+# Write a sentinel into OUT_FILE so we can confirm it was NOT overwritten.
+echo "SENTINEL" > "$OUT_FILE"
+MOCK_GH_API_FAIL=1 bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null 2>&1 && {
+    echo "FAIL scenario 4: expected non-zero exit when a repo fetch fails"
+    exit 1
+}
+if ! grep -q "SENTINEL" "$OUT_FILE" 2>/dev/null; then
+    echo "FAIL scenario 4: OUT_FILE was overwritten despite fetch failure"
+    cat "$OUT_FILE"
+    exit 1
+fi
+if ! grep -q "PARTIAL RUN" "$LOG_FILE" 2>/dev/null; then
+    echo "FAIL scenario 4: expected PARTIAL RUN in log"
+    cat "$LOG_FILE"
     exit 1
 fi
 
