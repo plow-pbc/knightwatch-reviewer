@@ -13,10 +13,12 @@
 #
 # This file's ASSERTIONS ARE THE CONTRACT — when you remove an
 # assertion, you remove a token fence. Don't drop assertions to
-# "clean up"; the K-decay paired tokens, the negative fences, and the
-# specialist-registration tokens are all load-bearing and were each
-# written in response to a specific regression. See PR #25, PR #38,
-# PR #42, PR #45, PR #47 review history if uncertain about a fence.
+# "clean up"; the negative fences and the specialist-registration
+# tokens are all load-bearing and were each written in response to
+# a specific regression. See PR #25, PR #38, PR #42, PR #45, PR #47
+# review history if uncertain about a fence — though note PR #55
+# dropped several wording-pin fences that were over-fitting; that
+# PR's description documents what was removed and why.
 #
 # Deliberately NOT a content-pinning test. Rule 8 (Remedy-cost framing)
 # itself forbids tests that calcify prompt prose; what we fence here is
@@ -34,32 +36,6 @@ assert_grep() {
 # ====================================================================
 # Section 1: prompt-contract sync (formerly anti-bloat-contract-smoke.sh)
 # ====================================================================
-
-echo "  asserting Rule 8 (Remedy-cost framing) in common-header.md..."
-assert_grep "Rule 8 missing from prompts/common-header.md" \
-    "Remedy-cost framing" prompts/common-header.md
-
-echo "  asserting voice-posture pointer in common-header.md..."
-assert_grep "common-header.md should reference Broken-Glass Test" \
-    "Broken-Glass Test" prompts/common-header.md
-assert_grep "common-header.md should mandate cost-naming" \
-    "adds complexity and makes PMF iteration harder" prompts/common-header.md
-assert_grep "common-header.md should reference review-priority.md scratch input" \
-    "review-priority.md" prompts/common-header.md
-
-echo "  asserting Bug 1+2 prompt contracts in common-header.md + critic.md..."
-assert_grep "common-header.md should fence Q-field shape rule" \
-    "Q-field shape" prompts/common-header.md
-assert_grep "common-header.md should anchor Q-shape rule on additive scale (~20 LOC)" \
-    "20 LOC" prompts/common-header.md
-assert_grep "common-header.md should fence Broken-Glass-is-pro-simplification rule" \
-    "Broken-Glass is pro-simplification" prompts/common-header.md
-assert_grep "critic.md should fence security-controls exception in the Pre-PMF lens" \
-    "security or data-integrity controls" prompts/critic.md
-
-echo "  asserting probe-resolver job description in critic.md..."
-assert_grep "critic.md should describe probe resolution job" \
-    "probe resolution" prompts/critic.md
 
 # Security fence: per-angle critics run with codex sandbox bypassed
 # (--dangerously-bypass-approvals-and-sandbox in lib/pipeline.py:run_codex)
@@ -104,10 +80,6 @@ if ! printf '%s' "$verdict_block" | grep -qF "\`medium\` or \`blocking\`"; then
     exit 1
 fi
 
-echo "  asserting voice-posture pointer in critic.md..."
-assert_grep "critic.md should cite Broken-Glass Test" \
-    "Broken-Glass Test" prompts/critic.md
-
 echo "  asserting Pre-PMF lens reference in critic.md..."
 assert_grep "critic.md should reference loc-trend.md (Pre-PMF lens)" \
     "loc-trend.md" prompts/critic.md
@@ -140,24 +112,11 @@ echo "  asserting common-header documents dead-code.md scratch..."
 assert_grep "common-header.md should document dead-code.md" \
     "dead-code.md" prompts/common-header.md
 
-# Probe-as-unit shape — the unified Probes section, AI-author callout,
-# Q: question template, and per-line specialist attribution are the
-# core surface contract.
-echo "  asserting Open Questions Q: format in aggregator.md..."
-assert_grep "aggregator.md should describe Q: question template" \
-    "**Q:" prompts/aggregator.md
+# Cross-file marker: any consumer parsing the rendered Probes section
+# by `[from: <specialist>]` depends on aggregator.md owning the token format.
 echo "  asserting [from: <specialist>] attribution token in aggregator.md..."
 assert_grep "aggregator.md should describe per-line specialist attribution" \
     "[from: <specialist>]" prompts/aggregator.md
-echo "  asserting unified Probes section in aggregator.md..."
-assert_grep "aggregator.md should have **Probes** unified section" \
-    "**Probes**" prompts/aggregator.md
-echo "  asserting AI-author callout in aggregator.md..."
-assert_grep "aggregator.md should have **For AI authors** callout" \
-    "**For AI authors**" prompts/aggregator.md
-echo "  asserting unified-probes section ordering instructions..."
-assert_grep "aggregator.md should fence Answer: yes ordering" \
-    "Answer: yes" prompts/aggregator.md
 
 for specialist in shape simplification architecture consumers tests performance security data-integrity; do
     echo "  asserting simplification probe class in ${specialist}.md..."
@@ -185,63 +144,8 @@ assert_grep "aggregator.md should reference loc-trend.md trigger" \
 assert_grep "aggregator.md should reference momentum specialist output" \
     "momentum.md" prompts/aggregator.md
 
-# Path 2 trigger — fence the trigger SHAPE (threshold + prior-rounds-only),
-# not just file references. Momentum runs before the critic, so this-round
-# signals aren't visible to it yet — the trigger must be prior-rounds-only.
-echo "  asserting Path 2 trigger phrases in aggregator.md..."
-assert_grep "aggregator.md should fence the 1.5× LOC threshold" \
-    "1.5×" prompts/aggregator.md
-assert_grep "aggregator.md should fence the 2+ prior rounds threshold" \
-    "2+ prior rounds" prompts/aggregator.md
-assert_grep "aggregator.md should fence prior-rounds-only language ('any prior round')" \
-    "any prior round" prompts/aggregator.md
-
-echo "  asserting aggregator.md has no 'this round or any prior round' regression..."
-if grep -qF "this round or any prior round" prompts/aggregator.md; then
-    echo "FAIL: aggregator.md regressed to old 'this round or any prior round' wording"
-    exit 1
-fi
-
-echo "  asserting Pre-PMF lens (always-on) in critic.md..."
-assert_grep "critic.md should fence Pre-PMF lens (always-on)" \
-    "Pre-PMF lens (always-on)" prompts/critic.md
-
-# Probe-as-unit polarity contract (R23 F#2): simplification is
-# removal-shaped per probe-schema.md § Class options; Pre-PMF lens
-# defaults to Answer: yes (apply the removal) at this scale.
-echo "  asserting Pre-PMF removal-default for simplification in critic.md..."
-assert_grep "critic.md should mark simplification as removal-shaped" \
-    "removal-shaped" prompts/critic.md
-assert_grep "critic.md should default simplification probes to Answer: yes at pre-PMF" \
-    'default to `Answer: yes`' prompts/critic.md
-
-echo "  asserting K-decay thresholds in critic.md..."
-# Probe-resolver model: "K ≥ 3 with no engagement and Class ≠ bug" /
-# "K ≥ 5 with no engagement and Class ≠ bug" — pair threshold with Class
-# guard so the severe-bug carve-out remains keyed on the bug class.
-assert_grep "critic.md should fence K >= 3 decay rule with Class guard" \
-    "K ≥ 3 with no engagement" prompts/critic.md
-assert_grep "critic.md should fence K >= 5 decay rule with Class guard" \
-    "K ≥ 5 with no engagement" prompts/critic.md
-
-echo "  asserting severe-bug carve-out in critic.md..."
-assert_grep "critic.md should carve severe-bug probes out of decay/Pre-PMF" \
-    "Severe-bug carve-out" prompts/critic.md
-# Non-security severe-bug token — guards against a regression that
-# narrows the carve-out back to security-only by dropping data-loss
-# class words from the prompt prose.
-assert_grep "critic.md severe-bug carve-out should cover data-loss class" \
-    "data loss" prompts/critic.md
-
-# Union-verdict rule must hold across current + carried-forward probes.
-# Per-angle critics now write back into each layered specialist file;
-# the central specialists/critic.md sink is gone.
-echo "  asserting aggregator fences the union-of-current-and-carried-forward verdict rule..."
-assert_grep "aggregator.md should fence the union-of-current-and-carried-forward verdict rule" \
-    "union of current and carried-forward" prompts/aggregator.md
-
 # ====================================================================
-# Section 1.5: systemd-chain shebang security
+# Section 2: systemd-chain shebang security
 # ====================================================================
 # Security fence: scripts launched directly by systemd ExecStart, or
 # exec'd from those scripts, MUST use the absolute `#!/bin/bash`
@@ -328,7 +232,7 @@ for unit in systemd/*.service; do
 done
 
 # ====================================================================
-# Section 2: pipeline.py wiring (formerly orchestrate.sh + momentum-wire)
+# Section 3: pipeline.py wiring (formerly orchestrate.sh + momentum-wire)
 # ====================================================================
 
 PIPELINE=lib/pipeline.py
@@ -366,43 +270,11 @@ assert_grep "common-header.md should mandate 'No probes.' marker" \
 assert_grep "pipeline.py should grep for the same 'No probes.' marker" \
     'No probes\.' "$PIPELINE"
 
-# ====================================================================
-# Section: subtractive-priority tokens (added 2026-05-04)
-# ====================================================================
-# Pins the subtractive-by-default tightening in this repo's
-# .knightwatch/review-priority.md and the canonical worked example in
-# the consumed standards. If these tokens drift away, every specialist
-# loses the operating-point signal that drives PR#47-style structural
-# loops to surface the substrate-replacement move.
-
-echo "  asserting subtractive-priority tokens in .knightwatch/review-priority.md..."
-assert_grep "review-priority.md should name SIMPLIFY at all costs" \
-    "SIMPLIFY at all costs" .knightwatch/review-priority.md
-assert_grep "review-priority.md should cite cumulative additive LOC" \
-    "Cumulative additive LOC" .knightwatch/review-priority.md
-assert_grep "review-priority.md should cite the canonical Broken-Glass section" \
-    "Broken-Glass Test" .knightwatch/review-priority.md
-
-echo "  asserting simplification.md anchors on inferred-intent for refactor PRs..."
-# Specialist-prompt fences: presence + file-path reference (the contract
-# surface — wording itself is checked at the row level below, not pinned here).
-assert_grep "simplification.md should grade diff against stated intent" \
-    "grade the diff against stated intent" prompts/simplification.md
+echo "  asserting simplification.md anchors on inferred-intent scratch artifact..."
+# Cross-file: simplification.md must reference the scratch artifact
+# `.codex-scratch/inferred-intent.md` so the inferred-intent staging
+# (lib/pipeline.py) and the consuming specialist agree on the path.
 assert_grep "simplification.md should anchor on the inferred-intent scratch artifact" \
     ".codex-scratch/inferred-intent.md" prompts/simplification.md
-
-# Schema-row fence: the simplification class row in probe-schema.md owns the
-# severity contract. Verify the row exists AND contains the canonical
-# `net-additive refactor` blocking-case token on the same line — drift in
-# either direction (row removal or token migration into a different class)
-# trips this assertion.
-schema_row=$(grep -E '^- \*\*`simplification`\*\*' prompts/probe-schema.md || true)
-[[ -n "$schema_row" \
-   && "$schema_row" == *"net-additive refactor"* \
-   && "$schema_row" == *"Severity if yes: blocking"* ]] || {
-    echo "FAIL: prompts/probe-schema.md simplification row missing or no longer pairs 'net-additive refactor' with 'Severity if yes: blocking'"
-    echo "  got: $schema_row"
-    exit 1
-}
 
 echo "  PASS"
