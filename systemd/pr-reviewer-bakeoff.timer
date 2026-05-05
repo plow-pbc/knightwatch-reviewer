@@ -1,0 +1,11 @@
+[Unit]
+Description=Plow PR reviewer specialist bake-off (hourly at :30)
+
+[Timer]
+OnCalendar=*:30
+Persistent=false
+AccuracySec=10s
+Unit=pr-reviewer-bakeoff.service
+
+[Install]
+WantedBy=timers.target

@@ -138,4 +138,8 @@ test:
     bash lib/tests/replay-smoke.sh
 
     echo ""
+    echo "=== specialist-bakeoff smoke test ==="
+    bash lib/tests/specialist-bakeoff-smoke.sh
+
+    echo ""
     echo "all checks passed"

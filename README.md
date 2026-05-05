@@ -65,6 +65,18 @@ Reviews fire on PR open and again after one hour of idle. To force a fresh revie
 | `/srosro-approve` | Approve the PR (push-access collaborators only) |
 | `/srosro-memorize` | Teach the bot a calibration lesson from your reply |
 
+### Specialist bake-off
+
+A small post-hoc measurement that helps decide which specialists are earning their place. `specialist-bakeoff.sh` runs hourly via systemd (`*:30`), walks the tracked repos in `repos.conf`, parses posted bot reviews on GitHub, and writes a markdown table to `~/.pr-reviewer/specialist-bakeoff.md` with three columns per specialist over a rolling 30-day window:
+
+- **Shipped** — count of `[from: <specialist>]` attributions in posted reviews.
+- **Loved** — count of `/srosro-memorize` comments by trusted (push-access) collaborators that quoted a `[from: <specialist>]` tag from a prior bot review. To credit a specialist when you memorize, **quote the tag** (e.g. `[from: aggregator]`) in your memorize body.
+- **Loved/Shipped** — ratio (small-but-mighty vs high-volume-low-value).
+
+Use it to inform collapse-or-keep decisions on specialist agents.
+
+See `docs/specialist-bakeoff-sample.md` for an example snapshot.
+
 ## Repo layout
 
 - `review.sh` / `lib/review-one-pr.sh` — per-PR review driver
