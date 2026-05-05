@@ -2,18 +2,14 @@
 # Pure parsers for the specialist bake-off. Read from stdin, emit to stdout.
 # No file I/O, no network — composable in pipelines + hermetic-testable.
 
-# count_attributions: read a review body on stdin, emit one line per
-# `[from: <specialist>]` attribution. Caller pipes through `sort | uniq -c`
-# to aggregate. grep exits 1 when no match — normalize to 0 so callers
-# under set -e don't abort when a review has no attributions.
-#
-# Truncates at the first `---` line — the bot's review template uses that
-# as the boundary between substantive probes (above) and the human-coaching
-# footer (below). The footer contains documentation examples with literal
-# `[from: <name>]` tokens that should NOT count as shipped attributions.
-# Only probe-line tokens in the substantive body count.
+# count_attributions: read review body(ies) on stdin, emit one specialist
+# name per `[from: <specialist>]` attribution found in numbered probe
+# lines (`^N. ...`). Line-pattern filter excludes prose/footer/doc/
+# README/example tokens by construction — only probe-line attributions
+# count. Caller pipes through `sort | uniq -c`. grep exits 1 on no match
+# — normalize to 0 so callers under `set -e` don't abort.
 count_attributions() {
-    awk '/^---$/ { exit } { print }' \
+    grep -E '^[0-9]+\.' \
         | grep -oE '\[from: [a-z][a-z-]*\]' \
         | sed -E 's/\[from: ([a-z-]+)\]/\1/' \
         || true

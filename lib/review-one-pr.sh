@@ -1184,7 +1184,7 @@ _How to use: auto-reviews every new PR and re-reviews after an hour of inactivit
 - \`/srosro-approve\` — APPROVE the PR.
 - \`/srosro-memorize <feedback>\` — teach a calibration lesson (\`learn-from-replies\` updates \`COMMENT_REVIEW_MISTAKES.md\` from your body, sentiment-aware via LLM). **Quote the \`[from: <specialist>]\` tag from a finding to ALSO credit that specialist on the bake-off Loved column** — bake-off counts attributions, not sentiment, so quote tags for positive feedback only. Negative feedback: skip the tag (still tunes the rules).
 
-> Positive: \`/srosro-memorize great find on the [from: shape] race condition — exactly the kind of cross-angle pattern worth catching.\`
+> Positive: \`/srosro-memorize great find on the [from: <specialist>] race condition — exactly the kind of cross-angle pattern worth catching (substitute the actual tag from the probe).\`
 > Negative: \`/srosro-memorize the simplification DRY finding was a misread; those helpers serve different contracts. Don't suggest collapsing distinct seams.\`
 
 AI agents must not use \`/srosro-memorize\` — the rule list it tunes is shared global state.
