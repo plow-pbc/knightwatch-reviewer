@@ -169,7 +169,10 @@ probe_matches() {
         # Severity gate
         if [ "$sev_min_rank" -gt 0 ]; then
             local line_sev=""
-            if [[ "$line" =~ Severity:[[:space:]]*(low|medium|blocking) ]]; then
+            # Anchor on the backticked field literal so prose mentions of
+            # "Severity: low" elsewhere in the line don't shadow the
+            # actual `Severity: blocking` field.
+            if [[ "$line" =~ \`Severity:[[:space:]]*(low|medium|blocking)\` ]]; then
                 line_sev="${BASH_REMATCH[1]}"
             fi
             local line_sev_rank
@@ -180,7 +183,7 @@ probe_matches() {
         # Class gate
         if [ -n "$class_set" ]; then
             local line_class=""
-            if [[ "$line" =~ Class:[[:space:]]*([a-zA-Z-]+) ]]; then
+            if [[ "$line" =~ \`Class:[[:space:]]*([a-zA-Z-]+)\` ]]; then
                 line_class="${BASH_REMATCH[1]}"
             fi
             local ok_class=0
@@ -193,18 +196,23 @@ probe_matches() {
         fi
 
         return 0
-    done < <(grep -E '^\s*-\s+\[from:' "$agg" || true)
+    done < <(grep -E '^[[:space:]]*-[[:space:]]+\[from:' "$agg" || true)
     return 1
 }
 
 # --- Run replay (or skip) --------------------------------------------------
 if [ -z "$NO_REPLAY" ]; then
     LIB_DIR="$(cd "$(dirname "$0")" && pwd)"
-    REPLAY_ARGS=(--repo "$REPO" --pr "$PR" --sha "$SHA")
+    # Force a known --output-dir so the verifier reads from the same path
+    # replay writes to. Without this, replay.sh derives its OUT path from
+    # PROMPTS_DIR (basename → slug; see replay.sh:50-51) and the two paths
+    # diverge whenever --prompts is non-default.
+    PROMPT_SLUG=$(basename "${PROMPTS:-default}" | tr -c 'A-Za-z0-9' '_')
+    DERIVED_OUT="${OUT_DIR:-replays/${REPO//\//-}-${PR}-${SHA:0:7}-${PROMPT_SLUG}}"
+    REPLAY_ARGS=(--repo "$REPO" --pr "$PR" --sha "$SHA" --output-dir "$DERIVED_OUT")
     [ -n "$PROMPTS" ] && REPLAY_ARGS+=(--prompts "$PROMPTS")
-    [ -n "$OUT_DIR" ] && REPLAY_ARGS+=(--output-dir "$OUT_DIR")
     "$LIB_DIR/replay.sh" "${REPLAY_ARGS[@]}"
-    AGG="${OUT_DIR:-replays/${REPO//\//-}-${PR}-${SHA:0:7}-default}/aggregator-output.md"
+    AGG="$DERIVED_OUT/aggregator-output.md"
 else
     AGG="$NO_REPLAY"
 fi
@@ -215,8 +223,14 @@ PASS=1
 
 # Verdict check
 if [ -n "$EXPECTED_VERDICT" ]; then
-    actual_verdict=$(grep -E '^VERDICT:' "$AGG" | head -1 | awk '{print $2}')
-    if [ "$actual_verdict" = "$EXPECTED_VERDICT" ]; then
+    # `|| true` keeps a missing-VERDICT case as a recoverable FAIL: rather
+    # than letting `set -euo pipefail` kill the script before any
+    # diagnostic is emitted.
+    actual_verdict=$(grep -E '^VERDICT:' "$AGG" | head -1 | awk '{print $2}' || true)
+    if [ -z "$actual_verdict" ]; then
+        echo "  FAIL: aggregator-output has no VERDICT: line — malformed review" >&2
+        PASS=0
+    elif [ "$actual_verdict" = "$EXPECTED_VERDICT" ]; then
         echo "  PASS: verdict $actual_verdict (expected $EXPECTED_VERDICT)"
     else
         echo "  FAIL: verdict mismatch — expected $EXPECTED_VERDICT, got $actual_verdict" >&2

@@ -16,6 +16,20 @@ The `lib/replay-verify.sh --fixture <path>` argument accepts either location.
 The replay-batch.sh / replay-verify workflow does not enumerate fixtures
 itself; the operator passes `--fixture` per invocation.
 
+## Fixture-format gotchas
+
+The verifier's awk parser is intentionally minimal. Two foot-guns to know about:
+
+- **Commas inside keyword entries split.** `keywords_all: ["foo, bar"]` is parsed as two
+  AND-required keywords `foo` and `bar`, NOT as the literal substring `foo, bar`. If you
+  need a literal-comma match, split into two `keywords_all` entries instead.
+- **Pipe characters in `name` corrupt parsing.** Names like `- name: race-cond|leak`
+  shift downstream fields. Avoid `|` in fixture names — pick a different separator.
+
+These haven't been fixed in code because the alternative (a real YAML parser, or hand-rolled
+quote-aware split) costs more than it earns at this scale. If a real fixture trips them,
+file an issue and we'll revisit.
+
 ## Why no fixtures shipped here
 
 Even this repo's own historical PRs change shape over time (the bot's
