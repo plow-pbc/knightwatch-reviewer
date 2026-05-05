@@ -76,6 +76,31 @@ Output goes under `~/.pr-reviewer/replays/` so private canary identifiers + repl
 
 `lib/replay-batch.sh` runs cells sequentially. Wall time is roughly `canaries × 10 min × 2 sides` — for 3 canaries that's ~60 min total. Each cell burns ~17 codex calls (1 intent + 1 dead-code + 8 specialists + 7 critics + 1 momentum + 1 aggregator). Logged-in `codex` CLI required.
 
+### Verify with fixtures (optional, recommended for repeated regressions)
+
+If you maintain canary fixtures at `~/.pr-reviewer/canary-fixtures/` (format: `replays/canaries/README.md` § Fixture format), `lib/replay-verify.sh` lets you assert specific behaviors instead of eyeballing each `aggregator-output.md`:
+
+```bash
+# Per-fixture pass/fail against the experiment side. --no-replay reads
+# the cell that lib/replay-batch.sh already wrote — no second codex burn.
+. lib/replay-paths.sh
+for f in ~/.pr-reviewer/canary-fixtures/*.md; do
+  fm=$(awk '/^---$/{c++; if (c==2) exit; next} c==1' "$f")
+  repo=$(awk '/^repo:/ {print $2}' <<<"$fm")
+  pr=$(awk   '/^pr:/   {print $2}' <<<"$fm")
+  sha=$(awk  '/^sha:/  {print $2}' <<<"$fm")
+  slug=$(replay_prompt_slug "$(pwd)/prompts")
+  cell="$(replay_run_dir "$repo" "$pr" "$sha" "$slug")"
+  ./lib/replay-verify.sh --fixture "$f" \
+    --no-replay "$OUT/experiment/$cell/aggregator-output.md" \
+    || echo "FIXTURE FAILED: $(basename "$f")"
+done
+```
+
+A fixture that flipped PASS → FAIL between baseline and experiment is the regression — call it out in **Notable deltas** below. Fixtures encode `expected_verdict` + `expected_contains` + `expected_absent` so a regression surfaces as a clean FAIL line instead of a subtle aggregator-output diff.
+
+Reviewers asking for "one more substring fence" in a smoke test are usually asking for a fixture instead — encode the behavior as an `expected_contains` / `expected_absent` entry, not as prompt prose pinning. See `replays/canaries/README.md` for the format spec.
+
 ### Score table — fill in (summarize, don't paste full output)
 
 | Canary | Verdict (baseline → experiment) | # findings (baseline → experiment) | Severity / focus changes |
