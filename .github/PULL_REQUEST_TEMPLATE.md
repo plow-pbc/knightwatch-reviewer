@@ -102,6 +102,7 @@ for f in ~/.pr-reviewer/canary-fixtures/*.md; do
     "0 1") echo "REGRESSION: $(basename "$f") — passed baseline, failed experiment" ;;
     "1 0") echo "RECOVERY:   $(basename "$f") — failed baseline, passed experiment" ;;
     "1 1") echo "STALE:      $(basename "$f") — failed both sides (fixture or canary needs update)" ;;
+    *)     echo "ERROR:      $(basename "$f") — verifier exit base=$base expt=$expt (parse error / missing cell / unknown — inspect manually)" ;;
   esac
 done
 ```
