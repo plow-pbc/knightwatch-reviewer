@@ -43,7 +43,7 @@ Single-tenant by design: one Linux host with `gh` authenticated as the bot's sig
 
 ## Configure repos
 
-Add `owner/repo` entries to [`repos.conf`](repos.conf) and re-run `./install.sh`:
+The tracked-repo manifest is split into a committed template ([`repos.conf.example`](repos.conf.example)) and a per-operator live file (`repos.conf`, gitignored). On first `./install.sh` run the live file is bootstrapped from the template — edit it in place, then re-run `./install.sh`:
 
 ```sh
 REPOS=(
@@ -52,7 +52,7 @@ REPOS=(
 )
 ```
 
-The next 2-minute timer tick picks it up. `SOURCE_PATHS` in the same file enables cross-repo grep/search-roots and `KID_PATHS` wires kid-prior-art lookup. Per-repo policy (product context, review priority, sibling allowlist, dead-code command, strict-typing command) lives in each tracked repo's `.knightwatch/` directory and is read from the base branch via `lib/knightwatch-config.sh`. See the inline comments in [`repos.conf`](repos.conf) for shapes and `lib/tracked-repos.sh` for the loader.
+The next 2-minute timer tick picks it up. `SOURCE_PATHS` in the same file enables cross-repo grep/search-roots and `KID_PATHS` wires kid-prior-art lookup. Per-repo policy (product context, review priority, sibling allowlist, dead-code command, strict-typing command) lives in each tracked repo's `.knightwatch/` directory and is read from the base branch via `lib/knightwatch-config.sh`. See the inline comments in [`repos.conf.example`](repos.conf.example) for shapes and `lib/tracked-repos.sh` for the loader.
 
 ## Use on a PR
 
@@ -70,4 +70,4 @@ Reviews fire on PR open and again after one hour of idle. To force a fresh revie
 - `review.sh` / `lib/review-one-pr.sh` — per-PR review driver
 - `prompts/` — specialist + critic + aggregator prompts
 - `systemd/` — polling timer + service units
-- `repos.conf` — tracked-repo manifest
+- `repos.conf.example` — tracked-repo manifest template (live `repos.conf` is per-operator, gitignored)

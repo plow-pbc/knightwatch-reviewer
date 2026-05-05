@@ -5,9 +5,12 @@
 # added its own bespoke smoke and they drifted independently.
 #
 # Contract:
-#   A. repos.conf sources cleanly + has the expected shape (REPOS
-#      non-empty, KID_PATHS is an assoc array, every REPO has a
-#      KID_PATHS entry, no stale KID_PATHS keys, plow-content tracked).
+#   A. repos.conf.example sources cleanly + has the expected shape
+#      (REPOS non-empty, KID_PATHS is an assoc array, every REPO has a
+#      KID_PATHS entry, no stale KID_PATHS keys). The .example file is
+#      the tracked source of truth for the manifest shape; the live
+#      repos.conf is per-operator and gitignored, so the shape contract
+#      is enforced against the template instead.
 #   B. lib/tracked-repos.sh is the ONE seam for loading the manifest:
 #      pre-declares REPOS/KID_PATHS empty so accesses stay safe under
 #      `set -u` when repos.conf is absent, sources repos.conf and
@@ -16,26 +19,29 @@
 #      hard list catches drift if a new consumer is added without
 #      going through the loader.
 #   D. install.sh symlinks repos.conf into INSTALL_DIR — sandboxed
-#      install + readlink verification.
+#      install + readlink verification. install.sh bootstraps
+#      repos.conf from .example when missing, so this works on a
+#      fresh clone without manual setup.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-CONF="$PROJECT_ROOT/repos.conf"
+CONF_EXAMPLE="$PROJECT_ROOT/repos.conf.example"
 LOADER="$PROJECT_ROOT/lib/tracked-repos.sh"
 
-[ -f "$CONF" ] || { echo "FAIL: $CONF missing"; exit 1; }
+[ -f "$CONF_EXAMPLE" ] || { echo "FAIL: $CONF_EXAMPLE missing"; exit 1; }
 [ -f "$LOADER" ] || { echo "FAIL: $LOADER missing"; exit 1; }
 
-# ----- Contract A: canonical repos.conf shape -----------------------------
-# Source the canonical conf in a subshell so it doesn't pollute the test's
-# env. The smoke binary is bash, so sourcing the bash conf is the same
-# shape every consumer uses.
+# ----- Contract A: canonical manifest shape (template) --------------------
+# Source the tracked .example template — the live repos.conf is
+# per-operator and gitignored, so the shape contract is enforced
+# against the template, which install.sh uses to bootstrap the
+# operator's file on first run.
 declare -a REPOS=()
 declare -A KID_PATHS=()
-. "$CONF"
+. "$CONF_EXAMPLE"
 
 echo "  A1: REPOS is non-empty..."
 [ "${#REPOS[@]}" -ge 1 ] || { echo "FAIL A1: REPOS array is empty"; exit 1; }
@@ -70,17 +76,6 @@ for key in "${!KID_PATHS[@]}"; do
     done
     [ "$found" = "1" ] || { echo "FAIL A4: KID_PATHS has stale entry [$key] not in REPOS"; exit 1; }
 done
-
-echo "  A5: cncorp/plow-content is tracked..."
-# Specific anchor for the PR that introduced this conf file. If a
-# future edit accidentally drops plow-content, the smoke surfaces it
-# directly (rather than only via 'no review showed up on plow-content'
-# in prod).
-found=0
-for repo in "${REPOS[@]}"; do
-    if [ "$repo" = "cncorp/plow-content" ]; then found=1; break; fi
-done
-[ "$found" = "1" ] || { echo "FAIL A5: cncorp/plow-content missing from REPOS"; exit 1; }
 
 # ----- Contract B: lib/tracked-repos.sh loader behavior -------------------
 TMPDIR=$(mktemp -d -t repos-conf-smoke-XXXXXX)
@@ -172,7 +167,10 @@ chmod +x "$SAND_HOME/.local/bin/sudo" "$SAND_HOME/.local/bin/systemctl"
 LINK="$SAND_INSTALL/repos.conf"
 [ -L "$LINK" ] || { echo "FAIL D: $LINK is not a symlink"; ls -la "$SAND_INSTALL"; exit 1; }
 TARGET="$(readlink -f "$LINK")"
-EXPECTED="$(readlink -f "$CONF")"
+# install.sh bootstraps $PROJECT_ROOT/repos.conf from .example when
+# missing, so the symlink resolves to the live (operator-editable) file,
+# not the template.
+EXPECTED="$(readlink -f "$PROJECT_ROOT/repos.conf")"
 [ "$TARGET" = "$EXPECTED" ] || { echo "FAIL D: symlink resolves to $TARGET, expected $EXPECTED"; exit 1; }
 
-echo "  PASS (A1-A5: shape; B1-B4: loader; C: $(echo "${#CONSUMERS[@]}") consumers; D: install delivery)"
+echo "  PASS (A1-A4: shape; B1-B4: loader; C: $(echo "${#CONSUMERS[@]}") consumers; D: install delivery)"

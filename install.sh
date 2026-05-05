@@ -114,6 +114,16 @@ done < <(grep -h "^ExecStart=" "${service_units[@]}" | sort -u)
 DIRS=(lib docs prompts)
 # Tracked-repo manifest. Sourced by every script that needs the REPOS
 # array or KID_PATHS map — single source of truth, host-editable.
+# repos.conf is per-operator and gitignored; bootstrap from the tracked
+# template (repos.conf.example) on first run so a fresh clone can
+# install + start systemd units without manual setup. Operator edits
+# the live file in-place afterwards and re-runs install.sh to widen
+# the systemd ReadWritePaths sandboxes.
+if [[ ! -f "$REPO_DIR/repos.conf" ]]; then
+    [[ -f "$REPO_DIR/repos.conf.example" ]] || fail "neither repos.conf nor repos.conf.example present at $REPO_DIR"
+    cp "$REPO_DIR/repos.conf.example" "$REPO_DIR/repos.conf"
+    info "bootstrapped repos.conf from repos.conf.example — edit $REPO_DIR/repos.conf to track real repos and re-run install.sh"
+fi
 CONFIG_FILES=(repos.conf)
 
 mkdir -p "$INSTALL_DIR"
@@ -157,7 +167,7 @@ shopt -u nullglob
 #
 # The narrower review render keeps Codex specialists (inner sandbox
 # disabled) from getting writes to entire repo source trees.
-[[ -f "$REPO_DIR/repos.conf" ]] || fail "repos.conf missing at $REPO_DIR/repos.conf — needed to render kid-refresh ReadWritePaths"
+# repos.conf existence is already guaranteed by the bootstrap above.
 # shellcheck disable=SC1091
 . "$REPO_DIR/repos.conf"
 # Dedupe + sort for stable rendering across runs so cmp-based idempotency

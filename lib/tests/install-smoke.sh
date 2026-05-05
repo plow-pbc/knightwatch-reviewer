@@ -140,7 +140,9 @@ done
 # derives from $PROJECT_ROOT/repos.conf, so the cmp below compares against
 # what install.sh actually wrote (post-substitution), not the source-with-
 # placeholder. Sources repos.conf in a subshell so the smoke's own
-# REPOS / KID_PATHS state isn't perturbed.
+# REPOS / KID_PATHS state isn't perturbed. install.sh's bootstrap (run
+# above by run_install) ensures repos.conf exists even on a fresh clone
+# — operator file is gitignored, .example is the tracked template.
 EXPECTED_KID_RW_PATHS=$(
     REPOS=( ); declare -A KID_PATHS=( )
     # shellcheck disable=SC1091
