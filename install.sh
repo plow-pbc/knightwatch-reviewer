@@ -73,6 +73,21 @@ if [ "${GH_MAJ:-0}" -lt 2 ] || { [ "${GH_MAJ:-0}" -eq 2 ] && [ "${GH_MIN:-0}" -l
 fi
 ok "gh: $GH_VERSION"
 
+# --- 0. Bootstrap repos.conf from .example on a fresh clone -----------------
+# repos.conf is per-operator and gitignored; the tracked template lives at
+# repos.conf.example. On first run we copy the template into place and
+# exit — the placeholder REPOS would otherwise enable systemd timers that
+# spin on `gh pr list --repo your-org/example-repo`, wasting API quota and
+# polluting logs until the operator edits the file. Fail-fast at the
+# install boundary instead: tell the operator what to do and stop.
+if [[ ! -f "$REPO_DIR/repos.conf" ]]; then
+    [[ -f "$REPO_DIR/repos.conf.example" ]] || fail "neither repos.conf nor repos.conf.example present at $REPO_DIR"
+    cp "$REPO_DIR/repos.conf.example" "$REPO_DIR/repos.conf"
+    info "bootstrapped repos.conf from repos.conf.example"
+    info "edit $REPO_DIR/repos.conf to track real repos, then re-run ./install.sh — exiting now without enabling timers on the placeholder manifest"
+    exit 0
+fi
+
 # --- 1. Symlinks into $INSTALL_DIR ------------------------------------------
 # Discover the script list from the systemd unit files' ExecStart=
 # directives — the units are the source of truth for what runs in
@@ -112,18 +127,6 @@ done < <(grep -h "^ExecStart=" "${service_units[@]}" | sort -u)
 [[ ${#SCRIPTS[@]} -ge 1 ]] || fail "no scripts discovered from ExecStart= directives — check systemd/*.service shape"
 
 DIRS=(lib docs prompts)
-# Tracked-repo manifest. Sourced by every script that needs the REPOS
-# array or KID_PATHS map — single source of truth, host-editable.
-# repos.conf is per-operator and gitignored; bootstrap from the tracked
-# template (repos.conf.example) on first run so a fresh clone can
-# install + start systemd units without manual setup. Operator edits
-# the live file in-place afterwards and re-runs install.sh to widen
-# the systemd ReadWritePaths sandboxes.
-if [[ ! -f "$REPO_DIR/repos.conf" ]]; then
-    [[ -f "$REPO_DIR/repos.conf.example" ]] || fail "neither repos.conf nor repos.conf.example present at $REPO_DIR"
-    cp "$REPO_DIR/repos.conf.example" "$REPO_DIR/repos.conf"
-    info "bootstrapped repos.conf from repos.conf.example — edit $REPO_DIR/repos.conf to track real repos and re-run install.sh"
-fi
 CONFIG_FILES=(repos.conf)
 
 mkdir -p "$INSTALL_DIR"
@@ -151,29 +154,29 @@ shopt -u nullglob
 [[ ${#units[@]} -ge 1 ]] || fail "no systemd unit files in $REPO_DIR/systemd/"
 
 # Two render shapes from the same KID_PATHS source of truth, one per
-# unit's actual access need:
+# unit's actual access need. Both prefix paths with `-` so a missing
+# checkout (e.g. operator hasn't cloned a tracked repo yet) doesn't
+# fail systemd unit start — the review/refresh code already skips
+# missing paths gracefully (lib/review-one-pr.sh's kid block,
+# plow-kid-refresh.sh's checkout check).
 #
 #   @KID_RW_PATHS@        — full repo roots (e.g. /home/odio/Hacking/foo).
 #                           Used by pr-reviewer-kid-refresh.service, which
 #                           git-pulls and re-indexes the checkouts.
 #
-#   @KID_INDEX_RW_PATHS@  — `.keepitdry` subdirs only, prefixed with `-`
-#                           so missing dirs don't fail systemd unit start
-#                           (review code already skips when index is
-#                           absent — see lib/review-one-pr.sh's kid block).
-#                           Used by pr-reviewer.service, which only needs
+#   @KID_INDEX_RW_PATHS@  — `.keepitdry` subdirs only, used by
+#                           pr-reviewer.service, which only needs
 #                           chromadb's SQLite WAL/journal writes inside
 #                           the index dir.
 #
 # The narrower review render keeps Codex specialists (inner sandbox
 # disabled) from getting writes to entire repo source trees.
-# repos.conf existence is already guaranteed by the bootstrap above.
 # shellcheck disable=SC1091
 . "$REPO_DIR/repos.conf"
 # Dedupe + sort for stable rendering across runs so cmp-based idempotency
 # doesn't trigger spurious copies when bash hashing reorders the assoc
 # array between runs.
-KID_RW_PATHS=$(printf '%s\n' "${KID_PATHS[@]}" | sort -u | tr '\n' ' ')
+KID_RW_PATHS=$(printf '%s\n' "${KID_PATHS[@]}" | sort -u | sed 's|^|-|' | tr '\n' ' ')
 KID_RW_PATHS="${KID_RW_PATHS% }"
 KID_INDEX_RW_PATHS=$(printf '%s\n' "${KID_PATHS[@]}" | sort -u | sed 's|$|/.keepitdry|; s|^|-|' | tr '\n' ' ')
 KID_INDEX_RW_PATHS="${KID_INDEX_RW_PATHS% }"

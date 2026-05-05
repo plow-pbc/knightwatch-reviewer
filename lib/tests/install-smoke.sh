@@ -123,6 +123,16 @@ while IFS= read -r execstart; do
 done < <(grep -h "^ExecStart=" "$PROJECT_ROOT"/systemd/*.service | sort -u)
 [[ ${#PROD_SCRIPTS[@]} -ge 1 ]] || { echo "FAIL setup: no scripts discovered from production unit files"; exit 1; }
 
+# Scenarios 1-3 below test install.sh's main install path (symlinks +
+# unit copy + timer enable). They run against $PROJECT_ROOT directly
+# and so need $PROJECT_ROOT/repos.conf to exist — without it install.sh
+# bootstraps from .example and exits early, leaving every scenario with
+# nothing to assert against. The bootstrap-and-exit path is exercised
+# separately by repos-conf-smoke.sh's Contract D.1, so just pre-create
+# repos.conf here when the operator hasn't (gitignored on disk; this
+# only fires on fresh clones).
+[ -f "$PROJECT_ROOT/repos.conf" ] || cp "$PROJECT_ROOT/repos.conf.example" "$PROJECT_ROOT/repos.conf"
+
 # --- Scenario 1: first-run install -----------------------------------------
 echo "  scenario 1: first-run install — every unit copied, every timer enabled..."
 : > "$STUB_LOG"
@@ -147,7 +157,9 @@ EXPECTED_KID_RW_PATHS=$(
     REPOS=( ); declare -A KID_PATHS=( )
     # shellcheck disable=SC1091
     . "$PROJECT_ROOT/repos.conf"
-    paths=$(printf '%s\n' "${KID_PATHS[@]}" | sort -u | tr '\n' ' ')
+    # Both render shapes prefix paths with `-` so a missing checkout
+    # doesn't fail systemd unit start (matches install.sh).
+    paths=$(printf '%s\n' "${KID_PATHS[@]}" | sort -u | sed 's|^|-|' | tr '\n' ' ')
     printf '%s' "${paths% }"
 )
 EXPECTED_KID_INDEX_RW_PATHS=$(
@@ -312,4 +324,58 @@ n_cp="$(count_stub 'SUDO cp')"
 # enabled+active per MOCK_TIMERS_ENABLED).
 [ "$(count_stub 'SYSTEMCTL enable --now pr-reviewer.timer')" = "0" ] || { echo "FAIL scenario 3: existing pr-reviewer.timer was re-enabled despite already being active"; cat "$STUB_LOG"; exit 1; }
 
-echo "  PASS (3 scenarios: first-run, idempotent-rerun, new-unit-incremental-enables-new-timer)"
+# --- Scenario 4: divergent operator repos.conf is preserved -----------------
+# Pin the contract that install.sh DOES NOT overwrite an existing
+# repos.conf with the .example template, even when the two diverge.
+# A regression to "always re-bootstrap" would silently replace the
+# operator's tracked-repo list with the placeholder manifest on every
+# install.sh run. Run from an isolated overlay so $PROJECT_ROOT's
+# operator file isn't touched.
+echo "  scenario 4: divergent operator repos.conf is preserved (not overwritten by .example)..."
+OVERLAY4="$TMPDIR/overlay-divergent"
+SAND_INSTALL4="$TMPDIR/install-divergent"
+SAND_SYSTEMD4="$TMPDIR/systemd-divergent"
+mkdir -p "$OVERLAY4" "$SAND_INSTALL4" "$SAND_SYSTEMD4"
+for entry in "$PROJECT_ROOT"/*; do
+    name="$(basename "$entry")"
+    [ "$name" = "repos.conf" ] && continue
+    [ "$name" = "repos.conf.example" ] && continue
+    ln -snf "$entry" "$OVERLAY4/$name"
+done
+# Distinct .example template — if install.sh ever clobbers the live file,
+# this content will appear in the rendered systemd unit and the assertion
+# below will fail.
+cat > "$OVERLAY4/repos.conf.example" <<'CONF'
+REPOS=("template-org/template-repo")
+declare -A KID_PATHS=(["template-org/template-repo"]="/should/not/appear")
+declare -A SOURCE_PATHS=(["template-org/template-repo"]="/should/not/appear")
+CONF
+# Operator's live file with paths that must survive the install.sh run.
+cat > "$OVERLAY4/repos.conf" <<'CONF'
+REPOS=("custom-org/custom-repo")
+declare -A KID_PATHS=(["custom-org/custom-repo"]="/var/operator/custom-checkout")
+declare -A SOURCE_PATHS=(["custom-org/custom-repo"]="/var/operator/custom-checkout")
+CONF
+LIVE_BEFORE=$(sha1sum "$OVERLAY4/repos.conf" | awk '{print $1}')
+
+(
+    cd "$OVERLAY4"
+    HOME="$HOME" \
+        PATH="$STUB_BIN:$PATH" \
+        INSTALL_DIR="$SAND_INSTALL4" \
+        SYSTEMD_DIR="$SAND_SYSTEMD4" \
+        ./install.sh > /dev/null
+)
+
+LIVE_AFTER=$(sha1sum "$OVERLAY4/repos.conf" | awk '{print $1}')
+[ "$LIVE_BEFORE" = "$LIVE_AFTER" ] || { echo "FAIL scenario 4: install.sh modified the operator's repos.conf (sha changed $LIVE_BEFORE → $LIVE_AFTER)"; exit 1; }
+
+# Rendered unit ReadWritePaths must derive from the live file, not
+# the template. If install.sh sourced the .example by mistake, the
+# rendered unit would contain "/should/not/appear" instead.
+KID_REFRESH_UNIT="$SAND_SYSTEMD4/pr-reviewer-kid-refresh.service"
+[ -f "$KID_REFRESH_UNIT" ] || { echo "FAIL scenario 4: kid-refresh unit not installed"; ls -la "$SAND_SYSTEMD4"; exit 1; }
+grep -q "/var/operator/custom-checkout" "$KID_REFRESH_UNIT" || { echo "FAIL scenario 4: kid-refresh unit missing operator path /var/operator/custom-checkout"; grep '^ReadWritePaths=' "$KID_REFRESH_UNIT"; exit 1; }
+grep -q "/should/not/appear" "$KID_REFRESH_UNIT" && { echo "FAIL scenario 4: kid-refresh unit contains template path /should/not/appear — operator file was clobbered or .example was sourced"; grep '^ReadWritePaths=' "$KID_REFRESH_UNIT"; exit 1; }
+
+echo "  PASS (4 scenarios: first-run, idempotent-rerun, new-unit-incremental-enables-new-timer, divergent-operator-repos.conf-preserved)"

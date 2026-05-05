@@ -132,16 +132,22 @@ for c in "${CONSUMERS[@]}"; do
     grep -q 'tracked-repos\.sh' "$f" || { echo "FAIL C: $c does not source lib/tracked-repos.sh"; exit 1; }
 done
 
-# ----- Contract D: install.sh symlinks repos.conf into INSTALL_DIR --------
-echo "  D: install.sh symlinks repos.conf into INSTALL_DIR..."
-# Sandboxed install. install.sh runs sudo cp + sudo systemctl; stub
-# both so the test doesn't need real privilege or systemd. We only
-# care about the symlink leg (no sudo, no systemctl), but stubbing
-# keeps the install run from failing partway through.
-SAND_INSTALL="$TMPDIR/install"
-SAND_SYSTEMD="$TMPDIR/systemd"
+# ----- Contract D: install.sh bootstrap + symlink delivery ----------------
+# install.sh has two install paths:
+#   D.1) repos.conf missing — bootstrap from .example, exit before
+#        symlinks/units/timers (avoid spinning placeholder timers).
+#   D.2) repos.conf present — full install, symlink repos.conf into
+#        INSTALL_DIR.
+# Both cases run from a temp overlay (symlinked project tree, with
+# repos.conf either omitted or pre-created) so the smoke is
+# deterministic regardless of $PROJECT_ROOT state — a gitignored
+# repos.conf can otherwise persist across local smoke runs and skip
+# the bootstrap branch entirely.
+#
+# Stubs for sudo + systemctl: install.sh runs sudo cp + sudo systemctl
+# in the full-install path; stubs let the smoke run without privilege.
 SAND_HOME="$TMPDIR/home"
-mkdir -p "$SAND_INSTALL" "$SAND_SYSTEMD" "$SAND_HOME/.local/bin"
+mkdir -p "$SAND_HOME/.local/bin"
 cat > "$SAND_HOME/.local/bin/sudo" <<'STUB'
 #!/bin/bash
 exec "$@"
@@ -155,22 +161,63 @@ esac
 STUB
 chmod +x "$SAND_HOME/.local/bin/sudo" "$SAND_HOME/.local/bin/systemctl"
 
+# Symlink-overlay of $PROJECT_ROOT, omitting any pre-existing repos.conf.
+# Keeps the smoke from touching the operator's working tree and lets
+# each scenario decide whether the live file is present.
+make_overlay() {
+    local overlay="$1"
+    mkdir -p "$overlay"
+    for entry in "$PROJECT_ROOT"/*; do
+        name="$(basename "$entry")"
+        [ "$name" = "repos.conf" ] && continue
+        ln -snf "$entry" "$overlay/$name"
+    done
+}
+
+# D.1: fresh bootstrap exits without enabling timers
+echo "  D.1: fresh bootstrap (no repos.conf) — copies from .example and exits early..."
+OVERLAY1="$TMPDIR/overlay-fresh"
+SAND_INSTALL1="$TMPDIR/install-fresh"
+SAND_SYSTEMD1="$TMPDIR/systemd-fresh"
+mkdir -p "$SAND_INSTALL1" "$SAND_SYSTEMD1"
+make_overlay "$OVERLAY1"
+[ ! -e "$OVERLAY1/repos.conf" ] || { echo "FAIL D.1 setup: overlay already has repos.conf"; exit 1; }
 (
-    cd "$PROJECT_ROOT"
+    cd "$OVERLAY1"
     HOME="$SAND_HOME" \
         PATH="$SAND_HOME/.local/bin:$PATH" \
-        INSTALL_DIR="$SAND_INSTALL" \
-        SYSTEMD_DIR="$SAND_SYSTEMD" \
+        INSTALL_DIR="$SAND_INSTALL1" \
+        SYSTEMD_DIR="$SAND_SYSTEMD1" \
         ./install.sh > /dev/null
 )
+[ -f "$OVERLAY1/repos.conf" ] || { echo "FAIL D.1: overlay repos.conf not created by bootstrap"; exit 1; }
+cmp -s "$OVERLAY1/repos.conf" "$OVERLAY1/repos.conf.example" || { echo "FAIL D.1: bootstrapped repos.conf does not match .example byte-for-byte"; exit 1; }
+# Early-exit boundary: install.sh must NOT reach the symlink stage on bootstrap.
+if [ -e "$SAND_INSTALL1/repos.conf" ]; then
+    echo "FAIL D.1: install.sh continued past bootstrap exit — repos.conf delivered into INSTALL_DIR"
+    exit 1
+fi
 
-LINK="$SAND_INSTALL/repos.conf"
-[ -L "$LINK" ] || { echo "FAIL D: $LINK is not a symlink"; ls -la "$SAND_INSTALL"; exit 1; }
+# D.2: existing repos.conf — symlink delivery
+echo "  D.2: existing repos.conf — full install symlinks repos.conf into INSTALL_DIR..."
+OVERLAY2="$TMPDIR/overlay-full"
+SAND_INSTALL2="$TMPDIR/install-full"
+SAND_SYSTEMD2="$TMPDIR/systemd-full"
+mkdir -p "$SAND_INSTALL2" "$SAND_SYSTEMD2"
+make_overlay "$OVERLAY2"
+cp "$OVERLAY2/repos.conf.example" "$OVERLAY2/repos.conf"
+(
+    cd "$OVERLAY2"
+    HOME="$SAND_HOME" \
+        PATH="$SAND_HOME/.local/bin:$PATH" \
+        INSTALL_DIR="$SAND_INSTALL2" \
+        SYSTEMD_DIR="$SAND_SYSTEMD2" \
+        ./install.sh > /dev/null
+)
+LINK="$SAND_INSTALL2/repos.conf"
+[ -L "$LINK" ] || { echo "FAIL D.2: $LINK is not a symlink"; ls -la "$SAND_INSTALL2"; exit 1; }
 TARGET="$(readlink -f "$LINK")"
-# install.sh bootstraps $PROJECT_ROOT/repos.conf from .example when
-# missing, so the symlink resolves to the live (operator-editable) file,
-# not the template.
-EXPECTED="$(readlink -f "$PROJECT_ROOT/repos.conf")"
-[ "$TARGET" = "$EXPECTED" ] || { echo "FAIL D: symlink resolves to $TARGET, expected $EXPECTED"; exit 1; }
+EXPECTED="$(readlink -f "$OVERLAY2/repos.conf")"
+[ "$TARGET" = "$EXPECTED" ] || { echo "FAIL D.2: symlink resolves to $TARGET, expected $EXPECTED"; exit 1; }
 
-echo "  PASS (A1-A4: shape; B1-B4: loader; C: $(echo "${#CONSUMERS[@]}") consumers; D: install delivery)"
+echo "  PASS (A1-A4: shape; B1-B4: loader; C: $(echo "${#CONSUMERS[@]}") consumers; D.1: bootstrap-exits; D.2: symlink-delivery)"
