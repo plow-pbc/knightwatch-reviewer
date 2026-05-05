@@ -13,10 +13,12 @@
 #
 # This file's ASSERTIONS ARE THE CONTRACT — when you remove an
 # assertion, you remove a token fence. Don't drop assertions to
-# "clean up"; the K-decay paired tokens, the negative fences, and the
-# specialist-registration tokens are all load-bearing and were each
-# written in response to a specific regression. See PR #25, PR #38,
-# PR #42, PR #45, PR #47 review history if uncertain about a fence.
+# "clean up"; the negative fences and the specialist-registration
+# tokens are all load-bearing and were each written in response to
+# a specific regression. See PR #25, PR #38, PR #42, PR #45, PR #47
+# review history if uncertain about a fence — though note PR #55
+# dropped several wording-pin fences that were over-fitting; that
+# PR's description documents what was removed and why.
 #
 # Deliberately NOT a content-pinning test. Rule 8 (Remedy-cost framing)
 # itself forbids tests that calcify prompt prose; what we fence here is
@@ -146,7 +148,7 @@ assert_grep "aggregator.md should reference momentum specialist output" \
     "momentum.md" prompts/aggregator.md
 
 # ====================================================================
-# Section 1.5: systemd-chain shebang security
+# Section 2: systemd-chain shebang security
 # ====================================================================
 # Security fence: scripts launched directly by systemd ExecStart, or
 # exec'd from those scripts, MUST use the absolute `#!/bin/bash`
@@ -233,7 +235,7 @@ for unit in systemd/*.service; do
 done
 
 # ====================================================================
-# Section 2: pipeline.py wiring (formerly orchestrate.sh + momentum-wire)
+# Section 3: pipeline.py wiring (formerly orchestrate.sh + momentum-wire)
 # ====================================================================
 
 PIPELINE=lib/pipeline.py
