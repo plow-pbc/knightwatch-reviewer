@@ -3,15 +3,16 @@
 # No file I/O, no network — composable in pipelines + hermetic-testable.
 
 # count_attributions: read review body(ies) on stdin, emit one specialist
-# name per `[from: <specialist>]` attribution found in numbered probe
-# lines (`^N. ...`). Line-pattern filter excludes prose/footer/doc/
-# README/example tokens by construction — only probe-line attributions
-# count. Caller pipes through `sort | uniq -c`. grep exits 1 on no match
-# — normalize to 0 so callers under `set -e` don't abort.
+# name per probe's RENDERED attribution slot. Anchored to the documented
+# probe-line shape from prompts/aggregator.md step 6:
+#   `N. [<severity>] [from: <specialist>] [<class>] ...`
+# Only the leading [from: <specialist>] slot counts — inline mentions of
+# `[from: <other>]` within probe prose, footer/README/doc tokens, and any
+# unnumbered surface are excluded by construction. Caller pipes through
+# `sort | uniq -c`. grep exits 1 on no match — normalize to 0.
 count_attributions() {
-    grep -E '^[0-9]+\.' \
-        | grep -oE '\[from: [a-z][a-z-]*\]' \
-        | sed -E 's/\[from: ([a-z-]+)\]/\1/' \
+    grep -oE '^[0-9]+\. \[[^]]+\] \[from: [a-z][a-z-]*\]' \
+        | sed -E 's/.*\[from: ([a-z-]+)\]/\1/' \
         || true
 }
 

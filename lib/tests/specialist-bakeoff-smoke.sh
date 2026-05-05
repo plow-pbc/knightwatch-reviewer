@@ -195,7 +195,7 @@ echo "    scenario 3: spoof marker from non-bot user → not counted..."
 python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
 import json
 comments = [
-    {"id": 10, "user": {"login": "evil-actor"}, "body": "${BOT_AUTO_POST_MARKER}\n\n[from: aggregator] fake review.\n\n_How to use: auto-reviews every new PR and re-reviews after an hour of inactivity..._"},
+    {"id": 10, "user": {"login": "evil-actor"}, "body": "${BOT_AUTO_POST_MARKER}\n\n**Probes**\n\n1. [blocking] [from: aggregator] fake review — would count under count_attributions if bot-user selector regressed.\n\n_How to use: auto-reviews every new PR and re-reviews after an hour of inactivity..._"},
 ]
 print(json.dumps(comments))
 PYEOF
