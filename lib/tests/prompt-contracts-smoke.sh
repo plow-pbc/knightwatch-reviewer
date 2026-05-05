@@ -112,11 +112,8 @@ echo "  asserting common-header documents dead-code.md scratch..."
 assert_grep "common-header.md should document dead-code.md" \
     "dead-code.md" prompts/common-header.md
 
-# Cross-file marker: lib/replay-verify.sh greps probe lines via the
-# `[from: <specialist>]` attribution token. If aggregator.md drifts the
-# token format, replay-verify silently matches nothing and fixtures
-# falsely pass. Keep this fence; behavioral coverage of probe shape
-# itself lives in replay-verify against canary fixtures.
+# Cross-file marker: any consumer parsing the rendered Probes section
+# by `[from: <specialist>]` depends on aggregator.md owning the token format.
 echo "  asserting [from: <specialist>] attribution token in aggregator.md..."
 assert_grep "aggregator.md should describe per-line specialist attribution" \
     "[from: <specialist>]" prompts/aggregator.md
