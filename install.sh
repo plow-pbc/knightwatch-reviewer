@@ -80,10 +80,22 @@ ok "gh: $GH_VERSION"
 # spin on `gh pr list --repo your-org/example-repo`, wasting API quota and
 # polluting logs until the operator edits the file. Fail-fast at the
 # install boundary instead: tell the operator what to do and stop.
+#
+# Two unconfigured states fail-fast here, both with the same message:
+#   1. repos.conf doesn't exist — bootstrap from .example, then exit.
+#   2. repos.conf exists but is byte-for-byte identical to .example — the
+#      operator hasn't edited yet (e.g., re-ran install.sh on a fresh
+#      clone, or a tool raw-cp'd the template). Reject the same way; the
+#      operator hitting "already configured" silently is the bug.
 if [[ ! -f "$REPO_DIR/repos.conf" ]]; then
     [[ -f "$REPO_DIR/repos.conf.example" ]] || fail "neither repos.conf nor repos.conf.example present at $REPO_DIR"
     cp "$REPO_DIR/repos.conf.example" "$REPO_DIR/repos.conf"
     info "bootstrapped repos.conf from repos.conf.example"
+    info "edit $REPO_DIR/repos.conf to track real repos, then re-run ./install.sh — exiting now without enabling timers on the placeholder manifest"
+    exit 0
+fi
+if [[ -f "$REPO_DIR/repos.conf.example" ]] && cmp -s "$REPO_DIR/repos.conf" "$REPO_DIR/repos.conf.example"; then
+    info "$REPO_DIR/repos.conf is byte-for-byte identical to repos.conf.example — placeholder manifest, not edited yet"
     info "edit $REPO_DIR/repos.conf to track real repos, then re-run ./install.sh — exiting now without enabling timers on the placeholder manifest"
     exit 0
 fi

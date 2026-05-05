@@ -198,14 +198,40 @@ if [ -e "$SAND_INSTALL1/repos.conf" ]; then
     exit 1
 fi
 
-# D.2: existing repos.conf — symlink delivery
-echo "  D.2: existing repos.conf — full install symlinks repos.conf into INSTALL_DIR..."
+# D.2: divergent operator repos.conf — full install symlinks live file +
+# preserves operator content + renders unit ReadWritePaths from live, not
+# template. Folds the prior install-smoke "divergent operator" scenario in
+# here so this manifest split has one place that owns full-install
+# assertions instead of two (DRY — see knightwatch round-2 probe 2).
+#
+# A divergent fixture is required: install.sh's Step 0 boundary rejects
+# any repos.conf that's byte-for-byte identical to .example (= operator
+# hasn't edited yet). A raw-cp would re-trigger the bootstrap-exit path.
+echo "  D.2: divergent operator repos.conf — full install + preservation + render-from-live..."
 OVERLAY2="$TMPDIR/overlay-full"
 SAND_INSTALL2="$TMPDIR/install-full"
 SAND_SYSTEMD2="$TMPDIR/systemd-full"
 mkdir -p "$SAND_INSTALL2" "$SAND_SYSTEMD2"
 make_overlay "$OVERLAY2"
-cp "$OVERLAY2/repos.conf.example" "$OVERLAY2/repos.conf"
+# Distinct .example content so a regression that sourced .example
+# instead of repos.conf would surface as the template path leaking into
+# the rendered systemd unit. Break the symlink first — make_overlay
+# created $OVERLAY2/repos.conf.example as a symlink to $PROJECT_ROOT's
+# tracked template, so a `cat >` would follow it and corrupt the live
+# template file in the project tree.
+rm -f "$OVERLAY2/repos.conf.example"
+cat > "$OVERLAY2/repos.conf.example" <<'CONF'
+REPOS=("template-org/template-repo")
+declare -A KID_PATHS=(["template-org/template-repo"]="/should/not/appear")
+declare -A SOURCE_PATHS=(["template-org/template-repo"]="/should/not/appear")
+CONF
+# Operator's live file with paths that must survive install.sh untouched.
+cat > "$OVERLAY2/repos.conf" <<'CONF'
+REPOS=("custom-org/custom-repo")
+declare -A KID_PATHS=(["custom-org/custom-repo"]="/var/operator/custom-checkout")
+declare -A SOURCE_PATHS=(["custom-org/custom-repo"]="/var/operator/custom-checkout")
+CONF
+LIVE_BEFORE=$(sha1sum "$OVERLAY2/repos.conf" | awk '{print $1}')
 (
     cd "$OVERLAY2"
     HOME="$SAND_HOME" \
@@ -214,10 +240,42 @@ cp "$OVERLAY2/repos.conf.example" "$OVERLAY2/repos.conf"
         SYSTEMD_DIR="$SAND_SYSTEMD2" \
         ./install.sh > /dev/null
 )
+# Symlink delivery
 LINK="$SAND_INSTALL2/repos.conf"
 [ -L "$LINK" ] || { echo "FAIL D.2: $LINK is not a symlink"; ls -la "$SAND_INSTALL2"; exit 1; }
 TARGET="$(readlink -f "$LINK")"
 EXPECTED="$(readlink -f "$OVERLAY2/repos.conf")"
 [ "$TARGET" = "$EXPECTED" ] || { echo "FAIL D.2: symlink resolves to $TARGET, expected $EXPECTED"; exit 1; }
+# Preservation: live file's bytes are unchanged
+LIVE_AFTER=$(sha1sum "$OVERLAY2/repos.conf" | awk '{print $1}')
+[ "$LIVE_BEFORE" = "$LIVE_AFTER" ] || { echo "FAIL D.2: install.sh modified the operator's repos.conf (sha changed $LIVE_BEFORE → $LIVE_AFTER)"; exit 1; }
+# Render-from-live: rendered kid-refresh unit's ReadWritePaths derives from
+# the live file, not the template. If install.sh sourced .example by
+# mistake, the template path would leak into the rendered unit.
+KID_REFRESH_UNIT="$SAND_SYSTEMD2/pr-reviewer-kid-refresh.service"
+[ -f "$KID_REFRESH_UNIT" ] || { echo "FAIL D.2: kid-refresh unit not installed"; ls -la "$SAND_SYSTEMD2"; exit 1; }
+grep -q "/var/operator/custom-checkout" "$KID_REFRESH_UNIT" || { echo "FAIL D.2: kid-refresh unit missing operator path /var/operator/custom-checkout"; grep '^ReadWritePaths=' "$KID_REFRESH_UNIT"; exit 1; }
+grep -q "/should/not/appear" "$KID_REFRESH_UNIT" && { echo "FAIL D.2: kid-refresh unit contains template path /should/not/appear — .example was sourced instead of live"; grep '^ReadWritePaths=' "$KID_REFRESH_UNIT"; exit 1; }
 
-echo "  PASS (A1-A4: shape; B1-B4: loader; C: $(echo "${#CONSUMERS[@]}") consumers; D.1: bootstrap-exits; D.2: symlink-delivery)"
+# D.3: byte-for-byte template copy is treated as unconfigured
+echo "  D.3: byte-for-byte template copy — install.sh exits early without symlinking..."
+OVERLAY3="$TMPDIR/overlay-rawcopy"
+SAND_INSTALL3="$TMPDIR/install-rawcopy"
+SAND_SYSTEMD3="$TMPDIR/systemd-rawcopy"
+mkdir -p "$SAND_INSTALL3" "$SAND_SYSTEMD3"
+make_overlay "$OVERLAY3"
+cp "$OVERLAY3/repos.conf.example" "$OVERLAY3/repos.conf"
+(
+    cd "$OVERLAY3"
+    HOME="$SAND_HOME" \
+        PATH="$SAND_HOME/.local/bin:$PATH" \
+        INSTALL_DIR="$SAND_INSTALL3" \
+        SYSTEMD_DIR="$SAND_SYSTEMD3" \
+        ./install.sh > /dev/null
+)
+if [ -e "$SAND_INSTALL3/repos.conf" ]; then
+    echo "FAIL D.3: install.sh accepted byte-for-byte template copy as configured — repos.conf was symlinked into INSTALL_DIR"
+    exit 1
+fi
+
+echo "  PASS (A1-A4: shape; B1-B4: loader; C: $(echo "${#CONSUMERS[@]}") consumers; D.1: bootstrap-exits; D.2: divergent-full-install; D.3: rawcopy-rejected)"
