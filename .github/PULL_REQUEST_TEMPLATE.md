@@ -76,6 +76,43 @@ Output goes under `~/.pr-reviewer/replays/` so private canary identifiers + repl
 
 `lib/replay-batch.sh` runs cells sequentially. Wall time is roughly `canaries × 10 min × 2 sides` — for 3 canaries that's ~60 min total. Each cell burns ~17 codex calls (1 intent + 1 dead-code + 8 specialists + 7 critics + 1 momentum + 1 aggregator). Logged-in `codex` CLI required.
 
+### Verify with fixtures (optional, recommended for repeated regressions)
+
+If you maintain canary fixtures at `~/.pr-reviewer/canary-fixtures/` (format: `replays/canaries/README.md` § Fixture format), `lib/replay-verify.sh` lets you assert specific behaviors instead of eyeballing each `aggregator-output.md`:
+
+```bash
+# Per-fixture diff between baseline and experiment cells. --no-replay
+# reads what lib/replay-batch.sh already wrote — no second codex burn.
+# Run against BOTH sides so a fixture that fails on baseline (stale or
+# canary drifted) is labeled distinctly from a true PR regression.
+. lib/replay-paths.sh
+for f in ~/.pr-reviewer/canary-fixtures/*.md; do
+  fm=$(awk '/^---$/{c++; if (c==2) exit; next} c==1' "$f")
+  repo=$(awk '/^repo:/ {print $2}' <<<"$fm")
+  pr=$(awk   '/^pr:/   {print $2}' <<<"$fm")
+  sha=$(awk  '/^sha:/  {print $2}' <<<"$fm")
+  slug=$(replay_prompt_slug "$(pwd)/prompts")
+  cell="$(replay_run_dir "$repo" "$pr" "$sha" "$slug")"
+  # Errexit-safe status capture: under `set -euo pipefail` from the prior block,
+  # `cmd; base=$?` would exit the shell on the first non-zero before $? is read.
+  if ./lib/replay-verify.sh --fixture "$f" --no-replay "$OUT/baseline/$cell/aggregator-output.md"   >/dev/null 2>&1; then base=0; else base=$?; fi
+  if ./lib/replay-verify.sh --fixture "$f" --no-replay "$OUT/experiment/$cell/aggregator-output.md" >/dev/null 2>&1; then expt=0; else expt=$?; fi
+  case "$base $expt" in
+    "0 0") ;;  # both pass — silent (normal)
+    "0 1") echo "REGRESSION: $(basename "$f") — passed baseline, failed experiment" ;;
+    "1 0") echo "RECOVERY:   $(basename "$f") — failed baseline, passed experiment" ;;
+    "1 1") echo "STALE:      $(basename "$f") — failed both sides (fixture or canary needs update)" ;;
+    *)     echo "ERROR:      $(basename "$f") — verifier exit base=$base expt=$expt (parse error / missing cell / unknown — inspect manually)" ;;
+  esac
+done
+```
+
+Only the **REGRESSION** lines belong in **Notable deltas** below — STALE fixtures are operator-side cleanup (the canary diverged from the fixture's expectations independent of this PR), and RECOVERY lines are worth mentioning as positive deltas. Fixtures encode `expected_verdict` + `expected_contains` + `expected_absent` so a regression surfaces as a clean FAIL line instead of a subtle aggregator-output diff.
+
+**Sanitize before pasting**: fixture basenames can carry private repo / PR / SHA identifiers (e.g. `cncorp-plow-565-dual-screen.md`). The local console output is for the operator's eyes; in **Notable deltas**, summarize the *behavior* that regressed (e.g. "data-integrity finding lost on the dual-screen-source canary"), not the raw fixture filename.
+
+Reviewers asking for "one more substring fence" in a smoke test are usually asking for a fixture instead — encode the behavior as an `expected_contains` / `expected_absent` entry, not as prompt prose pinning. See `replays/canaries/README.md` for the format spec.
+
 ### Score table — fill in (summarize, don't paste full output)
 
 | Canary | Verdict (baseline → experiment) | # findings (baseline → experiment) | Severity / focus changes |
