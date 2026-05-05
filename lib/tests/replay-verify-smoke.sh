@@ -53,6 +53,17 @@ expect_fail() {
 # Test 1: passing fixture
 expect_pass "passing" "$FIXTURE_DIR/sample-aggregator-output.md"
 
+# Test: last-verdict-wins — quoted earlier VERDICT line shouldn't shadow
+# the real final one. Production (lib/review-one-pr.sh:1166) uses tail -1
+# per prompts/aggregator.md:196 ("On the VERY LAST LINE"); a regression
+# to head -1 would silently pass without this scenario.
+TMP_AGG_LV="$LOG_DIR/last-verdict-wins.agg.md"
+{
+    echo '> Old review said: VERDICT: APPROVE'
+    cat "$FIXTURE_DIR/sample-aggregator-output.md"
+} > "$TMP_AGG_LV"
+expect_pass "last_verdict_wins" "$TMP_AGG_LV"
+
 # Test 2: expected_contains violation — strip required `simplification` substring
 TMP_AGG="$LOG_DIR/keyword-missing.agg.md"
 sed 's/simplification/something-else/g' "$FIXTURE_DIR/sample-aggregator-output.md" > "$TMP_AGG"
@@ -83,25 +94,23 @@ grep -qF '${OUT:-$HOME/.pr-reviewer/replays/' lib/replay-batch.sh || \
     { echo "FAIL: lib/replay-batch.sh OUT default no longer points to ~/.pr-reviewer/"; exit 1; }
 
 echo "  test: replay-paths naming contract..."
-[ -f lib/replay-paths.sh ] || { echo "FAIL: lib/replay-paths.sh missing"; exit 1; }
 # Source in a subshell so the helper functions don't pollute the smoke's
 # global namespace. Smoke asserts the helper's *observable* naming
 # contract — what callers depend on — not just file presence.
 (
     . lib/replay-paths.sh
     # Slug rule: basename of the prompts dir, non-alphanumerics → '_'.
-    # Trailing newline from `basename` becomes a trailing '_' (existing
-    # behavior; cell-dir uniqueness depends on it being deterministic
-    # across all callers, not on it being trim-clean).
+    # No trailing '_' — basename's newline is stripped by printf '%s'
+    # before tr (see lib/replay-paths.sh::replay_prompt_slug).
     actual=$(replay_prompt_slug 'default')
-    [ "$actual" = "default_" ] || { echo "FAIL: replay_prompt_slug 'default' = '$actual' (expected 'default_')"; exit 1; }
+    [ "$actual" = "default" ] || { echo "FAIL: replay_prompt_slug 'default' = '$actual' (expected 'default')"; exit 1; }
     actual=$(replay_prompt_slug '/abs/path/alt-prompts')
-    [ "$actual" = "alt_prompts_" ] || { echo "FAIL: replay_prompt_slug '/abs/path/alt-prompts' = '$actual' (expected 'alt_prompts_')"; exit 1; }
+    [ "$actual" = "alt_prompts" ] || { echo "FAIL: replay_prompt_slug '/abs/path/alt-prompts' = '$actual' (expected 'alt_prompts')"; exit 1; }
     actual=$(replay_prompt_slug '')
-    [ "$actual" = "default_" ] || { echo "FAIL: replay_prompt_slug '' = '$actual' (expected 'default_' via fallback)"; exit 1; }
+    [ "$actual" = "default" ] || { echo "FAIL: replay_prompt_slug '' = '$actual' (expected 'default' via fallback)"; exit 1; }
     # Run-dir rule: <repo-slug>-<pr>-<sha7>-<slug>; '/' in repo → '-'.
-    actual=$(replay_run_dir 'cncorp/plow' '565' '852beef00abc' 'alt_prompts_')
-    [ "$actual" = "cncorp-plow-565-852beef-alt_prompts_" ] || { echo "FAIL: replay_run_dir = '$actual'"; exit 1; }
+    actual=$(replay_run_dir 'cncorp/plow' '565' '852beef00abc' 'alt_prompts')
+    [ "$actual" = "cncorp-plow-565-852beef-alt_prompts" ] || { echo "FAIL: replay_run_dir = '$actual'"; exit 1; }
 )
 
 echo "  test: all three replay scripts source replay-paths.sh..."

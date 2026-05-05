@@ -20,7 +20,11 @@
 # clobber each other's output dir.
 replay_prompt_slug() {
     local prompts_dir="${1:-default}"
-    basename "$prompts_dir" | tr -c 'A-Za-z0-9' '_'
+    # Strip basename's trailing newline before `tr` so the slug doesn't
+    # carry a trailing '_'. printf is the cleanest no-newline emit.
+    local base
+    base=$(basename "$prompts_dir")
+    printf '%s' "$base" | tr -c 'A-Za-z0-9' '_'
 }
 
 # Per-cell directory name. Composed by the entrypoint into a full path:
