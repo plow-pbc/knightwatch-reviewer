@@ -138,4 +138,8 @@ test:
     bash lib/tests/replay-smoke.sh
 
     echo ""
+    echo "=== replay-verify smoke test ==="
+    bash lib/tests/replay-verify-smoke.sh
+
+    echo ""
     echo "all checks passed"
