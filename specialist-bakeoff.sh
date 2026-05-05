@@ -37,9 +37,8 @@ REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 [ ${#REPOS[@]} -ge 1 ] || { echo "FATAL: no tracked repos — populate $STATE_DIR/repos.conf or set REPOS in config.env" >&2; exit 1; }
 
 # Source the parsers (pure stdin/stdout — count_attributions,
-# extract_memorize_attributions) and the trust-gate (is_trusted_repo_author).
+# extract_memorize_attributions).
 . "$REVIEWER_LIB_DIR/bakeoff-parsers.sh"
-. "$REVIEWER_LIB_DIR/auth.sh"
 
 log() { echo "[$(date -u +%FT%TZ)] $*" >> "$LOG_FILE"; }
 
@@ -55,24 +54,14 @@ trap 'rm -f "$shipped_tmp" "$loved_tmp"' EXIT
 review_count=0
 fetch_failures=0
 
-# In-memory trust cache: avoid repeated collaborator API calls for the
-# same user within a single run. Key: "<repo>/<user>", value: "0" or "1".
-declare -A _trusted_cache=()
-
-trusted_cached() {
-    local repo="$1" user="$2"
-    local key="$repo/$user"
-    if [[ -v _trusted_cache["$key"] ]]; then
-        return "${_trusted_cache[$key]}"
-    fi
-    if is_trusted_repo_author "$repo" "$user"; then
-        _trusted_cache["$key"]=0
-        return 0
-    else
-        _trusted_cache["$key"]=1
-        return 1
-    fi
-}
+# Substantive bot review selector — used by both review_count and
+# attribution extraction below. ONE source of truth for the rules
+# (bot user, marker, ACK exclusion, footer fence). The footer fence
+# distinguishes posted reviews from same-bot ACK comments.
+SUBSTANTIVE_REVIEW_JQ='.user.login == $bot_user
+    and (.body | contains($marker))
+    and (.body | contains("👀 reviewing") | not)
+    and (.body | contains("How to use: auto-reviews"))'
 
 for repo in "${REPOS[@]}"; do
     log "scanning $repo since $SINCE_ISO..."
@@ -82,31 +71,24 @@ for repo in "${REPOS[@]}"; do
     comments_json=$(gh api --paginate \
         "repos/$repo/issues/comments?since=$SINCE_ISO" \
         2>>"$LOG_FILE" | jq -s 'add // []') \
-        || { log "WARN: gh api failed for $repo, skipping"; fetch_failures=$((fetch_failures + 1)); continue; }
+        || { log "WARN: gh api comments failed for $repo, skipping"; fetch_failures=$((fetch_failures + 1)); continue; }
 
-    # Substantive bot reviews: posted by BOT_USER, contain the auto-post
-    # marker, are NOT the 👀 ACK placeholder, and DO contain the final-review
-    # footer ("How to use: auto-reviews").  The footer fence is load-bearing:
-    # same-bot ACK comments have the marker but not the footer, so marker alone
-    # is insufficient.  jq args avoid hardcoding these values inline.
+    # Bulk-fetch trusted set (push-access collaborators).
+    # Same fail-loud contract as the comment fetch — bumps fetch_failures
+    # and skips this repo on lookup failure, so a transient gh hiccup can't
+    # silently drop a trusted memorize from the Loved column.
+    trusted_set=$(gh api --paginate "repos/$repo/collaborators?affiliation=direct" 2>>"$LOG_FILE" \
+        | jq -rs '[.[][]] | map(select(.permissions.push == true) | .login) | .[]') \
+        || { log "WARN: gh api collaborators failed for $repo, skipping"; fetch_failures=$((fetch_failures + 1)); continue; }
+
     this_count=$(printf '%s' "$comments_json" \
         | jq --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" \
-             '[.[] | select(
-                .user.login == $bot_user
-                and (.body | contains($marker))
-                and (.body | contains("👀 reviewing") | not)
-                and (.body | contains("How to use: auto-reviews"))
-              )] | length')
+             "[.[] | select($SUBSTANTIVE_REVIEW_JQ)] | length")
     review_count=$((review_count + this_count))
 
     printf '%s' "$comments_json" \
         | jq -r --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" \
-             '.[] | select(
-                .user.login == $bot_user
-                and (.body | contains($marker))
-                and (.body | contains("👀 reviewing") | not)
-                and (.body | contains("How to use: auto-reviews"))
-              ) | .body' \
+             ".[] | select($SUBSTANTIVE_REVIEW_JQ) | .body" \
         | count_attributions >> "$shipped_tmp"
 
     # Memorize signals: /srosro-memorize comments by trusted humans.
@@ -114,7 +96,7 @@ for repo in "${REPOS[@]}"; do
     # original /srosro-memorize body, which would double-count attributions).
     while IFS=$'\t' read -r author body; do
         [ -z "$author" ] && continue
-        if trusted_cached "$repo" "$author"; then
+        if grep -qFx "$author" <<< "$trusted_set"; then
             printf '%s' "$body" | extract_memorize_attributions >> "$loved_tmp"
         fi
     done < <(printf '%s' "$comments_json" \

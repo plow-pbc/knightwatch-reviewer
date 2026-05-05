@@ -55,12 +55,11 @@ mkdir -p "$STUB_BIN"
 export MOCK_COMMENTS_FILE="$TMPDIR_SMOKE/comments.json"
 echo "[]" > "$MOCK_COMMENTS_FILE"
 
-# Stub gh: serves a fixed PR list + fixed comments payload, trusts only
-# "trusted-human" (returns "write" permission), untrusted others ("none").
+# Stub gh: serves a fixed comments payload + a bulk collaborators list.
+# trusted-human has push=true; untrusted-user has push=false.
 cat > "$STUB_BIN/gh" <<'STUB'
 #!/bin/bash
 if [ "$1" = "api" ]; then
-    echo "$@" >> "${GH_STUB_ARGS_LOG:-/dev/null}"
     endpoint=""
     paginate=""
     for arg in "$@"; do
@@ -73,13 +72,6 @@ if [ "$1" = "api" ]; then
         echo "gh api: simulated failure" >&2
         exit 1
     fi
-    # Extract --jq filter if present (gh applies jq inline).
-    jq_filter=""
-    for arg in "$@"; do
-        [ "$prev" = "--jq" ] && jq_filter="$arg"
-        prev="$arg"
-    done
-    prev=""
     if [[ "$endpoint" == */issues/comments* ]]; then
         if [ -n "$paginate" ] && [ -s "${MOCK_COMMENTS_FILE_PAGE2:-/dev/null}" ]; then
             cat "$MOCK_COMMENTS_FILE"
@@ -87,12 +79,8 @@ if [ "$1" = "api" ]; then
         else
             cat "$MOCK_COMMENTS_FILE"
         fi
-    elif [[ "$endpoint" == */collaborators/trusted-human/permission ]]; then
-        raw='{"permission":"write"}'
-        if [ -n "$jq_filter" ]; then printf '%s' "$raw" | jq -r "$jq_filter"; else printf '%s\n' "$raw"; fi
-    elif [[ "$endpoint" == */collaborators/*/permission ]]; then
-        raw='{"permission":"none"}'
-        if [ -n "$jq_filter" ]; then printf '%s' "$raw" | jq -r "$jq_filter"; else printf '%s\n' "$raw"; fi
+    elif [[ "$endpoint" == */collaborators* ]]; then
+        printf '[{"login":"trusted-human","permissions":{"push":true}},{"login":"untrusted-user","permissions":{"push":false}}]\n'
     else
         echo "{}"
     fi
@@ -110,7 +98,6 @@ export PATH="$STUB_BIN:$PATH"
 export REVIEWER_LIB_DIR="$TMPDIR_SMOKE/lib"
 mkdir -p "$REVIEWER_LIB_DIR"
 cp "$REPO_ROOT/lib/tracked-repos.sh"    "$REVIEWER_LIB_DIR/tracked-repos.sh"
-cp "$REPO_ROOT/lib/auth.sh"             "$REVIEWER_LIB_DIR/auth.sh"
 cp "$REPO_ROOT/lib/bakeoff-parsers.sh"  "$REVIEWER_LIB_DIR/bakeoff-parsers.sh"
 
 # Single tracked repo.
@@ -142,9 +129,9 @@ echo "    scenario 2: review + ACK + memorize (trusted+untrusted) → aggregator
 #   B: same-bot ACK — has marker, NO footer — must NOT count as a review
 #   C: untrusted /srosro-memorize quoting [from: aggregator] — must be ignored
 #   D: (PAGE 2) trusted /srosro-memorize quoting [from: aggregator] — must count
-# A regression that drops --paginate would produce Loved=0, not 1.
-export GH_STUB_ARGS_LOG="$TMPDIR_SMOKE/gh-stub-args.log"
-: > "$GH_STUB_ARGS_LOG"
+# A regression that drops --paginate would still produce Loved=0 (page-2
+# trusted memorize never reaches extract_memorize_attributions), so the
+# aggregator | 1 | 1 assertion below is the load-bearing pagination check.
 
 python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
 import json
@@ -174,18 +161,13 @@ if ! grep -q '| aggregator |' "$OUT_FILE"; then
     cat "$OUT_FILE"
     exit 1
 fi
-# Shipped=1 (one substantive review), Loved=1 (one trusted memorize from page 2)
+# Shipped=1 (one substantive review), Loved=1 (one trusted memorize from page 2).
+# If --paginate were dropped, the page-2 trusted memorize would never reach
+# extract_memorize_attributions and Loved would be 0 — this is the load-bearing
+# pagination assertion.
 if ! grep -qE '\| aggregator \| +1 \| +1 \|' "$OUT_FILE"; then
     echo "FAIL scenario 2: expected aggregator | 1 | 1 in table (page-2 memorize not merged)"
     cat "$OUT_FILE"
-    exit 1
-fi
-# Assert --paginate was passed (a regression that drops it would still
-# fetch page 1 only, produce Loved=0, and fail the assertion above — but
-# this check makes the contract explicit).
-if grep -F -- '--paginate' "$GH_STUB_ARGS_LOG" 2>/dev/null | grep -q 'issues/comments'; then : ; else
-    echo "FAIL scenario 2: gh stub issues/comments call did not include --paginate"
-    cat "$GH_STUB_ARGS_LOG" 2>/dev/null || echo "(log empty)"
     exit 1
 fi
 
