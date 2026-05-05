@@ -70,7 +70,7 @@ Reviews fire on PR open and again after one hour of idle. To force a fresh revie
 A small post-hoc measurement that helps decide which specialists are earning their place. `specialist-bakeoff.sh` runs hourly via systemd (`*:30`), walks the tracked repos in `repos.conf`, parses posted bot reviews on GitHub, and writes a markdown table to `~/.pr-reviewer/specialist-bakeoff.md` with three columns per specialist over a rolling 30-day window:
 
 - **Shipped** — count of `[from: <specialist>]` attributions in posted reviews.
-- **Loved** — count of `/srosro-memorize` comments by trusted (push-access) collaborators that quoted a `[from: <specialist>]` tag from a prior bot review. To credit a specialist when you memorize, **quote the tag** (e.g. `[from: aggregator]`) in your memorize body.
+- **Loved** — count of `/srosro-memorize` comments by trusted (push-access) collaborators that quoted a `[from: <specialist>]` tag from a prior bot review. To credit a specialist when you memorize, **quote the tag** (e.g. `[from: simplification]`) in your memorize body. Quote tags for positive feedback only — the parser counts attributions, not sentiment.
 - **Loved/Shipped** — ratio (small-but-mighty vs high-volume-low-value).
 
 Use it to inform collapse-or-keep decisions on specialist agents.

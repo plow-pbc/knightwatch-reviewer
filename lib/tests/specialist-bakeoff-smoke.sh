@@ -19,6 +19,28 @@ if [ "$got" != "$want" ]; then
     exit 1
 fi
 
+echo "  count_attributions: footer ignored AND multi-review streams counted correctly..."
+# count_attributions filters by probe-line pattern (^N.) — so prose/
+# footer/doc tokens are excluded by construction. Production streams
+# multiple selected review bodies through one parser invocation; this
+# test runs the fixture concatenated TWICE to exercise both invariants:
+#   - footer's literal `[from: shape]` example never counts (would inflate
+#     shape if line-pattern filter regressed to body-wide grep)
+#   - both reviews' probe-line attributions count (would yield only review 1
+#     if the parser ever truncated at the first `---` separator)
+# Expected: data-integrity=2, shape=2 (each review has 1 of each on probe lines).
+got=$(cat "$FIX_DIR/review-with-footer.md" "$FIX_DIR/review-with-footer.md" \
+        | count_attributions | sort | uniq -c | awk '{print $2"="$1}' | sort)
+want=$'data-integrity=2\nshape=2'
+if [ "$got" != "$want" ]; then
+    echo "FAIL: count_attributions multi-review boundary regressed"
+    echo "got:"
+    echo "$got"
+    echo "want:"
+    echo "$want"
+    exit 1
+fi
+
 echo "  extract_memorize_attributions: quoted memorize names simplification..."
 got=$(extract_memorize_attributions < "$FIX_DIR/memorize-quoted.md")
 want="simplification"
@@ -133,7 +155,7 @@ echo "    scenario 2: review + ACK + memorize (trusted+untrusted) → aggregator
 python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
 import json
 comments = [
-    {"id": 1, "user": {"login": "testbot"},        "body": "${BOT_AUTO_POST_MARKER}\n\n[from: aggregator] The aggregator logic is overfit.\n\n_How to use: auto-reviews every new PR and re-reviews after an hour of inactivity..._"},
+    {"id": 1, "user": {"login": "testbot"},        "body": "${BOT_AUTO_POST_MARKER}\n\n**Probes**\n\n1. [blocking] [from: aggregator] The aggregator logic is overfit.\n\n_How to use: auto-reviews every new PR and re-reviews after an hour of inactivity..._"},
     {"id": 2, "user": {"login": "testbot"},        "body": "${BOT_AUTO_POST_MARKER}\n\n\U0001f440 reviewing..."},
     {"id": 3, "user": {"login": "untrusted-user"}, "body": "Thanks! /srosro-memorize I agree with [from: aggregator] finding."},
 ]
@@ -173,7 +195,7 @@ echo "    scenario 3: spoof marker from non-bot user → not counted..."
 python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
 import json
 comments = [
-    {"id": 10, "user": {"login": "evil-actor"}, "body": "${BOT_AUTO_POST_MARKER}\n\n[from: aggregator] fake review.\n\n_How to use: auto-reviews every new PR and re-reviews after an hour of inactivity..._"},
+    {"id": 10, "user": {"login": "evil-actor"}, "body": "${BOT_AUTO_POST_MARKER}\n\n**Probes**\n\n1. [blocking] [from: aggregator] fake review — would count under count_attributions if bot-user selector regressed.\n\n_How to use: auto-reviews every new PR and re-reviews after an hour of inactivity..._"},
 ]
 print(json.dumps(comments))
 PYEOF

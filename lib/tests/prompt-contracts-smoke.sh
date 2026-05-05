@@ -94,7 +94,7 @@ assert_grep "aggregator.md should reference decline-history.md" \
 
 echo "  asserting layered-file note in aggregator.md..."
 assert_grep "aggregator.md should describe layered specialist files" \
-    "layered specialist files" prompts/aggregator.md
+    "layered file" prompts/aggregator.md
 
 # Specialist + scratch wiring — every specialist must be referenced by
 # the critic + aggregator read lists, and common-header must document
@@ -117,6 +117,20 @@ assert_grep "common-header.md should document dead-code.md" \
 echo "  asserting [from: <specialist>] attribution token in aggregator.md..."
 assert_grep "aggregator.md should describe per-line specialist attribution" \
     "[from: <specialist>]" prompts/aggregator.md
+
+# Negative fence: the old default ("attributed [from: aggregator]") was
+# replaced with specialist attribution as the default for cross-angle
+# probes. A regression that re-introduces the legacy default token in
+# either source-of-truth file would re-create the bake-off measurement
+# bug (cross-angle synthesis credits the orchestrator instead of the
+# specialist whose lens caught the pattern).
+echo "  asserting legacy [from: aggregator] default token is gone..."
+for prompt in prompts/aggregator.md prompts/probe-schema.md; do
+    if grep -qF "attributed \`[from: aggregator]\`" "$prompt"; then
+        echo "FAIL: $prompt regressed to the legacy 'attributed [from: aggregator]' default — cross-angle attribution should be the most load-bearing specialist; aggregator-attribution is the fallback for genuinely emergent patterns"
+        exit 1
+    fi
+done
 
 for specialist in shape simplification architecture consumers tests performance security data-integrity; do
     echo "  asserting simplification probe class in ${specialist}.md..."
