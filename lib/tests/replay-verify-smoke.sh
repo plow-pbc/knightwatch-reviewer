@@ -50,6 +50,33 @@ expect_fail() {
     }
 }
 
+# expect_fixture_parse_error NAME FIXTURE DIAGNOSTIC
+# Runs the verifier in --no-replay mode against FIXTURE; asserts exit
+# code == 2 (parse error, per lib/replay-verify.sh's contract) AND that
+# the supplied DIAGNOSTIC substring appears in the captured output.
+# Used for the malformed-fixture cases (missing/typo'd section headers,
+# typo'd optional sections, etc.) — exit 2 is the contract; non-zero
+# alone would also accept exit 1 (assertion failure) which is wrong.
+expect_fixture_parse_error() {
+    local name="$1" fixture="$2" diagnostic="$3"
+    echo "  test: $name (expect exit 2 + '$diagnostic')..."
+    local rc=0
+    ./lib/replay-verify.sh \
+        --fixture "$fixture" \
+        --no-replay "$FIXTURE_DIR/sample-aggregator-output.md" \
+        > "$LOG_DIR/$name.log" 2>&1 || rc=$?
+    if [ "$rc" != "2" ]; then
+        cat "$LOG_DIR/$name.log"
+        echo "FAIL: $name expected exit 2, got rc=$rc"
+        exit 1
+    fi
+    grep -q "$diagnostic" "$LOG_DIR/$name.log" || {
+        cat "$LOG_DIR/$name.log"
+        echo "FAIL: $name expected '$diagnostic' diagnostic"
+        exit 1
+    }
+}
+
 # Test 1: passing fixture
 expect_pass "passing" "$FIXTURE_DIR/sample-aggregator-output.md"
 
@@ -80,17 +107,7 @@ sha: a
 
 - simplification
 FIX
-echo "  test: missing_expected_verdict (expect exit 2)..."
-if ./lib/replay-verify.sh \
-        --fixture "$TMP_FIX_NO_VERDICT" \
-        --no-replay "$FIXTURE_DIR/sample-aggregator-output.md" \
-        > "$LOG_DIR/no-verdict.log" 2>&1; then
-    cat "$LOG_DIR/no-verdict.log"
-    echo "FAIL: missing expected_verdict should fail-fast with exit 2"
-    exit 1
-fi
-grep -q "missing or empty ## expected_verdict" "$LOG_DIR/no-verdict.log" || \
-    { cat "$LOG_DIR/no-verdict.log"; echo "FAIL: expected 'missing or empty ## expected_verdict' diagnostic"; exit 1; }
+expect_fixture_parse_error "missing_expected_verdict" "$TMP_FIX_NO_VERDICT" "missing or empty ## expected_verdict"
 
 # Test: typo'd section header — `## expected_verdict_old` must NOT
 # satisfy the expected_verdict parse. Old prefix-match regex would have
@@ -112,17 +129,7 @@ COMMENT
 
 - simplification
 FIX
-echo "  test: typo_section_header (expect exit 2)..."
-if ./lib/replay-verify.sh \
-        --fixture "$TMP_FIX_TYPO_SECTION" \
-        --no-replay "$FIXTURE_DIR/sample-aggregator-output.md" \
-        > "$LOG_DIR/typo-section.log" 2>&1; then
-    cat "$LOG_DIR/typo-section.log"
-    echo "FAIL: typo'd section header should fail-fast with exit 2"
-    exit 1
-fi
-grep -q "missing or empty ## expected_verdict" "$LOG_DIR/typo-section.log" || \
-    { cat "$LOG_DIR/typo-section.log"; echo "FAIL: expected 'missing or empty ## expected_verdict' diagnostic"; exit 1; }
+expect_fixture_parse_error "typo_section_header" "$TMP_FIX_TYPO_SECTION" "missing or empty ## expected_verdict"
 
 # Test: typo'd OPTIONAL section header — `## expected_contans` (missing 'i')
 # must NOT silently no-op. Round-9's parse_section closed the canonical-name
@@ -145,24 +152,11 @@ COMMENT
 
 - simplification
 FIX
-echo "  test: typo_optional_section (expect exit 2)..."
-if ./lib/replay-verify.sh \
-        --fixture "$TMP_FIX_TYPO_OPT" \
-        --no-replay "$FIXTURE_DIR/sample-aggregator-output.md" \
-        > "$LOG_DIR/typo-optional.log" 2>&1; then
-    cat "$LOG_DIR/typo-optional.log"
-    echo "FAIL: typo'd optional section should fail-fast with exit 2"
-    exit 1
-fi
-grep -q "unknown expected_\* section" "$LOG_DIR/typo-optional.log" || \
-    { cat "$LOG_DIR/typo-optional.log"; echo "FAIL: expected 'unknown expected_*' diagnostic"; exit 1; }
+expect_fixture_parse_error "typo_optional_section" "$TMP_FIX_TYPO_OPT" "unknown expected_\* section"
 
 # Test: section header with trailing text — `## expected_contains typo`
-# (canonical name + extra text) must fail-fast. Round-10's validator
-# stripped trailing text and accepted such headers, but parse_section's
-# exact-match would reject them at lookup time → silent no-op assertion,
-# false-green ALL PASS. Validator now mirrors parse_section's full-line
-# match.
+# (canonical name + extra text) must fail-fast. Fences the validator's
+# full-line exact-match contract (see parse_section in lib/replay-verify.sh).
 TMP_FIX_TRAILING="$LOG_DIR/typo-trailing.fixture.md"
 cat > "$TMP_FIX_TRAILING" <<'FIX'
 ---
@@ -179,17 +173,7 @@ COMMENT
 
 - simplification
 FIX
-echo "  test: section_header_trailing_text (expect exit 2)..."
-if ./lib/replay-verify.sh \
-        --fixture "$TMP_FIX_TRAILING" \
-        --no-replay "$FIXTURE_DIR/sample-aggregator-output.md" \
-        > "$LOG_DIR/typo-trailing.log" 2>&1; then
-    cat "$LOG_DIR/typo-trailing.log"
-    echo "FAIL: section header with trailing text should fail-fast with exit 2"
-    exit 1
-fi
-grep -q "unknown expected_\* section" "$LOG_DIR/typo-trailing.log" || \
-    { cat "$LOG_DIR/typo-trailing.log"; echo "FAIL: expected 'unknown expected_*' diagnostic"; exit 1; }
+expect_fixture_parse_error "section_header_trailing_text" "$TMP_FIX_TRAILING" "unknown expected_\* section"
 
 # Test 2: expected_contains violation — strip required `simplification` substring
 TMP_AGG="$LOG_DIR/keyword-missing.agg.md"
