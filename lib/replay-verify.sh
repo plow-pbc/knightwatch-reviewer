@@ -97,6 +97,26 @@ if [ -z "$EXPECTED_VERDICT" ]; then
     exit 2
 fi
 
+# Sealed section contract: any `## expected_*` header outside the canonical
+# set is a fixture typo and must fail-fast. Without this, `## expected_contans`
+# (typo for `## expected_contains`) silently no-ops — fixture has no
+# enforcement, verifier reaches `verify-replay: ALL PASS` false-green.
+unknown_sections=$(awk '
+    /^## expected_/ {
+        # Strip "## " prefix; everything after the first space (if any) is comment
+        sub("^## ", "")
+        sub("[ ].*$", "")
+        if ($0 != "expected_verdict" && $0 != "expected_contains" && $0 != "expected_absent") {
+            print $0
+        }
+    }
+' "$FIXTURE")
+if [ -n "$unknown_sections" ]; then
+    echo "FAIL: fixture $FIXTURE has unknown expected_* section(s): $unknown_sections" >&2
+    echo "       canonical sections: expected_verdict, expected_contains, expected_absent" >&2
+    exit 2
+fi
+
 # --- Run replay (or skip) --------------------------------------------------
 if [ -z "$NO_REPLAY" ]; then
     LIB_DIR="$(cd "$(dirname "$0")" && pwd)"

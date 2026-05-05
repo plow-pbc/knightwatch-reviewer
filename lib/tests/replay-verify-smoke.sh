@@ -124,6 +124,39 @@ fi
 grep -q "missing or empty ## expected_verdict" "$LOG_DIR/typo-section.log" || \
     { cat "$LOG_DIR/typo-section.log"; echo "FAIL: expected 'missing or empty ## expected_verdict' diagnostic"; exit 1; }
 
+# Test: typo'd OPTIONAL section header — `## expected_contans` (missing 'i')
+# must NOT silently no-op. Round-9's parse_section closed the canonical-name
+# false-green, but typo'd optional sections were still ignored — fixture
+# would reach ALL PASS without any expected_contains enforcement. Fixed by
+# the unknown-section rejection step.
+TMP_FIX_TYPO_OPT="$LOG_DIR/typo-optional.fixture.md"
+cat > "$TMP_FIX_TYPO_OPT" <<'FIX'
+---
+repo: x/y
+pr: 1
+sha: a
+---
+
+## expected_verdict
+
+COMMENT
+
+## expected_contans
+
+- simplification
+FIX
+echo "  test: typo_optional_section (expect exit 2)..."
+if ./lib/replay-verify.sh \
+        --fixture "$TMP_FIX_TYPO_OPT" \
+        --no-replay "$FIXTURE_DIR/sample-aggregator-output.md" \
+        > "$LOG_DIR/typo-optional.log" 2>&1; then
+    cat "$LOG_DIR/typo-optional.log"
+    echo "FAIL: typo'd optional section should fail-fast with exit 2"
+    exit 1
+fi
+grep -q "unknown expected_\* section" "$LOG_DIR/typo-optional.log" || \
+    { cat "$LOG_DIR/typo-optional.log"; echo "FAIL: expected 'unknown expected_*' diagnostic"; exit 1; }
+
 # Test 2: expected_contains violation — strip required `simplification` substring
 TMP_AGG="$LOG_DIR/keyword-missing.agg.md"
 sed 's/simplification/something-else/g' "$FIXTURE_DIR/sample-aggregator-output.md" > "$TMP_AGG"
@@ -171,6 +204,20 @@ echo "  test: replay-paths naming contract..."
     # Run-dir rule: <repo-slug>-<pr>-<sha7>-<slug>; '/' in repo → '-'.
     actual=$(replay_run_dir 'cncorp/plow' '565' '852beef00abc' 'alt_prompts')
     [ "$actual" = "cncorp-plow-565-852beef-alt_prompts" ] || { echo "FAIL: replay_run_dir = '$actual'"; exit 1; }
+    # Path-traversal guard: pr / sha must not contain ../, /, etc.
+    # Validation rejects non-numeric pr and non-hex sha.
+    if replay_run_dir 'x/y' '../../etc/passwd' 'a' 'p' 2>/dev/null; then
+        echo "FAIL: replay_run_dir accepted traversal pr"; exit 1
+    fi
+    if replay_run_dir 'x/y' '1' '../../etc/passwd' 'p' 2>/dev/null; then
+        echo "FAIL: replay_run_dir accepted traversal sha"; exit 1
+    fi
+    if replay_run_dir 'x/y' 'abc' 'a' 'p' 2>/dev/null; then
+        echo "FAIL: replay_run_dir accepted non-numeric pr"; exit 1
+    fi
+    if replay_run_dir 'x/y' '1' 'zzzz' 'p' 2>/dev/null; then
+        echo "FAIL: replay_run_dir accepted non-hex sha"; exit 1
+    fi
 )
 
 echo "  test: all three replay scripts source replay-paths.sh..."

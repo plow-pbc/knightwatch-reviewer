@@ -30,7 +30,22 @@ replay_prompt_slug() {
 # Per-cell directory name. Composed by the entrypoint into a full path:
 #   $HOME/.pr-reviewer/replays/<this>     (default)
 #   replays/<this>                         (when --output-dir replays/... is passed)
+#
+# Validates pr (digits) and sha (hex) to prevent path traversal via
+# fixture/CSV-controlled values. A pr=../../foo or sha=../../ would
+# otherwise compose into a dir name that resolves outside the intended
+# replay tree once concatenated with $HOME/.pr-reviewer/replays/.
 replay_run_dir() {
     local repo="$1" pr="$2" sha="$3" slug="$4"
+    case "$pr" in
+        ''|*[!0-9]*)
+            echo "FAIL: replay_run_dir: pr must be all-digits, got: '$pr'" >&2
+            return 2 ;;
+    esac
+    case "$sha" in
+        ''|*[!0-9a-fA-F]*)
+            echo "FAIL: replay_run_dir: sha must be hex, got: '$sha'" >&2
+            return 2 ;;
+    esac
     printf '%s-%s-%s-%s\n' "${repo//\//-}" "$pr" "${sha:0:7}" "$slug"
 }
