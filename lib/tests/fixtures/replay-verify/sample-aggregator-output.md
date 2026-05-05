@@ -2,6 +2,6 @@
 
 ## Probes
 
-- [from: simplification] **Q:** Should we substrate-replace the bash-substrate? `Severity: medium` `Class: simplification`
+1. [medium] [from: simplification] [simplification] Should we substrate-replace the bash-substrate? Files: lib/foo.sh:1. Edit: delete the substrate.
 
 VERDICT: COMMENT

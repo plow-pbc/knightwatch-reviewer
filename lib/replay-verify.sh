@@ -122,16 +122,20 @@ parse_finding_blocks() {
 # --- Severity ladder -------------------------------------------------------
 sev_rank() {
     case "$1" in
-        low) echo 1 ;;
+        nit|low) echo 1 ;;
         medium) echo 2 ;;
         blocking) echo 3 ;;
+        # `open` falls through to 0 — open probes have no resolved severity.
+        # Canaries that need a confirmed finding at severity_min should fail.
         *) echo 0 ;;
     esac
 }
 
 # --- Probe-line matcher ----------------------------------------------------
 # A "probe line" in the rendered aggregator-output looks like:
-#   - [from: simplification] **Q:** ... `Severity: medium` `Class: simplification`
+#   1. [medium] [from: simplification] [simplification] <prose>. Files: ....
+#   5. [open] [from: shape] [simplification] **Q: ...** — ....
+# (See prompts/aggregator.md:150-153 for the rendering contract.)
 # Match: every keywords_all term + at least one keywords_any term + severity ≥ min + class ∈ class_any (if present).
 # Returns 0 if any probe in the aggregator-output matches; 1 if none.
 probe_matches() {
@@ -166,24 +170,26 @@ probe_matches() {
         fi
         [ "$ok_any" = 1 ] || continue
 
-        # Severity gate
+        # Severity gate. Real probe lines lead with [<severity>] (or [open]
+        # for Answer: unknown, [nit] for low-priority). The token IS the
+        # severity — there's no `Severity: <level>` field anywhere.
         if [ "$sev_min_rank" -gt 0 ]; then
             local line_sev=""
-            # Anchor on the backticked field literal so prose mentions of
-            # "Severity: low" elsewhere in the line don't shadow the
-            # actual `Severity: blocking` field.
-            if [[ "$line" =~ \`Severity:[[:space:]]*(low|medium|blocking)\` ]]; then
+            if [[ "$line" =~ ^[0-9]+\.[[:space:]]+\[(low|medium|blocking|open|nit)\] ]]; then
                 line_sev="${BASH_REMATCH[1]}"
             fi
             local line_sev_rank
             line_sev_rank=$(sev_rank "$line_sev")
+            # [open] probes have no resolved severity — exclude from severity-min gate.
+            # Canaries expecting a resolved finding at severity_min won't match these.
             [ "$line_sev_rank" -ge "$sev_min_rank" ] || continue
         fi
 
-        # Class gate
+        # Class gate. Real probe lines: `N. [<sev>] [from: <name>] [<class>] ...`
+        # Class is the third bracketed token (after severity + from-spec).
         if [ -n "$class_set" ]; then
             local line_class=""
-            if [[ "$line" =~ \`Class:[[:space:]]*([a-zA-Z-]+)\` ]]; then
+            if [[ "$line" =~ \[from:[[:space:]]+[a-zA-Z-]+\][[:space:]]+\[([a-zA-Z-]+)\] ]]; then
                 line_class="${BASH_REMATCH[1]}"
             fi
             local ok_class=0
@@ -196,7 +202,9 @@ probe_matches() {
         fi
 
         return 0
-    done < <(grep -E '^[[:space:]]*-[[:space:]]+\[from:' "$agg" || true)
+    # Real probe lines are: `N. [<severity>] [from: <specialist>] [<class>] <prose>`.
+    # See prompts/aggregator.md:150-153 for the rendering contract.
+    done < <(grep -E '^[0-9]+\.[[:space:]]+\[(low|medium|blocking|open|nit)\][[:space:]]+\[from:' "$agg" || true)
     return 1
 }
 
