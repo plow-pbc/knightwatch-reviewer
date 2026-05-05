@@ -19,6 +19,23 @@ if [ "$got" != "$want" ]; then
     exit 1
 fi
 
+echo "  count_attributions: footer's documentation examples are NOT counted..."
+# Bot review template (lib/review-one-pr.sh:1179) has a `---` separator
+# between the substantive body and the human-coaching footer. The footer's
+# /srosro-memorize examples include literal `[from: shape]` tokens that
+# would otherwise inflate Shipped on every posted review. count_attributions
+# truncates at `---` so only probe-line tokens count.
+got=$(count_attributions < "$FIX_DIR/review-with-footer.md" | sort | uniq -c | awk '{print $2"="$1}' | sort)
+want=$'data-integrity=1\nshape=1'
+if [ "$got" != "$want" ]; then
+    echo "FAIL: count_attributions should ignore footer; expected only the 2 substantive-body probes"
+    echo "got:"
+    echo "$got"
+    echo "want:"
+    echo "$want"
+    exit 1
+fi
+
 echo "  extract_memorize_attributions: quoted memorize names simplification..."
 got=$(extract_memorize_attributions < "$FIX_DIR/memorize-quoted.md")
 want="simplification"

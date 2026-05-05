@@ -6,8 +6,15 @@
 # `[from: <specialist>]` attribution. Caller pipes through `sort | uniq -c`
 # to aggregate. grep exits 1 when no match — normalize to 0 so callers
 # under set -e don't abort when a review has no attributions.
+#
+# Truncates at the first `---` line — the bot's review template uses that
+# as the boundary between substantive probes (above) and the human-coaching
+# footer (below). The footer contains documentation examples with literal
+# `[from: <name>]` tokens that should NOT count as shipped attributions.
+# Only probe-line tokens in the substantive body count.
 count_attributions() {
-    grep -oE '\[from: [a-z][a-z-]*\]' \
+    awk '/^---$/ { exit } { print }' \
+        | grep -oE '\[from: [a-z][a-z-]*\]' \
         | sed -E 's/\[from: ([a-z-]+)\]/\1/' \
         || true
 }
