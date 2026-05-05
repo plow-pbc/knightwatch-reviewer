@@ -25,6 +25,9 @@ OUT_FILE="${OUT_FILE:-$STATE_DIR/specialist-bakeoff.md}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/bakeoff.log}"
 mkdir -p "$STATE_DIR"
 
+BOT_USER="${BOT_USER:-srosro}"
+BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
+
 # Tracked-repo manifest (single source of truth in repos.conf). The
 # shared loader at lib/tracked-repos.sh is the ONE seam every consumer
 # goes through.  It also pins TMPDIR=$STATE_DIR/tmp so mktemp works
@@ -80,21 +83,29 @@ for repo in "${REPOS[@]}"; do
         2>>"$LOG_FILE" | jq -s 'add // []') \
         || { log "WARN: gh api failed for $repo, skipping"; continue; }
 
-    # Bot reviews: contain the auto-post marker and are NOT the 👀 placeholder.
-    # Count via jq (avoids grep-on-multiline-body problems); emit bodies for
-    # attribution parsing.
+    # Substantive bot reviews: posted by BOT_USER, contain the auto-post
+    # marker, are NOT the 👀 ACK placeholder, and DO contain the final-review
+    # footer ("How to use: auto-reviews").  The footer fence is load-bearing:
+    # same-bot ACK comments have the marker but not the footer, so marker alone
+    # is insufficient.  jq args avoid hardcoding these values inline.
     this_count=$(printf '%s' "$comments_json" \
-        | jq '[.[] | select(
-            .body | (contains("<!-- knightwatch-reviewer:auto-post -->")
-                     and (contains("👀 reviewing") | not))
-          )] | length')
+        | jq --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" \
+             '[.[] | select(
+                .user.login == $bot_user
+                and (.body | contains($marker))
+                and (.body | contains("👀 reviewing") | not)
+                and (.body | contains("How to use: auto-reviews"))
+              )] | length')
     review_count=$((review_count + this_count))
 
     printf '%s' "$comments_json" \
-        | jq -r '.[] | select(
-            .body | (contains("<!-- knightwatch-reviewer:auto-post -->")
-                     and (contains("👀 reviewing") | not))
-          ) | .body' \
+        | jq -r --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" \
+             '.[] | select(
+                .user.login == $bot_user
+                and (.body | contains($marker))
+                and (.body | contains("👀 reviewing") | not)
+                and (.body | contains("How to use: auto-reviews"))
+              ) | .body' \
         | count_attributions >> "$shipped_tmp"
 
     # Memorize signals: /srosro-memorize comments by trusted humans.
@@ -106,10 +117,11 @@ for repo in "${REPOS[@]}"; do
             printf '%s' "$body" | extract_memorize_attributions >> "$loved_tmp"
         fi
     done < <(printf '%s' "$comments_json" \
-        | jq -r '.[] | select(
-              (.body | test("/srosro-memorize"; "i"))
-              and (.body | contains("<!-- knightwatch-reviewer:auto-post -->") | not)
-          ) | [.user.login, .body] | @tsv')
+        | jq -r --arg marker "$BOT_AUTO_POST_MARKER" \
+              '.[] | select(
+                  (.body | test("/srosro-memorize"; "i"))
+                  and (.body | contains($marker) | not)
+              ) | [.user.login, .body] | @tsv')
 done
 
 log "scanned $review_count bot reviews across ${#REPOS[@]} repos"

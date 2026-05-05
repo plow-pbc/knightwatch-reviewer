@@ -26,7 +26,8 @@ ProtectControlGroups=yes
 ProtectHome=read-only
 # See pr-reviewer.service for the rationale on excluding /home/odio/.local
 # (writable-PATH attack vector against ~/.local/bin tool symlinks).
-ReadWritePaths=/home/odio/.pr-reviewer /home/odio/.codex /home/odio/.claude /home/odio/.cache /home/odio/.config /home/odio/Hacking/vibe-engineering
+# Bake-off only writes $STATE_DIR/specialist-bakeoff.md + gh cache/config.
+ReadWritePaths=/home/odio/.pr-reviewer /home/odio/.cache /home/odio/.config
 
 [Install]
 WantedBy=multi-user.target
