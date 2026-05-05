@@ -1,0 +1,33 @@
+[Unit]
+Description=Plow PR reviewer — specialist bake-off (hourly at :30)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=odio
+Group=odio
+WorkingDirectory=/home/odio/.pr-reviewer
+Environment=HOME=/home/odio
+# PATH: system dirs FIRST (see pr-reviewer.service for rationale —
+# defense-in-depth on top of the ~/.local-not-in-ReadWritePaths fix).
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/odio/.npm-global/bin:/home/odio/.local/bin
+ExecStart=/home/odio/.pr-reviewer/specialist-bakeoff.sh
+TimeoutStartSec=15min
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pr-reviewer-bakeoff
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectHome=read-only
+# See pr-reviewer.service for the rationale on excluding /home/odio/.local
+# (writable-PATH attack vector against ~/.local/bin tool symlinks).
+# Bake-off only writes $STATE_DIR/specialist-bakeoff.md + gh cache/config.
+ReadWritePaths=/home/odio/.pr-reviewer /home/odio/.cache /home/odio/.config
+
+[Install]
+WantedBy=multi-user.target

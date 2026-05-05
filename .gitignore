@@ -213,6 +213,12 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
+# Per-operator tracked-repo manifest. The committed template lives at
+# repos.conf.example; install.sh bootstraps repos.conf from it on first
+# run, and the operator edits the live file in-place. Anchored to the
+# repo root so a hypothetical nested file isn't accidentally caught.
+/repos.conf
+
 # Runtime artifacts (only present if the repo is used as the STATE_DIR itself).
 # In normal installs, state lives in ~/.pr-reviewer/ and doesn't touch this tree.
 state.json

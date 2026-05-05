@@ -5,9 +5,12 @@
 # added its own bespoke smoke and they drifted independently.
 #
 # Contract:
-#   A. repos.conf sources cleanly + has the expected shape (REPOS
-#      non-empty, KID_PATHS is an assoc array, every REPO has a
-#      KID_PATHS entry, no stale KID_PATHS keys, plow-content tracked).
+#   A. repos.conf.example sources cleanly + has the expected shape
+#      (REPOS non-empty, KID_PATHS is an assoc array, every REPO has a
+#      KID_PATHS entry, no stale KID_PATHS keys). The .example file is
+#      the tracked source of truth for the manifest shape; the live
+#      repos.conf is per-operator and gitignored, so the shape contract
+#      is enforced against the template instead.
 #   B. lib/tracked-repos.sh is the ONE seam for loading the manifest:
 #      pre-declares REPOS/KID_PATHS empty so accesses stay safe under
 #      `set -u` when repos.conf is absent, sources repos.conf and
@@ -16,26 +19,38 @@
 #      hard list catches drift if a new consumer is added without
 #      going through the loader.
 #   D. install.sh symlinks repos.conf into INSTALL_DIR — sandboxed
-#      install + readlink verification.
+#      install + readlink verification. install.sh bootstraps
+#      repos.conf from .example when missing, so this works on a
+#      fresh clone without manual setup.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-CONF="$PROJECT_ROOT/repos.conf"
+CONF_EXAMPLE="$PROJECT_ROOT/repos.conf.example"
 LOADER="$PROJECT_ROOT/lib/tracked-repos.sh"
 
-[ -f "$CONF" ] || { echo "FAIL: $CONF missing"; exit 1; }
+[ -f "$CONF_EXAMPLE" ] || { echo "FAIL: $CONF_EXAMPLE missing"; exit 1; }
 [ -f "$LOADER" ] || { echo "FAIL: $LOADER missing"; exit 1; }
 
-# ----- Contract A: canonical repos.conf shape -----------------------------
-# Source the canonical conf in a subshell so it doesn't pollute the test's
-# env. The smoke binary is bash, so sourcing the bash conf is the same
-# shape every consumer uses.
+# ----- Contract A0: privacy fence ------------------------------------------
+# The live repos.conf is gitignored; the operator manifest's privacy
+# rests entirely on that .gitignore line. If a future edit removes it,
+# an operator's tracked-repo list would land in their next commit. Pin
+# the fence with check-ignore so the smoke surfaces a regression
+# directly instead of waiting for a leak in the wild.
+echo "  A0: /repos.conf is gitignored at the repo root..."
+git -C "$PROJECT_ROOT" check-ignore -q repos.conf || { echo "FAIL A0: $PROJECT_ROOT/repos.conf is not gitignored — operator manifest privacy fence missing"; exit 1; }
+
+# ----- Contract A: canonical manifest shape (template) --------------------
+# Source the tracked .example template — the live repos.conf is
+# per-operator and gitignored, so the shape contract is enforced
+# against the template, which install.sh uses to bootstrap the
+# operator's file on first run.
 declare -a REPOS=()
 declare -A KID_PATHS=()
-. "$CONF"
+. "$CONF_EXAMPLE"
 
 echo "  A1: REPOS is non-empty..."
 [ "${#REPOS[@]}" -ge 1 ] || { echo "FAIL A1: REPOS array is empty"; exit 1; }
@@ -70,17 +85,6 @@ for key in "${!KID_PATHS[@]}"; do
     done
     [ "$found" = "1" ] || { echo "FAIL A4: KID_PATHS has stale entry [$key] not in REPOS"; exit 1; }
 done
-
-echo "  A5: cncorp/plow-content is tracked..."
-# Specific anchor for the PR that introduced this conf file. If a
-# future edit accidentally drops plow-content, the smoke surfaces it
-# directly (rather than only via 'no review showed up on plow-content'
-# in prod).
-found=0
-for repo in "${REPOS[@]}"; do
-    if [ "$repo" = "cncorp/plow-content" ]; then found=1; break; fi
-done
-[ "$found" = "1" ] || { echo "FAIL A5: cncorp/plow-content missing from REPOS"; exit 1; }
 
 # ----- Contract B: lib/tracked-repos.sh loader behavior -------------------
 TMPDIR=$(mktemp -d -t repos-conf-smoke-XXXXXX)
@@ -137,16 +141,22 @@ for c in "${CONSUMERS[@]}"; do
     grep -q 'tracked-repos\.sh' "$f" || { echo "FAIL C: $c does not source lib/tracked-repos.sh"; exit 1; }
 done
 
-# ----- Contract D: install.sh symlinks repos.conf into INSTALL_DIR --------
-echo "  D: install.sh symlinks repos.conf into INSTALL_DIR..."
-# Sandboxed install. install.sh runs sudo cp + sudo systemctl; stub
-# both so the test doesn't need real privilege or systemd. We only
-# care about the symlink leg (no sudo, no systemctl), but stubbing
-# keeps the install run from failing partway through.
-SAND_INSTALL="$TMPDIR/install"
-SAND_SYSTEMD="$TMPDIR/systemd"
+# ----- Contract D: install.sh bootstrap + symlink delivery ----------------
+# install.sh has two install paths:
+#   D.1) repos.conf missing — bootstrap from .example, exit before
+#        symlinks/units/timers (avoid spinning placeholder timers).
+#   D.2) repos.conf present — full install, symlink repos.conf into
+#        INSTALL_DIR.
+# Both cases run from a temp overlay (symlinked project tree, with
+# repos.conf either omitted or pre-created) so the smoke is
+# deterministic regardless of $PROJECT_ROOT state — a gitignored
+# repos.conf can otherwise persist across local smoke runs and skip
+# the bootstrap branch entirely.
+#
+# Stubs for sudo + systemctl: install.sh runs sudo cp + sudo systemctl
+# in the full-install path; stubs let the smoke run without privilege.
 SAND_HOME="$TMPDIR/home"
-mkdir -p "$SAND_INSTALL" "$SAND_SYSTEMD" "$SAND_HOME/.local/bin"
+mkdir -p "$SAND_HOME/.local/bin"
 cat > "$SAND_HOME/.local/bin/sudo" <<'STUB'
 #!/bin/bash
 exec "$@"
@@ -160,19 +170,116 @@ esac
 STUB
 chmod +x "$SAND_HOME/.local/bin/sudo" "$SAND_HOME/.local/bin/systemctl"
 
-(
-    cd "$PROJECT_ROOT"
-    HOME="$SAND_HOME" \
-        PATH="$SAND_HOME/.local/bin:$PATH" \
-        INSTALL_DIR="$SAND_INSTALL" \
-        SYSTEMD_DIR="$SAND_SYSTEMD" \
-        ./install.sh > /dev/null
-)
+# Symlink-overlay of $PROJECT_ROOT, omitting any pre-existing repos.conf.
+# Keeps the smoke from touching the operator's working tree and lets
+# each scenario decide whether the live file is present.
+make_overlay() {
+    local overlay="$1"
+    mkdir -p "$overlay"
+    for entry in "$PROJECT_ROOT"/*; do
+        name="$(basename "$entry")"
+        [ "$name" = "repos.conf" ] && continue
+        ln -snf "$entry" "$overlay/$name"
+    done
+}
 
-LINK="$SAND_INSTALL/repos.conf"
-[ -L "$LINK" ] || { echo "FAIL D: $LINK is not a symlink"; ls -la "$SAND_INSTALL"; exit 1; }
+# Run install.sh from an overlay with HOME/PATH/INSTALL_DIR/SYSTEMD_DIR
+# pinned to the smoke's stubs. Three subshell invocations across D.1-D.3
+# would otherwise drift apart on the next manifest scenario; the helper
+# pins the install invocation tuple in one place.
+run_overlay_install() {
+    local overlay="$1" install_dir="$2" systemd_dir="$3"
+    (
+        cd "$overlay"
+        HOME="$SAND_HOME" \
+            PATH="$SAND_HOME/.local/bin:$PATH" \
+            INSTALL_DIR="$install_dir" \
+            SYSTEMD_DIR="$systemd_dir" \
+            ./install.sh > /dev/null
+    )
+}
+
+# D.1: fresh bootstrap exits without enabling timers
+echo "  D.1: fresh bootstrap (no repos.conf) — copies from .example and exits early..."
+OVERLAY1="$TMPDIR/overlay-fresh"
+SAND_INSTALL1="$TMPDIR/install-fresh"
+SAND_SYSTEMD1="$TMPDIR/systemd-fresh"
+mkdir -p "$SAND_INSTALL1" "$SAND_SYSTEMD1"
+make_overlay "$OVERLAY1"
+[ ! -e "$OVERLAY1/repos.conf" ] || { echo "FAIL D.1 setup: overlay already has repos.conf"; exit 1; }
+run_overlay_install "$OVERLAY1" "$SAND_INSTALL1" "$SAND_SYSTEMD1"
+[ -f "$OVERLAY1/repos.conf" ] || { echo "FAIL D.1: overlay repos.conf not created by bootstrap"; exit 1; }
+cmp -s "$OVERLAY1/repos.conf" "$OVERLAY1/repos.conf.example" || { echo "FAIL D.1: bootstrapped repos.conf does not match .example byte-for-byte"; exit 1; }
+# Early-exit boundary: install.sh must NOT reach the symlink stage on bootstrap.
+if [ -e "$SAND_INSTALL1/repos.conf" ]; then
+    echo "FAIL D.1: install.sh continued past bootstrap exit — repos.conf delivered into INSTALL_DIR"
+    exit 1
+fi
+
+# D.2: divergent operator repos.conf — full install symlinks live file +
+# preserves operator content + renders unit ReadWritePaths from live, not
+# template. Folds the prior install-smoke "divergent operator" scenario in
+# here so this manifest split has one place that owns full-install
+# assertions instead of two (DRY — see knightwatch round-2 probe 2).
+#
+# A divergent fixture is required: install.sh's Step 0 boundary rejects
+# any repos.conf that's byte-for-byte identical to .example (= operator
+# hasn't edited yet). A raw-cp would re-trigger the bootstrap-exit path.
+echo "  D.2: divergent operator repos.conf — full install + preservation + render-from-live..."
+OVERLAY2="$TMPDIR/overlay-full"
+SAND_INSTALL2="$TMPDIR/install-full"
+SAND_SYSTEMD2="$TMPDIR/systemd-full"
+mkdir -p "$SAND_INSTALL2" "$SAND_SYSTEMD2"
+make_overlay "$OVERLAY2"
+# Distinct .example content so a regression that sourced .example
+# instead of repos.conf would surface as the template path leaking into
+# the rendered systemd unit. Break the symlink first — make_overlay
+# created $OVERLAY2/repos.conf.example as a symlink to $PROJECT_ROOT's
+# tracked template, so a `cat >` would follow it and corrupt the live
+# template file in the project tree.
+rm -f "$OVERLAY2/repos.conf.example"
+cat > "$OVERLAY2/repos.conf.example" <<'CONF'
+REPOS=("template-org/template-repo")
+declare -A KID_PATHS=(["template-org/template-repo"]="/should/not/appear")
+declare -A SOURCE_PATHS=(["template-org/template-repo"]="/should/not/appear")
+CONF
+# Operator's live file with paths that must survive install.sh untouched.
+cat > "$OVERLAY2/repos.conf" <<'CONF'
+REPOS=("custom-org/custom-repo")
+declare -A KID_PATHS=(["custom-org/custom-repo"]="/var/operator/custom-checkout")
+declare -A SOURCE_PATHS=(["custom-org/custom-repo"]="/var/operator/custom-checkout")
+CONF
+LIVE_BEFORE=$(sha1sum "$OVERLAY2/repos.conf" | awk '{print $1}')
+run_overlay_install "$OVERLAY2" "$SAND_INSTALL2" "$SAND_SYSTEMD2"
+# Symlink delivery
+LINK="$SAND_INSTALL2/repos.conf"
+[ -L "$LINK" ] || { echo "FAIL D.2: $LINK is not a symlink"; ls -la "$SAND_INSTALL2"; exit 1; }
 TARGET="$(readlink -f "$LINK")"
-EXPECTED="$(readlink -f "$CONF")"
-[ "$TARGET" = "$EXPECTED" ] || { echo "FAIL D: symlink resolves to $TARGET, expected $EXPECTED"; exit 1; }
+EXPECTED="$(readlink -f "$OVERLAY2/repos.conf")"
+[ "$TARGET" = "$EXPECTED" ] || { echo "FAIL D.2: symlink resolves to $TARGET, expected $EXPECTED"; exit 1; }
+# Preservation: live file's bytes are unchanged
+LIVE_AFTER=$(sha1sum "$OVERLAY2/repos.conf" | awk '{print $1}')
+[ "$LIVE_BEFORE" = "$LIVE_AFTER" ] || { echo "FAIL D.2: install.sh modified the operator's repos.conf (sha changed $LIVE_BEFORE → $LIVE_AFTER)"; exit 1; }
+# Render-from-live: rendered kid-refresh unit's ReadWritePaths derives from
+# the live file, not the template. If install.sh sourced .example by
+# mistake, the template path would leak into the rendered unit.
+KID_REFRESH_UNIT="$SAND_SYSTEMD2/pr-reviewer-kid-refresh.service"
+[ -f "$KID_REFRESH_UNIT" ] || { echo "FAIL D.2: kid-refresh unit not installed"; ls -la "$SAND_SYSTEMD2"; exit 1; }
+grep -q "/var/operator/custom-checkout" "$KID_REFRESH_UNIT" || { echo "FAIL D.2: kid-refresh unit missing operator path /var/operator/custom-checkout"; grep '^ReadWritePaths=' "$KID_REFRESH_UNIT"; exit 1; }
+grep -q "/should/not/appear" "$KID_REFRESH_UNIT" && { echo "FAIL D.2: kid-refresh unit contains template path /should/not/appear — .example was sourced instead of live"; grep '^ReadWritePaths=' "$KID_REFRESH_UNIT"; exit 1; }
 
-echo "  PASS (A1-A5: shape; B1-B4: loader; C: $(echo "${#CONSUMERS[@]}") consumers; D: install delivery)"
+# D.3: byte-for-byte template copy is treated as unconfigured
+echo "  D.3: byte-for-byte template copy — install.sh exits early without symlinking..."
+OVERLAY3="$TMPDIR/overlay-rawcopy"
+SAND_INSTALL3="$TMPDIR/install-rawcopy"
+SAND_SYSTEMD3="$TMPDIR/systemd-rawcopy"
+mkdir -p "$SAND_INSTALL3" "$SAND_SYSTEMD3"
+make_overlay "$OVERLAY3"
+cp "$OVERLAY3/repos.conf.example" "$OVERLAY3/repos.conf"
+run_overlay_install "$OVERLAY3" "$SAND_INSTALL3" "$SAND_SYSTEMD3"
+if [ -e "$SAND_INSTALL3/repos.conf" ]; then
+    echo "FAIL D.3: install.sh accepted byte-for-byte template copy as configured — repos.conf was symlinked into INSTALL_DIR"
+    exit 1
+fi
+
+echo "  PASS (A0: privacy-fence; A1-A4: shape; B1-B4: loader; C: $(echo "${#CONSUMERS[@]}") consumers; D.1: bootstrap-exits; D.2: divergent-full-install; D.3: rawcopy-rejected)"

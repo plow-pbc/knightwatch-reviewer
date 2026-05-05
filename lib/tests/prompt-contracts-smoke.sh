@@ -169,6 +169,7 @@ SYSTEMD_CHAIN_SCRIPTS=(
     approve-from-replies.sh
     plow-kid-refresh.sh
     re-request-poller.sh
+    specialist-bakeoff.sh
     lib/review-one-pr.sh
 )
 for script in "${SYSTEMD_CHAIN_SCRIPTS[@]}"; do

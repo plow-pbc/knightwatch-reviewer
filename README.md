@@ -43,7 +43,7 @@ Single-tenant by design: one Linux host with `gh` authenticated as the bot's sig
 
 ## Configure repos
 
-Add `owner/repo` entries to [`repos.conf`](repos.conf) and re-run `./install.sh`:
+The tracked-repo manifest is split into a committed template ([`repos.conf.example`](repos.conf.example)) and a per-operator live file (`repos.conf`, gitignored). On first `./install.sh` run the live file is bootstrapped from the template — edit it in place, then re-run `./install.sh`:
 
 ```sh
 REPOS=(
@@ -52,7 +52,7 @@ REPOS=(
 )
 ```
 
-The next 2-minute timer tick picks it up. `SOURCE_PATHS` in the same file enables cross-repo grep/search-roots and `KID_PATHS` wires kid-prior-art lookup. Per-repo policy (product context, review priority, sibling allowlist, dead-code command, strict-typing command) lives in each tracked repo's `.knightwatch/` directory and is read from the base branch via `lib/knightwatch-config.sh`. See the inline comments in [`repos.conf`](repos.conf) for shapes and `lib/tracked-repos.sh` for the loader.
+The next 2-minute timer tick picks it up. `SOURCE_PATHS` in the same file enables cross-repo grep/search-roots and `KID_PATHS` wires kid-prior-art lookup. Per-repo policy (product context, review priority, sibling allowlist, dead-code command, strict-typing command) lives in each tracked repo's `.knightwatch/` directory and is read from the base branch via `lib/knightwatch-config.sh`. See the inline comments in [`repos.conf.example`](repos.conf.example) for shapes and `lib/tracked-repos.sh` for the loader.
 
 ## Use on a PR
 
@@ -65,9 +65,21 @@ Reviews fire on PR open and again after one hour of idle. To force a fresh revie
 | `/srosro-approve` | Approve the PR (push-access collaborators only) |
 | `/srosro-memorize` | Teach the bot a calibration lesson from your reply |
 
+### Specialist bake-off
+
+A small post-hoc measurement that helps decide which specialists are earning their place. `specialist-bakeoff.sh` runs hourly via systemd (`*:30`), walks the tracked repos in `repos.conf`, parses posted bot reviews on GitHub, and writes a markdown table to `~/.pr-reviewer/specialist-bakeoff.md` with three columns per specialist over a rolling 30-day window:
+
+- **Shipped** — count of `[from: <specialist>]` attributions in posted reviews.
+- **Loved** — count of `/srosro-memorize` comments by trusted (push-access) collaborators that quoted a `[from: <specialist>]` tag from a prior bot review. To credit a specialist when you memorize, **quote the tag** (e.g. `[from: aggregator]`) in your memorize body.
+- **Loved/Shipped** — ratio (small-but-mighty vs high-volume-low-value).
+
+Use it to inform collapse-or-keep decisions on specialist agents.
+
+See `docs/specialist-bakeoff-sample.md` for an example snapshot.
+
 ## Repo layout
 
 - `review.sh` / `lib/review-one-pr.sh` — per-PR review driver
 - `prompts/` — specialist + critic + aggregator prompts
 - `systemd/` — polling timer + service units
-- `repos.conf` — tracked-repo manifest
+- `repos.conf.example` — tracked-repo manifest template (live `repos.conf` is per-operator, gitignored)

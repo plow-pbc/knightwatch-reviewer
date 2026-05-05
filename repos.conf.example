@@ -1,10 +1,17 @@
 #!/bin/bash
-# Tracked GitHub repos for the knightwatch-reviewer bot. Single source
-# of truth — sourced by review.sh, learn-from-replies.sh,
-# approve-from-replies.sh, re-request-poller.sh, and lib/review-one-pr.sh.
+# Tracked GitHub repos for the knightwatch-reviewer bot.
 #
-# To add a repo: append a line to REPOS and a corresponding entry in
-# each of the two maps below (KID_PATHS, SOURCE_PATHS — smoke suite
+# This file (repos.conf.example) is a TEMPLATE. The live config —
+# repos.conf — is per-operator, gitignored, and bootstrapped from this
+# template by install.sh on first run. Edit repos.conf, not this file,
+# unless you're updating the documented shape.
+#
+# Single source of truth at runtime — sourced by review.sh,
+# learn-from-replies.sh, approve-from-replies.sh, re-request-poller.sh,
+# and lib/review-one-pr.sh.
+#
+# To track a new repo: append a line to REPOS and a corresponding entry
+# in each of the two maps below (KID_PATHS, SOURCE_PATHS — smoke suite
 # enforces a key per repo). Then run ./install.sh on the deployed
 # checkout: adding a KID_PATHS entry widens both the kid-refresh and
 # pr-reviewer units' ReadWritePaths sandboxes, which only re-render on
@@ -29,39 +36,21 @@
 #     disabled specialists from getting writes outside the index.
 
 REPOS=(
-    "cncorp/plow"
-    "cncorp/plow-content"
-    "srosro/tkmx-client"
-    "srosro/tkmx-server"
-    "srosro/knightwatch-reviewer"
-    "srosro/vibe-engineering"
-    "plow-pbc/watchmepivot"
+    "your-org/example-repo"
 )
 
 declare -A KID_PATHS=(
-    ["cncorp/plow"]="$HOME/Hacking/plow-kid"
-    ["cncorp/plow-content"]="$HOME/Hacking/plow-content"
-    ["srosro/tkmx-client"]="$HOME/Hacking/tkmx-client"
-    ["srosro/tkmx-server"]="$HOME/Hacking/tkmx-server"
-    ["srosro/knightwatch-reviewer"]="$HOME/Hacking/knightwatch-reviewer"
-    ["srosro/vibe-engineering"]="$HOME/Hacking/vibe-engineering"
-    ["plow-pbc/watchmepivot"]="$HOME/Hacking/watchmepivot"
+    ["your-org/example-repo"]="$HOME/Hacking/example-repo"
 )
 
 # Per-repo source-checkout path. Used by lib/review-one-pr.sh to stage
 # .codex-scratch/search-roots.md, the cross-repo grep surface for the
 # dead-code-search and consumers specialists. Distinct from KID_PATHS
-# (kid-index path, not source) — KID_PATHS["cncorp/plow"] points at
-# plow-kid for kid lookups; SOURCE_PATHS["cncorp/plow"] points at the
-# plow source checkout where greppable code actually lives. Empty /
+# (kid-index path, not source) — KID_PATHS may point at a separate
+# kid-index dir (e.g. <repo>-kid) while SOURCE_PATHS points at the
+# repo source checkout where greppable code actually lives. Empty /
 # unset = exclude that repo from the search surface.
 
 declare -A SOURCE_PATHS=(
-    ["cncorp/plow"]="$HOME/Hacking/plow"
-    ["cncorp/plow-content"]="$HOME/Hacking/plow-content"
-    ["srosro/tkmx-client"]="$HOME/Hacking/tkmx-client"
-    ["srosro/tkmx-server"]="$HOME/Hacking/tkmx-server"
-    ["srosro/knightwatch-reviewer"]="$HOME/Hacking/knightwatch-reviewer"
-    ["srosro/vibe-engineering"]="$HOME/Hacking/vibe-engineering"
-    ["plow-pbc/watchmepivot"]="$HOME/Hacking/watchmepivot"
+    ["your-org/example-repo"]="$HOME/Hacking/example-repo"
 )
