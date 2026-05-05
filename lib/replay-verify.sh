@@ -75,6 +75,15 @@ EXPECTED_VERDICT=$(awk '
     in_block && NF > 0 { print; exit }
 ' "$FIXTURE")
 
+# Fixture-as-contract: a fixture without expected_verdict is malformed.
+# Without this guard, the runtime verdict-check block would skip silently
+# (its `[ -n "$EXPECTED_VERDICT" ]` predicate falls through), reaching
+# `verify-replay: ALL PASS` without asserting the production contract.
+if [ -z "$EXPECTED_VERDICT" ]; then
+    echo "FAIL: fixture $FIXTURE missing or empty ## expected_verdict section" >&2
+    exit 2
+fi
+
 # --- Run replay (or skip) --------------------------------------------------
 if [ -z "$NO_REPLAY" ]; then
     LIB_DIR="$(cd "$(dirname "$0")" && pwd)"

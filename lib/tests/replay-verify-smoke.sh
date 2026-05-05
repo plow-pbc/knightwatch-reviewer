@@ -53,16 +53,44 @@ expect_fail() {
 # Test 1: passing fixture
 expect_pass "passing" "$FIXTURE_DIR/sample-aggregator-output.md"
 
-# Test: last-verdict-wins — quoted earlier VERDICT line shouldn't shadow
-# the real final one. Production (lib/review-one-pr.sh:1166) uses tail -1
-# per prompts/aggregator.md:196 ("On the VERY LAST LINE"); a regression
-# to head -1 would silently pass without this scenario.
+# Test: last-verdict-wins — an earlier line that grep -E '^VERDICT:'
+# DOES match shouldn't shadow the real final one. Production
+# (lib/review-one-pr.sh:1166) uses tail -1 per prompts/aggregator.md:196
+# ("On the VERY LAST LINE"). With head -1, this scenario would extract
+# APPROVE from the prepended line and FAIL the COMMENT match.
 TMP_AGG_LV="$LOG_DIR/last-verdict-wins.agg.md"
 {
-    echo '> Old review said: VERDICT: APPROVE'
+    echo 'VERDICT: APPROVE'
+    echo '(this earlier verdict line is from a quoted prior review; the real verdict is below)'
     cat "$FIXTURE_DIR/sample-aggregator-output.md"
 } > "$TMP_AGG_LV"
 expect_pass "last_verdict_wins" "$TMP_AGG_LV"
+
+# Test: fixture missing expected_verdict — verifier must fail with exit 2,
+# not silently skip the verdict assertion.
+TMP_FIX_NO_VERDICT="$LOG_DIR/no-verdict.fixture.md"
+cat > "$TMP_FIX_NO_VERDICT" <<'FIX'
+---
+repo: x/y
+pr: 1
+sha: a
+---
+
+## expected_contains
+
+- simplification
+FIX
+echo "  test: missing_expected_verdict (expect exit 2)..."
+if ./lib/replay-verify.sh \
+        --fixture "$TMP_FIX_NO_VERDICT" \
+        --no-replay "$FIXTURE_DIR/sample-aggregator-output.md" \
+        > "$LOG_DIR/no-verdict.log" 2>&1; then
+    cat "$LOG_DIR/no-verdict.log"
+    echo "FAIL: missing expected_verdict should fail-fast with exit 2"
+    exit 1
+fi
+grep -q "missing or empty ## expected_verdict" "$LOG_DIR/no-verdict.log" || \
+    { cat "$LOG_DIR/no-verdict.log"; echo "FAIL: expected 'missing or empty ## expected_verdict' diagnostic"; exit 1; }
 
 # Test 2: expected_contains violation — strip required `simplification` substring
 TMP_AGG="$LOG_DIR/keyword-missing.agg.md"
