@@ -34,6 +34,15 @@ LOADER="$PROJECT_ROOT/lib/tracked-repos.sh"
 [ -f "$CONF_EXAMPLE" ] || { echo "FAIL: $CONF_EXAMPLE missing"; exit 1; }
 [ -f "$LOADER" ] || { echo "FAIL: $LOADER missing"; exit 1; }
 
+# ----- Contract A0: privacy fence ------------------------------------------
+# The live repos.conf is gitignored; the operator manifest's privacy
+# rests entirely on that .gitignore line. If a future edit removes it,
+# an operator's tracked-repo list would land in their next commit. Pin
+# the fence with check-ignore so the smoke surfaces a regression
+# directly instead of waiting for a leak in the wild.
+echo "  A0: /repos.conf is gitignored at the repo root..."
+git -C "$PROJECT_ROOT" check-ignore -q repos.conf || { echo "FAIL A0: $PROJECT_ROOT/repos.conf is not gitignored — operator manifest privacy fence missing"; exit 1; }
+
 # ----- Contract A: canonical manifest shape (template) --------------------
 # Source the tracked .example template — the live repos.conf is
 # per-operator and gitignored, so the shape contract is enforced
@@ -273,4 +282,4 @@ if [ -e "$SAND_INSTALL3/repos.conf" ]; then
     exit 1
 fi
 
-echo "  PASS (A1-A4: shape; B1-B4: loader; C: $(echo "${#CONSUMERS[@]}") consumers; D.1: bootstrap-exits; D.2: divergent-full-install; D.3: rawcopy-rejected)"
+echo "  PASS (A0: privacy-fence; A1-A4: shape; B1-B4: loader; C: $(echo "${#CONSUMERS[@]}") consumers; D.1: bootstrap-exits; D.2: divergent-full-install; D.3: rawcopy-rejected)"
