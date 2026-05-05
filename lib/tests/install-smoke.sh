@@ -123,30 +123,45 @@ while IFS= read -r execstart; do
 done < <(grep -h "^ExecStart=" "$PROJECT_ROOT"/systemd/*.service | sort -u)
 [[ ${#PROD_SCRIPTS[@]} -ge 1 ]] || { echo "FAIL setup: no scripts discovered from production unit files"; exit 1; }
 
-# Scenarios 1-3 below test install.sh's main install path (symlinks +
-# unit copy + timer enable). They run against $PROJECT_ROOT directly
-# and so need $PROJECT_ROOT/repos.conf to exist AND be divergent from
-# repos.conf.example — install.sh's bootstrap boundary rejects both
-# missing and byte-for-byte-template states, redirecting them to the
-# bootstrap-exit path (exercised separately by repos-conf-smoke's D.1).
-# Write a smoke-specific fixture only when the operator hasn't already
-# placed a real repos.conf (gitignored on disk; this only fires on fresh
-# clones).
-if [ ! -f "$PROJECT_ROOT/repos.conf" ]; then
-    cat > "$PROJECT_ROOT/repos.conf" <<'CONF'
-# Smoke test fixture — divergent from repos.conf.example so install.sh
-# treats it as configured. install-smoke is gitignored from this tree
-# anyway (see /repos.conf in .gitignore).
+# All scenarios run install.sh from a temp overlay (symlinks of the
+# project tree + a divergent repos.conf written into the overlay only),
+# never against $PROJECT_ROOT directly. The boundary rule: tests must
+# never write to a path that real install.sh treats as live operator
+# config. $PROJECT_ROOT/repos.conf is gitignored but install.sh treats
+# it as the operator's manifest; a smoke fixture written there leaks
+# into a subsequent direct ./install.sh invocation.
+#
+# Helper: build an overlay containing a divergent repos.conf install.sh
+# will accept (i.e., not byte-identical to .example, so it skips the
+# bootstrap-exit path).
+make_install_overlay() {
+    local overlay="$1"
+    mkdir -p "$overlay"
+    for entry in "$PROJECT_ROOT"/*; do
+        local name="$(basename "$entry")"
+        [ "$name" = "repos.conf" ] && continue   # tests own this in the overlay
+        ln -snf "$entry" "$overlay/$name"
+    done
+    cat > "$overlay/repos.conf" <<'CONF'
+# Smoke fixture — divergent from repos.conf.example so install.sh skips
+# the bootstrap-exit guard. Confined to the overlay so it never lands
+# in $PROJECT_ROOT.
 REPOS=("smoke-org/smoke-repo")
 declare -A KID_PATHS=(["smoke-org/smoke-repo"]="$HOME/Hacking/smoke-checkout")
 declare -A SOURCE_PATHS=(["smoke-org/smoke-repo"]="$HOME/Hacking/smoke-checkout")
 CONF
-fi
+}
+
+# Shared overlay for scenarios 1+2 (idempotent re-run depends on
+# scenario 1's INSTALL_DIR/SYSTEMD_DIR state, so they reuse the same
+# REPO_DIR too).
+SHARED_OVERLAY="$TMPDIR/repo-overlay-shared"
+make_install_overlay "$SHARED_OVERLAY"
 
 # --- Scenario 1: first-run install -----------------------------------------
 echo "  scenario 1: first-run install — every unit copied, every timer enabled..."
 : > "$STUB_LOG"
-run_install "$PROJECT_ROOT/install.sh" || { echo "FAIL scenario 1: install.sh exited non-zero"; cat "$STUB_LOG"; exit 1; }
+run_install "$SHARED_OVERLAY/install.sh" || { echo "FAIL scenario 1: install.sh exited non-zero"; cat "$STUB_LOG"; exit 1; }
 
 # Symlinks present (script names sourced from the unit files, same as install.sh)
 for s in "${PROD_SCRIPTS[@]}"; do
@@ -157,16 +172,13 @@ for d in lib docs prompts; do
 done
 
 # Render the same @KID_RW_PATHS@ / @KID_INDEX_RW_PATHS@ values install.sh
-# derives from $PROJECT_ROOT/repos.conf, so the cmp below compares against
-# what install.sh actually wrote (post-substitution), not the source-with-
-# placeholder. Sources repos.conf in a subshell so the smoke's own
-# REPOS / KID_PATHS state isn't perturbed. install.sh's bootstrap (run
-# above by run_install) ensures repos.conf exists even on a fresh clone
-# — operator file is gitignored, .example is the tracked template.
+# derives from the overlay's repos.conf, so the cmp below compares against
+# what install.sh actually wrote (post-substitution). Sources in a subshell
+# so the smoke's own REPOS / KID_PATHS state isn't perturbed.
 EXPECTED_KID_RW_PATHS=$(
     REPOS=( ); declare -A KID_PATHS=( )
     # shellcheck disable=SC1091
-    . "$PROJECT_ROOT/repos.conf"
+    . "$SHARED_OVERLAY/repos.conf"
     # Both render shapes prefix paths with `-` so a missing checkout
     # doesn't fail systemd unit start (matches install.sh).
     paths=$(printf '%s\n' "${KID_PATHS[@]}" | sort -u | sed 's|^|-|' | tr '\n' ' ')
@@ -175,7 +187,7 @@ EXPECTED_KID_RW_PATHS=$(
 EXPECTED_KID_INDEX_RW_PATHS=$(
     REPOS=( ); declare -A KID_PATHS=( )
     # shellcheck disable=SC1091
-    . "$PROJECT_ROOT/repos.conf"
+    . "$SHARED_OVERLAY/repos.conf"
     paths=$(printf '%s\n' "${KID_PATHS[@]}" | sort -u | sed 's|$|/.keepitdry|; s|^|-|' | tr '\n' ' ')
     printf '%s' "${paths% }"
 )
@@ -228,7 +240,7 @@ n_enable="$(count_stub 'SYSTEMCTL enable --now')"
 # --- Scenario 2: idempotent re-run -----------------------------------------
 echo "  scenario 2: re-run with everything already installed — no copy, no reload, no enable..."
 : > "$STUB_LOG"
-MOCK_TIMERS_ENABLED=1 run_install "$PROJECT_ROOT/install.sh" || { echo "FAIL scenario 2: install.sh exited non-zero on rerun"; cat "$STUB_LOG"; exit 1; }
+MOCK_TIMERS_ENABLED=1 run_install "$SHARED_OVERLAY/install.sh" || { echo "FAIL scenario 2: install.sh exited non-zero on rerun"; cat "$STUB_LOG"; exit 1; }
 
 # No sudo cp (units in sync)
 [ "$(count_stub 'SUDO cp')" = "0" ] || { echo "FAIL scenario 2: expected 0 sudo cp on rerun, got $(count_stub 'SUDO cp')"; cat "$STUB_LOG"; exit 1; }
@@ -239,22 +251,11 @@ MOCK_TIMERS_ENABLED=1 run_install "$PROJECT_ROOT/install.sh" || { echo "FAIL sce
 
 # --- Scenario 3: new unit added → only that one installs+enables -----------
 echo "  scenario 3: drop a new unit into systemd/ — only that one is copied + enabled..."
-# Copy current units into an overlay so the test doesn't mutate the real
-# repo, then add a fake one and point install.sh at the overlay via a
-# wrapper that swaps the systemd/ source dir. The cleanest way to do
-# this without changing install.sh's contract is to symlink the entire
-# repo into $TMPDIR and add the unit there.
-OVERLAY="$TMPDIR/repo-overlay"
-mkdir -p "$OVERLAY"
-for entry in "$PROJECT_ROOT"/* "$PROJECT_ROOT"/.[!.]*; do
-    [ -e "$entry" ] || continue
-    name="$(basename "$entry")"
-    case "$name" in
-        ".git"|".git/*") continue ;;  # skip git internals
-    esac
-    ln -sfn "$entry" "$OVERLAY/$name"
-done
-# Replace the systemd/ symlink with a real dir we can add a unit to
+# Build a fresh overlay (project tree symlinks + divergent repos.conf
+# fixture, same shape as scenarios 1+2's SHARED_OVERLAY), then replace
+# the systemd/ symlink with a real dir we can add new units to.
+OVERLAY="$TMPDIR/repo-overlay-newunit"
+make_install_overlay "$OVERLAY"
 rm -f "$OVERLAY/systemd"
 mkdir -p "$OVERLAY/systemd"
 for unit in "$PROJECT_ROOT"/systemd/*; do

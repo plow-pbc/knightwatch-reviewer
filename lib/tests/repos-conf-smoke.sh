@@ -174,6 +174,22 @@ make_overlay() {
     done
 }
 
+# Run install.sh from an overlay with HOME/PATH/INSTALL_DIR/SYSTEMD_DIR
+# pinned to the smoke's stubs. Three subshell invocations across D.1-D.3
+# would otherwise drift apart on the next manifest scenario; the helper
+# pins the install invocation tuple in one place.
+run_overlay_install() {
+    local overlay="$1" install_dir="$2" systemd_dir="$3"
+    (
+        cd "$overlay"
+        HOME="$SAND_HOME" \
+            PATH="$SAND_HOME/.local/bin:$PATH" \
+            INSTALL_DIR="$install_dir" \
+            SYSTEMD_DIR="$systemd_dir" \
+            ./install.sh > /dev/null
+    )
+}
+
 # D.1: fresh bootstrap exits without enabling timers
 echo "  D.1: fresh bootstrap (no repos.conf) — copies from .example and exits early..."
 OVERLAY1="$TMPDIR/overlay-fresh"
@@ -182,14 +198,7 @@ SAND_SYSTEMD1="$TMPDIR/systemd-fresh"
 mkdir -p "$SAND_INSTALL1" "$SAND_SYSTEMD1"
 make_overlay "$OVERLAY1"
 [ ! -e "$OVERLAY1/repos.conf" ] || { echo "FAIL D.1 setup: overlay already has repos.conf"; exit 1; }
-(
-    cd "$OVERLAY1"
-    HOME="$SAND_HOME" \
-        PATH="$SAND_HOME/.local/bin:$PATH" \
-        INSTALL_DIR="$SAND_INSTALL1" \
-        SYSTEMD_DIR="$SAND_SYSTEMD1" \
-        ./install.sh > /dev/null
-)
+run_overlay_install "$OVERLAY1" "$SAND_INSTALL1" "$SAND_SYSTEMD1"
 [ -f "$OVERLAY1/repos.conf" ] || { echo "FAIL D.1: overlay repos.conf not created by bootstrap"; exit 1; }
 cmp -s "$OVERLAY1/repos.conf" "$OVERLAY1/repos.conf.example" || { echo "FAIL D.1: bootstrapped repos.conf does not match .example byte-for-byte"; exit 1; }
 # Early-exit boundary: install.sh must NOT reach the symlink stage on bootstrap.
@@ -232,14 +241,7 @@ declare -A KID_PATHS=(["custom-org/custom-repo"]="/var/operator/custom-checkout"
 declare -A SOURCE_PATHS=(["custom-org/custom-repo"]="/var/operator/custom-checkout")
 CONF
 LIVE_BEFORE=$(sha1sum "$OVERLAY2/repos.conf" | awk '{print $1}')
-(
-    cd "$OVERLAY2"
-    HOME="$SAND_HOME" \
-        PATH="$SAND_HOME/.local/bin:$PATH" \
-        INSTALL_DIR="$SAND_INSTALL2" \
-        SYSTEMD_DIR="$SAND_SYSTEMD2" \
-        ./install.sh > /dev/null
-)
+run_overlay_install "$OVERLAY2" "$SAND_INSTALL2" "$SAND_SYSTEMD2"
 # Symlink delivery
 LINK="$SAND_INSTALL2/repos.conf"
 [ -L "$LINK" ] || { echo "FAIL D.2: $LINK is not a symlink"; ls -la "$SAND_INSTALL2"; exit 1; }
@@ -265,14 +267,7 @@ SAND_SYSTEMD3="$TMPDIR/systemd-rawcopy"
 mkdir -p "$SAND_INSTALL3" "$SAND_SYSTEMD3"
 make_overlay "$OVERLAY3"
 cp "$OVERLAY3/repos.conf.example" "$OVERLAY3/repos.conf"
-(
-    cd "$OVERLAY3"
-    HOME="$SAND_HOME" \
-        PATH="$SAND_HOME/.local/bin:$PATH" \
-        INSTALL_DIR="$SAND_INSTALL3" \
-        SYSTEMD_DIR="$SAND_SYSTEMD3" \
-        ./install.sh > /dev/null
-)
+run_overlay_install "$OVERLAY3" "$SAND_INSTALL3" "$SAND_SYSTEMD3"
 if [ -e "$SAND_INSTALL3/repos.conf" ]; then
     echo "FAIL D.3: install.sh accepted byte-for-byte template copy as configured — repos.conf was symlinked into INSTALL_DIR"
     exit 1
