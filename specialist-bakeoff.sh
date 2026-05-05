@@ -23,19 +23,20 @@ STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 WINDOW_DAYS="${WINDOW_DAYS:-30}"
 OUT_FILE="${OUT_FILE:-$STATE_DIR/specialist-bakeoff.md}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/bakeoff.log}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
 mkdir -p "$STATE_DIR"
 
-# Source repos.conf for the REPOS array (same source-of-truth as every
-# other script; if the operator adds a tracked repo, the bake-off picks
-# it up automatically).
-. "$SCRIPT_DIR/repos.conf"
+# Tracked-repo manifest (single source of truth in repos.conf). The
+# shared loader at lib/tracked-repos.sh is the ONE seam every consumer
+# goes through.  It also pins TMPDIR=$STATE_DIR/tmp so mktemp works
+# correctly under systemd PrivateTmp=yes.
+REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
+. "$REVIEWER_LIB_DIR/tracked-repos.sh"
+[ ${#REPOS[@]} -ge 1 ] || { echo "FATAL: no tracked repos — populate $STATE_DIR/repos.conf or set REPOS in config.env" >&2; exit 1; }
 
-# Source the parsers + trust-gate (shared with review.sh and
-# learn-from-replies.sh). Provides count_attributions,
-# extract_memorize_attributions, and is_trusted_repo_author.
-. "$SCRIPT_DIR/lib/bakeoff-parsers.sh"
+# Source the parsers (pure stdin/stdout — count_attributions,
+# extract_memorize_attributions) and the trust-gate (is_trusted_repo_author).
+. "$REVIEWER_LIB_DIR/bakeoff-parsers.sh"
+. "$REVIEWER_LIB_DIR/auth.sh"
 
 log() { echo "[$(date -u +%FT%TZ)] $*" >> "$LOG_FILE"; }
 
@@ -114,8 +115,8 @@ done
 log "scanned $review_count bot reviews across ${#REPOS[@]} repos"
 
 # ---- assemble the table ----
-shipped_counts=$(sort "$shipped_tmp" | uniq -c | awk '{print $2"\t"$1}' || true)
-loved_counts=$(sort "$loved_tmp" | uniq -c | awk '{print $2"\t"$1}' || true)
+shipped_counts=$(sort "$shipped_tmp" | uniq -c | awk '{print $2"\t"$1}')
+loved_counts=$(sort "$loved_tmp" | uniq -c | awk '{print $2"\t"$1}')
 
 # Union of all specialist names seen in either column.
 all_specialists=$( (sort -u "$shipped_tmp"; sort -u "$loved_tmp") | sort -u | grep -v '^$' || true)

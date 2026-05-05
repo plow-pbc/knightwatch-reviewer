@@ -1,13 +1,6 @@
 #!/usr/bin/env bash
 # Pure parsers for the specialist bake-off. Read from stdin, emit to stdout.
 # No file I/O, no network — composable in pipelines + hermetic-testable.
-#
-# Also sources lib/auth.sh to expose is_trusted_repo_author — the canonical
-# trust-gate shared by review.sh, learn-from-replies.sh, and
-# specialist-bakeoff.sh. Single source of truth lives in auth.sh; this file
-# is the one-stop import for the bake-off driver.
-_BAKEOFF_PARSERS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-. "$_BAKEOFF_PARSERS_DIR/auth.sh"
 
 # count_attributions: read a review body on stdin, emit one line per
 # `[from: <specialist>]` attribution. Caller pipes through `sort | uniq -c`
