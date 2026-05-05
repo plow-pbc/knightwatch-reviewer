@@ -78,12 +78,12 @@ EXPECTED_VERDICT=$(awk '
 # --- Run replay (or skip) --------------------------------------------------
 if [ -z "$NO_REPLAY" ]; then
     LIB_DIR="$(cd "$(dirname "$0")" && pwd)"
+    . "$LIB_DIR/replay-paths.sh"
     # Both lib/replay.sh and the verifier derive the same default path
-    # ($HOME/.pr-reviewer/replays/<repo>-<pr>-<sha7>-<slug>), so the
-    # verifier can read replay's output without forcing --output-dir.
-    # When --output-dir IS passed, propagate to keep the contract.
-    PROMPT_SLUG=$(basename "${PROMPTS:-default}" | tr -c 'A-Za-z0-9' '_')
-    DERIVED_OUT="${OUT_DIR:-$HOME/.pr-reviewer/replays/${REPO//\//-}-${PR}-${SHA:0:7}-${PROMPT_SLUG}}"
+    # via lib/replay-paths.sh, so the verifier can read replay's output
+    # without forcing --output-dir. When --output-dir IS passed, propagate.
+    PROMPT_SLUG="$(replay_prompt_slug "${PROMPTS:-}")"
+    DERIVED_OUT="${OUT_DIR:-$HOME/.pr-reviewer/replays/$(replay_run_dir "$REPO" "$PR" "$SHA" "$PROMPT_SLUG")}"
     REPLAY_ARGS=(--repo "$REPO" --pr "$PR" --sha "$SHA")
     [ -n "$PROMPTS" ] && REPLAY_ARGS+=(--prompts "$PROMPTS")
     [ -n "$OUT_DIR" ] && REPLAY_ARGS+=(--output-dir "$OUT_DIR")

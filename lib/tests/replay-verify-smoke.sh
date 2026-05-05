@@ -82,4 +82,11 @@ grep -qF '${OUT:-$HOME/.pr-reviewer/replays/' lib/replay.sh || \
 grep -qF '${OUT:-$HOME/.pr-reviewer/replays/' lib/replay-batch.sh || \
     { echo "FAIL: lib/replay-batch.sh OUT default no longer points to ~/.pr-reviewer/"; exit 1; }
 
+echo "  test: replay-paths helper sourced by all three scripts..."
+[ -f lib/replay-paths.sh ] || { echo "FAIL: lib/replay-paths.sh missing"; exit 1; }
+for f in lib/replay.sh lib/replay-verify.sh lib/replay-batch.sh; do
+    grep -qF 'replay-paths.sh' "$f" || \
+        { echo "FAIL: $f does not source lib/replay-paths.sh"; exit 1; }
+done
+
 echo "  PASS"
