@@ -9,3 +9,13 @@ count_attributions() {
     grep -oE '\[from: [a-z][a-z-]*\]' \
         | sed -E 's/\[from: ([a-z-]+)\]/\1/'
 }
+
+# extract_memorize_attributions: read a /srosro-memorize comment body on
+# stdin. If it contains quoted `[from: <specialist>]` tags from a prior
+# bot review, emit those specialist names (one per line, deduplicated).
+# If it has no tags, emit nothing — we don't attribute the love to anyone.
+extract_memorize_attributions() {
+    grep -oE '\[from: [a-z][a-z-]*\]' \
+        | sed -E 's/\[from: ([a-z-]+)\]/\1/' \
+        | sort -u
+}

@@ -18,4 +18,19 @@ if [ "$got" != "$want" ]; then
     exit 1
 fi
 
+echo "  extract_memorize_attributions: quoted memorize names simplification..."
+got=$(extract_memorize_attributions < "$FIX_DIR/memorize-quoted.md")
+want="simplification"
+if [ "$got" != "$want" ]; then
+    echo "FAIL: memorize-quoted should attribute to simplification, got '$got'"
+    exit 1
+fi
+
+echo "  extract_memorize_attributions: unquoted memorize attributes to nobody..."
+got=$(extract_memorize_attributions < "$FIX_DIR/memorize-no-quote.md") || true
+if [ -n "$got" ]; then
+    echo "FAIL: memorize-no-quote should produce no attribution, got '$got'"
+    exit 1
+fi
+
 echo "PASS"
