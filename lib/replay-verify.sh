@@ -68,12 +68,25 @@ if [ -z "$NO_REPLAY" ]; then
     }
 fi
 
+# --- Parse a fixture section (exact-match section header) -----------------
+# Emits all non-empty lines between `## <section>` (exact match, no prefix
+# accepted) and the next `## ` header. Exact match prevents `expected_verdict`
+# from accidentally matching `expected_verdict_old` or any other typo'd
+# section header — fixture-as-contract: malformed section names must fail
+# parse, not silently match a similar one.
+parse_section() {
+    local section="$1" file="$2"
+    awk -v section="$section" '
+        $0 == "## " section { in_block = 1; next }
+        /^## / && in_block { exit }
+        in_block && NF > 0 { print }
+    ' "$file"
+}
+
 # --- Parse expected_verdict ------------------------------------------------
-EXPECTED_VERDICT=$(awk '
-    /^## expected_verdict/ { in_block = 1; next }
-    /^## / && in_block { exit }
-    in_block && NF > 0 { print; exit }
-' "$FIXTURE")
+# Shape: one VERDICT value (APPROVE / COMMENT) per fixture. We take the
+# first non-empty line of the section.
+EXPECTED_VERDICT=$(parse_section "expected_verdict" "$FIXTURE" | head -1)
 
 # Fixture-as-contract: a fixture without expected_verdict is malformed.
 # Without this guard, the runtime verdict-check block would skip silently
@@ -112,17 +125,21 @@ PASS=1
 # Rendered reviews can quote earlier verdict-shaped text (e.g. a previous
 # review's "VERDICT: APPROVE"); using head -1 would assert against that
 # quoted line and bypass production's contract.
-if [ -n "$EXPECTED_VERDICT" ]; then
-    actual_verdict=$(grep -E '^VERDICT:' "$AGG" | tail -1 | awk '{print $2}' || true)
-    if [ -z "$actual_verdict" ]; then
-        echo "  FAIL: aggregator-output has no VERDICT: line — malformed review" >&2
-        PASS=0
-    elif [ "$actual_verdict" = "$EXPECTED_VERDICT" ]; then
-        echo "  PASS: verdict $actual_verdict (expected $EXPECTED_VERDICT)"
-    else
-        echo "  FAIL: verdict mismatch — expected $EXPECTED_VERDICT, got $actual_verdict" >&2
-        PASS=0
-    fi
+#
+# EXPECTED_VERDICT is guaranteed non-empty by the parse-time guard above
+# (mandatory section, exits 2 if missing). `|| true` on the grep keeps a
+# missing-VERDICT in the aggregator-output as a recoverable FAIL: rather
+# than letting `set -euo pipefail` kill the script before any diagnostic
+# is emitted.
+actual_verdict=$(grep -E '^VERDICT:' "$AGG" | tail -1 | awk '{print $2}' || true)
+if [ -z "$actual_verdict" ]; then
+    echo "  FAIL: aggregator-output has no VERDICT: line — malformed review" >&2
+    PASS=0
+elif [ "$actual_verdict" = "$EXPECTED_VERDICT" ]; then
+    echo "  PASS: verdict $actual_verdict (expected $EXPECTED_VERDICT)"
+else
+    echo "  FAIL: verdict mismatch — expected $EXPECTED_VERDICT, got $actual_verdict" >&2
+    PASS=0
 fi
 
 # expected_contains: each substring must appear (case-insensitive) somewhere
@@ -130,15 +147,13 @@ fi
 # entries for distinct concerns rather than trying to encode joint shape.
 parse_substrings() {
     local section="$1" file="$2"
-    awk -v section="$section" '
-        $0 == "## " section { in_section = 1; next }
-        /^## / && in_section { exit }
-        in_section && /^- / {
+    parse_section "$section" "$file" | awk '
+        /^- / {
             sub("^- ", "")
             sub("[ ]+$", "")
             if (NF > 0) print
         }
-    ' "$file"
+    '
 }
 
 while IFS= read -r kw; do

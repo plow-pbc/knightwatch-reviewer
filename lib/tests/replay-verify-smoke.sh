@@ -92,6 +92,38 @@ fi
 grep -q "missing or empty ## expected_verdict" "$LOG_DIR/no-verdict.log" || \
     { cat "$LOG_DIR/no-verdict.log"; echo "FAIL: expected 'missing or empty ## expected_verdict' diagnostic"; exit 1; }
 
+# Test: typo'd section header — `## expected_verdict_old` must NOT
+# satisfy the expected_verdict parse. Old prefix-match regex would have
+# silently accepted any `^## expected_verdict.*` header; the unified
+# parse_section uses exact-match.
+TMP_FIX_TYPO_SECTION="$LOG_DIR/typo-section.fixture.md"
+cat > "$TMP_FIX_TYPO_SECTION" <<'FIX'
+---
+repo: x/y
+pr: 1
+sha: a
+---
+
+## expected_verdict_old
+
+COMMENT
+
+## expected_contains
+
+- simplification
+FIX
+echo "  test: typo_section_header (expect exit 2)..."
+if ./lib/replay-verify.sh \
+        --fixture "$TMP_FIX_TYPO_SECTION" \
+        --no-replay "$FIXTURE_DIR/sample-aggregator-output.md" \
+        > "$LOG_DIR/typo-section.log" 2>&1; then
+    cat "$LOG_DIR/typo-section.log"
+    echo "FAIL: typo'd section header should fail-fast with exit 2"
+    exit 1
+fi
+grep -q "missing or empty ## expected_verdict" "$LOG_DIR/typo-section.log" || \
+    { cat "$LOG_DIR/typo-section.log"; echo "FAIL: expected 'missing or empty ## expected_verdict' diagnostic"; exit 1; }
+
 # Test 2: expected_contains violation — strip required `simplification` substring
 TMP_AGG="$LOG_DIR/keyword-missing.agg.md"
 sed 's/simplification/something-else/g' "$FIXTURE_DIR/sample-aggregator-output.md" > "$TMP_AGG"
