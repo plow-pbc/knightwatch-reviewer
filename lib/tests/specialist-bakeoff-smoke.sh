@@ -112,9 +112,6 @@ run_driver() {
 # ---- scenario 1: no comments → empty table ----
 echo "    scenario 1: no comments → empty table body..."
 run_driver
-if grep -q '|.*|.*|.*|' "$OUT_FILE" 2>/dev/null && grep -v '^|' "$OUT_FILE" | grep -q '[a-z]'; then
-    : # OK if table rows exist (they shouldn't)
-fi
 # Table header is always present; no data rows expected.
 if grep -qE '^\| [a-z]' "$OUT_FILE"; then
     echo "FAIL scenario 1: expected empty table body, got rows in $OUT_FILE"

@@ -125,7 +125,7 @@ all_specialists=$( (sort -u "$shipped_tmp"; sort -u "$loved_tmp") | sort -u | gr
 {
     echo "# Specialist bake-off — last $WINDOW_DAYS days"
     echo
-    echo "_Generated $(date -u +%FT%TZ) from $review_count posted reviews across ${#REPOS[@]} tracked repos. See \`docs/plans/2026-05-04-specialist-bakeoff.md\` for measurement notes._"
+    echo "_Generated $(date -u +%FT%TZ) from $review_count posted reviews across ${#REPOS[@]} tracked repos._"
     echo
     echo "| Specialist | Shipped | Loved | Loved/Shipped |"
     echo "|---|---:|---:|---:|"

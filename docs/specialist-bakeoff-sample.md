@@ -2,7 +2,7 @@
 
 # Specialist bake-off — last 30 days
 
-_Generated 2026-05-05T04:53:24Z from 1033 posted reviews across 7 tracked repos. See `docs/plans/2026-05-04-specialist-bakeoff.md` for measurement notes._
+_Generated 2026-05-05T04:53:24Z from 1033 posted reviews across 7 tracked repos._
 
 | Specialist | Shipped | Loved | Loved/Shipped |
 |---|---:|---:|---:|
