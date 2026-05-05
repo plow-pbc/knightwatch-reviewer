@@ -157,6 +157,40 @@ fi
 grep -q "unknown expected_\* section" "$LOG_DIR/typo-optional.log" || \
     { cat "$LOG_DIR/typo-optional.log"; echo "FAIL: expected 'unknown expected_*' diagnostic"; exit 1; }
 
+# Test: section header with trailing text — `## expected_contains typo`
+# (canonical name + extra text) must fail-fast. Round-10's validator
+# stripped trailing text and accepted such headers, but parse_section's
+# exact-match would reject them at lookup time → silent no-op assertion,
+# false-green ALL PASS. Validator now mirrors parse_section's full-line
+# match.
+TMP_FIX_TRAILING="$LOG_DIR/typo-trailing.fixture.md"
+cat > "$TMP_FIX_TRAILING" <<'FIX'
+---
+repo: x/y
+pr: 1
+sha: a
+---
+
+## expected_verdict
+
+COMMENT
+
+## expected_contains typo
+
+- simplification
+FIX
+echo "  test: section_header_trailing_text (expect exit 2)..."
+if ./lib/replay-verify.sh \
+        --fixture "$TMP_FIX_TRAILING" \
+        --no-replay "$FIXTURE_DIR/sample-aggregator-output.md" \
+        > "$LOG_DIR/typo-trailing.log" 2>&1; then
+    cat "$LOG_DIR/typo-trailing.log"
+    echo "FAIL: section header with trailing text should fail-fast with exit 2"
+    exit 1
+fi
+grep -q "unknown expected_\* section" "$LOG_DIR/typo-trailing.log" || \
+    { cat "$LOG_DIR/typo-trailing.log"; echo "FAIL: expected 'unknown expected_*' diagnostic"; exit 1; }
+
 # Test 2: expected_contains violation — strip required `simplification` substring
 TMP_AGG="$LOG_DIR/keyword-missing.agg.md"
 sed 's/simplification/something-else/g' "$FIXTURE_DIR/sample-aggregator-output.md" > "$TMP_AGG"

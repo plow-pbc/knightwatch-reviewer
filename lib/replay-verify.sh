@@ -101,11 +101,15 @@ fi
 # set is a fixture typo and must fail-fast. Without this, `## expected_contans`
 # (typo for `## expected_contains`) silently no-ops — fixture has no
 # enforcement, verifier reaches `verify-replay: ALL PASS` false-green.
+# Validator must mirror parse_section full-line exact-match contract.
+# If we stripped trailing text here (e.g. `## expected_contains typo` →
+# `expected_contains`), the validator would accept the typo header
+# while parse_section exact-match rejected it — silent no-op assertion,
+# fixture reaches ALL PASS false-green. Match the parser, not a relaxed
+# alternative.
 unknown_sections=$(awk '
     /^## expected_/ {
-        # Strip "## " prefix; everything after the first space (if any) is comment
         sub("^## ", "")
-        sub("[ ].*$", "")
         if ($0 != "expected_verdict" && $0 != "expected_contains" && $0 != "expected_absent") {
             print $0
         }
