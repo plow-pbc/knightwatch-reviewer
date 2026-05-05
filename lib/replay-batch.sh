@@ -43,10 +43,12 @@ done
 }
 [ -f "$PRS" ] || { echo "error: PRS_CSV not found: $PRS" >&2; exit 2; }
 
-OUT="${OUT:-replays/batch-$(date +%Y%m%d-%H%M%S)}"
+# Default to operator-local replay tree — see lib/replay.sh for rationale.
+OUT="${OUT:-$HOME/.pr-reviewer/replays/batch-$(date +%Y%m%d-%H%M%S)}"
 mkdir -p "$OUT"
 
 LIB_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$LIB_DIR/replay-paths.sh"
 INDEX="$OUT/index.md"
 IFS=',' read -ra PROMPT_LIST <<<"$PROMPTS"
 
@@ -77,8 +79,8 @@ while IFS=',' read -r repo pr sha; do
     printf '| %s |' "$pr_label" >> "$INDEX"
 
     for prompts_dir in "${PROMPT_LIST[@]}"; do
-        slug="$(basename "$prompts_dir" | tr -c 'A-Za-z0-9' '_')"
-        cell_dir="$OUT/${repo//\//-}-${pr}-${sha:0:7}-${slug}"
+        slug="$(replay_prompt_slug "$prompts_dir")"
+        cell_dir="$OUT/$(replay_run_dir "$repo" "$pr" "$sha" "$slug")"
         echo "    [$slug] → $cell_dir"
         if "$LIB_DIR/replay.sh" \
                 --repo "$repo" --pr "$pr" --sha "$sha" \

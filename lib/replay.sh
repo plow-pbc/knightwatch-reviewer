@@ -20,6 +20,9 @@
 
 set -euo pipefail
 
+LIB_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$LIB_DIR/replay-paths.sh"
+
 REPO=""; PR=""; SHA=""; OUT=""
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -47,8 +50,12 @@ done
 # the same repo/PR/SHA don't clobber each other's manifest.json /
 # aggregator-output.md / agents/. Operator-supplied --output-dir is
 # respected verbatim.
-PROMPT_SLUG="$(basename "${PROMPTS_DIR:-default}" | tr -c 'A-Za-z0-9' '_')"
-OUT="${OUT:-replays/${REPO//\//-}-${PR}-${SHA:0:7}-${PROMPT_SLUG}}"
+PROMPT_SLUG="$(replay_prompt_slug "${PROMPTS_DIR:-}")"
+# Default replay artifacts to the operator-local replay tree (same boundary
+# PULL_REQUEST_TEMPLATE.md uses for ~/.pr-reviewer/replays/). Operators who
+# want repo-local artifacts (e.g. capturing a public-canary's last-known-good
+# snapshot for review) opt in with --output-dir replays/...
+OUT="${OUT:-$HOME/.pr-reviewer/replays/$(replay_run_dir "$REPO" "$PR" "$SHA" "$PROMPT_SLUG")}"
 mkdir -p "$OUT"
 
 # Manifest captures replay provenance — deterministic spot-check input.
@@ -65,7 +72,6 @@ jq -n \
 # Stage the same .codex-scratch inputs pipeline.py reads,
 # then invoke pipeline.py against a fresh checkout at $SHA. The post-
 # pipeline gh-posting step is deliberately skipped — we only want the rendered review.
-LIB_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$LIB_DIR/state-io.sh"
 . "$LIB_DIR/run-dir.sh"
 . "$LIB_DIR/scratch.sh"
@@ -155,7 +161,6 @@ PR_ID="$REPO#$PR"
 PR_TITLE="$(gh pr view "$PR" --repo "$REPO" --json title --jq .title)"
 PR_URL="https://github.com/$REPO/pull/$PR"
 PR_AUTHOR="$(gh pr view "$PR" --repo "$REPO" --json author --jq .author.login)"
-_LIB_DIR="$LIB_DIR"
 LOG_FILE="$OUT/run.log"
 
 # `python3 lib/pipeline.py` returns a non-zero exit on any-stage failure

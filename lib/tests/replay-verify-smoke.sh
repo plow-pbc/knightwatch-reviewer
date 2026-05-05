@@ -1,0 +1,250 @@
+#!/usr/bin/env bash
+# Smoke: lib/replay-verify.sh fixture-parser + matcher.
+#
+# Runs the verifier in --no-replay mode against synthetic aggregator-output
+# fixtures so the parser/matcher logic is exercised without burning codex
+# calls. Behavioral end-to-end (does verifier correctly drive a real
+# replay?) is covered by manual operator runs.
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+
+FIXTURE_DIR="lib/tests/fixtures/replay-verify"
+[ -f "$FIXTURE_DIR/sample-fixture.md" ] || { echo "FAIL: missing sample-fixture.md"; exit 1; }
+[ -f "$FIXTURE_DIR/sample-aggregator-output.md" ] || { echo "FAIL: missing sample-aggregator-output.md"; exit 1; }
+
+LOG_DIR=$(mktemp -d)
+trap 'rm -rf "$LOG_DIR"' EXIT
+
+# expect_pass NAME AGG_FILE
+# Verifier should exit 0 against the supplied aggregator-output.
+expect_pass() {
+    local name="$1" agg="$2"
+    echo "  test: $name (expect pass)..."
+    if ! ./lib/replay-verify.sh \
+            --fixture "$FIXTURE_DIR/sample-fixture.md" \
+            --no-replay "$agg" \
+            > "$LOG_DIR/$name.log" 2>&1; then
+        cat "$LOG_DIR/$name.log"
+        echo "FAIL: $name expected pass, got non-zero exit"
+        exit 1
+    fi
+}
+
+# expect_fail NAME AGG_FILE GREP_PATTERN
+# Verifier should exit non-zero AND its output should contain GREP_PATTERN.
+expect_fail() {
+    local name="$1" agg="$2" pattern="$3"
+    echo "  test: $name (expect fail w/ '$pattern')..."
+    if ./lib/replay-verify.sh \
+            --fixture "$FIXTURE_DIR/sample-fixture.md" \
+            --no-replay "$agg" \
+            > "$LOG_DIR/$name.log" 2>&1; then
+        cat "$LOG_DIR/$name.log"
+        echo "FAIL: $name expected non-zero exit, got pass"
+        exit 1
+    fi
+    grep -q "$pattern" "$LOG_DIR/$name.log" || {
+        cat "$LOG_DIR/$name.log"
+        echo "FAIL: $name expected '$pattern' diagnostic"
+        exit 1
+    }
+}
+
+# expect_fixture_parse_error NAME FIXTURE DIAGNOSTIC
+# Runs the verifier in --no-replay mode against FIXTURE; asserts exit
+# code == 2 (parse error, per lib/replay-verify.sh's contract) AND that
+# the supplied DIAGNOSTIC substring appears in the captured output.
+# Used for the malformed-fixture cases (missing/typo'd section headers,
+# typo'd optional sections, etc.) — exit 2 is the contract; non-zero
+# alone would also accept exit 1 (assertion failure) which is wrong.
+expect_fixture_parse_error() {
+    local name="$1" fixture="$2" diagnostic="$3"
+    echo "  test: $name (expect exit 2 + '$diagnostic')..."
+    local rc=0
+    ./lib/replay-verify.sh \
+        --fixture "$fixture" \
+        --no-replay "$FIXTURE_DIR/sample-aggregator-output.md" \
+        > "$LOG_DIR/$name.log" 2>&1 || rc=$?
+    if [ "$rc" != "2" ]; then
+        cat "$LOG_DIR/$name.log"
+        echo "FAIL: $name expected exit 2, got rc=$rc"
+        exit 1
+    fi
+    grep -q "$diagnostic" "$LOG_DIR/$name.log" || {
+        cat "$LOG_DIR/$name.log"
+        echo "FAIL: $name expected '$diagnostic' diagnostic"
+        exit 1
+    }
+}
+
+# Test 1: passing fixture
+expect_pass "passing" "$FIXTURE_DIR/sample-aggregator-output.md"
+
+# Test: last-verdict-wins — an earlier line that grep -E '^VERDICT:'
+# DOES match shouldn't shadow the real final one. Production
+# (lib/review-one-pr.sh:1166) uses tail -1 per prompts/aggregator.md:196
+# ("On the VERY LAST LINE"). With head -1, this scenario would extract
+# APPROVE from the prepended line and FAIL the COMMENT match.
+TMP_AGG_LV="$LOG_DIR/last-verdict-wins.agg.md"
+{
+    echo 'VERDICT: APPROVE'
+    echo '(this earlier verdict line is from a quoted prior review; the real verdict is below)'
+    cat "$FIXTURE_DIR/sample-aggregator-output.md"
+} > "$TMP_AGG_LV"
+expect_pass "last_verdict_wins" "$TMP_AGG_LV"
+
+# Test: fixture missing expected_verdict — verifier must fail with exit 2,
+# not silently skip the verdict assertion.
+TMP_FIX_NO_VERDICT="$LOG_DIR/no-verdict.fixture.md"
+cat > "$TMP_FIX_NO_VERDICT" <<'FIX'
+---
+repo: x/y
+pr: 1
+sha: a
+---
+
+## expected_contains
+
+- simplification
+FIX
+expect_fixture_parse_error "missing_expected_verdict" "$TMP_FIX_NO_VERDICT" "missing or empty ## expected_verdict"
+
+# Test: typo'd section header — `## expected_verdict_old` must NOT
+# satisfy the expected_verdict parse. Old prefix-match regex would have
+# silently accepted any `^## expected_verdict.*` header; the unified
+# parse_section uses exact-match.
+TMP_FIX_TYPO_SECTION="$LOG_DIR/typo-section.fixture.md"
+cat > "$TMP_FIX_TYPO_SECTION" <<'FIX'
+---
+repo: x/y
+pr: 1
+sha: a
+---
+
+## expected_verdict_old
+
+COMMENT
+
+## expected_contains
+
+- simplification
+FIX
+expect_fixture_parse_error "typo_section_header" "$TMP_FIX_TYPO_SECTION" "missing or empty ## expected_verdict"
+
+# Test: typo'd OPTIONAL section header — `## expected_contans` (missing 'i')
+# must NOT silently no-op. Round-9's parse_section closed the canonical-name
+# false-green, but typo'd optional sections were still ignored — fixture
+# would reach ALL PASS without any expected_contains enforcement. Fixed by
+# the unknown-section rejection step.
+TMP_FIX_TYPO_OPT="$LOG_DIR/typo-optional.fixture.md"
+cat > "$TMP_FIX_TYPO_OPT" <<'FIX'
+---
+repo: x/y
+pr: 1
+sha: a
+---
+
+## expected_verdict
+
+COMMENT
+
+## expected_contans
+
+- simplification
+FIX
+expect_fixture_parse_error "typo_optional_section" "$TMP_FIX_TYPO_OPT" "unknown expected_\* section"
+
+# Test: section header with trailing text — `## expected_contains typo`
+# (canonical name + extra text) must fail-fast. Fences the validator's
+# full-line exact-match contract (see parse_section in lib/replay-verify.sh).
+TMP_FIX_TRAILING="$LOG_DIR/typo-trailing.fixture.md"
+cat > "$TMP_FIX_TRAILING" <<'FIX'
+---
+repo: x/y
+pr: 1
+sha: a
+---
+
+## expected_verdict
+
+COMMENT
+
+## expected_contains typo
+
+- simplification
+FIX
+expect_fixture_parse_error "section_header_trailing_text" "$TMP_FIX_TRAILING" "unknown expected_\* section"
+
+# Test 2: expected_contains violation — strip required `simplification` substring
+TMP_AGG="$LOG_DIR/keyword-missing.agg.md"
+sed 's/simplification/something-else/g' "$FIXTURE_DIR/sample-aggregator-output.md" > "$TMP_AGG"
+expect_fail "expected_contains_missing" "$TMP_AGG" "expected_contains 'simplification' not found"
+
+# Test 3: expected_absent triggered — append a security blocking probe
+TMP_AGG2="$LOG_DIR/expected-not.agg.md"
+cat "$FIXTURE_DIR/sample-aggregator-output.md" > "$TMP_AGG2"
+cat >> "$TMP_AGG2" <<'PROBE'
+
+2. [blocking] [from: security] [bug] credential leak in CI. Files: x:1. Edit: rotate the credential.
+PROBE
+expect_fail "expected_absent_triggered" "$TMP_AGG2" "expected_absent 'credential' found"
+
+# Test 4: verdict mismatch — flip COMMENT to APPROVE
+TMP_AGG3="$LOG_DIR/verdict-mismatch.agg.md"
+sed 's/^VERDICT: COMMENT/VERDICT: APPROVE/' "$FIXTURE_DIR/sample-aggregator-output.md" > "$TMP_AGG3"
+expect_fail "verdict_mismatch" "$TMP_AGG3" "verdict mismatch"
+
+echo "  test: privacy-default tripwire..."
+# Privacy fence: the replay entrypoints must default to ~/.pr-reviewer/
+# (not repo-local replays/...). lib/replay.sh and lib/replay-batch.sh own
+# this default; the verifier wrapper inherits it. A regression here would
+# silently leak private-fixture artifacts into the repo working tree.
+grep -qF '${OUT:-$HOME/.pr-reviewer/replays/' lib/replay.sh || \
+    { echo "FAIL: lib/replay.sh OUT default no longer points to ~/.pr-reviewer/"; exit 1; }
+grep -qF '${OUT:-$HOME/.pr-reviewer/replays/' lib/replay-batch.sh || \
+    { echo "FAIL: lib/replay-batch.sh OUT default no longer points to ~/.pr-reviewer/"; exit 1; }
+
+echo "  test: replay-paths naming contract..."
+# Source in a subshell so the helper functions don't pollute the smoke's
+# global namespace. Smoke asserts the helper's *observable* naming
+# contract — what callers depend on — not just file presence.
+(
+    . lib/replay-paths.sh
+    # Slug rule: basename of the prompts dir, non-alphanumerics → '_'.
+    # No trailing '_' — basename's newline is stripped by printf '%s'
+    # before tr (see lib/replay-paths.sh::replay_prompt_slug).
+    actual=$(replay_prompt_slug 'default')
+    [ "$actual" = "default" ] || { echo "FAIL: replay_prompt_slug 'default' = '$actual' (expected 'default')"; exit 1; }
+    actual=$(replay_prompt_slug '/abs/path/alt-prompts')
+    [ "$actual" = "alt_prompts" ] || { echo "FAIL: replay_prompt_slug '/abs/path/alt-prompts' = '$actual' (expected 'alt_prompts')"; exit 1; }
+    actual=$(replay_prompt_slug '')
+    [ "$actual" = "default" ] || { echo "FAIL: replay_prompt_slug '' = '$actual' (expected 'default' via fallback)"; exit 1; }
+    # Run-dir rule: <repo-slug>-<pr>-<sha7>-<slug>; '/' in repo → '-'.
+    actual=$(replay_run_dir 'cncorp/plow' '565' '852beef00abc' 'alt_prompts')
+    [ "$actual" = "cncorp-plow-565-852beef-alt_prompts" ] || { echo "FAIL: replay_run_dir = '$actual'"; exit 1; }
+    # Path-traversal guard: pr / sha must not contain ../, /, etc.
+    # Validation rejects non-numeric pr and non-hex sha.
+    if replay_run_dir 'x/y' '../../etc/passwd' 'a' 'p' 2>/dev/null; then
+        echo "FAIL: replay_run_dir accepted traversal pr"; exit 1
+    fi
+    if replay_run_dir 'x/y' '1' '../../etc/passwd' 'p' 2>/dev/null; then
+        echo "FAIL: replay_run_dir accepted traversal sha"; exit 1
+    fi
+    if replay_run_dir 'x/y' 'abc' 'a' 'p' 2>/dev/null; then
+        echo "FAIL: replay_run_dir accepted non-numeric pr"; exit 1
+    fi
+    if replay_run_dir 'x/y' '1' 'zzzz' 'p' 2>/dev/null; then
+        echo "FAIL: replay_run_dir accepted non-hex sha"; exit 1
+    fi
+)
+
+echo "  test: all three replay scripts source replay-paths.sh..."
+# Cross-file fence: every replay entrypoint must compose the helper above
+# rather than re-deriving locally. A new replay-* script that re-implements
+# the slug or run-dir rule would silently drift.
+for f in lib/replay.sh lib/replay-verify.sh lib/replay-batch.sh; do
+    grep -qF 'replay-paths.sh' "$f" || \
+        { echo "FAIL: $f does not source lib/replay-paths.sh"; exit 1; }
+done
+
+echo "  PASS"
