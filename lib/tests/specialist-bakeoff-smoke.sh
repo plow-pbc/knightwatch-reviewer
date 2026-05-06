@@ -142,7 +142,7 @@ if grep -qE '^\| [a-z]' "$OUT_FILE"; then
 fi
 
 # ---- scenario 2: substantive review, ACK, untrusted memorize, trusted memorize ----
-echo "    scenario 2: review + ACK + memorize (trusted+untrusted) → aggregator 1|1..."
+echo "    scenario 2: review + ACK + memorize (trusted+untrusted) → aggregator 1|0|1..."
 # Four comments split across two pages — load-bearing comment D is on page 2:
 #   A: substantive bot review — has marker, has footer, has [from: aggregator]
 #   B: same-bot ACK — has marker, NO footer — must NOT count as a review
@@ -184,8 +184,8 @@ fi
 # If --paginate were dropped, the page-2 trusted memorize would never reach
 # extract_memorize_attributions and Loved would be 0 — this is the load-bearing
 # pagination assertion.
-if ! grep -qE '\| aggregator \| +1 \| +1 \|' "$OUT_FILE"; then
-    echo "FAIL scenario 2: expected aggregator | 1 | 1 in table (page-2 memorize not merged)"
+if ! grep -qE '\| aggregator \| +1 \| +0 \| +1 \|' "$OUT_FILE"; then
+    echo "FAIL scenario 2: expected aggregator | 1 | 0 | 1 in table (page-2 memorize not merged)"
     cat "$OUT_FILE"
     exit 1
 fi

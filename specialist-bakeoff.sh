@@ -7,6 +7,11 @@
 #
 # WHAT IT MEASURES (rolling 30-day window):
 #   - shipped:  count of [from: <specialist>] attributions in posted reviews
+#   - applied:  count of probes whose cited paths were touched by
+#               commits AFTER the probe was emitted; computed at review-
+#               post time by lib/applied-marker.sh and stored as a
+#               <!-- knightwatch-applied: {json} --> footer on the
+#               prior review comment.
 #   - loved:    count of /srosro-memorize comments by trusted humans where
 #               the body quoted a [from: <specialist>] tag
 #   - reviews:  total review comments observed (for normalization)
@@ -49,7 +54,8 @@ SINCE_ISO=$(date -u -d "$WINDOW_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
 # Accumulate attributions in temp files: one specialist name per line.
 shipped_tmp=$(mktemp)
 loved_tmp=$(mktemp)
-trap 'rm -f "$shipped_tmp" "$loved_tmp"' EXIT
+applied_tmp=$(mktemp)
+trap 'rm -f "$shipped_tmp" "$loved_tmp" "$applied_tmp"' EXIT
 
 review_count=0
 fetch_failures=0
@@ -91,6 +97,15 @@ for repo in "${REPOS[@]}"; do
              ".[] | select($SUBSTANTIVE_REVIEW_JQ) | .body" \
         | count_attributions >> "$shipped_tmp"
 
+    # Applied: read the structured marker from each bot review body.
+    # The marker is emitted by lib/applied-marker.sh at the next
+    # incremental review, so the most recent review on each PR will
+    # not carry one yet — that's expected.
+    printf '%s' "$comments_json" \
+        | jq -r --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" \
+             ".[] | select($SUBSTANTIVE_REVIEW_JQ) | .body" \
+        | extract_applied_marker >> "$applied_tmp"
+
     # Memorize signals: /srosro-memorize comments by trusted humans.
     # Exclude bot ACKs (they contain the auto-post marker and quote the
     # original /srosro-memorize body, which would double-count attributions).
@@ -118,30 +133,39 @@ fi
 # ---- assemble the table ----
 shipped_counts=$(sort "$shipped_tmp" | uniq -c | awk '{print $2"\t"$1}')
 loved_counts=$(sort "$loved_tmp" | uniq -c | awk '{print $2"\t"$1}')
+applied_counts=$(awk -F'\t' '{count[$1] += $2} END {for (s in count) print s"\t"count[s]}' "$applied_tmp")
 
-# Union of all specialist names seen in either column.
-all_specialists=$( (sort -u "$shipped_tmp"; sort -u "$loved_tmp") | sort -u | grep -v '^$' || true)
+# Union of all specialist names seen in any column.
+all_specialists=$( (sort -u "$shipped_tmp"; sort -u "$loved_tmp"; awk -F'\t' '{print $1}' "$applied_tmp" | sort -u) | sort -u | grep -v '^$' || true)
+
+# Look up a specialist's count in a `<spec>\t<count>` newline-separated string.
+# Empty result if the specialist is absent — caller defaults to 0 (see below).
+counts_lookup() {
+    printf '%s\n' "$1" | awk -v s="$2" '$1==s{print $2; exit}'
+}
 
 {
     echo "# Specialist bake-off — last $WINDOW_DAYS days"
     echo
     echo "_Generated $(date -u +%FT%TZ) from $review_count posted reviews across ${#REPOS[@]} tracked repos._"
     echo
-    echo "| Specialist | Shipped | Loved | Loved/Shipped |"
-    echo "|---|---:|---:|---:|"
+    echo "| Specialist | Shipped | Applied | Loved | Loved/Shipped |"
+    echo "|---|---:|---:|---:|---:|"
     if [ -n "$all_specialists" ]; then
         while read -r spec; do
             [ -z "$spec" ] && continue
-            shipped=$(printf '%s\n' "$shipped_counts" | awk -v s="$spec" '$1==s{print $2; exit}')
-            loved=$(printf '%s\n' "$loved_counts" | awk -v s="$spec" '$1==s{print $2; exit}')
+            shipped=$(counts_lookup "$shipped_counts" "$spec")
+            applied=$(counts_lookup "$applied_counts" "$spec")
+            loved=$(counts_lookup "$loved_counts" "$spec")
             shipped=${shipped:-0}
+            applied=${applied:-0}
             loved=${loved:-0}
             if [ "$shipped" -gt 0 ]; then
                 ratio=$(awk -v l="$loved" -v s="$shipped" 'BEGIN{printf "%.2f", l/s}')
             else
                 ratio="—"
             fi
-            echo "| $spec | $shipped | $loved | $ratio |"
+            echo "| $spec | $shipped | $applied | $loved | $ratio |"
         done <<< "$all_specialists" | sort -t'|' -k3,3rn
     fi
 } > "$OUT_FILE"
