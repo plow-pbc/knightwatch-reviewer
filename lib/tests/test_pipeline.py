@@ -43,6 +43,40 @@ class FakeCompletedProcess:
         self.returncode = returncode
 
 
+def _make_codex_stub(plan=None, default=(0, "### Probe 1\nstub\n"),
+                     before_write=None):
+    """Module-level fake-codex side_effect for `subprocess.run`. Owns the
+    full agent contract surface: writes valid intent / per-angle critic /
+    specialist defaults so callers only specify the fields they care
+    about. `plan` is a dict mapping agent name → (exit_code, output_text);
+    unspecified agents fall through to `default` (with intent + critic
+    auto-substituted to contract-valid output). `before_write(name, out_path)`
+    is called pre-write — used by ordering tests."""
+    plan = plan or {}
+    def side_effect(argv, **kwargs):
+        out_path = Path(argv[argv.index("-o") + 1])
+        agent_name = out_path.parent.name
+        if before_write is not None:
+            before_write(agent_name, out_path)
+        ec, out = plan.get(agent_name, default)
+        # Auto-default intent + per-angle critic to contract-valid output
+        # so callers don't have to know each agent's contract upfront.
+        if agent_name == "intent" and ec == 0 and out == default[1]:
+            out = "Inferred intent: stub.\n"
+        if (
+            agent_name.startswith("critic-")
+            and ec == 0
+            and out == default[1]
+        ):
+            out = (
+                "## Critic counter-arguments\n\n"
+                "### Probe 1\n- **Answer:** yes\n- **Evidence:** stub\n"
+            )
+        out_path.write_text(out)
+        return FakeCompletedProcess(ec)
+    return side_effect
+
+
 class TestRunCodex(unittest.TestCase):
     """run_codex wraps `codex exec`; matches lib/run-specialist.sh contract."""
 
@@ -445,23 +479,11 @@ class TestRunSpecialist(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _make_codex_stub(self, plan):
-        """plan: dict mapping agent name → (exit_code, output_text)."""
-        def side_effect(argv, **kwargs):
-            # Recover agent name from -o argument's parent dir
-            out_idx = argv.index("-o")
-            out_path = Path(argv[out_idx + 1])
-            agent_name = out_path.parent.name
-            ec, out = plan.get(agent_name, (0, "### Probe 1\nstub\n"))
-            out_path.write_text(out)
-            return FakeCompletedProcess(ec)
-        return side_effect
-
     @patch("pipeline.subprocess.run")
     def test_specialist_then_critic_writes_layered_file(self, mock_run):
         # Critic owns the '## Critic counter-arguments' H2 — pipeline.py only
         # adds the '---' separator, so the critic output must include the H2.
-        mock_run.side_effect = self._make_codex_stub({
+        mock_run.side_effect = _make_codex_stub({
             "security": (0, "### Probe 1\nspecialist body\n"),
             "critic-security": (0,
                 "## Critic counter-arguments\n\n### Probe 1\n"
@@ -520,7 +542,7 @@ class TestRunSpecialist(unittest.TestCase):
 
     @patch("pipeline.subprocess.run")
     def test_specialist_failure_skips_critic(self, mock_run):
-        mock_run.side_effect = self._make_codex_stub({
+        mock_run.side_effect = _make_codex_stub({
             "security": (7, ""),
         })
         rc = pipeline.run_specialist(
@@ -543,7 +565,7 @@ class TestRunSpecialist(unittest.TestCase):
         probe — the run_specialist validator catches it and returns 4 before the
         layered file is written, so malformed critic output never reaches
         aggregation."""
-        mock_run.side_effect = self._make_codex_stub({
+        mock_run.side_effect = _make_codex_stub({
             "security": (0, "### Probe 1\nspec body\n\n### Probe 2\nmore\n"),
             # Critic addresses Probe 1 but skips Probe 2 — semantic violation.
             "critic-security": (0,
@@ -566,7 +588,7 @@ class TestRunSpecialist(unittest.TestCase):
 
     @patch("pipeline.subprocess.run")
     def test_specialist_success_critic_failure_returns_critic_rc(self, mock_run):
-        mock_run.side_effect = self._make_codex_stub({
+        mock_run.side_effect = _make_codex_stub({
             "security": (0, "### Probe 1\nstub\n"),
             "critic-security": (5, ""),
         })
@@ -606,40 +628,9 @@ class TestRunPipeline(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _make_codex_stub(self, plan=None, default=(0, "### Probe 1\nstub\n"),
-                         before_write=None):
-        plan = plan or {}
-        def side_effect(argv, **kwargs):
-            out_idx = argv.index("-o")
-            out_path = Path(argv[out_idx + 1])
-            agent_name = out_path.parent.name
-            if before_write is not None:
-                before_write(agent_name, out_path)
-            ec, out = plan.get(agent_name, default)
-            # Special-case intent so the validation matcher passes
-            if agent_name == "intent" and ec == 0 and out == default[1]:
-                out = "Inferred intent: stub.\n"
-            # Per-angle critics must emit '## Critic counter-arguments' H2
-            # + a `### Probe N` block per specialist probe with Answer +
-            # Evidence, per the contract enforced by _validate_critic_output()
-            # at the run_specialist() boundary. Default tests that don't override
-            # the critic output need a contract-valid stub.
-            if (
-                agent_name.startswith("critic-")
-                and ec == 0
-                and out == default[1]
-            ):
-                out = (
-                    "## Critic counter-arguments\n\n"
-                    "### Probe 1\n- **Answer:** yes\n- **Evidence:** stub\n"
-                )
-            out_path.write_text(out)
-            return FakeCompletedProcess(ec)
-        return side_effect
-
     @patch("pipeline.subprocess.run")
     def test_first_review_runs_intent_dc_angles_aggregator(self, mock_run):
-        mock_run.side_effect = self._make_codex_stub({
+        mock_run.side_effect = _make_codex_stub({
             "intent": (0, "Inferred intent: stub.\n"),
             "dead-code-search": (0, "dc evidence\n"),
             "aggregator": (0, "# Review\nVERDICT: APPROVE\n"),
@@ -662,7 +653,7 @@ class TestRunPipeline(unittest.TestCase):
     @patch("pipeline.subprocess.run")
     def test_re_review_runs_momentum(self, mock_run):
         (self.run_dir / "inputs" / "previous-review.md").write_text("prior review body\n")
-        mock_run.side_effect = self._make_codex_stub({
+        mock_run.side_effect = _make_codex_stub({
             "intent": (0, "Inferred intent: stub.\n"),
             "dead-code-search": (0, "dc\n"),
             "momentum": (0, "momentum body\n"),
@@ -678,7 +669,7 @@ class TestRunPipeline(unittest.TestCase):
 
     @patch("pipeline.subprocess.run")
     def test_intent_failure_aborts(self, mock_run):
-        mock_run.side_effect = self._make_codex_stub({
+        mock_run.side_effect = _make_codex_stub({
             "intent": (7, ""),
         })
         rc = pipeline.run_pipeline(
@@ -693,7 +684,7 @@ class TestRunPipeline(unittest.TestCase):
     @patch("pipeline.subprocess.run")
     def test_dead_code_failure_aborts_loud(self, mock_run):
         """dead-code-search becomes fail-loud (was fail-soft in shell pipeline)."""
-        mock_run.side_effect = self._make_codex_stub({
+        mock_run.side_effect = _make_codex_stub({
             "intent": (0, "Inferred intent: stub.\n"),
             "dead-code-search": (7, ""),
         })
@@ -707,7 +698,7 @@ class TestRunPipeline(unittest.TestCase):
 
     @patch("pipeline.subprocess.run")
     def test_one_angle_failure_aborts_pipeline(self, mock_run):
-        mock_run.side_effect = self._make_codex_stub({
+        mock_run.side_effect = _make_codex_stub({
             "intent": (0, "Inferred intent: stub.\n"),
             "dead-code-search": (0, "dc\n"),
             "shape": (5, ""),  # one angle fails
@@ -722,7 +713,7 @@ class TestRunPipeline(unittest.TestCase):
 
     @patch("pipeline.subprocess.run")
     def test_aggregator_failure_aborts(self, mock_run):
-        mock_run.side_effect = self._make_codex_stub({
+        mock_run.side_effect = _make_codex_stub({
             "intent": (0, "Inferred intent: stub.\n"),
             "dead-code-search": (0, "dc\n"),
             "aggregator": (8, ""),
@@ -737,7 +728,7 @@ class TestRunPipeline(unittest.TestCase):
 
     @patch("pipeline.subprocess.run")
     def test_intent_must_have_inferred_intent_prefix(self, mock_run):
-        mock_run.side_effect = self._make_codex_stub({
+        mock_run.side_effect = _make_codex_stub({
             "intent": (0, "wrong prefix\n"),  # missing "Inferred intent: "
         })
         rc = pipeline.run_pipeline(
@@ -759,7 +750,7 @@ class TestRunPipeline(unittest.TestCase):
         def hit_barrier(name, _out_path):
             if name in ("intent", "dead-code-search"):
                 barrier.wait()
-        mock_run.side_effect = self._make_codex_stub(before_write=hit_barrier)
+        mock_run.side_effect = _make_codex_stub(before_write=hit_barrier)
         rc = pipeline.run_pipeline(
             repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
             prompts_dir=str(self.prompts),
@@ -777,7 +768,7 @@ class TestRunPipeline(unittest.TestCase):
         def hit_barrier(name, _out_path):
             if name in ("security", "performance"):
                 barrier.wait()
-        mock_run.side_effect = self._make_codex_stub(before_write=hit_barrier)
+        mock_run.side_effect = _make_codex_stub(before_write=hit_barrier)
         rc = pipeline.run_pipeline(
             repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
             prompts_dir=str(self.prompts),
@@ -801,7 +792,7 @@ class TestRunPipeline(unittest.TestCase):
                         name,
                         {p.name for p in scratch.iterdir() if p.is_symlink()},
                     ))
-        mock_run.side_effect = self._make_codex_stub(before_write=capture_scratch_links)
+        mock_run.side_effect = _make_codex_stub(before_write=capture_scratch_links)
         rc = pipeline.run_pipeline(
             repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
             prompts_dir=str(self.prompts),
