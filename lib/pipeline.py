@@ -162,7 +162,10 @@ def build_prompt(
                 "build_prompt: aggregator.md missing INSERT_VOICE_HERE marker"
             )
         voice_body = _strip_leading_html_comment(voice_path.read_text()).rstrip("\n")
-        stitched = re.sub(r"^.*INSERT_VOICE_HERE.*$", voice_body, agg, count=1, flags=re.MULTILINE)
+        # Lambda replacement avoids re.sub's backslash interpretation in the
+        # replacement string (\1, \g<name>) — voice.md is operator-editable
+        # markdown that may legitimately contain backslashes.
+        stitched = re.sub(r"^.*INSERT_VOICE_HERE.*$", lambda _: voice_body, agg, count=1, flags=re.MULTILINE)
         return _substitute_placeholders(stitched, **base_subs)
 
     raise ValueError(f"build_prompt: unknown kind '{kind}'")
