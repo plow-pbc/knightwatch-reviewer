@@ -53,6 +53,34 @@ if [ "$got" != "$want" ]; then
     exit 1
 fi
 
+echo "  pr_touched_paths: returns the file list the PR touched..."
+# Hermetic: stub gh to return a known files-list for a fixed REPO/PR.
+TMPDIR_ENG="$(mktemp -d)"
+STUB_BIN_ENG="$TMPDIR_ENG/bin"
+mkdir -p "$STUB_BIN_ENG"
+cat > "$STUB_BIN_ENG/gh" <<'EOSTUB'
+#!/usr/bin/env bash
+# Match `gh api --paginate repos/<repo>/pulls/<pr>/files --jq '.[].filename'`.
+# Return a fixed files list regardless of args (the test only calls one endpoint).
+echo "lib/foo.sh"
+echo "lib/bar.sh"
+echo "lib/unrelated.sh"
+EOSTUB
+chmod +x "$STUB_BIN_ENG/gh"
+
+. "$REPO_ROOT/lib/engagement.sh"
+
+PATH="$STUB_BIN_ENG:$PATH" got=$(PATH="$STUB_BIN_ENG:$PATH" pr_touched_paths "owner/repo" "1" | sort -u)
+want=$'lib/bar.sh\nlib/foo.sh\nlib/unrelated.sh'
+if [ "$got" != "$want" ]; then
+    echo "FAIL: pr_touched_paths output mismatch"
+    echo "got:"
+    echo "$got"
+    echo "want:"
+    echo "$want"
+    exit 1
+fi
+
 echo "  extract_memorize_attributions: quoted memorize names simplification..."
 got=$(extract_memorize_attributions < "$FIX_DIR/memorize-quoted.md")
 want="simplification"
@@ -75,7 +103,7 @@ fi
 echo "  driver smoke: paginated gh, trusted/untrusted memorize, ACK filter..."
 
 TMPDIR_SMOKE=$(mktemp -d)
-trap 'rm -rf "$TMPDIR_SMOKE"' EXIT
+trap 'rm -rf "$TMPDIR_SMOKE" "$TMPDIR_ENG"' EXIT
 
 export STATE_DIR="$TMPDIR_SMOKE/state"
 export OUT_FILE="$STATE_DIR/specialist-bakeoff.md"
