@@ -157,15 +157,11 @@ def build_prompt(
         voice_path = pdir / "voice.md"
         if not voice_path.exists():
             raise FileNotFoundError(f"build_prompt: voice.md missing at {voice_path}")
-        if "INSERT_VOICE_HERE" not in agg:
-            raise ValueError(
-                "build_prompt: aggregator.md missing INSERT_VOICE_HERE marker"
-            )
+        marker = "<!-- INSERT_VOICE_HERE -->"
+        if marker not in agg:
+            raise ValueError(f"build_prompt: aggregator.md missing {marker} marker")
         voice_body = _strip_leading_html_comment(voice_path.read_text()).rstrip("\n")
-        # Lambda replacement avoids re.sub's backslash interpretation in the
-        # replacement string (\1, \g<name>) — voice.md is operator-editable
-        # markdown that may legitimately contain backslashes.
-        stitched = re.sub(r"^.*INSERT_VOICE_HERE.*$", lambda _: voice_body, agg, count=1, flags=re.MULTILINE)
+        stitched = agg.replace(marker, voice_body, 1)
         return _substitute_placeholders(stitched, **base_subs)
 
     raise ValueError(f"build_prompt: unknown kind '{kind}'")

@@ -252,10 +252,6 @@ done
 
 PIPELINE=lib/pipeline.py
 
-echo "  asserting momentum specialist invocation in pipeline.py..."
-assert_grep "pipeline.py missing momentum reference" \
-    "momentum" "$PIPELINE"
-
 echo "  asserting momentum gate on previous-review.md..."
 # Fence the EXACT guard expression, not the bare substring "previous-review.md"
 # (which appears in unrelated write_scratch calls + comments and would PASS
