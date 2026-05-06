@@ -3,6 +3,7 @@ import os
 import stat
 import subprocess
 import sys
+import threading
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -726,6 +727,91 @@ class TestRunPipeline(unittest.TestCase):
         self.assertNotEqual(rc, 0)
         self.assertFalse(self.repo_dir.exists())
 
+    @patch("pipeline.subprocess.run")
+    def test_wave_a_runs_intent_and_dead_code_in_parallel(self, mock_run):
+        """Wave A's intent + dead-code-search must run concurrently. Use
+        threading.Barrier(2): both stubs wait at the barrier — if Wave A
+        is serial, the first stub blocks alone and BrokenBarrierError
+        fires, failing the pipeline. The latency win depends on this
+        contract; pin it behaviorally."""
+        barrier = threading.Barrier(2, timeout=5)
+
+        def side_effect(argv, **kwargs):
+            out_path = Path(argv[argv.index("-o") + 1])
+            name = out_path.parent.name
+            if name in ("intent", "dead-code-search"):
+                barrier.wait()
+            if name == "intent":
+                out_path.write_text("Inferred intent: stub.\n")
+            elif name == "aggregator":
+                out_path.write_text("# Review\nVERDICT: APPROVE\n")
+            elif name.startswith("critic-"):
+                out_path.write_text(
+                    "## Critic counter-arguments\n\n"
+                    "### Probe 1\n- **Answer:** yes\n- **Evidence:** stub\n"
+                )
+            elif name == "dead-code-search":
+                out_path.write_text("dc evidence\n")
+            else:
+                out_path.write_text("### Probe 1\nstub\n")
+            return FakeCompletedProcess(0)
+
+        mock_run.side_effect = side_effect
+        rc = pipeline.run_pipeline(
+            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
+            prompts_dir=str(self.prompts),
+            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
+        )
+        self.assertEqual(rc, 0)
+
+    @patch("pipeline.subprocess.run")
+    def test_wave_b_starts_after_wave_a_artifacts_linked(self, mock_run):
+        """Wave A → Wave B is a hard barrier: every specialist (and momentum
+        on re-review) must see `.codex-scratch/inferred-intent.md` and
+        `.codex-scratch/dead-code.md` linked at the moment they start. If
+        the barrier regresses (e.g. specialists submitted concurrently with
+        intent), this test catches it."""
+        (self.run_dir / "inputs" / "previous-review.md").write_text("prior\n")
+        scratch = self.repo_dir / ".codex-scratch"
+        seen_links: list[tuple[str, set[str]]] = []
+        lock = threading.Lock()
+
+        def side_effect(argv, **kwargs):
+            out_path = Path(argv[argv.index("-o") + 1])
+            name = out_path.parent.name
+            if name in pipeline.SPECIALISTS or name == "momentum":
+                with lock:
+                    seen_links.append((
+                        name,
+                        {p.name for p in scratch.iterdir() if p.is_symlink()},
+                    ))
+            if name == "intent":
+                out_path.write_text("Inferred intent: stub.\n")
+            elif name == "aggregator":
+                out_path.write_text("# Review\nVERDICT: APPROVE\n")
+            elif name.startswith("critic-"):
+                out_path.write_text(
+                    "## Critic counter-arguments\n\n"
+                    "### Probe 1\n- **Answer:** yes\n- **Evidence:** stub\n"
+                )
+            else:
+                out_path.write_text("### Probe 1\nstub\n")
+            return FakeCompletedProcess(0)
+
+        mock_run.side_effect = side_effect
+        rc = pipeline.run_pipeline(
+            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
+            prompts_dir=str(self.prompts),
+            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(seen_links), len(pipeline.SPECIALISTS) + 1)  # +momentum
+        for name, links in seen_links:
+            self.assertIn("inferred-intent.md", links,
+                          f"{name} started before Wave A linked inferred-intent.md")
+            self.assertIn("dead-code.md", links,
+                          f"{name} started before Wave A linked dead-code.md")
+
 
 class TestPipelineCLI(unittest.TestCase):
     """End-to-end smoke against the real `python3 lib/pipeline.py REPO_DIR
@@ -883,6 +969,20 @@ class TestRealPromptsCompose(unittest.TestCase):
             self.assertNotIn("{{PR_ID}}", out, f"{specialist}: PR_ID placeholder leaked")
             self.assertNotIn("{{SPECIALIST_NAME}}", out, f"{specialist}: specialist name leaked")
             self.assertIn(specialist, out, f"{specialist}: specialist name missing")
+
+    def test_standalone_compose_against_real_prompts(self):
+        """Each standalone prompt body must compose without error against the
+        real prompts/ tree — catches drift in prompts/standalone/{intent,
+        dead-code-search,momentum}.md (e.g. a renamed placeholder)."""
+        for name in ("intent", "dead-code-search", "momentum"):
+            out = pipeline.build_prompt(
+                kind="standalone", agent=name,
+                prompts_dir=str(self.real_prompts),
+                pr_id="owner/repo#42", pr_title="Add X",
+                pr_url="https://example/pull/42", pr_author="alice",
+            )
+            self.assertNotIn("{{PR_ID}}", out, f"{name}: PR_ID placeholder leaked")
+            self.assertNotIn("{{PR_TITLE}}", out, f"{name}: PR_TITLE placeholder leaked")
 
 
 if __name__ == "__main__":
