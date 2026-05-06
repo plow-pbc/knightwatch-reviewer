@@ -113,7 +113,11 @@ strip_applied_footer() {
     awk -v prefix="$APPLIED_MARKER_PREFIX" '
     BEGIN { skip_next = 0 }
     {
-        if (skip_next) { skip_next = 0; next }
+        if (skip_next) {
+            skip_next = 0
+            if (index($0, "**Applied since this review:**") == 1) next
+            # else: not the prose line we expected — leave it intact
+        }
         if (index($0, prefix) == 1) { skip_next = 1; next }
         print
     }

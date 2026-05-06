@@ -129,4 +129,21 @@ got=$(printf '%s' "$body2" | strip_applied_footer; printf x); got=${got%x}
 [ "$got" = "$body2" ] || fail "no-marker passthrough" "got=<<$got>>"
 pass "body without marker passes through unchanged"
 
+# Marker followed by an unrelated line (not the prose footer) — strip
+# must drop the marker but PRESERVE the unrelated line. Defends against
+# corruption / half-written bodies.
+body3='Body line.
+
+<!-- knightwatch-applied: {"applied":{"shape":1}} -->
+This is not the expected prose line — keep it.
+More body.
+'
+got=$(printf '%s' "$body3" | strip_applied_footer; printf x); got=${got%x}
+case "$got" in
+    *knightwatch-applied*) fail "stale marker should be removed" "got=<<$got>>" ;;
+    *"This is not the expected prose line"*"More body."*) ;;
+    *) fail "non-prose line after marker must be preserved" "got=<<$got>>" ;;
+esac
+pass "marker followed by non-prose line: marker stripped, content preserved"
+
 echo "all strip_applied_footer tests passed"

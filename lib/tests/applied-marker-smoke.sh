@@ -69,4 +69,19 @@ if ! grep -q 'Applied since this review' "$STUB_PATCH_OUT"; then
     echo "FAIL smoke: PATCH body missing human prose footer" >&2
     exit 1
 fi
+
+# Round-trip fence: the writer's output must parse cleanly through the
+# bake-off's reader. If a future change (e.g. whitespace, key order)
+# breaks the reader's pinned `\}\}` regex, this assertion catches it.
+# shellcheck disable=SC1091
+source "$REPO_ROOT/lib/bakeoff-parsers.sh"
+got=$(extract_applied_marker < "$STUB_PATCH_OUT" | sort)
+want=$'shape\t1'
+if [ "$got" != "$want" ]; then
+    echo "FAIL smoke: round-trip — extract_applied_marker on PATCH body" >&2
+    echo "  got:  <<$got>>" >&2
+    echo "  want: <<$want>>" >&2
+    exit 1
+fi
+
 echo "PASS smoke: applied marker round-trip (touched=a.sh → shape applied, tests not)"

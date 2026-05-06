@@ -137,6 +137,12 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # internally; multi-source is idempotent.
 . "$_LIB_DIR/decline-history.sh"
 
+# --- write-time Applied (extract_probes_from_review, compute_applied,
+# render_applied_footer, patch_review_with_applied,
+# fetch_touched_paths_since). Pure function defs, no side effects;
+# the actual call sites are gated by the REVIEW_SCOPE case below.
+. "$_LIB_DIR/applied-marker.sh"
+
 # --- per-run dir -------------------------------------------------------------
 # Every worker invocation gets its own runs/<RUN_ID>/ dir holding the run log,
 # input scratch, and one subdir per agent (prompt + output + log). The git
@@ -1283,8 +1289,6 @@ GH_POSTED=true
 # patch_review_with_applied just strips any stale footer).
 case "$REVIEW_SCOPE" in
     incremental:*|fallback:*)
-        # shellcheck disable=SC1091
-        source "$(dirname "$0")/applied-marker.sh"
         bot_login=$(gh api user --jq .login 2>>"$LOG_FILE" || true)
         if [ -n "$bot_login" ]; then
             prior_json=$(gh api --paginate \
