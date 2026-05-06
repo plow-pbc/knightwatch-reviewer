@@ -589,11 +589,15 @@ class TestRunPipeline(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _make_codex_stub(self, plan, default=(0, "### Probe 1\nstub\n")):
+    def _make_codex_stub(self, plan=None, default=(0, "### Probe 1\nstub\n"),
+                         before_write=None):
+        plan = plan or {}
         def side_effect(argv, **kwargs):
             out_idx = argv.index("-o")
             out_path = Path(argv[out_idx + 1])
             agent_name = out_path.parent.name
+            if before_write is not None:
+                before_write(agent_name, out_path)
             ec, out = plan.get(agent_name, default)
             # Special-case intent so the validation matcher passes
             if agent_name == "intent" and ec == 0 and out == default[1]:
@@ -735,28 +739,28 @@ class TestRunPipeline(unittest.TestCase):
         fires, failing the pipeline. The latency win depends on this
         contract; pin it behaviorally."""
         barrier = threading.Barrier(2, timeout=5)
-
-        def side_effect(argv, **kwargs):
-            out_path = Path(argv[argv.index("-o") + 1])
-            name = out_path.parent.name
+        def hit_barrier(name, _out_path):
             if name in ("intent", "dead-code-search"):
                 barrier.wait()
-            if name == "intent":
-                out_path.write_text("Inferred intent: stub.\n")
-            elif name == "aggregator":
-                out_path.write_text("# Review\nVERDICT: APPROVE\n")
-            elif name.startswith("critic-"):
-                out_path.write_text(
-                    "## Critic counter-arguments\n\n"
-                    "### Probe 1\n- **Answer:** yes\n- **Evidence:** stub\n"
-                )
-            elif name == "dead-code-search":
-                out_path.write_text("dc evidence\n")
-            else:
-                out_path.write_text("### Probe 1\nstub\n")
-            return FakeCompletedProcess(0)
+        mock_run.side_effect = self._make_codex_stub(before_write=hit_barrier)
+        rc = pipeline.run_pipeline(
+            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
+            prompts_dir=str(self.prompts),
+            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
+        )
+        self.assertEqual(rc, 0)
 
-        mock_run.side_effect = side_effect
+    @patch("pipeline.subprocess.run")
+    def test_wave_b_runs_specialists_concurrently(self, mock_run):
+        """Wave B's 8-specialist fan-out must run concurrently. Pick two
+        deterministic specialists (security, performance) and gate them
+        on a shared Barrier(2). Serial Wave B regression → first stub
+        blocks alone → BrokenBarrierError → run fails."""
+        barrier = threading.Barrier(2, timeout=5)
+        def hit_barrier(name, _out_path):
+            if name in ("security", "performance"):
+                barrier.wait()
+        mock_run.side_effect = self._make_codex_stub(before_write=hit_barrier)
         rc = pipeline.run_pipeline(
             repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
             prompts_dir=str(self.prompts),
@@ -768,37 +772,19 @@ class TestRunPipeline(unittest.TestCase):
     def test_wave_b_starts_after_wave_a_artifacts_linked(self, mock_run):
         """Wave A → Wave B is a hard barrier: every specialist (and momentum
         on re-review) must see `.codex-scratch/inferred-intent.md` and
-        `.codex-scratch/dead-code.md` linked at the moment they start. If
-        the barrier regresses (e.g. specialists submitted concurrently with
-        intent), this test catches it."""
+        `.codex-scratch/dead-code.md` linked at the moment they start."""
         (self.run_dir / "inputs" / "previous-review.md").write_text("prior\n")
         scratch = self.repo_dir / ".codex-scratch"
         seen_links: list[tuple[str, set[str]]] = []
         lock = threading.Lock()
-
-        def side_effect(argv, **kwargs):
-            out_path = Path(argv[argv.index("-o") + 1])
-            name = out_path.parent.name
+        def capture_scratch_links(name, _out_path):
             if name in pipeline.SPECIALISTS or name == "momentum":
                 with lock:
                     seen_links.append((
                         name,
                         {p.name for p in scratch.iterdir() if p.is_symlink()},
                     ))
-            if name == "intent":
-                out_path.write_text("Inferred intent: stub.\n")
-            elif name == "aggregator":
-                out_path.write_text("# Review\nVERDICT: APPROVE\n")
-            elif name.startswith("critic-"):
-                out_path.write_text(
-                    "## Critic counter-arguments\n\n"
-                    "### Probe 1\n- **Answer:** yes\n- **Evidence:** stub\n"
-                )
-            else:
-                out_path.write_text("### Probe 1\nstub\n")
-            return FakeCompletedProcess(0)
-
-        mock_run.side_effect = side_effect
+        mock_run.side_effect = self._make_codex_stub(before_write=capture_scratch_links)
         rc = pipeline.run_pipeline(
             repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
             prompts_dir=str(self.prompts),
