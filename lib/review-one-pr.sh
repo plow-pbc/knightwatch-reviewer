@@ -1261,6 +1261,8 @@ fi
 # public — strip any remaining workdir/<sibling-abs>/.siblings prefixes.
 COMMENT_BODY=$(scrub_review_paths "$COMMENT_BODY" "$REPO_DIR" SOURCE_PATHS)
 
+APPLIED_CUTOFF_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
 if ! gh pr comment "$PR_NUM" --repo "$REPO" --body "$COMMENT_BODY"; then
     log "$PR_ID: gh pr comment FAILED — not updating state (next tick will retry)"
     rm -rf "$REPO_DIR"
@@ -1272,6 +1274,50 @@ fi
 # right away (useful for runs that race two workers); if it fails, the
 # trap repairs it on the way out.
 GH_POSTED=true
+
+# Write-time Applied: PATCH the immediately-prior bot review with an
+# applied footer reflecting which probes the author acted on between
+# that review and this one. Skip on first/whole-PR scopes (no prior to
+# update), no prior bot review, network failure, or zero applied probes
+# (render_applied_footer emits empty in that case and
+# patch_review_with_applied just strips any stale footer).
+case "$REVIEW_SCOPE" in
+    incremental:*|fallback:*)
+        # shellcheck disable=SC1091
+        source "$(dirname "$0")/applied-marker.sh"
+        bot_login=$(gh api user --jq .login 2>>"$LOG_FILE" || true)
+        if [ -n "$bot_login" ]; then
+            prior_json=$(gh api --paginate \
+                "repos/$REPO/issues/$PR_NUM/comments" \
+                --jq "[.[] | select(.user.login == \"$bot_login\") | select(.body | contains(\"$BOT_AUTO_POST_MARKER\")) | select(.body | contains(\"👀 reviewing\") | not) | select(.created_at < \"$APPLIED_CUTOFF_TS\")] | sort_by(.created_at) | .[-1]" \
+                2>>"$LOG_FILE" || true)
+            if [ -n "$prior_json" ] && [ "$prior_json" != "null" ]; then
+                prior_id=$(printf '%s' "$prior_json" | jq -r .id)
+                prior_created=$(printf '%s' "$prior_json" | jq -r .created_at)
+                prior_body=$(printf '%s' "$prior_json" | jq -r .body)
+                probes=$(printf '%s' "$prior_body" | extract_probes_from_review)
+                if [ -n "$probes" ]; then
+                    touched_tmp=$(mktemp)
+                    if fetch_touched_paths_since "$REPO" "$REVIEWED_SHA" "$prior_created" \
+                            > "$touched_tmp" 2>>"$LOG_FILE"; then
+                        applied=$(printf '%s\n' "$probes" | compute_applied "$touched_tmp")
+                        footer=$(printf '%s\n' "$applied" | render_applied_footer)
+                        if patch_review_with_applied "$REPO" "$prior_id" "$footer" \
+                                2>>"$LOG_FILE"; then
+                            log "$PR_ID: applied-marker patched on prior comment $prior_id"
+                        else
+                            log "$PR_ID: applied-marker PATCH failed for $prior_id (non-fatal)"
+                        fi
+                    else
+                        log "$PR_ID: fetch_touched_paths_since failed (non-fatal, skipping applied)"
+                    fi
+                    rm -f "$touched_tmp"
+                fi
+            fi
+        fi
+        ;;
+esac
+
 META_TMP="$RUN_DIR/meta.json.tmp"
 if jq --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '. + {posted_at: $ts}' \
         "$RUN_DIR/meta.json" > "$META_TMP" 2>/dev/null; then

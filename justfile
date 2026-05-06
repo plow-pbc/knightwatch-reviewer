@@ -118,6 +118,10 @@ test:
     bash lib/tests/applied-marker-unit.sh
 
     echo ""
+    echo "=== applied-marker smoke test ==="
+    bash lib/tests/applied-marker-smoke.sh
+
+    echo ""
     echo "=== approve-from-replies smoke test ==="
     bash lib/tests/approve-from-replies-smoke.sh
 
