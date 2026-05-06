@@ -80,3 +80,63 @@ compute_applied() {
     }
     '
 }
+
+# Marker that the bake-off greps for. Single-line on purpose so the JSON
+# survives any markdown-renderer line-wrapping in mobile clients.
+APPLIED_MARKER_PREFIX='<!-- knightwatch-applied: '
+APPLIED_MARKER_SUFFIX=' -->'
+
+# stdin: per-specialist applied counts (specialist\tcount, output of
+# compute_applied). stdout: one-line marker + human-readable prose.
+# Empty input → empty output (no probes applied → don't dirty the comment).
+render_applied_footer() {
+    local lines
+    lines=$(cat)
+    [ -z "$lines" ] && return 0
+
+    local json prose total
+    json=$(printf '%s\n' "$lines" \
+        | jq -Rs 'split("\n") | map(select(length > 0) | split("\t") | {(.[0]): (.[1] | tonumber)}) | add | {applied: .}' \
+        -c)
+    total=$(printf '%s\n' "$lines" | awk 'NF >= 2 {s += $2} END {print s}')
+    prose=$(printf '%s\n' "$lines" | awk -F'\t' 'NF >= 2 {printf "%s×%d, ", $1, $2}' | sed 's/, $//')
+
+    printf '%s%s%s\n' "$APPLIED_MARKER_PREFIX" "$json" "$APPLIED_MARKER_SUFFIX"
+    printf '**Applied since this review:** %d probe(s) — %s.\n' "$total" "$prose"
+}
+
+# Strip a previously-rendered footer from a body. Invariants the strip
+# must preserve: any line not in the marker+footer block stays intact;
+# trailing newline behavior matches the input. We match the marker line,
+# then optionally one following "**Applied since this review:**" line.
+strip_applied_footer() {
+    awk -v prefix="$APPLIED_MARKER_PREFIX" '
+    BEGIN { skip_next = 0 }
+    {
+        if (skip_next) { skip_next = 0; next }
+        if (index($0, prefix) == 1) { skip_next = 1; next }
+        print
+    }
+    '
+}
+
+# Edit the prior review comment in place: strip any existing applied
+# footer, append the freshly-rendered one. PATCH via gh api. Idempotent
+# on re-run.
+#
+# args: $1=repo (owner/name), $2=comment_id, $3=footer_text (output of
+#       render_applied_footer; may be empty, in which case we just strip).
+# Returns 0 on success, non-zero on gh failure.
+patch_review_with_applied() {
+    local repo="$1" comment_id="$2" footer="$3"
+    local body new_body
+    body=$(gh api "repos/$repo/issues/comments/$comment_id" --jq .body) || return 1
+    new_body=$(printf '%s' "$body" | strip_applied_footer)
+    if [ -n "$footer" ]; then
+        new_body=$(printf '%s\n\n%s\n' "$new_body" "$footer")
+    fi
+    # gh api PATCH with --input - reads JSON from stdin; jq builds the
+    # JSON safely so backticks/quotes in the body don't break shell.
+    jq -n --arg b "$new_body" '{body: $b}' \
+        | gh api "repos/$repo/issues/comments/$comment_id" --method PATCH --input - >/dev/null
+}

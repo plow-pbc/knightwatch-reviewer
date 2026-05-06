@@ -77,3 +77,56 @@ got=$(compute_applied <(echo "") <<<"$probes")
 pass "empty touched-paths set → empty output"
 
 echo "all compute_applied tests passed"
+
+echo "  test_render_applied_footer:"
+
+input=$(printf 'shape\t1\ntests\t2')
+got=$(printf '%s' "$input" | render_applied_footer)
+case "$got" in
+    *'<!-- knightwatch-applied: {"applied":'*'"shape":1'*'"tests":2'*'} -->'*) ;;
+    *) fail "marker shape" "got=<<$got>>" ;;
+esac
+case "$got" in
+    *'**Applied since this review:**'*'shape×1'*'tests×2'*) ;;
+    *) fail "footer prose" "got=<<$got>>" ;;
+esac
+pass "footer = marker line + human prose"
+
+# Empty input → empty output (no probes applied, nothing to emit).
+got=$(printf '' | render_applied_footer)
+[ -z "$got" ] || fail "empty render" "got=<<$got>>"
+pass "empty applied set → empty footer"
+
+echo "all render_applied_footer tests passed"
+
+echo "  test_strip_existing_marker:"
+
+body='Review body line 1.
+
+Some content.
+
+<!-- knightwatch-applied: {"applied":{"shape":99}} -->
+**Applied since this review:** stale.
+'
+stripped=$(printf '%s' "$body" | strip_applied_footer)
+case "$stripped" in
+    *knightwatch-applied*) fail "strip should remove marker" "got=<<$stripped>>" ;;
+    *Applied\ since\ this\ review*) fail "strip should remove footer prose" "got=<<$stripped>>" ;;
+    *) ;;
+esac
+case "$stripped" in
+    *"Review body line 1."*"Some content."*) ;;
+    *) fail "strip should preserve original body" "got=<<$stripped>>" ;;
+esac
+pass "strip removes marker + footer, preserves body"
+
+# No-marker body → unchanged. Sentinel preserves trailing newlines that
+# command substitution would otherwise strip on both inputs.
+body2='Plain review.
+No marker here.
+'
+got=$(printf '%s' "$body2" | strip_applied_footer; printf x); got=${got%x}
+[ "$got" = "$body2" ] || fail "no-marker passthrough" "got=<<$got>>"
+pass "body without marker passes through unchanged"
+
+echo "all strip_applied_footer tests passed"
