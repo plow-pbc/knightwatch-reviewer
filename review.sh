@@ -21,7 +21,7 @@ LOG_FILE="${LOG_FILE:-$STATE_DIR/orchestrator.log}"
 REPOS_DIR="${REPOS_DIR:-$STATE_DIR/repos}"
 WORKDIRS_DIR="${WORKDIRS_DIR:-$STATE_DIR/workdirs}"
 STABLE_SECS="${STABLE_SECS:-3600}"
-MAX_CONCURRENT="${MAX_CONCURRENT:-8}"
+MAX_CONCURRENT="${MAX_CONCURRENT:-4}"
 
 # Tracked-repo manifest (REPOS array + KID_PATHS assoc array). Single
 # source of truth at repos.conf — adding a repo only edits one file.
