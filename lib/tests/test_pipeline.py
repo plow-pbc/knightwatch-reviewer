@@ -17,13 +17,13 @@ def _write_minimal_prompts(prompts_dir: Path) -> None:
     """Write the full minimal prompt tree run_pipeline + the CLI smoke need.
 
     Shared between TestRunPipeline and TestPipelineCLI so adding a required
-    prompt file or marker only needs one update site. TestRunAngle uses a
-    smaller tree (only common-header / one specialist / critic) because it
+    prompt file or marker only needs one update site. TestRunSpecialist uses
+    a smaller tree (only common-header / one specialist / critic) because it
     doesn't exercise the full pipeline — kept inline there.
     """
     (prompts_dir / "common-header.md").write_text("H {{SPECIALIST_NAME}}\n")
-    for angle in pipeline.ANGLES:
-        (prompts_dir / f"{angle}.md").write_text(f"BODY {angle}\n")
+    for specialist in pipeline.SPECIALISTS:
+        (prompts_dir / f"{specialist}.md").write_text(f"BODY {specialist}\n")
     (prompts_dir / "intent.md").write_text("intent prompt\n")
     (prompts_dir / "dead-code-search.md").write_text("dc prompt\n")
     (prompts_dir / "momentum.md").write_text("momentum prompt\n")
@@ -117,10 +117,10 @@ class TestRunCodex(unittest.TestCase):
 
     @patch("pipeline.subprocess.run")
     def test_critic_per_angle_exempt_from_run_codex_gate(self, mock_run):
-        """Per-angle critic correctness is validated at the run_angle boundary
-        (where both specialist + critic outputs are available), not here.
-        run_codex passes any critic output through; the semantic checks in
-        TestValidateCriticOutput cover the contract."""
+        """Per-angle critic correctness is validated at the run_specialist
+        boundary (where both specialist + critic outputs are available), not
+        here. run_codex passes any critic output through; the semantic checks
+        in TestValidateCriticOutput cover the contract."""
         mock_run.side_effect = self._stub_codex(0, "anything goes through run_codex\n")
         rc = pipeline.run_codex("critic-security", str(self.repo_dir), "PROMPT", str(self.agent_dir))
         self.assertEqual(rc, 0)
@@ -327,7 +327,7 @@ class TestBuildPrompt(unittest.TestCase):
 
         Per-angle critic prompt body has no PR placeholders — the specialist's
         output (which IS the critic's input context) is appended at runtime
-        by run_angle, not via build_prompt.
+        by run_specialist, not via build_prompt.
         """
         (self.prompts / "critic.md").write_text("Critique probes for {{ANGLE}}.\n")
         out = pipeline.build_prompt(
@@ -403,8 +403,8 @@ class TestBuildPrompt(unittest.TestCase):
         self.assertIn(".codex-scratch/specialists/shape.md", out)
 
 
-class TestRunAngle(unittest.TestCase):
-    """run_angle dispatches specialist→critic, composes layered file."""
+class TestRunSpecialist(unittest.TestCase):
+    """run_specialist dispatches specialist→critic, composes layered file."""
 
     def setUp(self):
         self.tmp = TemporaryDirectory()
@@ -446,8 +446,8 @@ class TestRunAngle(unittest.TestCase):
                 "## Critic counter-arguments\n\n### Probe 1\n"
                 "- **Answer:** yes\n- **Evidence:** cited\n"),
         })
-        rc = pipeline.run_angle(
-            angle="security",
+        rc = pipeline.run_specialist(
+            specialist="security",
             repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
             prompts_dir=str(self.prompts),
             pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
@@ -485,8 +485,8 @@ class TestRunAngle(unittest.TestCase):
             return FakeCompletedProcess(0)
 
         mock_run.side_effect = side_effect
-        rc = pipeline.run_angle(
-            angle="security",
+        rc = pipeline.run_specialist(
+            specialist="security",
             repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
             prompts_dir=str(self.prompts),
             pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
@@ -502,8 +502,8 @@ class TestRunAngle(unittest.TestCase):
         mock_run.side_effect = self._make_codex_stub({
             "security": (7, ""),
         })
-        rc = pipeline.run_angle(
-            angle="security",
+        rc = pipeline.run_specialist(
+            specialist="security",
             repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
             prompts_dir=str(self.prompts),
             pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
@@ -519,7 +519,7 @@ class TestRunAngle(unittest.TestCase):
     @patch("pipeline.subprocess.run")
     def test_critic_contract_violation_returns_4(self, mock_run):
         """Critic returns 0 from codex but its output skips a specialist
-        probe — the run_angle validator catches it and returns 4 before the
+        probe — the run_specialist validator catches it and returns 4 before the
         layered file is written, so malformed critic output never reaches
         aggregation."""
         mock_run.side_effect = self._make_codex_stub({
@@ -529,8 +529,8 @@ class TestRunAngle(unittest.TestCase):
                 "## Critic counter-arguments\n\n### Probe 1\n"
                 "- **Answer:** yes\n- **Evidence:** cited\n"),
         })
-        rc = pipeline.run_angle(
-            angle="security",
+        rc = pipeline.run_specialist(
+            specialist="security",
             repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
             prompts_dir=str(self.prompts),
             pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
@@ -549,8 +549,8 @@ class TestRunAngle(unittest.TestCase):
             "security": (0, "### Probe 1\nstub\n"),
             "critic-security": (5, ""),
         })
-        rc = pipeline.run_angle(
-            angle="security",
+        rc = pipeline.run_specialist(
+            specialist="security",
             repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
             prompts_dir=str(self.prompts),
             pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
@@ -597,7 +597,7 @@ class TestRunPipeline(unittest.TestCase):
             # Per-angle critics must emit '## Critic counter-arguments' H2
             # + a `### Probe N` block per specialist probe with Answer +
             # Evidence, per the contract enforced by _validate_critic_output()
-            # at the run_angle() boundary. Default tests that don't override
+            # at the run_specialist() boundary. Default tests that don't override
             # the critic output need a contract-valid stub.
             if (
                 agent_name.startswith("critic-")
@@ -625,10 +625,10 @@ class TestRunPipeline(unittest.TestCase):
             pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
         )
         self.assertEqual(rc, 0)
-        # All 8 angles ran
-        for angle in pipeline.ANGLES:
-            self.assertTrue((self.run_dir / "agents" / angle / "output.md").exists())
-            self.assertTrue((self.run_dir / "agents" / f"critic-{angle}" / "output.md").exists())
+        # All 8 specialists ran
+        for specialist in pipeline.SPECIALISTS:
+            self.assertTrue((self.run_dir / "agents" / specialist / "output.md").exists())
+            self.assertTrue((self.run_dir / "agents" / f"critic-{specialist}" / "output.md").exists())
         # Aggregator ran
         self.assertTrue((self.run_dir / "agents" / "aggregator" / "output.md").exists())
         # Momentum did NOT run (no previous-review.md)
@@ -805,14 +805,14 @@ class TestPipelineCLI(unittest.TestCase):
         agg_out = self.run_dir / "agents" / "aggregator" / "output.md"
         self.assertTrue(agg_out.exists(), "aggregator output.md missing")
         self.assertIn("VERDICT: APPROVE", agg_out.read_text())
-        for angle in pipeline.ANGLES:
+        for specialist in pipeline.SPECIALISTS:
             self.assertTrue(
-                (self.run_dir / "agents" / angle / "output.md").exists(),
-                f"missing specialist output for {angle}",
+                (self.run_dir / "agents" / specialist / "output.md").exists(),
+                f"missing specialist output for {specialist}",
             )
             self.assertTrue(
-                (self.run_dir / "agents" / f"critic-{angle}" / "output.md").exists(),
-                f"missing critic output for {angle}",
+                (self.run_dir / "agents" / f"critic-{specialist}" / "output.md").exists(),
+                f"missing critic output for {specialist}",
             )
 
     def test_missing_required_env_var_fails_loud(self):
@@ -869,17 +869,17 @@ class TestRealPromptsCompose(unittest.TestCase):
         self.assertIn("owner/repo#42", out, "PR_ID substitution failed")
 
     def test_specialist_compose_against_real_prompts(self):
-        """common-header.md + each angle's body file must compose without error."""
-        for angle in pipeline.ANGLES:
+        """common-header.md + each specialist's body file must compose without error."""
+        for specialist in pipeline.SPECIALISTS:
             out = pipeline.build_prompt(
-                kind="specialist", agent=angle,
+                kind="specialist", agent=specialist,
                 prompts_dir=str(self.real_prompts),
                 pr_id="owner/repo#42", pr_title="Add X",
                 pr_url="https://example/pull/42", pr_author="alice",
             )
-            self.assertNotIn("{{PR_ID}}", out, f"{angle}: PR_ID placeholder leaked")
-            self.assertNotIn("{{SPECIALIST_NAME}}", out, f"{angle}: specialist name leaked")
-            self.assertIn(angle, out, f"{angle}: specialist name missing")
+            self.assertNotIn("{{PR_ID}}", out, f"{specialist}: PR_ID placeholder leaked")
+            self.assertNotIn("{{SPECIALIST_NAME}}", out, f"{specialist}: specialist name leaked")
+            self.assertIn(specialist, out, f"{specialist}: specialist name missing")
 
 
 if __name__ == "__main__":

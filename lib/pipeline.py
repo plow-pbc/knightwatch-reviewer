@@ -11,7 +11,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-ANGLES = (
+SPECIALISTS = (
     "security", "data-integrity", "architecture", "simplification",
     "tests", "shape", "performance", "consumers",
 )
@@ -87,7 +87,7 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
             lf.write(f"[{_ts()}] agent={name} produced empty output\n")
         return 3
 
-    if name in ANGLES:
+    if name in SPECIALISTS:
         if not _PROBE_BLOCK_RE.search(out_file.read_text()):
             with log_file.open("a") as lf:
                 lf.write(
@@ -239,8 +239,8 @@ def _validate_critic_output(spec_text: str, crit_text: str) -> str | None:
     return None
 
 
-def run_angle(
-    angle: str,
+def run_specialist(
+    specialist: str,
     repo_dir: str,
     run_dir: str,
     prompts_dir: str,
@@ -249,45 +249,44 @@ def run_angle(
     pr_url: str,
     pr_author: str,
 ) -> int:
-    """Run one per-angle pipeline: specialist → critic. Writes the layered
-    file (specialist + critic) on full success. Returns 0 or the failing
-    stage's exit code."""
+    """Run one specialist → critic chain. Writes the layered file (specialist
+    + critic) on full success. Returns 0 or the failing stage's exit code."""
     run = Path(run_dir)
     repo = Path(repo_dir)
 
     spec_prompt = build_prompt(
-        kind="specialist", agent=angle, prompts_dir=prompts_dir,
+        kind="specialist", agent=specialist, prompts_dir=prompts_dir,
         pr_id=pr_id, pr_title=pr_title, pr_url=pr_url, pr_author=pr_author,
     )
-    spec_agent_dir = run / "agents" / angle
-    spec_rc = run_codex(angle, str(repo), spec_prompt, str(spec_agent_dir))
+    spec_agent_dir = run / "agents" / specialist
+    spec_rc = run_codex(specialist, str(repo), spec_prompt, str(spec_agent_dir))
     if spec_rc != 0:
-        log(f"{pr_id}: specialist {angle} exited non-zero (see {spec_agent_dir}/log.txt)")
+        log(f"{pr_id}: specialist {specialist} exited non-zero (see {spec_agent_dir}/log.txt)")
         return spec_rc
     spec_out = (spec_agent_dir / "output.md").read_text()
 
     # Stage specialist output to .codex-scratch so the critic can read it
     # via the path documented in prompts/critic.md. Overwritten with layered
     # content after a successful critic.
-    scratch_path = repo / ".codex-scratch" / "specialists" / f"{angle}.md"
+    scratch_path = repo / ".codex-scratch" / "specialists" / f"{specialist}.md"
     scratch_path.parent.mkdir(parents=True, exist_ok=True)
     scratch_path.write_text(spec_out)
 
     crit_prompt = build_prompt(
-        kind="critic", agent=f"critic-{angle}", prompts_dir=prompts_dir,
+        kind="critic", agent=f"critic-{specialist}", prompts_dir=prompts_dir,
         pr_id=pr_id, pr_title=pr_title, pr_url=pr_url, pr_author=pr_author,
     )
-    crit_agent_dir = run / "agents" / f"critic-{angle}"
-    crit_rc = run_codex(f"critic-{angle}", str(repo), crit_prompt, str(crit_agent_dir))
+    crit_agent_dir = run / "agents" / f"critic-{specialist}"
+    crit_rc = run_codex(f"critic-{specialist}", str(repo), crit_prompt, str(crit_agent_dir))
     if crit_rc != 0:
-        log(f"{pr_id}: critic-{angle} exited non-zero (see {crit_agent_dir}/log.txt)")
+        log(f"{pr_id}: critic-{specialist} exited non-zero (see {crit_agent_dir}/log.txt)")
         return crit_rc
     crit_out = (crit_agent_dir / "output.md").read_text()
 
     err = _validate_critic_output(spec_out, crit_out)
     if err:
         log(
-            f"{pr_id}: critic-{angle} contract violation: {err} "
+            f"{pr_id}: critic-{specialist} contract violation: {err} "
             f"(see {crit_agent_dir}/output.md)"
         )
         return 4
@@ -383,17 +382,17 @@ def run_pipeline(
     # run alongside the specialists.
     prev_review = run / "inputs" / "previous-review.md"
     has_prev = prev_review.exists() and prev_review.stat().st_size > 0
-    label = f"{len(ANGLES)} specialists" + (" + momentum" if has_prev else "")
+    label = f"{len(SPECIALISTS)} specialists" + (" + momentum" if has_prev else "")
     log(f"{pr_id}: Wave B — {label}")
-    angle_kwargs = dict(
+    specialist_kwargs = dict(
         run_dir=run_dir, prompts_dir=prompts_dir,
         pr_id=pr_id, pr_title=pr_title, pr_url=pr_url, pr_author=pr_author,
     )
     failure: str | None = None
-    with ThreadPoolExecutor(max_workers=len(ANGLES) + 1) as ex:
+    with ThreadPoolExecutor(max_workers=len(SPECIALISTS) + 1) as ex:
         futures = {
-            ex.submit(run_angle, angle=a, repo_dir=repo_dir, **angle_kwargs): a
-            for a in ANGLES
+            ex.submit(run_specialist, specialist=s, repo_dir=repo_dir, **specialist_kwargs): s
+            for s in SPECIALISTS
         }
         if has_prev:
             futures[ex.submit(_run_standalone, "momentum", **common_kwargs)] = "momentum"
