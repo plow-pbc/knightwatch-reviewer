@@ -39,6 +39,7 @@ REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 # Source the parsers (pure stdin/stdout — count_attributions,
 # extract_memorize_attributions).
 . "$REVIEWER_LIB_DIR/bakeoff-parsers.sh"
+. "$REVIEWER_LIB_DIR/engagement.sh"
 
 log() { echo "[$(date -u +%FT%TZ)] $*" >> "$LOG_FILE"; }
 
@@ -49,7 +50,9 @@ SINCE_ISO=$(date -u -d "$WINDOW_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
 # Accumulate attributions in temp files: one specialist name per line.
 shipped_tmp=$(mktemp)
 loved_tmp=$(mktemp)
-trap 'rm -f "$shipped_tmp" "$loved_tmp"' EXIT
+applied_tmp=$(mktemp)
+declare -A pr_paths_cache=()    # cache: "<repo>#<pr>" → newline-joined paths
+trap 'rm -f "$shipped_tmp" "$loved_tmp" "$applied_tmp"' EXIT
 
 review_count=0
 fetch_failures=0
@@ -91,6 +94,40 @@ for repo in "${REPOS[@]}"; do
              ".[] | select($SUBSTANTIVE_REVIEW_JQ) | .body" \
         | count_attributions >> "$shipped_tmp"
 
+    # Applied column: for each substantive bot review's body + its issue PR,
+    # extract probe-cited paths, look up the PR's touched paths (cached),
+    # and if any probe's paths intersect the PR's touched set, credit the
+    # probe's specialist with an Applied attribution.
+    while IFS=$'\t' read -r issue_url review_body; do
+        [ -z "$issue_url" ] && continue
+        pr_num="${issue_url##*/}"
+        cache_key="${repo}#${pr_num}"
+        if [[ -z "${pr_paths_cache[$cache_key]+set}" ]]; then
+            pr_paths_cache["$cache_key"]=$(pr_touched_paths "$repo" "$pr_num" 2>>"$LOG_FILE" || echo "")
+        fi
+        pr_paths="${pr_paths_cache[$cache_key]}"
+        [ -z "$pr_paths" ] && continue
+
+        # Walk each probe line; emit "<specialist>" if any cited path matches.
+        while IFS= read -r probe_line; do
+            specialist=$(printf '%s\n' "$probe_line" \
+                | grep -oE '^[0-9]+\. \[[^]]+\] \[from: [a-z][a-z-]*\]' \
+                | sed -E 's/.*\[from: ([a-z-]+)\]/\1/' || true)
+            [ -z "$specialist" ] && continue
+
+            cited_paths=$(printf '%s\n' "$probe_line" | probe_cited_paths)
+            [ -z "$cited_paths" ] && continue
+
+            # Set-intersection: any cited path in the PR's touched set?
+            if printf '%s\n' "$cited_paths" \
+                | grep -qFxf <(printf '%s\n' "$pr_paths"); then
+                echo "$specialist" >> "$applied_tmp"
+            fi
+        done < <(printf '%b\n' "$review_body" | grep -E '^[0-9]+\.' || true)
+    done < <(printf '%s' "$comments_json" \
+        | jq -r --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" \
+             ".[] | select($SUBSTANTIVE_REVIEW_JQ) | [.issue_url, .body] | @tsv")
+
     # Memorize signals: /srosro-memorize comments by trusted humans.
     # Exclude bot ACKs (they contain the auto-post marker and quote the
     # original /srosro-memorize body, which would double-count attributions).
@@ -119,29 +156,32 @@ fi
 shipped_counts=$(sort "$shipped_tmp" | uniq -c | awk '{print $2"\t"$1}')
 loved_counts=$(sort "$loved_tmp" | uniq -c | awk '{print $2"\t"$1}')
 
-# Union of all specialist names seen in either column.
-all_specialists=$( (sort -u "$shipped_tmp"; sort -u "$loved_tmp") | sort -u | grep -v '^$' || true)
+# Union of all specialist names seen in any column.
+all_specialists=$( (sort -u "$shipped_tmp"; sort -u "$loved_tmp"; sort -u "$applied_tmp") | sort -u | grep -v '^$' || true)
 
 {
     echo "# Specialist bake-off — last $WINDOW_DAYS days"
     echo
     echo "_Generated $(date -u +%FT%TZ) from $review_count posted reviews across ${#REPOS[@]} tracked repos._"
     echo
-    echo "| Specialist | Shipped | Loved | Loved/Shipped |"
-    echo "|---|---:|---:|---:|"
+    echo "| Specialist | Shipped | Applied | Loved | Loved/Shipped |"
+    echo "|---|---:|---:|---:|---:|"
     if [ -n "$all_specialists" ]; then
+        applied_counts=$(sort "$applied_tmp" | uniq -c | awk '{print $2"\t"$1}')
         while read -r spec; do
             [ -z "$spec" ] && continue
             shipped=$(printf '%s\n' "$shipped_counts" | awk -v s="$spec" '$1==s{print $2; exit}')
+            applied=$(printf '%s\n' "$applied_counts" | awk -v s="$spec" '$1==s{print $2; exit}')
             loved=$(printf '%s\n' "$loved_counts" | awk -v s="$spec" '$1==s{print $2; exit}')
             shipped=${shipped:-0}
+            applied=${applied:-0}
             loved=${loved:-0}
             if [ "$shipped" -gt 0 ]; then
                 ratio=$(awk -v l="$loved" -v s="$shipped" 'BEGIN{printf "%.2f", l/s}')
             else
                 ratio="—"
             fi
-            echo "| $spec | $shipped | $loved | $ratio |"
+            echo "| $spec | $shipped | $applied | $loved | $ratio |"
         done <<< "$all_specialists" | sort -t'|' -k3,3rn
     fi
 } > "$OUT_FILE"
