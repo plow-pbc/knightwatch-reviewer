@@ -16,6 +16,19 @@ count_attributions() {
         || true
 }
 
+# probe_cited_paths: read review body(ies) on stdin, emit one file path per
+# probe-cited-path. Same line-pattern boundary as count_attributions
+# (numbered probe lines only); extracts backtick-wrapped path tokens that
+# look like file paths (have an extension), strips the optional `:LINE`
+# suffix, deduplicates with sort -u at the caller. Used by the bake-off's
+# Applied column to identify which paths each probe cites.
+probe_cited_paths() {
+    grep -oE '^[0-9]+\..*' \
+        | grep -oE '`[^`]+\.[a-z]+(:[0-9]+)?`' \
+        | sed -E 's/^`//; s/`$//; s/:[0-9]+$//' \
+        || true
+}
+
 # extract_memorize_attributions: read a /srosro-memorize comment body on
 # stdin. If it contains quoted `[from: <specialist>]` tags from a prior
 # bot review, emit those specialist names (one per line, deduplicated).

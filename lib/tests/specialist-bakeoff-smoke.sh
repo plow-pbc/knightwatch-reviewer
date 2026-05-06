@@ -41,6 +41,18 @@ if [ "$got" != "$want" ]; then
     exit 1
 fi
 
+echo "  probe_cited_paths: extracts paths from probe Files: clauses (no :LINE, no backticks)..."
+got=$(probe_cited_paths < "$FIX_DIR/review-with-applied-paths.md" | sort -u)
+want=$'docs/never-touched.md\nlib/bar.sh\nlib/foo.sh\ntests/baz.sh'
+if [ "$got" != "$want" ]; then
+    echo "FAIL: probe_cited_paths output mismatch"
+    echo "got:"
+    echo "$got"
+    echo "want:"
+    echo "$want"
+    exit 1
+fi
+
 echo "  extract_memorize_attributions: quoted memorize names simplification..."
 got=$(extract_memorize_attributions < "$FIX_DIR/memorize-quoted.md")
 want="simplification"
