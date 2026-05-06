@@ -21,12 +21,14 @@ def _write_minimal_prompts(prompts_dir: Path) -> None:
     a smaller tree (only common-header / one specialist / critic) because it
     doesn't exercise the full pipeline — kept inline there.
     """
+    (prompts_dir / "specialists").mkdir(parents=True, exist_ok=True)
+    (prompts_dir / "standalone").mkdir(parents=True, exist_ok=True)
     (prompts_dir / "common-header.md").write_text("H {{SPECIALIST_NAME}}\n")
     for specialist in pipeline.SPECIALISTS:
-        (prompts_dir / f"{specialist}.md").write_text(f"BODY {specialist}\n")
-    (prompts_dir / "intent.md").write_text("intent prompt\n")
-    (prompts_dir / "dead-code-search.md").write_text("dc prompt\n")
-    (prompts_dir / "momentum.md").write_text("momentum prompt\n")
+        (prompts_dir / "specialists" / f"{specialist}.md").write_text(f"BODY {specialist}\n")
+    (prompts_dir / "standalone" / "intent.md").write_text("intent prompt\n")
+    (prompts_dir / "standalone" / "dead-code-search.md").write_text("dc prompt\n")
+    (prompts_dir / "standalone" / "momentum.md").write_text("momentum prompt\n")
     (prompts_dir / "critic.md").write_text("critic prompt\n")
     (prompts_dir / "voice.md").write_text("Voice: {{OPERATOR_NAME}}\n")
     (prompts_dir / "aggregator.md").write_text(
@@ -273,7 +275,8 @@ class TestBuildPrompt(unittest.TestCase):
     def setUp(self):
         self.tmp = TemporaryDirectory()
         self.prompts = Path(self.tmp.name) / "prompts"
-        self.prompts.mkdir()
+        (self.prompts / "specialists").mkdir(parents=True)
+        (self.prompts / "standalone").mkdir(parents=True)
         # Minimal common-header.md
         (self.prompts / "common-header.md").write_text(
             "PR: {{PR_ID}} ({{PR_TITLE}}) by {{PR_AUTHOR}}\n"
@@ -292,7 +295,7 @@ class TestBuildPrompt(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_specialist_substitutes_and_concatenates(self):
-        (self.prompts / "security.md").write_text(
+        (self.prompts / "specialists" / "security.md").write_text(
             "Security review for {{PR_ID}} as {{SPECIALIST_NAME}}.\n"
         )
         out = pipeline.build_prompt(
@@ -309,7 +312,7 @@ class TestBuildPrompt(unittest.TestCase):
 
     def test_standalone_substitutes_no_header(self):
         """intent / dead-code-search / momentum: no common-header, no SPECIALIST_NAME."""
-        (self.prompts / "intent.md").write_text(
+        (self.prompts / "standalone" / "intent.md").write_text(
             "Infer intent for {{PR_ID}} ({{PR_TITLE}}).\n"
         )
         out = pipeline.build_prompt(
@@ -416,9 +419,9 @@ class TestRunSpecialist(unittest.TestCase):
 
         # Minimal prompts dir so build_prompt can resolve files
         self.prompts = Path(self.tmp.name) / "prompts"
-        self.prompts.mkdir()
+        (self.prompts / "specialists").mkdir(parents=True)
         (self.prompts / "common-header.md").write_text("HEADER {{SPECIALIST_NAME}}\n")
-        (self.prompts / "security.md").write_text("BODY for {{SPECIALIST_NAME}}\n")
+        (self.prompts / "specialists" / "security.md").write_text("BODY for {{SPECIALIST_NAME}}\n")
         (self.prompts / "critic.md").write_text("Critique {{ANGLE}}.\n")
 
     def tearDown(self):

@@ -138,7 +138,7 @@ for specialist in shape simplification architecture consumers tests performance 
     # every specialist must register simplification as one of its emitted
     # classes (it's the universal removal-shaped class).
     assert_grep "${specialist}.md should list simplification as a probe class" \
-        "simplification" "prompts/${specialist}.md"
+        "simplification" "prompts/specialists/${specialist}.md"
 done
 
 # Privacy: linked-issue staging must NOT fetch issue body or title from
@@ -290,6 +290,6 @@ echo "  asserting simplification.md anchors on inferred-intent scratch artifact.
 # `.codex-scratch/inferred-intent.md` so the inferred-intent staging
 # (lib/pipeline.py) and the consuming specialist agree on the path.
 assert_grep "simplification.md should anchor on the inferred-intent scratch artifact" \
-    ".codex-scratch/inferred-intent.md" prompts/simplification.md
+    ".codex-scratch/inferred-intent.md" prompts/specialists/simplification.md
 
 echo "  PASS"

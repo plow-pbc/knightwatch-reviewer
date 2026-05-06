@@ -135,7 +135,7 @@ def build_prompt(
 
     if kind == "specialist":
         common = (pdir / "common-header.md").read_text()
-        body = (pdir / f"{agent}.md").read_text()
+        body = (pdir / "specialists" / f"{agent}.md").read_text()
         subs = dict(base_subs, specialist_name=agent)
         return (
             _substitute_placeholders(common, **subs)
@@ -144,7 +144,7 @@ def build_prompt(
         )
 
     if kind == "standalone":
-        body = (pdir / f"{agent}.md").read_text()
+        body = (pdir / "standalone" / f"{agent}.md").read_text()
         return _substitute_placeholders(body, **base_subs, specialist_name="")
 
     if kind == "critic":
