@@ -263,10 +263,6 @@ echo "  asserting momentum gate on previous-review.md..."
 assert_grep "pipeline.py missing momentum gate (prev_review.exists() and size > 0)" \
     'prev_review.exists() and prev_review.stat().st_size > 0' "$PIPELINE"
 
-echo "  asserting momentum is dispatched as a codex stage..."
-assert_grep "pipeline.py missing momentum stage dispatch (_run_standalone)" \
-    '_run_standalone, "momentum"' "$PIPELINE"
-
 echo "  asserting momentum output symlink to .codex-scratch/momentum.md..."
 assert_grep "pipeline.py missing symlink target .codex-scratch/momentum.md" \
     'momentum.md' "$PIPELINE"

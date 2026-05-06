@@ -387,14 +387,10 @@ def run_pipeline(
     has_prev = prev_review.exists() and prev_review.stat().st_size > 0
     label = f"{len(SPECIALISTS)} specialists" + (" + momentum" if has_prev else "")
     log(f"{pr_id}: Wave B — {label}")
-    specialist_kwargs = dict(
-        run_dir=run_dir, prompts_dir=prompts_dir,
-        pr_id=pr_id, pr_title=pr_title, pr_url=pr_url, pr_author=pr_author,
-    )
     failure: str | None = None
     with ThreadPoolExecutor(max_workers=len(SPECIALISTS) + 1) as ex:
         futures = {
-            ex.submit(run_specialist, specialist=s, repo_dir=repo_dir, **specialist_kwargs): s
+            ex.submit(run_specialist, specialist=s, **common_kwargs): s
             for s in SPECIALISTS
         }
         if has_prev:
