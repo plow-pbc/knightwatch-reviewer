@@ -50,3 +50,30 @@ want5=$'shape\tlib/foo.sh,bar.md'
 pass "backticks stripped, :LINE suffix dropped"
 
 echo "all extract_probes_from_review tests passed"
+
+echo "  test_compute_applied:"
+
+# Probes: shape (a.sh, b.md), tests (t.sh), simplification (no paths).
+# Touched: a.sh, t.sh.
+# Expected: shape=1 (a.sh matches), tests=1 (t.sh matches), simplification absent.
+probes=$(printf 'shape\ta.sh,b.md\ntests\tt.sh\nsimplification\t')
+touched=$(printf 'a.sh\nt.sh')
+got=$(compute_applied <(echo "$touched") <<<"$probes" | sort)
+want=$'shape\t1\ntests\t1'
+[ "$got" = "$want" ] || fail "basic apply" "got=<<$got>>, want=<<$want>>"
+pass "applied set = specialists with any cited path in touched set"
+
+# Same specialist appears in 3 probes, 2 apply: count is 2.
+probes2=$(printf 'shape\ta.sh\nshape\tb.sh\nshape\tc.sh')
+touched2=$(printf 'a.sh\nb.sh')
+got=$(compute_applied <(echo "$touched2") <<<"$probes2")
+want2=$'shape\t2'
+[ "$got" = "$want2" ] || fail "per-probe count" "got=<<$got>>"
+pass "per-probe (not per-specialist) counting — 2 of 3 shape probes applied"
+
+# Empty touched set → no output.
+got=$(compute_applied <(echo "") <<<"$probes")
+[ -z "$got" ] || fail "empty touched" "got=<<$got>>"
+pass "empty touched-paths set → empty output"
+
+echo "all compute_applied tests passed"

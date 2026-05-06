@@ -47,3 +47,36 @@ extract_probes_from_review() {
     }
     '
 }
+
+# args: $1 = path to a file (or process substitution) listing touched paths,
+#       one per line.
+# stdin: probe records from extract_probes_from_review (specialist\tcsv-paths).
+# stdout: per-specialist applied count (specialist\tcount), no header,
+#         only specialists with count>=1.
+compute_applied() {
+    local touched_file="$1"
+    awk -v touched_file="$touched_file" '
+    BEGIN {
+        # Load touched-path set from the file passed via -v.
+        while ((getline line < touched_file) > 0) {
+            if (line != "") touched[line] = 1
+        }
+        close(touched_file)
+    }
+    {
+        spec = $1
+        paths = $2
+        if (paths == "") next
+        n = split(paths, ps, ",")
+        for (i = 1; i <= n; i++) {
+            if (ps[i] in touched) {
+                count[spec]++
+                next  # one match is enough for this probe
+            }
+        }
+    }
+    END {
+        for (s in count) printf "%s\t%d\n", s, count[s]
+    }
+    '
+}
