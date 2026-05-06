@@ -56,6 +56,26 @@ if [ -n "$got" ]; then
     exit 1
 fi
 
+echo "  extract_applied_marker: marker yields per-specialist counts..."
+got=$(extract_applied_marker < "$FIX_DIR/review-with-applied-marker.md" | sort)
+want=$'shape\t1\ntests\t1'
+if [ "$got" != "$want" ]; then
+    echo "FAIL: extract_applied_marker output mismatch"
+    echo "got:"
+    echo "$got"
+    echo "want:"
+    echo "$want"
+    exit 1
+fi
+
+echo "  extract_applied_marker: no marker → empty output..."
+# Reuse review-1.md (no marker) — must produce no output.
+got=$(extract_applied_marker < "$FIX_DIR/review-1.md") || true
+if [ -n "$got" ]; then
+    echo "FAIL: extract_applied_marker should produce no output for no-marker review, got '$got'"
+    exit 1
+fi
+
 # ============================================================
 # Driver smoke: specialist-bakeoff.sh end-to-end, no network.
 # Mirrors the gh-stub pattern from learn-from-replies-smoke.sh.
@@ -223,6 +243,42 @@ fi
 if ! grep -q "PARTIAL RUN" "$LOG_FILE" 2>/dev/null; then
     echo "FAIL scenario 4: expected PARTIAL RUN in log"
     cat "$LOG_FILE"
+    exit 1
+fi
+
+# ---- scenario 5: marker-bearing review → Applied column populated ----
+echo "    scenario 5: review with applied marker → shape 1|1|0, tests 1|1|0..."
+# A substantive bot review that carries TWO things:
+#   - probe lines [from: shape] / [from: tests] (drive Shipped)
+#   - <!-- knightwatch-applied: {"applied":{"shape":1,"tests":1}} --> (drives Applied)
+# Loved is 0 (no memorize comment). The assertion below is the load-bearing
+# fence on the read-side: if extract_applied_marker regresses or the row
+# emit drops the new column, Applied=1 won't show up.
+
+python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
+import json
+body = (
+    "<!-- knightwatch-reviewer:auto-post -->\n\n"
+    "**Probes**\n\n"
+    "1. [blocking] [from: shape] [shape] Foo. Files: x.sh.\n"
+    "2. [low] [from: tests] [tests] Bar. Files: t.sh.\n\n"
+    "<!-- knightwatch-applied: {\"applied\":{\"shape\":1,\"tests\":1}} -->\n"
+    "**Applied since this review:** 2 probe(s) — shape×1, tests×1.\n\n"
+    "_How to use: auto-reviews every new PR..._"
+)
+print(json.dumps([{"id": 1, "user": {"login": "testbot"}, "body": body}]))
+PYEOF
+
+run_driver
+
+if ! grep -qE '\| shape \| +1 \| +1 \| +0 \|' "$OUT_FILE"; then
+    echo "FAIL scenario 5: expected shape | 1 | 1 | 0 in table"
+    cat "$OUT_FILE"
+    exit 1
+fi
+if ! grep -qE '\| tests \| +1 \| +1 \| +0 \|' "$OUT_FILE"; then
+    echo "FAIL scenario 5: expected tests | 1 | 1 | 0 in table"
+    cat "$OUT_FILE"
     exit 1
 fi
 
