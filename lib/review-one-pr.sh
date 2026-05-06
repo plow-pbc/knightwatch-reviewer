@@ -143,6 +143,12 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # the actual call sites are gated by the REVIEW_SCOPE case below.
 . "$_LIB_DIR/applied-marker.sh"
 
+# --- gh-comments (fetch_issue_comments) — canonical paginated fetch
+# returning ONE merged JSON array. Used by the Applied hook's prior-
+# review lookup so the `.[-1]` selector picks the last comment across
+# all pages (raw `gh api --paginate ... --jq` would run jq per-page).
+. "$_LIB_DIR/gh-comments.sh"
+
 # --- per-run dir -------------------------------------------------------------
 # Every worker invocation gets its own runs/<RUN_ID>/ dir holding the run log,
 # input scratch, and one subdir per agent (prompt + output + log). The git
@@ -1291,9 +1297,17 @@ case "$REVIEW_SCOPE" in
     incremental:*|fallback:*)
         bot_login=$(gh api user --jq .login 2>>"$LOG_FILE" || true)
         if [ -n "$bot_login" ]; then
-            prior_json=$(gh api --paginate \
-                "repos/$REPO/issues/$PR_NUM/comments" \
-                --jq "[.[] | select(.user.login == \"$bot_login\") | select(.body | contains(\"$BOT_AUTO_POST_MARKER\")) | select(.body | contains(\"👀 reviewing\") | not) | select(.created_at < \"$APPLIED_CUTOFF_TS\")] | sort_by(.created_at) | .[-1]" \
+            prior_json=$(fetch_issue_comments "$REPO" "$PR_NUM" 2>>"$LOG_FILE" \
+                | jq -c --arg bot_user "$bot_login" \
+                       --arg marker "$BOT_AUTO_POST_MARKER" \
+                       --arg cutoff "$APPLIED_CUTOFF_TS" \
+                       '[.[]
+                         | select(.user.login == $bot_user)
+                         | select(.body | contains($marker))
+                         | select(.body | contains("👀 reviewing") | not)
+                         | select(.body | contains("How to use: auto-reviews"))
+                         | select(.created_at < $cutoff)]
+                         | sort_by(.created_at) | .[-1]' \
                 2>>"$LOG_FILE" || true)
             if [ -n "$prior_json" ] && [ "$prior_json" != "null" ]; then
                 prior_id=$(printf '%s' "$prior_json" | jq -r .id)

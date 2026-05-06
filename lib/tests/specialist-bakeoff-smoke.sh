@@ -4,6 +4,7 @@
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$REPO_ROOT/lib/bakeoff-parsers.sh"
+. "$REPO_ROOT/lib/applied-marker.sh"
 
 FIX_DIR="$REPO_ROOT/lib/tests/fixtures/specialist-bakeoff"
 
@@ -141,6 +142,7 @@ export REVIEWER_LIB_DIR="$TMPDIR_SMOKE/lib"
 mkdir -p "$REVIEWER_LIB_DIR"
 cp "$REPO_ROOT/lib/tracked-repos.sh"    "$REVIEWER_LIB_DIR/tracked-repos.sh"
 cp "$REPO_ROOT/lib/bakeoff-parsers.sh"  "$REVIEWER_LIB_DIR/bakeoff-parsers.sh"
+cp "$REPO_ROOT/lib/applied-marker.sh"   "$REVIEWER_LIB_DIR/applied-marker.sh"
 
 # Single tracked repo.
 cat > "$STATE_DIR/repos.conf" <<'CONF'

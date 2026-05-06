@@ -160,7 +160,7 @@ When Path 2 fires:
    Per-probe rendering format:
 
    - For `Answer: yes`: `N. [<severity>] [from: <specialist>] [<class>] <Q recast as declarative outcome — name the failing path / structural shape / cost — one paragraph>. Files: <path:line>, …. Edit: <If yes, edit: clause verbatim>.`
-   - For `Answer: unknown`: `N. [open] [from: <specialist>] [<class>] **Q: <Q in 5-10 words>** — <Q full text>. If yes, <If yes, edit clause>. If no, <If no, cost clause>.`
+   - For `Answer: unknown`: `N. [open] [from: <specialist>] [<class>] **Q: <Q in 5-10 words>** — <Q full text>. Files: <path:line>, …. If yes, <If yes, edit clause>. If no, <If no, cost clause>.`
 
 7. Produce the final posted review in EXACTLY this structure. Target 300-500 words for typical PRs. For large diffs (>500 KB) or PRs with many substantive probes, you may flex up to 1000 words — but only if the extra length carries real content. Quality over length: don't pad to hit the floor, and don't drop important probes to hit the ceiling. **Step-back signal mode (above) overrides this length contract** — a redirect review is 200-400 words even when the underlying PR has 20 probes, because the redirect is the review.
 

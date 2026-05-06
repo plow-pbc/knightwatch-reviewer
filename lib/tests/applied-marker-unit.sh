@@ -49,6 +49,14 @@ want5=$'shape\tlib/foo.sh,bar.md'
 [ "$got" = "$want5" ] || fail "backtick + :LINE normalization" "got=<<$got>>"
 pass "backticks stripped, :LINE suffix dropped"
 
+# [open] probes (Answer: unknown) must also extract Files: paths so they
+# can earn Applied credit when the author touches the cited path.
+input6='1. [open] [from: shape] [shape] **Q: foo?** — Q full text. Files: q.sh:42. If yes, x. If no, y.'
+got=$(printf '%s' "$input6" | extract_probes_from_review)
+want6=$'shape\tq.sh'
+[ "$got" = "$want6" ] || fail "open probe Files: extract" "got=<<$got>>"
+pass "open probes extract Files: paths (eligible for Applied credit)"
+
 echo "all extract_probes_from_review tests passed"
 
 echo "  test_compute_applied:"

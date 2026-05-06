@@ -73,8 +73,8 @@ fi
 # Round-trip fence: the writer's output must parse cleanly through the
 # bake-off's reader. If a future change (e.g. whitespace, key order)
 # breaks the reader's pinned `\}\}` regex, this assertion catches it.
-# shellcheck disable=SC1091
-source "$REPO_ROOT/lib/bakeoff-parsers.sh"
+# extract_applied_marker is already in scope via the applied-marker.sh
+# source above (P3 review fix moved it next to the marker constants).
 got=$(extract_applied_marker < "$STUB_PATCH_OUT" | sort)
 want=$'shape\t1'
 if [ "$got" != "$want" ]; then

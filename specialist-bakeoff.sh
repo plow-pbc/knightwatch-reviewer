@@ -44,6 +44,7 @@ REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 # Source the parsers (pure stdin/stdout — count_attributions,
 # extract_memorize_attributions).
 . "$REVIEWER_LIB_DIR/bakeoff-parsers.sh"
+. "$REVIEWER_LIB_DIR/applied-marker.sh"
 
 log() { echo "[$(date -u +%FT%TZ)] $*" >> "$LOG_FILE"; }
 

@@ -27,20 +27,3 @@ extract_memorize_attributions() {
         | sort -u \
         || true
 }
-
-# extract_applied_marker: read a comment body on stdin. If it contains a
-# `<!-- knightwatch-applied: {"applied":{...}} -->` footer (emitted at
-# review-write-time by lib/applied-marker.sh::render_applied_footer),
-# emit one `<specialist>\t<count>` line per applied specialist. No
-# marker → no output. Bake-off counts the structured signal here
-# instead of re-parsing rendered probe prose at read-time.
-# The grep regex requires `}}` — it's pinned to the canonical 2-level
-# `{"applied":{...}}` shape produced by render_applied_footer. If that
-# shape ever changes, both renderer and parser must change together.
-extract_applied_marker() {
-    grep -oE '<!-- knightwatch-applied: \{[^}]*\}\} -->' \
-        | sed -E 's/^<!-- knightwatch-applied: //; s/ -->$//' \
-        | jq -r '.applied | to_entries[] | "\(.key)\t\(.value)"' \
-        2>/dev/null \
-        || true
-}
