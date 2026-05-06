@@ -114,6 +114,10 @@ test:
     bash lib/tests/review-one-pr-sha-flow-smoke.sh
 
     echo ""
+    echo "=== applied-marker unit test ==="
+    bash lib/tests/applied-marker-unit.sh
+
+    echo ""
     echo "=== approve-from-replies smoke test ==="
     bash lib/tests/approve-from-replies-smoke.sh
 
