@@ -18,13 +18,15 @@ count_attributions() {
 
 # probe_cited_paths: read review body(ies) on stdin, emit one file path per
 # probe-cited-path. Same line-pattern boundary as count_attributions
-# (numbered probe lines only); extracts backtick-wrapped path tokens that
-# look like file paths (have an extension), strips the optional `:LINE`
-# suffix, deduplicates with sort -u at the caller. Used by the bake-off's
-# Applied column to identify which paths each probe cites.
+# (numbered probe lines only); extracts backtick-wrapped OR unquoted path
+# tokens that look like file paths (have an extension), strips the optional
+# `:LINE` suffix, deduplicates with sort -u at the caller. Used by the
+# bake-off's Applied column to identify which paths each probe cites.
+# Note: production probes render Files: unquoted (prompts/aggregator.md:162),
+# so backticks are treated as optional.
 probe_cited_paths() {
     grep -oE '^[0-9]+\..*' \
-        | grep -oE '`[^`]+\.[a-z]+(:[0-9]+)?`' \
+        | grep -oE '`?[a-zA-Z][a-zA-Z0-9_./-]*\.[a-z]+(:[0-9]+)?`?' \
         | sed -E 's/^`//; s/`$//; s/:[0-9]+$//' \
         || true
 }

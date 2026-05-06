@@ -103,16 +103,20 @@ for repo in "${REPOS[@]}"; do
         pr_num="${issue_url##*/}"
         cache_key="${repo}#${pr_num}"
         if [[ -z "${pr_paths_cache[$cache_key]+set}" ]]; then
-            pr_paths_cache["$cache_key"]=$(pr_touched_paths "$repo" "$pr_num" 2>>"$LOG_FILE" || echo "")
+            if pr_paths_lookup=$(pr_touched_paths "$repo" "$pr_num" 2>>"$LOG_FILE"); then
+                pr_paths_cache["$cache_key"]="$pr_paths_lookup"
+            else
+                log "WARN: pr_touched_paths failed for $repo#$pr_num, skipping"
+                fetch_failures=$((fetch_failures + 1))
+                continue
+            fi
         fi
         pr_paths="${pr_paths_cache[$cache_key]}"
         [ -z "$pr_paths" ] && continue
 
         # Walk each probe line; emit "<specialist>" if any cited path matches.
         while IFS= read -r probe_line; do
-            specialist=$(printf '%s\n' "$probe_line" \
-                | grep -oE '^[0-9]+\. \[[^]]+\] \[from: [a-z][a-z-]*\]' \
-                | sed -E 's/.*\[from: ([a-z-]+)\]/\1/' || true)
+            specialist=$(printf '%s\n' "$probe_line" | count_attributions || true)
             [ -z "$specialist" ] && continue
 
             cited_paths=$(printf '%s\n' "$probe_line" | probe_cited_paths)
