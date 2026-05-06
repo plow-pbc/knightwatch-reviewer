@@ -140,3 +140,25 @@ patch_review_with_applied() {
     jq -n --arg b "$new_body" '{body: $b}' \
         | gh api "repos/$repo/issues/comments/$comment_id" --method PATCH --input - >/dev/null
 }
+
+# Fetch distinct paths touched by commits in <repo> on <branch> since
+# <iso_ts>. Output one path per line, sorted unique.
+#
+# args: $1=repo, $2=branch (head ref), $3=since (RFC3339 timestamp).
+# Returns 0 on success (even if zero commits matched). Non-zero on gh
+# failure — caller decides whether to skip or hard-fail.
+fetch_touched_paths_since() {
+    local repo="$1" branch="$2" since="$3"
+    local shas
+    shas=$(gh api --paginate \
+        "repos/$repo/commits?sha=$branch&since=$since" \
+        --jq '.[].sha') || return 1
+    [ -z "$shas" ] && return 0
+    local files
+    files=$(
+        while IFS= read -r sha; do
+            gh api "repos/$repo/commits/$sha" --jq '.files[].filename' || exit 1
+        done <<<"$shas"
+    ) || return 1
+    printf '%s\n' "$files" | sort -u
+}
