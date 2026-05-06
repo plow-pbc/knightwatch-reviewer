@@ -1,44 +1,35 @@
 #!/usr/bin/env bash
-# Pure parsers for the specialist bake-off. Read from stdin, emit to stdout.
-# No file I/O, no network — composable in pipelines + hermetic-testable.
+# Pure parsers for the specialist bake-off. Read stdin, emit one token per line.
+# _extract is the shared shape: optional line-prefilter, token regex, cleanup.
+# grep exits 1 on no-match — normalize to 0 so callers under set -e don't abort.
 
-# count_attributions: read review body(ies) on stdin, emit one specialist
-# name per probe's RENDERED attribution slot. Anchored to the documented
-# probe-line shape from prompts/aggregator.md step 6:
-#   `N. [<severity>] [from: <specialist>] [<class>] ...`
-# Only the leading [from: <specialist>] slot counts — inline mentions of
-# `[from: <other>]` within probe prose, footer/README/doc tokens, and any
-# unnumbered surface are excluded by construction. Caller pipes through
-# `sort | uniq -c`. grep exits 1 on no match — normalize to 0.
+_extract() {
+    local pre="$1" pat="$2" cleanup="$3"
+    if [ -z "$pre" ]; then
+        grep -oE "$pat" | sed -E "$cleanup" || true
+    else
+        grep -oE "$pre" | grep -oE "$pat" | sed -E "$cleanup" || true
+    fi
+}
+
+# Specialist name from probe's leading [from:] slot (anchored to ^N. per
+# prompts/aggregator.md step 6). Inline mentions / unnumbered lines excluded.
 count_attributions() {
-    grep -oE '^[0-9]+\. \[[^]]+\] \[from: [a-z][a-z-]*\]' \
-        | sed -E 's/.*\[from: ([a-z-]+)\]/\1/' \
-        || true
+    _extract '' \
+        '^[0-9]+\. \[[^]]+\] \[from: [a-z][a-z-]*\]' \
+        's/.*\[from: ([a-z-]+)\]/\1/'
 }
 
-# probe_cited_paths: read review body(ies) on stdin, emit one file path per
-# probe-cited-path. Same line-pattern boundary as count_attributions
-# (numbered probe lines only); extracts backtick-wrapped OR unquoted path
-# tokens that look like file paths (have an extension), strips the optional
-# `:LINE` suffix, deduplicates with sort -u at the caller. Used by the
-# bake-off's Applied column to identify which paths each probe cites.
-# Note: production probes render Files: unquoted (prompts/aggregator.md:162),
-# so backticks are treated as optional.
+# File paths cited in probe-line Files: clauses. Production renders unquoted
+# (prompts/aggregator.md:162); regex tolerates older backticked output.
 probe_cited_paths() {
-    grep -oE '^[0-9]+\..*' \
-        | grep -oE '`?[a-zA-Z][a-zA-Z0-9_./-]*\.[a-z]+(:[0-9]+)?`?' \
-        | sed -E 's/^`//; s/`$//; s/:[0-9]+$//' \
-        || true
+    _extract '^[0-9]+\..*' \
+        '`?[a-zA-Z][a-zA-Z0-9_./-]*\.[a-z]+(:[0-9]+)?`?' \
+        's/^`//; s/`$//; s/:[0-9]+$//'
 }
 
-# extract_memorize_attributions: read a /srosro-memorize comment body on
-# stdin. If it contains quoted `[from: <specialist>]` tags from a prior
-# bot review, emit those specialist names (one per line, deduplicated).
-# If it has no tags, emit nothing — we don't attribute the love to anyone.
-# grep exits 1 when no match — normalize to 0 same reason as above.
+# Deduped specialist names quoted in /srosro-memorize bodies. Drives Loved.
 extract_memorize_attributions() {
-    grep -oE '\[from: [a-z][a-z-]*\]' \
-        | sed -E 's/\[from: ([a-z-]+)\]/\1/' \
-        | sort -u \
-        || true
+    _extract '' '\[from: [a-z][a-z-]*\]' 's/\[from: ([a-z-]+)\]/\1/' \
+        | sort -u
 }
