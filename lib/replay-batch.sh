@@ -62,7 +62,7 @@ IFS=',' read -ra PROMPT_LIST <<<"$PROMPTS"
     done
     printf '\n|---|'
     for _ in "${PROMPT_LIST[@]}"; do
-        printf '---|'
+        printf -- '---|'
     done
     printf '\n'
 } > "$INDEX"
