@@ -46,32 +46,30 @@ class FakeCompletedProcess:
 def _make_codex_stub(plan=None, default=(0, "### Probe 1\nstub\n"),
                      before_write=None):
     """Module-level fake-codex side_effect for `subprocess.run`. Owns the
-    full agent contract surface: writes valid intent / per-angle critic /
-    specialist defaults so callers only specify the fields they care
-    about. `plan` is a dict mapping agent name → (exit_code, output_text);
-    unspecified agents fall through to `default` (with intent + critic
-    auto-substituted to contract-valid output). `before_write(name, out_path)`
-    is called pre-write — used by ordering tests."""
+    full agent contract surface so callers only specify what they care
+    about. `plan` maps agent name → (exit_code, output_text); explicit
+    entries are used verbatim. Agents NOT in plan fall through to
+    `default` (with intent + per-angle critic auto-substituted to
+    contract-valid output, so orchestrator-level tests don't need to
+    spell out every agent). `before_write(name, out_path)` fires pre-write
+    — used by ordering tests."""
     plan = plan or {}
     def side_effect(argv, **kwargs):
         out_path = Path(argv[argv.index("-o") + 1])
         agent_name = out_path.parent.name
         if before_write is not None:
             before_write(agent_name, out_path)
-        ec, out = plan.get(agent_name, default)
-        # Auto-default intent + per-angle critic to contract-valid output
-        # so callers don't have to know each agent's contract upfront.
-        if agent_name == "intent" and ec == 0 and out == default[1]:
-            out = "Inferred intent: stub.\n"
-        if (
-            agent_name.startswith("critic-")
-            and ec == 0
-            and out == default[1]
-        ):
-            out = (
-                "## Critic counter-arguments\n\n"
-                "### Probe 1\n- **Answer:** yes\n- **Evidence:** stub\n"
-            )
+        if agent_name in plan:
+            ec, out = plan[agent_name]
+        else:
+            ec, out = default
+            if agent_name == "intent":
+                out = "Inferred intent: stub.\n"
+            elif agent_name.startswith("critic-"):
+                out = (
+                    "## Critic counter-arguments\n\n"
+                    "### Probe 1\n- **Answer:** yes\n- **Evidence:** stub\n"
+                )
         out_path.write_text(out)
         return FakeCompletedProcess(ec)
     return side_effect
@@ -84,72 +82,71 @@ class TestRunCodex(unittest.TestCase):
         self.tmp = TemporaryDirectory()
         self.repo_dir = Path(self.tmp.name) / "repo"
         (self.repo_dir / ".git").mkdir(parents=True)
-        self.agent_dir = Path(self.tmp.name) / "agents" / "intent"
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _stub_codex(self, exit_code, output_text):
-        """Return a side_effect that simulates codex writing to its -o target."""
-        def side_effect(argv, **kwargs):
-            # Extract the -o argument (codex output target)
-            out_idx = argv.index("-o")
-            out_path = Path(argv[out_idx + 1])
-            out_path.write_text(output_text)
-            return FakeCompletedProcess(exit_code)
-        return side_effect
+    def _agent_dir(self, name):
+        """Mirror production layout: agents/<name>/. Required so the
+        module-level _make_codex_stub's plan lookup (keyed on dir name)
+        resolves to this test's agent."""
+        return Path(self.tmp.name) / "agents" / name
 
     @patch("pipeline.subprocess.run")
     def test_success_path_writes_artifacts(self, mock_run):
-        mock_run.side_effect = self._stub_codex(0, "### Probe 1\nstub\n")
-        rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(self.agent_dir))
+        agent_dir = self._agent_dir("intent")
+        mock_run.side_effect = _make_codex_stub(plan={"intent": (0, "### Probe 1\nstub\n")})
+        rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(agent_dir))
         self.assertEqual(rc, 0)
-        self.assertEqual((self.agent_dir / "prompt.txt").read_text(), "PROMPT")
-        self.assertTrue((self.agent_dir / "output.md").stat().st_size > 0)
-        self.assertIn("agent=intent starting", (self.agent_dir / "log.txt").read_text())
-        self.assertIn("agent=intent exit=0", (self.agent_dir / "log.txt").read_text())
+        self.assertEqual((agent_dir / "prompt.txt").read_text(), "PROMPT")
+        self.assertTrue((agent_dir / "output.md").stat().st_size > 0)
+        self.assertIn("agent=intent starting", (agent_dir / "log.txt").read_text())
+        self.assertIn("agent=intent exit=0", (agent_dir / "log.txt").read_text())
 
     @patch("pipeline.subprocess.run")
     def test_codex_argv_pins_model(self, mock_run):
         """The model=gpt-5.5 pin must reach codex (regression fence)."""
-        mock_run.side_effect = self._stub_codex(0, "### Probe 1\nstub\n")
-        pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(self.agent_dir))
+        mock_run.side_effect = _make_codex_stub(plan={"intent": (0, "### Probe 1\nstub\n")})
+        pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(self._agent_dir("intent")))
         argv = mock_run.call_args[0][0]
         self.assertIn("model=gpt-5.5", argv)
         self.assertIn("--dangerously-bypass-approvals-and-sandbox", argv)
 
     @patch("pipeline.subprocess.run")
     def test_codex_nonzero_exit_propagates(self, mock_run):
-        mock_run.side_effect = self._stub_codex(7, "")
-        rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(self.agent_dir))
+        mock_run.side_effect = _make_codex_stub(plan={"intent": (7, "")})
+        rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(self._agent_dir("intent")))
         self.assertEqual(rc, 7)
 
     @patch("pipeline.subprocess.run")
     def test_codex_zero_exit_empty_output_returns_3(self, mock_run):
         """Codex says success but wrote nothing — fail loud as exit 3."""
-        mock_run.side_effect = self._stub_codex(0, "")
-        rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(self.agent_dir))
+        agent_dir = self._agent_dir("intent")
+        mock_run.side_effect = _make_codex_stub(plan={"intent": (0, "")})
+        rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(agent_dir))
         self.assertEqual(rc, 3)
-        self.assertIn("produced empty output", (self.agent_dir / "log.txt").read_text())
+        self.assertIn("produced empty output", (agent_dir / "log.txt").read_text())
 
     @patch("pipeline.subprocess.run")
     def test_specialist_must_emit_probe_or_no_probes_sentinel(self, mock_run):
         """Probe-emitting roles must include `### Probe ` or `No probes.` — exit 4 otherwise."""
-        mock_run.side_effect = self._stub_codex(0, "garbage that doesn't look like a probe\n")
-        rc = pipeline.run_codex("security", str(self.repo_dir), "PROMPT", str(self.agent_dir))
+        mock_run.side_effect = _make_codex_stub(
+            plan={"security": (0, "garbage that doesn't look like a probe\n")},
+        )
+        rc = pipeline.run_codex("security", str(self.repo_dir), "PROMPT", str(self._agent_dir("security")))
         self.assertEqual(rc, 4)
 
     @patch("pipeline.subprocess.run")
     def test_specialist_no_probes_sentinel_passes(self, mock_run):
-        mock_run.side_effect = self._stub_codex(0, "No probes.\n")
-        rc = pipeline.run_codex("security", str(self.repo_dir), "PROMPT", str(self.agent_dir))
+        mock_run.side_effect = _make_codex_stub(plan={"security": (0, "No probes.\n")})
+        rc = pipeline.run_codex("security", str(self.repo_dir), "PROMPT", str(self._agent_dir("security")))
         self.assertEqual(rc, 0)
 
     @patch("pipeline.subprocess.run")
     def test_intent_exempt_from_probe_gate(self, mock_run):
         """Non-probe-emitting roles (intent, critic, aggregator, etc.) skip the gate."""
-        mock_run.side_effect = self._stub_codex(0, "Inferred intent: doing X.\n")
-        rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(self.agent_dir))
+        mock_run.side_effect = _make_codex_stub(plan={"intent": (0, "Inferred intent: doing X.\n")})
+        rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(self._agent_dir("intent")))
         self.assertEqual(rc, 0)
 
     @patch("pipeline.subprocess.run")
@@ -158,8 +155,10 @@ class TestRunCodex(unittest.TestCase):
         boundary (where both specialist + critic outputs are available), not
         here. run_codex passes any critic output through; the semantic checks
         in TestValidateCriticOutput cover the contract."""
-        mock_run.side_effect = self._stub_codex(0, "anything goes through run_codex\n")
-        rc = pipeline.run_codex("critic-security", str(self.repo_dir), "PROMPT", str(self.agent_dir))
+        mock_run.side_effect = _make_codex_stub(
+            plan={"critic-security": (0, "anything goes through run_codex\n")},
+        )
+        rc = pipeline.run_codex("critic-security", str(self.repo_dir), "PROMPT", str(self._agent_dir("critic-security")))
         self.assertEqual(rc, 0)
 
 
@@ -512,22 +511,18 @@ class TestRunSpecialist(unittest.TestCase):
         critic is invoked (not just after the layered overwrite)."""
         scratch_path = self.repo_dir / ".codex-scratch" / "specialists" / "security.md"
         captured: dict[str, str] = {}
-
-        def side_effect(argv, **kwargs):
-            out_path = Path(argv[argv.index("-o") + 1])
-            agent_name = out_path.parent.name
-            if agent_name == "critic-security":
-                # Snapshot scratch contents at the moment the critic runs.
+        def snapshot_at_critic(name, _out_path):
+            if name == "critic-security":
                 captured["scratch_at_critic"] = scratch_path.read_text()
-                out_path.write_text(
+        mock_run.side_effect = _make_codex_stub(
+            plan={
+                "security": (0, "### Probe 1\nspecialist body\n"),
+                "critic-security": (0,
                     "## Critic counter-arguments\n\n"
-                    "### Probe 1\n- **Answer:** yes\n- **Evidence:** cited\n"
-                )
-                return FakeCompletedProcess(0)
-            out_path.write_text("### Probe 1\nspecialist body\n")
-            return FakeCompletedProcess(0)
-
-        mock_run.side_effect = side_effect
+                    "### Probe 1\n- **Answer:** yes\n- **Evidence:** cited\n"),
+            },
+            before_write=snapshot_at_critic,
+        )
         rc = pipeline.run_specialist(
             specialist="security",
             repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
