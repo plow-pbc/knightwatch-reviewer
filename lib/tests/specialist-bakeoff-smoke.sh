@@ -143,6 +143,8 @@ if [ "$1" = "api" ]; then
         fi
     elif [[ "$endpoint" == */collaborators* ]]; then
         printf '[{"login":"trusted-human","permissions":{"push":true}},{"login":"untrusted-user","permissions":{"push":false}}]\n'
+    elif [[ "$endpoint" == *pulls/*/files* ]]; then
+        echo "lib/foo.sh"
     else
         echo "{}"
     fi
@@ -183,7 +185,7 @@ if grep -qE '^\| [a-z]' "$OUT_FILE"; then
 fi
 
 # ---- scenario 2: substantive review, ACK, untrusted memorize, trusted memorize ----
-echo "    scenario 2: review + ACK + memorize (trusted+untrusted) → aggregator 1|0|1..."
+echo "    scenario 2: review + ACK + memorize (trusted+untrusted) → aggregator 1|1|1..."
 # Four comments split across two pages — load-bearing comment D is on page 2:
 #   A: substantive bot review — has marker, has footer, has [from: aggregator]
 #   B: same-bot ACK — has marker, NO footer — must NOT count as a review
@@ -196,7 +198,7 @@ echo "    scenario 2: review + ACK + memorize (trusted+untrusted) → aggregator
 python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
 import json
 comments = [
-    {"id": 1, "user": {"login": "testbot"},        "body": "${BOT_AUTO_POST_MARKER}\n\n**Probes**\n\n1. [blocking] [from: aggregator] The aggregator logic is overfit.\n\n_How to use: auto-reviews every new PR and re-reviews after an hour of inactivity..._"},
+    {"id": 1, "user": {"login": "testbot"},        "issue_url": "https://api.github.com/repos/test-org/bakeoff-probe/issues/99", "body": "${BOT_AUTO_POST_MARKER}\n\n**Probes**\n\n1. [blocking] [from: aggregator] The aggregator logic is overfit. Files: \`lib/foo.sh:42\`. Edit: rewrite.\n\n_How to use: auto-reviews every new PR and re-reviews after an hour of inactivity..._"},
     {"id": 2, "user": {"login": "testbot"},        "body": "${BOT_AUTO_POST_MARKER}\n\n\U0001f440 reviewing..."},
     {"id": 3, "user": {"login": "untrusted-user"}, "body": "Thanks! /srosro-memorize I agree with [from: aggregator] finding."},
 ]
@@ -221,13 +223,15 @@ if ! grep -q '| aggregator |' "$OUT_FILE"; then
     cat "$OUT_FILE"
     exit 1
 fi
-# Shipped=1 (one substantive review), Applied=0 (no cited paths in stub review body),
-# Loved=1 (one trusted memorize from page 2).
+# Shipped=1 (one substantive review), Applied=1 (probe cites lib/foo.sh:42 which
+# intersects with the PR-touched file lib/foo.sh returned by the stub), Loved=1
+# (one trusted memorize from page 2).
 # If --paginate were dropped, the page-2 trusted memorize would never reach
 # extract_memorize_attributions and Loved would be 0 — this is the load-bearing
-# pagination assertion.
-if ! grep -qE '\| aggregator \| +1 \| +0 \| +1 \|' "$OUT_FILE"; then
-    echo "FAIL scenario 2: expected aggregator | 1 | 0 | 1 in table (page-2 memorize not merged)"
+# pagination assertion. Applied=1 is the load-bearing end-to-end test of the
+# inner loop, printf '%b\n' newline decode, and grep -qFxf set-intersection.
+if ! grep -qE '\| aggregator \| +1 \| +1 \| +1 \|' "$OUT_FILE"; then
+    echo "FAIL scenario 2: expected aggregator | 1 | 1 | 1 in table (Applied inner loop or pagination broken)"
     cat "$OUT_FILE"
     exit 1
 fi
