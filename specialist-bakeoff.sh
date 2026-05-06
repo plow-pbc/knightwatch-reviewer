@@ -39,7 +39,6 @@ REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 # Source the parsers (pure stdin/stdout — count_attributions,
 # extract_memorize_attributions).
 . "$REVIEWER_LIB_DIR/bakeoff-parsers.sh"
-. "$REVIEWER_LIB_DIR/engagement.sh"
 
 log() { echo "[$(date -u +%FT%TZ)] $*" >> "$LOG_FILE"; }
 
@@ -103,10 +102,10 @@ for repo in "${REPOS[@]}"; do
         pr_num="${issue_url##*/}"
         cache_key="${repo}#${pr_num}"
         if [[ -z "${pr_paths_cache[$cache_key]+set}" ]]; then
-            if pr_paths_lookup=$(pr_touched_paths "$repo" "$pr_num" 2>>"$LOG_FILE"); then
+            if pr_paths_lookup=$(gh api --paginate "repos/$repo/pulls/$pr_num/files" --jq '.[].filename' 2>>"$LOG_FILE"); then
                 pr_paths_cache["$cache_key"]="$pr_paths_lookup"
             else
-                log "WARN: pr_touched_paths failed for $repo#$pr_num, skipping"
+                log "WARN: gh api pulls/files failed for $repo#$pr_num, skipping"
                 fetch_failures=$((fetch_failures + 1))
                 continue
             fi

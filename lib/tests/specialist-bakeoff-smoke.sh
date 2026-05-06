@@ -53,34 +53,6 @@ if [ "$got" != "$want" ]; then
     exit 1
 fi
 
-echo "  pr_touched_paths: returns the file list the PR touched..."
-# Hermetic: stub gh to return a known files-list for a fixed REPO/PR.
-TMPDIR_ENG="$(mktemp -d)"
-STUB_BIN_ENG="$TMPDIR_ENG/bin"
-mkdir -p "$STUB_BIN_ENG"
-cat > "$STUB_BIN_ENG/gh" <<'EOSTUB'
-#!/usr/bin/env bash
-# Match `gh api --paginate repos/<repo>/pulls/<pr>/files --jq '.[].filename'`.
-# Return a fixed files list regardless of args (the test only calls one endpoint).
-echo "lib/foo.sh"
-echo "lib/bar.sh"
-echo "lib/unrelated.sh"
-EOSTUB
-chmod +x "$STUB_BIN_ENG/gh"
-
-. "$REPO_ROOT/lib/engagement.sh"
-
-PATH="$STUB_BIN_ENG:$PATH" got=$(PATH="$STUB_BIN_ENG:$PATH" pr_touched_paths "owner/repo" "1" | sort -u)
-want=$'lib/bar.sh\nlib/foo.sh\nlib/unrelated.sh'
-if [ "$got" != "$want" ]; then
-    echo "FAIL: pr_touched_paths output mismatch"
-    echo "got:"
-    echo "$got"
-    echo "want:"
-    echo "$want"
-    exit 1
-fi
-
 echo "  extract_memorize_attributions: quoted memorize names simplification..."
 got=$(extract_memorize_attributions < "$FIX_DIR/memorize-quoted.md")
 want="simplification"
@@ -103,7 +75,7 @@ fi
 echo "  driver smoke: paginated gh, trusted/untrusted memorize, ACK filter..."
 
 TMPDIR_SMOKE=$(mktemp -d)
-trap 'rm -rf "$TMPDIR_SMOKE" "$TMPDIR_ENG"' EXIT
+trap 'rm -rf "$TMPDIR_SMOKE"' EXIT
 
 export STATE_DIR="$TMPDIR_SMOKE/state"
 export OUT_FILE="$STATE_DIR/specialist-bakeoff.md"
@@ -132,6 +104,10 @@ if [ "$1" = "api" ]; then
     done
     if [[ "$endpoint" == */issues/comments* ]] && [ -n "${MOCK_GH_API_FAIL:-}" ]; then
         echo "gh api: simulated failure" >&2
+        exit 1
+    fi
+    if [[ "$endpoint" == *pulls/*/files* ]] && [ -n "${MOCK_GH_API_FAIL_FILES:-}" ]; then
+        echo "gh api: simulated files failure" >&2
         exit 1
     fi
     if [[ "$endpoint" == */issues/comments* ]]; then
@@ -163,7 +139,6 @@ export REVIEWER_LIB_DIR="$TMPDIR_SMOKE/lib"
 mkdir -p "$REVIEWER_LIB_DIR"
 cp "$REPO_ROOT/lib/tracked-repos.sh"    "$REVIEWER_LIB_DIR/tracked-repos.sh"
 cp "$REPO_ROOT/lib/bakeoff-parsers.sh"  "$REVIEWER_LIB_DIR/bakeoff-parsers.sh"
-cp "$REPO_ROOT/lib/engagement.sh"       "$REVIEWER_LIB_DIR/engagement.sh"
 
 # Single tracked repo.
 cat > "$STATE_DIR/repos.conf" <<'CONF'
@@ -268,6 +243,34 @@ if ! grep -q "SENTINEL" "$OUT_FILE" 2>/dev/null; then
 fi
 if ! grep -q "PARTIAL RUN" "$LOG_FILE" 2>/dev/null; then
     echo "FAIL scenario 4: expected PARTIAL RUN in log"
+    cat "$LOG_FILE"
+    exit 1
+fi
+
+# ---- scenario 5: pulls/files failure → partial run, OUT_FILE not overwritten ----
+echo "    scenario 5: pulls/files failure → exit non-zero, OUT_FILE not overwritten..."
+# Seed a substantive review so the driver reaches the PR-files fetch.
+# comments and collaborators succeed; only *pulls/*/files* exits 1.
+python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
+import json
+comments = [
+    {"id": 1, "user": {"login": "testbot"}, "issue_url": "https://api.github.com/repos/test-org/bakeoff-probe/issues/99", "body": "${BOT_AUTO_POST_MARKER}\n\n**Probes**\n\n1. [blocking] [from: aggregator] [bug] Test. Files: lib/foo.sh:1.\n\n_How to use: auto-reviews every new PR and re-reviews after an hour of inactivity..._"},
+    {"id": 2, "user": {"login": "trusted-human"}, "body": "Thanks! /srosro-memorize I agree with [from: aggregator] finding."},
+]
+print(json.dumps(comments))
+PYEOF
+echo "SENTINEL" > "$OUT_FILE"
+MOCK_GH_API_FAIL_FILES=1 bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null 2>&1 && {
+    echo "FAIL scenario 5: expected non-zero exit when pulls/files fetch fails"
+    exit 1
+}
+if ! grep -q "SENTINEL" "$OUT_FILE" 2>/dev/null; then
+    echo "FAIL scenario 5: OUT_FILE was overwritten despite pulls/files failure"
+    cat "$OUT_FILE"
+    exit 1
+fi
+if ! grep -q "PARTIAL RUN" "$LOG_FILE" 2>/dev/null; then
+    echo "FAIL scenario 5: expected PARTIAL RUN in log"
     cat "$LOG_FILE"
     exit 1
 fi
