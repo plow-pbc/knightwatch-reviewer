@@ -379,6 +379,23 @@ class TestBuildPrompt(unittest.TestCase):
                 pr_id="x", pr_title="x", pr_url="x", pr_author="x",
             )
 
+    def test_voice_md_with_backslash_sequences_preserved_verbatim(self):
+        """Regression fence: voice.md is operator-editable markdown that may
+        legitimately contain backslash sequences like `\\1`, `\\g<name>`, or
+        bare `\\` (escaped chars in inline code, regex examples in operator
+        docs). The stitch must preserve them verbatim. Earlier `re.sub` with
+        a string replacement would have substituted `\\1` as a backref into
+        an empty group → corruption or re.error mid-review."""
+        (self.prompts / "voice.md").write_text(
+            "Voice: literal backref \\1 and \\g<x> and a stray \\\\ here.\n"
+        )
+        out = pipeline.build_prompt(
+            kind="aggregator", agent="aggregator",
+            prompts_dir=str(self.prompts),
+            pr_id="x", pr_title="x", pr_url="x", pr_author="x",
+        )
+        self.assertIn("literal backref \\1 and \\g<x> and a stray \\\\ here.", out)
+
     def test_voice_md_leading_html_comment_stripped(self):
         """voice.md may begin with operator docs in <!-- ... -->; strip before stitch."""
         (self.prompts / "voice.md").write_text(

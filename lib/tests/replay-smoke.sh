@@ -50,4 +50,25 @@ fi
 grep -qF "🎬 Replay of" "$TMPDIR/present-out.md" \
     || { echo "FAIL scenario 2: replay scope note not found in output"; exit 1; }
 
-echo "OK: replay-smoke (absent-note appears; present-note suppressed)"
+# Scenario 3: replay-batch builds index.md without crashing on the table
+# separator row. Regression fence: bash 5.2's printf strips a leading `--`
+# from its first arg, so `printf '---|'` aborts before the index header.
+# Comments-only PR CSV → no replay rows execute → no codex needed.
+echo "  scenario 3: replay-batch builds index.md (printf '---|' regression fence)..."
+PRS_FILE="$TMPDIR/empty-prs.csv"
+printf '# only comments — no PR rows\n# second comment line\n' > "$PRS_FILE"
+PROMPTS_A="$TMPDIR/prompts-a"; PROMPTS_B="$TMPDIR/prompts-b"
+mkdir -p "$PROMPTS_A" "$PROMPTS_B"
+BATCH_OUT="$TMPDIR/batch-out"
+bash "$REPO_ROOT/lib/replay-batch.sh" \
+    --prs "$PRS_FILE" \
+    --prompts "$PROMPTS_A,$PROMPTS_B" \
+    --output-dir "$BATCH_OUT" \
+    > "$TMPDIR/batch.log" 2>&1 \
+    || { echo "FAIL scenario 3: replay-batch exited non-zero"; cat "$TMPDIR/batch.log"; exit 1; }
+[ -f "$BATCH_OUT/index.md" ] \
+    || { echo "FAIL scenario 3: $BATCH_OUT/index.md missing"; exit 1; }
+grep -qF '|---|---|---|' "$BATCH_OUT/index.md" \
+    || { echo "FAIL scenario 3: index.md missing the table separator row"; cat "$BATCH_OUT/index.md"; exit 1; }
+
+echo "OK: replay-smoke (absent-note appears; present-note suppressed; replay-batch index.md emitted)"
