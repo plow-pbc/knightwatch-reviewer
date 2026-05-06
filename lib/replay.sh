@@ -75,9 +75,9 @@ jq -n \
 . "$LIB_DIR/state-io.sh"
 . "$LIB_DIR/run-dir.sh"
 . "$LIB_DIR/scratch.sh"
-# Pipeline (intent → dead-code → 8 angles parallel → momentum → aggregator)
-# is implemented in lib/pipeline.py. Replay invokes it as a subprocess
-# below after staging scratch inputs.
+# Pipeline shape (Wave A: intent ∥ dead-code-search → Wave B: 8 specialists
+# ∥ momentum-on-re-review → aggregator) is implemented in lib/pipeline.py.
+# Replay invokes it as a subprocess below after staging scratch inputs.
 
 WORK="$(mktemp -d)"
 # On exit, preserve per-agent log.txt files for post-mortem before

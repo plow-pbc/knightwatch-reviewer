@@ -1,37 +1,23 @@
 #!/usr/bin/env python3
-"""Pipeline orchestration for knightwatch-reviewer.
-
-Replaces lib/orchestrate.sh + lib/critic-splitter.sh + lib/run-specialist.sh
-+ lib/prompt-build.sh. Per-angle critics replace the centralized critic +
-splitter; each angle's critic appends to its specialist's file directly.
-
-Stdlib only (no pip deps). Driven by env vars matching the prior shell
-contract: PR_ID, PR_TITLE, PR_URL, PR_AUTHOR, PROMPTS_DIR, LOG_FILE.
-"""
+"""Pipeline orchestration for knightwatch-reviewer."""
 from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-# Roles that must emit at least one `### Probe N` block or the literal
-# `No probes.` sentinel — matches lib/run-specialist.sh:76-83 contract.
-# Critics, intent, aggregator, momentum, and dead-code-search have
-# different output shapes and are exempt; per-angle critics are validated
-# semantically against the specialist's probe count by run_angle (not via
-# a regex at run_codex), so a critic that emits the right H2 but skips
-# probe resolutions is still caught.
-ANGLES = (
+SPECIALISTS = (
     "security", "data-integrity", "architecture", "simplification",
     "tests", "shape", "performance", "consumers",
 )
-_PROBE_GATED_ROLES = frozenset(ANGLES)
 _PROBE_BLOCK_RE = re.compile(r"^### Probe |^No probes\.$", re.MULTILINE)
 _PROBE_HEADER_RE = re.compile(r"^### Probe (\d+)\b", re.MULTILINE)
+_CRITIC_H2_RE = re.compile(r"^## Critic counter-arguments\s*$", re.MULTILINE)
 
 
 def _ts() -> str:
@@ -44,9 +30,7 @@ def _log_file() -> Path | None:
 
 
 def log(msg: str) -> None:
-    """Tee a timestamped line to stdout AND $LOG_FILE — matches state-io.sh's
-    `echo ... | tee -a "$LOG_FILE"` so the systemd journal (stdout) and a
-    `tail -f` of LOG_FILE both reflect every event."""
+    """Tee a timestamped line to stdout and $LOG_FILE."""
     line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n"
     sys.stdout.write(line)
     sys.stdout.flush()
@@ -56,19 +40,20 @@ def log(msg: str) -> None:
             f.write(line)
 
 
-def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
-    """Wrap one `codex exec` invocation.
+def _relink(link: Path, target: Path) -> None:
+    """Replace `link` with a symlink to `target`. mkdir parents as needed."""
+    link.parent.mkdir(parents=True, exist_ok=True)
+    if link.exists() or link.is_symlink():
+        link.unlink()
+    link.symlink_to(target)
 
-    Mirrors lib/run-specialist.sh: writes prompt.txt/output.md/log.txt;
-    returns codex exit code, or 3 for empty output, or 4 for probe-contract
-    violation.
-    """
+
+def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
+    """Wrap one `codex exec` invocation. Writes prompt.txt/output.md/log.txt
+    under agent_dir. Returns codex exit code, 3 for empty output, or 4 for
+    probe-contract violation (specialist roles only)."""
     repo = Path(repo_dir)
     agent = Path(agent_dir)
-    if not (repo / ".git").is_dir():
-        sys.stderr.write(f"run_codex: {repo} is not a git repo\n")
-        return 2
-
     agent.mkdir(parents=True, exist_ok=True)
     prompt_file = agent / "prompt.txt"
     out_file = agent / "output.md"
@@ -102,12 +87,8 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
             lf.write(f"[{_ts()}] agent={name} produced empty output\n")
         return 3
 
-    # Probe-contract gate for the 8 angle specialists. Per-angle critics are
-    # validated semantically against the specialist's output by run_angle —
-    # not here — so this gate covers specialists only.
-    if name in _PROBE_GATED_ROLES:
-        text = out_file.read_text()
-        if not _PROBE_BLOCK_RE.search(text):
+    if name in SPECIALISTS:
+        if not _PROBE_BLOCK_RE.search(out_file.read_text()):
             with log_file.open("a") as lf:
                 lf.write(
                     f"[{_ts()}] agent={name} produced output that doesn't follow "
@@ -119,26 +100,19 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
 
 
 def _substitute_placeholders(template: str, **subs: str) -> str:
-    """Replace {{KEY}} tokens. Caller passes pr_id, pr_title, pr_url, pr_author,
-    specialist_name (optional), operator_name."""
     for key, val in subs.items():
-        token = "{{" + key.upper() + "}}"
-        template = template.replace(token, val)
+        template = template.replace("{{" + key.upper() + "}}", val)
     return template
 
 
 def _strip_leading_html_comment(text: str) -> str:
-    """Drop a leading <!-- ... --> block (operator docs in voice.md)."""
     if not text.lstrip().startswith("<!--"):
         return text
-    # Find closing --> after the first <!--
     start = text.index("<!--")
     end = text.find("-->", start)
     if end < 0:
-        return text  # malformed; pass through
-    # Skip past --> and any trailing newline
-    after = text[end + 3:]
-    return after.lstrip("\n")
+        return text
+    return text[end + 3:].lstrip("\n")
 
 
 def build_prompt(
@@ -150,11 +124,8 @@ def build_prompt(
     pr_url: str,
     pr_author: str,
 ) -> str:
-    """Build the prompt string for one codex call.
-
-    `kind` is one of: 'standalone' (intent, dead-code-search, momentum),
-    'specialist' (the 8 angles), 'critic' (per-angle critic-<angle>), 'aggregator'.
-    """
+    """Build a prompt string. `kind` is 'specialist', 'standalone', 'critic',
+    or 'aggregator'."""
     pdir = Path(prompts_dir)
     operator_name = os.environ.get("OPERATOR_NAME", "Sam")
     base_subs = dict(
@@ -164,7 +135,7 @@ def build_prompt(
 
     if kind == "specialist":
         common = (pdir / "common-header.md").read_text()
-        body = (pdir / f"{agent}.md").read_text()
+        body = (pdir / "specialists" / f"{agent}.md").read_text()
         subs = dict(base_subs, specialist_name=agent)
         return (
             _substitute_placeholders(common, **subs)
@@ -173,52 +144,30 @@ def build_prompt(
         )
 
     if kind == "standalone":
-        # intent, dead-code-search, momentum.
-        body = (pdir / f"{agent}.md").read_text()
-        subs = dict(base_subs, specialist_name="")
-        return _substitute_placeholders(body, **subs)
+        body = (pdir / "standalone" / f"{agent}.md").read_text()
+        return _substitute_placeholders(body, **base_subs, specialist_name="")
 
     if kind == "critic":
-        # Per-angle critic: critic-<angle>. Body cites
-        # .codex-scratch/specialists/{{ANGLE}}.md; ANGLE substitution happens here.
         body = (pdir / "critic.md").read_text()
-        angle = agent[len("critic-"):] if agent.startswith("critic-") else ""
-        subs = dict(base_subs, angle=angle, specialist_name=angle)
-        return _substitute_placeholders(body, **subs)
+        angle = agent[len("critic-"):]
+        return _substitute_placeholders(body, **base_subs, angle=angle, specialist_name=angle)
 
     if kind == "aggregator":
         agg = (pdir / "aggregator.md").read_text()
         voice_path = pdir / "voice.md"
         if not voice_path.exists():
-            raise FileNotFoundError(
-                f"build_prompt: voice.md missing at {voice_path} — incomplete install"
-            )
-        if "INSERT_VOICE_HERE" not in agg:
-            raise ValueError(
-                "build_prompt: aggregator.md missing INSERT_VOICE_HERE marker — stitch contract violated"
-            )
-        voice_body = _strip_leading_html_comment(voice_path.read_text())
-        # Replace the line containing INSERT_VOICE_HERE with the voice body.
-        # Match the same shape as the prior awk: any line containing the marker.
-        out_lines: list[str] = []
-        for line in agg.splitlines(keepends=True):
-            if "INSERT_VOICE_HERE" in line:
-                out_lines.append(voice_body)
-                if not voice_body.endswith("\n"):
-                    out_lines.append("\n")
-            else:
-                out_lines.append(line)
-        stitched = "".join(out_lines)
+            raise FileNotFoundError(f"build_prompt: voice.md missing at {voice_path}")
+        marker = "<!-- INSERT_VOICE_HERE -->"
+        if marker not in agg:
+            raise ValueError(f"build_prompt: aggregator.md missing {marker} marker")
+        voice_body = _strip_leading_html_comment(voice_path.read_text()).rstrip("\n")
+        stitched = agg.replace(marker, voice_body, 1)
         return _substitute_placeholders(stitched, **base_subs)
 
     raise ValueError(f"build_prompt: unknown kind '{kind}'")
 
 
-_CRITIC_H2_RE = re.compile(r"^## Critic counter-arguments\s*$", re.MULTILINE)
-
-
 def _duplicate_ids(ids: list[str]) -> list[str]:
-    """Return the IDs that appear more than once, in first-seen order."""
     seen: set[str] = set()
     dupes: list[str] = []
     for pid in ids:
@@ -229,19 +178,11 @@ def _duplicate_ids(ids: list[str]) -> list[str]:
 
 
 def _validate_critic_output(spec_text: str, crit_text: str) -> str | None:
-    """Validate critic output against the specialist's probes.
-
-    Bijection contract: critic addresses EVERY specialist probe by ID with
-    Answer + Evidence, NEVER emits a probe id the specialist didn't (cross-
-    angle and generated probes belong to the aggregator), OR emits the bare
-    'No probes.' sentinel — but only when the specialist had zero probes.
-    Anchored H2 (start-of-line `## Critic counter-arguments`) so a mid-prose
-    quote of the heading doesn't smuggle malformed output through. Duplicate
-    probe IDs on either side are rejected up-front so set-equality can't
-    mask unresolved hidden duplicates.
-
-    Returns None on success, an error message on failure.
-    """
+    """Validate critic output against the specialist's probes. Bijection
+    contract: critic addresses every specialist probe by ID with Answer +
+    Evidence, never emits a probe id the specialist didn't, OR emits the
+    bare 'No probes.' sentinel when the specialist had zero probes.
+    Returns None on success, an error message on failure."""
     spec_probe_id_list = _PROBE_HEADER_RE.findall(spec_text)
     spec_dupes = _duplicate_ids(spec_probe_id_list)
     if spec_dupes:
@@ -252,7 +193,6 @@ def _validate_critic_output(spec_text: str, crit_text: str) -> str | None:
     spec_probe_ids = set(spec_probe_id_list)
 
     if not spec_probe_ids:
-        # Specialist had no probes — critic must emit exactly 'No probes.'
         if crit_text.strip() != "No probes.":
             return (
                 "specialist emitted 0 probes; critic must respond with bare "
@@ -260,7 +200,6 @@ def _validate_critic_output(spec_text: str, crit_text: str) -> str | None:
             )
         return None
 
-    # Specialist had probes — critic must have an anchored H2
     if not _CRITIC_H2_RE.search(crit_text):
         return (
             f"specialist emitted {len(spec_probe_ids)} probe(s); critic missing "
@@ -276,23 +215,13 @@ def _validate_critic_output(spec_text: str, crit_text: str) -> str | None:
         )
     crit_probe_ids = set(crit_probe_id_list)
 
-    # Bijection: spec_probe_ids must equal crit_probe_ids exactly. Missing →
-    # critic skipped a specialist probe (under-resolution); extra → critic
-    # invented a cross-angle/generated probe (aggregator's territory).
     missing = spec_probe_ids - crit_probe_ids
     if missing:
-        return (
-            f"critic missing resolution for probe(s): "
-            f"{sorted(missing, key=int)}"
-        )
+        return f"critic missing resolution for probe(s): {sorted(missing, key=int)}"
     extra = crit_probe_ids - spec_probe_ids
     if extra:
-        return (
-            f"critic emitted probe(s) not in specialist: {sorted(extra, key=int)} "
-            "— cross-angle/generated probes belong to the aggregator, not per-angle critics"
-        )
+        return f"critic emitted probe(s) not in specialist: {sorted(extra, key=int)}"
 
-    # Each critic probe block must carry both Answer + Evidence fields
     for probe_id in sorted(spec_probe_ids, key=int):
         section_match = re.search(
             rf"^### Probe {probe_id}\b(.*?)(?=^### Probe |\Z)",
@@ -309,8 +238,8 @@ def _validate_critic_output(spec_text: str, crit_text: str) -> str | None:
     return None
 
 
-def run_angle(
-    angle: str,
+def run_specialist(
+    specialist: str,
     repo_dir: str,
     run_dir: str,
     prompts_dir: str,
@@ -319,98 +248,87 @@ def run_angle(
     pr_url: str,
     pr_author: str,
 ) -> int:
-    """Run one per-angle pipeline: specialist → critic.
-
-    Returns the codex exit code of whichever stage failed (or 0 on full
-    success). Layered file (`specialist + ## Critic counter-arguments +
-    critic`) is written to both `<run_dir>/agents/<angle>/layered.md` and
-    `<repo_dir>/.codex-scratch/specialists/<angle>.md` only on full success.
-    """
+    """Run one specialist → critic chain. Writes the layered file (specialist
+    + critic) on full success. Returns 0 or the failing stage's exit code."""
     run = Path(run_dir)
     repo = Path(repo_dir)
 
-    # 1. Specialist
     spec_prompt = build_prompt(
-        kind="specialist", agent=angle, prompts_dir=prompts_dir,
+        kind="specialist", agent=specialist, prompts_dir=prompts_dir,
         pr_id=pr_id, pr_title=pr_title, pr_url=pr_url, pr_author=pr_author,
     )
-    spec_agent_dir = run / "agents" / angle
-    spec_rc = run_codex(angle, str(repo), spec_prompt, str(spec_agent_dir))
+    spec_agent_dir = run / "agents" / specialist
+    spec_rc = run_codex(specialist, str(repo), spec_prompt, str(spec_agent_dir))
     if spec_rc != 0:
-        log(f"{pr_id}: specialist {angle} exited non-zero (see {spec_agent_dir}/log.txt)")
+        log(f"{pr_id}: specialist {specialist} exited non-zero (see {spec_agent_dir}/log.txt)")
         return spec_rc
     spec_out = (spec_agent_dir / "output.md").read_text()
 
-    # Stage specialist output to .codex-scratch BEFORE the critic runs, so the
-    # per-angle critic can read its canonical input via the path documented in
-    # prompts/critic.md (no inline prompt augmentation needed). The file is
-    # overwritten with the layered content after a successful critic.
-    scratch_path = repo / ".codex-scratch" / "specialists" / f"{angle}.md"
+    # Stage specialist output to .codex-scratch so the critic can read it
+    # via the path documented in prompts/critic.md. Overwritten with layered
+    # content after a successful critic.
+    scratch_path = repo / ".codex-scratch" / "specialists" / f"{specialist}.md"
     scratch_path.parent.mkdir(parents=True, exist_ok=True)
     scratch_path.write_text(spec_out)
 
-    # 2. Per-angle critic — reads .codex-scratch/specialists/<angle>.md
     crit_prompt = build_prompt(
-        kind="critic", agent=f"critic-{angle}", prompts_dir=prompts_dir,
+        kind="critic", agent=f"critic-{specialist}", prompts_dir=prompts_dir,
         pr_id=pr_id, pr_title=pr_title, pr_url=pr_url, pr_author=pr_author,
     )
-    crit_agent_dir = run / "agents" / f"critic-{angle}"
-    crit_rc = run_codex(f"critic-{angle}", str(repo), crit_prompt, str(crit_agent_dir))
+    crit_agent_dir = run / "agents" / f"critic-{specialist}"
+    crit_rc = run_codex(f"critic-{specialist}", str(repo), crit_prompt, str(crit_agent_dir))
     if crit_rc != 0:
-        log(f"{pr_id}: critic-{angle} exited non-zero (see {crit_agent_dir}/log.txt)")
+        log(f"{pr_id}: critic-{specialist} exited non-zero (see {crit_agent_dir}/log.txt)")
         return crit_rc
     crit_out = (crit_agent_dir / "output.md").read_text()
 
-    # Semantic contract validation: critic must address every specialist
-    # probe by ID with Answer + Evidence, or emit the bare 'No probes.'
-    # sentinel matching a zero-probe specialist. Catches malformed critic
-    # output before it reaches aggregation. (run_codex's regex gate covers
-    # specialist output only — critic correctness depends on cross-file
-    # state and lives here.)
     err = _validate_critic_output(spec_out, crit_out)
     if err:
         log(
-            f"{pr_id}: critic-{angle} contract violation: {err} "
+            f"{pr_id}: critic-{specialist} contract violation: {err} "
             f"(see {crit_agent_dir}/output.md)"
         )
         return 4
 
-    # 3. Compose layered file. The critic's own '## Critic counter-arguments'
-    # H2 owns its section; pipeline only adds the '---' separator so the H2
-    # isn't doubled.
     layered = spec_out + "\n\n---\n\n" + crit_out
     (spec_agent_dir / "layered.md").write_text(layered)
     scratch_path.write_text(layered)
-
     return 0
 
 
 def _abort(repo_dir: Path, msg: str) -> int:
-    """Log + clean up REPO_DIR + return non-zero exit. Caller exits."""
     log(msg)
     if repo_dir.exists():
-        # Match orchestrate.sh's `rm -rf "$REPO_DIR"` cleanup.
-        import shutil
         shutil.rmtree(repo_dir, ignore_errors=True)
     return 1
 
 
-def _validate_intent(intent_out: Path, pr_id: str) -> str | None:
-    """Return None on success, error message on validation failure."""
+def _validate_intent(intent_out: Path) -> str:
+    """Return the parsed intent line. Raise ValueError on contract violation."""
     if not intent_out.exists() or intent_out.stat().st_size == 0:
-        return f"{pr_id}: intent inference failed (empty output)"
+        raise ValueError("intent inference produced empty output")
     text = intent_out.read_text()
     nonblank = [ln for ln in text.splitlines() if ln.strip()]
     if len(nonblank) != 1:
-        return (
-            f"{pr_id}: intent output has {len(nonblank)} non-blank lines, "
-            "expected exactly 1 — aborting"
+        raise ValueError(
+            f"intent output has {len(nonblank)} non-blank lines, expected exactly 1"
         )
-    if not text.startswith("Inferred intent: ") and not any(
-        ln.startswith("Inferred intent: ") for ln in nonblank
-    ):
-        return f"{pr_id}: intent output missing 'Inferred intent: ' prefix — aborting"
-    return None
+    if not nonblank[0].startswith("Inferred intent: "):
+        raise ValueError("intent output missing 'Inferred intent: ' prefix")
+    return nonblank[0]
+
+
+def _run_standalone(
+    name: str, repo_dir: str, run_dir: str, prompts_dir: str,
+    pr_id: str, pr_title: str, pr_url: str, pr_author: str,
+) -> int:
+    """Build + run one standalone codex stage at agents/<name>/. Returns rc."""
+    prompt = build_prompt(
+        kind="standalone", agent=name, prompts_dir=prompts_dir,
+        pr_id=pr_id, pr_title=pr_title, pr_url=pr_url, pr_author=pr_author,
+    )
+    agent_dir = Path(run_dir) / "agents" / name
+    return run_codex(name, repo_dir, prompt, str(agent_dir))
 
 
 def run_pipeline(
@@ -424,107 +342,84 @@ def run_pipeline(
 ) -> int:
     """Run the full LLM review pipeline. Returns 0 on success, non-zero on
     any-stage failure. Aggregator output lands at
-    <run_dir>/agents/aggregator/output.md; the caller posts it.
-
-    Every stage fails loud. dead-code-search aborts on failure (no
-    soft-degrade path).
-    """
+    <run_dir>/agents/aggregator/output.md."""
     repo = Path(repo_dir)
     run = Path(run_dir)
+    scratch = repo / ".codex-scratch"
+    scratch.mkdir(parents=True, exist_ok=True)
 
     common_kwargs = dict(
-        prompts_dir=prompts_dir,
+        repo_dir=repo_dir, run_dir=run_dir, prompts_dir=prompts_dir,
         pr_id=pr_id, pr_title=pr_title, pr_url=pr_url, pr_author=pr_author,
     )
 
-    # 1. Intent (sequential, fail-loud)
-    log(f"{pr_id}: inferring developer intent...")
-    intent_prompt = build_prompt(kind="standalone", agent="intent", **common_kwargs)
+    # Wave A: intent + dead-code-search in parallel. Both are inputs to the
+    # specialists (intent → architecture/simplification/momentum read it;
+    # dead-code → consumers reads it), so they must complete before Wave B.
+    log(f"{pr_id}: Wave A — intent + dead-code-search")
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        intent_fut = ex.submit(_run_standalone, "intent", **common_kwargs)
+        dc_fut = ex.submit(_run_standalone, "dead-code-search", **common_kwargs)
+        intent_rc = intent_fut.result()
+        dc_rc = dc_fut.result()
+    if intent_rc != 0:
+        return _abort(repo, f"{pr_id}: intent inference failed (exit={intent_rc}) — aborting")
+    if dc_rc != 0:
+        return _abort(repo, f"{pr_id}: dead-code search failed (exit={dc_rc}) — aborting")
+
     intent_dir = run / "agents" / "intent"
-    rc = run_codex("intent", str(repo), intent_prompt, str(intent_dir))
-    if rc != 0:
-        return _abort(repo, f"{pr_id}: intent inference failed (exit={rc}) — aborting")
-    err = _validate_intent(intent_dir / "output.md", pr_id)
-    if err:
-        return _abort(repo, err)
-    # Symlink so prompt-cited paths resolve
-    scratch = repo / ".codex-scratch"
-    scratch.mkdir(parents=True, exist_ok=True)
-    intent_link = scratch / "inferred-intent.md"
-    if intent_link.exists() or intent_link.is_symlink():
-        intent_link.unlink()
-    intent_link.symlink_to(intent_dir / "output.md")
-    log(f"{pr_id}: intent inference complete: {(intent_dir / 'output.md').read_text().splitlines()[0]}")
+    try:
+        intent_text = _validate_intent(intent_dir / "output.md")
+    except ValueError as e:
+        return _abort(repo, f"{pr_id}: {e} — aborting")
+    _relink(scratch / "inferred-intent.md", intent_dir / "output.md")
+    _relink(scratch / "dead-code.md", run / "agents" / "dead-code-search" / "output.md")
+    log(f"{pr_id}: Wave A complete: {intent_text}")
 
-    # 2. Dead-code-search (sequential, fail-loud — no soft-degrade)
-    log(f"{pr_id}: dead-code search...")
-    dc_prompt = build_prompt(kind="standalone", agent="dead-code-search", **common_kwargs)
-    dc_dir = run / "agents" / "dead-code-search"
-    rc = run_codex("dead-code-search", str(repo), dc_prompt, str(dc_dir))
-    if rc != 0:
-        return _abort(repo, f"{pr_id}: dead-code search failed (exit={rc}) — aborting")
-    dc_link = scratch / "dead-code.md"
-    if dc_link.exists() or dc_link.is_symlink():
-        dc_link.unlink()
-    dc_link.symlink_to(dc_dir / "output.md")
-    log(f"{pr_id}: dead-code search complete")
-
-    # 3. 8 angle pipelines in parallel (each = specialist → critic)
-    log(f"{pr_id}: launching {len(ANGLES)} per-angle pipelines in parallel...")
-    angle_kwargs = dict(
-        repo_dir=repo_dir, run_dir=run_dir,
-        **common_kwargs,
-    )
-    angle_failure: str | None = None
-    with ThreadPoolExecutor(max_workers=len(ANGLES)) as ex:
-        futures = {ex.submit(run_angle, angle=a, **angle_kwargs): a for a in ANGLES}
+    # Wave B: 8 specialists + (momentum if re-review) in parallel. Momentum
+    # reads inferred-intent.md (Wave A) but no specialist output, so it can
+    # run alongside the specialists.
+    prev_review = run / "inputs" / "previous-review.md"
+    has_prev = prev_review.exists() and prev_review.stat().st_size > 0
+    label = f"{len(SPECIALISTS)} specialists" + (" + momentum" if has_prev else "")
+    log(f"{pr_id}: Wave B — {label}")
+    failure: str | None = None
+    with ThreadPoolExecutor(max_workers=len(SPECIALISTS) + 1) as ex:
+        futures = {
+            ex.submit(run_specialist, specialist=s, **common_kwargs): s
+            for s in SPECIALISTS
+        }
+        if has_prev:
+            futures[ex.submit(_run_standalone, "momentum", **common_kwargs)] = "momentum"
         for fut in as_completed(futures):
-            angle = futures[fut]
+            name = futures[fut]
             try:
                 rc = fut.result()
             except Exception as exc:
-                angle_failure = (
-                    f"{pr_id}: angle {angle} raised {type(exc).__name__}: {exc} — aborting"
-                )
+                failure = f"{pr_id}: {name} raised {type(exc).__name__}: {exc} — aborting"
                 break
             if rc != 0:
-                angle_failure = (
-                    f"{pr_id}: angle {angle} exited non-zero (rc={rc}, see "
-                    f"{run}/agents/{angle}/log.txt or {run}/agents/critic-{angle}/log.txt) "
+                failure = (
+                    f"{pr_id}: {name} exited non-zero (rc={rc}, see {run}/agents/{name}/log.txt) "
                     "— aborting"
                 )
                 break
-    # Outside the `with` block: executor.shutdown(wait=True) has finished, so
-    # no in-flight angle thread can re-create repo_dir between rmtree and now.
-    if angle_failure is not None:
-        return _abort(repo, angle_failure)
-    log(f"{pr_id}: all {len(ANGLES)} angle pipelines completed")
+    if failure is not None:
+        return _abort(repo, failure)
+    if has_prev:
+        _relink(scratch / "momentum.md", run / "agents" / "momentum" / "output.md")
+    log(f"{pr_id}: Wave B complete")
 
-    # 4. Momentum (re-reviews only)
-    prev_review = run / "inputs" / "previous-review.md"
-    if prev_review.exists() and prev_review.stat().st_size > 0:
-        log(f"{pr_id}: launching momentum specialist (re-review)...")
-        m_prompt = build_prompt(kind="standalone", agent="momentum", **common_kwargs)
-        m_dir = run / "agents" / "momentum"
-        rc = run_codex("momentum", str(repo), m_prompt, str(m_dir))
-        if rc != 0:
-            return _abort(repo, f"{pr_id}: momentum specialist failed (exit={rc}) — aborting")
-        m_link = scratch / "momentum.md"
-        if m_link.exists() or m_link.is_symlink():
-            m_link.unlink()
-        m_link.symlink_to(m_dir / "output.md")
-    else:
-        log(f"{pr_id}: skipping momentum specialist (first review)")
-
-    # 5. Aggregator
+    # Aggregator (sequential — depends on Waves A + B)
     log(f"{pr_id}: aggregator...")
-    agg_prompt = build_prompt(kind="aggregator", agent="aggregator", **common_kwargs)
+    agg_prompt = build_prompt(
+        kind="aggregator", agent="aggregator", prompts_dir=prompts_dir,
+        pr_id=pr_id, pr_title=pr_title, pr_url=pr_url, pr_author=pr_author,
+    )
     agg_dir = run / "agents" / "aggregator"
     rc = run_codex("aggregator", str(repo), agg_prompt, str(agg_dir))
     if rc != 0:
         return _abort(repo, f"{pr_id}: aggregator failed (exit={rc}) — aborting")
-    if not (agg_dir / "output.md").exists() or (agg_dir / "output.md").stat().st_size == 0:
-        return _abort(repo, f"{pr_id}: aggregator produced empty output — aborting")
     log(f"{pr_id}: aggregator complete")
     return 0
 
@@ -535,13 +430,12 @@ def main() -> int:
         return 2
     repo_dir, run_dir = sys.argv[1], sys.argv[2]
     prompts_dir = os.environ.get("PROMPTS_DIR", os.path.expanduser("~/.pr-reviewer/prompts"))
-    pr_id = os.environ["PR_ID"]
-    pr_title = os.environ["PR_TITLE"]
-    pr_url = os.environ["PR_URL"]
-    pr_author = os.environ["PR_AUTHOR"]
     return run_pipeline(
         repo_dir=repo_dir, run_dir=run_dir, prompts_dir=prompts_dir,
-        pr_id=pr_id, pr_title=pr_title, pr_url=pr_url, pr_author=pr_author,
+        pr_id=os.environ["PR_ID"],
+        pr_title=os.environ["PR_TITLE"],
+        pr_url=os.environ["PR_URL"],
+        pr_author=os.environ["PR_AUTHOR"],
     )
 
 

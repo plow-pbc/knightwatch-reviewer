@@ -3,6 +3,7 @@ import os
 import stat
 import subprocess
 import sys
+import threading
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -17,16 +18,18 @@ def _write_minimal_prompts(prompts_dir: Path) -> None:
     """Write the full minimal prompt tree run_pipeline + the CLI smoke need.
 
     Shared between TestRunPipeline and TestPipelineCLI so adding a required
-    prompt file or marker only needs one update site. TestRunAngle uses a
-    smaller tree (only common-header / one specialist / critic) because it
+    prompt file or marker only needs one update site. TestRunSpecialist uses
+    a smaller tree (only common-header / one specialist / critic) because it
     doesn't exercise the full pipeline — kept inline there.
     """
+    (prompts_dir / "specialists").mkdir(parents=True, exist_ok=True)
+    (prompts_dir / "standalone").mkdir(parents=True, exist_ok=True)
     (prompts_dir / "common-header.md").write_text("H {{SPECIALIST_NAME}}\n")
-    for angle in pipeline.ANGLES:
-        (prompts_dir / f"{angle}.md").write_text(f"BODY {angle}\n")
-    (prompts_dir / "intent.md").write_text("intent prompt\n")
-    (prompts_dir / "dead-code-search.md").write_text("dc prompt\n")
-    (prompts_dir / "momentum.md").write_text("momentum prompt\n")
+    for specialist in pipeline.SPECIALISTS:
+        (prompts_dir / "specialists" / f"{specialist}.md").write_text(f"BODY {specialist}\n")
+    (prompts_dir / "standalone" / "intent.md").write_text("intent prompt\n")
+    (prompts_dir / "standalone" / "dead-code-search.md").write_text("dc prompt\n")
+    (prompts_dir / "standalone" / "momentum.md").write_text("momentum prompt\n")
     (prompts_dir / "critic.md").write_text("critic prompt\n")
     (prompts_dir / "voice.md").write_text("Voice: {{OPERATOR_NAME}}\n")
     (prompts_dir / "aggregator.md").write_text(
@@ -40,6 +43,38 @@ class FakeCompletedProcess:
         self.returncode = returncode
 
 
+def _make_codex_stub(plan=None, default=(0, "### Probe 1\nstub\n"),
+                     before_write=None):
+    """Module-level fake-codex side_effect for `subprocess.run`. Owns the
+    full agent contract surface so callers only specify what they care
+    about. `plan` maps agent name → (exit_code, output_text); explicit
+    entries are used verbatim. Agents NOT in plan fall through to
+    `default` (with intent + per-angle critic auto-substituted to
+    contract-valid output, so orchestrator-level tests don't need to
+    spell out every agent). `before_write(name, out_path)` fires pre-write
+    — used by ordering tests."""
+    plan = plan or {}
+    def side_effect(argv, **kwargs):
+        out_path = Path(argv[argv.index("-o") + 1])
+        agent_name = out_path.parent.name
+        if before_write is not None:
+            before_write(agent_name, out_path)
+        if agent_name in plan:
+            ec, out = plan[agent_name]
+        else:
+            ec, out = default
+            if agent_name == "intent":
+                out = "Inferred intent: stub.\n"
+            elif agent_name.startswith("critic-"):
+                out = (
+                    "## Critic counter-arguments\n\n"
+                    "### Probe 1\n- **Answer:** yes\n- **Evidence:** stub\n"
+                )
+        out_path.write_text(out)
+        return FakeCompletedProcess(ec)
+    return side_effect
+
+
 class TestRunCodex(unittest.TestCase):
     """run_codex wraps `codex exec`; matches lib/run-specialist.sh contract."""
 
@@ -47,82 +82,83 @@ class TestRunCodex(unittest.TestCase):
         self.tmp = TemporaryDirectory()
         self.repo_dir = Path(self.tmp.name) / "repo"
         (self.repo_dir / ".git").mkdir(parents=True)
-        self.agent_dir = Path(self.tmp.name) / "agents" / "intent"
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _stub_codex(self, exit_code, output_text):
-        """Return a side_effect that simulates codex writing to its -o target."""
-        def side_effect(argv, **kwargs):
-            # Extract the -o argument (codex output target)
-            out_idx = argv.index("-o")
-            out_path = Path(argv[out_idx + 1])
-            out_path.write_text(output_text)
-            return FakeCompletedProcess(exit_code)
-        return side_effect
+    def _agent_dir(self, name):
+        """Mirror production layout: agents/<name>/. Required so the
+        module-level _make_codex_stub's plan lookup (keyed on dir name)
+        resolves to this test's agent."""
+        return Path(self.tmp.name) / "agents" / name
 
     @patch("pipeline.subprocess.run")
     def test_success_path_writes_artifacts(self, mock_run):
-        mock_run.side_effect = self._stub_codex(0, "### Probe 1\nstub\n")
-        rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(self.agent_dir))
+        agent_dir = self._agent_dir("intent")
+        mock_run.side_effect = _make_codex_stub(plan={"intent": (0, "### Probe 1\nstub\n")})
+        rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(agent_dir))
         self.assertEqual(rc, 0)
-        self.assertEqual((self.agent_dir / "prompt.txt").read_text(), "PROMPT")
-        self.assertTrue((self.agent_dir / "output.md").stat().st_size > 0)
-        self.assertIn("agent=intent starting", (self.agent_dir / "log.txt").read_text())
-        self.assertIn("agent=intent exit=0", (self.agent_dir / "log.txt").read_text())
+        self.assertEqual((agent_dir / "prompt.txt").read_text(), "PROMPT")
+        self.assertTrue((agent_dir / "output.md").stat().st_size > 0)
+        self.assertIn("agent=intent starting", (agent_dir / "log.txt").read_text())
+        self.assertIn("agent=intent exit=0", (agent_dir / "log.txt").read_text())
 
     @patch("pipeline.subprocess.run")
     def test_codex_argv_pins_model(self, mock_run):
         """The model=gpt-5.5 pin must reach codex (regression fence)."""
-        mock_run.side_effect = self._stub_codex(0, "### Probe 1\nstub\n")
-        pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(self.agent_dir))
+        mock_run.side_effect = _make_codex_stub(plan={"intent": (0, "### Probe 1\nstub\n")})
+        pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(self._agent_dir("intent")))
         argv = mock_run.call_args[0][0]
         self.assertIn("model=gpt-5.5", argv)
         self.assertIn("--dangerously-bypass-approvals-and-sandbox", argv)
 
     @patch("pipeline.subprocess.run")
     def test_codex_nonzero_exit_propagates(self, mock_run):
-        mock_run.side_effect = self._stub_codex(7, "")
-        rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(self.agent_dir))
+        mock_run.side_effect = _make_codex_stub(plan={"intent": (7, "")})
+        rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(self._agent_dir("intent")))
         self.assertEqual(rc, 7)
 
     @patch("pipeline.subprocess.run")
     def test_codex_zero_exit_empty_output_returns_3(self, mock_run):
         """Codex says success but wrote nothing — fail loud as exit 3."""
-        mock_run.side_effect = self._stub_codex(0, "")
-        rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(self.agent_dir))
+        agent_dir = self._agent_dir("intent")
+        mock_run.side_effect = _make_codex_stub(plan={"intent": (0, "")})
+        rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(agent_dir))
         self.assertEqual(rc, 3)
-        self.assertIn("produced empty output", (self.agent_dir / "log.txt").read_text())
+        self.assertIn("produced empty output", (agent_dir / "log.txt").read_text())
 
     @patch("pipeline.subprocess.run")
     def test_specialist_must_emit_probe_or_no_probes_sentinel(self, mock_run):
         """Probe-emitting roles must include `### Probe ` or `No probes.` — exit 4 otherwise."""
-        mock_run.side_effect = self._stub_codex(0, "garbage that doesn't look like a probe\n")
-        rc = pipeline.run_codex("security", str(self.repo_dir), "PROMPT", str(self.agent_dir))
+        mock_run.side_effect = _make_codex_stub(
+            plan={"security": (0, "garbage that doesn't look like a probe\n")},
+        )
+        rc = pipeline.run_codex("security", str(self.repo_dir), "PROMPT", str(self._agent_dir("security")))
         self.assertEqual(rc, 4)
 
     @patch("pipeline.subprocess.run")
     def test_specialist_no_probes_sentinel_passes(self, mock_run):
-        mock_run.side_effect = self._stub_codex(0, "No probes.\n")
-        rc = pipeline.run_codex("security", str(self.repo_dir), "PROMPT", str(self.agent_dir))
+        mock_run.side_effect = _make_codex_stub(plan={"security": (0, "No probes.\n")})
+        rc = pipeline.run_codex("security", str(self.repo_dir), "PROMPT", str(self._agent_dir("security")))
         self.assertEqual(rc, 0)
 
     @patch("pipeline.subprocess.run")
     def test_intent_exempt_from_probe_gate(self, mock_run):
         """Non-probe-emitting roles (intent, critic, aggregator, etc.) skip the gate."""
-        mock_run.side_effect = self._stub_codex(0, "Inferred intent: doing X.\n")
-        rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(self.agent_dir))
+        mock_run.side_effect = _make_codex_stub(plan={"intent": (0, "Inferred intent: doing X.\n")})
+        rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(self._agent_dir("intent")))
         self.assertEqual(rc, 0)
 
     @patch("pipeline.subprocess.run")
     def test_critic_per_angle_exempt_from_run_codex_gate(self, mock_run):
-        """Per-angle critic correctness is validated at the run_angle boundary
-        (where both specialist + critic outputs are available), not here.
-        run_codex passes any critic output through; the semantic checks in
-        TestValidateCriticOutput cover the contract."""
-        mock_run.side_effect = self._stub_codex(0, "anything goes through run_codex\n")
-        rc = pipeline.run_codex("critic-security", str(self.repo_dir), "PROMPT", str(self.agent_dir))
+        """Per-angle critic correctness is validated at the run_specialist
+        boundary (where both specialist + critic outputs are available), not
+        here. run_codex passes any critic output through; the semantic checks
+        in TestValidateCriticOutput cover the contract."""
+        mock_run.side_effect = _make_codex_stub(
+            plan={"critic-security": (0, "anything goes through run_codex\n")},
+        )
+        rc = pipeline.run_codex("critic-security", str(self.repo_dir), "PROMPT", str(self._agent_dir("critic-security")))
         self.assertEqual(rc, 0)
 
 
@@ -273,7 +309,8 @@ class TestBuildPrompt(unittest.TestCase):
     def setUp(self):
         self.tmp = TemporaryDirectory()
         self.prompts = Path(self.tmp.name) / "prompts"
-        self.prompts.mkdir()
+        (self.prompts / "specialists").mkdir(parents=True)
+        (self.prompts / "standalone").mkdir(parents=True)
         # Minimal common-header.md
         (self.prompts / "common-header.md").write_text(
             "PR: {{PR_ID}} ({{PR_TITLE}}) by {{PR_AUTHOR}}\n"
@@ -292,7 +329,7 @@ class TestBuildPrompt(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_specialist_substitutes_and_concatenates(self):
-        (self.prompts / "security.md").write_text(
+        (self.prompts / "specialists" / "security.md").write_text(
             "Security review for {{PR_ID}} as {{SPECIALIST_NAME}}.\n"
         )
         out = pipeline.build_prompt(
@@ -309,7 +346,7 @@ class TestBuildPrompt(unittest.TestCase):
 
     def test_standalone_substitutes_no_header(self):
         """intent / dead-code-search / momentum: no common-header, no SPECIALIST_NAME."""
-        (self.prompts / "intent.md").write_text(
+        (self.prompts / "standalone" / "intent.md").write_text(
             "Infer intent for {{PR_ID}} ({{PR_TITLE}}).\n"
         )
         out = pipeline.build_prompt(
@@ -327,7 +364,7 @@ class TestBuildPrompt(unittest.TestCase):
 
         Per-angle critic prompt body has no PR placeholders — the specialist's
         output (which IS the critic's input context) is appended at runtime
-        by run_angle, not via build_prompt.
+        by run_specialist, not via build_prompt.
         """
         (self.prompts / "critic.md").write_text("Critique probes for {{ANGLE}}.\n")
         out = pipeline.build_prompt(
@@ -375,6 +412,23 @@ class TestBuildPrompt(unittest.TestCase):
                 pr_id="x", pr_title="x", pr_url="x", pr_author="x",
             )
 
+    def test_voice_md_with_backslash_sequences_preserved_verbatim(self):
+        """Regression fence: voice.md is operator-editable markdown that may
+        legitimately contain backslash sequences like `\\1`, `\\g<name>`, or
+        bare `\\` (escaped chars in inline code, regex examples in operator
+        docs). The stitch must preserve them verbatim. Earlier `re.sub` with
+        a string replacement would have substituted `\\1` as a backref into
+        an empty group → corruption or re.error mid-review."""
+        (self.prompts / "voice.md").write_text(
+            "Voice: literal backref \\1 and \\g<x> and a stray \\\\ here.\n"
+        )
+        out = pipeline.build_prompt(
+            kind="aggregator", agent="aggregator",
+            prompts_dir=str(self.prompts),
+            pr_id="x", pr_title="x", pr_url="x", pr_author="x",
+        )
+        self.assertIn("literal backref \\1 and \\g<x> and a stray \\\\ here.", out)
+
     def test_voice_md_leading_html_comment_stripped(self):
         """voice.md may begin with operator docs in <!-- ... -->; strip before stitch."""
         (self.prompts / "voice.md").write_text(
@@ -403,8 +457,8 @@ class TestBuildPrompt(unittest.TestCase):
         self.assertIn(".codex-scratch/specialists/shape.md", out)
 
 
-class TestRunAngle(unittest.TestCase):
-    """run_angle dispatches specialist→critic, composes layered file."""
+class TestRunSpecialist(unittest.TestCase):
+    """run_specialist dispatches specialist→critic, composes layered file."""
 
     def setUp(self):
         self.tmp = TemporaryDirectory()
@@ -416,38 +470,26 @@ class TestRunAngle(unittest.TestCase):
 
         # Minimal prompts dir so build_prompt can resolve files
         self.prompts = Path(self.tmp.name) / "prompts"
-        self.prompts.mkdir()
+        (self.prompts / "specialists").mkdir(parents=True)
         (self.prompts / "common-header.md").write_text("HEADER {{SPECIALIST_NAME}}\n")
-        (self.prompts / "security.md").write_text("BODY for {{SPECIALIST_NAME}}\n")
+        (self.prompts / "specialists" / "security.md").write_text("BODY for {{SPECIALIST_NAME}}\n")
         (self.prompts / "critic.md").write_text("Critique {{ANGLE}}.\n")
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _make_codex_stub(self, plan):
-        """plan: dict mapping agent name → (exit_code, output_text)."""
-        def side_effect(argv, **kwargs):
-            # Recover agent name from -o argument's parent dir
-            out_idx = argv.index("-o")
-            out_path = Path(argv[out_idx + 1])
-            agent_name = out_path.parent.name
-            ec, out = plan.get(agent_name, (0, "### Probe 1\nstub\n"))
-            out_path.write_text(out)
-            return FakeCompletedProcess(ec)
-        return side_effect
-
     @patch("pipeline.subprocess.run")
     def test_specialist_then_critic_writes_layered_file(self, mock_run):
         # Critic owns the '## Critic counter-arguments' H2 — pipeline.py only
         # adds the '---' separator, so the critic output must include the H2.
-        mock_run.side_effect = self._make_codex_stub({
+        mock_run.side_effect = _make_codex_stub({
             "security": (0, "### Probe 1\nspecialist body\n"),
             "critic-security": (0,
                 "## Critic counter-arguments\n\n### Probe 1\n"
                 "- **Answer:** yes\n- **Evidence:** cited\n"),
         })
-        rc = pipeline.run_angle(
-            angle="security",
+        rc = pipeline.run_specialist(
+            specialist="security",
             repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
             prompts_dir=str(self.prompts),
             pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
@@ -469,24 +511,20 @@ class TestRunAngle(unittest.TestCase):
         critic is invoked (not just after the layered overwrite)."""
         scratch_path = self.repo_dir / ".codex-scratch" / "specialists" / "security.md"
         captured: dict[str, str] = {}
-
-        def side_effect(argv, **kwargs):
-            out_path = Path(argv[argv.index("-o") + 1])
-            agent_name = out_path.parent.name
-            if agent_name == "critic-security":
-                # Snapshot scratch contents at the moment the critic runs.
+        def snapshot_at_critic(name, _out_path):
+            if name == "critic-security":
                 captured["scratch_at_critic"] = scratch_path.read_text()
-                out_path.write_text(
+        mock_run.side_effect = _make_codex_stub(
+            plan={
+                "security": (0, "### Probe 1\nspecialist body\n"),
+                "critic-security": (0,
                     "## Critic counter-arguments\n\n"
-                    "### Probe 1\n- **Answer:** yes\n- **Evidence:** cited\n"
-                )
-                return FakeCompletedProcess(0)
-            out_path.write_text("### Probe 1\nspecialist body\n")
-            return FakeCompletedProcess(0)
-
-        mock_run.side_effect = side_effect
-        rc = pipeline.run_angle(
-            angle="security",
+                    "### Probe 1\n- **Answer:** yes\n- **Evidence:** cited\n"),
+            },
+            before_write=snapshot_at_critic,
+        )
+        rc = pipeline.run_specialist(
+            specialist="security",
             repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
             prompts_dir=str(self.prompts),
             pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
@@ -499,11 +537,11 @@ class TestRunAngle(unittest.TestCase):
 
     @patch("pipeline.subprocess.run")
     def test_specialist_failure_skips_critic(self, mock_run):
-        mock_run.side_effect = self._make_codex_stub({
+        mock_run.side_effect = _make_codex_stub({
             "security": (7, ""),
         })
-        rc = pipeline.run_angle(
-            angle="security",
+        rc = pipeline.run_specialist(
+            specialist="security",
             repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
             prompts_dir=str(self.prompts),
             pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
@@ -519,18 +557,18 @@ class TestRunAngle(unittest.TestCase):
     @patch("pipeline.subprocess.run")
     def test_critic_contract_violation_returns_4(self, mock_run):
         """Critic returns 0 from codex but its output skips a specialist
-        probe — the run_angle validator catches it and returns 4 before the
+        probe — the run_specialist validator catches it and returns 4 before the
         layered file is written, so malformed critic output never reaches
         aggregation."""
-        mock_run.side_effect = self._make_codex_stub({
+        mock_run.side_effect = _make_codex_stub({
             "security": (0, "### Probe 1\nspec body\n\n### Probe 2\nmore\n"),
             # Critic addresses Probe 1 but skips Probe 2 — semantic violation.
             "critic-security": (0,
                 "## Critic counter-arguments\n\n### Probe 1\n"
                 "- **Answer:** yes\n- **Evidence:** cited\n"),
         })
-        rc = pipeline.run_angle(
-            angle="security",
+        rc = pipeline.run_specialist(
+            specialist="security",
             repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
             prompts_dir=str(self.prompts),
             pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
@@ -545,12 +583,12 @@ class TestRunAngle(unittest.TestCase):
 
     @patch("pipeline.subprocess.run")
     def test_specialist_success_critic_failure_returns_critic_rc(self, mock_run):
-        mock_run.side_effect = self._make_codex_stub({
+        mock_run.side_effect = _make_codex_stub({
             "security": (0, "### Probe 1\nstub\n"),
             "critic-security": (5, ""),
         })
-        rc = pipeline.run_angle(
-            angle="security",
+        rc = pipeline.run_specialist(
+            specialist="security",
             repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
             prompts_dir=str(self.prompts),
             pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
@@ -585,36 +623,9 @@ class TestRunPipeline(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _make_codex_stub(self, plan, default=(0, "### Probe 1\nstub\n")):
-        def side_effect(argv, **kwargs):
-            out_idx = argv.index("-o")
-            out_path = Path(argv[out_idx + 1])
-            agent_name = out_path.parent.name
-            ec, out = plan.get(agent_name, default)
-            # Special-case intent so the validation matcher passes
-            if agent_name == "intent" and ec == 0 and out == default[1]:
-                out = "Inferred intent: stub.\n"
-            # Per-angle critics must emit '## Critic counter-arguments' H2
-            # + a `### Probe N` block per specialist probe with Answer +
-            # Evidence, per the contract enforced by _validate_critic_output()
-            # at the run_angle() boundary. Default tests that don't override
-            # the critic output need a contract-valid stub.
-            if (
-                agent_name.startswith("critic-")
-                and ec == 0
-                and out == default[1]
-            ):
-                out = (
-                    "## Critic counter-arguments\n\n"
-                    "### Probe 1\n- **Answer:** yes\n- **Evidence:** stub\n"
-                )
-            out_path.write_text(out)
-            return FakeCompletedProcess(ec)
-        return side_effect
-
     @patch("pipeline.subprocess.run")
     def test_first_review_runs_intent_dc_angles_aggregator(self, mock_run):
-        mock_run.side_effect = self._make_codex_stub({
+        mock_run.side_effect = _make_codex_stub({
             "intent": (0, "Inferred intent: stub.\n"),
             "dead-code-search": (0, "dc evidence\n"),
             "aggregator": (0, "# Review\nVERDICT: APPROVE\n"),
@@ -625,10 +636,10 @@ class TestRunPipeline(unittest.TestCase):
             pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
         )
         self.assertEqual(rc, 0)
-        # All 8 angles ran
-        for angle in pipeline.ANGLES:
-            self.assertTrue((self.run_dir / "agents" / angle / "output.md").exists())
-            self.assertTrue((self.run_dir / "agents" / f"critic-{angle}" / "output.md").exists())
+        # All 8 specialists ran
+        for specialist in pipeline.SPECIALISTS:
+            self.assertTrue((self.run_dir / "agents" / specialist / "output.md").exists())
+            self.assertTrue((self.run_dir / "agents" / f"critic-{specialist}" / "output.md").exists())
         # Aggregator ran
         self.assertTrue((self.run_dir / "agents" / "aggregator" / "output.md").exists())
         # Momentum did NOT run (no previous-review.md)
@@ -637,7 +648,7 @@ class TestRunPipeline(unittest.TestCase):
     @patch("pipeline.subprocess.run")
     def test_re_review_runs_momentum(self, mock_run):
         (self.run_dir / "inputs" / "previous-review.md").write_text("prior review body\n")
-        mock_run.side_effect = self._make_codex_stub({
+        mock_run.side_effect = _make_codex_stub({
             "intent": (0, "Inferred intent: stub.\n"),
             "dead-code-search": (0, "dc\n"),
             "momentum": (0, "momentum body\n"),
@@ -653,7 +664,7 @@ class TestRunPipeline(unittest.TestCase):
 
     @patch("pipeline.subprocess.run")
     def test_intent_failure_aborts(self, mock_run):
-        mock_run.side_effect = self._make_codex_stub({
+        mock_run.side_effect = _make_codex_stub({
             "intent": (7, ""),
         })
         rc = pipeline.run_pipeline(
@@ -668,7 +679,7 @@ class TestRunPipeline(unittest.TestCase):
     @patch("pipeline.subprocess.run")
     def test_dead_code_failure_aborts_loud(self, mock_run):
         """dead-code-search becomes fail-loud (was fail-soft in shell pipeline)."""
-        mock_run.side_effect = self._make_codex_stub({
+        mock_run.side_effect = _make_codex_stub({
             "intent": (0, "Inferred intent: stub.\n"),
             "dead-code-search": (7, ""),
         })
@@ -682,7 +693,7 @@ class TestRunPipeline(unittest.TestCase):
 
     @patch("pipeline.subprocess.run")
     def test_one_angle_failure_aborts_pipeline(self, mock_run):
-        mock_run.side_effect = self._make_codex_stub({
+        mock_run.side_effect = _make_codex_stub({
             "intent": (0, "Inferred intent: stub.\n"),
             "dead-code-search": (0, "dc\n"),
             "shape": (5, ""),  # one angle fails
@@ -697,7 +708,7 @@ class TestRunPipeline(unittest.TestCase):
 
     @patch("pipeline.subprocess.run")
     def test_aggregator_failure_aborts(self, mock_run):
-        mock_run.side_effect = self._make_codex_stub({
+        mock_run.side_effect = _make_codex_stub({
             "intent": (0, "Inferred intent: stub.\n"),
             "dead-code-search": (0, "dc\n"),
             "aggregator": (8, ""),
@@ -712,7 +723,7 @@ class TestRunPipeline(unittest.TestCase):
 
     @patch("pipeline.subprocess.run")
     def test_intent_must_have_inferred_intent_prefix(self, mock_run):
-        mock_run.side_effect = self._make_codex_stub({
+        mock_run.side_effect = _make_codex_stub({
             "intent": (0, "wrong prefix\n"),  # missing "Inferred intent: "
         })
         rc = pipeline.run_pipeline(
@@ -722,6 +733,73 @@ class TestRunPipeline(unittest.TestCase):
         )
         self.assertNotEqual(rc, 0)
         self.assertFalse(self.repo_dir.exists())
+
+    @patch("pipeline.subprocess.run")
+    def test_wave_a_runs_intent_and_dead_code_in_parallel(self, mock_run):
+        """Wave A's intent + dead-code-search must run concurrently. Use
+        threading.Barrier(2): both stubs wait at the barrier — if Wave A
+        is serial, the first stub blocks alone and BrokenBarrierError
+        fires, failing the pipeline. The latency win depends on this
+        contract; pin it behaviorally."""
+        barrier = threading.Barrier(2, timeout=5)
+        def hit_barrier(name, _out_path):
+            if name in ("intent", "dead-code-search"):
+                barrier.wait()
+        mock_run.side_effect = _make_codex_stub(before_write=hit_barrier)
+        rc = pipeline.run_pipeline(
+            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
+            prompts_dir=str(self.prompts),
+            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
+        )
+        self.assertEqual(rc, 0)
+
+    @patch("pipeline.subprocess.run")
+    def test_wave_b_runs_specialists_concurrently(self, mock_run):
+        """Wave B's 8-specialist fan-out must run concurrently. Pick two
+        deterministic specialists (security, performance) and gate them
+        on a shared Barrier(2). Serial Wave B regression → first stub
+        blocks alone → BrokenBarrierError → run fails."""
+        barrier = threading.Barrier(2, timeout=5)
+        def hit_barrier(name, _out_path):
+            if name in ("security", "performance"):
+                barrier.wait()
+        mock_run.side_effect = _make_codex_stub(before_write=hit_barrier)
+        rc = pipeline.run_pipeline(
+            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
+            prompts_dir=str(self.prompts),
+            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
+        )
+        self.assertEqual(rc, 0)
+
+    @patch("pipeline.subprocess.run")
+    def test_wave_b_starts_after_wave_a_artifacts_linked(self, mock_run):
+        """Wave A → Wave B is a hard barrier: every specialist (and momentum
+        on re-review) must see `.codex-scratch/inferred-intent.md` and
+        `.codex-scratch/dead-code.md` linked at the moment they start."""
+        (self.run_dir / "inputs" / "previous-review.md").write_text("prior\n")
+        scratch = self.repo_dir / ".codex-scratch"
+        seen_links: list[tuple[str, set[str]]] = []
+        lock = threading.Lock()
+        def capture_scratch_links(name, _out_path):
+            if name in pipeline.SPECIALISTS or name == "momentum":
+                with lock:
+                    seen_links.append((
+                        name,
+                        {p.name for p in scratch.iterdir() if p.is_symlink()},
+                    ))
+        mock_run.side_effect = _make_codex_stub(before_write=capture_scratch_links)
+        rc = pipeline.run_pipeline(
+            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
+            prompts_dir=str(self.prompts),
+            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(seen_links), len(pipeline.SPECIALISTS) + 1)  # +momentum
+        for name, links in seen_links:
+            self.assertIn("inferred-intent.md", links,
+                          f"{name} started before Wave A linked inferred-intent.md")
+            self.assertIn("dead-code.md", links,
+                          f"{name} started before Wave A linked dead-code.md")
 
 
 class TestPipelineCLI(unittest.TestCase):
@@ -805,14 +883,14 @@ class TestPipelineCLI(unittest.TestCase):
         agg_out = self.run_dir / "agents" / "aggregator" / "output.md"
         self.assertTrue(agg_out.exists(), "aggregator output.md missing")
         self.assertIn("VERDICT: APPROVE", agg_out.read_text())
-        for angle in pipeline.ANGLES:
+        for specialist in pipeline.SPECIALISTS:
             self.assertTrue(
-                (self.run_dir / "agents" / angle / "output.md").exists(),
-                f"missing specialist output for {angle}",
+                (self.run_dir / "agents" / specialist / "output.md").exists(),
+                f"missing specialist output for {specialist}",
             )
             self.assertTrue(
-                (self.run_dir / "agents" / f"critic-{angle}" / "output.md").exists(),
-                f"missing critic output for {angle}",
+                (self.run_dir / "agents" / f"critic-{specialist}" / "output.md").exists(),
+                f"missing critic output for {specialist}",
             )
 
     def test_missing_required_env_var_fails_loud(self):
@@ -869,17 +947,31 @@ class TestRealPromptsCompose(unittest.TestCase):
         self.assertIn("owner/repo#42", out, "PR_ID substitution failed")
 
     def test_specialist_compose_against_real_prompts(self):
-        """common-header.md + each angle's body file must compose without error."""
-        for angle in pipeline.ANGLES:
+        """common-header.md + each specialist's body file must compose without error."""
+        for specialist in pipeline.SPECIALISTS:
             out = pipeline.build_prompt(
-                kind="specialist", agent=angle,
+                kind="specialist", agent=specialist,
                 prompts_dir=str(self.real_prompts),
                 pr_id="owner/repo#42", pr_title="Add X",
                 pr_url="https://example/pull/42", pr_author="alice",
             )
-            self.assertNotIn("{{PR_ID}}", out, f"{angle}: PR_ID placeholder leaked")
-            self.assertNotIn("{{SPECIALIST_NAME}}", out, f"{angle}: specialist name leaked")
-            self.assertIn(angle, out, f"{angle}: specialist name missing")
+            self.assertNotIn("{{PR_ID}}", out, f"{specialist}: PR_ID placeholder leaked")
+            self.assertNotIn("{{SPECIALIST_NAME}}", out, f"{specialist}: specialist name leaked")
+            self.assertIn(specialist, out, f"{specialist}: specialist name missing")
+
+    def test_standalone_compose_against_real_prompts(self):
+        """Each standalone prompt body must compose without error against the
+        real prompts/ tree — catches drift in prompts/standalone/{intent,
+        dead-code-search,momentum}.md (e.g. a renamed placeholder)."""
+        for name in ("intent", "dead-code-search", "momentum"):
+            out = pipeline.build_prompt(
+                kind="standalone", agent=name,
+                prompts_dir=str(self.real_prompts),
+                pr_id="owner/repo#42", pr_title="Add X",
+                pr_url="https://example/pull/42", pr_author="alice",
+            )
+            self.assertNotIn("{{PR_ID}}", out, f"{name}: PR_ID placeholder leaked")
+            self.assertNotIn("{{PR_TITLE}}", out, f"{name}: PR_TITLE placeholder leaked")
 
 
 if __name__ == "__main__":
