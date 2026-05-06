@@ -252,17 +252,9 @@ done
 
 PIPELINE=lib/pipeline.py
 
-echo "  asserting momentum gate on previous-review.md..."
-# Fence the EXACT guard expression, not the bare substring "previous-review.md"
-# (which appears in unrelated write_scratch calls + comments and would PASS
-# even if the re-review-only gate around the momentum specialist disappeared).
-assert_grep "pipeline.py missing momentum gate (prev_review.exists() and size > 0)" \
-    'prev_review.exists() and prev_review.stat().st_size > 0' "$PIPELINE"
-
-echo "  asserting momentum output symlink to .codex-scratch/momentum.md..."
-assert_grep "pipeline.py missing symlink target .codex-scratch/momentum.md" \
-    'momentum.md' "$PIPELINE"
-
+# Cross-file path token: review-one-pr.sh must invoke pipeline.py. Smoke
+# layer owns this because it spans two files; runtime ordering inside
+# pipeline.py belongs to TestRunPipeline (`lib/tests/test_pipeline.py`).
 echo "  asserting pipeline.py is invoked from review-one-pr.sh..."
 assert_grep "review-one-pr.sh does not invoke lib/pipeline.py" \
     'pipeline.py' lib/review-one-pr.sh
