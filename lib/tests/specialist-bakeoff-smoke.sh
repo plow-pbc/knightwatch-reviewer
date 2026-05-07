@@ -386,8 +386,8 @@ run_driver
 LOVED=$(sqlite3 "$DB_FILE" "SELECT loved_positive FROM specialist_runs WHERE specialist='tests';")
 [ "$LOVED" = "1" ] || { echo "FAIL scenario 7: kw-props did not mark loved_positive (got '$LOVED')"; exit 1; }
 
-# ---- scenario 8: trusted /kw-critique after substantive review → loved_negative=1 ----
-echo "    scenario 8: trusted /kw-critique after substantive review → loved_negative=1..."
+# ---- scenario 8: trusted /kw-critique after substantive review → critiqued=1 ----
+echo "    scenario 8: trusted /kw-critique after substantive review → critiqued=1..."
 rm -f "$DB_FILE"
 python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
 import json
@@ -409,15 +409,15 @@ print(json.dumps([
 ]))
 PYEOF
 run_driver
-CRIT=$(sqlite3 "$DB_FILE" "SELECT loved_negative FROM specialist_runs WHERE specialist='shape';")
-[ "$CRIT" = "1" ] || { echo "FAIL scenario 8: kw-critique did not mark loved_negative (got '$CRIT')"; exit 1; }
+CRIT=$(sqlite3 "$DB_FILE" "SELECT critiqued FROM specialist_runs WHERE specialist='shape';")
+[ "$CRIT" = "1" ] || { echo "FAIL scenario 8: kw-critique did not mark critiqued (got '$CRIT')"; exit 1; }
 
 # ---- scenario 9: re-running walker is idempotent (rows + flags unchanged) ----
 echo "    scenario 9: re-walk on same input is idempotent..."
 # Don't rm DB — reuse scenario 8's state, run again.
-BEFORE=$(sqlite3 "$DB_FILE" "SELECT COUNT(*), SUM(loved_negative) FROM specialist_runs;")
+BEFORE=$(sqlite3 "$DB_FILE" "SELECT COUNT(*), SUM(critiqued) FROM specialist_runs;")
 run_driver
-AFTER=$(sqlite3 "$DB_FILE" "SELECT COUNT(*), SUM(loved_negative) FROM specialist_runs;")
+AFTER=$(sqlite3 "$DB_FILE" "SELECT COUNT(*), SUM(critiqued) FROM specialist_runs;")
 [ "$BEFORE" = "$AFTER" ] || { echo "FAIL scenario 9: re-walk changed state (before=$BEFORE after=$AFTER)"; exit 1; }
 
 # ---- scenario 10: successful walk advances watermark to max review created_at ----

@@ -23,7 +23,7 @@ COUNT=$(sqlite3 "$DB" "SELECT COUNT(*) FROM specialist_runs;")
 
 echo "  upsert_specialist_run: inserts new row with default flags 0..."
 upsert_specialist_run "$DB" srosro/repo 200 security 8 2026-05-02T00:00:00Z
-ROW=$(sqlite3 "$DB" "SELECT specialist, published, applied, loved_positive, loved_negative FROM specialist_runs WHERE comment_id=200 AND specialist='security';")
+ROW=$(sqlite3 "$DB" "SELECT specialist, published, applied, loved_positive, critiqued FROM specialist_runs WHERE comment_id=200 AND specialist='security';")
 [ "$ROW" = "security|0|0|0|0" ] || { echo "FAIL: defaults wrong: $ROW"; exit 1; }
 
 echo "  upsert_specialist_run: re-upsert preserves flag columns..."

@@ -7,11 +7,20 @@
 #   - published:      did this specialist contribute any probe to the review
 #   - applied:        was any cited path of any of its probes touched by the PR
 #   - loved_positive: did a /kw-props or /srosro-memorize quoting it land
-#   - loved_negative: did a /kw-critique quoting it land
+#   - critiqued:      did a /kw-critique quoting it land
 #
 # Re-walks must NOT reset the flag columns to 0 — that's why row creation
 # uses `INSERT … ON CONFLICT DO UPDATE` that touches only `last_walked_at`,
 # and flag updates are separate UPDATE statements.
+
+# SQL injection invariant: every string field interpolated below ($repo,
+# $specialist, $ts, $before_ts) MUST be pre-validated by callers — the
+# parsers in lib/bakeoff-parsers.sh constrain inputs to [a-z][a-z,-]*
+# (specialist names) and ISO8601 timestamps (timestamps); $repo comes from
+# operator-controlled tracked-repos.sh; integer fields (comment_id,
+# pr_number) are unquoted and rely on jq -r .id producing integers.
+# If you add a new helper that interpolates a new field, audit its
+# upstream parser/validator before merging.
 
 # Bootstrap the schema. Idempotent — safe to call on every walk.
 store_init() {
@@ -28,7 +37,7 @@ CREATE TABLE IF NOT EXISTS specialist_runs (
     applied_added   INTEGER NOT NULL DEFAULT 0,
     applied_removed INTEGER NOT NULL DEFAULT 0,
     loved_positive  INTEGER NOT NULL DEFAULT 0,
-    loved_negative  INTEGER NOT NULL DEFAULT 0,
+    critiqued       INTEGER NOT NULL DEFAULT 0,
     last_walked_at  TEXT    NOT NULL,
     PRIMARY KEY (repo, comment_id, specialist)
 );
@@ -69,7 +78,7 @@ SQL
 mark_published()      { _mark_flag "$1" "$2" "$3" "$4" published; }
 mark_applied()        { _mark_flag "$1" "$2" "$3" "$4" applied; }
 mark_loved_positive() { _mark_flag "$1" "$2" "$3" "$4" loved_positive; }
-mark_loved_negative() { _mark_flag "$1" "$2" "$3" "$4" loved_negative; }
+mark_critiqued()      { _mark_flag "$1" "$2" "$3" "$4" critiqued; }
 
 # Set both LOC counters in one UPDATE. SET semantics (overwrite, not increment),
 # so a re-walk that observes a different commit on the PR replaces stale values.
@@ -124,7 +133,7 @@ SELECT
     SUM(applied_added) AS added,
     SUM(applied_removed) AS removed,
     SUM(loved_positive) AS loved,
-    SUM(loved_negative) AS critiqued
+    SUM(critiqued) AS critiqued
 FROM specialist_runs
 WHERE ran_at >= '$window_iso'
 GROUP BY specialist

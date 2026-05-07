@@ -193,7 +193,7 @@ for repo in "${REPOS[@]}"; do
             done <<< "$positives"
             while IFS= read -r specialist; do
                 [ -z "$specialist" ] && continue
-                mark_loved_negative "$DB_FILE" "$repo" "$target_review" "$specialist"
+                mark_critiqued "$DB_FILE" "$repo" "$target_review" "$specialist"
             done <<< "$negatives"
         fi
     done < <(printf '%s' "$comments_json" \
