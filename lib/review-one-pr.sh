@@ -226,6 +226,24 @@ if [ -z "$BASE_REF" ] || [ -z "$PR_AUTHOR" ]; then
     exit 1
 fi
 
+# Verify GitHub has published refs/pull/$PR_NUM/head BEFORE the
+# placeholder post. GitHub doesn't publish this ref atomically with PR
+# creation — refs/pull/N/merge appears immediately, but /head can lag
+# for many minutes (observed on plow-pbc/watchmepivot#20: 17+ minutes
+# between PR open and /head propagation). Without this precheck, the
+# canonical fetch at line ~340 (`git fetch +refs/pull/N/head:...`) would
+# fail, the EXIT trap would rewrite the just-posted placeholder to
+# "review aborted", and the orchestrator would re-dispatch every 2-min
+# tick — PRs with no successful prior review skip the stability
+# cooldown (review.sh's `[ -n "$KNOWN_SHA" ] && ...` gate), so the loop
+# would spam the PR with placeholder + abort-PATCH pairs until GitHub
+# catches up. Posting nothing on this skip lets the next tick retry
+# silently, costing only a no-op orchestrator cycle.
+if ! gh api "repos/$REPO/git/refs/pull/$PR_NUM/head" >/dev/null 2>&1; then
+    log "$PR_ID: refs/pull/$PR_NUM/head not yet published by GitHub — skipping (PR likely just opened; next tick will retry)"
+    exit 0
+fi
+
 # Post a "reviewing" placeholder immediately so the PR author sees the bot
 # picked up the work — the full run (`just test` up to 30m + 6 specialists +
 # critic + aggregator) can take many minutes. We keep the comment ID so we
