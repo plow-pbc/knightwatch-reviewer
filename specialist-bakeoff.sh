@@ -138,49 +138,55 @@ for repo in "${REPOS[@]}"; do
             set_max_severity "$DB_FILE" "$repo" "$review_id" "$specialist" "${spec_max_sev[$specialist]}"
         done
         unset spec_max_sev
+        # Applied accuracy note: clear_applied_for_review only runs when this
+        # walk actually fetched the review (since=watermark - OVERLAP_HOURS).
+        # A PR force-pushed >24h after its last review activity won't have its
+        # Applied/+LOC reset until the next bot review on that PR. Acceptable
+        # at current scale — bake-off aggregates many PRs per specialist, so a
+        # few stale rows from late force-pushes are noise, not signal.
         if [ "$pr_files_ok" = "1" ]; then
-            # Clear stale Applied/+LOC for this review before recomputing — handles
-            # the rewalk case where the PR diff stopped touching a previously-
-            # matched cited path (incl. the empty-diff force-push edge case where
-            # pulls/files succeeds with an empty list).
+            # Clear stale Applied/+LOC before recomputing — handles the rewalk
+            # case where the PR diff stopped touching a previously-matched cited
+            # path (incl. the empty-diff force-push edge case where pulls/files
+            # succeeds with an empty list).
             clear_applied_for_review "$DB_FILE" "$repo" "$review_id"
 
-            if [ -n "$pr_paths" ]; then
-                # Collect deduped (specialist, path) pairs across all probes in this review.
-                declare -A spec_paths_seen=()
-                while IFS= read -r probe_line; do
-                    specialist=$(printf '%s\n' "$probe_line" | count_attributions || true)
-                    [ -z "$specialist" ] && continue
-                    while IFS= read -r p; do
-                        [ -z "$p" ] && continue
-                        spec_paths_seen["${specialist}	${p}"]=1
-                    done < <(printf '%s\n' "$probe_line" | probe_cited_paths)
-                done < <(printf '%s\n' "$review_body" | grep -E '^[0-9]+\.' || true)
+            # Collect deduped (specialist, path) pairs across all probes in this review.
+            # Empty $pr_paths is a no-op below — the path-intersection grep matches
+            # nothing, spec_matched stays empty, no marks issued. No special case needed.
+            declare -A spec_paths_seen=()
+            while IFS= read -r probe_line; do
+                specialist=$(printf '%s\n' "$probe_line" | count_attributions || true)
+                [ -z "$specialist" ] && continue
+                while IFS= read -r p; do
+                    [ -z "$p" ] && continue
+                    spec_paths_seen["${specialist}	${p}"]=1
+                done < <(printf '%s\n' "$probe_line" | probe_cited_paths)
+            done < <(printf '%s\n' "$review_body" | grep -E '^[0-9]+\.' || true)
 
-                # Per specialist: sum LOC across paths that touched the PR; mark + record.
-                declare -A spec_added=()
-                declare -A spec_removed=()
-                declare -A spec_matched=()
-                pr_files_tsv="${pr_files_cache[$cache_key]}"
-                for key in "${!spec_paths_seen[@]}"; do
-                    specialist="${key%%	*}"
-                    path="${key#*	}"
-                    if grep -qFx "$path" <<< "$pr_paths"; then
-                        loc_line=$(printf '%s\n' "$pr_files_tsv" | awk -F'\t' -v p="$path" '$1==p {print $2"\t"$3; exit}')
-                        a=$(printf '%s' "$loc_line" | cut -f1)
-                        r=$(printf '%s' "$loc_line" | cut -f2)
-                        spec_added["$specialist"]=$((${spec_added[$specialist]:-0} + ${a:-0}))
-                        spec_removed["$specialist"]=$((${spec_removed[$specialist]:-0} + ${r:-0}))
-                        spec_matched["$specialist"]=1
-                    fi
-                done
-                for specialist in "${!spec_matched[@]}"; do
-                    mark_applied "$DB_FILE" "$repo" "$review_id" "$specialist"
-                    set_applied_loc "$DB_FILE" "$repo" "$review_id" "$specialist" \
-                        "${spec_added[$specialist]:-0}" "${spec_removed[$specialist]:-0}"
-                done
-                unset spec_paths_seen spec_added spec_removed spec_matched
-            fi
+            # Per specialist: sum LOC across paths that touched the PR; mark + record.
+            declare -A spec_added=()
+            declare -A spec_removed=()
+            declare -A spec_matched=()
+            pr_files_tsv="${pr_files_cache[$cache_key]}"
+            for key in "${!spec_paths_seen[@]}"; do
+                specialist="${key%%	*}"
+                path="${key#*	}"
+                if grep -qFx "$path" <<< "$pr_paths"; then
+                    loc_line=$(printf '%s\n' "$pr_files_tsv" | awk -F'\t' -v p="$path" '$1==p {print $2"\t"$3; exit}')
+                    a=$(printf '%s' "$loc_line" | cut -f1)
+                    r=$(printf '%s' "$loc_line" | cut -f2)
+                    spec_added["$specialist"]=$((${spec_added[$specialist]:-0} + ${a:-0}))
+                    spec_removed["$specialist"]=$((${spec_removed[$specialist]:-0} + ${r:-0}))
+                    spec_matched["$specialist"]=1
+                fi
+            done
+            for specialist in "${!spec_matched[@]}"; do
+                mark_applied "$DB_FILE" "$repo" "$review_id" "$specialist"
+                set_applied_loc "$DB_FILE" "$repo" "$review_id" "$specialist" \
+                    "${spec_added[$specialist]:-0}" "${spec_removed[$specialist]:-0}"
+            done
+            unset spec_paths_seen spec_added spec_removed spec_matched
         fi
 
         walked_reviews=$((walked_reviews + 1))
