@@ -135,6 +135,11 @@ for repo in "${REPOS[@]}"; do
         done
         unset spec_max_sev
         if [ -n "$pr_paths" ]; then
+            # Clear stale Applied/+LOC for this review before recomputing — handles
+            # the rewalk case where the PR diff stopped touching a previously-
+            # matched cited path.
+            clear_applied_for_review "$DB_FILE" "$repo" "$review_id"
+
             # Collect deduped (specialist, path) pairs across all probes in this review.
             declare -A spec_paths_seen=()
             while IFS= read -r probe_line; do

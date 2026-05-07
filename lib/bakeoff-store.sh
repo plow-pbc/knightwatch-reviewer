@@ -139,6 +139,21 @@ UPDATE specialist_runs
 SQL
 }
 
+# Reset applied + applied_added + applied_removed for every (specialist) row
+# of a given (repo, comment_id). Called by the walker BEFORE recomputing
+# applied matches, so that stale credit (PR diff stopped touching the
+# previously-matched path) gets cleared. Only call AFTER pulls/files
+# succeeds — otherwise you'd nuke previously-correct data on a transient
+# API failure.
+clear_applied_for_review() {
+    local db="$1" repo="$2" comment_id="$3"
+    sqlite3 "$db" <<SQL
+UPDATE specialist_runs
+   SET applied = 0, applied_added = 0, applied_removed = 0
+ WHERE repo = '$repo' AND comment_id = $comment_id;
+SQL
+}
+
 # Find the most-recent prior review on (repo, pr) before before_ts.
 # Used by the walker's pass-2 to attribute feedback comments to a specific
 # (review, specialist) row. Returns empty string if no qualifying review.

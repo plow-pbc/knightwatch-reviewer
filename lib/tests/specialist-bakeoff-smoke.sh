@@ -501,4 +501,34 @@ run_driver
 SEV=$(sqlite3 "$DB_FILE" "SELECT max_severity FROM specialist_runs WHERE specialist='tests';")
 [ "$SEV" = "blocking" ] || { echo "FAIL scenario 12: max_severity='$SEV' (expected 'blocking')"; exit 1; }
 
+# ---- scenario 13: rewalk with PR diff no longer touching cited path → applied resets to 0 ----
+echo "    scenario 13: rewalk after PR diff stops touching cited path → applied resets..."
+rm -f "$DB_FILE"
+python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
+import json
+print(json.dumps([{
+    "id": 1300,
+    "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/130",
+    "created_at": "2026-04-15T12:00:00Z",
+    "user": {"login": "testbot"},
+    "body": "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=shape -->\n\n**Probes**\n\n1. [blocking] [from: shape] cycle. Files: x.sh.\n\n_How to use: auto-reviews every new PR..._"
+}]))
+PYEOF
+# First walk: PR touches x.sh — applied should be 1.
+export MOCK_PULLS_FILES_FILE="$TMPDIR_SMOKE/pulls-files.txt"
+printf 'x.sh\t10\t2\n' > "$MOCK_PULLS_FILES_FILE"
+run_driver
+A1=$(sqlite3 "$DB_FILE" "SELECT applied, applied_added, applied_removed FROM specialist_runs WHERE specialist='shape';")
+[ "$A1" = "1|10|2" ] || { echo "FAIL scenario 13 first walk: '$A1'"; exit 1; }
+
+# Second walk: PR no longer touches x.sh (force-push removed those changes).
+# Applied should reset to 0; LOC should reset to 0.
+printf 'unrelated.sh\t99\t0\n' > "$MOCK_PULLS_FILES_FILE"
+run_driver
+A2=$(sqlite3 "$DB_FILE" "SELECT applied, applied_added, applied_removed FROM specialist_runs WHERE specialist='shape';")
+[ "$A2" = "0|0|0" ] || { echo "FAIL scenario 13 rewalk: expected '0|0|0', got '$A2'"; exit 1; }
+
+rm -f "$MOCK_PULLS_FILES_FILE"
+unset MOCK_PULLS_FILES_FILE
+
 echo "PASS"

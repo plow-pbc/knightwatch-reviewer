@@ -135,4 +135,26 @@ set_max_severity "$DB6" srosro/repo 9000 tests blocking
 ROW=$(sqlite3 "$DB6" "SELECT max_severity FROM specialist_runs WHERE comment_id=9000 AND specialist='tests';")
 [ "$ROW" = "blocking" ] || { echo "FAIL: set_max_severity round-trip: $ROW"; exit 1; }
 
+echo "  clear_applied_for_review: resets applied + LOC for all rows of a (repo, comment_id)..."
+DB7="$TMP/bakeoff7.db"
+store_init "$DB7"
+upsert_specialist_run "$DB7" srosro/repo 5000 tests 99 2026-04-15T00:00:00Z
+upsert_specialist_run "$DB7" srosro/repo 5000 shape 99 2026-04-15T00:00:00Z
+mark_applied "$DB7" srosro/repo 5000 tests
+mark_applied "$DB7" srosro/repo 5000 shape
+set_applied_loc "$DB7" srosro/repo 5000 tests 50 10
+set_applied_loc "$DB7" srosro/repo 5000 shape 25 5
+clear_applied_for_review "$DB7" srosro/repo 5000
+OUT=$(sqlite3 -separator , "$DB7" "SELECT specialist, applied, applied_added, applied_removed FROM specialist_runs WHERE comment_id=5000 ORDER BY specialist;")
+EXPECTED='shape,0,0,0
+tests,0,0,0'
+[ "$OUT" = "$EXPECTED" ] || { echo "FAIL: clear_applied_for_review: got '$OUT'"; exit 1; }
+
+echo "  clear_applied_for_review: scoped to (repo, comment_id) — other rows untouched..."
+upsert_specialist_run "$DB7" srosro/repo 6000 tests 88 2026-04-15T00:00:00Z
+mark_applied "$DB7" srosro/repo 6000 tests
+clear_applied_for_review "$DB7" srosro/repo 5000   # different comment_id
+OUT=$(sqlite3 "$DB7" "SELECT applied FROM specialist_runs WHERE comment_id=6000 AND specialist='tests';")
+[ "$OUT" = "1" ] || { echo "FAIL: cross-comment leak — comment_id=6000 got reset, applied='$OUT'"; exit 1; }
+
 echo "PASS"
