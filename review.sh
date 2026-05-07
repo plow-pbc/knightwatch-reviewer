@@ -9,8 +9,8 @@
 # ReadWritePaths — a writable-interpreter resolution path. Hard-coding
 # /bin/bash blocks the writable-PATH attack regardless of $PATH order.
 # The systemd unit's Environment=PATH puts system dirs FIRST and trails
-# the writable user dirs, so user-installed tools (codex via npm-global,
-# pipx packages in ~/.local/bin) remain reachable without prepending the
+# the writable user dirs, so user-installed tools (codex via nvm-managed
+# per-version bin, pipx packages in ~/.local/bin) remain reachable without prepending the
 # writable dirs in front of system tools. Do NOT re-add an
 # `export PATH=$HOME/.local/bin:...` here — that would let an attacker
 # place ~/.local/bin/timeout (or gh, git, awk, …) and have it shadow
