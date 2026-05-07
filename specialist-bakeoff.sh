@@ -21,6 +21,9 @@
 #   - findings emitted-but-dropped pre-aggregator (specialist files don't
 #     persist past the run); see plan doc for the trade.
 #   - sentiment on memorize bodies (opt-in is the signal, not text valence).
+#   - PRs whose pulls/files lookup fails contribute Shipped/Loved but not
+#     Applied — logged as WARN in bakeoff.log, run continues. (Repo-level
+#     comments/collaborators fetch failures, by contrast, abort the run.)
 set -euo pipefail
 [ -n "${BASH_VERSION:-}" ] || { echo "FATAL: bash required"; exit 1; }
 
@@ -132,7 +135,7 @@ for repo in "${REPOS[@]}"; do
                 | grep -qFxf <(printf '%s\n' "$pr_paths"); then
                 echo "$specialist" >> "$applied_tmp"
             fi
-        done < <(printf '%b\n' "$review_body" | grep -E '^[0-9]+\.' || true)
+        done < <(printf '%b\n' "$review_body" | grep -E '^[0-9]+\. \[' || true)
     done < <(printf '%s' "$comments_json" \
         | jq -r --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" \
              ".[] | select($SUBSTANTIVE_REVIEW_JQ) | [.issue_url, .body] | @tsv")
