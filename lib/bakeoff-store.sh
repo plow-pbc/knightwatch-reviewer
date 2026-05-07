@@ -14,11 +14,14 @@
 # and flag updates are separate UPDATE statements.
 
 # SQL injection invariant: every string field interpolated below ($repo,
-# $specialist, $ts, $before_ts) MUST be pre-validated by callers — the
+# $specialist, $ts, $before_ts, $sev) MUST be pre-validated by callers — the
 # parsers in lib/bakeoff-parsers.sh constrain inputs to [a-z][a-z,-]*
 # (specialist names) and ISO8601 timestamps (timestamps); $repo comes from
-# operator-controlled tracked-repos.sh; integer fields (comment_id,
-# pr_number) are unquoted and rely on jq -r .id producing integers.
+# operator-controlled tracked-repos.sh; $sev comes from probe_severity() in
+# lib/bakeoff-parsers.sh which constrains to [a-z]+ via the `^N. [<sev>]`
+# probe shape, and callers MUST pass a value from severity_rank()'s key set
+# (blocking|medium|low|open|''); integer fields (comment_id, pr_number) are
+# unquoted and rely on jq -r .id producing integers.
 # If you add a new helper that interpolates a new field, audit its
 # upstream parser/validator before merging.
 
@@ -127,6 +130,8 @@ severity_rank() {
 # simple and severity_rank stays the only seam that knows the order.
 set_max_severity() {
     local db="$1" repo="$2" comment_id="$3" specialist="$4" sev="$5"
+    # $sev MUST be from severity_rank()'s key set: blocking|medium|low|open|''
+    # (validated upstream by probe_severity() in lib/bakeoff-parsers.sh).
     sqlite3 "$db" <<SQL
 UPDATE specialist_runs
    SET max_severity = '$sev'
