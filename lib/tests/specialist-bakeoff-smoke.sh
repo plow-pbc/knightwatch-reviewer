@@ -99,6 +99,7 @@ trap 'rm -rf "$TMPDIR_SMOKE"' EXIT
 export STATE_DIR="$TMPDIR_SMOKE/state"
 export OUT_FILE="$STATE_DIR/specialist-bakeoff.md"
 export LOG_FILE="$STATE_DIR/bakeoff.log"
+export DB_FILE="$STATE_DIR/bakeoff.db"
 export BOT_USER="testbot"
 export BOT_AUTO_POST_MARKER="<!-- knightwatch-reviewer:auto-post -->"
 mkdir -p "$STATE_DIR/tmp"
@@ -174,6 +175,7 @@ export REVIEWER_LIB_DIR="$TMPDIR_SMOKE/lib"
 mkdir -p "$REVIEWER_LIB_DIR"
 cp "$REPO_ROOT/lib/tracked-repos.sh"    "$REVIEWER_LIB_DIR/tracked-repos.sh"
 cp "$REPO_ROOT/lib/bakeoff-parsers.sh"  "$REVIEWER_LIB_DIR/bakeoff-parsers.sh"
+cp "$REPO_ROOT/lib/bakeoff-store.sh"    "$REVIEWER_LIB_DIR/bakeoff-store.sh"
 
 # Single tracked repo.
 cat > "$STATE_DIR/repos.conf" <<'CONF'
@@ -184,30 +186,39 @@ run_driver() {
     bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null 2>&1
 }
 
-# ---- scenario 1: no comments → empty table ----
-echo "    scenario 1: no comments → empty table body..."
+# ---- scenario 1: no comments → empty table (placeholder text) ----
+echo "    scenario 1: no comments → placeholder text, no data rows..."
+rm -f "$DB_FILE"
 run_driver
-# Table header is always present; no data rows expected.
 if grep -qE '^\| [a-z]' "$OUT_FILE"; then
-    echo "FAIL scenario 1: expected empty table body, got rows in $OUT_FILE"
+    echo "FAIL scenario 1: expected no data rows, got rows in $OUT_FILE"
+    cat "$OUT_FILE"
+    exit 1
+fi
+if ! grep -qF "Awaiting first reviews" "$OUT_FILE"; then
+    echo "FAIL scenario 1: expected 'Awaiting first reviews' placeholder in $OUT_FILE"
     cat "$OUT_FILE"
     exit 1
 fi
 
 # ---- scenario 2: substantive review, ACK, untrusted memorize, trusted memorize ----
-echo "    scenario 2: review + ACK + memorize (trusted+untrusted) → aggregator 1|0|1..."
+echo "    scenario 2: review + ACK + memorize (trusted+untrusted) → aggregator row..."
 # Four comments split across two pages — load-bearing comment D is on page 2:
-#   A: substantive bot review — has marker, has footer, has [from: aggregator]
+#   A: substantive bot review — has marker, roster, footer, [from: aggregator]
 #   B: same-bot ACK — has marker, NO footer — must NOT count as a review
 #   C: untrusted /srosro-memorize quoting [from: aggregator] — must be ignored
 #   D: (PAGE 2) trusted /srosro-memorize quoting [from: aggregator] — must count
+# A regression that drops --paginate would still produce Loved=0 (page-2
+# trusted memorize never reaches extract_memorize_attributions), so the
+# Loved=1 assertion below is the load-bearing pagination check.
+rm -f "$DB_FILE"
 
 python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
 import json
 comments = [
-    {"id": 1, "user": {"login": "testbot"},        "body": "${BOT_AUTO_POST_MARKER}\n\n**Probes**\n\n1. [blocking] [from: aggregator] The aggregator logic is overfit.\n\n_How to use: auto-reviews every new PR and re-reviews after an hour of inactivity..._"},
-    {"id": 2, "user": {"login": "testbot"},        "body": "${BOT_AUTO_POST_MARKER}\n\n\U0001f440 reviewing..."},
-    {"id": 3, "user": {"login": "untrusted-user"}, "body": "Thanks! /srosro-memorize I agree with [from: aggregator] finding."},
+    {"id": 1, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/20", "created_at": "2026-04-15T12:00:00Z", "user": {"login": "testbot"},        "body": "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=aggregator,tests,security,shape -->\n\n**Probes**\n\n1. [blocking] [from: aggregator] The aggregator logic is overfit.\n\n_How to use: auto-reviews every new PR and re-reviews after an hour of inactivity..._"},
+    {"id": 2, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/20", "created_at": "2026-04-15T12:01:00Z", "user": {"login": "testbot"},        "body": "${BOT_AUTO_POST_MARKER}\n\n\U0001f440 reviewing..."},
+    {"id": 3, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/20", "created_at": "2026-04-15T12:30:00Z", "user": {"login": "untrusted-user"}, "body": "Thanks! /srosro-memorize I agree with [from: aggregator] finding."},
 ]
 print(json.dumps(comments))
 PYEOF
@@ -216,7 +227,7 @@ export MOCK_COMMENTS_FILE_PAGE2="$TMPDIR_SMOKE/comments-page2.json"
 python3 - <<PYEOF > "$MOCK_COMMENTS_FILE_PAGE2"
 import json
 comments = [
-    {"id": 4, "user": {"login": "trusted-human"},  "body": "/srosro-memorize The [from: aggregator] tip was great."},
+    {"id": 4, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/20", "created_at": "2026-04-15T13:00:00Z", "user": {"login": "trusted-human"},  "body": "/srosro-memorize The [from: aggregator] tip was great."},
 ]
 print(json.dumps(comments))
 PYEOF
@@ -230,22 +241,25 @@ if ! grep -q '| aggregator |' "$OUT_FILE"; then
     cat "$OUT_FILE"
     exit 1
 fi
-# Shipped=1 (one substantive review), Loved=1 (one trusted memorize from page 2).
+# 7-col table: | spec | Reviews | Shipped | Applied | Loved | Critiqued | Loved/Shipped |
+# Reviews=1 (one row in store for aggregator), Shipped=1 (probe attributed),
+# Applied=0 (no Files: clause), Loved=1 (page-2 trusted memorize), Critiqued=0.
 # If --paginate were dropped, the page-2 trusted memorize would never reach
 # extract_memorize_attributions and Loved would be 0 — this is the load-bearing
 # pagination assertion.
-if ! grep -qE '\| aggregator \| +1 \| +0 \| +1 \|' "$OUT_FILE"; then
-    echo "FAIL scenario 2: expected aggregator | 1 | 0 | 1 in table (page-2 memorize not merged)"
+if ! grep -qE '\| aggregator \| +1 \| +1 \| +0 \| +1 \| +0 \| +1\.00 \|' "$OUT_FILE"; then
+    echo "FAIL scenario 2: expected aggregator | 1 | 1 | 0 | 1 | 0 | 1.00 in table"
     cat "$OUT_FILE"
     exit 1
 fi
 
 # ---- scenario 3: spoof — non-bot user posts marker → must NOT count ----
 echo "    scenario 3: spoof marker from non-bot user → not counted..."
+rm -f "$DB_FILE"
 python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
 import json
 comments = [
-    {"id": 10, "user": {"login": "evil-actor"}, "body": "${BOT_AUTO_POST_MARKER}\n\n**Probes**\n\n1. [blocking] [from: aggregator] fake review — would count under count_attributions if bot-user selector regressed.\n\n_How to use: auto-reviews every new PR and re-reviews after an hour of inactivity..._"},
+    {"id": 10, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/30", "created_at": "2026-04-15T12:00:00Z", "user": {"login": "evil-actor"}, "body": "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=aggregator,tests,security,shape -->\n\n**Probes**\n\n1. [blocking] [from: aggregator] fake review — would count under count_attributions if bot-user selector regressed.\n\n_How to use: auto-reviews every new PR and re-reviews after an hour of inactivity..._"},
 ]
 print(json.dumps(comments))
 PYEOF
@@ -258,6 +272,7 @@ fi
 
 # ---- scenario 4: gh api failure → partial run, OUT_FILE not overwritten ----
 echo "    scenario 4: gh api failure → exit non-zero, OUT_FILE not overwritten..."
+rm -f "$DB_FILE"
 echo "[]" > "$MOCK_COMMENTS_FILE"
 # Write a sentinel into OUT_FILE so we can confirm it was NOT overwritten.
 echo "SENTINEL" > "$OUT_FILE"
@@ -277,15 +292,17 @@ if ! grep -q "PARTIAL RUN" "$LOG_FILE" 2>/dev/null; then
 fi
 
 # ---- scenario 5: review with cited Files: that overlap PR-touched paths → Applied counted ----
-echo "    scenario 5: review with cited Files: paths matching PR diff → shape 1|1|0..."
+echo "    scenario 5: review with cited Files: paths matching PR diff → shape Applied=1..."
 # A substantive bot review citing x.sh as a Files: path. The mocked
 # pulls/files endpoint reports x.sh in the PR's touched set.
-# Expected: Applied=1 for the shape specialist, Loved=0.
+# Expected: Reviews=1, Shipped=1, Applied=1, Loved=0, Critiqued=0.
+rm -f "$DB_FILE"
 
 python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
 import json
 body = (
-    "<!-- knightwatch-reviewer:auto-post -->\n\n"
+    "<!-- knightwatch-reviewer:auto-post -->\n"
+    "<!-- knightwatch-bakeoff: specialists=shape,tests -->\n\n"
     "**Probes**\n\n"
     "1. [blocking] [from: shape] [shape] Foo. Files: x.sh. Edit: y.\n\n"
     "_How to use: auto-reviews every new PR..._"
@@ -293,6 +310,7 @@ body = (
 print(json.dumps([{
     "id": 100,
     "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/42",
+    "created_at": "2026-04-15T12:00:00Z",
     "user": {"login": "testbot"},
     "body": body,
 }]))
@@ -306,10 +324,87 @@ run_driver
 rm -f "$MOCK_PULLS_FILES_FILE"
 unset MOCK_PULLS_FILES_FILE
 
-if ! grep -qE '\| shape \| +1 \| +1 \| +0 \|' "$OUT_FILE"; then
-    echo "FAIL scenario 5: expected shape | 1 | 1 | 0 in table (Applied=1 from x.sh ∩ x.sh)"
+if ! grep -qE '\| shape \| +1 \| +1 \| +1 \| +0 \| +0 \| +0\.00 \|' "$OUT_FILE"; then
+    echo "FAIL scenario 5: expected shape | 1 | 1 | 1 | 0 | 0 | 0.00 in table"
     cat "$OUT_FILE"
     exit 1
 fi
+
+# ---- scenario 6: substantive review WITHOUT roster marker → no rows in store ----
+echo "    scenario 6: review without roster marker → no rows in store..."
+rm -f "$DB_FILE"
+python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
+import json
+print(json.dumps([{
+    "id": 600,
+    "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/60",
+    "created_at": "2026-04-15T12:00:00Z",
+    "user": {"login": "testbot"},
+    "body": "${BOT_AUTO_POST_MARKER}\n\n**Probes**\n\n1. [blocking] [from: tests] missing test. Files: x.sh.\n\n_How to use: auto-reviews every new PR..._"
+}]))
+PYEOF
+run_driver
+ROW_COUNT=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM specialist_runs;")
+[ "$ROW_COUNT" = "0" ] || { echo "FAIL scenario 6: marker-less review created rows ($ROW_COUNT)"; exit 1; }
+
+# ---- scenario 7: trusted /kw-props after substantive review → loved_positive=1 ----
+echo "    scenario 7: trusted /kw-props after substantive review → loved_positive=1..."
+rm -f "$DB_FILE"
+python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
+import json
+print(json.dumps([
+    {
+        "id": 700,
+        "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/70",
+        "created_at": "2026-04-15T12:00:00Z",
+        "user": {"login": "testbot"},
+        "body": "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=tests,shape -->\n\n**Probes**\n\n1. [blocking] [from: tests] missing test. Files: x.sh.\n\n_How to use: auto-reviews every new PR..._"
+    },
+    {
+        "id": 701,
+        "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/70",
+        "created_at": "2026-04-15T13:00:00Z",
+        "user": {"login": "trusted-human"},
+        "body": "/kw-props [from: tests] solid catch"
+    }
+]))
+PYEOF
+run_driver
+LOVED=$(sqlite3 "$DB_FILE" "SELECT loved_positive FROM specialist_runs WHERE specialist='tests';")
+[ "$LOVED" = "1" ] || { echo "FAIL scenario 7: kw-props did not mark loved_positive (got '$LOVED')"; exit 1; }
+
+# ---- scenario 8: trusted /kw-critique after substantive review → loved_negative=1 ----
+echo "    scenario 8: trusted /kw-critique after substantive review → loved_negative=1..."
+rm -f "$DB_FILE"
+python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
+import json
+print(json.dumps([
+    {
+        "id": 800,
+        "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/80",
+        "created_at": "2026-04-15T12:00:00Z",
+        "user": {"login": "testbot"},
+        "body": "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=shape,tests -->\n\n**Probes**\n\n1. [blocking] [from: shape] cycle. Files: x.sh.\n\n_How to use: auto-reviews every new PR..._"
+    },
+    {
+        "id": 801,
+        "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/80",
+        "created_at": "2026-04-15T13:00:00Z",
+        "user": {"login": "trusted-human"},
+        "body": "/kw-critique [from: shape] misread"
+    }
+]))
+PYEOF
+run_driver
+CRIT=$(sqlite3 "$DB_FILE" "SELECT loved_negative FROM specialist_runs WHERE specialist='shape';")
+[ "$CRIT" = "1" ] || { echo "FAIL scenario 8: kw-critique did not mark loved_negative (got '$CRIT')"; exit 1; }
+
+# ---- scenario 9: re-running walker is idempotent (rows + flags unchanged) ----
+echo "    scenario 9: re-walk on same input is idempotent..."
+# Don't rm DB — reuse scenario 8's state, run again.
+BEFORE=$(sqlite3 "$DB_FILE" "SELECT COUNT(*), SUM(loved_negative) FROM specialist_runs;")
+run_driver
+AFTER=$(sqlite3 "$DB_FILE" "SELECT COUNT(*), SUM(loved_negative) FROM specialist_runs;")
+[ "$BEFORE" = "$AFTER" ] || { echo "FAIL scenario 9: re-walk changed state (before=$BEFORE after=$AFTER)"; exit 1; }
 
 echo "PASS"
