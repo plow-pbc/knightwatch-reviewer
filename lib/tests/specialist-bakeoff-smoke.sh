@@ -56,6 +56,37 @@ if [ -n "$got" ]; then
     exit 1
 fi
 
+echo "  probe_cited_paths: Files-only extract; Edit clause excluded..."
+input=$(cat <<'PROBES'
+1. [blocking] [from: shape] [shape] Foo. Files: a.sh:1, b.md. Edit: see fake.sh:99.
+2. [low] [from: tests] [tests] Bar. Files: t.sh. Edit: do x.
+3. [open] [from: simplification] [simplification] **Q: foo?** — Q text. If yes, x. If no, y.
+PROBES
+)
+got=$(printf '%s\n' "$input" | probe_cited_paths | sort)
+want=$'a.sh\nb.md\nt.sh'
+if [ "$got" != "$want" ]; then
+    echo "FAIL: probe_cited_paths Files-only extract"
+    echo "  got:"
+    echo "$got"
+    echo "  want:"
+    echo "$want"
+    exit 1
+fi
+
+echo "  probe_cited_paths: backtick + :LINE normalization..."
+input2='1. [blocking] [from: shape] [shape] X. Files: `lib/foo.sh:42`, bar.md.'
+got=$(printf '%s\n' "$input2" | probe_cited_paths | sort)
+want2=$'bar.md\nlib/foo.sh'
+if [ "$got" != "$want2" ]; then
+    echo "FAIL: probe_cited_paths normalization"
+    echo "  got:"
+    echo "$got"
+    echo "  want:"
+    echo "$want2"
+    exit 1
+fi
+
 # ============================================================
 # Driver smoke: specialist-bakeoff.sh end-to-end, no network.
 # Mirrors the gh-stub pattern from learn-from-replies-smoke.sh.

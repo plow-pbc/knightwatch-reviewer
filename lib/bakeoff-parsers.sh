@@ -27,3 +27,39 @@ extract_memorize_attributions() {
         | sort -u \
         || true
 }
+
+# probe_cited_paths: read review body(ies) on stdin, emit one cited path
+# per line for every probe that has a `Files:` clause. Anchored to the
+# probe-line shape `N. [<sev>] [from: <spec>] [<class>] ...` per
+# prompts/aggregator.md:162. Files-only — `Edit:` clause paths are
+# intentionally excluded (the Edit: is the proposed remedy, not the
+# subject the probe is about). [open] probes (no Files: clause today)
+# silently emit nothing — they earn no Applied credit by construction.
+# Caller pipes through grep/sort/uniq for set ops or counting.
+probe_cited_paths() {
+    awk '
+    /^[0-9]+\. \[[^]]+\] \[from: [a-z][a-z-]*\]/ {
+        # Extract the Files: segment. Terminator: " Edit:" (yes probes),
+        # " If yes," (open probes that gain Files: in the future), or
+        # end of line. Trim trailing punctuation.
+        files_seg = $0
+        if (sub(/^.*Files: /, "", files_seg)) {
+            sub(/ Edit: .*$/, "", files_seg)
+            sub(/ If yes,.*$/, "", files_seg)
+            sub(/[.;]$/, "", files_seg)
+        } else {
+            next
+        }
+        # Each comma-separated token: strip backticks, leading/trailing
+        # whitespace, and the optional `:LINE` suffix.
+        n = split(files_seg, parts, /, */)
+        for (i = 1; i <= n; i++) {
+            p = parts[i]
+            gsub(/`/, "", p)
+            gsub(/^[ \t]+|[ \t]+$/, "", p)
+            sub(/:[0-9]+$/, "", p)
+            if (p != "") print p
+        }
+    }
+    '
+}
