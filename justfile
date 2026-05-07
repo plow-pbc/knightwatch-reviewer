@@ -114,6 +114,10 @@ test:
     bash lib/tests/review-one-pr-sha-flow-smoke.sh
 
     echo ""
+    echo "=== review-one-pr pull/head precheck smoke test ==="
+    bash lib/tests/review-one-pr-pull-head-smoke.sh
+
+    echo ""
     echo "=== approve-from-replies smoke test ==="
     bash lib/tests/approve-from-replies-smoke.sh
 
