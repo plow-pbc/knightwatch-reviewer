@@ -10,6 +10,7 @@
 - Codex runs with `--dangerously-bypass-approvals-and-sandbox` (Ubuntu 24.04 AppArmor breaks bwrap for unprivileged user namespaces). Outer sandbox is systemd; that substitution is load-bearing and should not be reverted casually.
 - State lives in `~/.pr-reviewer/`. Code lives in this repo. `~/.pr-reviewer/{review.sh, lib, prompts, docs}` are symlinks to the repo.
 - Auto-tuning from PR-reply feedback runs hourly. It only edits `~/.claude/COMMENT_REVIEW_MISTAKES.md` — a ranked top-48 list of calibrations. It does NOT touch hand-curated files (`CODING_STANDARDS.md`, `REVIEW_PRACTICES.md`, `TESTING.md`).
+- Bot command prefix is operator-configurable via `BOT_CMD_PREFIX` (default `srosro`). All command parsers (props/critique/approve/memorize/review/update-review) match `/${BOT_CMD_PREFIX}-<verb>`.
 
 **Persistent stores:**
 - `~/.pr-reviewer/state.json` — legacy "what did we last review?" cache (no longer read or written by production paths; preserved for transition).

@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Unit tests for the lib/bakeoff-parsers.sh stdin parsers — roster marker,
-# /kw-props, /kw-critique. Pure functions; no GH/file I/O.
+# /<prefix>-props, /<prefix>-critique. Pure functions; no GH/file I/O.
+# Pin the prefix to the default ("srosro") so test bodies match the
+# fixture command literals regardless of caller env.
 set -euo pipefail
+export BOT_CMD_PREFIX=srosro
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../bakeoff-parsers.sh"
 FIX="$HERE/fixtures/specialist-bakeoff"
@@ -16,28 +19,28 @@ echo "  extract_roster_marker: missing marker emits nothing..."
 NO_MARKER=$(printf '<!-- knightwatch-reviewer:auto-post -->\n\nno roster here\n' | extract_roster_marker)
 [ -z "$NO_MARKER" ] || { echo "FAIL: expected empty, got: $NO_MARKER"; exit 1; }
 
-echo "  extract_kw_props_attributions: '/kw-props [from: tests]' → tests..."
-OUT=$(printf '/kw-props [from: tests] solid catch on the missing assertion\n' | extract_kw_props_attributions)
-[ "$OUT" = "tests" ] || { echo "FAIL: kw-props: $OUT"; exit 1; }
+echo "  extract_props_attributions: '/srosro-props [from: tests]' → tests..."
+OUT=$(printf '/srosro-props [from: tests] solid catch on the missing assertion\n' | extract_props_attributions)
+[ "$OUT" = "tests" ] || { echo "FAIL: srosro-props: $OUT"; exit 1; }
 
-echo "  extract_kw_props_attributions: ignores body without /kw-props line..."
-OUT=$(printf 'just a comment with [from: tests] mention but no command\n' | extract_kw_props_attributions)
-[ -z "$OUT" ] || { echo "FAIL: kw-props leaked: $OUT"; exit 1; }
+echo "  extract_props_attributions: ignores body without /srosro-props line..."
+OUT=$(printf 'just a comment with [from: tests] mention but no command\n' | extract_props_attributions)
+[ -z "$OUT" ] || { echo "FAIL: srosro-props leaked: $OUT"; exit 1; }
 
-echo "  extract_kw_critique_attributions: '/kw-critique [from: shape]' → shape..."
-OUT=$(printf '/kw-critique [from: shape] this finding misread the contract\n' | extract_kw_critique_attributions)
-[ "$OUT" = "shape" ] || { echo "FAIL: kw-critique: $OUT"; exit 1; }
+echo "  extract_critique_attributions: '/srosro-critique [from: shape]' → shape..."
+OUT=$(printf '/srosro-critique [from: shape] this finding misread the contract\n' | extract_critique_attributions)
+[ "$OUT" = "shape" ] || { echo "FAIL: srosro-critique: $OUT"; exit 1; }
 
-echo "  extract_kw_critique_attributions: requires the command on the same line as the tag..."
-OUT=$(printf '/kw-critique\nseparately: [from: shape] is wrong\n' | extract_kw_critique_attributions)
+echo "  extract_critique_attributions: requires the command on the same line as the tag..."
+OUT=$(printf '/srosro-critique\nseparately: [from: shape] is wrong\n' | extract_critique_attributions)
 [ -z "$OUT" ] || { echo "FAIL: cross-line attribution leaked: $OUT"; exit 1; }
 
-echo "  extract_kw_props_attributions: prose-mentioned [from: X] after command does NOT mis-attribute..."
-OUT=$(printf '/kw-props [from: tests] solid catch — way better than [from: shape] would have been\n' | extract_kw_props_attributions)
+echo "  extract_props_attributions: prose-mentioned [from: X] after command does NOT mis-attribute..."
+OUT=$(printf '/srosro-props [from: tests] solid catch — way better than [from: shape] would have been\n' | extract_props_attributions)
 [ "$OUT" = "tests" ] || { echo "FAIL: prose [from:] leaked: $OUT"; exit 1; }
 
-echo "  extract_kw_props_attributions: same [from: X] repeated → deduped to one..."
-OUT=$(printf '/kw-props [from: tests] line one\n/kw-props [from: tests] line two\n' | extract_kw_props_attributions)
+echo "  extract_props_attributions: same [from: X] repeated → deduped to one..."
+OUT=$(printf '/srosro-props [from: tests] line one\n/srosro-props [from: tests] line two\n' | extract_props_attributions)
 [ "$OUT" = "tests" ] || { echo "FAIL: dedup: $OUT"; exit 1; }
 
 echo "  extract_roster_marker: empty specialists list emits nothing..."

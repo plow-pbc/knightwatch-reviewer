@@ -162,4 +162,8 @@ test:
     bash lib/tests/specialists-roster-smoke.sh
 
     echo ""
+    echo "=== cmd-prefix smoke test ==="
+    bash lib/tests/cmd-prefix-smoke.sh
+
+    echo ""
     echo "all checks passed"

@@ -6,8 +6,8 @@
 # findings. Booleans capture the per-review per-specialist outcome:
 #   - published:      did this specialist contribute any probe to the review
 #   - applied:        was any cited path of any of its probes touched by the PR
-#   - loved_positive: did a /kw-props or /srosro-memorize quoting it land
-#   - critiqued:      did a /kw-critique quoting it land
+#   - loved_positive: did a /srosro-props or /srosro-memorize quoting it land
+#   - critiqued:      did a /srosro-critique quoting it land
 #
 # Re-walks must NOT reset the flag columns to 0 — that's why row creation
 # uses `INSERT … ON CONFLICT DO UPDATE` that touches only `last_walked_at`,

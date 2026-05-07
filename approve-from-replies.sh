@@ -53,6 +53,7 @@ REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 . "$REVIEWER_LIB_DIR/tracked-repos.sh"
 [ ${#REPOS[@]} -ge 1 ] || { echo "FATAL: no tracked repos — populate $STATE_DIR/repos.conf or set REPOS in config.env" >&2; exit 1; }
 BOT_USER="${BOT_USER:-srosro}"
+BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
 BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
 
 # is_trusted_repo_author() — push-access trust gate, shared with review.sh.
@@ -68,7 +69,7 @@ BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-pos
 # substring match would treat "don't use /srosro-approve yet" as an
 # approval, which is the wrong call for a side effect this strong.
 is_approve_request() {
-    printf '%s' "$1" | grep -qiE '^[[:space:]]*/srosro-approve([[:space:]]|$)'
+    printf '%s' "$1" | grep -qiE "^[[:space:]]*/${BOT_CMD_PREFIX}-approve([[:space:]]|$)"
 }
 
 PROCESSED=0
@@ -116,7 +117,7 @@ for REPO in "${REPOS[@]}"; do
             # Defensive bot filter (cheap pre-check before the trust API call).
             case "$USER" in
                 *"[bot]"|"Copilot"|"copilot")
-                    log "$APPROVE_KEY: /srosro-approve from bot @$USER ignored"
+                    log "$APPROVE_KEY: /${BOT_CMD_PREFIX}-approve from bot @$USER ignored"
                     seen_set "$APPROVES_SEEN_FILE" "$APPROVE_KEY"
                     continue
                     ;;
@@ -125,7 +126,7 @@ for REPO in "${REPOS[@]}"; do
             # approval. Drive-by commenters are recorded as seen so we
             # don't re-log on every tick.
             if ! is_trusted_repo_author "$REPO" "$USER"; then
-                log "$APPROVE_KEY: /srosro-approve from @$USER ignored (no push access)"
+                log "$APPROVE_KEY: /${BOT_CMD_PREFIX}-approve from @$USER ignored (no push access)"
                 seen_set "$APPROVES_SEEN_FILE" "$APPROVE_KEY"
                 SKIPPED_UNTRUSTED=$((SKIPPED_UNTRUSTED + 1))
                 continue
@@ -135,7 +136,7 @@ for REPO in "${REPOS[@]}"; do
             # ticks (and review.sh's own filter) treat it as a bot post
             # and don't reprocess it.
             APPROVE_BODY="$BOT_AUTO_POST_MARKER
-Approved on @${USER}'s /srosro-approve request."
+Approved on @${USER}'s /${BOT_CMD_PREFIX}-approve request."
             if gh pr review "$PR_NUM" --repo "$REPO" --approve --body "$APPROVE_BODY" >/dev/null 2>>"$LOG_FILE"; then
                 log "$APPROVE_KEY: approved on @${USER}'s request"
                 # Critical call site: if seen_set fails after a successful
@@ -161,7 +162,7 @@ Approved on @${USER}'s /srosro-approve request."
 done
 
 if [ "$PROCESSED" -eq 0 ] && [ "$SKIPPED_UNTRUSTED" -eq 0 ] && [ "$SKIPPED_FAILED" -eq 0 ]; then
-    log "no new /srosro-approve requests"
+    log "no new /${BOT_CMD_PREFIX}-approve requests"
 else
     log "approves: processed=$PROCESSED skipped_untrusted=$SKIPPED_UNTRUSTED skipped_failed=$SKIPPED_FAILED"
 fi

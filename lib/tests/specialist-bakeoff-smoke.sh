@@ -360,8 +360,8 @@ run_driver
 ROW_COUNT=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM specialist_runs;")
 [ "$ROW_COUNT" = "0" ] || { echo "FAIL scenario 6: marker-less review created rows ($ROW_COUNT)"; exit 1; }
 
-# ---- scenario 7: trusted /kw-props after substantive review → loved_positive=1 ----
-echo "    scenario 7: trusted /kw-props after substantive review → loved_positive=1..."
+# ---- scenario 7: trusted /srosro-props after substantive review → loved_positive=1 ----
+echo "    scenario 7: trusted /srosro-props after substantive review → loved_positive=1..."
 rm -f "$DB_FILE"
 python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
 import json
@@ -378,16 +378,16 @@ print(json.dumps([
         "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/70",
         "created_at": "2026-04-15T13:00:00Z",
         "user": {"login": "trusted-human"},
-        "body": "/kw-props [from: tests] solid catch"
+        "body": "/srosro-props [from: tests] solid catch"
     }
 ]))
 PYEOF
 run_driver
 LOVED=$(sqlite3 "$DB_FILE" "SELECT loved_positive FROM specialist_runs WHERE specialist='tests';")
-[ "$LOVED" = "1" ] || { echo "FAIL scenario 7: kw-props did not mark loved_positive (got '$LOVED')"; exit 1; }
+[ "$LOVED" = "1" ] || { echo "FAIL scenario 7: srosro-props did not mark loved_positive (got '$LOVED')"; exit 1; }
 
-# ---- scenario 8: trusted /kw-critique after substantive review → critiqued=1 ----
-echo "    scenario 8: trusted /kw-critique after substantive review → critiqued=1..."
+# ---- scenario 8: trusted /srosro-critique after substantive review → critiqued=1 ----
+echo "    scenario 8: trusted /srosro-critique after substantive review → critiqued=1..."
 rm -f "$DB_FILE"
 python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
 import json
@@ -404,13 +404,13 @@ print(json.dumps([
         "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/80",
         "created_at": "2026-04-15T13:00:00Z",
         "user": {"login": "trusted-human"},
-        "body": "/kw-critique [from: shape] misread"
+        "body": "/srosro-critique [from: shape] misread"
     }
 ]))
 PYEOF
 run_driver
 CRIT=$(sqlite3 "$DB_FILE" "SELECT critiqued FROM specialist_runs WHERE specialist='shape';")
-[ "$CRIT" = "1" ] || { echo "FAIL scenario 8: kw-critique did not mark critiqued (got '$CRIT')"; exit 1; }
+[ "$CRIT" = "1" ] || { echo "FAIL scenario 8: srosro-critique did not mark critiqued (got '$CRIT')"; exit 1; }
 
 # ---- scenario 9: re-running walker is idempotent (rows + flags unchanged) ----
 echo "    scenario 9: re-walk on same input is idempotent..."

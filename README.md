@@ -92,13 +92,15 @@ The next 2-minute timer tick picks it up. `SOURCE_PATHS` in the same file enable
 
 Reviews fire on PR open and again after one hour of idle. To force a fresh review on the new head, post a slash command:
 
+> **Command prefix:** all bot commands use the prefix from `BOT_CMD_PREFIX` (default: `srosro`). Set it in `~/.pr-reviewer/config.env` to fork-customize. Examples below use the default.
+
 | Command | What |
 |---|---|
 | `/srosro-update-review` | Incremental re-review against the prior reviewed SHA |
 | `/srosro-review` | Whole-PR re-review from scratch |
 | `/srosro-approve` | Approve the PR (push-access collaborators only) |
-| `/kw-props [from: <specialist>]` | +1 a specialist's contribution (drives the bake-off Loved column) |
-| `/kw-critique [from: <specialist>]` | Flag a specialist's contribution as a misread (drives the Critiqued column) |
+| `/srosro-props [from: <specialist>]` | +1 a specialist's contribution (drives the bake-off Loved column) |
+| `/srosro-critique [from: <specialist>]` | Flag a specialist's contribution as a misread (drives the Critiqued column) |
 | `/srosro-memorize` | Teach the bot a calibration lesson from your reply (still credits Loved when you quote a [from: <specialist>] tag, for back-compat) |
 
 ### Specialist bake-off
@@ -110,8 +112,8 @@ A small post-hoc measurement that helps decide which specialists are earning the
 - **Applied** — reviews where any of this specialist's probes cited a path that the PR touched (any commit on the branch). Coarse signal — counts a probe applied even if the cited path was touched BEFORE the probe was raised; the false-positive band is uniform across specialists, so cross-specialist comparison stays meaningful. `[open]` probes (no `Files:` clause) earn no Applied credit.
 - **+LOC** — sum of `additions` across the specialist's applied (deduped) cited paths in the PR's diff.
 - **−LOC** — sum of `deletions`, same scope.
-- **Loved** — reviews where a trusted (push-access) collaborator posted `/kw-props [from: <specialist>]` or a `/srosro-memorize` quoting the tag, after the review.
-- **Critiqued** — reviews where a trusted collaborator posted `/kw-critique [from: <specialist>]`.
+- **Loved** — reviews where a trusted (push-access) collaborator posted `/srosro-props [from: <specialist>]` or a `/srosro-memorize` quoting the tag, after the review.
+- **Critiqued** — reviews where a trusted collaborator posted `/srosro-critique [from: <specialist>]`.
 - **Loved/Shipped** — ratio (small-but-mighty vs high-volume-low-value).
 
 The store is append-only — historical reviews continue accumulating data, and the rolling 30-day window is now a query parameter rather than an API-cost ceiling. Subsequent walks only fetch comments newer than the per-repo watermark (with `OVERLAP_HOURS=24` slack for late-edited feedback).
