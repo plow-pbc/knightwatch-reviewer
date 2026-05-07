@@ -351,23 +351,9 @@ echo "    scenario 5: review with cited Files: paths matching PR diff → shape 
 # Expected: Reviews=1, Shipped=1, Applied=1, Loved=0, Critiqued=0.
 rm -f "$DB_FILE"
 
-python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
-import json
-body = (
-    "<!-- knightwatch-reviewer:auto-post -->\n"
-    "<!-- knightwatch-bakeoff: specialists=shape,tests -->\n\n"
-    "**Probes**\n\n"
-    "1. [blocking] [from: shape] [shape] Foo. Files: x.sh. Edit: y.\n\n"
-    "_How to use: auto-reviews every new PR..._"
-)
-print(json.dumps([{
-    "id": 100,
-    "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/42",
-    "created_at": "2026-04-15T12:00:00Z",
-    "user": {"login": "testbot"},
-    "body": body,
-}]))
-PYEOF
+build_bot_review 100 42 2026-04-15T12:00:00Z shape,tests \
+    '1. [blocking] [from: shape] [shape] Foo. Files: x.sh. Edit: y.' \
+    | jq -s '.' > "$MOCK_COMMENTS_FILE"
 
 export MOCK_PULLS_FILES_FILE="$TMPDIR_SMOKE/pulls-files.txt"
 printf 'x.sh\t12\t3\n' > "$MOCK_PULLS_FILES_FILE"
@@ -431,25 +417,11 @@ AFTER=$(sqlite3 "$DB_FILE" "SELECT COUNT(*), SUM(critiqued) FROM specialist_runs
 # ---- scenario 10: successful walk advances watermark to max review created_at ----
 echo "    scenario 10: watermark advances to max review created_at on success..."
 rm -f "$DB_FILE"
-python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
-import json
-print(json.dumps([
-    {
-        "id": 1000,
-        "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/100",
-        "created_at": "2026-04-15T12:00:00Z",
-        "user": {"login": "testbot"},
-        "body": "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=tests -->\n\n**Probes**\n\n1. [blocking] [from: tests] missing test. Files: x.sh.\n\n_How to use: auto-reviews every new PR..._"
-    },
-    {
-        "id": 1001,
-        "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/100",
-        "created_at": "2026-04-16T12:00:00Z",
-        "user": {"login": "testbot"},
-        "body": "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=tests -->\n\n**Probes**\n\n1. [blocking] [from: tests] another missing test. Files: y.sh.\n\n_How to use: auto-reviews every new PR..._"
-    }
-]))
-PYEOF
+{ build_bot_review 1000 100 2026-04-15T12:00:00Z tests \
+    '1. [blocking] [from: tests] missing test. Files: x.sh.'
+  build_bot_review 1001 100 2026-04-16T12:00:00Z tests \
+    '1. [blocking] [from: tests] another missing test. Files: y.sh.'; } \
+    | jq -s '.' > "$MOCK_COMMENTS_FILE"
 run_driver
 WM=$(sqlite3 "$DB_FILE" "SELECT last_walked_at FROM walks WHERE repo='test-org/bakeoff-probe';")
 [ "$WM" = "2026-04-16T12:00:00Z" ] || { echo "FAIL scenario 10: watermark='$WM' (expected the later timestamp 2026-04-16)"; exit 1; }
@@ -458,30 +430,16 @@ WM=$(sqlite3 "$DB_FILE" "SELECT last_walked_at FROM walks WHERE repo='test-org/b
 echo "    scenario 11: pulls/files failure holds watermark (per-repo failure gating)..."
 rm -f "$DB_FILE"
 # Seed a watermark via a successful initial run
-python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
-import json
-print(json.dumps([{
-    "id": 1100,
-    "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/110",
-    "created_at": "2026-04-10T00:00:00Z",
-    "user": {"login": "testbot"},
-    "body": "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=tests -->\n\n**Probes**\n\n1. [blocking] [from: tests] foo. Files: x.sh.\n\n_How to use: auto-reviews every new PR..._"
-}]))
-PYEOF
+build_bot_review 1100 110 2026-04-10T00:00:00Z tests \
+    '1. [blocking] [from: tests] foo. Files: x.sh.' \
+    | jq -s '.' > "$MOCK_COMMENTS_FILE"
 run_driver
 SEEDED_WM=$(sqlite3 "$DB_FILE" "SELECT last_walked_at FROM walks WHERE repo='test-org/bakeoff-probe';")
 
 # Now run again with new comments + simulated pulls/files failure
-python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
-import json
-print(json.dumps([{
-    "id": 1101,
-    "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/111",
-    "created_at": "2026-04-20T00:00:00Z",
-    "user": {"login": "testbot"},
-    "body": "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=tests -->\n\n**Probes**\n\n1. [blocking] [from: tests] bar. Files: y.sh.\n\n_How to use: auto-reviews every new PR..._"
-}]))
-PYEOF
+build_bot_review 1101 111 2026-04-20T00:00:00Z tests \
+    '1. [blocking] [from: tests] bar. Files: y.sh.' \
+    | jq -s '.' > "$MOCK_COMMENTS_FILE"
 echo "SENTINEL" > "$OUT_FILE"
 MOCK_GH_PULLS_FILES_FAIL=1 bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null 2>&1 && {
     echo "FAIL scenario 11: expected non-zero exit when pulls/files fails"
