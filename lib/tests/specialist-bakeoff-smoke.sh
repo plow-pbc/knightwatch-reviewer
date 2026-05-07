@@ -201,9 +201,6 @@ echo "    scenario 2: review + ACK + memorize (trusted+untrusted) → aggregator
 #   B: same-bot ACK — has marker, NO footer — must NOT count as a review
 #   C: untrusted /srosro-memorize quoting [from: aggregator] — must be ignored
 #   D: (PAGE 2) trusted /srosro-memorize quoting [from: aggregator] — must count
-# A regression that drops --paginate would still produce Loved=0 (page-2
-# trusted memorize never reaches extract_memorize_attributions), so the
-# aggregator | 1 | 1 assertion below is the load-bearing pagination check.
 
 python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
 import json
