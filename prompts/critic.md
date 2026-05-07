@@ -13,7 +13,7 @@ Then read:
 - `.codex-scratch/commits.md` — commit subjects on this branch, one per line
 - `.codex-scratch/inferred-intent.md` — pre-fan-out inferred end-user-facing intent
 - `.codex-scratch/author-intent.md` — the PR's own description + linked issues. **Privacy guard**: linked-issue bodies in this file may be private to consumers other than the public PR. Do NOT quote, paraphrase, or summarize that content in your output — use it to ground your resolutions, never reproduce it.
-- `.codex-scratch/trigger-comment.md` — present whenever the review was triggered by a trusted-author `/srosro-review` or `/srosro-update-review`. When body is substantive prose, weight it; when it's only the bare slash command, ignore.
+- `.codex-scratch/trigger-comment.md` — present whenever the review was triggered by a trusted-author review or update-review slash-command comment (default `/srosro-review` / `/srosro-update-review`, configurable via `BOT_CMD_PREFIX`). When body is substantive prose, weight it; when it's only the bare slash command, ignore.
 - `.codex-scratch/product-context.md` — product stage and roadmap
 - `.codex-scratch/review-priority.md` — per-repo operating point + voice posture
 - `.codex-scratch/decline-history.md` — operator's prior decline replies on this PR (read prose for context; explicit `<!-- decline:class=X -->` markers are counted toward the Decline-history channel below)
