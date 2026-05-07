@@ -25,6 +25,10 @@
 # Bootstrap the schema. Idempotent — safe to call on every walk.
 store_init() {
     local db="$1"
+    # Schema note: max_severity (added 2026-05-07) is in CREATE TABLE below.
+    # SQLite has no ALTER TABLE ADD COLUMN IF NOT EXISTS; dev DBs that
+    # pre-date this column should be deleted (rm ~/.pr-reviewer/bakeoff.db).
+    # Production has no DB yet so this is a no-op there.
     sqlite3 "$db" <<'SQL'
 CREATE TABLE IF NOT EXISTS specialist_runs (
     repo            TEXT    NOT NULL,
@@ -38,6 +42,7 @@ CREATE TABLE IF NOT EXISTS specialist_runs (
     applied_removed INTEGER NOT NULL DEFAULT 0,
     loved_positive  INTEGER NOT NULL DEFAULT 0,
     critiqued       INTEGER NOT NULL DEFAULT 0,
+    max_severity    TEXT    NOT NULL DEFAULT '',
     last_walked_at  TEXT    NOT NULL,
     PRIMARY KEY (repo, comment_id, specialist)
 );
@@ -102,6 +107,30 @@ set_walk_watermark() {
     sqlite3 "$db" <<SQL
 INSERT INTO walks (repo, last_walked_at) VALUES ('$repo', '$ts')
 ON CONFLICT(repo) DO UPDATE SET last_walked_at = excluded.last_walked_at;
+SQL
+}
+
+# Severity ordering — single source of truth. Higher number = worse.
+# blocking > medium > low > open > '' (empty = no probes yet).
+severity_rank() {
+    case "${1:-}" in
+        blocking) echo 4 ;;
+        medium)   echo 3 ;;
+        low)      echo 2 ;;
+        open)     echo 1 ;;
+        *)        echo 0 ;;
+    esac
+}
+
+# Set max_severity to the given value. Caller is responsible for picking
+# the max via severity_rank — this helper is a plain SET so SQL stays
+# simple and severity_rank stays the only seam that knows the order.
+set_max_severity() {
+    local db="$1" repo="$2" comment_id="$3" specialist="$4" sev="$5"
+    sqlite3 "$db" <<SQL
+UPDATE specialist_runs
+   SET max_severity = '$sev'
+ WHERE repo = '$repo' AND comment_id = $comment_id AND specialist = '$specialist';
 SQL
 }
 

@@ -116,6 +116,24 @@ for repo in "${REPOS[@]}"; do
             fi
         fi
         pr_paths="${pr_paths_cache[$cache_key]}"
+        # Track max severity per specialist across the review's probes. Runs
+        # unconditionally (severity is a property of the review body, not the PR
+        # diff — so it should be tracked even when pulls/files fails).
+        declare -A spec_max_sev=()
+        while IFS= read -r probe_line; do
+            specialist=$(printf '%s\n' "$probe_line" | count_attributions || true)
+            [ -z "$specialist" ] && continue
+            sev=$(printf '%s\n' "$probe_line" | probe_severity)
+            [ -z "$sev" ] && continue
+            cur="${spec_max_sev[$specialist]:-}"
+            if [ "$(severity_rank "$sev")" -gt "$(severity_rank "$cur")" ]; then
+                spec_max_sev["$specialist"]="$sev"
+            fi
+        done < <(printf '%s\n' "$review_body" | grep -E '^[0-9]+\.' || true)
+        for specialist in "${!spec_max_sev[@]}"; do
+            set_max_severity "$DB_FILE" "$repo" "$review_id" "$specialist" "${spec_max_sev[$specialist]}"
+        done
+        unset spec_max_sev
         if [ -n "$pr_paths" ]; then
             # Collect deduped (specialist, path) pairs across all probes in this review.
             declare -A spec_paths_seen=()

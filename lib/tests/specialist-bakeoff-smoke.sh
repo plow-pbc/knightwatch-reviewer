@@ -484,4 +484,21 @@ HELD_WM=$(sqlite3 "$DB_FILE" "SELECT last_walked_at FROM walks WHERE repo='test-
 [ "$HELD_WM" = "$SEEDED_WM" ] || { echo "FAIL scenario 11: watermark advanced despite pulls/files failure (was '$SEEDED_WM' now '$HELD_WM')"; exit 1; }
 grep -q "SENTINEL" "$OUT_FILE" || { echo "FAIL scenario 11: OUT_FILE was overwritten despite failure"; exit 1; }
 
+# ---- scenario 12: max_severity tracks the worst severity per specialist ----
+echo "    scenario 12: max_severity = blocking when specialist emits [blocking] + [medium] probes..."
+rm -f "$DB_FILE"
+python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
+import json
+print(json.dumps([{
+    "id": 1200,
+    "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/120",
+    "created_at": "2026-04-15T12:00:00Z",
+    "user": {"login": "testbot"},
+    "body": "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=tests -->\n\n**Probes**\n\n1. [medium] [from: tests] one issue. Files: x.sh.\n2. [blocking] [from: tests] worse issue. Files: y.sh.\n\n_How to use: auto-reviews every new PR..._"
+}]))
+PYEOF
+run_driver
+SEV=$(sqlite3 "$DB_FILE" "SELECT max_severity FROM specialist_runs WHERE specialist='tests';")
+[ "$SEV" = "blocking" ] || { echo "FAIL scenario 12: max_severity='$SEV' (expected 'blocking')"; exit 1; }
+
 echo "PASS"

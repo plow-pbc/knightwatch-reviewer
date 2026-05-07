@@ -120,4 +120,19 @@ OUT=$(query_window_aggregates "$DB5" "2026-04-01T00:00:00Z")
 # TSV: specialist  reviews  shipped  applied  added  removed  loved  critiqued
 [ "$OUT" = $'tests\t1\t1\t1\t30\t10\t0\t0' ] || { echo "FAIL: TSV shape: $OUT"; exit 1; }
 
+echo "  severity_rank: blocking > medium > low > open > '' (empty)..."
+[ "$(severity_rank blocking)" = "4" ] || { echo "FAIL: blocking rank"; exit 1; }
+[ "$(severity_rank medium)"   = "3" ] || { echo "FAIL: medium rank"; exit 1; }
+[ "$(severity_rank low)"      = "2" ] || { echo "FAIL: low rank"; exit 1; }
+[ "$(severity_rank open)"     = "1" ] || { echo "FAIL: open rank"; exit 1; }
+[ "$(severity_rank '')"       = "0" ] || { echo "FAIL: empty rank"; exit 1; }
+
+echo "  set_max_severity: writes severity into the row..."
+DB6="$TMP/bakeoff6.db"
+store_init "$DB6"
+upsert_specialist_run "$DB6" srosro/repo 9000 tests 99 2026-04-15T12:00:00Z
+set_max_severity "$DB6" srosro/repo 9000 tests blocking
+ROW=$(sqlite3 "$DB6" "SELECT max_severity FROM specialist_runs WHERE comment_id=9000 AND specialist='tests';")
+[ "$ROW" = "blocking" ] || { echo "FAIL: set_max_severity round-trip: $ROW"; exit 1; }
+
 echo "PASS"

@@ -97,3 +97,10 @@ extract_critique_attributions() {
         | sed -E 's/^.*\[from: ([a-z-]+)\]/\1/' \
         | sort -u || true
 }
+
+# Severity token from each probe line. Format: `^N. [<severity>] [from: ...]`.
+# Emits one severity per probe line. Caller picks max across lines if needed.
+probe_severity() {
+    grep -oE '^[0-9]+\. \[[a-z]+\]' \
+        | sed -E 's/^[0-9]+\. \[([a-z]+)\]/\1/' || true
+}
