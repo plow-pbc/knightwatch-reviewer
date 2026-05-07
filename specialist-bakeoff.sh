@@ -72,6 +72,7 @@ for repo in "${REPOS[@]}"; do
 
     declare -A pr_paths_cache=()
     declare -A pr_files_cache=()
+    declare -A pr_files_ok_cache=()
 
     # Pass 1: walk substantive bot reviews. Each row is one (review × specialist).
     # The roster marker drives row creation; probe parsing drives flag updates.
@@ -107,15 +108,18 @@ for repo in "${REPOS[@]}"; do
             if pr_files_tsv=$(gh api --paginate "repos/$repo/pulls/$pr_num/files" --jq '.[] | [.filename, .additions, .deletions] | @tsv' 2>>"$LOG_FILE"); then
                 pr_files_cache["$cache_key"]="$pr_files_tsv"
                 pr_paths_cache["$cache_key"]=$(printf '%s\n' "$pr_files_tsv" | cut -f1)
+                pr_files_ok_cache["$cache_key"]="1"
             else
                 log "WARN: gh api pulls/files failed for $repo#$pr_num, skipping applied check"
                 fetch_failures=$((fetch_failures + 1))
                 repo_failures=$((repo_failures + 1))
                 pr_paths_cache["$cache_key"]=""
                 pr_files_cache["$cache_key"]=""
+                pr_files_ok_cache["$cache_key"]="0"
             fi
         fi
         pr_paths="${pr_paths_cache[$cache_key]}"
+        pr_files_ok="${pr_files_ok_cache[$cache_key]}"
         # Track max severity per specialist across the review's probes. Runs
         # unconditionally (severity is a property of the review body, not the PR
         # diff — so it should be tracked even when pulls/files fails).
@@ -134,46 +138,49 @@ for repo in "${REPOS[@]}"; do
             set_max_severity "$DB_FILE" "$repo" "$review_id" "$specialist" "${spec_max_sev[$specialist]}"
         done
         unset spec_max_sev
-        if [ -n "$pr_paths" ]; then
+        if [ "$pr_files_ok" = "1" ]; then
             # Clear stale Applied/+LOC for this review before recomputing — handles
             # the rewalk case where the PR diff stopped touching a previously-
-            # matched cited path.
+            # matched cited path (incl. the empty-diff force-push edge case where
+            # pulls/files succeeds with an empty list).
             clear_applied_for_review "$DB_FILE" "$repo" "$review_id"
 
-            # Collect deduped (specialist, path) pairs across all probes in this review.
-            declare -A spec_paths_seen=()
-            while IFS= read -r probe_line; do
-                specialist=$(printf '%s\n' "$probe_line" | count_attributions || true)
-                [ -z "$specialist" ] && continue
-                while IFS= read -r p; do
-                    [ -z "$p" ] && continue
-                    spec_paths_seen["${specialist}	${p}"]=1
-                done < <(printf '%s\n' "$probe_line" | probe_cited_paths)
-            done < <(printf '%s\n' "$review_body" | grep -E '^[0-9]+\.' || true)
+            if [ -n "$pr_paths" ]; then
+                # Collect deduped (specialist, path) pairs across all probes in this review.
+                declare -A spec_paths_seen=()
+                while IFS= read -r probe_line; do
+                    specialist=$(printf '%s\n' "$probe_line" | count_attributions || true)
+                    [ -z "$specialist" ] && continue
+                    while IFS= read -r p; do
+                        [ -z "$p" ] && continue
+                        spec_paths_seen["${specialist}	${p}"]=1
+                    done < <(printf '%s\n' "$probe_line" | probe_cited_paths)
+                done < <(printf '%s\n' "$review_body" | grep -E '^[0-9]+\.' || true)
 
-            # Per specialist: sum LOC across paths that touched the PR; mark + record.
-            declare -A spec_added=()
-            declare -A spec_removed=()
-            declare -A spec_matched=()
-            pr_files_tsv="${pr_files_cache[$cache_key]}"
-            for key in "${!spec_paths_seen[@]}"; do
-                specialist="${key%%	*}"
-                path="${key#*	}"
-                if grep -qFx "$path" <<< "$pr_paths"; then
-                    loc_line=$(printf '%s\n' "$pr_files_tsv" | awk -F'\t' -v p="$path" '$1==p {print $2"\t"$3; exit}')
-                    a=$(printf '%s' "$loc_line" | cut -f1)
-                    r=$(printf '%s' "$loc_line" | cut -f2)
-                    spec_added["$specialist"]=$((${spec_added[$specialist]:-0} + ${a:-0}))
-                    spec_removed["$specialist"]=$((${spec_removed[$specialist]:-0} + ${r:-0}))
-                    spec_matched["$specialist"]=1
-                fi
-            done
-            for specialist in "${!spec_matched[@]}"; do
-                mark_applied "$DB_FILE" "$repo" "$review_id" "$specialist"
-                set_applied_loc "$DB_FILE" "$repo" "$review_id" "$specialist" \
-                    "${spec_added[$specialist]:-0}" "${spec_removed[$specialist]:-0}"
-            done
-            unset spec_paths_seen spec_added spec_removed spec_matched
+                # Per specialist: sum LOC across paths that touched the PR; mark + record.
+                declare -A spec_added=()
+                declare -A spec_removed=()
+                declare -A spec_matched=()
+                pr_files_tsv="${pr_files_cache[$cache_key]}"
+                for key in "${!spec_paths_seen[@]}"; do
+                    specialist="${key%%	*}"
+                    path="${key#*	}"
+                    if grep -qFx "$path" <<< "$pr_paths"; then
+                        loc_line=$(printf '%s\n' "$pr_files_tsv" | awk -F'\t' -v p="$path" '$1==p {print $2"\t"$3; exit}')
+                        a=$(printf '%s' "$loc_line" | cut -f1)
+                        r=$(printf '%s' "$loc_line" | cut -f2)
+                        spec_added["$specialist"]=$((${spec_added[$specialist]:-0} + ${a:-0}))
+                        spec_removed["$specialist"]=$((${spec_removed[$specialist]:-0} + ${r:-0}))
+                        spec_matched["$specialist"]=1
+                    fi
+                done
+                for specialist in "${!spec_matched[@]}"; do
+                    mark_applied "$DB_FILE" "$repo" "$review_id" "$specialist"
+                    set_applied_loc "$DB_FILE" "$repo" "$review_id" "$specialist" \
+                        "${spec_added[$specialist]:-0}" "${spec_removed[$specialist]:-0}"
+                done
+                unset spec_paths_seen spec_added spec_removed spec_matched
+            fi
         fi
 
         walked_reviews=$((walked_reviews + 1))

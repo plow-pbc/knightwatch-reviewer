@@ -20,7 +20,7 @@
 # operator-controlled tracked-repos.sh; $sev comes from probe_severity() in
 # lib/bakeoff-parsers.sh which constrains to [a-z]+ via the `^N. [<sev>]`
 # probe shape, and callers MUST pass a value from severity_rank()'s key set
-# (blocking|medium|low|open|''); integer fields (comment_id, pr_number) are
+# (blocking|medium|low|nit|open|''); integer fields (comment_id, pr_number) are
 # unquoted and rely on jq -r .id producing integers.
 # If you add a new helper that interpolates a new field, audit its
 # upstream parser/validator before merging.
@@ -28,10 +28,8 @@
 # Bootstrap the schema. Idempotent — safe to call on every walk.
 store_init() {
     local db="$1"
-    # Schema note: max_severity (added 2026-05-07) is in CREATE TABLE below.
-    # SQLite has no ALTER TABLE ADD COLUMN IF NOT EXISTS; dev DBs that
-    # pre-date this column should be deleted (rm ~/.pr-reviewer/bakeoff.db).
-    # Production has no DB yet so this is a no-op there.
+    # Schema note: max_severity (added 2026-05-07) is in CREATE TABLE below
+    # AND in the pragma-gated ALTER below (handles pre-existing DBs from PR #66).
     sqlite3 "$db" <<'SQL'
 CREATE TABLE IF NOT EXISTS specialist_runs (
     repo            TEXT    NOT NULL,
@@ -57,6 +55,12 @@ CREATE TABLE IF NOT EXISTS walks (
     last_walked_at  TEXT NOT NULL
 );
 SQL
+
+    # Migration: add max_severity column to pre-existing DBs (added 2026-05-07).
+    # SQLite has no ALTER TABLE ... ADD COLUMN IF NOT EXISTS; check via pragma.
+    if ! sqlite3 "$db" "SELECT 1 FROM pragma_table_info('specialist_runs') WHERE name='max_severity';" | grep -q 1; then
+        sqlite3 "$db" "ALTER TABLE specialist_runs ADD COLUMN max_severity TEXT NOT NULL DEFAULT '';"
+    fi
 }
 
 # Insert a (repo, comment_id, specialist) row if absent. Preserves any
@@ -114,12 +118,13 @@ SQL
 }
 
 # Severity ordering — single source of truth. Higher number = worse.
-# blocking > medium > low > open > '' (empty = no probes yet).
+# blocking > medium > low > nit > open > '' (empty = no probes yet).
 severity_rank() {
     case "${1:-}" in
-        blocking) echo 4 ;;
-        medium)   echo 3 ;;
-        low)      echo 2 ;;
+        blocking) echo 5 ;;
+        medium)   echo 4 ;;
+        low)      echo 3 ;;
+        nit)      echo 2 ;;
         open)     echo 1 ;;
         *)        echo 0 ;;
     esac
@@ -130,7 +135,7 @@ severity_rank() {
 # simple and severity_rank stays the only seam that knows the order.
 set_max_severity() {
     local db="$1" repo="$2" comment_id="$3" specialist="$4" sev="$5"
-    # $sev MUST be from severity_rank()'s key set: blocking|medium|low|open|''
+    # $sev MUST be from severity_rank()'s key set: blocking|medium|low|nit|open|''
     # (validated upstream by probe_severity() in lib/bakeoff-parsers.sh).
     sqlite3 "$db" <<SQL
 UPDATE specialist_runs

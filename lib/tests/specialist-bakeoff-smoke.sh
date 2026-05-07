@@ -605,4 +605,52 @@ run_driver
 LOVED=$(sqlite3 "$DB_FILE" "SELECT loved_positive FROM specialist_runs WHERE specialist='tests' AND comment_id=1402;")
 [ "$LOVED" = "1" ] || { echo "FAIL scenario 14: late /srosro-props within overlap not credited (loved_positive='$LOVED')"; exit 1; }
 
+# ---- scenario 15: max_severity=nit when specialist emits only [nit] probes ----
+echo "    scenario 15: max_severity = nit when specialist emits only [nit] probes..."
+rm -f "$DB_FILE"
+python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
+import json
+print(json.dumps([{
+    "id": 1500,
+    "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/150",
+    "created_at": "2026-04-15T12:00:00Z",
+    "user": {"login": "testbot"},
+    "body": "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=tests -->\n\n**Probes**\n\n1. [nit] [from: tests] minor naming. Files: x.sh.\n\n_How to use: auto-reviews every new PR..._"
+}]))
+PYEOF
+run_driver
+SEV=$(sqlite3 "$DB_FILE" "SELECT max_severity FROM specialist_runs WHERE specialist='tests';")
+[ "$SEV" = "nit" ] || { echo "FAIL scenario 15: max_severity='$SEV' (expected 'nit')"; exit 1; }
+
+# ---- scenario 16: rewalk where pulls/files returns empty → applied resets ----
+echo "    scenario 16: empty pulls/files (force-push to empty diff) → applied resets to 0..."
+rm -f "$DB_FILE"
+python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
+import json
+print(json.dumps([{
+    "id": 1600,
+    "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/160",
+    "created_at": "2026-04-15T12:00:00Z",
+    "user": {"login": "testbot"},
+    "body": "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=shape -->\n\n**Probes**\n\n1. [blocking] [from: shape] cycle. Files: x.sh.\n\n_How to use: auto-reviews every new PR..._"
+}]))
+PYEOF
+# First walk: PR touches x.sh — applied should be 1.
+export MOCK_PULLS_FILES_FILE="$TMPDIR_SMOKE/pulls-files.txt"
+printf 'x.sh\t10\t2\n' > "$MOCK_PULLS_FILES_FILE"
+run_driver
+A1=$(sqlite3 "$DB_FILE" "SELECT applied, applied_added, applied_removed FROM specialist_runs WHERE specialist='shape';")
+[ "$A1" = "1|10|2" ] || { echo "FAIL scenario 16 first walk: '$A1'"; exit 1; }
+
+# Second walk: PR has zero files (force-push to empty diff). pulls/files
+# returns []. With the empty-but-successful fix, clear_applied_for_review
+# should still fire and reset applied/LOC to 0.
+: > "$MOCK_PULLS_FILES_FILE"   # empty file → stub returns []
+run_driver
+A2=$(sqlite3 "$DB_FILE" "SELECT applied, applied_added, applied_removed FROM specialist_runs WHERE specialist='shape';")
+[ "$A2" = "0|0|0" ] || { echo "FAIL scenario 16 rewalk with empty pulls/files: expected '0|0|0', got '$A2'"; exit 1; }
+
+rm -f "$MOCK_PULLS_FILES_FILE"
+unset MOCK_PULLS_FILES_FILE
+
 echo "PASS"

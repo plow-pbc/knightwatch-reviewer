@@ -120,10 +120,11 @@ OUT=$(query_window_aggregates "$DB5" "2026-04-01T00:00:00Z")
 # TSV: specialist  reviews  shipped  applied  added  removed  loved  critiqued
 [ "$OUT" = $'tests\t1\t1\t1\t30\t10\t0\t0' ] || { echo "FAIL: TSV shape: $OUT"; exit 1; }
 
-echo "  severity_rank: blocking > medium > low > open > '' (empty)..."
-[ "$(severity_rank blocking)" = "4" ] || { echo "FAIL: blocking rank"; exit 1; }
-[ "$(severity_rank medium)"   = "3" ] || { echo "FAIL: medium rank"; exit 1; }
-[ "$(severity_rank low)"      = "2" ] || { echo "FAIL: low rank"; exit 1; }
+echo "  severity_rank: blocking > medium > low > nit > open > '' (empty)..."
+[ "$(severity_rank blocking)" = "5" ] || { echo "FAIL: blocking rank"; exit 1; }
+[ "$(severity_rank medium)"   = "4" ] || { echo "FAIL: medium rank"; exit 1; }
+[ "$(severity_rank low)"      = "3" ] || { echo "FAIL: low rank"; exit 1; }
+[ "$(severity_rank nit)"      = "2" ] || { echo "FAIL: nit rank"; exit 1; }
 [ "$(severity_rank open)"     = "1" ] || { echo "FAIL: open rank"; exit 1; }
 [ "$(severity_rank '')"       = "0" ] || { echo "FAIL: empty rank"; exit 1; }
 
@@ -156,5 +157,36 @@ mark_applied "$DB7" srosro/repo 6000 tests
 clear_applied_for_review "$DB7" srosro/repo 5000   # different comment_id
 OUT=$(sqlite3 "$DB7" "SELECT applied FROM specialist_runs WHERE comment_id=6000 AND specialist='tests';")
 [ "$OUT" = "1" ] || { echo "FAIL: cross-comment leak — comment_id=6000 got reset, applied='$OUT'"; exit 1; }
+
+echo "  store_init: ALTER adds max_severity to a pre-existing DB without the column..."
+DB8="$TMP/bakeoff8.db"
+# Simulate an old-schema DB (PR #66 era — no max_severity column).
+sqlite3 "$DB8" <<'OLDSQL'
+CREATE TABLE specialist_runs (
+    repo TEXT NOT NULL,
+    comment_id INTEGER NOT NULL,
+    specialist TEXT NOT NULL,
+    pr_number INTEGER NOT NULL,
+    ran_at TEXT NOT NULL,
+    published INTEGER NOT NULL DEFAULT 0,
+    applied INTEGER NOT NULL DEFAULT 0,
+    applied_added INTEGER NOT NULL DEFAULT 0,
+    applied_removed INTEGER NOT NULL DEFAULT 0,
+    loved_positive INTEGER NOT NULL DEFAULT 0,
+    critiqued INTEGER NOT NULL DEFAULT 0,
+    last_walked_at TEXT NOT NULL,
+    PRIMARY KEY (repo, comment_id, specialist)
+);
+INSERT INTO specialist_runs VALUES ('srosro/repo', 100, 'tests', 7, '2026-04-01T00:00:00Z', 1, 0, 0, 0, 0, 0, '2026-04-01T00:00:00Z');
+OLDSQL
+store_init "$DB8"
+HAS=$(sqlite3 "$DB8" "SELECT 1 FROM pragma_table_info('specialist_runs') WHERE name='max_severity';")
+[ "$HAS" = "1" ] || { echo "FAIL: ALTER did not add max_severity"; exit 1; }
+# Verify pre-existing data survives the migration.
+ROW=$(sqlite3 "$DB8" "SELECT comment_id, specialist FROM specialist_runs;")
+[ "$ROW" = "100|tests" ] || { echo "FAIL: pre-existing row lost: $ROW"; exit 1; }
+# Verify the new column defaults to '' for the migrated row.
+SEV=$(sqlite3 "$DB8" "SELECT max_severity FROM specialist_runs WHERE comment_id=100;")
+[ "$SEV" = "" ] || { echo "FAIL: migrated row should have empty max_severity, got '$SEV'"; exit 1; }
 
 echo "PASS"
