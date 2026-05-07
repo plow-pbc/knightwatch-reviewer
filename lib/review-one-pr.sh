@@ -226,46 +226,20 @@ if [ -z "$BASE_REF" ] || [ -z "$PR_AUTHOR" ]; then
     exit 1
 fi
 
-# Verify GitHub has published refs/pull/$PR_NUM/head BEFORE the
-# placeholder post. GitHub doesn't publish this ref atomically with PR
-# creation — refs/pull/N/merge appears immediately, but /head can lag
-# for many minutes (observed on plow-pbc/watchmepivot#20: 17+ minutes
-# between PR open and /head propagation). Without this precheck, the
-# canonical fetch at line ~340 (`git fetch +refs/pull/N/head:...`) would
-# fail, the EXIT trap would rewrite the just-posted placeholder to
-# "review aborted", and the orchestrator would re-dispatch every 2-min
-# tick — PRs with no successful prior review skip the stability
-# cooldown (review.sh's `[ -n "$KNOWN_SHA" ] && ...` gate), so the loop
-# would spam the PR with placeholder + abort-PATCH pairs until GitHub
-# catches up. Posting nothing on this skip lets the next tick retry
-# silently, costing only a no-op orchestrator cycle.
-if ! gh api "repos/$REPO/git/refs/pull/$PR_NUM/head" >/dev/null 2>&1; then
-    log "$PR_ID: refs/pull/$PR_NUM/head not yet published by GitHub — skipping (PR likely just opened; next tick will retry)"
-    exit 0
-fi
-
-# Post a "reviewing" placeholder immediately so the PR author sees the bot
-# picked up the work — the full run (`just test` up to 30m + 6 specialists +
-# critic + aggregator) can take many minutes. We keep the comment ID so we
-# can DELETE the placeholder once the real review posts as a fresh comment.
-# We post the review as a NEW comment (not by editing this placeholder)
-# because GitHub does not fire notifications on comment edits — authors
-# would see "👀 reviewing" silently transform 14 minutes later and never
-# know the review was ready, leading to "@srosro review please" pings even
-# though the review was already up. On any abort path, the EXIT trap edits
-# the placeholder to "aborted" instead so it doesn't read as "still
-# reviewing" forever.
+# Install the EXIT trap BEFORE the canonical clone/fetch so finalize_run is
+# guaranteed to fire on any abort path. cleanup_eyes is a no-op until
+# EYES_COMMENT_ID gets set after the head-ref fetch succeeds (placeholder
+# post moved below the canonical fetch — see comment there). An abort BEFORE
+# the placeholder post therefore exits with no GitHub side-effects.
 #
-# The leading HTML comment is invisible in rendered Markdown but lets the
-# orchestrator's jq filter recognize this as one of our auto-posts so we
-# don't self-trigger on the next tick.
-EYES_COMMENT_ID=$(gh api "repos/$REPO/issues/$PR_NUM/comments" \
-    --method POST \
-    -f body="$BOT_AUTO_POST_MARKER
-$BOT_AI_AUTHOR_MARKER
-👀 reviewing — [sam's ai review bot](https://github.com/srosro/knightwatch-reviewer)" \
-    --jq '.id' 2>/dev/null) || EYES_COMMENT_ID=""
-
+# Previous structure posted the placeholder before clone/fetch and relied
+# on cleanup_eyes to PATCH it to "review aborted" on every abort. That
+# left a placeholder + abort-PATCH pair on every 2-min orchestrator tick
+# when GitHub hadn't yet published refs/pull/N/head for a freshly-opened
+# PR — observed on plow-pbc/watchmepivot#20 (17+ minutes between PR open
+# and /head propagation). The canonical fetch is the single readiness
+# gate now.
+EYES_COMMENT_ID=""
 EYES_RESOLVED=false
 cleanup_eyes() {
     if [ "$EYES_RESOLVED" = "true" ] || [ -z "$EYES_COMMENT_ID" ]; then
@@ -278,12 +252,6 @@ review aborted before completion — see knightwatch-reviewer logs; will retry o
         >/dev/null 2>&1 || true
 }
 trap 'finalize_run; cleanup_eyes' EXIT
-
-if [ -n "$EYES_COMMENT_ID" ]; then
-    log "$PR_ID: posted reviewing placeholder (comment id=$EYES_COMMENT_ID)"
-else
-    log "$PR_ID: failed to post reviewing placeholder (continuing)"
-fi
 
 # Canonical clone lives at $REPOS_DIR/<slug>/ and is the source of truth for
 # `fetch`. Multiple PR reviews on the same repo coexist by each working in
@@ -349,6 +317,41 @@ fi
 if ! fetch_err=$(git -C "$CANONICAL_DIR" fetch origin "+refs/pull/$PR_NUM/head:$PR_BRANCH" --depth=500 --quiet 2>&1); then
     log "$PR_ID: refs/pull/$PR_NUM/head fetch failed (${fetch_err:0:200}) — skipping"
     exit 0
+fi
+
+# Post the "reviewing" placeholder NOW that the canonical fetch confirmed
+# the PR head is reachable. The full run (`just test` up to 30m + 6
+# specialists + critic + aggregator) can take many minutes; the
+# placeholder gives the author immediate feedback that the bot picked up
+# the work. Posting AFTER the fetch (instead of before clone+fetch as the
+# previous structure did) makes the canonical fetch the single readiness
+# gate — when GitHub hasn't yet published refs/pull/N/head for a freshly-
+# opened PR, the worker exits silently above with no GitHub side-effects,
+# and the orchestrator's 2-min re-dispatch retries until the ref
+# propagates.
+#
+# We post the review as a NEW comment (not by editing this placeholder)
+# because GitHub does not fire notifications on comment edits — authors
+# would see "👀 reviewing" silently transform 14 minutes later and never
+# know the review was ready, leading to "@srosro review please" pings even
+# though the review was already up. On any abort path past this point, the
+# EXIT trap edits the placeholder to "aborted" instead so it doesn't read
+# as "still reviewing" forever.
+#
+# The leading HTML comment is invisible in rendered Markdown but lets the
+# orchestrator's jq filter recognize this as one of our auto-posts so we
+# don't self-trigger on the next tick.
+EYES_COMMENT_ID=$(gh api "repos/$REPO/issues/$PR_NUM/comments" \
+    --method POST \
+    -f body="$BOT_AUTO_POST_MARKER
+$BOT_AI_AUTHOR_MARKER
+👀 reviewing — [sam's ai review bot](https://github.com/srosro/knightwatch-reviewer)" \
+    --jq '.id' 2>/dev/null) || EYES_COMMENT_ID=""
+
+if [ -n "$EYES_COMMENT_ID" ]; then
+    log "$PR_ID: posted reviewing placeholder (comment id=$EYES_COMMENT_ID)"
+else
+    log "$PR_ID: failed to post reviewing placeholder (continuing)"
 fi
 
 # Align canonical's `refs/heads/$BASE_REF` with the just-fetched

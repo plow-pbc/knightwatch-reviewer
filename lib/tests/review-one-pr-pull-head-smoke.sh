@@ -1,28 +1,30 @@
 #!/usr/bin/env bash
-# Smoke for lib/review-one-pr.sh — fences the refs/pull/N/head precheck
-# that runs BEFORE the "👀 reviewing" placeholder post.
+# Smoke for lib/review-one-pr.sh — fences the rule that the worker MUST
+# NOT post a "👀 reviewing" placeholder before the canonical
+# `git fetch +refs/pull/N/head:...` has succeeded.
 #
 # GitHub doesn't publish refs/pull/N/head atomically with PR creation
 # (refs/pull/N/merge appears immediately, but /head can lag for several
-# minutes — observed on plow-pbc/watchmepivot#20: 17+ minutes). Without
-# the precheck, the worker would post a placeholder, fail the canonical
-# `git fetch refs/pull/N/head:...` later, and the EXIT trap would
-# rewrite the placeholder to "review aborted". The orchestrator would
-# then re-dispatch every 2-minute tick (PRs with no successful prior
-# review skip the stability cooldown), producing a comment-spam loop.
+# minutes — observed on plow-pbc/watchmepivot#20: 17+ minutes). When
+# the worker posts the placeholder before the fetch and the fetch then
+# fails, the EXIT trap rewrites the placeholder to "review aborted",
+# and the orchestrator re-dispatches every 2-min tick (PRs with no
+# successful prior review skip the stability cooldown), producing a
+# comment-spam loop. Posting the placeholder ONLY after a successful
+# fetch breaks the loop without giving up the immediate-feedback UX
+# (the canonical fetch is single-digit seconds in steady state).
 #
-# Two scenarios:
-#   head_missing — gh api .../refs/pull/N/head returns 404. Assert
-#                  worker exits without posting any placeholder or
-#                  abort comment, and run.log records the precheck
-#                  wording (regression-fences the message so a future
-#                  edit doesn't drift it back to "(PR closed?)").
-#   head_present — gh api returns the head SHA. Assert worker proceeds
-#                  far enough to post the placeholder (regression-fences
-#                  the precheck blocking healthy PRs).
-#
-# Stubs `gh` (and `flock` if missing) via PATH so neither the network
-# nor real PR infra is touched.
+# Two scenarios — same set of GitHub side-effect assertions, but with
+# refs/pull/N/head present vs absent in the upstream bare repo:
+#   head_missing — base ref pushed, refs/pull/N/head NOT pushed. The
+#                  worker's `git fetch +refs/pull/N/head:...` should
+#                  fail, exit 0 cleanly, and post NEITHER a placeholder
+#                  NOR an abort PATCH.
+#   head_present — base ref AND refs/pull/N/head pushed. The worker
+#                  should reach the placeholder post, then abort
+#                  downstream (no codex on PATH, etc.) — we only
+#                  assert the placeholder POST happened, proving the
+#                  fetch-success path didn't regress.
 
 set -uo pipefail
 
@@ -37,13 +39,20 @@ FAIL=0
 fail_msg() { echo "FAIL: $*" >&2; FAIL=$((FAIL+1)); }
 pass_msg() { echo "PASS: $*"; PASS=$((PASS+1)); }
 
-# write_gh_stub <stub_path> <head_ref_present: yes|no> <gh_call_log>
+# write_gh_stub <stub_path> <gh_call_log>
+#
+# Records every gh invocation so the smoke can assert which API calls
+# happened. Stubs `gh pr view ... --json baseRefName,...` with a fixture
+# matching the worker's downstream parse contract; everything else
+# (`gh api repos/.../issues/N/comments` POST, `gh api .../issues/comments/<id>`
+# PATCH, `gh repo clone`, etc.) returns a synthetic success — we don't
+# stub the canonical-fetch git commands; the worker runs against a real
+# bare-repo upstream so the head-ref-missing condition is the actual
+# `git fetch` failure mode this smoke fences.
 write_gh_stub() {
-    local stub_path="$1" head_ref_present="$2" gh_call_log="$3"
+    local stub_path="$1" gh_call_log="$2"
     cat > "$stub_path" <<STUB
 #!/bin/bash
-# Record every invocation (one line per call) so the smoke can assert
-# which API calls did or didn't happen.
 echo "\$@" >> "$gh_call_log"
 
 # gh pr view N --repo <repo> --json baseRefName,title,body,author,closingIssuesReferences
@@ -52,28 +61,16 @@ if [ "\$1" = "pr" ] && [ "\$2" = "view" ]; then
     exit 0
 fi
 
-# gh api repos/<owner>/<repo>/git/refs/pull/<num>/head — the precheck
-# under test. 404 simulates "head ref not yet propagated"; SHA-bearing
-# JSON simulates the healthy case.
-if [ "\$1" = "api" ] && [[ "\$2" == *"/git/refs/pull/"*"/head" ]]; then
-    if [ "$head_ref_present" = "yes" ]; then
-        printf '{"object":{"sha":"deadbeefcafebabe1234567890abcdef12345678"}}\n'
-        exit 0
-    else
-        printf '{"message":"Not Found","status":"404"}\n' >&2
-        exit 1
-    fi
-fi
-
-# gh api repos/.../issues/N/comments --method POST — the placeholder
-# post. Return a fake comment id so the worker captures it as
-# EYES_COMMENT_ID and continues into the canonical clone path.
+# gh api repos/.../issues/N/comments --method POST → placeholder POST
+# (returns a fake comment id so the worker captures it as
+# EYES_COMMENT_ID and continues).
 if [ "\$1" = "api" ] && [[ "\$2" == *"/issues/"*"/comments" ]]; then
     printf '12345\n'
     exit 0
 fi
 
-# Anything else (gh repo clone, gh pr comment, etc.) — silent success.
+# Anything else (gh repo clone, gh pr comment, gh api PATCH, etc.) →
+# silent success.
 exit 0
 STUB
     chmod +x "$stub_path"
@@ -109,8 +106,42 @@ STUB
     chmod +x "$bindir/flock"
 }
 
+# setup_bare_upstream <push_pull_head: yes|no> <bare_path>
+#
+# Builds a real bare repo with `main` + a feature branch + (optionally)
+# `refs/pull/99/head`. Returns the head SHA of the feature branch via
+# stdout so the caller can pass it to the worker as PR_SHA.
+setup_bare_upstream() {
+    local push_pull_head="$1" bare_path="$2"
+    local working
+    working=$(mktemp -d -t bare-working-XXXXXX)
+
+    git init -q --bare -b main "$bare_path"
+    git clone -q "$bare_path" "$working"
+    (
+        cd "$working"
+        git config user.email t@t
+        git config user.name t
+        git config commit.gpgsign false
+        echo "base" > README.md
+        git add README.md
+        git commit -qm "init"
+        git push -q origin main
+        git checkout -qb feat/test
+        echo "feature" > feature.txt
+        git add feature.txt
+        git commit -qm "feature"
+        git push -q origin feat/test
+    )
+    if [ "$push_pull_head" = "yes" ]; then
+        git -C "$working" push -q origin feat/test:refs/pull/99/head
+    fi
+    git -C "$working" rev-parse HEAD
+    rm -rf "$working"
+}
+
 run_scenario() {
-    local scenario_name="$1" head_ref_present="$2"
+    local scenario_name="$1" push_pull_head="$2"
     local scenario_dir="$TMPDIR_ROOT/$scenario_name"
     mkdir -p "$scenario_dir/state" "$scenario_dir/state/repos" \
              "$scenario_dir/state/workdirs" "$scenario_dir/state/canonical-locks" \
@@ -120,7 +151,7 @@ run_scenario() {
     local gh_call_log="$scenario_dir/gh-calls.log"
     : > "$gh_call_log"
 
-    write_gh_stub "$scenario_dir/home/.local/bin/gh" "$head_ref_present" "$gh_call_log"
+    write_gh_stub "$scenario_dir/home/.local/bin/gh" "$gh_call_log"
     write_flock_stub_if_missing "$scenario_dir/home/.local/bin"
 
     # Sandbox env. Mirrors lib/tests/review-one-pr-sha-flow-smoke.sh.
@@ -134,26 +165,34 @@ run_scenario() {
     export BOT_USER="srosro"
     export REVIEWER_LIB_DIR="$PROJECT_ROOT/lib"
 
-    # repos.conf — tracked-repos.sh fail-fast loud if missing.
     cat > "$STATE_DIR/repos.conf" <<'CONF'
 REPOS=("test-org/probe-repo")
 declare -A KID_PATHS=()
 declare -A SOURCE_PATHS=()
 CONF
 
-    # Run the worker. Timeout guards against logic bugs that would
-    # otherwise hang the smoke.
+    # Real bare upstream + canonical clone. The bare repo may or may
+    # not have refs/pull/99/head pushed — that's the variable under
+    # test, since the worker's canonical fetch is what's now gating
+    # the placeholder post.
+    local bare="$scenario_dir/bare.git"
+    local pr_sha
+    pr_sha=$(setup_bare_upstream "$push_pull_head" "$bare")
+    git clone -q "$bare" "$REPOS_DIR/test-org_probe-repo"
+
     local worker_log="$scenario_dir/worker.log"
     set +e
     TRIGGER_COMMENT_FILE="" timeout 30 bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
-        "test-org/probe-repo" 99 "deadbeefcafebabe1234567890abcdef12345678" \
+        "test-org/probe-repo" 99 "$pr_sha" \
         "feat/test" "Test PR" "false" \
         > "$worker_log" 2>&1
     local worker_exit=$?
     set -e
 
-    case "$head_ref_present" in
+    case "$push_pull_head" in
         no)
+            # Worker should exit 0 cleanly — head fetch fails, no
+            # placeholder, no trap rewrite.
             if [ "$worker_exit" -ne 0 ]; then
                 fail_msg "[$scenario_name] worker exited $worker_exit, expected 0"
                 echo "--- worker.log ---" >&2
@@ -161,17 +200,15 @@ CONF
             else
                 pass_msg "[$scenario_name] worker exited 0"
             fi
-            # The placeholder is posted via `gh api repos/.../issues/N/comments
-            # --method POST` — match on the path fragment.
+            # The placeholder POST hits `gh api repos/.../issues/N/comments`.
             if grep -qE 'api repos/[^ ]+/issues/[0-9]+/comments' "$gh_call_log"; then
-                fail_msg "[$scenario_name] placeholder POST was called (expected no-op)"
+                fail_msg "[$scenario_name] placeholder POST was called (expected no-op — placeholder must wait for head fetch)"
                 echo "--- gh-calls.log ---" >&2
                 cat "$gh_call_log" >&2 || true
             else
                 pass_msg "[$scenario_name] no placeholder POST"
             fi
-            # The abort patch hits `gh api repos/.../issues/comments/<id>
-            # --method PATCH` — different URL shape from the POST above.
+            # The abort patch hits `gh api repos/.../issues/comments/<id>`.
             if grep -qE 'api repos/[^ ]+/issues/comments/' "$gh_call_log"; then
                 fail_msg "[$scenario_name] abort PATCH was called (expected no-op)"
             else
@@ -179,21 +216,21 @@ CONF
             fi
             local run_log
             run_log=$(find "$STATE_DIR/runs" -name run.log 2>/dev/null | head -1)
-            if [ -n "$run_log" ] && grep -q "not yet published by GitHub" "$run_log"; then
-                pass_msg "[$scenario_name] run.log records 'not yet published by GitHub'"
+            if [ -n "$run_log" ] && grep -q "refs/pull/99/head fetch failed" "$run_log"; then
+                pass_msg "[$scenario_name] run.log records 'refs/pull/99/head fetch failed' with git stderr"
             else
-                fail_msg "[$scenario_name] run.log missing precheck wording (looked at: ${run_log:-<none>})"
+                fail_msg "[$scenario_name] run.log missing fetch-failure log line (looked at: ${run_log:-<none>})"
                 [ -n "$run_log" ] && { echo "--- run.log ---" >&2; cat "$run_log" >&2 || true; }
             fi
             ;;
         yes)
-            # Worker may abort downstream (no canonical clone, no codex,
-            # etc.) — we only assert the placeholder POST happened,
-            # proving the precheck didn't block a healthy PR.
+            # Worker may abort downstream (no codex, etc.) — we only
+            # assert the placeholder POST happened, proving the
+            # fetch-success path didn't regress.
             if grep -qE 'api repos/[^ ]+/issues/[0-9]+/comments' "$gh_call_log"; then
-                pass_msg "[$scenario_name] placeholder POST was called (precheck did not block)"
+                pass_msg "[$scenario_name] placeholder POST was called (fetch-success path posts placeholder)"
             else
-                fail_msg "[$scenario_name] placeholder POST was NOT called (precheck wrongly blocked)"
+                fail_msg "[$scenario_name] placeholder POST was NOT called (fetch-success path regressed)"
                 echo "--- worker.log ---" >&2
                 cat "$worker_log" >&2 || true
                 echo "--- gh-calls.log ---" >&2
