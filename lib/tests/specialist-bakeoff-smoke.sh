@@ -115,9 +115,17 @@ cat > "$STUB_BIN/gh" <<'STUB'
 if [ "$1" = "api" ]; then
     endpoint=""
     paginate=""
+    jq_expr=""
+    next_is_jq=""
     for arg in "$@"; do
+        if [ -n "$next_is_jq" ]; then
+            jq_expr="$arg"
+            next_is_jq=""
+            continue
+        fi
         case "$arg" in
             --paginate) paginate=1 ;;
+            --jq)       next_is_jq=1 ;;
             repos/*)    endpoint="$arg" ;;
         esac
     done
@@ -134,6 +142,20 @@ if [ "$1" = "api" ]; then
         fi
     elif [[ "$endpoint" == */collaborators* ]]; then
         printf '[{"login":"trusted-human","permissions":{"push":true}},{"login":"untrusted-user","permissions":{"push":false}}]\n'
+    elif [[ "$endpoint" == */pulls/*/files* ]]; then
+        # Driver feeds the touched-files set via MOCK_PULLS_FILES_FILE.
+        # Each line is a path. Real `gh` runs --jq server-side; we mirror
+        # by piping through jq when --jq was passed.
+        if [ -s "${MOCK_PULLS_FILES_FILE:-/dev/null}" ]; then
+            files_json=$(jq -nR '[inputs | {filename: .}]' < "$MOCK_PULLS_FILES_FILE")
+        else
+            files_json="[]"
+        fi
+        if [ -n "$jq_expr" ]; then
+            printf '%s' "$files_json" | jq -r "$jq_expr"
+        else
+            printf '%s' "$files_json"
+        fi
     else
         echo "{}"
     fi
@@ -173,7 +195,7 @@ if grep -qE '^\| [a-z]' "$OUT_FILE"; then
 fi
 
 # ---- scenario 2: substantive review, ACK, untrusted memorize, trusted memorize ----
-echo "    scenario 2: review + ACK + memorize (trusted+untrusted) → aggregator 1|1..."
+echo "    scenario 2: review + ACK + memorize (trusted+untrusted) → aggregator 1|0|1..."
 # Four comments split across two pages — load-bearing comment D is on page 2:
 #   A: substantive bot review — has marker, has footer, has [from: aggregator]
 #   B: same-bot ACK — has marker, NO footer — must NOT count as a review
@@ -215,8 +237,8 @@ fi
 # If --paginate were dropped, the page-2 trusted memorize would never reach
 # extract_memorize_attributions and Loved would be 0 — this is the load-bearing
 # pagination assertion.
-if ! grep -qE '\| aggregator \| +1 \| +1 \|' "$OUT_FILE"; then
-    echo "FAIL scenario 2: expected aggregator | 1 | 1 in table (page-2 memorize not merged)"
+if ! grep -qE '\| aggregator \| +1 \| +0 \| +1 \|' "$OUT_FILE"; then
+    echo "FAIL scenario 2: expected aggregator | 1 | 0 | 1 in table (page-2 memorize not merged)"
     cat "$OUT_FILE"
     exit 1
 fi
@@ -254,6 +276,42 @@ fi
 if ! grep -q "PARTIAL RUN" "$LOG_FILE" 2>/dev/null; then
     echo "FAIL scenario 4: expected PARTIAL RUN in log"
     cat "$LOG_FILE"
+    exit 1
+fi
+
+# ---- scenario 5: review with cited Files: that overlap PR-touched paths → Applied counted ----
+echo "    scenario 5: review with cited Files: paths matching PR diff → shape 1|1|0..."
+# A substantive bot review citing x.sh as a Files: path. The mocked
+# pulls/files endpoint reports x.sh in the PR's touched set.
+# Expected: Applied=1 for the shape specialist, Loved=0.
+
+python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
+import json
+body = (
+    "<!-- knightwatch-reviewer:auto-post -->\n\n"
+    "**Probes**\n\n"
+    "1. [blocking] [from: shape] [shape] Foo. Files: x.sh. Edit: y.\n\n"
+    "_How to use: auto-reviews every new PR..._"
+)
+print(json.dumps([{
+    "id": 100,
+    "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/42",
+    "user": {"login": "testbot"},
+    "body": body,
+}]))
+PYEOF
+
+export MOCK_PULLS_FILES_FILE="$TMPDIR_SMOKE/pulls-files.txt"
+printf 'x.sh\n' > "$MOCK_PULLS_FILES_FILE"
+
+run_driver
+
+rm -f "$MOCK_PULLS_FILES_FILE"
+unset MOCK_PULLS_FILES_FILE
+
+if ! grep -qE '\| shape \| +1 \| +1 \| +0 \|' "$OUT_FILE"; then
+    echo "FAIL scenario 5: expected shape | 1 | 1 | 0 in table (Applied=1 from x.sh ∩ x.sh)"
+    cat "$OUT_FILE"
     exit 1
 fi
 
