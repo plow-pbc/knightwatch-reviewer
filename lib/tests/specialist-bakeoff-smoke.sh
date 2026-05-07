@@ -135,11 +135,26 @@ if [ "$1" = "api" ]; then
         exit 1
     fi
     if [[ "$endpoint" == */issues/comments* ]]; then
+        # Honor since= query param: filter mock comments by created_at >= since.
+        # If no since= present, return all (for scenarios that don't care about
+        # watermark behavior).
+        SINCE=""
+        if [[ "$endpoint" == *since=* ]]; then
+            SINCE="${endpoint#*since=}"
+            SINCE="${SINCE%%&*}"
+        fi
+        _filter() {
+            if [ -n "$SINCE" ]; then
+                jq --arg since "$SINCE" '[.[] | select(.created_at >= $since)]'
+            else
+                jq '.'
+            fi
+        }
         if [ -n "$paginate" ] && [ -s "${MOCK_COMMENTS_FILE_PAGE2:-/dev/null}" ]; then
-            cat "$MOCK_COMMENTS_FILE"
-            cat "$MOCK_COMMENTS_FILE_PAGE2"
+            cat "$MOCK_COMMENTS_FILE" | _filter
+            cat "$MOCK_COMMENTS_FILE_PAGE2" | _filter
         else
-            cat "$MOCK_COMMENTS_FILE"
+            cat "$MOCK_COMMENTS_FILE" | _filter
         fi
     elif [[ "$endpoint" == */collaborators* ]]; then
         printf '[{"login":"trusted-human","permissions":{"push":true}},{"login":"untrusted-user","permissions":{"push":false}}]\n'
@@ -530,5 +545,64 @@ A2=$(sqlite3 "$DB_FILE" "SELECT applied, applied_added, applied_removed FROM spe
 
 rm -f "$MOCK_PULLS_FILES_FILE"
 unset MOCK_PULLS_FILES_FILE
+
+# ---- scenario 14: late-arriving /srosro-props within OVERLAP_HOURS is still credited ----
+echo "    scenario 14: late /srosro-props within OVERLAP_HOURS=24 still marks loved_positive..."
+rm -f "$DB_FILE"
+
+# First walk: seed a review at T1 (watermark advances to T1).
+T1="2026-04-15T12:00:00Z"
+python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
+import json
+print(json.dumps([{
+    "id": 1400,
+    "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/140",
+    "created_at": "$T1",
+    "user": {"login": "testbot"},
+    "body": "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=tests -->\n\n**Probes**\n\n1. [blocking] [from: tests] foo. Files: x.sh.\n\n_How to use: auto-reviews every new PR..._"
+}]))
+PYEOF
+run_driver
+WM=$(sqlite3 "$DB_FILE" "SELECT last_walked_at FROM walks WHERE repo='test-org/bakeoff-probe';")
+[ "$WM" = "$T1" ] || { echo "FAIL scenario 14 setup: watermark='$WM'"; exit 1; }
+
+# Second walk: a previously-unseen earlier review at T1 - 12h plus its
+# /srosro-props at T1 - 2h. Both are "behind the watermark" (created_at < T1)
+# but within OVERLAP_HOURS=24 lookback. Without the overlap slack the walker
+# would compute since=$T1 raw, the gh stub's since= filter would drop both,
+# and the loved_positive flag would never get set. With OVERLAP=24h the walker
+# computes since=T1 - 24h, both comments are returned, and the feedback at
+# T1 - 2h attributes to the new review at T1 - 12h.
+T_PRIOR="2026-04-15T00:00:00Z"  # T1 - 12h
+T_LATE="2026-04-15T10:00:00Z"   # T1 - 2h
+python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
+import json
+print(json.dumps([
+    {
+        "id": 1400,
+        "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/140",
+        "created_at": "$T1",
+        "user": {"login": "testbot"},
+        "body": "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=tests -->\n\n**Probes**\n\n1. [blocking] [from: tests] foo. Files: x.sh.\n\n_How to use: auto-reviews every new PR..._"
+    },
+    {
+        "id": 1402,
+        "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/140",
+        "created_at": "$T_PRIOR",
+        "user": {"login": "testbot"},
+        "body": "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=tests -->\n\n**Probes**\n\n1. [blocking] [from: tests] earlier finding. Files: x.sh.\n\n_How to use: auto-reviews every new PR..._"
+    },
+    {
+        "id": 1401,
+        "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/140",
+        "created_at": "$T_LATE",
+        "user": {"login": "trusted-human"},
+        "body": "/srosro-props [from: tests] late but real"
+    }
+]))
+PYEOF
+run_driver
+LOVED=$(sqlite3 "$DB_FILE" "SELECT loved_positive FROM specialist_runs WHERE specialist='tests' AND comment_id=1402;")
+[ "$LOVED" = "1" ] || { echo "FAIL scenario 14: late /srosro-props within overlap not credited (loved_positive='$LOVED')"; exit 1; }
 
 echo "PASS"
