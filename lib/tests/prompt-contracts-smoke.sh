@@ -172,7 +172,7 @@ assert_grep "aggregator.md should reference momentum specialist output" \
 # fenced here.
 # Two fence loops (was five): one over systemd-chain SCRIPTS (shebang +
 # no writable-PATH prepend), one over systemd UNITS (ReadWritePaths +
-# Environment=PATH ordering + .npm-global precedence). Each fence's
+# Environment=PATH ordering + .nvm-bin precedence). Each fence's
 # security rationale is in the per-FAIL message; the section comment
 # above this block carries the overarching "why absolute shebang +
 # system-PATH-first + .local-not-writable" attack-class context.
