@@ -63,3 +63,32 @@ probe_cited_paths() {
     }
     '
 }
+
+# Specialists invoked on this review, from the write-time bake-off marker.
+# Format on the wire: `<!-- knightwatch-bakeoff: specialists=a,b,c -->` (one
+# line, comma-separated). Tolerate optional whitespace before the closing
+# `-->` since markdown comment writers commonly insert it. Emits one
+# specialist per line.
+extract_roster_marker() {
+    grep -oE '<!-- knightwatch-bakeoff: specialists=[a-z][a-z,-]*[[:space:]]*-->' \
+        | sed -E 's/.*specialists=([a-z,-]+).*/\1/' \
+        | tr ',' '\n' \
+        | grep -v '^$' || true
+}
+
+# Specialist names from `/kw-props [from: <specialist>]` lines. Bool signal
+# per (memorize comment, specialist) — dedupe via sort -u.
+extract_kw_props_attributions() {
+    grep -E '^/kw-props .*\[from: [a-z][a-z-]*\]' \
+        | grep -oE '\[from: [a-z][a-z-]*\]' \
+        | sed -E 's/\[from: ([a-z-]+)\]/\1/' \
+        | sort -u || true
+}
+
+# Specialist names from `/kw-critique [from: <specialist>]` lines.
+extract_kw_critique_attributions() {
+    grep -E '^/kw-critique .*\[from: [a-z][a-z-]*\]' \
+        | grep -oE '\[from: [a-z][a-z-]*\]' \
+        | sed -E 's/\[from: ([a-z-]+)\]/\1/' \
+        | sort -u || true
+}
