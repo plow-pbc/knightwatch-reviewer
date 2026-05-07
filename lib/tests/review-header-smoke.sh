@@ -154,6 +154,19 @@ case "$line3" in
         exit 1 ;;
 esac
 
+echo "  asserting bakeoff marker on line 3 does NOT break the auto-post + ai-author pin..."
+# Production writer order: auto-post, ai-author, bakeoff marker, body. The
+# awk in prepend_review_header exits on the first non-marker line — if the
+# bakeoff marker landed BETWEEN auto-post and ai-author, awk would stop at
+# line 2 and the visible review-notes header would be inserted ABOVE
+# ai-author, breaking the two-marker contract.
+BAKEOFF_BODY=$(printf '%s\n%s\n<!-- knightwatch-bakeoff: specialists=tests,shape -->\n_intent line_\nbody text\n' "$MARKER" "$AI_AUTHOR_MARKER")
+result=$(prepend_review_header "$BAKEOFF_BODY" "📋 First review of this PR")
+line1=$(printf '%s' "$result" | sed -n '1p')
+line2=$(printf '%s' "$result" | sed -n '2p')
+[ "$line1" = "$MARKER" ] || { echo "FAIL: bakeoff marker case — line 1 is '$line1'"; exit 1; }
+[ "$line2" = "$AI_AUTHOR_MARKER" ] || { echo "FAIL: bakeoff marker case — line 2 is '$line2'"; exit 1; }
+
 echo "  one note → blockquote has just that note + final '.'..."
 result=$(prepend_review_header "$BODY" "📋 First review of this PR")
 assert_marker_first "$result" "one-note"
@@ -485,4 +498,4 @@ assert_contains "$result" "✅ Tests passed" "clean-PR tests"
 assert_contains "$result" "✅ Prior-art (KID) checked" "clean-PR kid"
 assert_contains "$result" "✅ Strict typing enforced" "clean-PR strict-typing"
 
-echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 7 tests-note + 3 kid-note + clean-PR composition)"
+echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 7 tests-note + 3 kid-note + clean-PR composition + bakeoff-marker pin)"

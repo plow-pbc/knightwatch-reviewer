@@ -1,6 +1,6 @@
 <!-- knightwatch-reviewer:auto-post -->
-<!-- knightwatch-bakeoff: specialists=security,tests,shape,aggregator -->
 <!-- ai-author -->
+<!-- knightwatch-bakeoff: specialists=security,tests,shape,aggregator -->
 
 **Probes**
 

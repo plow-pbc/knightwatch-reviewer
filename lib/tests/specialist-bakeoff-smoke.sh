@@ -143,6 +143,9 @@ if [ "$1" = "api" ]; then
         fi
     elif [[ "$endpoint" == */collaborators* ]]; then
         printf '[{"login":"trusted-human","permissions":{"push":true}},{"login":"untrusted-user","permissions":{"push":false}}]\n'
+    elif [[ "$endpoint" == */pulls/*/files* ]] && [ -n "${MOCK_GH_PULLS_FILES_FAIL:-}" ]; then
+        echo "gh api: simulated pulls/files failure" >&2
+        exit 1
     elif [[ "$endpoint" == */pulls/*/files* ]]; then
         # Driver feeds the touched-files set via MOCK_PULLS_FILES_FILE.
         # Each line is TSV: path\tadditions\tdeletions. additions+deletions
@@ -416,5 +419,69 @@ BEFORE=$(sqlite3 "$DB_FILE" "SELECT COUNT(*), SUM(loved_negative) FROM specialis
 run_driver
 AFTER=$(sqlite3 "$DB_FILE" "SELECT COUNT(*), SUM(loved_negative) FROM specialist_runs;")
 [ "$BEFORE" = "$AFTER" ] || { echo "FAIL scenario 9: re-walk changed state (before=$BEFORE after=$AFTER)"; exit 1; }
+
+# ---- scenario 10: successful walk advances watermark to max review created_at ----
+echo "    scenario 10: watermark advances to max review created_at on success..."
+rm -f "$DB_FILE"
+python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
+import json
+print(json.dumps([
+    {
+        "id": 1000,
+        "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/100",
+        "created_at": "2026-04-15T12:00:00Z",
+        "user": {"login": "testbot"},
+        "body": "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=tests -->\n\n**Probes**\n\n1. [blocking] [from: tests] missing test. Files: x.sh.\n\n_How to use: auto-reviews every new PR..._"
+    },
+    {
+        "id": 1001,
+        "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/100",
+        "created_at": "2026-04-16T12:00:00Z",
+        "user": {"login": "testbot"},
+        "body": "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=tests -->\n\n**Probes**\n\n1. [blocking] [from: tests] another missing test. Files: y.sh.\n\n_How to use: auto-reviews every new PR..._"
+    }
+]))
+PYEOF
+run_driver
+WM=$(sqlite3 "$DB_FILE" "SELECT last_walked_at FROM walks WHERE repo='test-org/bakeoff-probe';")
+[ "$WM" = "2026-04-16T12:00:00Z" ] || { echo "FAIL scenario 10: watermark='$WM' (expected the later timestamp 2026-04-16)"; exit 1; }
+
+# ---- scenario 11: pulls/files failure HOLDS the watermark (does not advance) ----
+echo "    scenario 11: pulls/files failure holds watermark (per-repo failure gating)..."
+rm -f "$DB_FILE"
+# Seed a watermark via a successful initial run
+python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
+import json
+print(json.dumps([{
+    "id": 1100,
+    "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/110",
+    "created_at": "2026-04-10T00:00:00Z",
+    "user": {"login": "testbot"},
+    "body": "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=tests -->\n\n**Probes**\n\n1. [blocking] [from: tests] foo. Files: x.sh.\n\n_How to use: auto-reviews every new PR..._"
+}]))
+PYEOF
+run_driver
+SEEDED_WM=$(sqlite3 "$DB_FILE" "SELECT last_walked_at FROM walks WHERE repo='test-org/bakeoff-probe';")
+
+# Now run again with new comments + simulated pulls/files failure
+python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
+import json
+print(json.dumps([{
+    "id": 1101,
+    "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/111",
+    "created_at": "2026-04-20T00:00:00Z",
+    "user": {"login": "testbot"},
+    "body": "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=tests -->\n\n**Probes**\n\n1. [blocking] [from: tests] bar. Files: y.sh.\n\n_How to use: auto-reviews every new PR..._"
+}]))
+PYEOF
+echo "SENTINEL" > "$OUT_FILE"
+MOCK_GH_PULLS_FILES_FAIL=1 bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null 2>&1 && {
+    echo "FAIL scenario 11: expected non-zero exit when pulls/files fails"
+    exit 1
+}
+unset MOCK_GH_PULLS_FILES_FAIL
+HELD_WM=$(sqlite3 "$DB_FILE" "SELECT last_walked_at FROM walks WHERE repo='test-org/bakeoff-probe';")
+[ "$HELD_WM" = "$SEEDED_WM" ] || { echo "FAIL scenario 11: watermark advanced despite pulls/files failure (was '$SEEDED_WM' now '$HELD_WM')"; exit 1; }
+grep -q "SENTINEL" "$OUT_FILE" || { echo "FAIL scenario 11: OUT_FILE was overwritten despite failure"; exit 1; }
 
 echo "PASS"

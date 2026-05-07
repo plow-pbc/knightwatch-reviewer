@@ -1195,10 +1195,15 @@ fi
 # one of our auto-posts" — see the corresponding jq filter in review.sh.
 # The bakeoff marker captures which specialists were invoked on this
 # review so lib/bakeoff-store.sh can establish per-review denominators.
-BAKEOFF_SPECIALISTS="security,data-integrity,architecture,simplification,tests,shape,performance,consumers,aggregator"
+# Single source of truth: derive from lib/pipeline.py::SPECIALISTS so adding
+# a specialist there also flows into the bakeoff roster automatically.
+# aggregator is appended because it can attribute its own cross-angle probes.
+# Fail-fast — no fallback. If pipeline.py is broken, we want the review to
+# fail loudly here, not silently post with a stale roster.
+BAKEOFF_SPECIALISTS=$(python3 -c "import sys; sys.path.insert(0, '$_LIB_DIR/..'); from lib.pipeline import SPECIALISTS; print(','.join(list(SPECIALISTS) + ['aggregator']))")
 COMMENT_BODY="$BOT_AUTO_POST_MARKER
-<!-- knightwatch-bakeoff: specialists=$BAKEOFF_SPECIALISTS -->
 $BOT_AI_AUTHOR_MARKER
+<!-- knightwatch-bakeoff: specialists=$BAKEOFF_SPECIALISTS -->
 $COMMENT_BODY
 
 ---
