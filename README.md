@@ -92,21 +92,33 @@ The next 2-minute timer tick picks it up. `SOURCE_PATHS` in the same file enable
 
 Reviews fire on PR open and again after one hour of idle. To force a fresh review on the new head, post a slash command:
 
+> **Command prefix:** all bot commands use the prefix from `BOT_CMD_PREFIX` (default: `srosro`). Set it in `~/.pr-reviewer/config.env` to fork-customize. Examples below use the default.
+
 | Command | What |
 |---|---|
 | `/srosro-update-review` | Incremental re-review against the prior reviewed SHA |
 | `/srosro-review` | Whole-PR re-review from scratch |
 | `/srosro-approve` | Approve the PR (push-access collaborators only) |
-| `/srosro-memorize` | Teach the bot a calibration lesson from your reply |
+| `/srosro-props [from: <specialist>]` | +1 a specialist's contribution (drives the bake-off Loved column) |
+| `/srosro-critique [from: <specialist>]` | Flag a specialist's contribution as a misread (drives the Critiqued column) |
+| `/srosro-memorize` | Teach the bot a calibration lesson from your reply (still credits Loved when you quote a [from: <specialist>] tag, for back-compat) |
 
 ### Specialist bake-off
 
-A small post-hoc measurement that helps decide which specialists are earning their place. `specialist-bakeoff.sh` runs hourly via systemd (`*:30`), walks the tracked repos in `repos.conf`, parses posted bot reviews on GitHub, and writes a markdown table to `~/.pr-reviewer/specialist-bakeoff.md` with four columns per specialist over a rolling 30-day window:
+A small post-hoc measurement that helps decide which specialists are earning their place. `specialist-bakeoff.sh` runs hourly via systemd (`*:30`), walks the tracked repos in `repos.conf` for new bot reviews + feedback comments since the per-repo watermark, and persists one row per (review × specialist) into `~/.pr-reviewer/bakeoff.db`. A markdown snapshot is regenerated at `~/.pr-reviewer/specialist-bakeoff.md` with eight columns per specialist over a rolling 30-day window (configurable via `WINDOW_DAYS`):
 
-- **Shipped** — count of `[from: <specialist>]` attributions in posted reviews.
-- **Applied** — count of probes whose cited `Files:` paths were touched by the PR (any commit on the branch, base..head). Coarse signal — counts a probe applied even if the cited path was touched BEFORE the probe was raised; the false-positive band is uniform across specialists, so cross-specialist comparison stays meaningful. `[open]` probes (no `Files:` clause) earn no Applied credit by construction.
-- **Loved** — count of `/srosro-memorize` comments by trusted (push-access) collaborators that quoted a `[from: <specialist>]` tag from a prior bot review. To credit a specialist when you memorize, **quote the tag** (e.g. `[from: simplification]`) in your memorize body. Quote tags for positive feedback only — the parser counts attributions, not sentiment.
+- **Reviews** — total reviews where this specialist was invoked (the denominator). Comes from the write-time `<!-- knightwatch-bakeoff: specialists=... -->` marker on every posted review.
+- **Shipped** — reviews where this specialist contributed at least one probe (per-review bool, not probe count).
+- **Applied** — reviews where any of this specialist's probes cited a path that the PR touched (any commit on the branch). Coarse signal — counts a probe applied even if the cited path was touched BEFORE the probe was raised; the false-positive band is uniform across specialists, so cross-specialist comparison stays meaningful. `[open]` probes (no `Files:` clause) earn no Applied credit.
+- **+LOC** — sum of `additions` across the specialist's applied (deduped) cited paths in the PR's diff.
+- **−LOC** — sum of `deletions`, same scope.
+- **Loved** — reviews where a trusted (push-access) collaborator posted `/srosro-props [from: <specialist>]` or a `/srosro-memorize` quoting the tag, after the review.
+- **Critiqued** — reviews where a trusted collaborator posted `/srosro-critique [from: <specialist>]`.
 - **Loved/Shipped** — ratio (small-but-mighty vs high-volume-low-value).
+
+The store is append-only — historical reviews continue accumulating data, and the rolling 30-day window is now a query parameter rather than an API-cost ceiling. Subsequent walks only fetch comments newer than the per-repo watermark (with `OVERLAP_HOURS=24` slack for late-edited feedback).
+
+> **First-run note:** the table will be empty for ~30 days after this ships, then populates as new reviews land. The roster marker only goes on new reviews; old reviews are skipped by the walker.
 
 Use it to inform collapse-or-keep decisions on specialist agents.
 

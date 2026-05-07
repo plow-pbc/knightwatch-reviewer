@@ -35,6 +35,7 @@ REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 . "$REVIEWER_LIB_DIR/tracked-repos.sh"
 [ ${#REPOS[@]} -ge 1 ] || { echo "FATAL: no tracked repos — populate $STATE_DIR/repos.conf or set REPOS in config.env" >&2; exit 1; }
 BOT_USER="${BOT_USER:-srosro}"
+BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
 BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
 
 # is_trusted_repo_author() — push-access trust gate, shared with review.sh.
@@ -50,7 +51,7 @@ BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-pos
 # this command but BOT_USER posts hit the LAST_OUR_TS branch above and
 # never reach this check, so the footer can't self-trigger.
 is_memorize_request() {
-    printf '%s' "$1" | grep -qiF '/srosro-memorize'
+    printf '%s' "$1" | grep -qiF "/${BOT_CMD_PREFIX}-memorize"
 }
 
 # ---------- Opt-in signal: /srosro-memorize requests from trusted humans ----------
@@ -118,7 +119,7 @@ for REPO in "${REPOS[@]}"; do
                 # /srosro-memorize all they want; we ignore them. Logged
                 # at info so misuse is visible.
                 if ! is_trusted_repo_author "$REPO" "$USER"; then
-                    log "${REPO}#${PR_NUM}: /srosro-memorize from @${USER} ignored (no push access)"
+                    log "${REPO}#${PR_NUM}: /${BOT_CMD_PREFIX}-memorize from @${USER} ignored (no push access)"
                     continue
                 fi
                 REPLY_KEY="${REPO}#${PR_NUM}#${ID}"
@@ -135,7 +136,7 @@ for REPO in "${REPOS[@]}"; do
 done
 
 if [ -z "$REPLIES" ]; then
-    log "no new /srosro-memorize requests"
+    log "no new /${BOT_CMD_PREFIX}-memorize requests"
     exit 0
 fi
 
@@ -144,11 +145,11 @@ log "signals: memorize_requests=$REPLY_COUNT — updating mistakes list..."
 
 MISTAKES=$(cat "$CLAUDE_DIR/COMMENT_REVIEW_MISTAKES.md")
 
-PROMPT="You maintain a ranked top-48 list of review-calibration rules based on EXPLICIT, OPT-IN feedback. Each new signal is a comment containing \`/srosro-memorize\` posted by a trusted (push-access) human collaborator after a bot review on the same PR — they're explicitly asking the bot to remember a lesson. This list is rewritten end-to-end on each update — it is not append-only. Your default action is to make the SMALLEST possible change that captures new signal; over-writing the whole list for one datapoint is a failure mode.
+PROMPT="You maintain a ranked top-48 list of review-calibration rules based on EXPLICIT, OPT-IN feedback. Each new signal is a comment containing \`/${BOT_CMD_PREFIX}-memorize\` posted by a trusted (push-access) human collaborator after a bot review on the same PR — they're explicitly asking the bot to remember a lesson. This list is rewritten end-to-end on each update — it is not append-only. Your default action is to make the SMALLEST possible change that captures new signal; over-writing the whole list for one datapoint is a failure mode.
 
 INPUTS:
 - The current \`COMMENT_REVIEW_MISTAKES.md\` (the list you are editing)
-- New /srosro-memorize requests (each is a trusted human's explicit ask to remember something)
+- New /${BOT_CMD_PREFIX}-memorize requests (each is a trusted human's explicit ask to remember something)
 
 YOUR JOB:
 
@@ -157,7 +158,7 @@ YOUR JOB:
 2. Decide what to do with each signal:
    - **Match an existing item** → merge it in (implicit: the item stays or moves up in rank). Do not add a near-duplicate.
    - **Genuinely new general pattern** → add it, but only if the pattern would plausibly repeat on FUTURE PRs. One-off observations are not rules.
-   - **Not a clear calibration lesson** (vague request, just thanks/acknowledgment, or '/srosro-memorize' with nothing actionable after it) → ignore it.
+   - **Not a clear calibration lesson** (vague request, just thanks/acknowledgment, or '/${BOT_CMD_PREFIX}-memorize' with nothing actionable after it) → ignore it.
    - **Soften an existing rule** → if the signal contradicts a too-broad rule, NARROW or soften that rule rather than adding a new one alongside.
 
 3. Produce the updated list. Keep the format EXACTLY:
@@ -169,11 +170,11 @@ YOUR JOB:
    - If the list exceeds 48 items after edits, DROP the lowest-ranked items.
    - Preserve the header text above the numbered list.
 
-4. Produce a per-request acknowledgment inside an <ACKS> block. For each /srosro-memorize request, emit one <ACK> line that names the request by its key and explains in ONE CONCISE LINE what you did: what rule you added, what existing rule you softened, or that you made no change and why. ACK every request — the human asked you to remember something, so silence is wrong; tell them what happened.
+4. Produce a per-request acknowledgment inside an <ACKS> block. For each /${BOT_CMD_PREFIX}-memorize request, emit one <ACK> line that names the request by its key and explains in ONE CONCISE LINE what you did: what rule you added, what existing rule you softened, or that you made no change and why. ACK every request — the human asked you to remember something, so silence is wrong; tell them what happened.
 
 ACK constraints:
 - One line per ACK, under ~200 chars, plain prose.
-- Do NOT use \`@${BOT_USER}\`, \`/srosro-review\`, \`/srosro-update-review\`, or \`/srosro-memorize\` in the ACK body (those would either trigger a re-review loop or recursively register as a new memorize request on the next tick).
+- Do NOT use \`@${BOT_USER}\`, \`/${BOT_CMD_PREFIX}-review\`, \`/${BOT_CMD_PREFIX}-update-review\`, or \`/${BOT_CMD_PREFIX}-memorize\` in the ACK body (those would either trigger a re-review loop or recursively register as a new memorize request on the next tick).
 - Focus on what changed (or didn't), not pleasantries.
 
 OUTPUT FORMAT — exactly this shape, nothing else:
@@ -191,7 +192,7 @@ Default to conservative edits. If a request doesn't clearly indicate a generaliz
 Current COMMENT_REVIEW_MISTAKES.md:
 $MISTAKES
 
-New /srosro-memorize requests:
+New /${BOT_CMD_PREFIX}-memorize requests:
 $REPLIES"
 
 RAW=$(printf '%s' "$PROMPT" | codex exec --skip-git-repo-check -c model="gpt-5.5" "Update the top-48 mistakes list and produce per-reply acknowledgments. Output COMMENT_REVIEW_MISTAKES + ACKS tags only." 2>&1)
@@ -258,9 +259,9 @@ if [ -n "$ACKS_BLOCK" ]; then
         # accidentally copy-paste into a real trigger.
         ACK_BODY=$(printf '%s' "$ACK_BODY" | sed \
             -e "s|@${BOT_USER}|${BOT_USER}|gI" \
-            -e 's|/srosro-update-review|srosro-update-review|gI' \
-            -e 's|/srosro-review|srosro-review|gI' \
-            -e 's|/srosro-memorize|srosro-memorize|gI')
+            -e "s|/${BOT_CMD_PREFIX}-update-review|${BOT_CMD_PREFIX}-update-review|gI" \
+            -e "s|/${BOT_CMD_PREFIX}-review|${BOT_CMD_PREFIX}-review|gI" \
+            -e "s|/${BOT_CMD_PREFIX}-memorize|${BOT_CMD_PREFIX}-memorize|gI")
 
         [ -z "$KEY" ] || [ -z "$ACK_BODY" ] && { ACK_SKIPPED=$((ACK_SKIPPED+1)); continue; }
 
@@ -296,7 +297,7 @@ if [ -d "$VIBE_REPO/.git" ]; then
     else
         git -C "$VIBE_REPO" add claude-config/ 2>>"$LOG_FILE"
         if git -C "$VIBE_REPO" -c user.email=eng@plow.co -c user.name=odio \
-            commit -m "auto: tune review-mistakes list from /srosro-memorize requests" \
+            commit -m "auto: tune review-mistakes list from /${BOT_CMD_PREFIX}-memorize requests" \
             >> "$LOG_FILE" 2>&1; then
             if git -C "$VIBE_REPO" push >> "$LOG_FILE" 2>&1; then
                 log "vibe-engineering: committed + pushed auto-tune"

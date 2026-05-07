@@ -1,208 +1,253 @@
 #!/bin/bash
-# Hourly: rebuild ~/.pr-reviewer/specialist-bakeoff.md from posted bot
-# reviews + trusted-human /srosro-memorize comments across tracked repos.
+# Hourly: walk new GitHub state into ~/.pr-reviewer/bakeoff.db and
+# regenerate ~/.pr-reviewer/specialist-bakeoff.md.
 #
-# Pure post-hoc measurement: read GitHub state, write a markdown table.
-# No pipeline changes, no extra LLM calls, no new state coupling.
+# Architecture: walker (writes to SQLite store, watermark per repo) →
+# reporter (queries the store, renders markdown). The store is the
+# source of truth for time-series; the markdown is a snapshot view.
 #
-# WHAT IT MEASURES (rolling 30-day window):
-#   - shipped:  count of [from: <specialist>] attributions in posted reviews
-#   - applied:  count of probes whose cited Files: paths intersect the PR's
-#               touched files (gh api .../pulls/N/files). Coarse signal —
-#               counts a probe applied even if the path was touched BEFORE
-#               the probe was raised. False-positive band ~85% uniformly
-#               across specialists, so cross-specialist comparison still
-#               discriminates. Open probes (no Files: clause) earn no credit.
-#   - loved:    count of /srosro-memorize comments by trusted humans where
-#               the body quoted a [from: <specialist>] tag
-#   - reviews:  total review comments observed (for normalization)
-#
-# WHAT IT DOESN'T MEASURE:
-#   - findings emitted-but-dropped pre-aggregator (specialist files don't
-#     persist past the run); see plan doc for the trade.
-#   - sentiment on memorize bodies (opt-in is the signal, not text valence).
-#   - PRs whose pulls/files lookup fails contribute Shipped/Loved but not
-#     Applied — logged as WARN in bakeoff.log, run continues. (Repo-level
-#     comments/collaborators fetch failures, by contrast, abort the run.)
+# The 30-day window is now a query parameter, not an API-cost ceiling —
+# subsequent walks only fetch comments newer than the per-repo watermark
+# (with OVERLAP_HOURS slack for late-edited memorize comments).
 set -euo pipefail
 [ -n "${BASH_VERSION:-}" ] || { echo "FATAL: bash required"; exit 1; }
 
-# ---- config ----
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 WINDOW_DAYS="${WINDOW_DAYS:-30}"
+OVERLAP_HOURS="${OVERLAP_HOURS:-24}"
+DB_FILE="${DB_FILE:-$STATE_DIR/bakeoff.db}"
 OUT_FILE="${OUT_FILE:-$STATE_DIR/specialist-bakeoff.md}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/bakeoff.log}"
 mkdir -p "$STATE_DIR"
 
 BOT_USER="${BOT_USER:-srosro}"
+BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
 BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
 
-# Tracked-repo manifest (single source of truth in repos.conf). The
-# shared loader at lib/tracked-repos.sh is the ONE seam every consumer
-# goes through.  It also pins TMPDIR=$STATE_DIR/tmp so mktemp works
-# correctly under systemd PrivateTmp=yes.
 REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 . "$REVIEWER_LIB_DIR/tracked-repos.sh"
 [ ${#REPOS[@]} -ge 1 ] || { echo "FATAL: no tracked repos — populate $STATE_DIR/repos.conf or set REPOS in config.env" >&2; exit 1; }
 
-# Source the parsers (pure stdin/stdout — count_attributions,
-# extract_memorize_attributions).
 . "$REVIEWER_LIB_DIR/bakeoff-parsers.sh"
+. "$REVIEWER_LIB_DIR/bakeoff-store.sh"
 
 log() { echo "[$(date -u +%FT%TZ)] $*" >> "$LOG_FILE"; }
 
-# ---- per-repo collection ----
-SINCE_ISO=$(date -u -d "$WINDOW_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
-            || date -u -v "-${WINDOW_DAYS}d" +%Y-%m-%dT%H:%M:%SZ)
+store_init "$DB_FILE"
 
-# Accumulate attributions in temp files: one specialist name per line.
-shipped_tmp=$(mktemp)
-loved_tmp=$(mktemp)
-applied_tmp=$(mktemp)
-declare -A pr_paths_cache=()    # cache: "<repo>#<pr>" → newline-joined paths
-trap 'rm -f "$shipped_tmp" "$loved_tmp" "$applied_tmp"' EXIT
-
-review_count=0
-fetch_failures=0
-
-# Substantive bot review selector — used by both review_count and
-# attribution extraction below. ONE source of truth for the rules
-# (bot user, marker, ACK exclusion, footer fence). The footer fence
-# distinguishes posted reviews from same-bot ACK comments.
 SUBSTANTIVE_REVIEW_JQ='.user.login == $bot_user
     and (.body | contains($marker))
     and (.body | contains("👀 reviewing") | not)
     and (.body | contains("How to use: auto-reviews"))'
 
+walked_reviews=0
+fetch_failures=0
+
 for repo in "${REPOS[@]}"; do
-    log "scanning $repo since $SINCE_ISO..."
+    repo_failures=0
+    window_floor=$(date -u -d "$WINDOW_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+                  || date -u -v "-${WINDOW_DAYS}d" +%Y-%m-%dT%H:%M:%SZ)
+    watermark=$(get_walk_watermark "$DB_FILE" "$repo")
+    if [ -n "$watermark" ]; then
+        slack_floor=$(date -u -d "$watermark -$OVERLAP_HOURS hours" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+                     || date -u -v "-${OVERLAP_HOURS}H" -j -f "%Y-%m-%dT%H:%M:%SZ" "$watermark" +%Y-%m-%dT%H:%M:%SZ)
+        if [[ "$slack_floor" > "$window_floor" ]]; then
+            since="$slack_floor"
+        else
+            since="$window_floor"
+        fi
+    else
+        since="$window_floor"
+    fi
+    log "scanning $repo since $since (watermark=${watermark:-<none>})..."
 
-    # Fetch all issue comments (where bot posts reviews) in the window.
-    # --paginate handles high-volume repos. jq -s merges the pages.
     comments_json=$(gh api --paginate \
-        "repos/$repo/issues/comments?since=$SINCE_ISO" \
+        "repos/$repo/issues/comments?since=$since" \
         2>>"$LOG_FILE" | jq -s 'add // []') \
-        || { log "WARN: gh api comments failed for $repo, skipping"; fetch_failures=$((fetch_failures + 1)); continue; }
+        || { log "WARN: gh api comments failed for $repo, skipping"; fetch_failures=$((fetch_failures + 1)); repo_failures=$((repo_failures + 1)); continue; }
 
-    # Bulk-fetch trusted set (push-access collaborators).
-    # Same fail-loud contract as the comment fetch — bumps fetch_failures
-    # and skips this repo on lookup failure, so a transient gh hiccup can't
-    # silently drop a trusted memorize from the Loved column.
     trusted_set=$(gh api --paginate "repos/$repo/collaborators?affiliation=direct" 2>>"$LOG_FILE" \
         | jq -rs '[.[][]] | map(select(.permissions.push == true) | .login) | .[]') \
-        || { log "WARN: gh api collaborators failed for $repo, skipping"; fetch_failures=$((fetch_failures + 1)); continue; }
+        || { log "WARN: gh api collaborators failed for $repo, skipping"; fetch_failures=$((fetch_failures + 1)); repo_failures=$((repo_failures + 1)); continue; }
 
-    this_count=$(printf '%s' "$comments_json" \
-        | jq --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" \
-             "[.[] | select($SUBSTANTIVE_REVIEW_JQ)] | length")
-    review_count=$((review_count + this_count))
+    declare -A pr_paths_cache=()
+    declare -A pr_files_cache=()
 
-    printf '%s' "$comments_json" \
-        | jq -r --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" \
-             ".[] | select($SUBSTANTIVE_REVIEW_JQ) | .body" \
-        | count_attributions >> "$shipped_tmp"
-
-    # Applied: per substantive review, intersect each probe's cited Files:
-    # paths against the PR's touched-paths set (cached per PR). Probe with
-    # any cited path in the touched set → credit the probe's specialist.
-    # The pulls/files fetch is lazy — deferred until we find a probe with
-    # cited paths — so reviews of all-[open]/no-Files probes don't trigger
-    # a wasted gh api call.
-    while IFS=$'\t' read -r issue_url review_body; do
-        [ -z "$issue_url" ] && continue
+    # Pass 1: walk substantive bot reviews. Each row is one (review × specialist).
+    # The roster marker drives row creation; probe parsing drives flag updates.
+    max_review_ts=""
+    while IFS=$'\t' read -r review_id issue_url created_at review_body; do
+        [ -z "$review_id" ] && continue
         pr_num="${issue_url##*/}"
-        cache_key="${repo}#${pr_num}"
+        review_body=$(printf '%b' "$review_body")
 
-        # Walk each probe line; emit specialist if any cited path matches.
-        while IFS= read -r probe_line; do
-            specialist=$(printf '%s\n' "$probe_line" | count_attributions)
+        # Roster: which specialists were invoked. Skip review entirely if
+        # no marker (legacy review pre-roster — no denominator data).
+        roster=$(printf '%s\n' "$review_body" | extract_roster_marker)
+        [ -z "$roster" ] && continue
+
+        while IFS= read -r specialist; do
             [ -z "$specialist" ] && continue
+            upsert_specialist_run "$DB_FILE" "$repo" "$review_id" "$specialist" "$pr_num" "$created_at"
+        done <<< "$roster"
 
-            cited_paths=$(printf '%s\n' "$probe_line" | probe_cited_paths)
-            [ -z "$cited_paths" ] && continue
+        # Mark published: any [from: <specialist>] in probe lines.
+        printf '%s\n' "$review_body" \
+            | count_attributions \
+            | sort -u \
+            | while IFS= read -r specialist; do
+                [ -z "$specialist" ] && continue
+                mark_published "$DB_FILE" "$repo" "$review_id" "$specialist"
+              done
 
-            # Lazy-fetch the PR's touched-paths set. Cache empty-string on
-            # gh failure so subsequent probes/reviews on the same PR skip
-            # immediately without re-firing the API call.
-            if [[ -z "${pr_paths_cache[$cache_key]+set}" ]]; then
-                if pr_paths_lookup=$(gh api --paginate "repos/$repo/pulls/$pr_num/files" --jq '.[].filename' 2>>"$LOG_FILE"); then
-                    pr_paths_cache["$cache_key"]="$pr_paths_lookup"
-                else
-                    # Per-PR Applied failure is a sub-class of "we couldn't see this PR's
-                    # files" — Shipped/Loved are still good. Don't poison the whole run via
-                    # fetch_failures; just log and skip this PR's Applied contribution.
-                    log "WARN: gh api pulls/files failed for $repo#$pr_num — Applied skipped for this PR"
-                    pr_paths_cache["$cache_key"]=""
-                    continue 2
+        # Mark applied: per specialist (deduped across its probes), intersect
+        # cited paths with PR touched paths and sum LOC across matched paths.
+        cache_key="${repo}#${pr_num}"
+        if [[ -z "${pr_paths_cache[$cache_key]+set}" ]]; then
+            if pr_files_tsv=$(gh api --paginate "repos/$repo/pulls/$pr_num/files" --jq '.[] | [.filename, .additions, .deletions] | @tsv' 2>>"$LOG_FILE"); then
+                pr_files_cache["$cache_key"]="$pr_files_tsv"
+                pr_paths_cache["$cache_key"]=$(printf '%s\n' "$pr_files_tsv" | cut -f1)
+            else
+                log "WARN: gh api pulls/files failed for $repo#$pr_num, skipping applied check"
+                fetch_failures=$((fetch_failures + 1))
+                repo_failures=$((repo_failures + 1))
+                pr_paths_cache["$cache_key"]=""
+                pr_files_cache["$cache_key"]=""
+            fi
+        fi
+        pr_paths="${pr_paths_cache[$cache_key]}"
+        if [ -n "$pr_paths" ]; then
+            # Collect deduped (specialist, path) pairs across all probes in this review.
+            declare -A spec_paths_seen=()
+            while IFS= read -r probe_line; do
+                specialist=$(printf '%s\n' "$probe_line" | count_attributions || true)
+                [ -z "$specialist" ] && continue
+                while IFS= read -r p; do
+                    [ -z "$p" ] && continue
+                    spec_paths_seen["${specialist}	${p}"]=1
+                done < <(printf '%s\n' "$probe_line" | probe_cited_paths)
+            done < <(printf '%s\n' "$review_body" | grep -E '^[0-9]+\.' || true)
+
+            # Per specialist: sum LOC across paths that touched the PR; mark + record.
+            declare -A spec_added=()
+            declare -A spec_removed=()
+            declare -A spec_matched=()
+            pr_files_tsv="${pr_files_cache[$cache_key]}"
+            for key in "${!spec_paths_seen[@]}"; do
+                specialist="${key%%	*}"
+                path="${key#*	}"
+                if grep -qFx "$path" <<< "$pr_paths"; then
+                    loc_line=$(printf '%s\n' "$pr_files_tsv" | awk -F'\t' -v p="$path" '$1==p {print $2"\t"$3; exit}')
+                    a=$(printf '%s' "$loc_line" | cut -f1)
+                    r=$(printf '%s' "$loc_line" | cut -f2)
+                    spec_added["$specialist"]=$((${spec_added[$specialist]:-0} + ${a:-0}))
+                    spec_removed["$specialist"]=$((${spec_removed[$specialist]:-0} + ${r:-0}))
+                    spec_matched["$specialist"]=1
                 fi
-            fi
-            pr_paths="${pr_paths_cache[$cache_key]}"
-            [ -z "$pr_paths" ] && continue 2
+            done
+            for specialist in "${!spec_matched[@]}"; do
+                mark_applied "$DB_FILE" "$repo" "$review_id" "$specialist"
+                set_applied_loc "$DB_FILE" "$repo" "$review_id" "$specialist" \
+                    "${spec_added[$specialist]:-0}" "${spec_removed[$specialist]:-0}"
+            done
+            unset spec_paths_seen spec_added spec_removed spec_matched
+        fi
 
-            if printf '%s\n' "$cited_paths" \
-                | grep -qFxf <(printf '%s\n' "$pr_paths"); then
-                echo "$specialist" >> "$applied_tmp"
-            fi
-        done < <(printf '%b\n' "$review_body" | grep -E '^[0-9]+\. \[' || true)
-    done < <(printf '%s' "$comments_json" \
-        | jq -r --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" \
-             ".[] | select($SUBSTANTIVE_REVIEW_JQ) | [.issue_url, .body] | @tsv")
-
-    # Memorize signals: /srosro-memorize comments by trusted humans.
-    # Exclude bot ACKs (they contain the auto-post marker and quote the
-    # original /srosro-memorize body, which would double-count attributions).
-    while IFS=$'\t' read -r author body; do
-        [ -z "$author" ] && continue
-        if grep -qFx "$author" <<< "$trusted_set"; then
-            printf '%s' "$body" | extract_memorize_attributions >> "$loved_tmp"
+        walked_reviews=$((walked_reviews + 1))
+        if [[ "$created_at" > "$max_review_ts" ]]; then
+            max_review_ts="$created_at"
         fi
     done < <(printf '%s' "$comments_json" \
-        | jq -r --arg marker "$BOT_AUTO_POST_MARKER" \
+        | jq -r --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" \
+             ".[] | select($SUBSTANTIVE_REVIEW_JQ) | [.id, .issue_url, .created_at, .body] | @tsv")
+
+    # Pass 2: feedback comments. For each feedback signal, find the most-recent
+    # substantive bot review on the same PR before the feedback's created_at,
+    # and mark the corresponding flag on (review, specialist) rows.
+    while IFS=$'\t' read -r author issue_url body created_at; do
+        [ -z "$author" ] && continue
+        grep -qFx "$author" <<< "$trusted_set" || continue
+        pr_num="${issue_url##*/}"
+        body_decoded=$(printf '%b' "$body")
+
+        positives=$( { printf '%s\n' "$body_decoded" | extract_props_attributions
+                       printf '%s\n' "$body_decoded" | extract_memorize_attributions
+                     } | sort -u | grep -v '^$' || true)
+        negatives=$(printf '%s\n' "$body_decoded" | extract_critique_attributions)
+
+        if [ -n "$positives" ] || [ -n "$negatives" ]; then
+            # Attribution rule: feedback (props/critique/memorize) credits
+            # the MOST-RECENT prior review on the same PR, regardless of whether that
+            # review's roster actually included the quoted specialist. Rationale:
+            # (a) human feedback typically lands within hours of the review they're
+            #     reacting to, so "most recent" is almost always the right one;
+            # (b) per-review drill-down is out of scope for the current bake-off
+            #     (aggregates by specialist over a window — this is fine);
+            # (c) if a future column needs sharper attribution (e.g. "which review
+            #     was loved?"), the feedback comment's quoted specialist should be
+            #     intersected with the target review's roster — not done here yet.
+            target_review=$(find_target_review_for_feedback "$DB_FILE" "$repo" "$pr_num" "$created_at")
+            [ -z "$target_review" ] && continue
+            while IFS= read -r specialist; do
+                [ -z "$specialist" ] && continue
+                mark_loved_positive "$DB_FILE" "$repo" "$target_review" "$specialist"
+            done <<< "$positives"
+            while IFS= read -r specialist; do
+                [ -z "$specialist" ] && continue
+                mark_critiqued "$DB_FILE" "$repo" "$target_review" "$specialist"
+            done <<< "$negatives"
+        fi
+    done < <(printf '%s' "$comments_json" \
+        | jq -r --arg marker "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
               '.[] | select(
-                  (.body | test("/srosro-memorize"; "i"))
+                  ((.body | test("^/" + $cmd_prefix + "-props "; "m"))
+                   or (.body | test("^/" + $cmd_prefix + "-critique "; "m"))
+                   or (.body | test("/" + $cmd_prefix + "-memorize"; "i")))
                   and (.body | contains($marker) | not)
-              ) | [.user.login, .body] | @tsv')
+              ) | [.user.login, .issue_url, .body, .created_at] | @tsv')
+
+    if [ "$repo_failures" -eq 0 ]; then
+        if [ -n "$max_review_ts" ]; then
+            set_walk_watermark "$DB_FILE" "$repo" "$max_review_ts"
+        else
+            set_walk_watermark "$DB_FILE" "$repo" "$(date -u +%FT%TZ)"
+        fi
+    fi
 done
 
-log "scanned $review_count bot reviews across ${#REPOS[@]} repos"
+log "walked $walked_reviews bot reviews across ${#REPOS[@]} repos"
 
 if [ "$fetch_failures" -gt 0 ]; then
-    log "PARTIAL RUN: $fetch_failures repo(s) failed to fetch — NOT overwriting $OUT_FILE"
-    echo "PARTIAL: $fetch_failures repo(s) failed; $OUT_FILE not updated" >&2
+    log "PARTIAL RUN: $fetch_failures fetch failure(s) — store may be missing rows but NOT overwriting $OUT_FILE"
+    echo "PARTIAL: $fetch_failures fetch failure(s); $OUT_FILE not updated" >&2
     exit 1
 fi
 
-# ---- assemble the table ----
-shipped_counts=$(sort "$shipped_tmp" | uniq -c | awk '{print $2"\t"$1}')
-loved_counts=$(sort "$loved_tmp" | uniq -c | awk '{print $2"\t"$1}')
-applied_counts=$(sort "$applied_tmp" | uniq -c | awk '{print $2"\t"$1}')
-
-# Union of all specialist names seen in any column.
-all_specialists=$( (sort -u "$shipped_tmp"; sort -u "$loved_tmp"; sort -u "$applied_tmp") | sort -u | grep -v '^$' || true)
+# ---- reporter: render markdown from store ----
+window_iso=$(date -u -d "$WINDOW_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+            || date -u -v "-${WINDOW_DAYS}d" +%Y-%m-%dT%H:%M:%SZ)
+total_reviews=$(sqlite3 "$DB_FILE" \
+    "SELECT COUNT(DISTINCT comment_id) FROM specialist_runs WHERE ran_at >= '$window_iso';")
 
 {
     echo "# Specialist bake-off — last $WINDOW_DAYS days"
     echo
-    echo "_Generated $(date -u +%FT%TZ) from $review_count posted reviews across ${#REPOS[@]} tracked repos._"
+    echo "_Generated $(date -u +%FT%TZ) from $total_reviews posted reviews across ${#REPOS[@]} tracked repos. Source: \`$DB_FILE\`._"
     echo
-    echo "| Specialist | Shipped | Applied | Loved | Loved/Shipped |"
-    echo "|---|---:|---:|---:|---:|"
-    if [ -n "$all_specialists" ]; then
-        while read -r spec; do
-            [ -z "$spec" ] && continue
-            shipped=$(printf '%s\n' "$shipped_counts" | awk -v s="$spec" '$1==s{print $2; exit}')
-            applied=$(printf '%s\n' "$applied_counts" | awk -v s="$spec" '$1==s{print $2; exit}')
-            loved=$(printf '%s\n' "$loved_counts" | awk -v s="$spec" '$1==s{print $2; exit}')
-            shipped=${shipped:-0}
-            applied=${applied:-0}
-            loved=${loved:-0}
+    if [ "$total_reviews" = "0" ]; then
+        echo "_Awaiting first reviews with the roster marker — table populates as new reviews land._"
+    else
+        echo "| Specialist | Reviews | Shipped | Applied | +LOC | -LOC | Loved | Critiqued | Loved/Shipped |"
+        echo "|---|---:|---:|---:|---:|---:|---:|---:|---:|"
+        query_window_aggregates "$DB_FILE" "$window_iso" \
+        | while IFS=$'\t' read -r spec reviews shipped applied added removed loved critiqued; do
             if [ "$shipped" -gt 0 ]; then
                 ratio=$(awk -v l="$loved" -v s="$shipped" 'BEGIN{printf "%.2f", l/s}')
             else
                 ratio="—"
             fi
-            echo "| $spec | $shipped | $applied | $loved | $ratio |"
-        done <<< "$all_specialists" | sort -t'|' -k3,3rn
+            echo "| $spec | $reviews | $shipped | $applied | $added | $removed | $loved | $critiqued | $ratio |"
+        done
     fi
 } > "$OUT_FILE"
 

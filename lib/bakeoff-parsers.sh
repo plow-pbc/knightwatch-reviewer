@@ -63,3 +63,37 @@ probe_cited_paths() {
     }
     '
 }
+
+# Specialists invoked on this review, from the write-time bake-off marker.
+# Format on the wire: `<!-- knightwatch-bakeoff: specialists=a,b,c -->` (one
+# line, comma-separated). Tolerate optional whitespace before the closing
+# `-->` since markdown comment writers commonly insert it. Emits one
+# specialist per line.
+extract_roster_marker() {
+    grep -oE '<!-- knightwatch-bakeoff: specialists=[a-z][a-z,-]*[[:space:]]*-->' \
+        | sed -E 's/.*specialists=([a-z,-]+).*/\1/' \
+        | tr ',' '\n' \
+        | grep -v '^$' || true
+}
+
+# Extracts the directly-targeted specialist from the leading `[from: X]`
+# slot of each /${BOT_CMD_PREFIX}-props line. Subsequent `[from: ...]`
+# tokens in the same line (prose mentions, contrasts) are intentionally
+# ignored — one comment is one bool credit per specialist.
+extract_props_attributions() {
+    local prefix="${BOT_CMD_PREFIX:-srosro}"
+    grep -oE "^/${prefix}-props \[from: [a-z][a-z-]*\]" \
+        | sed -E 's/^.*\[from: ([a-z-]+)\]/\1/' \
+        | sort -u || true
+}
+
+# Extracts the directly-targeted specialist from the leading `[from: X]`
+# slot of each /${BOT_CMD_PREFIX}-critique line. Subsequent `[from: ...]`
+# tokens in the same line (prose mentions, contrasts) are intentionally
+# ignored — one comment is one bool credit per specialist.
+extract_critique_attributions() {
+    local prefix="${BOT_CMD_PREFIX:-srosro}"
+    grep -oE "^/${prefix}-critique \[from: [a-z][a-z-]*\]" \
+        | sed -E 's/^.*\[from: ([a-z-]+)\]/\1/' \
+        | sort -u || true
+}

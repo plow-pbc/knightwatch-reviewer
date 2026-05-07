@@ -35,6 +35,7 @@ REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 . "$REVIEWER_LIB_DIR/gh-comments.sh"
 [ ${#REPOS[@]} -ge 1 ] || { echo "FATAL: no tracked repos — populate $STATE_DIR/repos.conf or set REPOS in config.env" >&2; exit 1; }
 BOT_USER="${BOT_USER:-srosro}"
+BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
 # Hidden HTML-comment marker prepended to every auto-post by this repo
 # (review ack, final review, learn-from-replies ack). The orchestrator's
 # jq filter excludes any comment containing this string so the bot
@@ -143,11 +144,11 @@ for REPO in "${REPOS[@]}"; do
             # substring). Whole-PR check excludes /srosro-update-review so
             # the longer command doesn't accidentally satisfy both paths.
             WHOLE_TRIGGER=$(printf '%s' "$COMMENTS_JSON" |
-                jq --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" \
-                    '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/srosro-review"; "i")) and ((.body | test("/srosro-update-review"; "i")) | not))] | length')
+                jq --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
+                    '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/" + $cmd_prefix + "-review"; "i")) and ((.body | test("/" + $cmd_prefix + "-update-review"; "i")) | not))] | length')
             INCREMENTAL_TRIGGER=$(printf '%s' "$COMMENTS_JSON" |
-                jq --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" \
-                    '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/srosro-update-review"; "i")))] | length')
+                jq --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
+                    '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/" + $cmd_prefix + "-update-review"; "i")))] | length')
             if [ "${WHOLE_TRIGGER:-0}" -gt 0 ]; then
                 FORCE_REVIEW=true
                 FORCE_WHOLE_PR=true
@@ -163,12 +164,12 @@ for REPO in "${REPOS[@]}"; do
             if [ "$FORCE_REVIEW" = "true" ]; then
                 if [ "$FORCE_WHOLE_PR" = "true" ]; then
                     TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
-                        jq -c --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" \
-                            '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/srosro-review"; "i")) and ((.body | test("/srosro-update-review"; "i")) | not))] | sort_by(.created_at) | last // empty' 2>/dev/null)
+                        jq -c --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
+                            '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/" + $cmd_prefix + "-review"; "i")) and ((.body | test("/" + $cmd_prefix + "-update-review"; "i")) | not))] | sort_by(.created_at) | last // empty' 2>/dev/null)
                 else
                     TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
-                        jq -c --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" \
-                            '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/srosro-update-review"; "i")))] | sort_by(.created_at) | last // empty' 2>/dev/null)
+                        jq -c --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
+                            '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/" + $cmd_prefix + "-update-review"; "i")))] | sort_by(.created_at) | last // empty' 2>/dev/null)
                 fi
                 if [ -n "$TRIGGER_JSON" ]; then
                     TRIGGER_USER=$(printf '%s' "$TRIGGER_JSON" | jq -r '.user.login // ""')
@@ -222,9 +223,9 @@ for REPO in "${REPOS[@]}"; do
         # /srosro-update-review on an unchanged PR no longer logs
         # "incremental re-review" before silently skipping).
         if [ "$FORCE_WHOLE_PR" = "true" ]; then
-            log "$PR_ID: /srosro-review requested — whole-PR re-review"
+            log "$PR_ID: /${BOT_CMD_PREFIX}-review requested — whole-PR re-review"
         elif [ "$FORCE_REVIEW" = "true" ]; then
-            log "$PR_ID: /srosro-update-review requested — incremental re-review"
+            log "$PR_ID: /${BOT_CMD_PREFIX}-update-review requested — incremental re-review"
         fi
 
         # Stability cooldown for non-forced re-reviews.

@@ -158,7 +158,7 @@ format_review_scope() {
         first)
             printf '📋 First review of this PR' ;;
         whole)
-            printf '📋 Whole-PR re-review (`/srosro-review`) — evaluated from scratch, no prior review consulted' ;;
+            printf '📋 Whole-PR re-review (`/%s-review`) — evaluated from scratch, no prior review consulted' "${BOT_CMD_PREFIX:-srosro}" ;;
         incremental:*)
             sha="${scope#incremental:}"
             if [ -z "$head_sha" ]; then

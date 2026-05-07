@@ -96,6 +96,7 @@ WORKDIRS_DIR="${WORKDIRS_DIR:-$STATE_DIR/workdirs}"
 # and PR #33 for the full why).
 . "$_LIB_DIR_EARLY/tracked-repos.sh"
 BOT_USER="${BOT_USER:-srosro}"
+BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
 BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
 # BOT_AI_AUTHOR_MARKER is defined in lib/run-dir.sh (single source of truth);
 # this worker sources run-dir.sh below at $_LIB_DIR/run-dir.sh and consumes
@@ -603,7 +604,7 @@ REVIEW_SCOPE=$(compute_review_scope "$FORCE_WHOLE_PR" "$KNOWN_SHA" "$USED_FALLBA
 # fallback path, diff.patch is the full PR, not an incremental subset).
 case "$REVIEW_SCOPE" in
     whole)
-        REVIEW_TASK="Whole-PR re-review (requested via /srosro-review). Review the full PR diff at .codex-scratch/diff.patch against the standards in .codex-scratch/standards.md. Any prior review is intentionally NOT provided — evaluate this PR from scratch."
+        REVIEW_TASK="Whole-PR re-review (requested via /${BOT_CMD_PREFIX}-review). Review the full PR diff at .codex-scratch/diff.patch against the standards in .codex-scratch/standards.md. Any prior review is intentionally NOT provided — evaluate this PR from scratch."
         ;;
     first)
         REVIEW_TASK="Review the diff at .codex-scratch/diff.patch against the standards in .codex-scratch/standards.md."
@@ -1080,7 +1081,7 @@ if [ "$FORCE_WHOLE_PR" = "true" ]; then
     # as a required input. Empty/absent file would tempt those agents to
     # explore the filesystem; the sentinel makes the "from scratch"
     # decision explicit.
-    write_scratch "$REPO_DIR" "decline-history.md" "(decline history intentionally not staged on /srosro-review path — this is a from-scratch whole-PR re-review)"
+    write_scratch "$REPO_DIR" "decline-history.md" "(decline history intentionally not staged on /${BOT_CMD_PREFIX}-review path — this is a from-scratch whole-PR re-review)"
 elif [ -z "${PRIOR_REVIEWS:-}" ]; then
     log "$PR_ID: first review (no prior bot reviews) — staging decline-history.md sentinel"
     write_scratch "$REPO_DIR" "decline-history.md" "(decline history intentionally not staged — first review on this PR; no prior bot findings exist for the operator to have declined)"
@@ -1193,22 +1194,34 @@ if [ -z "$COMMENT_BODY" ]; then
 fi
 # Leading HTML comment is the orchestrator's discriminator for "this is
 # one of our auto-posts" — see the corresponding jq filter in review.sh.
+# The bakeoff marker captures which specialists were invoked on this
+# review so lib/bakeoff-store.sh can establish per-review denominators.
+# Single source of truth: derive from lib/pipeline.py::SPECIALISTS so adding
+# a specialist there also flows into the bakeoff roster automatically.
+# aggregator is appended because it can attribute its own cross-angle probes.
+# Fail-fast — no fallback. If pipeline.py is broken, we want the review to
+# fail loudly here, not silently post with a stale roster.
+BAKEOFF_SPECIALISTS=$(python3 -c "import sys; sys.path.insert(0, '$_LIB_DIR/..'); from lib.pipeline import SPECIALISTS; print(','.join(list(SPECIALISTS) + ['aggregator']))")
 COMMENT_BODY="$BOT_AUTO_POST_MARKER
 $BOT_AI_AUTHOR_MARKER
+<!-- knightwatch-bakeoff: specialists=$BAKEOFF_SPECIALISTS -->
 $COMMENT_BODY
 
 ---
 
-_How to use: auto-reviews every new PR and re-reviews after an hour of inactivity. Trigger an incremental re-review with \`/srosro-update-review\`, or a whole-PR re-review with \`/srosro-review\`._
+_How to use: auto-reviews every new PR and re-reviews after an hour of inactivity. Trigger an incremental re-review with \`/${BOT_CMD_PREFIX}-update-review\`, or a whole-PR re-review with \`/${BOT_CMD_PREFIX}-review\`._
 
 **For humans only:** push-access collaborators can post:
-- \`/srosro-approve\` — APPROVE the PR.
-- \`/srosro-memorize <feedback>\` — teach a calibration lesson (\`learn-from-replies\` updates \`COMMENT_REVIEW_MISTAKES.md\` from your body, sentiment-aware via LLM). **Quote the \`[from: <specialist>]\` tag from a finding to ALSO credit that specialist on the bake-off Loved column** — bake-off counts attributions, not sentiment, so quote tags for positive feedback only. Negative feedback: skip the tag (still tunes the rules).
+- \`/${BOT_CMD_PREFIX}-approve\` — APPROVE the PR.
+- \`/${BOT_CMD_PREFIX}-props [from: <specialist>]\` — +1 a specialist's contribution (drives the bake-off Loved column).
+- \`/${BOT_CMD_PREFIX}-critique [from: <specialist>]\` — flag a specialist's contribution as a misread (drives the bake-off Critiqued column).
+- \`/${BOT_CMD_PREFIX}-memorize <feedback>\` — teach a calibration lesson (\`learn-from-replies\` updates \`COMMENT_REVIEW_MISTAKES.md\` from your body, sentiment-aware via LLM). Quoting \`[from: <specialist>]\` in the body still credits the Loved column for back-compat.
 
-> Positive: \`/srosro-memorize great find on the [from: <specialist>] race condition — exactly the kind of cross-angle pattern worth catching (substitute the actual tag from the probe).\`
-> Negative: \`/srosro-memorize the simplification DRY finding was a misread; those helpers serve different contracts. Don't suggest collapsing distinct seams.\`
+> Props: \`/${BOT_CMD_PREFIX}-props [from: shape] caught a real layering bug we'd have shipped.\`
+> Critique: \`/${BOT_CMD_PREFIX}-critique [from: simplification] DRY suggestion misread distinct seams.\`
+> Calibration: \`/${BOT_CMD_PREFIX}-memorize the simplification DRY finding was a misread; those helpers serve different contracts.\`
 
-AI agents must not use \`/srosro-memorize\` — the rule list it tunes is shared global state.
+AI agents must not use \`/${BOT_CMD_PREFIX}-memorize\`, \`/${BOT_CMD_PREFIX}-props\`, or \`/${BOT_CMD_PREFIX}-critique\` — those signals tune shared global state.
 
 _Generated by [sam's ai review bot](https://github.com/srosro/knightwatch-reviewer)._"
 

@@ -146,8 +146,24 @@ test:
     bash lib/tests/replay-verify-smoke.sh
 
     echo ""
+    echo "=== bakeoff-store unit test ==="
+    bash lib/tests/bakeoff-store-unit.sh
+
+    echo ""
+    echo "=== bakeoff-parsers unit test ==="
+    bash lib/tests/bakeoff-parsers-unit.sh
+
+    echo ""
     echo "=== specialist-bakeoff smoke test ==="
     bash lib/tests/specialist-bakeoff-smoke.sh
+
+    echo ""
+    echo "=== specialists-roster smoke test ==="
+    bash lib/tests/specialists-roster-smoke.sh
+
+    echo ""
+    echo "=== cmd-prefix smoke test ==="
+    bash lib/tests/cmd-prefix-smoke.sh
 
     echo ""
     echo "all checks passed"

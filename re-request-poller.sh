@@ -23,6 +23,7 @@ REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 . "$REVIEWER_LIB_DIR/tracked-repos.sh"
 [ ${#REPOS[@]} -ge 1 ] || { echo "FATAL: no tracked repos — populate $STATE_DIR/repos.conf or set REPOS in config.env" >&2; exit 1; }
 BOT_USER="${BOT_USER:-srosro}"
+BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"; }
 
@@ -56,14 +57,14 @@ for REPO in "${REPOS[@]}"; do
             continue
         fi
 
-        log "$PR_KEY: re-request review event at $LATEST — posting /srosro-review trigger"
+        log "$PR_KEY: re-request review event at $LATEST — posting /${BOT_CMD_PREFIX}-review trigger"
         # Bare command only — extra prose in the comment body would be
         # treated as requester framing by trigger-comment.md prompts.
         if gh pr comment "$PR_NUM" --repo "$REPO" \
-            --body "/srosro-review" >/dev/null 2>&1; then
+            --body "/${BOT_CMD_PREFIX}-review" >/dev/null 2>&1; then
             seen_set "$PR_KEY" "$LATEST"
         else
-            log "$PR_KEY: failed to post /srosro-review trigger comment"
+            log "$PR_KEY: failed to post /${BOT_CMD_PREFIX}-review trigger comment"
         fi
     done
 done
