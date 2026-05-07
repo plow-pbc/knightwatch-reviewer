@@ -105,23 +105,13 @@ for repo in "${REPOS[@]}"; do
     # Applied: per substantive review, intersect each probe's cited Files:
     # paths against the PR's touched-paths set (cached per PR). Probe with
     # any cited path in the touched set → credit the probe's specialist.
+    # The pulls/files fetch is lazy — deferred until we find a probe with
+    # cited paths — so reviews of all-[open]/no-Files probes don't trigger
+    # a wasted gh api call.
     while IFS=$'\t' read -r issue_url review_body; do
         [ -z "$issue_url" ] && continue
         pr_num="${issue_url##*/}"
         cache_key="${repo}#${pr_num}"
-        if [[ -z "${pr_paths_cache[$cache_key]+set}" ]]; then
-            if pr_paths_lookup=$(gh api --paginate "repos/$repo/pulls/$pr_num/files" --jq '.[].filename' 2>>"$LOG_FILE"); then
-                pr_paths_cache["$cache_key"]="$pr_paths_lookup"
-            else
-                # Per-PR Applied failure is a sub-class of "we couldn't see this PR's
-                # files" — Shipped/Loved are still good. Don't poison the whole run via
-                # fetch_failures; just log and skip this PR's Applied contribution.
-                log "WARN: gh api pulls/files failed for $repo#$pr_num — Applied skipped for this PR"
-                continue
-            fi
-        fi
-        pr_paths="${pr_paths_cache[$cache_key]}"
-        [ -z "$pr_paths" ] && continue
 
         # Walk each probe line; emit specialist if any cited path matches.
         while IFS= read -r probe_line; do
@@ -130,6 +120,24 @@ for repo in "${REPOS[@]}"; do
 
             cited_paths=$(printf '%s\n' "$probe_line" | probe_cited_paths)
             [ -z "$cited_paths" ] && continue
+
+            # Lazy-fetch the PR's touched-paths set. Cache empty-string on
+            # gh failure so subsequent probes/reviews on the same PR skip
+            # immediately without re-firing the API call.
+            if [[ -z "${pr_paths_cache[$cache_key]+set}" ]]; then
+                if pr_paths_lookup=$(gh api --paginate "repos/$repo/pulls/$pr_num/files" --jq '.[].filename' 2>>"$LOG_FILE"); then
+                    pr_paths_cache["$cache_key"]="$pr_paths_lookup"
+                else
+                    # Per-PR Applied failure is a sub-class of "we couldn't see this PR's
+                    # files" — Shipped/Loved are still good. Don't poison the whole run via
+                    # fetch_failures; just log and skip this PR's Applied contribution.
+                    log "WARN: gh api pulls/files failed for $repo#$pr_num — Applied skipped for this PR"
+                    pr_paths_cache["$cache_key"]=""
+                    continue 2
+                fi
+            fi
+            pr_paths="${pr_paths_cache[$cache_key]}"
+            [ -z "$pr_paths" ] && continue 2
 
             if printf '%s\n' "$cited_paths" \
                 | grep -qFxf <(printf '%s\n' "$pr_paths"); then
