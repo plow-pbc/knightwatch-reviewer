@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Unit tests for the lib/bakeoff-parsers.sh stdin parsers — roster marker,
+# /kw-props, /kw-critique. Pure functions; no GH/file I/O.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../bakeoff-parsers.sh"
@@ -29,5 +31,21 @@ OUT=$(printf '/kw-critique [from: shape] this finding misread the contract\n' | 
 echo "  extract_kw_critique_attributions: requires the command on the same line as the tag..."
 OUT=$(printf '/kw-critique\nseparately: [from: shape] is wrong\n' | extract_kw_critique_attributions)
 [ -z "$OUT" ] || { echo "FAIL: cross-line attribution leaked: $OUT"; exit 1; }
+
+echo "  extract_kw_props_attributions: prose-mentioned [from: X] after command does NOT mis-attribute..."
+OUT=$(printf '/kw-props [from: tests] solid catch — way better than [from: shape] would have been\n' | extract_kw_props_attributions)
+[ "$OUT" = "tests" ] || { echo "FAIL: prose [from:] leaked: $OUT"; exit 1; }
+
+echo "  extract_kw_props_attributions: same [from: X] repeated → deduped to one..."
+OUT=$(printf '/kw-props [from: tests] line one\n/kw-props [from: tests] line two\n' | extract_kw_props_attributions)
+[ "$OUT" = "tests" ] || { echo "FAIL: dedup: $OUT"; exit 1; }
+
+echo "  extract_roster_marker: empty specialists list emits nothing..."
+OUT=$(printf '<!-- knightwatch-bakeoff: specialists= -->\n' | extract_roster_marker)
+[ -z "$OUT" ] || { echo "FAIL: empty roster leaked: $OUT"; exit 1; }
+
+echo "  extract_roster_marker: tolerates extra whitespace before -->..."
+OUT=$(printf '<!-- knightwatch-bakeoff: specialists=tests,shape   -->\n' | extract_roster_marker | sort | paste -sd, -)
+[ "$OUT" = "shape,tests" ] || { echo "FAIL: whitespace tolerance: $OUT"; exit 1; }
 
 echo "PASS"

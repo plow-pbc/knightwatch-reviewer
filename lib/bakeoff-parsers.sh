@@ -76,19 +76,22 @@ extract_roster_marker() {
         | grep -v '^$' || true
 }
 
-# Specialist names from `/kw-props [from: <specialist>]` lines. Bool signal
-# per (memorize comment, specialist) — dedupe via sort -u.
+# Extracts the directly-targeted specialist from the leading `[from: X]`
+# slot of each /kw-props line. Subsequent `[from: ...]` tokens in the same
+# line (prose mentions, contrasts) are intentionally ignored — one comment
+# is one bool credit per specialist.
 extract_kw_props_attributions() {
-    grep -E '^/kw-props .*\[from: [a-z][a-z-]*\]' \
-        | grep -oE '\[from: [a-z][a-z-]*\]' \
-        | sed -E 's/\[from: ([a-z-]+)\]/\1/' \
+    grep -oE '^/kw-props \[from: [a-z][a-z-]*\]' \
+        | sed -E 's/^.*\[from: ([a-z-]+)\]/\1/' \
         | sort -u || true
 }
 
-# Specialist names from `/kw-critique [from: <specialist>]` lines.
+# Extracts the directly-targeted specialist from the leading `[from: X]`
+# slot of each /kw-critique line. Subsequent `[from: ...]` tokens in the
+# same line (prose mentions, contrasts) are intentionally ignored — one
+# comment is one bool credit per specialist.
 extract_kw_critique_attributions() {
-    grep -E '^/kw-critique .*\[from: [a-z][a-z-]*\]' \
-        | grep -oE '\[from: [a-z][a-z-]*\]' \
-        | sed -E 's/\[from: ([a-z-]+)\]/\1/' \
+    grep -oE '^/kw-critique \[from: [a-z][a-z-]*\]' \
+        | sed -E 's/^.*\[from: ([a-z-]+)\]/\1/' \
         | sort -u || true
 }
