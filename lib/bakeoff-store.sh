@@ -82,6 +82,21 @@ ON CONFLICT(repo) DO UPDATE SET last_walked_at = excluded.last_walked_at;
 SQL
 }
 
+# Find the most-recent prior review on (repo, pr) before before_ts.
+# Used by the walker's pass-2 to attribute feedback comments to a specific
+# (review, specialist) row. Returns empty string if no qualifying review.
+find_target_review_for_feedback() {
+    local db="$1" repo="$2" pr_number="$3" before_ts="$4"
+    sqlite3 "$db" <<SQL
+SELECT comment_id FROM specialist_runs
+ WHERE repo = '$repo'
+   AND pr_number = $pr_number
+   AND ran_at < '$before_ts'
+ ORDER BY ran_at DESC
+ LIMIT 1;
+SQL
+}
+
 # TSV: specialist\treviews\tshipped\tapplied\tloved\tcritiqued
 # Caller passes window cutoff to keep the function pure (no date math).
 query_window_aggregates() {

@@ -43,6 +43,7 @@ walked_reviews=0
 fetch_failures=0
 
 for repo in "${REPOS[@]}"; do
+    repo_failures=0
     window_floor=$(date -u -d "$WINDOW_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
                   || date -u -v "-${WINDOW_DAYS}d" +%Y-%m-%dT%H:%M:%SZ)
     watermark=$(get_walk_watermark "$DB_FILE" "$repo")
@@ -62,11 +63,11 @@ for repo in "${REPOS[@]}"; do
     comments_json=$(gh api --paginate \
         "repos/$repo/issues/comments?since=$since" \
         2>>"$LOG_FILE" | jq -s 'add // []') \
-        || { log "WARN: gh api comments failed for $repo, skipping"; fetch_failures=$((fetch_failures + 1)); continue; }
+        || { log "WARN: gh api comments failed for $repo, skipping"; fetch_failures=$((fetch_failures + 1)); repo_failures=$((repo_failures + 1)); continue; }
 
     trusted_set=$(gh api --paginate "repos/$repo/collaborators?affiliation=direct" 2>>"$LOG_FILE" \
         | jq -rs '[.[][]] | map(select(.permissions.push == true) | .login) | .[]') \
-        || { log "WARN: gh api collaborators failed for $repo, skipping"; fetch_failures=$((fetch_failures + 1)); continue; }
+        || { log "WARN: gh api collaborators failed for $repo, skipping"; fetch_failures=$((fetch_failures + 1)); repo_failures=$((repo_failures + 1)); continue; }
 
     declare -A pr_paths_cache=()
 
@@ -90,7 +91,6 @@ for repo in "${REPOS[@]}"; do
 
         # Mark published: any [from: <specialist>] in probe lines.
         printf '%s\n' "$review_body" \
-            | grep -E '^[0-9]+\.' \
             | count_attributions \
             | sort -u \
             | while IFS= read -r specialist; do
@@ -106,6 +106,7 @@ for repo in "${REPOS[@]}"; do
             else
                 log "WARN: gh api pulls/files failed for $repo#$pr_num, skipping applied check"
                 fetch_failures=$((fetch_failures + 1))
+                repo_failures=$((repo_failures + 1))
                 pr_paths_cache["$cache_key"]=""
             fi
         fi
@@ -146,10 +147,17 @@ for repo in "${REPOS[@]}"; do
         negatives=$(printf '%s\n' "$body_decoded" | extract_kw_critique_attributions)
 
         if [ -n "$positives" ] || [ -n "$negatives" ]; then
-            target_review=$(sqlite3 "$DB_FILE" \
-                "SELECT comment_id FROM specialist_runs
-                  WHERE repo='$repo' AND pr_number=$pr_num AND ran_at < '$created_at'
-                  ORDER BY ran_at DESC LIMIT 1;")
+            # Attribution rule: feedback (kw-props/kw-critique/srosro-memorize) credits
+            # the MOST-RECENT prior review on the same PR, regardless of whether that
+            # review's roster actually included the quoted specialist. Rationale:
+            # (a) human feedback typically lands within hours of the review they're
+            #     reacting to, so "most recent" is almost always the right one;
+            # (b) per-review drill-down is out of scope for the current bake-off
+            #     (aggregates by specialist over a window — this is fine);
+            # (c) if a future column needs sharper attribution (e.g. "which review
+            #     was loved?"), the feedback comment's quoted specialist should be
+            #     intersected with the target review's roster — not done here yet.
+            target_review=$(find_target_review_for_feedback "$DB_FILE" "$repo" "$pr_num" "$created_at")
             [ -z "$target_review" ] && continue
             while IFS= read -r specialist; do
                 [ -z "$specialist" ] && continue
@@ -169,10 +177,12 @@ for repo in "${REPOS[@]}"; do
                   and (.body | contains($marker) | not)
               ) | [.user.login, .issue_url, .body, .created_at] | @tsv')
 
-    if [ -n "$max_review_ts" ]; then
-        set_walk_watermark "$DB_FILE" "$repo" "$max_review_ts"
-    else
-        set_walk_watermark "$DB_FILE" "$repo" "$(date -u +%FT%TZ)"
+    if [ "$repo_failures" -eq 0 ]; then
+        if [ -n "$max_review_ts" ]; then
+            set_walk_watermark "$DB_FILE" "$repo" "$max_review_ts"
+        else
+            set_walk_watermark "$DB_FILE" "$repo" "$(date -u +%FT%TZ)"
+        fi
     fi
 done
 

@@ -76,4 +76,23 @@ OUT=$(query_window_aggregates "$DB2" "2026-04-01T00:00:00Z")
 FIRST_SPEC=$(printf '%s\n' "$OUT" | head -1 | cut -f1)
 [ "$FIRST_SPEC" = "alpha" ] || { echo "FAIL: ordering — first='$FIRST_SPEC' expected 'alpha'"; exit 1; }
 
+echo "  find_target_review_for_feedback: empty when no rows..."
+DB3="$TMP/bakeoff3.db"
+store_init "$DB3"
+OUT=$(find_target_review_for_feedback "$DB3" srosro/repo 99 2026-04-15T12:00:00Z)
+[ -z "$OUT" ] || { echo "FAIL: empty store should return empty: '$OUT'"; exit 1; }
+
+echo "  find_target_review_for_feedback: returns most-recent review before cutoff..."
+upsert_specialist_run "$DB3" srosro/repo 1001 tests 99 2026-04-10T00:00:00Z
+upsert_specialist_run "$DB3" srosro/repo 1002 tests 99 2026-04-12T00:00:00Z
+upsert_specialist_run "$DB3" srosro/repo 1003 tests 99 2026-04-20T00:00:00Z   # after cutoff
+OUT=$(find_target_review_for_feedback "$DB3" srosro/repo 99 2026-04-15T00:00:00Z)
+[ "$OUT" = "1002" ] || { echo "FAIL: expected most-recent before cutoff (1002), got '$OUT'"; exit 1; }
+
+echo "  find_target_review_for_feedback: scoped to (repo, pr_number)..."
+upsert_specialist_run "$DB3" other/repo 2002 tests 99 2026-04-13T00:00:00Z   # different repo
+upsert_specialist_run "$DB3" srosro/repo 3003 tests 88 2026-04-13T00:00:00Z   # different PR
+OUT=$(find_target_review_for_feedback "$DB3" srosro/repo 99 2026-04-15T00:00:00Z)
+[ "$OUT" = "1002" ] || { echo "FAIL: cross-(repo, pr) leak — got '$OUT' expected 1002"; exit 1; }
+
 echo "PASS"
