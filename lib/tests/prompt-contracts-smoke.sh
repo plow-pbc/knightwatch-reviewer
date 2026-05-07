@@ -204,10 +204,15 @@ done
 # Systemd unit fences: ReadWritePaths must NOT include bare /home/odio/.local
 # (it holds PATH-search targets — .local/bin/codex, .local/bin/kid; per-subdir
 # writes like .local/share/claude are fine). Environment=PATH must start with
-# /usr/... so writable user dirs trail. .npm-global must precede .local for
-# units that run codex; kid-refresh doesn't run codex and is exempt from the
-# .npm-global ordering check (still subject to the other two).
-echo "  asserting systemd units: ReadWritePaths + Environment=PATH ordering + .npm-global precedence..."
+# /usr/... so writable user dirs trail. The nvm-versioned bin (which provides
+# `codex`) must precede .local/bin for units that run codex, so a malicious
+# ~/.local/bin/codex planted via a PR-controlled `just test` can't shadow
+# the real install. The version segment is matched as a wildcard
+# (.nvm/versions/node/*/bin) so bumping the operator's nvm default doesn't
+# break this fence — the unit's pinned version path is the lockstep
+# requirement, not the smoke's. kid-refresh doesn't run codex and is
+# exempt from the bin-ordering check (still subject to the other two).
+echo "  asserting systemd units: ReadWritePaths + Environment=PATH ordering + nvm-bin precedence..."
 for unit in systemd/*.service; do
     rw_line=$(grep -E '^ReadWritePaths=' "$unit")
     path_line=$(grep -E '^Environment=PATH=' "$unit")
@@ -237,9 +242,9 @@ for unit in systemd/*.service; do
 
     if [[ "$unit" != *kid-refresh* ]]; then
         case "$path_line" in
-            *.npm-global/bin*.local/bin*) ;;
+            *.nvm/versions/node/*/bin*.local/bin*) ;;
             *.local/bin*)
-                echo "FAIL: $unit PATH has .local/bin without .npm-global/bin preceding it — PR-controlled just test could plant ~/.local/bin/codex shadowing the real codex install"
+                echo "FAIL: $unit PATH has .local/bin without .nvm/versions/node/<ver>/bin preceding it — PR-controlled just test could plant ~/.local/bin/codex shadowing the real codex install"
                 echo "  got: $path_line"
                 exit 1 ;;
         esac
