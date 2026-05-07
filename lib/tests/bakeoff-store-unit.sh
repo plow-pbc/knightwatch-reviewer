@@ -63,7 +63,7 @@ echo "  query_window_aggregates: in-window row counted, out-of-window excluded..
 upsert_specialist_run "$DB2" srosro/repo 1 tests 5 2026-04-01T00:00:00Z
 upsert_specialist_run "$DB2" srosro/repo 2 tests 6 2025-01-01T00:00:00Z
 OUT=$(query_window_aggregates "$DB2" "2026-03-01T00:00:00Z")
-[ "$OUT" = $'tests\t1\t0\t0\t0\t0' ] || { echo "FAIL: window filter: '$OUT'"; exit 1; }
+[ "$OUT" = $'tests\t1\t0\t0\t0\t0\t0\t0' ] || { echo "FAIL: window filter: '$OUT'"; exit 1; }
 
 echo "  query_window_aggregates: ORDER BY shipped DESC (more-published first)..."
 upsert_specialist_run "$DB2" srosro/repo 10 alpha 9 2026-04-10T00:00:00Z
@@ -94,5 +94,30 @@ upsert_specialist_run "$DB3" other/repo 2002 tests 99 2026-04-13T00:00:00Z   # d
 upsert_specialist_run "$DB3" srosro/repo 3003 tests 88 2026-04-13T00:00:00Z   # different PR
 OUT=$(find_target_review_for_feedback "$DB3" srosro/repo 99 2026-04-15T00:00:00Z)
 [ "$OUT" = "1002" ] || { echo "FAIL: cross-(repo, pr) leak — got '$OUT' expected 1002"; exit 1; }
+
+echo "  set_applied_loc: writes added + removed into the row..."
+DB4="$TMP/bakeoff4.db"
+store_init "$DB4"
+upsert_specialist_run "$DB4" srosro/repo 7000 tests 42 2026-04-15T12:00:00Z
+set_applied_loc "$DB4" srosro/repo 7000 tests 18 5
+ROW=$(sqlite3 "$DB4" "SELECT applied_added, applied_removed FROM specialist_runs WHERE comment_id=7000 AND specialist='tests';")
+[ "$ROW" = "18|5" ] || { echo "FAIL: set_applied_loc round-trip: $ROW"; exit 1; }
+
+echo "  set_applied_loc: idempotent (SET overwrites, not increment)..."
+set_applied_loc "$DB4" srosro/repo 7000 tests 18 5
+set_applied_loc "$DB4" srosro/repo 7000 tests 22 7   # later rewalk with new commit
+ROW=$(sqlite3 "$DB4" "SELECT applied_added, applied_removed FROM specialist_runs WHERE comment_id=7000 AND specialist='tests';")
+[ "$ROW" = "22|7" ] || { echo "FAIL: SET semantic broken: $ROW"; exit 1; }
+
+echo "  query_window_aggregates: emits added + removed columns..."
+DB5="$TMP/bakeoff5.db"
+store_init "$DB5"
+upsert_specialist_run "$DB5" srosro/repo 8000 tests 99 2026-04-15T00:00:00Z
+mark_published "$DB5" srosro/repo 8000 tests
+mark_applied "$DB5" srosro/repo 8000 tests
+set_applied_loc "$DB5" srosro/repo 8000 tests 30 10
+OUT=$(query_window_aggregates "$DB5" "2026-04-01T00:00:00Z")
+# TSV: specialist  reviews  shipped  applied  added  removed  loved  critiqued
+[ "$OUT" = $'tests\t1\t1\t1\t30\t10\t0\t0' ] || { echo "FAIL: TSV shape: $OUT"; exit 1; }
 
 echo "PASS"

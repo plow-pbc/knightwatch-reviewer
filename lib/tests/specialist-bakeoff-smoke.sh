@@ -145,10 +145,19 @@ if [ "$1" = "api" ]; then
         printf '[{"login":"trusted-human","permissions":{"push":true}},{"login":"untrusted-user","permissions":{"push":false}}]\n'
     elif [[ "$endpoint" == */pulls/*/files* ]]; then
         # Driver feeds the touched-files set via MOCK_PULLS_FILES_FILE.
-        # Each line is a path. Real `gh` runs --jq server-side; we mirror
-        # by piping through jq when --jq was passed.
+        # Each line is TSV: path\tadditions\tdeletions. additions+deletions
+        # default to 0 when omitted (lets older scenarios keep 1-field lines).
+        # Real `gh` runs --jq server-side; we mirror by piping through jq
+        # when --jq was passed.
         if [ -s "${MOCK_PULLS_FILES_FILE:-/dev/null}" ]; then
-            files_json=$(jq -nR '[inputs | {filename: .}]' < "$MOCK_PULLS_FILES_FILE")
+            files_json=$(awk -F'\t' 'BEGIN{first=1; print "["}
+{
+    if (first) first=0; else print ",";
+    add = ($2 == "" ? 0 : $2);
+    del = ($3 == "" ? 0 : $3);
+    printf "{\"filename\":\"%s\",\"additions\":%d,\"deletions\":%d}", $1, add, del
+}
+END{print "]"}' "$MOCK_PULLS_FILES_FILE")
         else
             files_json="[]"
         fi
@@ -241,14 +250,15 @@ if ! grep -q '| aggregator |' "$OUT_FILE"; then
     cat "$OUT_FILE"
     exit 1
 fi
-# 7-col table: | spec | Reviews | Shipped | Applied | Loved | Critiqued | Loved/Shipped |
+# 9-col table: | spec | Reviews | Shipped | Applied | +LOC | -LOC | Loved | Critiqued | Loved/Shipped |
 # Reviews=1 (one row in store for aggregator), Shipped=1 (probe attributed),
-# Applied=0 (no Files: clause), Loved=1 (page-2 trusted memorize), Critiqued=0.
+# Applied=0 (no Files: clause), +LOC=0/-LOC=0 (no applied paths), Loved=1
+# (page-2 trusted memorize), Critiqued=0.
 # If --paginate were dropped, the page-2 trusted memorize would never reach
 # extract_memorize_attributions and Loved would be 0 — this is the load-bearing
 # pagination assertion.
-if ! grep -qE '\| aggregator \| +1 \| +1 \| +0 \| +1 \| +0 \| +1\.00 \|' "$OUT_FILE"; then
-    echo "FAIL scenario 2: expected aggregator | 1 | 1 | 0 | 1 | 0 | 1.00 in table"
+if ! grep -qE '\| aggregator \| +1 \| +1 \| +0 \| +0 \| +0 \| +1 \| +0 \| +1\.00 \|' "$OUT_FILE"; then
+    echo "FAIL scenario 2: expected aggregator | 1 | 1 | 0 | 0 | 0 | 1 | 0 | 1.00 in table"
     cat "$OUT_FILE"
     exit 1
 fi
@@ -317,15 +327,15 @@ print(json.dumps([{
 PYEOF
 
 export MOCK_PULLS_FILES_FILE="$TMPDIR_SMOKE/pulls-files.txt"
-printf 'x.sh\n' > "$MOCK_PULLS_FILES_FILE"
+printf 'x.sh\t12\t3\n' > "$MOCK_PULLS_FILES_FILE"
 
 run_driver
 
 rm -f "$MOCK_PULLS_FILES_FILE"
 unset MOCK_PULLS_FILES_FILE
 
-if ! grep -qE '\| shape \| +1 \| +1 \| +1 \| +0 \| +0 \| +0\.00 \|' "$OUT_FILE"; then
-    echo "FAIL scenario 5: expected shape | 1 | 1 | 1 | 0 | 0 | 0.00 in table"
+if ! grep -qE '\| shape \| +1 \| +1 \| +1 \| +12 \| +3 \| +0 \| +0 \| +0\.00 \|' "$OUT_FILE"; then
+    echo "FAIL scenario 5: expected shape | 1 | 1 | 1 | 12 | 3 | 0 | 0 | 0.00 in table"
     cat "$OUT_FILE"
     exit 1
 fi

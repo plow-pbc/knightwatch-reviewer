@@ -70,6 +70,7 @@ for repo in "${REPOS[@]}"; do
         || { log "WARN: gh api collaborators failed for $repo, skipping"; fetch_failures=$((fetch_failures + 1)); repo_failures=$((repo_failures + 1)); continue; }
 
     declare -A pr_paths_cache=()
+    declare -A pr_files_cache=()
 
     # Pass 1: walk substantive bot reviews. Each row is one (review × specialist).
     # The roster marker drives row creation; probe parsing drives flag updates.
@@ -98,30 +99,57 @@ for repo in "${REPOS[@]}"; do
                 mark_published "$DB_FILE" "$repo" "$review_id" "$specialist"
               done
 
-        # Mark applied: per probe, intersect cited paths with PR touched paths.
+        # Mark applied: per specialist (deduped across its probes), intersect
+        # cited paths with PR touched paths and sum LOC across matched paths.
         cache_key="${repo}#${pr_num}"
         if [[ -z "${pr_paths_cache[$cache_key]+set}" ]]; then
-            if pr_paths_lookup=$(gh api --paginate "repos/$repo/pulls/$pr_num/files" --jq '.[].filename' 2>>"$LOG_FILE"); then
-                pr_paths_cache["$cache_key"]="$pr_paths_lookup"
+            if pr_files_tsv=$(gh api --paginate "repos/$repo/pulls/$pr_num/files" --jq '.[] | [.filename, .additions, .deletions] | @tsv' 2>>"$LOG_FILE"); then
+                pr_files_cache["$cache_key"]="$pr_files_tsv"
+                pr_paths_cache["$cache_key"]=$(printf '%s\n' "$pr_files_tsv" | cut -f1)
             else
                 log "WARN: gh api pulls/files failed for $repo#$pr_num, skipping applied check"
                 fetch_failures=$((fetch_failures + 1))
                 repo_failures=$((repo_failures + 1))
                 pr_paths_cache["$cache_key"]=""
+                pr_files_cache["$cache_key"]=""
             fi
         fi
         pr_paths="${pr_paths_cache[$cache_key]}"
         if [ -n "$pr_paths" ]; then
+            # Collect deduped (specialist, path) pairs across all probes in this review.
+            declare -A spec_paths_seen=()
             while IFS= read -r probe_line; do
                 specialist=$(printf '%s\n' "$probe_line" | count_attributions || true)
                 [ -z "$specialist" ] && continue
-                cited_paths=$(printf '%s\n' "$probe_line" | probe_cited_paths)
-                [ -z "$cited_paths" ] && continue
-                if printf '%s\n' "$cited_paths" \
-                    | grep -qFxf <(printf '%s\n' "$pr_paths"); then
-                    mark_applied "$DB_FILE" "$repo" "$review_id" "$specialist"
-                fi
+                while IFS= read -r p; do
+                    [ -z "$p" ] && continue
+                    spec_paths_seen["${specialist}	${p}"]=1
+                done < <(printf '%s\n' "$probe_line" | probe_cited_paths)
             done < <(printf '%s\n' "$review_body" | grep -E '^[0-9]+\.' || true)
+
+            # Per specialist: sum LOC across paths that touched the PR; mark + record.
+            declare -A spec_added=()
+            declare -A spec_removed=()
+            declare -A spec_matched=()
+            pr_files_tsv="${pr_files_cache[$cache_key]}"
+            for key in "${!spec_paths_seen[@]}"; do
+                specialist="${key%%	*}"
+                path="${key#*	}"
+                if grep -qFx "$path" <<< "$pr_paths"; then
+                    loc_line=$(printf '%s\n' "$pr_files_tsv" | awk -F'\t' -v p="$path" '$1==p {print $2"\t"$3; exit}')
+                    a=$(printf '%s' "$loc_line" | cut -f1)
+                    r=$(printf '%s' "$loc_line" | cut -f2)
+                    spec_added["$specialist"]=$((${spec_added[$specialist]:-0} + ${a:-0}))
+                    spec_removed["$specialist"]=$((${spec_removed[$specialist]:-0} + ${r:-0}))
+                    spec_matched["$specialist"]=1
+                fi
+            done
+            for specialist in "${!spec_matched[@]}"; do
+                mark_applied "$DB_FILE" "$repo" "$review_id" "$specialist"
+                set_applied_loc "$DB_FILE" "$repo" "$review_id" "$specialist" \
+                    "${spec_added[$specialist]:-0}" "${spec_removed[$specialist]:-0}"
+            done
+            unset spec_paths_seen spec_added spec_removed spec_matched
         fi
 
         walked_reviews=$((walked_reviews + 1))
@@ -208,16 +236,16 @@ total_reviews=$(sqlite3 "$DB_FILE" \
     if [ "$total_reviews" = "0" ]; then
         echo "_Awaiting first reviews with the roster marker — table populates as new reviews land._"
     else
-        echo "| Specialist | Reviews | Shipped | Applied | Loved | Critiqued | Loved/Shipped |"
-        echo "|---|---:|---:|---:|---:|---:|---:|"
+        echo "| Specialist | Reviews | Shipped | Applied | +LOC | -LOC | Loved | Critiqued | Loved/Shipped |"
+        echo "|---|---:|---:|---:|---:|---:|---:|---:|---:|"
         query_window_aggregates "$DB_FILE" "$window_iso" \
-        | while IFS=$'\t' read -r spec reviews shipped applied loved critiqued; do
+        | while IFS=$'\t' read -r spec reviews shipped applied added removed loved critiqued; do
             if [ "$shipped" -gt 0 ]; then
                 ratio=$(awk -v l="$loved" -v s="$shipped" 'BEGIN{printf "%.2f", l/s}')
             else
                 ratio="—"
             fi
-            echo "| $spec | $reviews | $shipped | $applied | $loved | $critiqued | $ratio |"
+            echo "| $spec | $reviews | $shipped | $applied | $added | $removed | $loved | $critiqued | $ratio |"
         done
     fi
 } > "$OUT_FILE"

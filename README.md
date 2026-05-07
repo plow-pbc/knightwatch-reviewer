@@ -103,11 +103,13 @@ Reviews fire on PR open and again after one hour of idle. To force a fresh revie
 
 ### Specialist bake-off
 
-A small post-hoc measurement that helps decide which specialists are earning their place. `specialist-bakeoff.sh` runs hourly via systemd (`*:30`), walks the tracked repos in `repos.conf` for new bot reviews + feedback comments since the per-repo watermark, and persists one row per (review × specialist) into `~/.pr-reviewer/bakeoff.db`. A markdown snapshot is regenerated at `~/.pr-reviewer/specialist-bakeoff.md` with six columns per specialist over a rolling 30-day window (configurable via `WINDOW_DAYS`):
+A small post-hoc measurement that helps decide which specialists are earning their place. `specialist-bakeoff.sh` runs hourly via systemd (`*:30`), walks the tracked repos in `repos.conf` for new bot reviews + feedback comments since the per-repo watermark, and persists one row per (review × specialist) into `~/.pr-reviewer/bakeoff.db`. A markdown snapshot is regenerated at `~/.pr-reviewer/specialist-bakeoff.md` with eight columns per specialist over a rolling 30-day window (configurable via `WINDOW_DAYS`):
 
 - **Reviews** — total reviews where this specialist was invoked (the denominator). Comes from the write-time `<!-- knightwatch-bakeoff: specialists=... -->` marker on every posted review.
 - **Shipped** — reviews where this specialist contributed at least one probe (per-review bool, not probe count).
 - **Applied** — reviews where any of this specialist's probes cited a path that the PR touched (any commit on the branch). Coarse signal — counts a probe applied even if the cited path was touched BEFORE the probe was raised; the false-positive band is uniform across specialists, so cross-specialist comparison stays meaningful. `[open]` probes (no `Files:` clause) earn no Applied credit.
+- **+LOC** — sum of `additions` across the specialist's applied (deduped) cited paths in the PR's diff.
+- **−LOC** — sum of `deletions`, same scope.
 - **Loved** — reviews where a trusted (push-access) collaborator posted `/kw-props [from: <specialist>]` or a `/srosro-memorize` quoting the tag, after the review.
 - **Critiqued** — reviews where a trusted collaborator posted `/kw-critique [from: <specialist>]`.
 - **Loved/Shipped** — ratio (small-but-mighty vs high-volume-low-value).

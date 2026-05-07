@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS specialist_runs (
     ran_at          TEXT    NOT NULL,
     published       INTEGER NOT NULL DEFAULT 0,
     applied         INTEGER NOT NULL DEFAULT 0,
+    applied_added   INTEGER NOT NULL DEFAULT 0,
+    applied_removed INTEGER NOT NULL DEFAULT 0,
     loved_positive  INTEGER NOT NULL DEFAULT 0,
     loved_negative  INTEGER NOT NULL DEFAULT 0,
     last_walked_at  TEXT    NOT NULL,
@@ -69,6 +71,18 @@ mark_applied()        { _mark_flag "$1" "$2" "$3" "$4" applied; }
 mark_loved_positive() { _mark_flag "$1" "$2" "$3" "$4" loved_positive; }
 mark_loved_negative() { _mark_flag "$1" "$2" "$3" "$4" loved_negative; }
 
+# Set both LOC counters in one UPDATE. SET semantics (overwrite, not increment),
+# so a re-walk that observes a different commit on the PR replaces stale values.
+set_applied_loc() {
+    local db="$1" repo="$2" comment_id="$3" specialist="$4" added="$5" removed="$6"
+    sqlite3 "$db" <<SQL
+UPDATE specialist_runs
+   SET applied_added = $added,
+       applied_removed = $removed
+ WHERE repo = '$repo' AND comment_id = $comment_id AND specialist = '$specialist';
+SQL
+}
+
 get_walk_watermark() {
     local db="$1" repo="$2"
     sqlite3 "$db" "SELECT last_walked_at FROM walks WHERE repo='$repo';"
@@ -97,7 +111,7 @@ SELECT comment_id FROM specialist_runs
 SQL
 }
 
-# TSV: specialist\treviews\tshipped\tapplied\tloved\tcritiqued
+# TSV: specialist\treviews\tshipped\tapplied\tadded\tremoved\tloved\tcritiqued
 # Caller passes window cutoff to keep the function pure (no date math).
 query_window_aggregates() {
     local db="$1" window_iso="$2"
@@ -107,6 +121,8 @@ SELECT
     COUNT(*) AS reviews,
     SUM(published) AS shipped,
     SUM(applied) AS applied,
+    SUM(applied_added) AS added,
+    SUM(applied_removed) AS removed,
     SUM(loved_positive) AS loved,
     SUM(loved_negative) AS critiqued
 FROM specialist_runs
