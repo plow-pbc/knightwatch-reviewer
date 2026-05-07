@@ -51,4 +51,29 @@ set_walk_watermark "$DB" srosro/repo 2026-05-07T00:00:00Z
 WM=$(get_walk_watermark "$DB" srosro/repo)
 [ "$WM" = "2026-05-07T00:00:00Z" ] || { echo "FAIL: watermark overwrite: $WM"; exit 1; }
 
+# query_window_aggregates uses a fresh DB so prior tests' rows don't pollute counts.
+DB2="$TMP/bakeoff2.db"
+
+echo "  query_window_aggregates: empty store → empty output..."
+store_init "$DB2"
+OUT=$(query_window_aggregates "$DB2" "2026-01-01T00:00:00Z")
+[ -z "$OUT" ] || { echo "FAIL: empty store: '$OUT'"; exit 1; }
+
+echo "  query_window_aggregates: in-window row counted, out-of-window excluded..."
+upsert_specialist_run "$DB2" srosro/repo 1 tests 5 2026-04-01T00:00:00Z
+upsert_specialist_run "$DB2" srosro/repo 2 tests 6 2025-01-01T00:00:00Z
+OUT=$(query_window_aggregates "$DB2" "2026-03-01T00:00:00Z")
+[ "$OUT" = $'tests\t1\t0\t0\t0\t0' ] || { echo "FAIL: window filter: '$OUT'"; exit 1; }
+
+echo "  query_window_aggregates: ORDER BY shipped DESC (more-published first)..."
+upsert_specialist_run "$DB2" srosro/repo 10 alpha 9 2026-04-10T00:00:00Z
+upsert_specialist_run "$DB2" srosro/repo 11 alpha 9 2026-04-11T00:00:00Z
+mark_published "$DB2" srosro/repo 10 alpha
+mark_published "$DB2" srosro/repo 11 alpha
+upsert_specialist_run "$DB2" srosro/repo 12 beta 9 2026-04-12T00:00:00Z
+mark_published "$DB2" srosro/repo 12 beta
+OUT=$(query_window_aggregates "$DB2" "2026-04-01T00:00:00Z")
+FIRST_SPEC=$(printf '%s\n' "$OUT" | head -1 | cut -f1)
+[ "$FIRST_SPEC" = "alpha" ] || { echo "FAIL: ordering — first='$FIRST_SPEC' expected 'alpha'"; exit 1; }
+
 echo "PASS"

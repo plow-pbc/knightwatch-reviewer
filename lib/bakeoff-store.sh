@@ -9,8 +9,9 @@
 #   - loved_positive: did a /kw-props or /srosro-memorize quoting it land
 #   - loved_negative: did a /kw-critique quoting it land
 #
-# Re-walks must NOT reset the flag columns to 0 — that's why we use INSERT
-# OR IGNORE for the row creation and separate UPDATE statements for marks.
+# Re-walks must NOT reset the flag columns to 0 — that's why row creation
+# uses `INSERT … ON CONFLICT DO UPDATE` that touches only `last_walked_at`,
+# and flag updates are separate UPDATE statements.
 
 # Bootstrap the schema. Idempotent — safe to call on every walk.
 store_init() {
