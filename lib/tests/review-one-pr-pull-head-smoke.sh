@@ -30,6 +30,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+. "$SCRIPT_DIR/tests/worker-smoke-helpers.sh"
 
 TMPDIR_ROOT=$(mktemp -d -t review-one-pr-pull-head-XXXXXX)
 trap 'rm -rf "$TMPDIR_ROOT"' EXIT
@@ -74,36 +75,6 @@ fi
 exit 0
 STUB
     chmod +x "$stub_path"
-}
-
-# Production uses util-linux flock(1). On macOS dev hosts brew's flock
-# is excluded; mirror PR #49's orchestrator-skip-smoke.sh shim using
-# python3 fcntl so the per-PR lock acquisition exercises the same OFD
-# semantics on both platforms.
-write_flock_stub_if_missing() {
-    local bindir="$1"
-    if command -v flock >/dev/null 2>&1; then
-        return 0
-    fi
-    cat > "$bindir/flock" <<'STUB'
-#!/usr/bin/env bash
-nonblock=0
-case "$1" in
-    -n) nonblock=1; shift ;;
-esac
-fd="$1"
-exec python3 - "$fd" "$nonblock" <<'PY'
-import fcntl, sys
-fd = int(sys.argv[1])
-nonblock = sys.argv[2] == "1"
-flags = fcntl.LOCK_EX | (fcntl.LOCK_NB if nonblock else 0)
-try:
-    fcntl.flock(fd, flags)
-except BlockingIOError:
-    sys.exit(1)
-PY
-STUB
-    chmod +x "$bindir/flock"
 }
 
 # setup_bare_upstream <push_pull_head: yes|no> <bare_path>
@@ -152,7 +123,7 @@ run_scenario() {
     : > "$gh_call_log"
 
     write_gh_stub "$scenario_dir/home/.local/bin/gh" "$gh_call_log"
-    write_flock_stub_if_missing "$scenario_dir/home/.local/bin"
+    write_worker_flock_stub_if_missing "$scenario_dir/home/.local/bin"
 
     # Sandbox env. Mirrors lib/tests/review-one-pr-sha-flow-smoke.sh.
     export STATE_DIR="$scenario_dir/state"
@@ -165,11 +136,7 @@ run_scenario() {
     export BOT_USER="srosro"
     export REVIEWER_LIB_DIR="$PROJECT_ROOT/lib"
 
-    cat > "$STATE_DIR/repos.conf" <<'CONF'
-REPOS=("test-org/probe-repo")
-declare -A KID_PATHS=()
-declare -A SOURCE_PATHS=()
-CONF
+    write_probe_repos_conf "$STATE_DIR/repos.conf"
 
     # Real bare upstream + canonical clone. The bare repo may or may
     # not have refs/pull/99/head pushed — that's the variable under
