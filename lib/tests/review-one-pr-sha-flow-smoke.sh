@@ -29,6 +29,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+. "$SCRIPT_DIR/tests/worker-smoke-helpers.sh"
 
 TMPDIR=$(mktemp -d -t review-one-pr-sha-flow-XXXXXX)
 trap 'rm -rf "$TMPDIR"' EXIT
@@ -64,15 +65,6 @@ case "\$fields" in
 esac
 STUB
     chmod +x "$stub_path"
-}
-
-# write_probe_repos_conf <conf_path>
-write_probe_repos_conf() {
-    cat > "$1" <<'CONF'
-REPOS=("test-org/probe-repo")
-declare -A KID_PATHS=()
-declare -A SOURCE_PATHS=()
-CONF
 }
 
 # ---- sandbox env ----
@@ -139,38 +131,7 @@ export HOME="$TMPDIR/home"
 mkdir -p "$HOME/.local/bin"
 export PATH="$HOME/.local/bin:$PATH"
 
-# Stub `flock` ONLY when missing — same pattern as PR #49's
-# orchestrator-skip-smoke.sh. lib/locking.sh's `exec {FD}> file; flock -n
-# FD` is a real production dep on Linux; util-linux's brew formula
-# explicitly excludes flock(1) on macOS. The stub uses python3+
-# fcntl.flock(2) so it has the same OFD-tied semantics (lock survives
-# parent-shell exit) the production code relies on.
-if ! command -v flock >/dev/null 2>&1; then
-    cat > "$HOME/.local/bin/flock" <<'STUB'
-#!/usr/bin/env bash
-# Two invocation forms used by the worker:
-#   flock -n FD     — non-blocking, exit 1 if held (per-PR lock at
-#                     lib/locking.sh:30 and canonical-lock retry path)
-#   flock FD        — blocking, wait for lock (canonical-lock acquire at
-#                     lib/review-one-pr.sh:294)
-nonblock=0
-case "$1" in
-    -n) nonblock=1; shift ;;
-esac
-fd="$1"
-exec python3 - "$fd" "$nonblock" <<'PY'
-import fcntl, sys
-fd = int(sys.argv[1])
-nonblock = sys.argv[2] == "1"
-flags = fcntl.LOCK_EX | (fcntl.LOCK_NB if nonblock else 0)
-try:
-    fcntl.flock(fd, flags)
-except BlockingIOError:
-    sys.exit(1)
-PY
-STUB
-    chmod +x "$HOME/.local/bin/flock"
-fi
+write_worker_flock_stub_if_missing "$HOME/.local/bin"
 
 write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"
 
