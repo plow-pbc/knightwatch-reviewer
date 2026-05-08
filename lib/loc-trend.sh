@@ -21,8 +21,9 @@ _LOC_TREND_LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 #
 # Round discovery delegates to author_visible_rounds. compute_loc_trend
 # adds:
-#   - per-round adds count via `git diff --numstat` (structured: sum
-#     the additions column, not regex on --shortstat human prose)
+#   - per-round typed state (unavailable / reachable_zero / deletion_only /
+#     numeric) via `git diff --numstat` (structured: sum the additions
+#     column, not regex on --shortstat human prose) for classification
 #   - per-round display column via `git diff --shortstat`
 #   - both diffs use three-dot syntax (<merge_base>...<sha>) so git
 #     computes the dynamic merge-base for THAT round. Two-dot
@@ -88,7 +89,6 @@ compute_loc_trend() {
         round_sha="${line#*$'\t'}"
         if ! git -C "$repo_dir" cat-file -e "$round_sha" 2>/dev/null; then
             state="unavailable"
-            adds=0
             dels=0
         else
             # Capture stdout AND exit code separately. `2>/dev/null || echo ""`
@@ -102,7 +102,6 @@ compute_loc_trend() {
             diff_exit=$?
             if [ $diff_exit -ne 0 ]; then
                 state="unavailable"
-                adds=0
                 dels=0
             elif [ -n "$numstat" ]; then
                 adds=$(printf '%s\n' "$numstat" | awk '{sum += $1} END {print sum+0}')
@@ -125,7 +124,6 @@ compute_loc_trend() {
             else
                 # numstat is empty AND diff exited 0 — truly no files in
                 # the diff (legitimate zero-diff round).
-                adds=0
                 dels=0
                 state="reachable_zero"
             fi
