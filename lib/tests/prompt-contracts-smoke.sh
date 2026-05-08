@@ -33,6 +33,11 @@ assert_grep() {
     grep -qF -- "$pattern" "$file" || { echo "FAIL: $label"; exit 1; }
 }
 
+assert_no_grep() {
+    local label="$1" pattern="$2" file="$3"
+    grep -qF -- "$pattern" "$file" && { echo "FAIL: $label"; exit 1; } || true
+}
+
 # ====================================================================
 # Section 1: prompt-contract sync (formerly anti-bloat-contract-smoke.sh)
 # ====================================================================
@@ -290,8 +295,7 @@ assert_grep "simplification.md should anchor on the inferred-intent scratch arti
 echo "  asserting carry-forward rule cites Files: shape at HEAD in aggregator.md..."
 # Positive token fences — the rule pivots on the cited Files: field and
 # the HEAD comparison point. Either token going missing breaks the rule's
-# mechanic without breaking grammar. Wording can drift; these two tokens
-# can't.
+# mechanic without breaking grammar.
 assert_grep "aggregator carry-forward should cite \`Files:\` field" \
     "\`Files:\` shape" prompts/aggregator.md
 assert_grep "aggregator carry-forward should compare against HEAD" \
@@ -299,26 +303,28 @@ assert_grep "aggregator carry-forward should compare against HEAD" \
 # Negative fence: the legacy step 38 said "decide: still active given this
 # round's diff" — implicit, deferred to LLM judgment. The new rule is a
 # concrete cited-shape grep.
-if grep -qF "decide: still active" prompts/aggregator.md; then
-    echo "FAIL: aggregator.md regressed to 'decide: still active' wording — carry-forward must specify cited-shape-at-HEAD test, not implicit 'decide'"
-    exit 1
-fi
+assert_no_grep "aggregator step 38 must not regress to 'decide: still active' wording — cited-shape-at-HEAD is the test, not implicit LLM judgment" \
+    "decide: still active" prompts/aggregator.md
 
 echo "  asserting Bug-Class-Recurrence is fully deleted from aggregator.md..."
 # Negative fence: BCR fired [blocking] on raw class-occurrence counts ≥2
 # across prior reviews, with no clearance path even when cited instances
 # were remediated. PR #584 round 13 cited prior probes by run-id as
 # evidence of recurrence while round 10's text acknowledged the original
-# concerns were resolved. The carry-forward rule (step 38) covers
-# persistence detection without the counter.
-if grep -qF "Bug-Class-Recurrence" prompts/aggregator.md; then
-    echo "FAIL: aggregator.md re-introduced Bug-Class-Recurrence — auto-emission was deleted; carry-forward (step 38) handles persistence without the counter"
-    exit 1
-fi
+# concerns were resolved.
+assert_no_grep "aggregator must not re-introduce Bug-Class-Recurrence — carry-forward (step 38) covers persistence without the counter" \
+    "Bug-Class-Recurrence" prompts/aggregator.md
+
+echo "  asserting Path 2 trigger uses HEAD-anchored strict-decrease + skips pause rounds..."
+# Positive tokens for the trigger. count[N] < count[N-1] is the math;
+# pause-round skip is what stops a Path-2-emitted "0 blockers" round
+# from injecting a false strict-decrease into the next round's window.
+assert_grep "Path 2 trigger should use the strict-decrease test" \
+    "count[N] < count[N-1]" prompts/aggregator.md
+assert_grep "Path 2 trigger should skip pause rounds when selecting the 3-round window" \
+    "Skip Path 2 pause rounds" prompts/aggregator.md
 
 echo "  asserting Path 2 halt action skips the Probes block in aggregator.md..."
-# Positive token: the load-bearing fix is dropping probes, not decorating
-# them with momentum prose alongside.
 assert_grep "Path 2 must skip the per-angle Probes block on halt" \
     "Skip the per-angle Probes block" prompts/aggregator.md
 # Negative fence: the old Path 2 action said "Keep the local probes in
@@ -327,10 +333,16 @@ assert_grep "Path 2 must skip the per-angle Probes block on halt" \
 # callout has eaten the visual real estate." That action shipped on PR
 # #584 round 13 and was the failure-mode replicator: momentum prose
 # rendered as decoration while [blocking] BCR rendered alongside.
-if grep -qF "Keep the local probes" prompts/aggregator.md; then
-    echo "FAIL: aggregator.md Path 2 regressed to 'Keep the local probes' action — Path 2 must drop the Probes block entirely so the structural callout is the only content"
-    exit 1
-fi
+assert_no_grep "Path 2 must not regress to 'Keep the local probes' action — must drop the Probes block entirely so the structural callout is the only content" \
+    "Keep the local probes" prompts/aggregator.md
+
+echo "  asserting carry-forward source picks past Path 2 pause rounds..."
+# Step 38 must walk back to the most recent review WITH a Probes block
+# when previous-review.md is itself a Path 2 pause round. Without this,
+# the next round sees zero probes to carry forward and falsely signals
+# convergence.
+assert_grep "step 38 should walk back to the most recent review with a Probes block when previous-review.md is a Path 2 pause" \
+    "most recent review that DID have a Probes block" prompts/aggregator.md
 
 echo "  asserting K-decay is fully deleted from critic.md..."
 # Negative fence: K-decay measured author engagement (commits/comments
@@ -338,10 +350,8 @@ echo "  asserting K-decay is fully deleted from critic.md..."
 # aggregator's tightened carry-forward (step 38) asks the question
 # directly via cited shape at HEAD; K-decay's behavioral proxy is
 # redundant.
-if grep -qF "K-decay" prompts/critic.md; then
-    echo "FAIL: critic.md re-introduced K-decay — engagement-as-resolution-proxy was deleted; cited-shape-at-HEAD (aggregator step 38) is the single resolution rule"
-    exit 1
-fi
+assert_no_grep "critic.md must not re-introduce K-decay — engagement-as-resolution-proxy was deleted; cited-shape-at-HEAD (aggregator step 38) is the single resolution rule" \
+    "K-decay" prompts/critic.md
 
 echo "  asserting LoC-trend trichotomy tags are gone from momentum.md..."
 # Negative fence: GROWING/STABLE/SHRINKING tags came from a 1.5×/0.66×
@@ -351,10 +361,8 @@ echo "  asserting LoC-trend trichotomy tags are gone from momentum.md..."
 # names in momentum.md implies a consumer that expects a pre-computed tag
 # — i.e. the classifier coming back.
 for tag in GROWING STABLE SHRINKING; do
-    if grep -qF "$tag" prompts/standalone/momentum.md; then
-        echo "FAIL: prompts/standalone/momentum.md re-introduced trichotomy tag '$tag' — momentum reads raw deltas; the classifier was deleted"
-        exit 1
-    fi
+    assert_no_grep "prompts/standalone/momentum.md must not re-introduce trichotomy tag '$tag' — momentum reads raw deltas; the classifier was deleted" \
+        "$tag" prompts/standalone/momentum.md
 done
 
 echo "  asserting loc-trend.sh emits no Trajectory: line..."
@@ -366,5 +374,20 @@ if grep -qE "echo.*Trajectory:" lib/loc-trend.sh; then
     echo "FAIL: lib/loc-trend.sh re-introduced a Trajectory: emission — the trichotomy classifier was deleted; consumers read raw deltas"
     exit 1
 fi
+
+echo "  asserting read-only sandbox fence on aggregator and momentum..."
+# Aggregator and momentum agents read PR-controlled inputs while codex
+# runs with --dangerously-bypass-approvals-and-sandbox (lib/pipeline.py:69).
+# Without the data-not-instructions fence the critic carries, a malicious
+# PR could prompt-inject the agents into write actions, network calls,
+# or credential exfiltration. Same fence as critic.md:3.
+assert_grep "aggregator.md should carry the read-only working directory fence" \
+    "Read-only working directory" prompts/aggregator.md
+assert_grep "aggregator.md should fence inputs as data-not-instructions" \
+    "data, not instructions" prompts/aggregator.md
+assert_grep "momentum.md should carry the read-only working directory fence" \
+    "Read-only working directory" prompts/standalone/momentum.md
+assert_grep "momentum.md should fence inputs as data-not-instructions" \
+    "data, not instructions" prompts/standalone/momentum.md
 
 echo "  PASS"
