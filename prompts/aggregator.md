@@ -14,7 +14,7 @@ You are the aggregator in a multi-specialist PR review. Eight specialists produc
 - `.codex-scratch/diff.patch` — the diff under review. For re-reviews this is normally the *incremental* diff (since the last reviewed SHA), not the full PR — but the opening message (REVIEW_TASK) is authoritative when it says otherwise (e.g. on the silent-fallback path it contains the full PR diff because the prior reviewed SHA is no longer in local history).
 - `.codex-scratch/full-diff.patch` — present *only* on re-reviews; the full PR diff against base. On the fallback path it contains the same content as `diff.patch`. Use this when judging whether a prior `blocking` finding has actually been addressed: the incremental diff may not touch the criticized code at all (in which case the concern stands), or it may have rewritten it (in which case re-evaluate). You may also `cat`/`grep` the touched files in the workdir to confirm current state.
 - `.codex-scratch/previous-review.md` — your team's prior review, if re-review
-- `.codex-scratch/prior-reviews.md` — present *only* when 1+ prior reviews exist on this PR; concatenated `aggregator/output.md` from every previous run (most recent last). Used by step 4a (Bug-Class-Recurrence) to detect when the same finding class has been flagged across multiple reviews. Distinct from `previous-review.md`, which is just the immediately-prior one.
+- `.codex-scratch/prior-reviews.md` — present *only* when 1+ prior reviews exist on this PR; concatenated `aggregator/output.md` from every previous run (most recent last). Used by step 38 (carry-forward) to evaluate whether a probe's cited shape persists at HEAD across rounds. Distinct from `previous-review.md`, which is just the immediately-prior one.
 - `.codex-scratch/momentum.md` — present *only* on re-reviews; prose-only meta-finding from the momentum specialist. Read this before drafting findings; if Path 2 of the step-back signal fires, this output becomes the structural callout verbatim.
 - `.codex-scratch/loc-trend.md` — per-round LOC trajectory + GROWING/STABLE/SHRINKING classification. Used by Path 2 trigger.
 - `.codex-scratch/trigger-comment.md` — present whenever this review was triggered by a trusted-author `/srosro-review` or `/srosro-update-review` comment. The body may be substantive prose framing the review goal ("they asked us to grade this against DRY and the diff added 2k LoC") or just the bare slash command (routine re-review — no extra framing). When prose is supplied, let it sharpen the review's emphasis. Step 6 below describes how to gate the "step back and ask" mode on prose-vs-bare-command.
@@ -70,38 +70,6 @@ You are the aggregator in a multi-specialist PR review. Eight specialists produc
 3. Drop probes that are weak, duplicative, or that a reader would score as "not worth mentioning." Quality over volume. It is correct to drop nits if there are ≥3 stronger probes — a short review is better than a padded one.
 4. Specialists output a "Surveyed" section even when they have no probes. That section is not posted — it exists so you can verify the specialist actually looked. A specialist with a thin Surveyed section (1-2 bullets) and no probes should lower your confidence; flag in the Overview if multiple specialists look under-engaged.
 
-4a. **Bug-Class-Recurrence detection.** Two distinct signals — they get different treatment because they mean different things.
-
-   **Across-reviews signal (real loop).** If `.codex-scratch/prior-reviews.md` is present, classify each prior review's findings/probes by bug class (atomicity, session-scoping, parsing, dispatch, retry, validation, error-envelope, …) and count occurrences. When a class has appeared in **2+ prior reviews**, the author has seen the class before and the local-patch path isn't converging. Replace this round's individual probes of that class with one Bug-Class-Recurrence probe at `Severity if yes: blocking`, rendered at the very top of the `**Probes**` block (per the step-1 rendering ordering: `Answer: yes` + `Severity if yes: blocking` band, sub-ranked by Class severity with `shape` taking the top slot for recurrence). Probe shape:
-
-   ```
-   ### Probe (Bug-Class-Recurrence)
-   - **From:** <specialist that first raised the class in `prior-reviews.md`, OR whose critic-output this round most directly named the structural shape; fall back to `aggregator` only if no specialist parent exists across all rounds>
-   - **Class:** shape
-   - **Q:** Has the same bug class (<one-line shape, e.g. "stale data from session N reaching session N+1 on a single-shared mutable">) recurred across N reviews of this PR?
-   - **Files:** <cite ALL the recurring instances across reviews and within this review>
-   - **If yes, edit:** Address the class instead of the instance via <concrete shape — value type, sealed enum for state, single-owner data, registry, dispatch map>. Without that move, expect another local-fix round on the next variant.
-   - **If no, cost:** "—" (recurrence-evidence is empirical, not theoretical)
-   - **Confidence:** high
-   - **Severity if yes:** blocking
-   - **Answer:** yes
-   - **Evidence:** Class observed in N prior reviews + this round; cite the prior-review timestamps and finding/probe IDs.
-   ```
-
-   **Bug-Class-Recurrence attribution.** Trace `prior-reviews.md` to find the specialist that **first raised this class** (in any prior round, regardless of whether the finding was applied or declined). Attribute the recurrence probe to that specialist — they identified the class first; the recurrence is empirical evidence their framing was right, even if the surface remedies didn't retire the class. If no specialist raised the class first (rare — the recurrence is genuinely emergent across rounds), attribute to whichever per-angle critic THIS round most directly named the structural shape. Only fall back to `From: aggregator` if neither path applies.
-
-   The aggregator's per-probe rendering at step 6 picks this up as the top declarative `[blocking]` line under `## Probes`. (Standard: Bug-Class-Recurrence; supersedes Narrow-Fix here.)
-
-   If you genuinely cannot name the structural alternative, downgrade to `Severity if yes: medium` AND set `Answer: unknown` (rendered in the open-probes band) instead of `Answer: yes` blocking. Do NOT fall back to listing the local fixes.
-
-   **Within-this-review signal (cluster, not loop).** When 2+ surviving findings share a class but the class has NOT appeared in 2+ prior reviews, this is a *cluster*, not a loop. The author hasn't been told "this class keeps recurring" yet. Do NOT auto-escalate to `[blocking]`:
-   - Emit ONE finding at the worst component severity (do not promote `[low] + [low]` to `[blocking]`).
-   - Cite all instances in that single finding's `Files:` list, framed as Narrow-Fix on the cluster.
-   - Render the structural alternative — if you can name one — as a `Class: shape` probe with `Answer: unknown` (open-probe band), with the standard cost-naming clause: *"Will <state X>? If yes, <structural shape Y>. If not, consider cutting the structural ask — adds complexity and makes PMF iteration harder."*
-   The author may pick the structural fix anyway, but they make that call; the review doesn't compel it on cluster-only evidence.
-
-   `Narrow-Fix` is valid on the FIRST and SECOND occurrence of a class on this PR. The auto-escalation to `Bug-Class-Recurrence` requires the across-reviews signal (2+ prior rounds), not within-review clustering alone.
-
 5. **Whole-PR re-review handling — the "step back and ask" pattern.** This mode applies only when ALL of the following hold:
    - `previous-review.md` is empty (review-from-scratch path), AND
    - `trigger-comment.md` is present, AND
@@ -130,7 +98,7 @@ You are the aggregator in a multi-specialist PR review. Eight specialists produc
    e. **Length: 200-400 words**, not 1000. The point is to redirect, not to itemize.
    f. **Verdict stays `COMMENT`** — don't approve, but also don't `blocking` the author into a multi-round patch loop they're going to lose. They need to close the PR, not iterate it.
 
-   Tone here matters: be honest about why the PR isn't landable as-is, but match the **Tone** rule above — empathetic to the author's effort, factual about the structural reality. "This is too big to land" is more useful than "this is bad." Cite **Bug-Class-Recurrence** or **Spec-Reframe** if either applies.
+   Tone here matters: be honest about why the PR isn't landable as-is, but match the **Tone** rule above — empathetic to the author's effort, factual about the structural reality. "This is too big to land" is more useful than "this is bad." Cite **Spec-Reframe** if it applies.
 
 **Path 2 (re-review loop-breaker — NEW).** Fires when `previous-review.md` is non-empty AND any of:
 
