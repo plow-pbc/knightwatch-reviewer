@@ -83,13 +83,14 @@ compute_loc_trend() {
     # merge-base per (base, sha) pair — each row reflects "what this
     # round looked like at the time," not "what this round looks like vs
     # current main."
-    local round_dels=() round_states=()
+    local round_adds=() round_dels=() round_states=()
     local round_sha numstat adds dels state diff_exit
     for line in "${rounds[@]}"; do
         round_sha="${line#*$'\t'}"
+        adds=0
+        dels=0
         if ! git -C "$repo_dir" cat-file -e "$round_sha" 2>/dev/null; then
             state="unavailable"
-            dels=0
         else
             # Capture stdout AND exit code separately. `2>/dev/null || echo ""`
             # would mask a non-zero exit and let it fall through as
@@ -102,7 +103,6 @@ compute_loc_trend() {
             diff_exit=$?
             if [ $diff_exit -ne 0 ]; then
                 state="unavailable"
-                dels=0
             elif [ -n "$numstat" ]; then
                 adds=$(printf '%s\n' "$numstat" | awk '{sum += $1} END {print sum+0}')
                 dels=$(printf '%s\n' "$numstat" | awk '{sum += $2} END {print sum+0}')
@@ -124,10 +124,10 @@ compute_loc_trend() {
             else
                 # numstat is empty AND diff exited 0 — truly no files in
                 # the diff (legitimate zero-diff round).
-                dels=0
                 state="reachable_zero"
             fi
         fi
+        round_adds+=("$adds")
         round_dels+=("$dels")
         round_states+=("$state")
     done
@@ -136,21 +136,21 @@ compute_loc_trend() {
         # Only the current round — no prior author-visible reviews.
         echo "(no prior rounds — first review)"
         echo
-        echo "| Round | Timestamp | SHA | merge-base..head (additions only) |"
-        echo "|---|---|---|---|"
-        echo "| 1 | $current_ts | ${current_sha:0:7} | $(_loc_trend_display "$repo_dir" "$merge_base" "$current_sha" "${round_states[0]}" "${round_dels[0]}") |"
+        echo "| Round | Timestamp | SHA | merge-base..head | Adds |"
+        echo "|---|---|---|---|---|"
+        echo "| 1 | $current_ts | ${current_sha:0:7} | $(_loc_trend_display "$repo_dir" "$merge_base" "$current_sha" "${round_states[0]}" "${round_dels[0]}") | ${round_adds[0]} |"
         return 0
     fi
 
     echo "This PR has been reviewed ${#rounds[@]} times."
     echo
-    echo "| Round | Timestamp | SHA | merge-base..head (additions only) |"
-    echo "|---|---|---|---|"
+    echo "| Round | Timestamp | SHA | merge-base..head | Adds |"
+    echo "|---|---|---|---|---|"
     local i=1 idx=0
     for line in "${rounds[@]}"; do
         ts="${line%$'\t'*}"
         sha="${line#*$'\t'}"
-        echo "| $i | $ts | ${sha:0:7} | $(_loc_trend_display "$repo_dir" "$merge_base" "$sha" "${round_states[$idx]}" "${round_dels[$idx]}") |"
+        echo "| $i | $ts | ${sha:0:7} | $(_loc_trend_display "$repo_dir" "$merge_base" "$sha" "${round_states[$idx]}" "${round_dels[$idx]}") | ${round_adds[$idx]} |"
         i=$((i + 1))
         idx=$((idx + 1))
     done

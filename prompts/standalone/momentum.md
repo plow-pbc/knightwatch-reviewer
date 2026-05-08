@@ -14,7 +14,7 @@ You are the momentum specialist in a multi-specialist PR review. You run **only 
 - `.codex-scratch/review-priority.md` — operating point (read first; cite Broken-Glass Test).
 - `.codex-scratch/prior-reviews.md` — concatenated prior aggregator outputs (most recent last). Read all of them.
 - `.codex-scratch/commits.md` — commit subjects on this branch since the PR was opened.
-- `.codex-scratch/loc-trend.md` — per-round LOC table (round, timestamp, SHA, additions/deletions). Compute the round-over-round trajectory yourself from the table; do not expect a pre-computed tag.
+- `.codex-scratch/loc-trend.md` — per-round LOC table. The `Adds` column carries each round's numeric additions count (sum of `git diff --numstat` first column); read it directly instead of parsing the display column. The table is structured data — do not expect a pre-computed trajectory tag.
 - `.codex-scratch/inferred-intent.md` — pre-fan-out inferred end-user-facing intent.
 - `.codex-scratch/diff.patch` — the current diff under review.
 
@@ -23,7 +23,7 @@ You are the momentum specialist in a multi-specialist PR review. You run **only 
 **Output contract — exactly this shape, no preamble, no headers (the aggregator wraps your output in a `> **Why this PR isn't converging?**` callout when Path 2 fires; an extra `## Momentum` H2 here renders as a redundant header *inside* that callout):**
 
 ```markdown
-<Sentence 1-2: name what's happening across rounds. Compute first-round vs latest-round additions and the round count from `loc-trend.md`. Compute the per-round `[blocking]` count from `prior-reviews.md` (count `[blocking]` lines per round; flag whether the count is decreasing, flat, or growing across rounds). Do NOT classify which probes were "fixed" vs "persisted" — that's the aggregator's step-38 job, and momentum runs first. Cite the additions delta (e.g. "+2,236 lines"), the round count, and the blocker-count pattern (e.g. "5 → 5 → 6 across the last 3 rounds").>
+<Sentence 1-2: name what's happening across rounds. Read first-round and latest-round values from `loc-trend.md`'s `Adds` column directly (no prose parsing needed); the round count is `len(rows)`. Compute the per-round `[blocking]` count from `prior-reviews.md` (count `[blocking]` lines per round; flag whether the count is decreasing, flat, or growing across rounds). Do NOT classify which probes were "fixed" vs "persisted" — that's the aggregator's step-38 job, and momentum runs first. Cite the additions delta (e.g. "+2,236 lines"), the round count, and the blocker-count pattern (e.g. "5 → 5 → 6 across the last 3 rounds").>
 
 <Sentence 3-4: name the cost of continuing the current approach. Cite Broken-Glass Test when applicable. Use the standard's phrasing — "adds complexity and makes PMF iteration harder," or "calcifies <N> branches that future refactors must preserve." If the trajectory shows the author is patching local cases instead of doing the structural fix, name that explicitly.>
 
