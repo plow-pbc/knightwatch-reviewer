@@ -78,6 +78,10 @@ test:
     bash lib/tests/prompt-contracts-smoke.sh
 
     echo ""
+    echo "=== aggregator-convergence smoke (elegant-convergence contract) ==="
+    bash lib/tests/aggregator-convergence-smoke.sh
+
+    echo ""
     echo "=== loc-trend smoke ==="
     bash lib/tests/loc-trend-smoke.sh
 
