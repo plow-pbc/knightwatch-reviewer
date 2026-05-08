@@ -87,7 +87,12 @@ compute_loc_trend() {
     local round_sha numstat adds dels state diff_exit
     for line in "${rounds[@]}"; do
         round_sha="${line#*$'\t'}"
-        adds=0
+        # Adds defaults to "n/a" (delta unknown) and is overwritten with a
+        # numeric value only on the paths where we actually computed one.
+        # numeric/deletion_only/reachable_zero rows store an integer; the
+        # unavailable rows (SHA evicted OR diff command failed) keep "n/a"
+        # so momentum can't read them as an arithmetic 0.
+        adds="n/a"
         dels=0
         if ! git -C "$repo_dir" cat-file -e "$round_sha" 2>/dev/null; then
             state="unavailable"
@@ -124,6 +129,7 @@ compute_loc_trend() {
             else
                 # numstat is empty AND diff exited 0 — truly no files in
                 # the diff (legitimate zero-diff round).
+                adds=0
                 state="reachable_zero"
             fi
         fi
@@ -133,16 +139,10 @@ compute_loc_trend() {
     done
 
     if [ ${#rounds[@]} -eq 1 ]; then
-        # Only the current round — no prior author-visible reviews.
         echo "(no prior rounds — first review)"
-        echo
-        echo "| Round | Timestamp | SHA | merge-base..head | Adds |"
-        echo "|---|---|---|---|---|"
-        echo "| 1 | $current_ts | ${current_sha:0:7} | $(_loc_trend_display "$repo_dir" "$merge_base" "$current_sha" "${round_states[0]}" "${round_dels[0]}") | ${round_adds[0]} |"
-        return 0
+    else
+        echo "This PR has been reviewed ${#rounds[@]} times."
     fi
-
-    echo "This PR has been reviewed ${#rounds[@]} times."
     echo
     echo "| Round | Timestamp | SHA | merge-base..head | Adds |"
     echo "|---|---|---|---|---|"

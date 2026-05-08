@@ -14,7 +14,7 @@ You are the momentum specialist in a multi-specialist PR review. You run **only 
 - `.codex-scratch/review-priority.md` — operating point (read first; cite Broken-Glass Test).
 - `.codex-scratch/prior-reviews.md` — concatenated prior aggregator outputs (most recent last). Read all of them.
 - `.codex-scratch/commits.md` — commit subjects on this branch since the PR was opened.
-- `.codex-scratch/loc-trend.md` — per-round LOC table. The `Adds` column carries each round's numeric additions count (sum of `git diff --numstat` first column); read it directly instead of parsing the display column. The table is structured data — do not expect a pre-computed trajectory tag.
+- `.codex-scratch/loc-trend.md` — per-round LOC table. The `Adds` column carries each round's numeric additions count (sum of `git diff --numstat` first column); read it directly instead of parsing the display column. **Sentinel:** unavailable rows (rebased / force-pushed / corrupted history) emit `n/a` in `Adds` — that means delta unknown, NOT zero. If either endpoint of the round-over-round delta is `n/a`, you have insufficient data and must abort with `(insufficient trajectory data — endpoint Adds is n/a)` instead of treating the missing value as a number. The table is structured data — do not expect a pre-computed trajectory tag.
 - `.codex-scratch/inferred-intent.md` — pre-fan-out inferred end-user-facing intent.
 - `.codex-scratch/diff.patch` — the current diff under review.
 
