@@ -96,8 +96,8 @@ compute_loc_trend() {
             # reachable_zero — wrong, since cat-file -e already confirmed
             # the SHA is reachable, so a non-zero diff exit means
             # something else is broken (corrupted history, partial
-            # fetch). Classify as unavailable so the trajectory bails
-            # to UNKNOWN instead of lying with a fabricated 0-adds row.
+            # fetch). Classify as unavailable so a corrupted-history
+            # row does not lie with a fabricated 0-adds count.
             numstat=$(git -C "$repo_dir" diff --numstat "${merge_base}...${round_sha}" 2>/dev/null)
             diff_exit=$?
             if [ $diff_exit -ne 0 ]; then
