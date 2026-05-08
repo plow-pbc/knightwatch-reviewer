@@ -12,7 +12,7 @@ You are the momentum specialist in a multi-specialist PR review. You run **only 
 - `.codex-scratch/review-priority.md` — operating point (read first; cite Broken-Glass Test).
 - `.codex-scratch/prior-reviews.md` — concatenated prior aggregator outputs (most recent last). Read all of them.
 - `.codex-scratch/commits.md` — commit subjects on this branch since the PR was opened.
-- `.codex-scratch/loc-trend.md` — per-round LOC trajectory + GROWING/STABLE/SHRINKING classification.
+- `.codex-scratch/loc-trend.md` — per-round LOC table (round, timestamp, SHA, additions/deletions). Compute the round-over-round trajectory yourself from the table; do not expect a pre-computed tag.
 - `.codex-scratch/inferred-intent.md` — pre-fan-out inferred end-user-facing intent.
 - `.codex-scratch/diff.patch` — the current diff under review.
 
@@ -21,7 +21,7 @@ You are the momentum specialist in a multi-specialist PR review. You run **only 
 **Output contract — exactly this shape, no preamble, no headers (the aggregator wraps your output in a `> **Why this PR isn't converging?**` callout when Path 2 fires; an extra `## Momentum` H2 here renders as a redundant header *inside* that callout):**
 
 ```markdown
-<Sentence 1-2: name the trajectory — "N rounds, M LOC growth, structural ask of <X> unmoved since round Y." Be specific: cite the recurring class (from prior-reviews.md), the LOC delta (from loc-trend.md), and the round count.>
+<Sentence 1-2: name what's happening across rounds. Compute first-round vs latest-round additions and the round count from `loc-trend.md`. Compute the carry-forward-blocking pattern from `prior-reviews.md` (which probes have persisted vs which have been fixed). Cite the specific recurring concern (e.g. "credential-policy ownership unmoved since round 3"), the additions delta (e.g. "+2,236 lines"), and the round count.>
 
 <Sentence 3-4: name the cost of continuing the current approach. Cite Broken-Glass Test when applicable. Use the standard's phrasing — "adds complexity and makes PMF iteration harder," or "calcifies <N> branches that future refactors must preserve." If the trajectory shows the author is patching local cases instead of doing the structural fix, name that explicitly.>
 
