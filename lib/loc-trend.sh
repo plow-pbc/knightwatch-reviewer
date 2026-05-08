@@ -56,29 +56,25 @@ compute_loc_trend() {
     # now" (the SHA the aggregator/momentum specialist are reasoning about).
     rounds+=("$(printf '%s\t%s' "$current_ts" "$current_sha")")
 
-    # Per-round typed state model. Four states drive both the trajectory
-    # classifier and the display column — single source of truth instead
-    # of overloading "shortstat is empty" to mean any of three different
-    # things ("SHA missing from local history" / "SHA exists but
-    # legitimately zero-diff" / "SHA exists but diff command failed").
+    # Per-round typed state model. Four states drive the display column —
+    # single source of truth instead of overloading "shortstat is empty"
+    # to mean any of three different things ("SHA missing from local
+    # history" / "SHA exists but legitimately zero-diff" / "SHA exists
+    # but diff command failed").
     #
     #   unavailable    — git cat-file -e rejects the SHA (rebase /
     #                    force-push / shallow clone evicted it) OR
     #                    cat-file -e succeeded but `git diff --numstat`
     #                    itself exited non-zero (corrupted history,
-    #                    partial fetch, weirder failure modes). adds=0
-    #                    but the value is meaningless; trajectory must
-    #                    bail to UNKNOWN.
+    #                    partial fetch, weirder failure modes).
     #   reachable_zero — SHA exists, three-dot diff succeeded with empty
     #                    output (no files in the diff at all).
     #                    Legitimate zero-diff round (force-push that
     #                    didn't change content; rebase-only rounds where
     #                    the rebase target is already in main).
     #   deletion_only  — SHA exists, diff has rows but adds=0 and dels>0
-    #                    (`git rm` round). The trajectory math still
-    #                    treats this as a 0-adds row (deletions are
-    #                    good for the loop-breaker), but the display
-    #                    distinguishes it from reachable_zero.
+    #                    (`git rm` round). Display distinguishes it from
+    #                    reachable_zero.
     #   numeric        — SHA exists, diff has at least one file with
     #                    adds > 0. adds carries the count.
     #
@@ -86,7 +82,7 @@ compute_loc_trend() {
     # merge-base per (base, sha) pair — each row reflects "what this
     # round looked like at the time," not "what this round looks like vs
     # current main."
-    local round_adds=() round_dels=() round_states=()
+    local round_dels=() round_states=()
     local round_sha numstat adds dels state diff_exit
     for line in "${rounds[@]}"; do
         round_sha="${line#*$'\t'}"
@@ -114,11 +110,9 @@ compute_loc_trend() {
                 if [ "$adds" -gt 0 ]; then
                     state="numeric"
                 elif [ "$dels" -gt 0 ]; then
-                    # adds=0, dels>0 — `git rm` round. Real diff, just
-                    # no additions. Trajectory still sees 0 adds (the
-                    # loop-breaker cares about growth, deletions are
-                    # good); display calls it out as deletion-only so
-                    # readers don't misread it as "no diff."
+                    # adds=0, dels>0 — `git rm` round. Display calls it
+                    # out as deletion-only so readers don't misread it
+                    # as "no diff."
                     state="deletion_only"
                 else
                     # numstat returned rows but both adds and dels are
@@ -136,7 +130,6 @@ compute_loc_trend() {
                 state="reachable_zero"
             fi
         fi
-        round_adds+=("$adds")
         round_dels+=("$dels")
         round_states+=("$state")
     done
@@ -151,62 +144,7 @@ compute_loc_trend() {
         return 0
     fi
 
-    # Trajectory dispatch on the typed states. UNKNOWN supersedes every
-    # other classification when at least one PRIOR row is unavailable —
-    # the additions count for that row is unrecoverable, so a ratio
-    # against it would be a lie. The current round being unavailable is
-    # impossible (we just resolved it) so we don't have to special-case it.
-    local first_state="${round_states[0]}"
-    local last_state="${round_states[-1]}"
-    local first_round_adds="${round_adds[0]}"
-    local last_round_adds="${round_adds[-1]}"
-    local trajectory ratio
-    local had_unavailable_prior=false
-    local s
-    local last_idx=$((${#round_states[@]} - 1))
-    local i_state=0
-    for s in "${round_states[@]}"; do
-        if [ "$s" = "unavailable" ] && [ "$i_state" -ne "$last_idx" ]; then
-            had_unavailable_prior=true
-            break
-        fi
-        i_state=$((i_state + 1))
-    done
-
-    # deletion_only is a 0-adds row for trajectory purposes — the
-    # loop-breaker cares about "is the PR growing in code", and a `git
-    # rm` round contributes zero growth. Map it to reachable_zero in the
-    # classifier so we keep the dispatch table small.
-    local first_traj="$first_state" last_traj="$last_state"
-    [ "$first_traj" = "deletion_only" ] && first_traj="reachable_zero"
-    [ "$last_traj" = "deletion_only" ] && last_traj="reachable_zero"
-
-    if [ "$had_unavailable_prior" = "true" ]; then
-        trajectory="UNKNOWN (one or more prior reviewed SHAs not in local history — likely rebased or force-pushed)"
-    elif [ "$first_traj" = "reachable_zero" ] && [ "$last_traj" = "numeric" ]; then
-        # First round was a legitimately zero-diff (or deletion-only)
-        # baseline; later rounds added real code. STABLE would be
-        # misleading — there's clearly growth, just no first-round
-        # baseline to compute a ratio against. Closes round-4 BCR(a).
-        trajectory="GROWING (from zero baseline → ${last_round_adds} adds)"
-    elif [ "$first_traj" = "numeric" ] && [ "$last_traj" = "numeric" ]; then
-        ratio=$(awk -v a="$last_round_adds" -v b="$first_round_adds" 'BEGIN{printf "%.2f", a/b}')
-        if awk -v r="$ratio" 'BEGIN{exit !(r >= 1.5)}'; then
-            trajectory="GROWING (${ratio}× from first review)"
-        elif awk -v r="$ratio" 'BEGIN{exit !(r <= 0.66)}'; then
-            trajectory="SHRINKING (${ratio}× from first review)"
-        else
-            trajectory="STABLE"
-        fi
-    else
-        # Remaining cases: first=numeric/last=reachable_zero (everything
-        # reverted, or last round was deletion-only), or all rows
-        # zero-adds. All read as STABLE — no meaningful trajectory
-        # because the latest round has no additions.
-        trajectory="STABLE"
-    fi
-
-    echo "This PR has been reviewed ${#rounds[@]} times. Trajectory: $trajectory."
+    echo "This PR has been reviewed ${#rounds[@]} times."
     echo
     echo "| Round | Timestamp | SHA | merge-base..head (additions only) |"
     echo "|---|---|---|---|"

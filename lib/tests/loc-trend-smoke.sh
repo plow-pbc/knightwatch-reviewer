@@ -8,9 +8,7 @@
 #   2. N>=1 prior author-visible runs → emits a table with one row per
 #      author-visible run + the current round, sorted by timestamp,
 #      each row carrying base..head shortstat.
-#   3. Trajectory line classifies GROWING / STABLE / SHRINKING based on
-#      ratio between first and last round's additions, OR UNKNOWN when
-#      a prior round's SHA isn't in local history (rebase/force-push).
+#   3. (deleted) Trajectory classifier removed; output table only.
 #   4. Runs without `posted_at` AND status != "completed" (in-flight or
 #      aborted) are excluded from the trajectory table — same predicate
 #      stage_prior_reviews uses (single owner via is_run_author_visible).
@@ -54,7 +52,7 @@ seq 1 10 > "$REPO/round1.txt"
 git -C "$REPO" add round1.txt && git -C "$REPO" commit -qm "round1"
 SHA1=$(git -C "$REPO" rev-parse HEAD)
 
-# round2: larger diff vs base (more insertions → GROWING trajectory)
+# round2: larger diff vs base (50 insertions)
 seq 1 50 > "$REPO/round2.txt"
 git -C "$REPO" add round2.txt && git -C "$REPO" commit -qm "round2"
 SHA2=$(git -C "$REPO" rev-parse HEAD)
@@ -86,10 +84,14 @@ OUT="$TMPDIR/loc-trend.md"
 # bootstrap.
 . "$PROJECT_ROOT/lib/loc-trend.sh"
 
-# Test 1: 2 prior author-visible runs + current round → 3 rows + GROWING
+# Trajectory tag intentionally removed — see docs/plans/2026-05-08-elegant-convergence.md
+# (this assertion lives at the top so any test invocation below catches a regression)
+compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" "$CURRENT_RUN" "$CURRENT_SHA" > "$OUT"
+grep -q 'Trajectory:' "$OUT" && { echo "FAIL: Trajectory: line should be absent (classifier deleted)"; cat "$OUT"; exit 1; }
+
+# Test 1: 2 prior author-visible runs + current round → 3 rows
 compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" "$CURRENT_RUN" "$CURRENT_SHA" > "$OUT"
 grep -q '^# LOC trend' "$OUT" || { echo "FAIL: missing header"; cat "$OUT"; exit 1; }
-grep -qE 'Trajectory:.*GROWING' "$OUT" || { echo "FAIL: missing/wrong trajectory"; cat "$OUT"; exit 1; }
 ROW_COUNT=$(grep -cE '^\| [0-9]+ \|' "$OUT")
 [ "$ROW_COUNT" = "3" ] || { echo "FAIL: expected 3 table rows (2 prior + current), got $ROW_COUNT"; cat "$OUT"; exit 1; }
 
@@ -153,72 +155,13 @@ ROUNDS_SHA=$(printf '%s\n' "$ROUNDS_OUT" | head -1 | awk -F'\t' '{print $2}')
     exit 1
 }
 
-# Test 6: STABLE trajectory — first round and last round have similar
-# additions counts (ratio in [0.66, 1.5]). Use SHA1 (10 adds vs base) as
-# the only prior, and SHA1 again as the current round → ratio 1.0 →
-# STABLE.
-rm -rf "$STATE_DIR/runs"
-mkdir -p "$STATE_DIR/runs"
-RUN_STABLE_PRIOR="$STATE_DIR/runs/cncorp_plow__999__20260501T000000000Z__${SHA1:0:7}"
-mkdir -p "$RUN_STABLE_PRIOR"
-jq -n --arg sha "$SHA1" --arg ts "2026-05-01T00:00:00Z" \
-    '{status:"completed", sha:$sha, started_at:$ts}' > "$RUN_STABLE_PRIOR/meta.json"
-compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" "$CURRENT_RUN" "$SHA1" > "$OUT"
-grep -qE 'Trajectory:.*STABLE' "$OUT" || {
-    echo "FAIL: expected STABLE trajectory (round1=10 adds, current=10 adds)"
-    cat "$OUT"
-    exit 1
-}
-
-# Test 7: SHRINKING trajectory — first round large, last round small
-# (ratio ≤ 0.66). Build a "fat" commit on top of round2; the fat round's
-# adds-vs-base = 10 (round1) + 50 (round2) + 100 (fat) = 160 lines.
-# Current = SHA1 (10 adds). Ratio 10/160 ≈ 0.06 → SHRINKING.
-seq 1 100 > "$REPO/round_fat.txt"
-git -C "$REPO" add round_fat.txt && git -C "$REPO" commit -qm "fat-round"
-SHA_FAT=$(git -C "$REPO" rev-parse HEAD)
-rm -rf "$STATE_DIR/runs"
-mkdir -p "$STATE_DIR/runs"
-RUN_FAT_PRIOR="$STATE_DIR/runs/cncorp_plow__999__20260501T000000000Z__${SHA_FAT:0:7}"
-mkdir -p "$RUN_FAT_PRIOR"
-jq -n --arg sha "$SHA_FAT" --arg ts "2026-05-01T00:00:00Z" \
-    '{status:"completed", sha:$sha, started_at:$ts}' > "$RUN_FAT_PRIOR/meta.json"
-compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" "$CURRENT_RUN" "$SHA1" > "$OUT"
-grep -qE 'Trajectory:.*SHRINKING' "$OUT" || {
-    echo "FAIL: expected SHRINKING trajectory (prior=160 adds, current=10 adds)"
-    cat "$OUT"
-    exit 1
-}
-
-# Test 8: UNKNOWN trajectory — a prior round's SHA isn't reachable in
-# local history (rebase / force-push / shallow clone evicted it). Silent
-# fall-through to STABLE here was the BCR class flagged on PR #38 round-3.
-# Use a 40-hex string that's never been an object in the test repo.
-rm -rf "$STATE_DIR/runs"
-mkdir -p "$STATE_DIR/runs"
-PHANTOM_SHA="deadbeef00000000000000000000000000000000"
-RUN_PHANTOM="$STATE_DIR/runs/cncorp_plow__999__20260501T000000000Z__${PHANTOM_SHA:0:7}"
-mkdir -p "$RUN_PHANTOM"
-jq -n --arg sha "$PHANTOM_SHA" --arg ts "2026-05-01T00:00:00Z" \
-    '{status:"completed", sha:$sha, started_at:$ts}' > "$RUN_PHANTOM/meta.json"
-compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" "$CURRENT_RUN" "$SHA1" > "$OUT"
-grep -qE 'Trajectory:.*UNKNOWN' "$OUT" || {
-    echo "FAIL: expected UNKNOWN trajectory (prior round's SHA not in local history)"
-    cat "$OUT"
-    exit 1
-}
-grep -qE 'Trajectory:.*STABLE' "$OUT" && {
-    echo "FAIL: phantom-SHA round silently classified as STABLE — UNKNOWN should supersede"
-    cat "$OUT"
-    exit 1
-}
-
-# Test 9: .reviewed_sha wins over .sha when both are present in meta.json
+# Test 6: .reviewed_sha wins over .sha when both are present in meta.json
 # — regression fence for the round-3 BCR finding. The orchestrator stamps
 # .sha at meta-write time (PR_SHA, pre-checkout) and later stamps
 # .reviewed_sha (post-checkout HEAD). Downstream consumers MUST prefer
 # .reviewed_sha so an enumeration race doesn't anchor the trajectory to
 # a SHA the worker never actually evaluated.
+PHANTOM_SHA="deadbeef00000000000000000000000000000000"
 rm -rf "$STATE_DIR/runs"
 mkdir -p "$STATE_DIR/runs"
 RUN_BOTH="$STATE_DIR/runs/cncorp_plow__999__20260501T000000000Z__0000000"
@@ -232,55 +175,7 @@ ROUNDS_SHA=$(printf '%s\n' "$ROUNDS_OUT" | head -1 | awk -F'\t' '{print $2}')
     exit 1
 }
 
-# Test 10: GROWING from a reachable_zero baseline. First round's diff
-# vs base is empty (e.g. round was rebase-only or already-merged work);
-# later round adds real code. The pre-typed-states classifier silently
-# called this STABLE because first_round_adds==0 short-circuited the
-# ratio. With explicit per-row states the trajectory must be GROWING.
-# Closes the round-4 BCR(a) bug.
-rm -rf "$STATE_DIR/runs"
-mkdir -p "$STATE_DIR/runs"
-# Use BASE_SHA itself as the first reviewed round → reachable_zero
-# (cat-file -e succeeds, BASE...BASE diff is empty).
-RUN_ZERO_BASELINE="$STATE_DIR/runs/cncorp_plow__999__20260501T000000000Z__${BASE_SHA:0:7}"
-mkdir -p "$RUN_ZERO_BASELINE"
-jq -n --arg sha "$BASE_SHA" --arg ts "2026-05-01T00:00:00Z" \
-    '{status:"completed", sha:$sha, started_at:$ts}' > "$RUN_ZERO_BASELINE/meta.json"
-# Current = SHA2 (50 adds vs base) → first=reachable_zero, last=numeric.
-compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" "$CURRENT_RUN" "$SHA2" > "$OUT"
-grep -qE 'Trajectory:.*GROWING' "$OUT" || {
-    echo "FAIL: expected GROWING from zero baseline (first=reachable_zero, last=numeric)"
-    cat "$OUT"
-    exit 1
-}
-grep -qE 'Trajectory:.*STABLE' "$OUT" && {
-    echo "FAIL: zero-baseline + later adds silently classified as STABLE — BCR(a) regressed"
-    cat "$OUT"
-    exit 1
-}
-
-# Test 11: all rounds reachable_zero → STABLE (legitimately stable at
-# zero). Distinct from UNKNOWN — every SHA is reachable, the diff just
-# happens to be empty (e.g. nothing added relative to base).
-rm -rf "$STATE_DIR/runs"
-mkdir -p "$STATE_DIR/runs"
-RUN_ALL_ZERO="$STATE_DIR/runs/cncorp_plow__999__20260501T000000000Z__${BASE_SHA:0:7}"
-mkdir -p "$RUN_ALL_ZERO"
-jq -n --arg sha "$BASE_SHA" --arg ts "2026-05-01T00:00:00Z" \
-    '{status:"completed", sha:$sha, started_at:$ts}' > "$RUN_ALL_ZERO/meta.json"
-compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" "$CURRENT_RUN" "$BASE_SHA" > "$OUT"
-grep -qE 'Trajectory:.*STABLE' "$OUT" || {
-    echo "FAIL: expected STABLE for all-reachable-zero rounds"
-    cat "$OUT"
-    exit 1
-}
-grep -qE 'Trajectory:.*UNKNOWN' "$OUT" && {
-    echo "FAIL: all-reachable-zero misclassified as UNKNOWN — typed state collapsed unavailable + reachable_zero"
-    cat "$OUT"
-    exit 1
-}
-
-# Test 12: display column renders "(zero diff)" for reachable_zero
+# Test 7: display column renders "(zero diff)" for reachable_zero
 # rounds, NOT "(sha not in local history)". Closes the round-4 BCR(b)
 # display bug — the prior implementation rendered any empty shortstat
 # as "(sha not in local history)" regardless of whether the SHA was
@@ -303,10 +198,9 @@ grep -qF '(sha not in local history)' "$OUT" && {
     exit 1
 }
 
-# Test 13: deletion-only round (adds=0, dels>0) classifies as
-# deletion_only, NOT reachable_zero. Display renders "(0 adds, N dels)";
-# trajectory math still treats the row as 0 adds (the loop-breaker
-# cares about additions; deletions are good). Closes round-6 BCR(F1.b).
+# Test 8: deletion-only round (adds=0, dels>0) classifies as
+# deletion_only, NOT reachable_zero. Display renders "(0 adds, N dels)".
+# Closes round-6 BCR(F1.b).
 #
 # Build a branch where the only diff vs base is a `git rm` of seed.txt.
 # Use a fresh branch so we don't perturb main. seed.txt has 1 line so
@@ -322,9 +216,6 @@ RUN_DEL="$STATE_DIR/runs/cncorp_plow__999__20260501T000000000Z__${SHA_DEL:0:7}"
 mkdir -p "$RUN_DEL"
 jq -n --arg sha "$SHA_DEL" --arg ts "2026-05-01T00:00:00Z" \
     '{status:"completed", sha:$sha, started_at:$ts}' > "$RUN_DEL/meta.json"
-# Current = SHA_DEL too — last_state=deletion_only, classifier folds it
-# to reachable_zero → STABLE. The display assertion below is the load-
-# bearing check.
 compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" "$CURRENT_RUN" "$SHA_DEL" > "$OUT"
 grep -qF '(0 adds, 1 dels)' "$OUT" || {
     echo "FAIL: expected display '(0 adds, 1 dels)' for deletion-only round"
@@ -336,25 +227,8 @@ grep -qF '(zero diff)' "$OUT" && {
     cat "$OUT"
     exit 1
 }
-# Trajectory math: deletion_only row counts as 0 adds for ratio
-# purposes. With first=last=deletion_only, classifier resolves to STABLE.
-grep -qE 'Trajectory:.*STABLE' "$OUT" || {
-    echo "FAIL: deletion-only first AND last round should resolve to STABLE (deletion_only folds to 0-adds for trajectory)"
-    cat "$OUT"
-    exit 1
-}
 
-# Trajectory: GROWING from a deletion-only baseline → numeric current
-# round. First round dels everything; current round adds code. Closes
-# the symmetric case to Test 10 (zero-diff baseline → GROWING).
-compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" "$CURRENT_RUN" "$SHA2" > "$OUT"
-grep -qE 'Trajectory:.*GROWING' "$OUT" || {
-    echo "FAIL: deletion-only baseline + numeric current should resolve to GROWING"
-    cat "$OUT"
-    exit 1
-}
-
-# Test 14: failed `git diff --numstat` exit code on a reachable SHA
+# Test 9: failed `git diff --numstat` exit code on a reachable SHA
 # classifies as unavailable, NOT reachable_zero. Closes round-6 BCR(F1.a).
 # Stub `git` on PATH so cat-file -e still succeeds (delegating to real
 # git) but `diff --numstat` exits non-zero with empty stdout — the
@@ -385,12 +259,6 @@ mkdir -p "$RUN_FAIL"
 jq -n --arg sha "$SHA1" --arg ts "2026-05-01T00:00:00Z" \
     '{status:"completed", sha:$sha, started_at:$ts}' > "$RUN_FAIL/meta.json"
 PATH="$STUB_DIR:$PATH" compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" "$CURRENT_RUN" "$SHA1" > "$OUT"
-# UNKNOWN supersedes — prior round's diff failed; we cannot trust the row.
-grep -qE 'Trajectory:.*UNKNOWN' "$OUT" || {
-    echo "FAIL: failed 'git diff --numstat' on reachable SHA should classify as unavailable -> UNKNOWN trajectory"
-    cat "$OUT"
-    exit 1
-}
 grep -qF '(sha not in local history)' "$OUT" || {
     echo "FAIL: failed-numstat row should display '(sha not in local history)' (folded into unavailable)"
     cat "$OUT"
