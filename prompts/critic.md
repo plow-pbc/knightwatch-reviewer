@@ -16,7 +16,6 @@ Then read:
 - `.codex-scratch/trigger-comment.md` — present whenever the review was triggered by a trusted-author `/srosro-review` or `/srosro-update-review`. When body is substantive prose, weight it; when it's only the bare slash command, ignore.
 - `.codex-scratch/product-context.md` — product stage and roadmap
 - `.codex-scratch/review-priority.md` — per-repo operating point + voice posture
-- `.codex-scratch/loc-trend.md` — per-round LOC trajectory (consulted by the Pre-PMF lens below)
 - `.codex-scratch/decline-history.md` — operator's prior decline replies on this PR (read prose for context; explicit `<!-- decline:class=X -->` markers are counted toward the Decline-history channel below)
 - `.codex-scratch/previous-review.md` — present on re-reviews; the prior posted review
 - `.codex-scratch/prior-reviews.md` — present when 1+ prior reviews exist on this PR; concatenated `aggregator/output.md` from every previous run (most recent last). The aggregator's carry-forward rule (`prompts/aggregator.md` step 38) is the single source of truth for which prior probes persist; you don't reason about prior probes here.

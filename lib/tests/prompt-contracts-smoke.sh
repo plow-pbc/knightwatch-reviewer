@@ -80,10 +80,6 @@ if ! printf '%s' "$verdict_block" | grep -qF "\`medium\` or \`blocking\`"; then
     exit 1
 fi
 
-echo "  asserting Pre-PMF lens reference in critic.md..."
-assert_grep "critic.md should reference loc-trend.md (Pre-PMF lens)" \
-    "loc-trend.md" prompts/critic.md
-
 echo "  asserting decline-history input in critic.md..."
 assert_grep "critic.md should reference decline-history.md" \
     "decline-history.md" prompts/critic.md
@@ -153,8 +149,6 @@ if grep -nF 'gh issue view' lib/review-one-pr.sh; then
 fi
 
 echo "  asserting re-review loop-breaker (Path 2) in aggregator.md..."
-assert_grep "aggregator.md should reference loc-trend.md trigger" \
-    "loc-trend.md" prompts/aggregator.md
 assert_grep "aggregator.md should reference momentum specialist output" \
     "momentum.md" prompts/aggregator.md
 
