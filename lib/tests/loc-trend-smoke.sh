@@ -269,5 +269,15 @@ grep -qF '(zero diff)' "$OUT" && {
     cat "$OUT"
     exit 1
 }
+# Behavior fence for the Adds=n/a sentinel — the unavailable row's table
+# row must end in `| n/a |` so momentum can detect insufficient delta data
+# instead of reading a fabricated zero. Token-grep coverage in
+# prompt-contracts-smoke.sh fences the source emit; this fences the
+# rendered table cell.
+grep -qE '\| n/a \|$' "$OUT" || {
+    echo "FAIL: failed-numstat unavailable row should render Adds cell as 'n/a'"
+    cat "$OUT"
+    exit 1
+}
 
 echo "  PASS"
