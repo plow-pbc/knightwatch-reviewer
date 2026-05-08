@@ -375,12 +375,28 @@ if grep -qE "echo.*Trajectory:" lib/loc-trend.sh; then
     exit 1
 fi
 
+echo "  asserting Adds=n/a sentinel on unavailable rows + momentum sentinel handling..."
+# Positive token fences. lib/loc-trend.sh emits "n/a" in the Adds column
+# for state=unavailable rows (rebased / force-pushed / corrupted history) so
+# downstream consumers can't read a fabricated 0 as "no growth this round."
+# momentum must treat n/a at either delta endpoint as insufficient data, not
+# as arithmetic input — otherwise it becomes a parallel liveness mechanism
+# beside the cited-shape-at-HEAD authority.
+assert_grep "lib/loc-trend.sh should emit the n/a sentinel for unavailable rows" \
+    'adds="n/a"' lib/loc-trend.sh
+assert_grep "prompts/standalone/momentum.md should treat n/a Adds as insufficient data" \
+    "endpoint Adds is n/a" prompts/standalone/momentum.md
+
 echo "  asserting read-only sandbox fence on aggregator and momentum..."
 # Aggregator and momentum agents read PR-controlled inputs while codex
 # runs with --dangerously-bypass-approvals-and-sandbox (lib/pipeline.py:69).
 # Without the data-not-instructions fence the critic carries, a malicious
 # PR could prompt-inject the agents into write actions, network calls,
-# or credential exfiltration. Same fence as critic.md:3.
+# or credential exfiltration. Same fence as critic.md:3. Specifically pin
+# test-results.md (PR-controlled `just test` output) by name so the
+# enumeration can't silently drop it on a refactor.
+assert_grep "aggregator.md fence should pin test-results.md by name (PR-controlled just-test output)" \
+    'test-results.md` (PR-controlled' prompts/aggregator.md
 assert_grep "aggregator.md should carry the read-only working directory fence" \
     "Read-only working directory" prompts/aggregator.md
 assert_grep "aggregator.md should fence inputs as data-not-instructions" \
