@@ -1002,7 +1002,7 @@ else
     PRIOR_REVIEWS=$(stage_prior_reviews "$STATE_DIR" "$REPO_SLUG_FOR_RUN" "$PR_NUM" "$RUN_DIR")
     if [ -n "$PRIOR_REVIEWS" ]; then
         PRIOR_COUNT=$(printf '%s' "$PRIOR_REVIEWS" | grep -c '^--- review at ')
-        log "$PR_ID: staging $PRIOR_COUNT prior review(s) for recurrence detection"
+        log "$PR_ID: staging $PRIOR_COUNT prior review(s) for carry-forward"
         write_scratch "$REPO_DIR" "prior-reviews.md" "$PRIOR_REVIEWS"
     fi
 fi

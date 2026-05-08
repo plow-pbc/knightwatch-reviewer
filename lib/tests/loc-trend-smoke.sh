@@ -84,8 +84,8 @@ OUT="$TMPDIR/loc-trend.md"
 # bootstrap.
 . "$PROJECT_ROOT/lib/loc-trend.sh"
 
-# Trajectory tag intentionally removed — see docs/plans/2026-05-08-elegant-convergence.md
-# (this assertion lives at the top so any test invocation below catches a regression)
+# Trajectory tag intentionally removed (PR #70: elegant-convergence).
+# This assertion lives at the top so any test invocation below catches a regression.
 compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" "$CURRENT_RUN" "$CURRENT_SHA" > "$OUT"
 grep -q 'Trajectory:' "$OUT" && { echo "FAIL: Trajectory: line should be absent (classifier deleted)"; cat "$OUT"; exit 1; }
 

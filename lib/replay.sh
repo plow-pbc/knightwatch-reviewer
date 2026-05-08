@@ -141,7 +141,7 @@ done
 # TODO: prior-reviews.md is stubbed above, so multi-round Path 2 (strict-decrease
 # trigger in aggregator.md) cannot be exercised via replay. Re-staging from the
 # source run dir's inputs/ would enable it. The deterministic smoke
-# (lib/tests/aggregator-convergence-smoke.sh) is the contract test for Path 2.
+# (lib/tests/prompt-contracts-smoke.sh, Section 4) is the contract test for Path 2.
 # standards.md content lives in operator-private ~/.claude/CODING_STANDARDS.md
 # in production (review-one-pr.sh:677). Replay can't rely on that — try the
 # operator's home tree if available, otherwise mark as unstaged like the

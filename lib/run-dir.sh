@@ -351,8 +351,8 @@ prepend_review_header() {
 #      reliably implies "gh post succeeded" for any preserved run.
 #
 # Single owner for "which prior review rounds count" — both
-# stage_prior_reviews (Bug-Class-Recurrence) and compute_loc_trend
-# (LOC trajectory table) call this so they can't drift.
+# stage_prior_reviews (carry-forward) and compute_loc_trend
+# (per-round LoC table) call this so they can't drift.
 is_run_author_visible() {
     local run_dir="$1"
     [ -f "$run_dir/meta.json" ] || return 1
@@ -534,9 +534,9 @@ latest_author_visible_review_started_at() {
 # race made the two diverge.
 #
 # This is the single owner for the "(ts, sha) per round" contract that
-# compute_loc_trend (LOC trajectory) consumes. Bug-Class-Recurrence
-# fence: keep the canonical-SHA projection in one helper so a downstream
-# caller can't drift to a stale local copy.
+# compute_loc_trend (per-round LoC table) consumes. Drift fence: keep
+# the canonical-SHA projection in one helper so a downstream caller
+# can't drift to a stale local copy.
 author_visible_rounds() {
     local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"
     local prior_run meta_sha meta_ts

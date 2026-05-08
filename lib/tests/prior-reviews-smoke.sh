@@ -154,8 +154,8 @@ fi
 # ---- scenario 4d: legacy run (status=completed, no posted_at) → INCLUDED ----
 # Runs created before this PR landed have status=completed but no
 # posted_at field. On first deploy, those legacy runs MUST count for
-# recurrence detection — the long-running PRs this feature targets
-# already have multi-review history. Predicate falls back to status when
+# carry-forward — the long-running PRs this feature targets already
+# have multi-review history. Predicate falls back to status when
 # posted_at is missing.
 echo "  scenario 4d: legacy run (status=completed, no posted_at) → INCLUDED..."
 make_run "$REPO_SLUG" "$PR" "20260429T060000000Z" "6666666" "## review four body — legacy pre-#15 completed run" "completed" "" >/dev/null
