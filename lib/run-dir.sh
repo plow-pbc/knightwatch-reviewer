@@ -65,8 +65,8 @@ allocate_run_dir() {
 # Pure read-only walk; no side effects. Lives here so the smoke test in
 # lib/tests/prior-reviews-smoke.sh exercises the same function the
 # worker calls — a wrong glob, missing self-exclusion, or empty-file
-# filter regression silently disables Bug-Class-Recurrence detection
-# without tripping any other test.
+# filter regression silently disables the aggregator's carry-forward
+# (step 38) without tripping any other test.
 # finalize_meta_json META_FILE FINISHED_AT STATUS GH_POSTED
 #
 # Atomically rewrites $META_FILE with finished_at + status, and repairs

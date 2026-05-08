@@ -52,7 +52,7 @@ You are the aggregator in a multi-specialist PR review. Eight specialists produc
    - Named the structural shape that the merged probe's `If yes, edit:` clause inherits from.
    - Has the most precise `Class:` for the merged finding (e.g. `bug` > `shape` > `simplification` when all three flagged the same race).
 
-   Use `From: aggregator` ONLY when the cross-angle pattern is genuinely emergent — visible only across rounds (recurrence with no specialist parent), or a structural observation about the review pipeline itself rather than the PR's code. The default should be specialist attribution; aggregator-attribution is the exception, not the rule.
+   Use `From: aggregator` ONLY when the cross-angle pattern is a structural observation about the review pipeline itself rather than the PR's code (e.g. momentum prose). The default should be specialist attribution; aggregator-attribution is the exception, not the rule.
 
    **Why this matters.** The bake-off (`~/.pr-reviewer/specialist-bakeoff.md`) tracks `[from: <specialist>]` attribution counts. When two near-duplicate specialists raise the same finding and you dedupe to one, the winning attribution decides which specialist's framing the bake-off credits — over many reviews this surfaces which specialist's lens consistently wins, which informs collapse-or-keep decisions empirically.
 
