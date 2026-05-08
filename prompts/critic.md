@@ -17,9 +17,9 @@ Then read:
 - `.codex-scratch/product-context.md` — product stage and roadmap
 - `.codex-scratch/review-priority.md` — per-repo operating point + voice posture
 - `.codex-scratch/loc-trend.md` — per-round LOC trajectory (consulted by the Pre-PMF lens below)
-- `.codex-scratch/decline-history.md` — operator's prior decline replies on this PR (read prose for context; explicit `<!-- decline:class=X -->` markers are counted toward the K-decay rule below)
+- `.codex-scratch/decline-history.md` — operator's prior decline replies on this PR (read prose for context; explicit `<!-- decline:class=X -->` markers are counted toward the Decline-history channel below)
 - `.codex-scratch/previous-review.md` — present on re-reviews; the prior posted review
-- `.codex-scratch/prior-reviews.md` — present when 1+ prior reviews exist on this PR; concatenated `aggregator/output.md` from every previous run (most recent last). Used by K-decay below to count rounds since the author engaged with each probe.
+- `.codex-scratch/prior-reviews.md` — present when 1+ prior reviews exist on this PR; concatenated `aggregator/output.md` from every previous run (most recent last). The aggregator's carry-forward rule (`prompts/aggregator.md` step 38) is the single source of truth for which prior probes persist; you don't reason about prior probes here.
 
 **Your job — probe resolution.**
 
@@ -34,13 +34,6 @@ For each probe, also set `Evidence:` to a one-line citation. For `Answer: yes`, 
 **Pre-PMF lens (always-on).** For every probe, evaluate: would the failure mode the probe is asking about be observed at our operating point today? `simplification` probes are removal-shaped per `probe-schema.md` — at pre-PMF scale most defensive complexity / duplication / dead branches aren't earning their place; default to `Answer: yes` (apply the removal) unless cited evidence shows the existing shape is justified. For other classes: failure-mode-not-observed → `Answer: no` with `Evidence: <firing rate observation>`. If the underlying concern is real (e.g. bug-class probe with cited path) → keep `Answer: yes` regardless of pre-PMF; the bug-class carve-out wins. **Exception** — `simplification` probes targeting security or data-integrity controls (auth checks, sandbox fences, secret/PII handling, origin/CSRF guards, credential paths, locks, atomic state writes, transaction/rollback fences) resolve through the Severe-bug carve-out below, NOT this default-yes path; the cited fence is the safety boundary, not removable complexity.
 
 **Severe-bug carve-out.** Probes with `Class: bug` and a cited failing path describing a user-observable severe outcome (secret leak, auth bypass, command injection, path traversal, sandbox escape, data loss / corruption / silent-drop, money-affecting state inconsistency, PII exfiltration) are NEVER set to `Answer: no` via the Pre-PMF lens. Silence on a real severe-bug blocker is the bot being right and the author being wrong — keep `Answer: yes` regardless.
-
-**K-decay (engagement-aware re-evaluation, re-reviews only).** For each probe present in `previous-review.md`, count rounds since the author engaged with it (engagement = (a) a commit on this branch that touched the cited files, OR (b) an author comment that quoted, addressed, or replied). The author has now seen the probe K times.
-
-- K = 1–2: keep `Answer:` as the specialist set it.
-- K ≥ 3 with no engagement and Class ≠ bug: set `Answer: unknown`. Either the probe is mis-scoped or the author has materially deferred it; silence at K ≥ 3 is signal.
-- K ≥ 5 with no engagement and Class ≠ bug: set `Answer: no` with `Evidence: dropped — K=5 silence`.
-- Class = bug: never K-decay; keep as set.
 
 **Decline-history channel.** Two channels in `.codex-scratch/decline-history.md`:
 - *Explicit class markers* (`<!-- decline:class=X -->` count ≥ 3): set `Answer: no`, `Evidence: declined N rounds, class=X`.
