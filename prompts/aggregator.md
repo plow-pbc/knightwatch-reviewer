@@ -16,7 +16,7 @@ You are the aggregator in a multi-specialist PR review. Eight specialists produc
 - `.codex-scratch/previous-review.md` — your team's prior review, if re-review
 - `.codex-scratch/prior-reviews.md` — present *only* when 1+ prior reviews exist on this PR; concatenated `aggregator/output.md` from every previous run (most recent last). Used by step 38 (carry-forward) to evaluate whether a probe's cited shape persists at HEAD across rounds. Distinct from `previous-review.md`, which is just the immediately-prior one.
 - `.codex-scratch/momentum.md` — present *only* on re-reviews; prose-only meta-finding from the momentum specialist. Read this before drafting findings; if Path 2 fires, this output becomes the review body verbatim.
-- `.codex-scratch/loc-trend.md` — per-round LOC trajectory + GROWING/STABLE/SHRINKING classification.
+- `.codex-scratch/loc-trend.md` — per-round LOC table (round, timestamp, SHA, additions/deletions). Compute the round-over-round delta from the table; no pre-classified trajectory tag.
 - `.codex-scratch/trigger-comment.md` — present whenever this review was triggered by a trusted-author `/srosro-review` or `/srosro-update-review` comment. The body may be substantive prose framing the review goal ("they asked us to grade this against DRY and the diff added 2k LoC") or just the bare slash command (routine re-review — no extra framing). When prose is supplied, let it sharpen the review's emphasis. Step 6 below describes how to gate the "step back and ask" mode on prose-vs-bare-command.
 - `.codex-scratch/test-results.md` — `just test` outcome
 - `.codex-scratch/standards.md` — the standards the review is measured against
