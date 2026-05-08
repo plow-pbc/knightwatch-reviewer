@@ -281,4 +281,96 @@ echo "  asserting simplification.md anchors on inferred-intent scratch artifact.
 assert_grep "simplification.md should anchor on the inferred-intent scratch artifact" \
     ".codex-scratch/inferred-intent.md" prompts/specialists/simplification.md
 
+# ====================================================================
+# Section 4: elegant-convergence rule fences (PR #70)
+# ====================================================================
+# Three competing "is this probe alive?" mechanisms (K-decay in critic,
+# carry-forward in aggregator step 38, BCR in aggregator step 4a) collapsed
+# into ONE rule: a probe persists iff its cited shape is still present at
+# HEAD. Two competing "is the PR converging?" signals (loc-trend trichotomy,
+# BCR-fired-N-rounds counter) collapsed into ONE: when the carried-forward
+# [blocking] set has not strictly decreased over the last 3 rounds, Path 2
+# halts the probe loop. These token + negative fences catch accidental
+# re-introduction of any of the deleted patterns.
+
+echo "  asserting carry-forward rule cites Files: shape at HEAD in aggregator.md..."
+# Positive token fences — the rule pivots on the cited Files: field and
+# the HEAD comparison point. Either token going missing breaks the rule's
+# mechanic without breaking grammar. Wording can drift; these two tokens
+# can't.
+assert_grep "aggregator carry-forward should cite \`Files:\` field" \
+    "\`Files:\` shape" prompts/aggregator.md
+assert_grep "aggregator carry-forward should compare against HEAD" \
+    "at HEAD" prompts/aggregator.md
+# Negative fence: the legacy step 38 said "decide: still active given this
+# round's diff" — implicit, deferred to LLM judgment. The new rule is a
+# concrete cited-shape grep.
+if grep -qF "decide: still active" prompts/aggregator.md; then
+    echo "FAIL: aggregator.md regressed to 'decide: still active' wording — carry-forward must specify cited-shape-at-HEAD test, not implicit 'decide'"
+    exit 1
+fi
+
+echo "  asserting Bug-Class-Recurrence is fully deleted from aggregator.md..."
+# Negative fence: BCR fired [blocking] on raw class-occurrence counts ≥2
+# across prior reviews, with no clearance path even when cited instances
+# were remediated. PR #584 round 13 cited prior probes by run-id as
+# evidence of recurrence while round 10's text acknowledged the original
+# concerns were resolved. The carry-forward rule (step 38) covers
+# persistence detection without the counter.
+if grep -qF "Bug-Class-Recurrence" prompts/aggregator.md; then
+    echo "FAIL: aggregator.md re-introduced Bug-Class-Recurrence — auto-emission was deleted; carry-forward (step 38) handles persistence without the counter"
+    exit 1
+fi
+
+echo "  asserting Path 2 halt action skips the Probes block in aggregator.md..."
+# Positive token: the load-bearing fix is dropping probes, not decorating
+# them with momentum prose alongside.
+assert_grep "Path 2 must skip the per-angle Probes block on halt" \
+    "Skip the per-angle Probes block" prompts/aggregator.md
+# Negative fence: the old Path 2 action said "Keep the local probes in
+# the **Probes** block, ranked by severity, all subject to voice posture
+# (questions over prescriptions). Not dropped — but the structural
+# callout has eaten the visual real estate." That action shipped on PR
+# #584 round 13 and was the failure-mode replicator: momentum prose
+# rendered as decoration while [blocking] BCR rendered alongside.
+if grep -qF "Keep the local probes" prompts/aggregator.md; then
+    echo "FAIL: aggregator.md Path 2 regressed to 'Keep the local probes' action — Path 2 must drop the Probes block entirely so the structural callout is the only content"
+    exit 1
+fi
+
+echo "  asserting K-decay is fully deleted from critic.md..."
+# Negative fence: K-decay measured author engagement (commits/comments
+# touching cited files) as a proxy for "is the probe still alive?". The
+# aggregator's tightened carry-forward (step 38) asks the question
+# directly via cited shape at HEAD; K-decay's behavioral proxy is
+# redundant.
+if grep -qF "K-decay" prompts/critic.md; then
+    echo "FAIL: critic.md re-introduced K-decay — engagement-as-resolution-proxy was deleted; cited-shape-at-HEAD (aggregator step 38) is the single resolution rule"
+    exit 1
+fi
+
+echo "  asserting LoC-trend trichotomy tags are gone from momentum.md..."
+# Negative fence: GROWING/STABLE/SHRINKING tags came from a 1.5×/0.66×
+# threshold classifier in lib/loc-trend.sh that mis-labeled PR #584 (1.40×
+# growth) as STABLE. The classifier was deleted; momentum reads the raw
+# round-by-round table and computes its own delta. Re-introducing the tag
+# names in momentum.md implies a consumer that expects a pre-computed tag
+# — i.e. the classifier coming back.
+for tag in GROWING STABLE SHRINKING; do
+    if grep -qF "$tag" prompts/standalone/momentum.md; then
+        echo "FAIL: prompts/standalone/momentum.md re-introduced trichotomy tag '$tag' — momentum reads raw deltas; the classifier was deleted"
+        exit 1
+    fi
+done
+
+echo "  asserting loc-trend.sh emits no Trajectory: line..."
+# Negative fence: the trichotomy classifier emitted "This PR has been
+# reviewed N times. Trajectory: <TAG>." The Trajectory: clause was the
+# source of the false-stable signal on PR #584. Deleted; downstream
+# consumers (momentum, aggregator) read the raw per-round table directly.
+if grep -qE "echo.*Trajectory:" lib/loc-trend.sh; then
+    echo "FAIL: lib/loc-trend.sh re-introduced a Trajectory: emission — the trichotomy classifier was deleted; consumers read raw deltas"
+    exit 1
+fi
+
 echo "  PASS"

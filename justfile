@@ -74,12 +74,8 @@ test:
     bash lib/tests/path-scrub-smoke.sh
 
     echo ""
-    echo "=== prompt-contracts smoke (anti-bloat + momentum-wire, folded) ==="
+    echo "=== prompt-contracts smoke (anti-bloat + momentum-wire + elegant-convergence, folded) ==="
     bash lib/tests/prompt-contracts-smoke.sh
-
-    echo ""
-    echo "=== aggregator-convergence smoke (elegant-convergence contract) ==="
-    bash lib/tests/aggregator-convergence-smoke.sh
 
     echo ""
     echo "=== loc-trend smoke ==="
