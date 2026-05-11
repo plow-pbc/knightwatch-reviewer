@@ -146,6 +146,10 @@ test:
     bash lib/tests/replay-verify-smoke.sh
 
     echo ""
+    echo "=== replay-batch stdin-isolation smoke test ==="
+    bash lib/tests/replay-batch-stdin-isolation-smoke.sh
+
+    echo ""
     echo "=== bakeoff-store unit test ==="
     bash lib/tests/bakeoff-store-unit.sh
 

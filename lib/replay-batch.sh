@@ -82,10 +82,16 @@ while IFS=',' read -r repo pr sha; do
         slug="$(replay_prompt_slug "$prompts_dir")"
         cell_dir="$OUT/$(replay_run_dir "$repo" "$pr" "$sha" "$slug")"
         echo "    [$slug] → $cell_dir"
+        # </dev/null is load-bearing: the outer `while read ... done <"$PRS"`
+        # iterates the CSV via stdin, and replay.sh invokes codex which
+        # reads stdin unconditionally. Without this isolation, codex
+        # consumes the rest of the CSV and only the first PR ever runs
+        # (observed in batch-pr70-perf-compare's initial run before the
+        # fix landed — 1/3 canaries processed, two silently dropped).
         if "$LIB_DIR/replay.sh" \
                 --repo "$repo" --pr "$pr" --sha "$sha" \
                 --prompts "$prompts_dir" --output-dir "$cell_dir" \
-                >"$cell_dir.batch.log" 2>&1
+                </dev/null >"$cell_dir.batch.log" 2>&1
         then
             rel="$(basename "$cell_dir")/aggregator-output.md"
             printf ' [%s](%s) |' "$slug" "$rel" >> "$INDEX"
