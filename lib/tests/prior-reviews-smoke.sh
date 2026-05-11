@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Smoke for stage_prior_reviews (lib/run-dir.sh).
 #
-# Bug-Class-Recurrence detection depends entirely on this helper returning
-# the right concatenation of prior aggregator outputs. A bad `find` glob,
-# missing self-exclusion, wrong predicate, or other-PR cross-contamination
-# would silently disable or distort recurrence detection without tripping
-# any existing smoke. Lock down the branches:
+# The aggregator's carry-forward rule (step 38: cited shape at HEAD)
+# depends entirely on this helper returning the right concatenation of
+# prior aggregator outputs. A bad `find` glob, missing self-exclusion,
+# wrong predicate, or other-PR cross-contamination would silently
+# disable or distort carry-forward without tripping any existing smoke.
+# Lock down the branches:
 #
 #   1. No runs at all → empty output (first review on PR)
 #   2. Only the current run → empty output (self-exclusion works)
@@ -153,8 +154,8 @@ fi
 # ---- scenario 4d: legacy run (status=completed, no posted_at) → INCLUDED ----
 # Runs created before this PR landed have status=completed but no
 # posted_at field. On first deploy, those legacy runs MUST count for
-# recurrence detection — the long-running PRs this feature targets
-# already have multi-review history. Predicate falls back to status when
+# carry-forward — the long-running PRs this feature targets already
+# have multi-review history. Predicate falls back to status when
 # posted_at is missing.
 echo "  scenario 4d: legacy run (status=completed, no posted_at) → INCLUDED..."
 make_run "$REPO_SLUG" "$PR" "20260429T060000000Z" "6666666" "## review four body — legacy pre-#15 completed run" "completed" "" >/dev/null

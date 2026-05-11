@@ -74,7 +74,7 @@ test:
     bash lib/tests/path-scrub-smoke.sh
 
     echo ""
-    echo "=== prompt-contracts smoke (anti-bloat + momentum-wire, folded) ==="
+    echo "=== prompt-contracts smoke (anti-bloat + momentum-wire + elegant-convergence, folded) ==="
     bash lib/tests/prompt-contracts-smoke.sh
 
     echo ""
@@ -144,6 +144,10 @@ test:
     echo ""
     echo "=== replay-verify smoke test ==="
     bash lib/tests/replay-verify-smoke.sh
+
+    echo ""
+    echo "=== replay-batch stdin-isolation smoke test ==="
+    bash lib/tests/replay-batch-stdin-isolation-smoke.sh
 
     echo ""
     echo "=== bakeoff-store unit test ==="

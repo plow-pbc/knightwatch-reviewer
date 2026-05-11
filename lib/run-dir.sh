@@ -65,8 +65,8 @@ allocate_run_dir() {
 # Pure read-only walk; no side effects. Lives here so the smoke test in
 # lib/tests/prior-reviews-smoke.sh exercises the same function the
 # worker calls — a wrong glob, missing self-exclusion, or empty-file
-# filter regression silently disables Bug-Class-Recurrence detection
-# without tripping any other test.
+# filter regression silently disables the aggregator's carry-forward
+# (step 38) without tripping any other test.
 # finalize_meta_json META_FILE FINISHED_AT STATUS GH_POSTED
 #
 # Atomically rewrites $META_FILE with finished_at + status, and repairs
@@ -351,8 +351,8 @@ prepend_review_header() {
 #      reliably implies "gh post succeeded" for any preserved run.
 #
 # Single owner for "which prior review rounds count" — both
-# stage_prior_reviews (Bug-Class-Recurrence) and compute_loc_trend
-# (LOC trajectory table) call this so they can't drift.
+# stage_prior_reviews (carry-forward) and compute_loc_trend
+# (per-round LoC table) call this so they can't drift.
 is_run_author_visible() {
     local run_dir="$1"
     [ -f "$run_dir/meta.json" ] || return 1
@@ -534,9 +534,9 @@ latest_author_visible_review_started_at() {
 # race made the two diverge.
 #
 # This is the single owner for the "(ts, sha) per round" contract that
-# compute_loc_trend (LOC trajectory) consumes. Bug-Class-Recurrence
-# fence: keep the canonical-SHA projection in one helper so a downstream
-# caller can't drift to a stale local copy.
+# compute_loc_trend (per-round LoC table) consumes. Drift fence: keep
+# the canonical-SHA projection in one helper so a downstream caller
+# can't drift to a stale local copy.
 author_visible_rounds() {
     local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"
     local prior_run meta_sha meta_ts

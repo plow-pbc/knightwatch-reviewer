@@ -981,10 +981,10 @@ write_scratch "$REPO_DIR" "probe-schema.md" "$(cat "$PROBE_SCHEMA_PATH")"
     write_scratch "$REPO_DIR" "trigger-comment.md" "$TRIGGER_COMMENT_BODY"
 
 # Stage prior aggregator outputs for this PR (every preserved run dir
-# except the current one) so the aggregator can detect Bug-Class-Recurrence
-# across reviews. Uses the per-run layout from PR #11; before that layout
-# only the most recent scratch was kept, so longitudinal recurrence couldn't
-# be detected. Empty / absent on the first review of a PR. Logic lives in
+# except the current one) so the aggregator's carry-forward rule (step 38)
+# can check whether prior probes' cited shapes still exist at HEAD. Uses
+# the per-run layout from PR #11; before that layout only the most recent
+# scratch was kept. Empty / absent on the first review of a PR. Logic lives in
 # lib/run-dir.sh::stage_prior_reviews so the smoke test exercises the same
 # function the worker calls.
 #
@@ -1002,7 +1002,7 @@ else
     PRIOR_REVIEWS=$(stage_prior_reviews "$STATE_DIR" "$REPO_SLUG_FOR_RUN" "$PR_NUM" "$RUN_DIR")
     if [ -n "$PRIOR_REVIEWS" ]; then
         PRIOR_COUNT=$(printf '%s' "$PRIOR_REVIEWS" | grep -c '^--- review at ')
-        log "$PR_ID: staging $PRIOR_COUNT prior review(s) for recurrence detection"
+        log "$PR_ID: staging $PRIOR_COUNT prior review(s) for carry-forward"
         write_scratch "$REPO_DIR" "prior-reviews.md" "$PRIOR_REVIEWS"
     fi
 fi
