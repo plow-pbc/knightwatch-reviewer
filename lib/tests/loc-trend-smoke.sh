@@ -259,23 +259,12 @@ mkdir -p "$RUN_FAIL"
 jq -n --arg sha "$SHA1" --arg ts "2026-05-01T00:00:00Z" \
     '{status:"completed", sha:$sha, started_at:$ts}' > "$RUN_FAIL/meta.json"
 PATH="$STUB_DIR:$PATH" compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" "$CURRENT_RUN" "$SHA1" > "$OUT"
-grep -qF '(sha not in local history)' "$OUT" || {
-    echo "FAIL: failed-numstat row should display '(sha not in local history)' (folded into unavailable)"
-    cat "$OUT"
-    exit 1
-}
-grep -qF '(zero diff)' "$OUT" && {
-    echo "FAIL: failed-numstat row silently rendered as '(zero diff)' — F1.a regressed"
-    cat "$OUT"
-    exit 1
-}
-# Behavior fence for the Adds=n/a sentinel — the unavailable row's table
-# row must end in `| n/a |` so momentum can detect insufficient delta data
-# instead of reading a fabricated zero. Token-grep coverage in
-# prompt-contracts-smoke.sh fences the source emit; this fences the
-# rendered table cell.
-grep -qE '\| n/a \|$' "$OUT" || {
-    echo "FAIL: failed-numstat unavailable row should render Adds cell as 'n/a'"
+# One anchored row assertion fences the full unavailable contract:
+# display cell = "(sha not in local history)", Adds cell = "n/a". Catches
+# both the F1.a display conflation (would render as "(zero diff)") AND
+# the round-4 Adds=n/a sentinel regression (would render numeric).
+grep -qE '\| \(sha not in local history\) \| n/a \|$' "$OUT" || {
+    echo "FAIL: failed-numstat unavailable row should render as '| (sha not in local history) | n/a |'"
     cat "$OUT"
     exit 1
 }
