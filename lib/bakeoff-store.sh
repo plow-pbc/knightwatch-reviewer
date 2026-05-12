@@ -8,6 +8,7 @@
 #   - applied:        was any cited path of any of its probes touched by the PR
 #   - loved_positive: did a /srosro-props or /srosro-memorize quoting it land
 #   - critiqued:      did a /srosro-critique quoting it land
+#   - edited_after:   did any cited path of any of its probes get touched by a commit landing AFTER the bot review (stronger signal than `applied`)
 #
 # Re-walks must NOT reset the flag columns to 0 — that's why row creation
 # uses `INSERT … ON CONFLICT DO UPDATE` that touches only `last_walked_at`,
@@ -43,6 +44,7 @@ CREATE TABLE IF NOT EXISTS specialist_runs (
     applied_removed INTEGER NOT NULL DEFAULT 0,
     loved_positive  INTEGER NOT NULL DEFAULT 0,
     critiqued       INTEGER NOT NULL DEFAULT 0,
+    edited_after    INTEGER NOT NULL DEFAULT 0,
     max_severity    TEXT    NOT NULL DEFAULT '',
     last_walked_at  TEXT    NOT NULL,
     PRIMARY KEY (repo, comment_id, specialist)
@@ -60,6 +62,11 @@ SQL
     # SQLite has no ALTER TABLE ... ADD COLUMN IF NOT EXISTS; check via pragma.
     if ! sqlite3 "$db" "SELECT 1 FROM pragma_table_info('specialist_runs') WHERE name='max_severity';" | grep -q 1; then
         sqlite3 "$db" "ALTER TABLE specialist_runs ADD COLUMN max_severity TEXT NOT NULL DEFAULT '';"
+    fi
+
+    # Migration: add edited_after column to pre-existing DBs (added 2026-05-12).
+    if ! sqlite3 "$db" "SELECT 1 FROM pragma_table_info('specialist_runs') WHERE name='edited_after';" | grep -q 1; then
+        sqlite3 "$db" "ALTER TABLE specialist_runs ADD COLUMN edited_after INTEGER NOT NULL DEFAULT 0;"
     fi
 }
 
@@ -91,6 +98,7 @@ mark_published()      { _mark_flag "$1" "$2" "$3" "$4" published; }
 mark_applied()        { _mark_flag "$1" "$2" "$3" "$4" applied; }
 mark_loved_positive() { _mark_flag "$1" "$2" "$3" "$4" loved_positive; }
 mark_critiqued()      { _mark_flag "$1" "$2" "$3" "$4" critiqued; }
+mark_edited_after()   { _mark_flag "$1" "$2" "$3" "$4" edited_after; }
 
 # Set both LOC counters in one UPDATE. SET semantics (overwrite, not increment),
 # so a re-walk that observes a different commit on the PR replaces stale values.
@@ -144,17 +152,17 @@ UPDATE specialist_runs
 SQL
 }
 
-# Reset applied + applied_added + applied_removed for every (specialist) row
-# of a given (repo, comment_id). Called by the walker BEFORE recomputing
-# applied matches, so that stale credit (PR diff stopped touching the
-# previously-matched path) gets cleared. Only call AFTER pulls/files
-# succeeds — otherwise you'd nuke previously-correct data on a transient
-# API failure.
+# Reset applied + applied_added + applied_removed + edited_after for every
+# (specialist) row of a given (repo, comment_id). Called by the walker
+# BEFORE recomputing applied matches, so that stale credit (PR diff stopped
+# touching the previously-matched path) gets cleared. Only call AFTER
+# pulls/files succeeds — otherwise you'd nuke previously-correct data on a
+# transient API failure.
 clear_applied_for_review() {
     local db="$1" repo="$2" comment_id="$3"
     sqlite3 "$db" <<SQL
 UPDATE specialist_runs
-   SET applied = 0, applied_added = 0, applied_removed = 0
+   SET applied = 0, applied_added = 0, applied_removed = 0, edited_after = 0
  WHERE repo = '$repo' AND comment_id = $comment_id;
 SQL
 }

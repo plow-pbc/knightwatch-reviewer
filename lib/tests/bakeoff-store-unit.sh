@@ -51,6 +51,39 @@ set_walk_watermark "$DB" srosro/repo 2026-05-07T00:00:00Z
 WM=$(get_walk_watermark "$DB" srosro/repo)
 [ "$WM" = "2026-05-07T00:00:00Z" ] || { echo "FAIL: watermark overwrite: $WM"; exit 1; }
 
+echo "  edited_after defaults to 0..."
+upsert_specialist_run "$DB" srosro/repo 300 tests 9 2026-05-09T00:00:00Z
+ROW=$(sqlite3 "$DB" "SELECT edited_after FROM specialist_runs WHERE comment_id=300 AND specialist='tests';")
+[ "$ROW" = "0" ] || { echo "FAIL: edited_after default not 0: $ROW"; exit 1; }
+
+echo "  mark_edited_after sets the flag idempotently..."
+mark_edited_after "$DB" srosro/repo 300 tests
+mark_edited_after "$DB" srosro/repo 300 tests
+ROW=$(sqlite3 "$DB" "SELECT edited_after FROM specialist_runs WHERE comment_id=300 AND specialist='tests';")
+[ "$ROW" = "1" ] || { echo "FAIL: edited_after not 1 after mark: $ROW"; exit 1; }
+
+echo "  clear_applied_for_review also resets edited_after..."
+clear_applied_for_review "$DB" srosro/repo 300
+ROW=$(sqlite3 "$DB" "SELECT applied, edited_after FROM specialist_runs WHERE comment_id=300 AND specialist='tests';")
+[ "$ROW" = "0|0" ] || { echo "FAIL: clear_applied_for_review did not reset edited_after: $ROW"; exit 1; }
+
+echo "  pre-existing DB (without edited_after) migrates idempotently..."
+LEGACY="$TMP/legacy.db"
+sqlite3 "$LEGACY" <<'LEGACY_SQL'
+CREATE TABLE specialist_runs (
+    repo TEXT NOT NULL, comment_id INTEGER NOT NULL, specialist TEXT NOT NULL,
+    pr_number INTEGER NOT NULL, ran_at TEXT NOT NULL,
+    published INTEGER NOT NULL DEFAULT 0, applied INTEGER NOT NULL DEFAULT 0,
+    applied_added INTEGER NOT NULL DEFAULT 0, applied_removed INTEGER NOT NULL DEFAULT 0,
+    loved_positive INTEGER NOT NULL DEFAULT 0, critiqued INTEGER NOT NULL DEFAULT 0,
+    max_severity TEXT NOT NULL DEFAULT '', last_walked_at TEXT NOT NULL,
+    PRIMARY KEY (repo, comment_id, specialist)
+);
+LEGACY_SQL
+store_init "$LEGACY"
+sqlite3 "$LEGACY" "SELECT 1 FROM pragma_table_info('specialist_runs') WHERE name='edited_after';" | grep -q 1 \
+    || { echo "FAIL: migration did not add edited_after column"; exit 1; }
+
 # query_window_aggregates uses a fresh DB so prior tests' rows don't pollute counts.
 DB2="$TMP/bakeoff2.db"
 
