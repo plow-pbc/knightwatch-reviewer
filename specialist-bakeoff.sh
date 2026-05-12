@@ -73,6 +73,7 @@ for repo in "${REPOS[@]}"; do
     declare -A pr_paths_cache=()
     declare -A pr_files_cache=()
     declare -A pr_files_ok_cache=()
+    declare -A pr_post_paths_cache=()
 
     # Pass 1: walk substantive bot reviews. Each row is one (review × specialist).
     # The roster marker drives row creation; probe parsing drives flag updates.
@@ -144,11 +145,40 @@ for repo in "${REPOS[@]}"; do
         # Applied/+LOC reset until the next bot review on that PR. Acceptable
         # at current scale — bake-off aggregates many PRs per specialist, so a
         # few stale rows from late force-pushes are noise, not signal.
+        # Per-PR set of paths touched by commits LANDING AFTER the review's
+        # created_at — fetched lazily (once per cache_key) and intersected
+        # with each specialist's cited paths to drive `edited_after`. A
+        # pulls/commits or commits/<sha> failure logs WARN and treats the
+        # set as empty for this review (edited_after stays 0); does not
+        # short-circuit Applied accounting.
+        post_review_key="${cache_key}#after#${created_at}"
+        if [[ -z "${pr_post_paths_cache[$post_review_key]+set}" ]]; then
+            post_paths=""
+            if commits_json=$(gh api --paginate "repos/$repo/pulls/$pr_num/commits" 2>>"$LOG_FILE"); then
+                shas=$(printf '%s\n' "$commits_json" \
+                    | jq -rs --arg t "$created_at" 'add // [] | .[] | select(.commit.author.date > $t) | .sha')
+                while IFS= read -r sha; do
+                    [ -z "$sha" ] && continue
+                    if commit_json=$(gh api "repos/$repo/commits/$sha" 2>>"$LOG_FILE"); then
+                        commit_paths=$(printf '%s\n' "$commit_json" | jq -r '.files[]?.filename')
+                        post_paths=$(printf '%s\n%s\n' "$post_paths" "$commit_paths")
+                    else
+                        log "WARN: gh api commits/$sha failed for $repo, post-review paths may be incomplete"
+                    fi
+                done <<< "$shas"
+                post_paths=$(printf '%s\n' "$post_paths" | grep -v '^$' | sort -u || true)
+            else
+                log "WARN: gh api pulls/commits failed for $repo#$pr_num, skipping edited_after for this review"
+            fi
+            pr_post_paths_cache["$post_review_key"]="$post_paths"
+        fi
+        post_paths="${pr_post_paths_cache[$post_review_key]}"
+
         if [ "$pr_files_ok" = "1" ]; then
-            # Clear stale Applied/+LOC before recomputing — handles the rewalk
-            # case where the PR diff stopped touching a previously-matched cited
-            # path (incl. the empty-diff force-push edge case where pulls/files
-            # succeeds with an empty list).
+            # Clear stale Applied/+LOC/edited_after before recomputing — handles
+            # the rewalk case where the PR diff stopped touching a previously-
+            # matched cited path (incl. the empty-diff force-push edge case
+            # where pulls/files succeeds with an empty list).
             clear_applied_for_review "$DB_FILE" "$repo" "$review_id"
 
             # Collect deduped (specialist, path) pairs across all probes in this review.
@@ -186,6 +216,23 @@ for repo in "${REPOS[@]}"; do
                 set_applied_loc "$DB_FILE" "$repo" "$review_id" "$specialist" \
                     "${spec_added[$specialist]:-0}" "${spec_removed[$specialist]:-0}"
             done
+
+            # Pass 1b: edited_after — intersect each specialist's cited paths
+            # with paths touched by post-review commits.
+            if [ -n "$post_paths" ]; then
+                declare -A spec_edited=()
+                for key in "${!spec_paths_seen[@]}"; do
+                    specialist="${key%%	*}"
+                    path="${key#*	}"
+                    if grep -qFx "$path" <<< "$post_paths"; then
+                        spec_edited["$specialist"]=1
+                    fi
+                done
+                for specialist in "${!spec_edited[@]}"; do
+                    mark_edited_after "$DB_FILE" "$repo" "$review_id" "$specialist"
+                done
+                unset spec_edited
+            fi
             unset spec_paths_seen spec_added spec_removed spec_matched
         fi
 

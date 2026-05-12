@@ -158,6 +158,42 @@ if [ "$1" = "api" ]; then
         fi
     elif [[ "$endpoint" == */collaborators* ]]; then
         printf '[{"login":"trusted-human","permissions":{"push":true}},{"login":"untrusted-user","permissions":{"push":false}}]\n'
+    elif [[ "$endpoint" == */pulls/*/commits* ]] && [ -n "${MOCK_GH_PULLS_COMMITS_FAIL:-}" ]; then
+        echo "gh api: simulated pulls/commits failure" >&2
+        exit 1
+    elif [[ "$endpoint" == */pulls/*/commits* ]]; then
+        # MOCK_PULLS_COMMITS_FILE: TSV of sha\tauthor_date per line.
+        if [ -s "${MOCK_PULLS_COMMITS_FILE:-/dev/null}" ]; then
+            commits_json=$(awk -F'\t' 'BEGIN{first=1; print "["}
+{
+    if (first) first=0; else print ",";
+    printf "{\"sha\":\"%s\",\"commit\":{\"author\":{\"date\":\"%s\"}}}", $1, $2
+}
+END{print "]"}' "$MOCK_PULLS_COMMITS_FILE")
+        else
+            commits_json="[]"
+        fi
+        if [ -n "$jq_expr" ]; then
+            printf '%s' "$commits_json" | jq -r "$jq_expr"
+        else
+            printf '%s' "$commits_json"
+        fi
+    elif [[ "$endpoint" == */commits/* ]]; then
+        # MOCK_COMMIT_FILES_DIR/<sha>.tsv: one filename per line.
+        sha="${endpoint##*/commits/}"
+        sha="${sha%%\?*}"
+        files_file="${MOCK_COMMIT_FILES_DIR:-/dev/null}/$sha.tsv"
+        if [ -s "$files_file" ]; then
+            files_json=$(awk 'BEGIN{first=1; print "["}
+{
+    if (first) first=0; else print ",";
+    printf "{\"filename\":\"%s\"}", $0
+}
+END{print "]"}' "$files_file")
+        else
+            files_json="[]"
+        fi
+        printf '{"sha":"%s","files":%s}' "$sha" "$files_json"
     elif [[ "$endpoint" == */pulls/*/files* ]] && [ -n "${MOCK_GH_PULLS_FILES_FAIL:-}" ]; then
         echo "gh api: simulated pulls/files failure" >&2
         exit 1
@@ -569,5 +605,64 @@ A2=$(sqlite3 "$DB_FILE" "SELECT applied, applied_added, applied_removed FROM spe
 
 rm -f "$MOCK_PULLS_FILES_FILE"
 unset MOCK_PULLS_FILES_FILE
+
+# ---- scenario 17: cited path edited AFTER review → edited_after=1 ----
+echo "    scenario 17: post-review commit touches cited path → edited_after=1..."
+rm -f "$DB_FILE"
+TS_REVIEW=$(hours_ago 20)
+TS_COMMIT_AFTER=$(hours_ago 10)   # AFTER review
+TS_COMMIT_BEFORE=$(hours_ago 30)  # BEFORE review
+
+python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
+import json
+body = "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=tests,shape -->\n\n**Probes**\n\n1. [blocking] [from: tests] [tests] Touched-later. Files: src/a.py. Edit: do x.\n2. [medium] [from: shape] [shape] Stale. Files: src/b.py. Edit: do y.\n\n_How to use: auto-reviews every new PR..._"
+print(json.dumps([{"id": 70, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/40", "created_at": "${TS_REVIEW}", "user": {"login": "testbot"}, "body": body}]))
+PYEOF
+
+# Both paths in the PR diff so applied=1 for both.
+export MOCK_PULLS_FILES_FILE="$TMPDIR_SMOKE/pulls-files.txt"
+printf 'src/a.py\t10\t0\nsrc/b.py\t5\t0\n' > "$MOCK_PULLS_FILES_FILE"
+
+# Two commits: one AFTER review touches src/a.py only, one BEFORE review touches src/b.py.
+printf 'sha-after\t%s\nsha-before\t%s\n' "$TS_COMMIT_AFTER" "$TS_COMMIT_BEFORE" > "$TMPDIR_SMOKE/commits.tsv"
+export MOCK_PULLS_COMMITS_FILE="$TMPDIR_SMOKE/commits.tsv"
+
+mkdir -p "$TMPDIR_SMOKE/commit-files"
+echo "src/a.py" > "$TMPDIR_SMOKE/commit-files/sha-after.tsv"
+echo "src/b.py" > "$TMPDIR_SMOKE/commit-files/sha-before.tsv"
+export MOCK_COMMIT_FILES_DIR="$TMPDIR_SMOKE/commit-files"
+
+run_driver
+
+# tests cited src/a.py which was touched AFTER → edited_after=1
+ROW=$(sqlite3 "$DB_FILE" "SELECT applied, edited_after FROM specialist_runs WHERE specialist='tests' AND comment_id=70;")
+[ "$ROW" = "1|1" ] || { echo "FAIL scenario 17: tests row '$ROW' expected '1|1'"; cat "$OUT_FILE"; exit 1; }
+# shape cited src/b.py which was touched BEFORE → edited_after=0
+ROW=$(sqlite3 "$DB_FILE" "SELECT applied, edited_after FROM specialist_runs WHERE specialist='shape' AND comment_id=70;")
+[ "$ROW" = "1|0" ] || { echo "FAIL scenario 17: shape row '$ROW' expected '1|0'"; cat "$OUT_FILE"; exit 1; }
+
+unset MOCK_PULLS_COMMITS_FILE MOCK_COMMIT_FILES_DIR
+
+# ---- scenario 18: re-walk after new post-review commit flips edited_after 0→1 ----
+echo "    scenario 18: re-walk picks up newly-landed post-review commit..."
+# Reset the after-commit's file list to empty initially, then add the cited path on rewalk.
+printf 'sha-after\t%s\n' "$TS_COMMIT_AFTER" > "$TMPDIR_SMOKE/commits.tsv"
+export MOCK_PULLS_COMMITS_FILE="$TMPDIR_SMOKE/commits.tsv"
+mkdir -p "$TMPDIR_SMOKE/commit-files-rewalk"
+: > "$TMPDIR_SMOKE/commit-files-rewalk/sha-after.tsv"   # empty: no files yet
+export MOCK_COMMIT_FILES_DIR="$TMPDIR_SMOKE/commit-files-rewalk"
+
+rm -f "$DB_FILE"
+run_driver
+ROW=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE specialist='tests' AND comment_id=70;")
+[ "$ROW" = "0" ] || { echo "FAIL scenario 18: pre-rewalk edited_after '$ROW' expected '0'"; exit 1; }
+
+# Now the rewalk: post-review commit grew to touch src/a.py.
+echo "src/a.py" > "$TMPDIR_SMOKE/commit-files-rewalk/sha-after.tsv"
+run_driver
+ROW=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE specialist='tests' AND comment_id=70;")
+[ "$ROW" = "1" ] || { echo "FAIL scenario 18: post-rewalk edited_after '$ROW' expected '1'"; exit 1; }
+
+unset MOCK_PULLS_COMMITS_FILE MOCK_COMMIT_FILES_DIR
 
 echo "PASS"
