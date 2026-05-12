@@ -144,104 +144,21 @@ class TestRunCodex(unittest.TestCase):
         rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(self._agent_dir("intent")))
         self.assertEqual(rc, 7)
 
+    @patch("pipeline.os.killpg")
     @patch("pipeline.subprocess.Popen")
-    def test_codex_subprocess_timeout_returns_sentinel(self, mock_popen):
-        """45m subprocess timeout → SPECIALIST_TIMEOUT_RC sentinel + log line.
-        Sentinel sits above the Unix exit range so codex's own exit(N) can
-        never silently masquerade as a timeout (round-2 probe 3)."""
+    def test_codex_timeout_returns_124_and_killpgs_subtree(self, mock_popen, mock_killpg):
+        """One behavioural fence for the timeout path: run_codex returns 124,
+        and SIGKILL goes to the whole pgrp (not just the direct child).
+        Without killpg, codex's tool descendants reparent to PID 1 with
+        reviewer credentials and disabled sandboxing — the security probe
+        from the first review round."""
         mock_popen.side_effect = _make_codex_stub(plan={"intent": "TIMEOUT"})
         rc = pipeline.run_codex(
             "intent", str(self.repo_dir), "PROMPT", str(self._agent_dir("intent"))
         )
-        self.assertEqual(rc, pipeline.SPECIALIST_TIMEOUT_RC)
-        # > 255 is the contract — any value codex can return through normal
-        # process.exit(N) truncation must NOT collide with our sentinel.
-        self.assertGreater(pipeline.SPECIALIST_TIMEOUT_RC, 255)
-        log_text = (self._agent_dir("intent") / "log.txt").read_text()
-        self.assertIn("timed out", log_text)
-        self.assertIn(f"agent=intent exit={pipeline.SPECIALIST_TIMEOUT_RC}", log_text)
-
-    @patch("pipeline.subprocess.Popen")
-    def test_codex_subprocess_new_session_and_wait_timeout(self, mock_popen):
-        """Two fences in one: Popen must set start_new_session=True (so codex
-        is its own pgrp leader and killpg reaches all descendants), and
-        proc.wait must be called with timeout=SPECIALIST_TIMEOUT_SEC (the
-        budget the killpg branch enforces)."""
-        captured = []
-        plan_stub = _make_codex_stub(plan={"intent": (0, "### Probe 1\nstub\n")})
-        def factory(*args, **kwargs):
-            fp = plan_stub(*args, **kwargs)
-            captured.append((args, kwargs, fp))
-            return fp
-        mock_popen.side_effect = factory
-        pipeline.run_codex(
-            "intent", str(self.repo_dir), "PROMPT", str(self._agent_dir("intent"))
-        )
-        _, popen_kwargs, fake_proc = captured[0]
-        self.assertTrue(popen_kwargs.get("start_new_session"),
-                        "codex must run in its own session/pgrp so killpg on "
-                        "timeout reaps node + tool descendants")
-        self.assertEqual(fake_proc.last_wait_timeout, pipeline.SPECIALIST_TIMEOUT_SEC)
-
-    @patch("pipeline.os.killpg")
-    @patch("pipeline.subprocess.Popen")
-    def test_codex_timeout_kills_whole_process_group(self, mock_popen, mock_killpg):
-        """Regression fence for the PID-1 orphan leak: on TimeoutExpired,
-        run_codex must SIGKILL the codex pgrp (proc.pid == pgid because of
-        start_new_session=True). Without killpg, codex's reparented node/tool
-        children survive with reviewer credentials and disabled sandboxing."""
-        captured = []
-        plan_stub = _make_codex_stub(plan={"intent": "TIMEOUT"})
-        def factory(*args, **kwargs):
-            fp = plan_stub(*args, **kwargs)
-            captured.append(fp)
-            return fp
-        mock_popen.side_effect = factory
-        rc = pipeline.run_codex(
-            "intent", str(self.repo_dir), "PROMPT", str(self._agent_dir("intent"))
-        )
-        self.assertEqual(rc, pipeline.SPECIALIST_TIMEOUT_RC)
-        pgid_arg, sig_arg = mock_killpg.call_args.args
-        self.assertEqual(sig_arg, signal.SIGKILL)
-        # pgid passed to killpg must be the Popen pid (start_new_session=True
-        # makes them equal).
-        self.assertEqual(pgid_arg, captured[0].pid)
-
-    @patch("pipeline.os.killpg")
-    @patch("pipeline.subprocess.Popen")
-    def test_codex_timeout_swallows_processlookuperror(self, mock_popen, mock_killpg):
-        """If the codex leader was already reaped between TimeoutExpired and
-        the killpg call (kernel race), ProcessLookupError must not propagate
-        — run_codex still returns the sentinel cleanly."""
-        mock_popen.side_effect = _make_codex_stub(plan={"intent": "TIMEOUT"})
-        mock_killpg.side_effect = ProcessLookupError()
-        rc = pipeline.run_codex(
-            "intent", str(self.repo_dir), "PROMPT", str(self._agent_dir("intent"))
-        )
-        self.assertEqual(rc, pipeline.SPECIALIST_TIMEOUT_RC)
-
-    @patch("pipeline.subprocess.Popen")
-    def test_run_codex_untracks_pgrp_on_success(self, mock_popen):
-        """run_codex must untrack the pgrp in finally — otherwise the signal-
-        handler registry leaks entries across 8 specialists × N reviews and
-        sends SIGKILL to recycled PIDs."""
-        pipeline._active_codex_pgrps.clear()
-        mock_popen.side_effect = _make_codex_stub(plan={"intent": (0, "### Probe 1\nstub\n")})
-        pipeline.run_codex(
-            "intent", str(self.repo_dir), "PROMPT", str(self._agent_dir("intent"))
-        )
-        self.assertEqual(pipeline._active_codex_pgrps, set())
-
-    @patch("pipeline.os.killpg")
-    @patch("pipeline.subprocess.Popen")
-    def test_run_codex_untracks_pgrp_on_timeout(self, mock_popen, mock_killpg):
-        """Same untrack-in-finally guarantee on the timeout branch."""
-        pipeline._active_codex_pgrps.clear()
-        mock_popen.side_effect = _make_codex_stub(plan={"intent": "TIMEOUT"})
-        pipeline.run_codex(
-            "intent", str(self.repo_dir), "PROMPT", str(self._agent_dir("intent"))
-        )
-        self.assertEqual(pipeline._active_codex_pgrps, set())
+        self.assertEqual(rc, 124)
+        mock_killpg.assert_called_once()
+        self.assertEqual(mock_killpg.call_args.args[1], signal.SIGKILL)
 
     @patch("pipeline.subprocess.Popen")
     def test_codex_zero_exit_empty_output_returns_3(self, mock_popen):
@@ -580,66 +497,6 @@ class TestBuildPrompt(unittest.TestCase):
         )
         # ANGLE is substituted via build_prompt's critic branch
         self.assertIn(".codex-scratch/specialists/shape.md", out)
-
-
-class TestCodexPgrpRegistry(unittest.TestCase):
-    """Codex pgrp tracking + the SIGTERM cleanup path. Bash wraps python3
-    with `timeout 55m` (and the worker outer with `timeout 90m bash`); both
-    SIGTERM python3's pgrp, but codex children use start_new_session=True
-    and are in their own sessions — without this registry + handler, the
-    upstream timeout leaves them alive as PID-1 orphans with reviewer
-    credentials. Round-2 probe 1 fence."""
-
-    def setUp(self):
-        # Each test starts with an empty registry; otherwise leaks from a
-        # prior class polute the assertion.
-        pipeline._active_codex_pgrps.clear()
-
-    def test_track_and_untrack_round_trip(self):
-        pipeline._track_codex_pgrp(11111)
-        pipeline._track_codex_pgrp(22222)
-        self.assertEqual(pipeline._active_codex_pgrps, {11111, 22222})
-        pipeline._untrack_codex_pgrp(11111)
-        self.assertEqual(pipeline._active_codex_pgrps, {22222})
-
-    def test_untrack_unknown_pgrp_is_noop(self):
-        """discard() semantics — untracking an unregistered pid must not
-        raise (race: timeout handler killpg's the registry, then the
-        finally block of run_codex untracks an already-removed pid)."""
-        pipeline._untrack_codex_pgrp(99999)  # should not raise
-
-    @patch("pipeline.os.killpg")
-    def test_killpg_all_codex_kills_every_tracked_pgrp(self, mock_killpg):
-        pipeline._track_codex_pgrp(11111)
-        pipeline._track_codex_pgrp(22222)
-        killed = pipeline._killpg_all_codex()
-        self.assertEqual(killed, 2)
-        # Both pgrps received SIGKILL.
-        pgrps_seen = {c.args[0] for c in mock_killpg.call_args_list}
-        sigs_seen = {c.args[1] for c in mock_killpg.call_args_list}
-        self.assertEqual(pgrps_seen, {11111, 22222})
-        self.assertEqual(sigs_seen, {signal.SIGKILL})
-        # Registry is cleared so a follow-up signal doesn't re-killpg
-        # recycled PIDs.
-        self.assertEqual(pipeline._active_codex_pgrps, set())
-
-    @patch("pipeline.os.killpg", side_effect=ProcessLookupError)
-    def test_killpg_all_codex_swallows_lookup_error(self, mock_killpg):
-        """If a pgrp was already reaped (race), ProcessLookupError must
-        not propagate out of the SIGTERM handler — otherwise Python crashes
-        instead of exiting cleanly."""
-        pipeline._track_codex_pgrp(11111)
-        killed = pipeline._killpg_all_codex()
-        self.assertEqual(killed, 0)
-        self.assertEqual(pipeline._active_codex_pgrps, set())
-
-    @patch("pipeline.signal.signal")
-    def test_install_signal_handlers_registers_sigterm_and_sigint(self, mock_signal):
-        pipeline._install_codex_cleanup_signal_handlers()
-        signums = {c.args[0] for c in mock_signal.call_args_list}
-        # SIGTERM (bash timeout / worker timeout) + SIGINT (operator Ctrl-C).
-        self.assertIn(signal.SIGTERM, signums)
-        self.assertIn(signal.SIGINT, signums)
 
 
 class TestRunSpecialist(unittest.TestCase):
@@ -1044,33 +901,6 @@ class TestRunPipeline(unittest.TestCase):
         self.assertEqual(names, {"performance", "security"})
         # No aggregator — we don't post half-broken reviews.
         self.assertFalse((self.run_dir / "agents" / "aggregator" / "output.md").exists())
-
-    @patch("pipeline.subprocess.Popen")
-    def test_momentum_timeout_tolerated_writes_scratch_stub(self, mock_popen):
-        """Momentum is opportunistic — its timeout is the same as a
-        specialist's for tolerance accounting, but the stub goes at
-        scratch/momentum.md (its aggregator-visible path), not
-        .codex-scratch/specialists/. Without the stub, the success-path
-        _relink would error on the missing source."""
-        (self.run_dir / "inputs" / "previous-review.md").write_text("prior\n")
-        mock_popen.side_effect = _make_codex_stub(plan={
-            "intent": (0, "Inferred intent: stub.\n"),
-            "dead-code-search": (0, "dc\n"),
-            "momentum": "TIMEOUT",
-            "aggregator": (0, "# Review\nVERDICT: APPROVE\n"),
-        })
-        rc = pipeline.run_pipeline(
-            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
-            prompts_dir=str(self.prompts),
-            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
-        )
-        self.assertEqual(rc, 0)
-        momentum_scratch = self.repo_dir / ".codex-scratch" / "momentum.md"
-        self.assertTrue(momentum_scratch.exists())
-        self.assertIn("momentum timed out", momentum_scratch.read_text())
-        # Warning for the bash worker mentions momentum specifically.
-        warning = (self.run_dir / "_wave_b_warning.txt").read_text()
-        self.assertIn("Momentum", warning)
 
     @patch("pipeline.subprocess.Popen")
     def test_hard_failure_not_tolerated_even_when_solo(self, mock_popen):

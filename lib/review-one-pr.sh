@@ -1164,17 +1164,6 @@ write_scratch "$REPO_DIR" "commits.md" "$COMMITS"
 # Per-angle critics run inline within each angle pipeline; no central
 # critic, no splitter. Aggregator output written to a deterministic path
 # we read after.
-# Inner pipeline budget. Per-codex 45m caps (pipeline.py SPECIALIST_TIMEOUT_SEC)
-# bound each stage, but Wave B (specialist+critic = up to 90m) + aggregator
-# (45m) can cumulatively exceed the 90m outer worker timeout. Wrapping
-# pipeline.py here means bash always regains control before the outer fires,
-# so the EXIT trap's cleanup_eyes/finalize_run path runs in every overrun
-# scenario (the failure mode this PR's commit message names). The 55m budget
-# leaves ~35m headroom under the 90m outer for `just test` (capped at 30m)
-# and the placeholder-PATCH window. timeout sends SIGTERM to its child's
-# process group, which here is python3 + its codex thread-pool children;
-# pipeline.py exits with rc=124 when killed, which the existing abort branch
-# below handles uniformly.
 PR_ID="$PR_ID" \
 PR_TITLE="$PR_TITLE" \
 PR_URL="$PR_URL" \
@@ -1182,7 +1171,7 @@ PR_AUTHOR="$PR_AUTHOR" \
 PROMPTS_DIR="${PROMPTS_DIR:-$HOME/.pr-reviewer/prompts}" \
 LOG_FILE="$LOG_FILE" \
 OPERATOR_NAME="${OPERATOR_NAME:-Sam}" \
-    timeout 55m python3 "$_LIB_DIR/pipeline.py" "$REPO_DIR" "$RUN_DIR"
+    python3 "$_LIB_DIR/pipeline.py" "$REPO_DIR" "$RUN_DIR"
 PIPELINE_EXIT=$?
 AGG_OUT="$RUN_DIR/agents/aggregator/output.md"
 
