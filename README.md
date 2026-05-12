@@ -99,9 +99,9 @@ Reviews fire on PR open and again after one hour of idle. To force a fresh revie
 | `/srosro-update-review` | Incremental re-review against the prior reviewed SHA |
 | `/srosro-review` | Whole-PR re-review from scratch |
 | `/srosro-approve` | Approve the PR (push-access collaborators only) |
-| `/srosro-props [from: <specialist>]` | +1 a specialist's contribution (drives the bake-off Loved column) |
-| `/srosro-critique [from: <specialist>]` | Flag a specialist's contribution as a misread (drives the Critiqued column) |
-| `/srosro-memorize` | Teach the bot a calibration lesson from your reply (still credits Loved when you quote a [from: <specialist>] tag, for back-compat) |
+| `/srosro-props [from: <specialist>]` | +1 a specialist's contribution (persisted to `bakeoff.db.loved_positive` — surfaced in the snapshot footer total, not a main-table column) |
+| `/srosro-critique [from: <specialist>]` | Flag a specialist's contribution as a misread (persisted to `bakeoff.db.critiqued` — surfaced in the snapshot footer total, not a main-table column) |
+| `/srosro-memorize` | Teach the bot a calibration lesson from your reply (also credits `loved_positive` when you quote a [from: <specialist>] tag, for back-compat) |
 
 ### Specialist bake-off
 

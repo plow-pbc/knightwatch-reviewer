@@ -192,16 +192,25 @@ END{print "]"}' "$MOCK_PULLS_COMMITS_FILE")
         else
             printf '%s' "$commits_json"
         fi
+    elif [[ "$endpoint" == */commits/* ]] && [ -n "${MOCK_GH_COMMIT_FAIL_SHA:-}" ] && [[ "${endpoint##*/commits/}" == "${MOCK_GH_COMMIT_FAIL_SHA%%\?*}" ]]; then
+        echo "gh api: simulated commits/<sha> failure for $endpoint" >&2
+        exit 1
     elif [[ "$endpoint" == */commits/* ]]; then
-        # MOCK_COMMIT_FILES_DIR/<sha>.tsv: one filename per line.
+        # MOCK_COMMIT_FILES_DIR/<sha>.tsv: TSV of filename[\tprevious_filename] per line.
+        # previous_filename is omitted (or empty) for normal edits; set it for
+        # rename commits so the walker can match probes citing the pre-rename path.
         sha="${endpoint##*/commits/}"
         sha="${sha%%\?*}"
         files_file="${MOCK_COMMIT_FILES_DIR:-/dev/null}/$sha.tsv"
         if [ -s "$files_file" ]; then
-            files_json=$(awk 'BEGIN{first=1; print "["}
+            files_json=$(awk -F'\t' 'BEGIN{first=1; print "["}
 {
     if (first) first=0; else print ",";
-    printf "{\"filename\":\"%s\"}", $0
+    if ($2 == "") {
+        printf "{\"filename\":\"%s\"}", $1
+    } else {
+        printf "{\"filename\":\"%s\",\"previous_filename\":\"%s\"}", $1, $2
+    }
 }
 END{print "]"}' "$files_file")
         else
@@ -734,6 +743,12 @@ grep -qE '\| Edited \|' "$OUT_FILE" \
 grep -qE '\| Cited \|' "$OUT_FILE" \
     || { echo "FAIL scenario 20: missing Cited column header"; cat "$OUT_FILE"; exit 1; }
 
+# Per-repo coverage subtable is present with the test-org/bakeoff-probe row.
+grep -qE '\*\*Per-repo coverage\*\*' "$OUT_FILE" \
+    || { echo "FAIL scenario 20: missing **Per-repo coverage** header"; cat "$OUT_FILE"; exit 1; }
+grep -qE '\| `test-org/bakeoff-probe` \| 1 \| 1 \| 100%' "$OUT_FILE" \
+    || { echo "FAIL scenario 20: per-repo row missing or wrong: expected 1/1/100% for test-org/bakeoff-probe"; cat "$OUT_FILE"; exit 1; }
+
 # aggregator must not appear as a data row.
 if grep -qE '^\| aggregator ' "$OUT_FILE"; then
     echo "FAIL scenario 20: aggregator row leaked into rendered table"
@@ -865,5 +880,63 @@ grep -q "SENTINEL" "$OUT_FILE" || { echo "FAIL scenario 24: OUT_FILE was overwri
 
 unset MOCK_PULLS_COMMITS_FILE
 rm -f "$TMPDIR_SMOKE/.comments-call-counter"
+
+# ---- scenario 25: post-review RENAME matches the cited (pre-rename) path ----
+echo "    scenario 25: post-review rename of cited path → edited_after=1 via previous_filename..."
+rm -f "$DB_FILE"
+TS_REVIEW_25=$(hours_ago 30)
+TS_COMMIT_25=$(hours_ago 20)
+
+build_bot_review 150 110 "$TS_REVIEW_25" tests \
+    '1. [blocking] [from: tests] [tests] Cited old path. Files: src/old.py. Edit: do x.' \
+    | jq -s . > "$MOCK_COMMENTS_FILE"
+printf 'src/new.py\t1\t0\n' > "$MOCK_PULLS_FILES_FILE"
+printf 'sha-rename\t%s\n' "$TS_COMMIT_25" > "$TMPDIR_SMOKE/commits.tsv"
+export MOCK_PULLS_COMMITS_FILE="$TMPDIR_SMOKE/commits.tsv"
+mkdir -p "$TMPDIR_SMOKE/commit-files-25"
+# TSV: filename<TAB>previous_filename. The cited path src/old.py is the
+# previous_filename; the commit's filename is src/new.py.
+printf 'src/new.py\tsrc/old.py\n' > "$TMPDIR_SMOKE/commit-files-25/sha-rename.tsv"
+export MOCK_COMMIT_FILES_DIR="$TMPDIR_SMOKE/commit-files-25"
+
+run_driver
+ROW=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE specialist='tests' AND comment_id=150;")
+[ "$ROW" = "1" ] || { echo "FAIL scenario 25: rename not matched via previous_filename ('$ROW' expected '1')"; exit 1; }
+
+unset MOCK_PULLS_COMMITS_FILE MOCK_COMMIT_FILES_DIR
+
+# ---- scenario 26: commits/<sha> failure preserves edited_after AND OUT_FILE ----
+echo "    scenario 26: commits/<sha> per-commit failure → non-zero exit, edited_after preserved, OUT_FILE preserved..."
+rm -f "$DB_FILE"
+TS_REVIEW_26=$(hours_ago 30)
+TS_COMMIT_26=$(hours_ago 20)
+
+build_bot_review 160 120 "$TS_REVIEW_26" tests \
+    '1. [blocking] [from: tests] [tests] Cited. Files: src/a.py. Edit: do x.' \
+    | jq -s . > "$MOCK_COMMENTS_FILE"
+printf 'src/a.py\t1\t0\n' > "$MOCK_PULLS_FILES_FILE"
+printf 'sha-x\t%s\n' "$TS_COMMIT_26" > "$TMPDIR_SMOKE/commits.tsv"
+export MOCK_PULLS_COMMITS_FILE="$TMPDIR_SMOKE/commits.tsv"
+mkdir -p "$TMPDIR_SMOKE/commit-files-26"
+echo "src/a.py" > "$TMPDIR_SMOKE/commit-files-26/sha-x.tsv"
+export MOCK_COMMIT_FILES_DIR="$TMPDIR_SMOKE/commit-files-26"
+
+# First walk: success → edited_after=1.
+echo SENTINEL > "$OUT_FILE"
+run_driver
+ROW=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE specialist='tests' AND comment_id=160;")
+[ "$ROW" = "1" ] || { echo "FAIL scenario 26 (setup): pre-fail edited_after '$ROW' expected '1'"; exit 1; }
+
+# Re-walk: pulls/commits succeeds, but commits/sha-x fails (per-commit failure).
+echo SENTINEL > "$OUT_FILE"
+MOCK_GH_COMMIT_FAIL_SHA=sha-x bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null 2>&1 && {
+    echo "FAIL scenario 26: expected non-zero exit on commits/<sha> failure"
+    exit 1
+}
+ROW=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE specialist='tests' AND comment_id=160;")
+[ "$ROW" = "1" ] || { echo "FAIL scenario 26: edited_after erased by commits/<sha> failure ('$ROW' expected '1')"; exit 1; }
+grep -q "SENTINEL" "$OUT_FILE" || { echo "FAIL scenario 26: OUT_FILE overwritten despite commits/<sha> failure"; exit 1; }
+
+unset MOCK_PULLS_COMMITS_FILE MOCK_COMMIT_FILES_DIR
 
 echo "PASS"

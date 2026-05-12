@@ -166,7 +166,10 @@ for repo in "${REPOS[@]}"; do
                 while IFS= read -r sha; do
                     [ -z "$sha" ] && continue
                     if commit_json=$(gh api "repos/$repo/commits/$sha" 2>>"$LOG_FILE"); then
-                        commit_paths=$(printf '%s\n' "$commit_json" | jq -r '.files[]?.filename')
+                        # Emit both filename AND previous_filename so a post-review
+                        # rename (commit changes old.py → new.py) still matches a
+                        # probe citing the pre-rename path.
+                        commit_paths=$(printf '%s\n' "$commit_json" | jq -r '.files[]? | (.filename, .previous_filename // empty)')
                         post_paths=$(printf '%s\n%s\n' "$post_paths" "$commit_paths")
                     else
                         log "WARN: gh api commits/$sha failed for $repo"
@@ -210,11 +213,18 @@ for repo in "${REPOS[@]}"; do
                 done < <(printf '%s\n' "$probe_line" | probe_cited_paths)
             done < <(printf '%s\n' "$review_body" | grep -E '^[0-9]+\.' || true)
 
-            # Per specialist: sum LOC across paths that touched the PR; mark + record.
+            # Single intersection pass — for each (specialist, cited_path):
+            #   - if path ∈ PR diff: accumulate +LOC/−LOC + mark applied
+            #   - if path ∈ post-review-touched (only when post_paths_ok=1
+            #     and the path set is non-empty — guards a half-built set
+            #     from under-marking a previously-correct edited_after)
             declare -A spec_added=()
             declare -A spec_removed=()
             declare -A spec_matched=()
+            declare -A spec_edited=()
             pr_files_tsv="${pr_files_cache[$cache_key]}"
+            check_edited=0
+            [ "$post_paths_ok" = "1" ] && [ -n "$post_paths" ] && check_edited=1
             for key in "${!spec_paths_seen[@]}"; do
                 specialist="${key%%	*}"
                 path="${key#*	}"
@@ -226,32 +236,19 @@ for repo in "${REPOS[@]}"; do
                     spec_removed["$specialist"]=$((${spec_removed[$specialist]:-0} + ${r:-0}))
                     spec_matched["$specialist"]=1
                 fi
+                if [ "$check_edited" = "1" ] && grep -qFx "$path" <<< "$post_paths"; then
+                    spec_edited["$specialist"]=1
+                fi
             done
             for specialist in "${!spec_matched[@]}"; do
                 mark_applied "$DB_FILE" "$repo" "$review_id" "$specialist"
                 set_applied_loc "$DB_FILE" "$repo" "$review_id" "$specialist" \
                     "${spec_added[$specialist]:-0}" "${spec_removed[$specialist]:-0}"
             done
-
-            # Pass 1b: edited_after — intersect each specialist's cited paths
-            # with paths touched by post-review commits. Skip entirely on
-            # partial fetch (post_paths_ok=0) so a half-built post_paths
-            # set can't under-mark a previously-correct edited_after.
-            if [ "$post_paths_ok" = "1" ] && [ -n "$post_paths" ]; then
-                declare -A spec_edited=()
-                for key in "${!spec_paths_seen[@]}"; do
-                    specialist="${key%%	*}"
-                    path="${key#*	}"
-                    if grep -qFx "$path" <<< "$post_paths"; then
-                        spec_edited["$specialist"]=1
-                    fi
-                done
-                for specialist in "${!spec_edited[@]}"; do
-                    mark_edited_after "$DB_FILE" "$repo" "$review_id" "$specialist"
-                done
-                unset spec_edited
-            fi
-            unset spec_paths_seen spec_added spec_removed spec_matched
+            for specialist in "${!spec_edited[@]}"; do
+                mark_edited_after "$DB_FILE" "$repo" "$review_id" "$specialist"
+            done
+            unset spec_paths_seen spec_added spec_removed spec_matched spec_edited
         fi
 
         walked_reviews=$((walked_reviews + 1))
