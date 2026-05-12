@@ -340,21 +340,15 @@ run_driver
 unset MOCK_COMMENTS_FILE_PAGE2
 rm -f "$TMPDIR_SMOKE/comments-page2.json"
 
-if ! grep -q '| aggregator |' "$OUT_FILE"; then
-    echo "FAIL scenario 2: expected aggregator row in table"
+if grep -q '^| aggregator ' "$OUT_FILE"; then
+    echo "FAIL scenario 2: aggregator row must be filtered out of rendered table"
     cat "$OUT_FILE"
     exit 1
 fi
-# 9-col table: | spec | Reviews | Shipped | Applied | +LOC | -LOC | Loved | Critiqued | Loved/Shipped |
-# Reviews=1 (one row in store for aggregator), Shipped=1 (probe attributed),
-# Applied=0 (no Files: clause), +LOC=0/-LOC=0 (no applied paths), Loved=1
-# (page-2 trusted memorize), Critiqued=0.
-# If --paginate were dropped, the page-2 trusted memorize would never reach
-# extract_memorize_attributions and Loved would be 0 — this is the load-bearing
-# pagination assertion.
-if ! grep -qE '\| aggregator \| +1 \| +1 \| +0 \| +0 \| +0 \| +1 \| +0 \| +1\.00 \|' "$OUT_FILE"; then
-    echo "FAIL scenario 2: expected aggregator | 1 | 1 | 0 | 0 | 0 | 1 | 0 | 1.00 in table"
-    cat "$OUT_FILE"
+# But aggregator's loved_positive should still be persisted in the DB.
+LOVED_AGG=$(sqlite3 "$DB_FILE" "SELECT loved_positive FROM specialist_runs WHERE specialist='aggregator' AND comment_id=1;")
+if [ "$LOVED_AGG" != "1" ]; then
+    echo "FAIL scenario 2: aggregator loved_positive not persisted (got '$LOVED_AGG')"
     exit 1
 fi
 
@@ -415,8 +409,11 @@ run_driver
 rm -f "$MOCK_PULLS_FILES_FILE"
 unset MOCK_PULLS_FILES_FILE
 
-if ! grep -qE '\| shape \| +1 \| +1 \| +1 \| +12 \| +3 \| +0 \| +0 \| +0\.00 \|' "$OUT_FILE"; then
-    echo "FAIL scenario 5: expected shape | 1 | 1 | 1 | 12 | 3 | 0 | 0 | 0.00 in table"
+# 11-col table: | spec | Reviews | Shipped | Cited | Edited | Blocking | Medium | Low+Nit | Open | +LOC | −LOC |
+# Reviews=1, Shipped=1, Cited=1 (x.sh in PR diff), Edited=0 (no post-review commits),
+# Blocking=1 ([blocking] probe), +LOC=12/−LOC=3 from the mocked pulls/files row.
+if ! grep -qE '\| shape \| +1 \| +1 \| +1 \| +0 \| +1 \| +0 \| +0 \| +0 \| +12 \| +3 \|' "$OUT_FILE"; then
+    echo "FAIL scenario 5: expected shape | 1 | 1 | 1 | 0 | 1 | 0 | 0 | 0 | 12 | 3 in table"
     cat "$OUT_FILE"
     exit 1
 fi
@@ -693,6 +690,51 @@ run_driver
 COV=$(sqlite3 "$DB_FILE" "SELECT reviews_total_in_window || '|' || reviews_with_marker_in_window FROM walks WHERE repo='test-org/bakeoff-probe';")
 # Expected: 2 substantive bot reviews (id 80 + 81; ACK 82 excluded because it lacks the "How to use" footer), 1 with marker.
 [ "$COV" = "2|1" ] || { echo "FAIL scenario 19: coverage '$COV' expected '2|1'"; sqlite3 "$DB_FILE" "SELECT * FROM walks;"; exit 1; }
+
+unset MOCK_PULLS_COMMITS_FILE
+
+# ---- scenario 20: rendered table shape — caption, severity cols, edited col, no aggregator ----
+echo "    scenario 20: rendered table — honest caption, severity + edited cols, aggregator omitted..."
+rm -f "$DB_FILE"
+TS=$(hours_ago 50)
+
+python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
+import json
+body = "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=tests,aggregator -->\n\n**Probes**\n\n1. [blocking] [from: tests] [tests] X. Files: src/a.py. Edit: do x.\n2. [open] [from: aggregator] **Q: foo?** — Q text.\n\n_How to use: auto-reviews every new PR..._"
+print(json.dumps([{"id": 90, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/60", "created_at": "${TS}", "user": {"login": "testbot"}, "body": body}]))
+PYEOF
+export MOCK_PULLS_FILES_FILE="$TMPDIR_SMOKE/pulls-files.txt"
+printf 'src/a.py\t1\t0\n' > "$MOCK_PULLS_FILES_FILE"
+: > "$TMPDIR_SMOKE/commits.tsv"
+export MOCK_PULLS_COMMITS_FILE="$TMPDIR_SMOKE/commits.tsv"
+
+run_driver
+
+# Header includes coverage caption.
+grep -qE 'Based on [0-9]+ of [0-9]+' "$OUT_FILE" \
+    || { echo "FAIL scenario 20: missing 'Based on N of M' caption"; cat "$OUT_FILE"; exit 1; }
+
+# Header lists the new columns.
+grep -qE '\| Blocking \|' "$OUT_FILE" \
+    || { echo "FAIL scenario 20: missing Blocking column header"; cat "$OUT_FILE"; exit 1; }
+grep -qE '\| Edited \|' "$OUT_FILE" \
+    || { echo "FAIL scenario 20: missing Edited column header"; cat "$OUT_FILE"; exit 1; }
+grep -qE '\| Cited \|' "$OUT_FILE" \
+    || { echo "FAIL scenario 20: missing Cited column header"; cat "$OUT_FILE"; exit 1; }
+
+# aggregator must not appear as a data row.
+if grep -qE '^\| aggregator ' "$OUT_FILE"; then
+    echo "FAIL scenario 20: aggregator row leaked into rendered table"
+    cat "$OUT_FILE"
+    exit 1
+fi
+
+# tests row contains the new bucket counts.
+TESTS_ROW=$(grep -E '^\| tests ' "$OUT_FILE")
+[ -n "$TESTS_ROW" ] || { echo "FAIL scenario 20: tests row missing"; cat "$OUT_FILE"; exit 1; }
+# Probe was [blocking] → Blocking bucket should be 1.
+echo "$TESTS_ROW" | grep -qE '\| 1 \|' \
+    || { echo "FAIL scenario 20: tests row missing blocking=1: $TESTS_ROW"; exit 1; }
 
 unset MOCK_PULLS_COMMITS_FILE
 

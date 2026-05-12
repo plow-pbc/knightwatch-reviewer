@@ -330,25 +330,52 @@ window_iso=$(date -u -d "$WINDOW_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null 
 total_reviews=$(sqlite3 "$DB_FILE" \
     "SELECT COUNT(DISTINCT comment_id) FROM specialist_runs WHERE ran_at >= '$window_iso';")
 
+# Coverage caption: sum per-repo total + with-marker.
+coverage_total=$(sqlite3 "$DB_FILE" "SELECT COALESCE(SUM(reviews_total_in_window), 0) FROM walks;")
+coverage_with_marker=$(sqlite3 "$DB_FILE" "SELECT COALESCE(SUM(reviews_with_marker_in_window), 0) FROM walks;")
+if [ "$coverage_total" -gt 0 ]; then
+    coverage_pct=$(awk -v w="$coverage_with_marker" -v t="$coverage_total" 'BEGIN{printf "%.0f", 100*w/t}')
+else
+    coverage_pct="—"
+fi
+
 {
     echo "# Specialist bake-off — last $WINDOW_DAYS days"
     echo
-    echo "_Generated $(date -u +%FT%TZ) from $total_reviews posted reviews across ${#REPOS[@]} tracked repos. Source: \`$DB_FILE\`._"
+    echo "_Generated $(date -u +%FT%TZ). Based on $coverage_with_marker of $coverage_total substantive bot reviews in window (${coverage_pct}% coverage; reviews without the roster marker are not measured). Source: \`$DB_FILE\`._"
     echo
     if [ "$total_reviews" = "0" ]; then
         echo "_Awaiting first reviews with the roster marker — table populates as new reviews land._"
     else
-        echo "| Specialist | Reviews | Shipped | Applied | +LOC | -LOC | Loved | Critiqued | Loved/Shipped |"
-        echo "|---|---:|---:|---:|---:|---:|---:|---:|---:|"
-        query_window_aggregates "$DB_FILE" "$window_iso" \
-        | while IFS=$'\t' read -r spec reviews shipped applied added removed loved critiqued; do
-            if [ "$shipped" -gt 0 ]; then
-                ratio=$(awk -v l="$loved" -v s="$shipped" 'BEGIN{printf "%.2f", l/s}')
+        echo "**Per-repo coverage**"
+        echo
+        echo "| Repo | With marker | Total | Coverage |"
+        echo "|---|---:|---:|---:|"
+        sqlite3 -separator '|' "$DB_FILE" \
+            "SELECT repo, reviews_with_marker_in_window, reviews_total_in_window FROM walks ORDER BY reviews_total_in_window DESC;" \
+        | while IFS='|' read -r repo wm total; do
+            if [ "${total:-0}" -gt 0 ]; then
+                pct=$(awk -v w="${wm:-0}" -v t="$total" 'BEGIN{printf "%.0f%%", 100*w/t}')
             else
-                ratio="—"
+                pct="—"
             fi
-            echo "| $spec | $reviews | $shipped | $applied | $added | $removed | $loved | $critiqued | $ratio |"
+            echo "| \`$repo\` | $wm | $total | $pct |"
+          done
+        echo
+        echo "**Per-specialist (current window)**"
+        echo
+        echo "| Specialist | Reviews | Shipped | Cited | Edited | Blocking | Medium | Low+Nit | Open | +LOC | −LOC |"
+        echo "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
+        query_window_aggregates "$DB_FILE" "$window_iso" \
+        | while IFS=$'\t' read -r spec reviews shipped applied added removed loved critiqued edited blocking medium low_nit open_cnt; do
+            # Drop aggregator: hardcoded in the roster marker (write-time
+            # invariant) but emits no probes by design — would be a
+            # permanently-zero row that adds noise to the decision view.
+            [ "$spec" = "aggregator" ] && continue
+            echo "| $spec | $reviews | $shipped | $applied | $edited | $blocking | $medium | $low_nit | $open_cnt | $added | $removed |"
         done
+        echo
+        echo "_Loved=$( sqlite3 "$DB_FILE" "SELECT COALESCE(SUM(loved_positive), 0) FROM specialist_runs WHERE ran_at >= '$window_iso';") · Critiqued=$( sqlite3 "$DB_FILE" "SELECT COALESCE(SUM(critiqued), 0) FROM specialist_runs WHERE ran_at >= '$window_iso';") in window — still persisted per-(review × specialist) in the DB but not rendered here; the qualitative signal is too sparse to drive collapse/keep decisions._"
     fi
 } > "$OUT_FILE"
 

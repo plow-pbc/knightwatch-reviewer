@@ -105,16 +105,15 @@ Reviews fire on PR open and again after one hour of idle. To force a fresh revie
 
 ### Specialist bake-off
 
-A small post-hoc measurement that helps decide which specialists are earning their place. `specialist-bakeoff.sh` runs hourly via systemd (`*:30`), walks the tracked repos in `repos.conf` for new bot reviews + feedback comments since the per-repo watermark, and persists one row per (review × specialist) into `~/.pr-reviewer/bakeoff.db`. A markdown snapshot is regenerated at `~/.pr-reviewer/specialist-bakeoff.md` with eight columns per specialist over a rolling 30-day window (configurable via `WINDOW_DAYS`):
+A small post-hoc measurement that helps decide which specialists are earning their place. `specialist-bakeoff.sh` runs hourly via systemd (`*:30`), walks the tracked repos in `repos.conf` for new bot reviews + feedback comments since the per-repo watermark, and persists one row per (review × specialist) into `~/.pr-reviewer/bakeoff.db`. A markdown snapshot is regenerated at `~/.pr-reviewer/specialist-bakeoff.md` with the following columns per specialist over a rolling 30-day window (configurable via `WINDOW_DAYS`):
 
 - **Reviews** — total reviews where this specialist was invoked (the denominator). Comes from the write-time `<!-- knightwatch-bakeoff: specialists=... -->` marker on every posted review.
 - **Shipped** — reviews where this specialist contributed at least one probe (per-review bool, not probe count).
-- **Applied** — reviews where any of this specialist's probes cited a path that the PR touched (any commit on the branch). Coarse signal — counts a probe applied even if the cited path was touched BEFORE the probe was raised; the false-positive band is uniform across specialists, so cross-specialist comparison stays meaningful. `[open]` probes (no `Files:` clause) earn no Applied credit.
-- **+LOC** — sum of `additions` across the specialist's applied (deduped) cited paths in the PR's diff.
-- **−LOC** — sum of `deletions`, same scope.
-- **Loved** — reviews where a trusted (push-access) collaborator posted `/srosro-props [from: <specialist>]` or a `/srosro-memorize` quoting the tag, after the review.
-- **Critiqued** — reviews where a trusted collaborator posted `/srosro-critique [from: <specialist>]`.
-- **Loved/Shipped** — ratio (small-but-mighty vs high-volume-low-value).
+- **Cited** — reviews where any of this specialist's probes cited a path that the PR touched (any commit on the branch). Near-tautological signal — by construction specialists cite paths in the diff they're reviewing. Useful as a sanity check (is the specialist looking at the right files?), not as a quality metric. `[open]` probes (no `Files:` clause) earn no Cited credit.
+- **Edited** — reviews where any of this specialist's cited paths was touched by a commit landing AFTER the bot review. Stronger signal than Cited: the developer went back to that path after seeing the probe. Doesn't prove the *specific* suggestion was applied, only that the area got more attention.
+- **Blocking / Medium / Low+Nit / Open** — reviews bucketed by the specialist's *max* probe severity in that review. Sums to ≤ Shipped (a review where the specialist raised no probes contributes to none). Helps tell apart specialists that ship load-bearing findings from those mostly raising open questions.
+- **+LOC / −LOC** — sum of `additions` / `deletions` across the specialist's Cited (deduped) paths in the PR's diff.
+- **Loved / Critiqued** *(persisted but not rendered)* — reviews where a trusted (push-access) collaborator posted `/srosro-props [from: <specialist>]` (or `/srosro-memorize` quoting the tag) / `/srosro-critique [from: <specialist>]`. Still tracked per-(review × specialist) in `bakeoff.db` for inspection; omitted from the rendered snapshot because the qualitative signal is currently too sparse to drive collapse/keep decisions (0 props, 0 critique, single-digit memorize across a 30-day window).
 
 The store is append-only — historical reviews continue accumulating data, and the rolling 30-day window is now a query parameter rather than an API-cost ceiling. Subsequent walks only fetch comments newer than the per-repo watermark (with `OVERLAP_HOURS=24` slack for late-edited feedback).
 
