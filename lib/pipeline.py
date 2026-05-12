@@ -432,14 +432,15 @@ def run_pipeline(
             except Exception as exc:
                 hard_failures.append(f"{name}: raised {type(exc).__name__}: {exc}")
                 continue
-            if rc == 124 and name != "security":
-                # Specialist timed out pre-output (run_specialist promotes
-                # critic-stage timeouts to rc=125 so they land in
-                # hard_failures below). Tolerable for non-security angles —
-                # the aggregator can render a useful review on 7/8 with a
-                # warning banner. Security is excluded because a silent
-                # absence of security findings + VERDICT: APPROVE is a
-                # quiet bypass of the review's main user-protecting angle.
+            if rc == 124:
+                # All timeouts (including security) land here so the
+                # _wave_b_timeouts.txt sentinel below names them when we
+                # fail loud — author-visible "timed out (security,
+                # performance)" beats the generic abort message.
+                # run_specialist promotes critic-stage timeouts to rc=125
+                # so a critic timeout never reaches this branch (it lands
+                # in hard_failures below, preserving the real specialist
+                # output instead of stub-overwriting it).
                 timed_out.append(name)
                 log(f"{pr_id}: specialist {name} timed out after {SPECIALIST_TIMEOUT_SEC}s")
             elif rc != 0:
@@ -454,11 +455,16 @@ def run_pipeline(
             repo, f"{pr_id}: Wave B hard failures: {'; '.join(hard_failures)} — aborting"
         )
 
-    # Fail-loud threshold: 2+ specialists hung means a systemic codex problem,
-    # not a single flake. Skip the aggregator and let the bash worker replace
-    # the 👀 placeholder with an explicit error (read from this sentinel) so
-    # the author isn't left with an orphan reviewing-marker for 90 min.
-    if len(timed_out) >= 2:
+    # Fail-loud cases:
+    #   - 2+ specialists timed out → systemic codex problem, not one flake.
+    #   - security specialist timed out → a silent absence of security
+    #     findings + VERDICT: APPROVE is a quiet bypass of the review's
+    #     main user-protecting angle.
+    # Both paths write the same sentinel so the bash worker patches the
+    # placeholder with named specialists rather than the generic abort
+    # body. Non-security count == 1 falls through to the tolerable stub
+    # below.
+    if "security" in timed_out or len(timed_out) >= 2:
         (run / "_wave_b_timeouts.txt").write_text("\n".join(timed_out) + "\n")
         return _abort(
             repo,

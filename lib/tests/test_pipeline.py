@@ -930,7 +930,9 @@ class TestRunPipeline(unittest.TestCase):
         """A timed-out security specialist would let the aggregator emit
         VERDICT: APPROVE on 7/8 angles without ever having looked at the
         security side — a silent bypass. Treat as hard failure so the
-        author sees an abort, not an unsafe approval."""
+        author sees an abort, not an unsafe approval. The timeouts sentinel
+        is written so review-one-pr.sh names `security` in the placeholder
+        body (not the generic abort message)."""
         mock_popen.side_effect = _make_codex_stub(plan={
             "intent": (0, "Inferred intent: stub.\n"),
             "dead-code-search": (0, "dc\n"),
@@ -942,9 +944,36 @@ class TestRunPipeline(unittest.TestCase):
             pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
         )
         self.assertNotEqual(rc, 0)
-        # No "tolerable timeout" sentinels — security can't be silently
-        # absent from a review whose verdict gates an approval flow.
+        # No tolerable-timeout warning sentinel.
         self.assertFalse((self.run_dir / "_wave_b_warning.txt").exists())
+        # But the multi-timeout sentinel IS written, naming `security` —
+        # the author-visible placeholder gets the specific specialist name.
+        sentinel = self.run_dir / "_wave_b_timeouts.txt"
+        self.assertTrue(sentinel.exists())
+        self.assertIn("security", sentinel.read_text())
+
+    @patch("pipeline.subprocess.Popen")
+    def test_security_plus_other_timeout_lists_both_in_sentinel(self, mock_popen):
+        """When security AND a non-security specialist both time out, the
+        sentinel must list both names — earlier code path put security in
+        hard_failures before the sentinel write, so the author got the
+        generic abort body instead of the named multi-timeout message."""
+        mock_popen.side_effect = _make_codex_stub(plan={
+            "intent": (0, "Inferred intent: stub.\n"),
+            "dead-code-search": (0, "dc\n"),
+            "security": "TIMEOUT",
+            "performance": "TIMEOUT",
+        })
+        rc = pipeline.run_pipeline(
+            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
+            prompts_dir=str(self.prompts),
+            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
+        )
+        self.assertNotEqual(rc, 0)
+        sentinel_names = set(
+            (self.run_dir / "_wave_b_timeouts.txt").read_text().split()
+        )
+        self.assertEqual(sentinel_names, {"security", "performance"})
 
     @patch("pipeline.subprocess.Popen")
     def test_critic_timeout_is_hard_failure_not_tolerable(self, mock_popen):
