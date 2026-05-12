@@ -120,7 +120,7 @@ When Path 2 fires:
    > <full momentum specialist prose verbatim, including its closing question>
    ```
 
-3. **Verdict stays `COMMENT`** — do not block, do not approve. The author either (a) addresses the structural ask and the next round's blocker count drops (resuming normal review), or (b) replies via `/srosro-review` with substantive prose that re-routes the lens.
+3. **Verdict stays `COMMENT`** — do not block, do not approve. The author either (a) addresses the structural ask and the next round's blocker count drops (resuming normal review), or (b) replies via the configured review-trigger slash command (e.g. `/srosro-review` with the default prefix) with substantive prose that re-routes the lens.
 4. **Length: 100-200 words** (just the intent + the momentum callout). No Overview, no Strengths, no Probes, no test/kid notes — those resume on the next round once the trigger clears.
 
 6. **Probe assembly — pre-template policy. Do NOT publish any of the instructions below verbatim; they govern how you build the `**Probes**` block inside the posted-review fence.**

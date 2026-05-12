@@ -430,14 +430,14 @@ WM=$(sqlite3 "$DB_FILE" "SELECT last_walked_at FROM walks WHERE repo='test-org/b
 echo "    scenario 11: pulls/files failure holds watermark (per-repo failure gating)..."
 rm -f "$DB_FILE"
 # Seed a watermark via a successful initial run
-build_bot_review 1100 110 2026-04-10T00:00:00Z tests \
+build_bot_review 1100 110 2026-04-25T00:00:00Z tests \
     '1. [blocking] [from: tests] foo. Files: x.sh.' \
     | jq -s '.' > "$MOCK_COMMENTS_FILE"
 run_driver
 SEEDED_WM=$(sqlite3 "$DB_FILE" "SELECT last_walked_at FROM walks WHERE repo='test-org/bakeoff-probe';")
 
 # Now run again with new comments + simulated pulls/files failure
-build_bot_review 1101 111 2026-04-20T00:00:00Z tests \
+build_bot_review 1101 111 2026-05-05T00:00:00Z tests \
     '1. [blocking] [from: tests] bar. Files: y.sh.' \
     | jq -s '.' > "$MOCK_COMMENTS_FILE"
 echo "SENTINEL" > "$OUT_FILE"
