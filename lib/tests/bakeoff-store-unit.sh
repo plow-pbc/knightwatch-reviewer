@@ -94,7 +94,7 @@ clear_edited_after_for_review "$DB" srosro/repo 300
 ROW=$(sqlite3 "$DB" "SELECT applied, edited_after FROM specialist_runs WHERE comment_id=300 AND specialist='tests';")
 [ "$ROW" = "1|0" ] || { echo "FAIL: clear_edited_after_for_review should leave applied untouched: $ROW"; exit 1; }
 
-echo "  pre-existing DB (without edited_after) migrates idempotently..."
+echo "  pre-existing DB (legacy specialist_runs + legacy walks) migrates idempotently..."
 LEGACY="$TMP/legacy.db"
 sqlite3 "$LEGACY" <<'LEGACY_SQL'
 CREATE TABLE specialist_runs (
@@ -106,10 +106,21 @@ CREATE TABLE specialist_runs (
     max_severity TEXT NOT NULL DEFAULT '', last_walked_at TEXT NOT NULL,
     PRIMARY KEY (repo, comment_id, specialist)
 );
+CREATE TABLE walks (
+    repo TEXT PRIMARY KEY, last_walked_at TEXT NOT NULL
+);
+INSERT INTO walks (repo, last_walked_at) VALUES ('legacy/repo', '2026-05-06T00:00:00Z');
 LEGACY_SQL
 store_init "$LEGACY"
 sqlite3 "$LEGACY" "SELECT 1 FROM pragma_table_info('specialist_runs') WHERE name='edited_after';" | grep -q 1 \
     || { echo "FAIL: migration did not add edited_after column"; exit 1; }
+sqlite3 "$LEGACY" "SELECT 1 FROM pragma_table_info('walks') WHERE name='reviews_total_in_window';" | grep -q 1 \
+    || { echo "FAIL: migration did not add reviews_total_in_window column"; exit 1; }
+sqlite3 "$LEGACY" "SELECT 1 FROM pragma_table_info('walks') WHERE name='reviews_with_marker_in_window';" | grep -q 1 \
+    || { echo "FAIL: migration did not add reviews_with_marker_in_window column"; exit 1; }
+# Pre-existing walks row survived migration AND coverage defaults to 0|0.
+ROW=$(sqlite3 "$LEGACY" "SELECT last_walked_at || '|' || reviews_total_in_window || '|' || reviews_with_marker_in_window FROM walks WHERE repo='legacy/repo';")
+[ "$ROW" = "2026-05-06T00:00:00Z|0|0" ] || { echo "FAIL: legacy walks row corrupted by migration: '$ROW'"; exit 1; }
 
 # query_window_aggregates uses a fresh DB so prior tests' rows don't pollute counts.
 DB2="$TMP/bakeoff2.db"
@@ -123,7 +134,7 @@ echo "  query_window_aggregates: in-window row counted, out-of-window excluded..
 upsert_specialist_run "$DB2" srosro/repo 1 tests 5 2026-04-01T00:00:00Z
 upsert_specialist_run "$DB2" srosro/repo 2 tests 6 2025-01-01T00:00:00Z
 OUT=$(query_window_aggregates "$DB2" "2026-03-01T00:00:00Z")
-[ "$OUT" = $'tests\t1\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0' ] || { echo "FAIL: window filter: '$OUT'"; exit 1; }
+[ "$OUT" = $'tests\t1\t0\t0\t0\t0\t0\t0\t0\t0\t0' ] || { echo "FAIL: window filter: '$OUT'"; exit 1; }
 
 echo "  query_window_aggregates: ORDER BY shipped DESC (more-published first)..."
 upsert_specialist_run "$DB2" srosro/repo 10 alpha 9 2026-04-10T00:00:00Z
@@ -160,22 +171,22 @@ upsert_specialist_run "$DB4" srosro/repo 24 epsilon 5 2026-04-24T00:00:00Z
 OUT=$(query_window_aggregates "$DB4" "2026-04-01T00:00:00Z")
 GAMMA=$(printf '%s\n' "$OUT" | awk -F'\t' '$1=="gamma"')
 # Expected TSV columns: specialist reviews shipped applied added removed
-#                       loved critiqued edited blocking medium low_nit open
-[ "$GAMMA" = $'gamma\t3\t3\t0\t0\t0\t0\t0\t0\t1\t0\t1\t1' ] \
+#                       edited blocking medium low_nit open
+[ "$GAMMA" = $'gamma\t3\t3\t0\t0\t0\t0\t1\t0\t1\t1' ] \
     || { echo "FAIL: gamma severity buckets: '$GAMMA'"; exit 1; }
 DELTA=$(printf '%s\n' "$OUT" | awk -F'\t' '$1=="delta"')
-[ "$DELTA" = $'delta\t1\t1\t0\t0\t0\t0\t0\t0\t0\t0\t1\t0' ] \
+[ "$DELTA" = $'delta\t1\t1\t0\t0\t0\t0\t0\t0\t1\t0' ] \
     || { echo "FAIL: delta severity buckets: '$DELTA'"; exit 1; }
 EPSILON=$(printf '%s\n' "$OUT" | awk -F'\t' '$1=="epsilon"')
 # Unset max_severity → not counted in any severity bucket; published=0.
-[ "$EPSILON" = $'epsilon\t1\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0' ] \
+[ "$EPSILON" = $'epsilon\t1\t0\t0\t0\t0\t0\t0\t0\t0\t0' ] \
     || { echo "FAIL: epsilon severity buckets: '$EPSILON'"; exit 1; }
 
 echo "  query_window_aggregates: edited_after sums..."
 mark_edited_after "$DB4" srosro/repo 20 gamma
 OUT=$(query_window_aggregates "$DB4" "2026-04-01T00:00:00Z")
 GAMMA=$(printf '%s\n' "$OUT" | awk -F'\t' '$1=="gamma"')
-[ "$GAMMA" = $'gamma\t3\t3\t0\t0\t0\t0\t0\t1\t1\t0\t1\t1' ] \
+[ "$GAMMA" = $'gamma\t3\t3\t0\t0\t0\t1\t1\t0\t1\t1' ] \
     || { echo "FAIL: gamma edited_after sum: '$GAMMA'"; exit 1; }
 
 echo "  find_target_review_for_feedback: empty when no rows..."
@@ -219,9 +230,9 @@ mark_published "$DB5" srosro/repo 8000 tests
 mark_applied "$DB5" srosro/repo 8000 tests
 set_applied_loc "$DB5" srosro/repo 8000 tests 30 10
 OUT=$(query_window_aggregates "$DB5" "2026-04-01T00:00:00Z")
-# TSV: specialist  reviews  shipped  applied  added  removed  loved  critiqued
+# TSV: specialist  reviews  shipped  applied  added  removed
 #      edited  blocking  medium  low_nit  open
-[ "$OUT" = $'tests\t1\t1\t1\t30\t10\t0\t0\t0\t0\t0\t0\t0' ] || { echo "FAIL: TSV shape: $OUT"; exit 1; }
+[ "$OUT" = $'tests\t1\t1\t1\t30\t10\t0\t0\t0\t0\t0' ] || { echo "FAIL: TSV shape: $OUT"; exit 1; }
 
 echo "  severity_rank: blocking > medium > low > nit > open > '' (empty)..."
 [ "$(severity_rank blocking)" = "5" ] || { echo "FAIL: blocking rank"; exit 1; }

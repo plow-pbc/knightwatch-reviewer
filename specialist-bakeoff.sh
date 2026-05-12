@@ -157,22 +157,30 @@ for repo in "${REPOS[@]}"; do
             post_paths=""
             post_paths_ok=1
             if commits_json=$(gh api --paginate "repos/$repo/pulls/$pr_num/commits" 2>>"$LOG_FILE"); then
+                # committer.date (not author.date) is the "landed on branch" timestamp —
+                # rebased or prewritten commits keep their original author.date but get
+                # a fresh committer.date when they land, which is what "after the review"
+                # needs to mean for Edited to count correctly.
                 shas=$(printf '%s\n' "$commits_json" \
-                    | jq -rs --arg t "$created_at" 'add // [] | .[] | select(.commit.author.date > $t) | .sha')
+                    | jq -rs --arg t "$created_at" 'add // [] | .[] | select(.commit.committer.date > $t) | .sha')
                 while IFS= read -r sha; do
                     [ -z "$sha" ] && continue
                     if commit_json=$(gh api "repos/$repo/commits/$sha" 2>>"$LOG_FILE"); then
                         commit_paths=$(printf '%s\n' "$commit_json" | jq -r '.files[]?.filename')
                         post_paths=$(printf '%s\n%s\n' "$post_paths" "$commit_paths")
                     else
-                        log "WARN: gh api commits/$sha failed for $repo, holding edited_after"
+                        log "WARN: gh api commits/$sha failed for $repo"
                         post_paths_ok=0
+                        fetch_failures=$((fetch_failures + 1))
+                        repo_failures=$((repo_failures + 1))
                     fi
                 done <<< "$shas"
                 post_paths=$(printf '%s\n' "$post_paths" | grep -v '^$' | sort -u || true)
             else
-                log "WARN: gh api pulls/commits failed for $repo#$pr_num, holding edited_after"
+                log "WARN: gh api pulls/commits failed for $repo#$pr_num"
                 post_paths_ok=0
+                fetch_failures=$((fetch_failures + 1))
+                repo_failures=$((repo_failures + 1))
             fi
             pr_post_paths_cache["$post_review_key"]="$post_paths"
             pr_post_paths_ok_cache["$post_review_key"]="$post_paths_ok"
@@ -380,7 +388,7 @@ fi
         echo "| Specialist | Reviews | Shipped | Cited | Edited | Blocking | Medium | Low+Nit | Open | +LOC | −LOC |"
         echo "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
         query_window_aggregates "$DB_FILE" "$window_iso" \
-        | while IFS=$'\t' read -r spec reviews shipped applied added removed loved critiqued edited blocking medium low_nit open_cnt; do
+        | while IFS=$'\t' read -r spec reviews shipped applied added removed edited blocking medium low_nit open_cnt; do
             # Drop aggregator: hardcoded in the roster marker (write-time
             # invariant) but emits no probes by design — would be a
             # permanently-zero row that adds noise to the decision view.

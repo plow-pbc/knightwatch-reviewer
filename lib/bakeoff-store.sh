@@ -231,11 +231,14 @@ SELECT comment_id FROM specialist_runs
 SQL
 }
 
-# TSV: specialist\treviews\tshipped\tapplied\tadded\tremoved\tloved\tcritiqued
+# TSV: specialist\treviews\tshipped\tapplied\tadded\tremoved
 #      \tedited\tblocking\tmedium\tlow_nit\topen
 # Severity buckets count reviews where max_severity falls in each tier.
 # `low_nit` collapses [low] + [nit] (adjacent on the severity ladder).
 # Reviews with unset max_severity (no probes) fall outside every bucket.
+# loved_positive + critiqued are persisted but not aggregated here — the
+# reporter footer queries those totals directly via separate sqlite3 calls
+# since the main table omits them.
 # Caller passes window cutoff to keep the function pure (no date math).
 query_window_aggregates() {
     local db="$1" window_iso="$2"
@@ -247,8 +250,6 @@ SELECT
     SUM(applied) AS applied,
     SUM(applied_added) AS added,
     SUM(applied_removed) AS removed,
-    SUM(loved_positive) AS loved,
-    SUM(critiqued) AS critiqued,
     SUM(edited_after) AS edited,
     SUM(CASE WHEN max_severity = 'blocking' THEN 1 ELSE 0 END) AS blocking,
     SUM(CASE WHEN max_severity = 'medium'   THEN 1 ELSE 0 END) AS medium,

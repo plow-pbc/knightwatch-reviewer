@@ -93,7 +93,7 @@ fi
 # ============================================================
 echo "  driver smoke: paginated gh, trusted/untrusted memorize, ACK filter..."
 
-TMPDIR_SMOKE=$(mktemp -d)
+export TMPDIR_SMOKE=$(mktemp -d)
 trap 'rm -rf "$TMPDIR_SMOKE"' EXIT
 
 export STATE_DIR="$TMPDIR_SMOKE/state"
@@ -134,6 +134,16 @@ if [ "$1" = "api" ]; then
         echo "gh api: simulated failure" >&2
         exit 1
     fi
+    if [[ "$endpoint" == */issues/comments* ]] && [ -n "${MOCK_FAIL_NTH_COMMENTS:-}" ]; then
+        ctr_file="${TMPDIR_SMOKE:-/tmp}/.comments-call-counter"
+        n=$(cat "$ctr_file" 2>/dev/null || echo 0)
+        n=$((n + 1))
+        echo "$n" > "$ctr_file"
+        if [ "$n" = "$MOCK_FAIL_NTH_COMMENTS" ]; then
+            echo "gh api: simulated failure on issues/comments call #$n" >&2
+            exit 1
+        fi
+    fi
     if [[ "$endpoint" == */issues/comments* ]]; then
         # Honor since= query param: filter mock comments by created_at >= since.
         # If no since= present, return all (for scenarios that don't care about
@@ -162,12 +172,16 @@ if [ "$1" = "api" ]; then
         echo "gh api: simulated pulls/commits failure" >&2
         exit 1
     elif [[ "$endpoint" == */pulls/*/commits* ]]; then
-        # MOCK_PULLS_COMMITS_FILE: TSV of sha\tauthor_date per line.
+        # MOCK_PULLS_COMMITS_FILE: TSV of sha\tauthor_date[\tcommitter_date] per line.
+        # committer_date defaults to author_date when omitted (back-compat with
+        # 2-column callers — committer is what the walker filters on for the
+        # "landed after review" fence; author can differ in rebase scenarios).
         if [ -s "${MOCK_PULLS_COMMITS_FILE:-/dev/null}" ]; then
             commits_json=$(awk -F'\t' 'BEGIN{first=1; print "["}
 {
     if (first) first=0; else print ",";
-    printf "{\"sha\":\"%s\",\"commit\":{\"author\":{\"date\":\"%s\"}}}", $1, $2
+    cd = ($3 == "" ? $2 : $3);
+    printf "{\"sha\":\"%s\",\"commit\":{\"author\":{\"date\":\"%s\"},\"committer\":{\"date\":\"%s\"}}}", $1, $2, cd
 }
 END{print "]"}' "$MOCK_PULLS_COMMITS_FILE")
         else
@@ -610,11 +624,10 @@ TS_REVIEW=$(hours_ago 20)
 TS_COMMIT_AFTER=$(hours_ago 10)   # AFTER review
 TS_COMMIT_BEFORE=$(hours_ago 30)  # BEFORE review
 
-python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
-import json
-body = "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=tests,shape -->\n\n**Probes**\n\n1. [blocking] [from: tests] [tests] Touched-later. Files: src/a.py. Edit: do x.\n2. [medium] [from: shape] [shape] Stale. Files: src/b.py. Edit: do y.\n\n_How to use: auto-reviews every new PR..._"
-print(json.dumps([{"id": 70, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/40", "created_at": "${TS_REVIEW}", "user": {"login": "testbot"}, "body": body}]))
-PYEOF
+build_bot_review 70 40 "$TS_REVIEW" tests,shape \
+    '1. [blocking] [from: tests] [tests] Touched-later. Files: src/a.py. Edit: do x.
+2. [medium] [from: shape] [shape] Stale. Files: src/b.py. Edit: do y.' \
+    | jq -s . > "$MOCK_COMMENTS_FILE"
 
 # Both paths in the PR diff so applied=1 for both.
 export MOCK_PULLS_FILES_FILE="$TMPDIR_SMOKE/pulls-files.txt"
@@ -698,11 +711,10 @@ echo "    scenario 20: rendered table — honest caption, severity + edited cols
 rm -f "$DB_FILE"
 TS=$(hours_ago 50)
 
-python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
-import json
-body = "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=tests,aggregator -->\n\n**Probes**\n\n1. [blocking] [from: tests] [tests] X. Files: src/a.py. Edit: do x.\n2. [open] [from: aggregator] **Q: foo?** — Q text.\n\n_How to use: auto-reviews every new PR..._"
-print(json.dumps([{"id": 90, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/60", "created_at": "${TS}", "user": {"login": "testbot"}, "body": body}]))
-PYEOF
+build_bot_review 90 60 "$TS" tests,aggregator \
+    '1. [blocking] [from: tests] [tests] X. Files: src/a.py. Edit: do x.
+2. [open] [from: aggregator] **Q: foo?** — Q text.' \
+    | jq -s . > "$MOCK_COMMENTS_FILE"
 export MOCK_PULLS_FILES_FILE="$TMPDIR_SMOKE/pulls-files.txt"
 printf 'src/a.py\t1\t0\n' > "$MOCK_PULLS_FILES_FILE"
 : > "$TMPDIR_SMOKE/commits.tsv"
@@ -744,11 +756,9 @@ rm -f "$DB_FILE"
 TS_REVIEW_21=$(hours_ago 30)
 TS_COMMIT_21=$(hours_ago 20)   # AFTER review
 
-python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
-import json
-body = "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=tests -->\n\n**Probes**\n\n1. [blocking] [from: tests] [tests] Touched-later. Files: src/a.py. Edit: do x.\n\n_How to use: auto-reviews every new PR..._"
-print(json.dumps([{"id": 110, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/70", "created_at": "${TS_REVIEW_21}", "user": {"login": "testbot"}, "body": body}]))
-PYEOF
+build_bot_review 110 70 "$TS_REVIEW_21" tests \
+    '1. [blocking] [from: tests] [tests] Touched-later. Files: src/a.py. Edit: do x.' \
+    | jq -s . > "$MOCK_COMMENTS_FILE"
 export MOCK_PULLS_FILES_FILE="$TMPDIR_SMOKE/pulls-files.txt"
 printf 'src/a.py\t10\t0\n' > "$MOCK_PULLS_FILES_FILE"
 printf 'sha-after\t%s\n' "$TS_COMMIT_21" > "$TMPDIR_SMOKE/commits.tsv"
@@ -757,15 +767,23 @@ mkdir -p "$TMPDIR_SMOKE/commit-files-21"
 echo "src/a.py" > "$TMPDIR_SMOKE/commit-files-21/sha-after.tsv"
 export MOCK_COMMIT_FILES_DIR="$TMPDIR_SMOKE/commit-files-21"
 
-# First walk: commits fetch succeeds → edited_after=1.
+# First walk: commits fetch succeeds → edited_after=1, OUT_FILE rendered with SENTINEL replaced.
+echo SENTINEL > "$OUT_FILE"
 run_driver
 ROW=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE specialist='tests' AND comment_id=110;")
 [ "$ROW" = "1" ] || { echo "FAIL scenario 21 (setup): pre-fail edited_after '$ROW' expected '1'"; exit 1; }
+grep -q "SENTINEL" "$OUT_FILE" && { echo "FAIL scenario 21 (setup): OUT_FILE not rewritten after success"; exit 1; }
 
-# Re-walk: simulate pulls/commits transient failure. edited_after must NOT flip to 0.
-MOCK_GH_PULLS_COMMITS_FAIL=1 run_driver
+# Re-walk with simulated pulls/commits failure. edited_after must be preserved (data-integrity)
+# AND the script must exit non-zero so the partial-run gate preserves OUT_FILE.
+echo SENTINEL > "$OUT_FILE"
+MOCK_GH_PULLS_COMMITS_FAIL=1 bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null 2>&1 && {
+    echo "FAIL scenario 21: expected non-zero exit when pulls/commits fetch fails"
+    exit 1
+}
 ROW=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE specialist='tests' AND comment_id=110;")
 [ "$ROW" = "1" ] || { echo "FAIL scenario 21: edited_after erased by transient pulls/commits failure ('$ROW' expected '1')"; exit 1; }
+grep -q "SENTINEL" "$OUT_FILE" || { echo "FAIL scenario 21: OUT_FILE was overwritten despite pulls/commits failure"; exit 1; }
 
 unset MOCK_PULLS_COMMITS_FILE MOCK_COMMIT_FILES_DIR
 
@@ -776,15 +794,11 @@ TS_R1_22=$(hours_ago 40)
 TS_COMMIT_22=$(hours_ago 30)   # between R1 and R2
 TS_R2_22=$(hours_ago 20)
 
-python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
-import json
-body = "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=tests -->\n\n**Probes**\n\n1. [blocking] [from: tests] [tests] Edited. Files: src/a.py. Edit: do x.\n\n_How to use: auto-reviews every new PR..._"
-comments = [
-    {"id": 120, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/80", "created_at": "${TS_R1_22}", "user": {"login": "testbot"}, "body": body},
-    {"id": 121, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/80", "created_at": "${TS_R2_22}", "user": {"login": "testbot"}, "body": body},
-]
-print(json.dumps(comments))
-PYEOF
+{ build_bot_review 120 80 "$TS_R1_22" tests \
+    '1. [blocking] [from: tests] [tests] Edited. Files: src/a.py. Edit: do x.'
+  build_bot_review 121 80 "$TS_R2_22" tests \
+    '1. [blocking] [from: tests] [tests] Edited. Files: src/a.py. Edit: do x.'
+} | jq -s . > "$MOCK_COMMENTS_FILE"
 printf 'src/a.py\t1\t0\n' > "$MOCK_PULLS_FILES_FILE"
 printf 'sha-mid\t%s\n' "$TS_COMMIT_22" > "$TMPDIR_SMOKE/commits.tsv"
 export MOCK_PULLS_COMMITS_FILE="$TMPDIR_SMOKE/commits.tsv"
@@ -802,5 +816,54 @@ ROW2=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE specia
 [ "$ROW2" = "0" ] || { echo "FAIL scenario 22: R2 edited_after '$ROW2' expected '0' (no commits after R2)"; exit 1; }
 
 unset MOCK_PULLS_COMMITS_FILE MOCK_COMMIT_FILES_DIR
+
+# ---- scenario 23: committer.date drives edited_after (handles rebased commits) ----
+echo "    scenario 23: rebased commit (author.date BEFORE review, committer.date AFTER) → edited_after=1..."
+rm -f "$DB_FILE"
+TS_REVIEW_23=$(hours_ago 30)
+TS_AUTHOR_OLD=$(hours_ago 40)    # BEFORE review (pre-existing on the branch)
+TS_COMMITTER_NEW=$(hours_ago 20) # AFTER review (rebase landed it post-review)
+
+build_bot_review 130 90 "$TS_REVIEW_23" tests \
+    '1. [blocking] [from: tests] [tests] Cited. Files: src/a.py. Edit: do x.' \
+    | jq -s . > "$MOCK_COMMENTS_FILE"
+printf 'src/a.py\t1\t0\n' > "$MOCK_PULLS_FILES_FILE"
+# 3-col TSV: sha, author_date (pre-review), committer_date (post-review).
+printf 'sha-rebased\t%s\t%s\n' "$TS_AUTHOR_OLD" "$TS_COMMITTER_NEW" > "$TMPDIR_SMOKE/commits.tsv"
+export MOCK_PULLS_COMMITS_FILE="$TMPDIR_SMOKE/commits.tsv"
+mkdir -p "$TMPDIR_SMOKE/commit-files-23"
+echo "src/a.py" > "$TMPDIR_SMOKE/commit-files-23/sha-rebased.tsv"
+export MOCK_COMMIT_FILES_DIR="$TMPDIR_SMOKE/commit-files-23"
+
+run_driver
+
+ROW=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE specialist='tests' AND comment_id=130;")
+[ "$ROW" = "1" ] || { echo "FAIL scenario 23: rebased commit not counted (got '$ROW' expected '1') — author/committer date filter regressed?"; exit 1; }
+
+unset MOCK_PULLS_COMMITS_FILE MOCK_COMMIT_FILES_DIR
+
+# ---- scenario 24: coverage-only fetch failure → non-zero exit + OUT_FILE preserved ----
+echo "    scenario 24: coverage-fetch failure (2nd issues/comments call) preserves OUT_FILE..."
+rm -f "$DB_FILE"
+TS_REVIEW_24=$(hours_ago 50)
+build_bot_review 140 100 "$TS_REVIEW_24" tests \
+    '1. [blocking] [from: tests] [tests] X. Files: src/a.py. Edit: do x.' \
+    | jq -s . > "$MOCK_COMMENTS_FILE"
+printf 'src/a.py\t1\t0\n' > "$MOCK_PULLS_FILES_FILE"
+: > "$TMPDIR_SMOKE/commits.tsv"
+export MOCK_PULLS_COMMITS_FILE="$TMPDIR_SMOKE/commits.tsv"
+
+echo SENTINEL > "$OUT_FILE"
+# Reset counter, then fail the SECOND issues/comments call. Walker's main fetch
+# (1st call) succeeds; coverage fetch (2nd call) fails.
+rm -f "$TMPDIR_SMOKE/.comments-call-counter"
+MOCK_FAIL_NTH_COMMENTS=2 bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null 2>&1 && {
+    echo "FAIL scenario 24: expected non-zero exit when coverage fetch fails"
+    exit 1
+}
+grep -q "SENTINEL" "$OUT_FILE" || { echo "FAIL scenario 24: OUT_FILE was overwritten despite coverage fetch failure"; cat "$OUT_FILE"; exit 1; }
+
+unset MOCK_PULLS_COMMITS_FILE
+rm -f "$TMPDIR_SMOKE/.comments-call-counter"
 
 echo "PASS"
