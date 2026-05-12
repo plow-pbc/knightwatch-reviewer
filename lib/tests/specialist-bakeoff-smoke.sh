@@ -213,6 +213,17 @@ run_driver() {
     bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null 2>&1
 }
 
+# ISO8601 timestamp N hours ago. All fixture timestamps in this file derive
+# from this so they stay safely inside the walker's WINDOW_DAYS=30 lookback
+# regardless of when the suite is run. (Hardcoded calendar dates drift out
+# of the window as the wall clock advances and the gh stub's since= filter
+# starts dropping fixtures.) GNU date primary, BSD date fallback — same
+# shape as specialist-bakeoff.sh's date-math.
+hours_ago() {
+    date -u -d "$1 hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+        || date -u -v "-${1}H" +%Y-%m-%dT%H:%M:%SZ
+}
+
 # Build a single substantive bot-review JSON object on stdout.
 # Args: $1 id, $2 pr_num, $3 created_at, $4 specialists (comma-sep), $5 probes_md (use \n for newlines).
 # Caller pipes one or more invocations through `jq -s .` to form the JSON array file.
@@ -265,12 +276,17 @@ echo "    scenario 2: review + ACK + memorize (trusted+untrusted) → aggregator
 # Loved=1 assertion below is the load-bearing pagination check.
 rm -f "$DB_FILE"
 
+TS_REVIEW=$(hours_ago 480)
+TS_ACK=$(hours_ago 479)
+TS_UNTRUSTED=$(hours_ago 478)
+TS_TRUSTED=$(hours_ago 477)  # load-bearing: AFTER review for attribution
+
 python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
 import json
 comments = [
-    {"id": 1, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/20", "created_at": "2026-04-15T12:00:00Z", "user": {"login": "testbot"},        "body": "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=aggregator,tests,security,shape -->\n\n**Probes**\n\n1. [blocking] [from: aggregator] The aggregator logic is overfit.\n\n_How to use: auto-reviews every new PR and re-reviews after an hour of inactivity..._"},
-    {"id": 2, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/20", "created_at": "2026-04-15T12:01:00Z", "user": {"login": "testbot"},        "body": "${BOT_AUTO_POST_MARKER}\n\n\U0001f440 reviewing..."},
-    {"id": 3, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/20", "created_at": "2026-04-15T12:30:00Z", "user": {"login": "untrusted-user"}, "body": "Thanks! /srosro-memorize I agree with [from: aggregator] finding."},
+    {"id": 1, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/20", "created_at": "${TS_REVIEW}", "user": {"login": "testbot"},        "body": "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=aggregator,tests,security,shape -->\n\n**Probes**\n\n1. [blocking] [from: aggregator] The aggregator logic is overfit.\n\n_How to use: auto-reviews every new PR and re-reviews after an hour of inactivity..._"},
+    {"id": 2, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/20", "created_at": "${TS_ACK}", "user": {"login": "testbot"},        "body": "${BOT_AUTO_POST_MARKER}\n\n\U0001f440 reviewing..."},
+    {"id": 3, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/20", "created_at": "${TS_UNTRUSTED}", "user": {"login": "untrusted-user"}, "body": "Thanks! /srosro-memorize I agree with [from: aggregator] finding."},
 ]
 print(json.dumps(comments))
 PYEOF
@@ -279,7 +295,7 @@ export MOCK_COMMENTS_FILE_PAGE2="$TMPDIR_SMOKE/comments-page2.json"
 python3 - <<PYEOF > "$MOCK_COMMENTS_FILE_PAGE2"
 import json
 comments = [
-    {"id": 4, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/20", "created_at": "2026-04-15T13:00:00Z", "user": {"login": "trusted-human"},  "body": "/srosro-memorize The [from: aggregator] tip was great."},
+    {"id": 4, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/20", "created_at": "${TS_TRUSTED}", "user": {"login": "trusted-human"},  "body": "/srosro-memorize The [from: aggregator] tip was great."},
 ]
 print(json.dumps(comments))
 PYEOF
@@ -309,10 +325,11 @@ fi
 # ---- scenario 3: spoof — non-bot user posts marker → must NOT count ----
 echo "    scenario 3: spoof marker from non-bot user → not counted..."
 rm -f "$DB_FILE"
+TS_SPOOF=$(hours_ago 480)
 python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
 import json
 comments = [
-    {"id": 10, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/30", "created_at": "2026-04-15T12:00:00Z", "user": {"login": "evil-actor"}, "body": "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=aggregator,tests,security,shape -->\n\n**Probes**\n\n1. [blocking] [from: aggregator] fake review — would count under count_attributions if bot-user selector regressed.\n\n_How to use: auto-reviews every new PR and re-reviews after an hour of inactivity..._"},
+    {"id": 10, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/30", "created_at": "${TS_SPOOF}", "user": {"login": "evil-actor"}, "body": "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=aggregator,tests,security,shape -->\n\n**Probes**\n\n1. [blocking] [from: aggregator] fake review — would count under count_attributions if bot-user selector regressed.\n\n_How to use: auto-reviews every new PR and re-reviews after an hour of inactivity..._"},
 ]
 print(json.dumps(comments))
 PYEOF
@@ -351,7 +368,7 @@ echo "    scenario 5: review with cited Files: paths matching PR diff → shape 
 # Expected: Reviews=1, Shipped=1, Applied=1, Loved=0, Critiqued=0.
 rm -f "$DB_FILE"
 
-build_bot_review 100 42 2026-04-15T12:00:00Z shape,tests \
+build_bot_review 100 42 "$(hours_ago 480)" shape,tests \
     '1. [blocking] [from: shape] [shape] Foo. Files: x.sh. Edit: y.' \
     | jq -s '.' > "$MOCK_COMMENTS_FILE"
 
@@ -372,12 +389,13 @@ fi
 # ---- scenario 6: substantive review WITHOUT roster marker → no rows in store ----
 echo "    scenario 6: review without roster marker → no rows in store..."
 rm -f "$DB_FILE"
+TS_NOMARKER=$(hours_ago 480)
 python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
 import json
 print(json.dumps([{
     "id": 600,
     "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/60",
-    "created_at": "2026-04-15T12:00:00Z",
+    "created_at": "${TS_NOMARKER}",
     "user": {"login": "testbot"},
     "body": "${BOT_AUTO_POST_MARKER}\n\n**Probes**\n\n1. [blocking] [from: tests] missing test. Files: x.sh.\n\n_How to use: auto-reviews every new PR..._"
 }]))
@@ -389,8 +407,10 @@ ROW_COUNT=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM specialist_runs;")
 # ---- scenario 7: trusted /srosro-props after substantive review → loved_positive=1 ----
 echo "    scenario 7: trusted /srosro-props after substantive review → loved_positive=1..."
 rm -f "$DB_FILE"
-{ build_bot_review 700 70 2026-04-15T12:00:00Z tests,shape '1. [blocking] [from: tests] missing test. Files: x.sh.'
-  build_feedback_comment 701 70 2026-04-15T13:00:00Z '/srosro-props [from: tests] solid catch'; } \
+TS_REVIEW=$(hours_ago 480)
+TS_FEEDBACK=$(hours_ago 479)
+{ build_bot_review 700 70 "$TS_REVIEW" tests,shape '1. [blocking] [from: tests] missing test. Files: x.sh.'
+  build_feedback_comment 701 70 "$TS_FEEDBACK" '/srosro-props [from: tests] solid catch'; } \
     | jq -s '.' > "$MOCK_COMMENTS_FILE"
 run_driver
 LOVED=$(sqlite3 "$DB_FILE" "SELECT loved_positive FROM specialist_runs WHERE specialist='tests';")
@@ -399,8 +419,10 @@ LOVED=$(sqlite3 "$DB_FILE" "SELECT loved_positive FROM specialist_runs WHERE spe
 # ---- scenario 8: trusted /srosro-critique after substantive review → critiqued=1 ----
 echo "    scenario 8: trusted /srosro-critique after substantive review → critiqued=1..."
 rm -f "$DB_FILE"
-{ build_bot_review 800 80 2026-04-15T12:00:00Z shape,tests '1. [blocking] [from: shape] cycle. Files: x.sh.'
-  build_feedback_comment 801 80 2026-04-15T13:00:00Z '/srosro-critique [from: shape] misread'; } \
+TS_REVIEW=$(hours_ago 480)
+TS_FEEDBACK=$(hours_ago 479)
+{ build_bot_review 800 80 "$TS_REVIEW" shape,tests '1. [blocking] [from: shape] cycle. Files: x.sh.'
+  build_feedback_comment 801 80 "$TS_FEEDBACK" '/srosro-critique [from: shape] misread'; } \
     | jq -s '.' > "$MOCK_COMMENTS_FILE"
 run_driver
 CRIT=$(sqlite3 "$DB_FILE" "SELECT critiqued FROM specialist_runs WHERE specialist='shape';")
@@ -417,27 +439,31 @@ AFTER=$(sqlite3 "$DB_FILE" "SELECT COUNT(*), SUM(critiqued) FROM specialist_runs
 # ---- scenario 10: successful walk advances watermark to max review created_at ----
 echo "    scenario 10: watermark advances to max review created_at on success..."
 rm -f "$DB_FILE"
-{ build_bot_review 1000 100 2026-04-15T12:00:00Z tests \
+TS_FIRST=$(hours_ago 480)
+TS_SECOND=$(hours_ago 456)  # 24h after TS_FIRST → 19 days ago
+{ build_bot_review 1000 100 "$TS_FIRST" tests \
     '1. [blocking] [from: tests] missing test. Files: x.sh.'
-  build_bot_review 1001 100 2026-04-16T12:00:00Z tests \
+  build_bot_review 1001 100 "$TS_SECOND" tests \
     '1. [blocking] [from: tests] another missing test. Files: y.sh.'; } \
     | jq -s '.' > "$MOCK_COMMENTS_FILE"
 run_driver
 WM=$(sqlite3 "$DB_FILE" "SELECT last_walked_at FROM walks WHERE repo='test-org/bakeoff-probe';")
-[ "$WM" = "2026-04-16T12:00:00Z" ] || { echo "FAIL scenario 10: watermark='$WM' (expected the later timestamp 2026-04-16)"; exit 1; }
+[ "$WM" = "$TS_SECOND" ] || { echo "FAIL scenario 10: watermark='$WM' (expected the later timestamp $TS_SECOND)"; exit 1; }
 
 # ---- scenario 11: pulls/files failure HOLDS the watermark (does not advance) ----
 echo "    scenario 11: pulls/files failure holds watermark (per-repo failure gating)..."
 rm -f "$DB_FILE"
+TS_SEED=$(hours_ago 480)
+TS_NEW=$(hours_ago 240)  # 10 days ago — both safely in window, new > seed
 # Seed a watermark via a successful initial run
-build_bot_review 1100 110 2026-04-25T00:00:00Z tests \
+build_bot_review 1100 110 "$TS_SEED" tests \
     '1. [blocking] [from: tests] foo. Files: x.sh.' \
     | jq -s '.' > "$MOCK_COMMENTS_FILE"
 run_driver
 SEEDED_WM=$(sqlite3 "$DB_FILE" "SELECT last_walked_at FROM walks WHERE repo='test-org/bakeoff-probe';")
 
 # Now run again with new comments + simulated pulls/files failure
-build_bot_review 1101 111 2026-05-05T00:00:00Z tests \
+build_bot_review 1101 111 "$TS_NEW" tests \
     '1. [blocking] [from: tests] bar. Files: y.sh.' \
     | jq -s '.' > "$MOCK_COMMENTS_FILE"
 echo "SENTINEL" > "$OUT_FILE"
@@ -453,7 +479,7 @@ grep -q "SENTINEL" "$OUT_FILE" || { echo "FAIL scenario 11: OUT_FILE was overwri
 # ---- scenario 12: max_severity tracks the worst severity per specialist ----
 echo "    scenario 12: max_severity = blocking when specialist emits [blocking] + [medium] probes..."
 rm -f "$DB_FILE"
-build_bot_review 1200 120 2026-04-15T12:00:00Z tests \
+build_bot_review 1200 120 "$(hours_ago 480)" tests \
     '1. [medium] [from: tests] one issue. Files: x.sh.\n2. [blocking] [from: tests] worse issue. Files: y.sh.' \
     | jq -s '.' > "$MOCK_COMMENTS_FILE"
 run_driver
@@ -463,7 +489,7 @@ SEV=$(sqlite3 "$DB_FILE" "SELECT max_severity FROM specialist_runs WHERE special
 # ---- scenario 13: rewalk with PR diff no longer touching cited path → applied resets to 0 ----
 echo "    scenario 13: rewalk after PR diff stops touching cited path → applied resets..."
 rm -f "$DB_FILE"
-build_bot_review 1300 130 2026-04-15T12:00:00Z shape \
+build_bot_review 1300 130 "$(hours_ago 480)" shape \
     '1. [blocking] [from: shape] cycle. Files: x.sh.' \
     | jq -s '.' > "$MOCK_COMMENTS_FILE"
 # First walk: PR touches x.sh — applied should be 1.
@@ -488,7 +514,7 @@ echo "    scenario 14: late /srosro-props within OVERLAP_HOURS=24 still marks lo
 rm -f "$DB_FILE"
 
 # First walk: seed a review at T1 (watermark advances to T1).
-T1="2026-04-15T12:00:00Z"
+T1=$(hours_ago 480)
 build_bot_review 1400 140 "$T1" tests '1. [blocking] [from: tests] foo. Files: x.sh.' \
     | jq -s '.' > "$MOCK_COMMENTS_FILE"
 run_driver
@@ -502,8 +528,8 @@ WM=$(sqlite3 "$DB_FILE" "SELECT last_walked_at FROM walks WHERE repo='test-org/b
 # and the loved_positive flag would never get set. With OVERLAP=24h the walker
 # computes since=T1 - 24h, both comments are returned, and the feedback at
 # T1 - 2h attributes to the new review at T1 - 12h.
-T_PRIOR="2026-04-15T00:00:00Z"  # T1 - 12h
-T_LATE="2026-04-15T10:00:00Z"   # T1 - 2h
+T_PRIOR=$(hours_ago 492)  # T1 - 12h
+T_LATE=$(hours_ago 482)   # T1 - 2h (still > T_PRIOR)
 { build_bot_review 1400 140 "$T1" tests '1. [blocking] [from: tests] foo. Files: x.sh.'
   build_bot_review 1402 140 "$T_PRIOR" tests '1. [blocking] [from: tests] earlier finding. Files: x.sh.'
   build_feedback_comment 1401 140 "$T_LATE" '/srosro-props [from: tests] late but real'; } \
@@ -515,7 +541,7 @@ LOVED=$(sqlite3 "$DB_FILE" "SELECT loved_positive FROM specialist_runs WHERE spe
 # ---- scenario 15: max_severity=nit when specialist emits only [nit] probes ----
 echo "    scenario 15: max_severity = nit when specialist emits only [nit] probes..."
 rm -f "$DB_FILE"
-build_bot_review 1500 150 2026-04-15T12:00:00Z tests \
+build_bot_review 1500 150 "$(hours_ago 480)" tests \
     '1. [nit] [from: tests] minor naming. Files: x.sh.' \
     | jq -s '.' > "$MOCK_COMMENTS_FILE"
 run_driver
@@ -525,7 +551,7 @@ SEV=$(sqlite3 "$DB_FILE" "SELECT max_severity FROM specialist_runs WHERE special
 # ---- scenario 16: rewalk where pulls/files returns empty → applied resets ----
 echo "    scenario 16: empty pulls/files (force-push to empty diff) → applied resets to 0..."
 rm -f "$DB_FILE"
-build_bot_review 1600 160 2026-04-15T12:00:00Z shape \
+build_bot_review 1600 160 "$(hours_ago 480)" shape \
     '1. [blocking] [from: shape] cycle. Files: x.sh.' \
     | jq -s '.' > "$MOCK_COMMENTS_FILE"
 # First walk: PR touches x.sh — applied should be 1.
