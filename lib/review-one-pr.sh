@@ -1189,7 +1189,7 @@ if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
     TIMEOUTS_SENTINEL="$RUN_DIR/_wave_b_timeouts.txt"
     if [ -s "$TIMEOUTS_SENTINEL" ]; then
         TIMED_OUT=$(paste -sd, "$TIMEOUTS_SENTINEL")
-        EYES_ABORT_BODY="❌ Review aborted — multiple specialists timed out (\`$TIMED_OUT\`). See knightwatch-reviewer logs; will retry on the next tick."
+        EYES_ABORT_BODY="❌ Review aborted — specialist timeout threshold reached (\`$TIMED_OUT\`). See knightwatch-reviewer logs; will retry on the next tick."
         log "$PR_ID: handing timeouts-error to cleanup_eyes (specialists=$TIMED_OUT)"
     fi
     [ -d "$REPO_DIR" ] && rm -rf "$REPO_DIR"

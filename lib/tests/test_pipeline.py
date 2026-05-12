@@ -665,6 +665,17 @@ class TestRunPipeline(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def _run(self) -> int:
+        """Shared call into pipeline.run_pipeline with this class's fixture
+        paths + stub PR metadata. Every TestRunPipeline scenario uses the
+        same arg set; the per-scenario variation lives in mock_popen
+        side_effect, not in the call itself."""
+        return pipeline.run_pipeline(
+            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
+            prompts_dir=str(self.prompts),
+            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
+        )
+
     @patch("pipeline.subprocess.Popen")
     def test_first_review_runs_intent_dc_angles_aggregator(self, mock_popen):
         mock_popen.side_effect = _make_codex_stub({
@@ -672,11 +683,7 @@ class TestRunPipeline(unittest.TestCase):
             "dead-code-search": (0, "dc evidence\n"),
             "aggregator": (0, "# Review\nVERDICT: APPROVE\n"),
         })
-        rc = pipeline.run_pipeline(
-            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
-            prompts_dir=str(self.prompts),
-            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
-        )
+        rc = self._run()
         self.assertEqual(rc, 0)
         # All 8 specialists ran
         for specialist in pipeline.SPECIALISTS:
@@ -696,11 +703,7 @@ class TestRunPipeline(unittest.TestCase):
             "momentum": (0, "momentum body\n"),
             "aggregator": (0, "# Review\nVERDICT: APPROVE\n"),
         })
-        rc = pipeline.run_pipeline(
-            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
-            prompts_dir=str(self.prompts),
-            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
-        )
+        rc = self._run()
         self.assertEqual(rc, 0)
         self.assertTrue((self.run_dir / "agents" / "momentum" / "output.md").exists())
 
@@ -709,11 +712,7 @@ class TestRunPipeline(unittest.TestCase):
         mock_popen.side_effect = _make_codex_stub({
             "intent": (7, ""),
         })
-        rc = pipeline.run_pipeline(
-            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
-            prompts_dir=str(self.prompts),
-            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
-        )
+        rc = self._run()
         self.assertNotEqual(rc, 0)
         # Repo dir should be cleaned up
         self.assertFalse(self.repo_dir.exists())
@@ -725,11 +724,7 @@ class TestRunPipeline(unittest.TestCase):
             "intent": (0, "Inferred intent: stub.\n"),
             "dead-code-search": (7, ""),
         })
-        rc = pipeline.run_pipeline(
-            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
-            prompts_dir=str(self.prompts),
-            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
-        )
+        rc = self._run()
         self.assertNotEqual(rc, 0)
         self.assertFalse(self.repo_dir.exists())
 
@@ -740,11 +735,7 @@ class TestRunPipeline(unittest.TestCase):
             "dead-code-search": (0, "dc\n"),
             "shape": (5, ""),  # one angle fails
         })
-        rc = pipeline.run_pipeline(
-            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
-            prompts_dir=str(self.prompts),
-            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
-        )
+        rc = self._run()
         self.assertNotEqual(rc, 0)
         self.assertFalse(self.repo_dir.exists())
 
@@ -755,11 +746,7 @@ class TestRunPipeline(unittest.TestCase):
             "dead-code-search": (0, "dc\n"),
             "aggregator": (8, ""),
         })
-        rc = pipeline.run_pipeline(
-            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
-            prompts_dir=str(self.prompts),
-            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
-        )
+        rc = self._run()
         self.assertNotEqual(rc, 0)
         self.assertFalse(self.repo_dir.exists())
 
@@ -768,11 +755,7 @@ class TestRunPipeline(unittest.TestCase):
         mock_popen.side_effect = _make_codex_stub({
             "intent": (0, "wrong prefix\n"),  # missing "Inferred intent: "
         })
-        rc = pipeline.run_pipeline(
-            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
-            prompts_dir=str(self.prompts),
-            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
-        )
+        rc = self._run()
         self.assertNotEqual(rc, 0)
         self.assertFalse(self.repo_dir.exists())
 
@@ -788,11 +771,7 @@ class TestRunPipeline(unittest.TestCase):
             if name in ("intent", "dead-code-search"):
                 barrier.wait()
         mock_popen.side_effect = _make_codex_stub(before_write=hit_barrier)
-        rc = pipeline.run_pipeline(
-            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
-            prompts_dir=str(self.prompts),
-            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
-        )
+        rc = self._run()
         self.assertEqual(rc, 0)
 
     @patch("pipeline.subprocess.Popen")
@@ -806,11 +785,7 @@ class TestRunPipeline(unittest.TestCase):
             if name in ("security", "performance"):
                 barrier.wait()
         mock_popen.side_effect = _make_codex_stub(before_write=hit_barrier)
-        rc = pipeline.run_pipeline(
-            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
-            prompts_dir=str(self.prompts),
-            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
-        )
+        rc = self._run()
         self.assertEqual(rc, 0)
 
     @patch("pipeline.subprocess.Popen")
@@ -830,11 +805,7 @@ class TestRunPipeline(unittest.TestCase):
                         {p.name for p in scratch.iterdir() if p.is_symlink()},
                     ))
         mock_popen.side_effect = _make_codex_stub(before_write=capture_scratch_links)
-        rc = pipeline.run_pipeline(
-            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
-            prompts_dir=str(self.prompts),
-            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
-        )
+        rc = self._run()
         self.assertEqual(rc, 0)
         self.assertEqual(len(seen_links), len(pipeline.SPECIALISTS) + 1)  # +momentum
         for name, links in seen_links:
@@ -855,11 +826,7 @@ class TestRunPipeline(unittest.TestCase):
             "performance": "TIMEOUT",
             "aggregator": (0, "# Review\nVERDICT: APPROVE\n"),
         })
-        rc = pipeline.run_pipeline(
-            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
-            prompts_dir=str(self.prompts),
-            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
-        )
+        rc = self._run()
         self.assertEqual(rc, 0)
         # Aggregator still ran on the surviving 7 specialists.
         self.assertTrue((self.run_dir / "agents" / "aggregator" / "output.md").exists())
@@ -889,11 +856,7 @@ class TestRunPipeline(unittest.TestCase):
             "performance": "TIMEOUT",
             "shape": "TIMEOUT",
         })
-        rc = pipeline.run_pipeline(
-            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
-            prompts_dir=str(self.prompts),
-            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
-        )
+        rc = self._run()
         self.assertNotEqual(rc, 0)
         # _abort cleans up the workdir → assert sentinel was written to run_dir
         # (which is NOT REPO_DIR) so the bash worker can still read it.
@@ -915,11 +878,7 @@ class TestRunPipeline(unittest.TestCase):
             "dead-code-search": (0, "dc\n"),
             "shape": (5, ""),  # hard failure, NOT a timeout
         })
-        rc = pipeline.run_pipeline(
-            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
-            prompts_dir=str(self.prompts),
-            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
-        )
+        rc = self._run()
         self.assertNotEqual(rc, 0)
         # No warning / timeouts sentinels — this was a hard failure path.
         self.assertFalse((self.run_dir / "_wave_b_warning.txt").exists())
@@ -938,11 +897,7 @@ class TestRunPipeline(unittest.TestCase):
             "dead-code-search": (0, "dc\n"),
             "security": "TIMEOUT",
         })
-        rc = pipeline.run_pipeline(
-            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
-            prompts_dir=str(self.prompts),
-            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
-        )
+        rc = self._run()
         self.assertNotEqual(rc, 0)
         # No tolerable-timeout warning sentinel.
         self.assertFalse((self.run_dir / "_wave_b_warning.txt").exists())
@@ -964,11 +919,7 @@ class TestRunPipeline(unittest.TestCase):
             "security": "TIMEOUT",
             "performance": "TIMEOUT",
         })
-        rc = pipeline.run_pipeline(
-            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
-            prompts_dir=str(self.prompts),
-            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
-        )
+        rc = self._run()
         self.assertNotEqual(rc, 0)
         sentinel_names = set(
             (self.run_dir / "_wave_b_timeouts.txt").read_text().split()
@@ -991,11 +942,7 @@ class TestRunPipeline(unittest.TestCase):
             "shape": (0, "### Probe 1\nreal shape finding\n"),
             "critic-shape": "TIMEOUT",
         })
-        rc = pipeline.run_pipeline(
-            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
-            prompts_dir=str(self.prompts),
-            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
-        )
+        rc = self._run()
         # Hard-failure abort (not the 1-tolerable path) and no warning sentinel.
         self.assertNotEqual(rc, 0)
         self.assertFalse((self.run_dir / "_wave_b_warning.txt").exists())
