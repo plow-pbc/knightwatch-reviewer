@@ -60,7 +60,14 @@ def _make_codex_stub(plan=None, default=(0, "### Probe 1\nstub\n"),
         if before_write is not None:
             before_write(agent_name, out_path)
         if agent_name in plan:
-            ec, out = plan[agent_name]
+            entry = plan[agent_name]
+            # "TIMEOUT" sentinel: simulate run_codex's 45m hard cap firing.
+            # subprocess.run with timeout= raises TimeoutExpired; the same
+            # exception is propagated unchanged from the mock so run_codex
+            # exercises its real timeout-handling branch.
+            if entry == "TIMEOUT":
+                raise subprocess.TimeoutExpired(cmd=argv, timeout=1)
+            ec, out = entry
         else:
             ec, out = default
             if agent_name == "intent":
@@ -117,6 +124,31 @@ class TestRunCodex(unittest.TestCase):
         mock_run.side_effect = _make_codex_stub(plan={"intent": (7, "")})
         rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(self._agent_dir("intent")))
         self.assertEqual(rc, 7)
+
+    @patch("pipeline.subprocess.run")
+    def test_codex_subprocess_timeout_returns_124(self, mock_run):
+        """45m subprocess timeout → 124 (GNU timeout convention) + log line.
+        Fence: without this branch, a wedged codex hangs the future, hangs
+        the ThreadPoolExecutor context exit, hangs the pipeline, hangs the
+        bash worker, and the 90m outer timeout kills the worker mid-trap."""
+        mock_run.side_effect = _make_codex_stub(plan={"intent": "TIMEOUT"})
+        rc = pipeline.run_codex(
+            "intent", str(self.repo_dir), "PROMPT", str(self._agent_dir("intent"))
+        )
+        self.assertEqual(rc, 124)
+        log_text = (self._agent_dir("intent") / "log.txt").read_text()
+        self.assertIn("timed out", log_text)
+        self.assertIn("agent=intent exit=124", log_text)
+
+    @patch("pipeline.subprocess.run")
+    def test_codex_subprocess_passes_timeout_arg(self, mock_run):
+        """subprocess.run must be called with timeout=SPECIALIST_TIMEOUT_SEC."""
+        mock_run.side_effect = _make_codex_stub(plan={"intent": (0, "### Probe 1\nstub\n")})
+        pipeline.run_codex(
+            "intent", str(self.repo_dir), "PROMPT", str(self._agent_dir("intent"))
+        )
+        _, kwargs = mock_run.call_args
+        self.assertEqual(kwargs.get("timeout"), pipeline.SPECIALIST_TIMEOUT_SEC)
 
     @patch("pipeline.subprocess.run")
     def test_codex_zero_exit_empty_output_returns_3(self, mock_run):
@@ -800,6 +832,113 @@ class TestRunPipeline(unittest.TestCase):
                           f"{name} started before Wave A linked inferred-intent.md")
             self.assertIn("dead-code.md", links,
                           f"{name} started before Wave A linked dead-code.md")
+
+    @patch("pipeline.subprocess.run")
+    def test_one_specialist_timeout_tolerated_aggregator_runs(self, mock_run):
+        """≤1 timeout: aggregator runs on 7/8 specialists, a stub fills the
+        missing slot so .codex-scratch/specialists/<name>.md exists, and a
+        warning sentinel is written for the bash worker to surface above
+        the posted review."""
+        mock_run.side_effect = _make_codex_stub(plan={
+            "intent": (0, "Inferred intent: stub.\n"),
+            "dead-code-search": (0, "dc\n"),
+            "performance": "TIMEOUT",
+            "aggregator": (0, "# Review\nVERDICT: APPROVE\n"),
+        })
+        rc = pipeline.run_pipeline(
+            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
+            prompts_dir=str(self.prompts),
+            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
+        )
+        self.assertEqual(rc, 0)
+        # Aggregator still ran on the surviving 7 specialists.
+        self.assertTrue((self.run_dir / "agents" / "aggregator" / "output.md").exists())
+        # Stub at the aggregator's read path so it didn't choke on a missing file.
+        scratch_specialist = self.repo_dir / ".codex-scratch" / "specialists" / "performance.md"
+        self.assertTrue(scratch_specialist.exists())
+        self.assertIn("No probes.", scratch_specialist.read_text())
+        # Forensic stub at the run-dir for bakeoff roster math.
+        self.assertTrue((self.run_dir / "agents" / "performance" / "layered.md").exists())
+        # Banner sentinel for review-one-pr.sh.
+        warning = (self.run_dir / "_wave_b_warning.txt").read_text()
+        self.assertIn("performance", warning)
+        self.assertIn("timed out", warning)
+        # The 2+ sentinel must NOT exist (1 timeout is tolerated).
+        self.assertFalse((self.run_dir / "_wave_b_timeouts.txt").exists())
+
+    @patch("pipeline.subprocess.run")
+    def test_two_specialist_timeouts_fail_loud(self, mock_run):
+        """≥2 timeouts: pipeline aborts, no aggregator runs, sentinel lists
+        the hung specialists so review-one-pr.sh can replace the 👀
+        placeholder with an explicit error naming them."""
+        mock_run.side_effect = _make_codex_stub(plan={
+            "intent": (0, "Inferred intent: stub.\n"),
+            "dead-code-search": (0, "dc\n"),
+            "performance": "TIMEOUT",
+            "security": "TIMEOUT",
+        })
+        rc = pipeline.run_pipeline(
+            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
+            prompts_dir=str(self.prompts),
+            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
+        )
+        self.assertNotEqual(rc, 0)
+        # _abort cleans up the workdir → assert sentinel was written to run_dir
+        # (which is NOT REPO_DIR) so the bash worker can still read it.
+        sentinel = self.run_dir / "_wave_b_timeouts.txt"
+        self.assertTrue(sentinel.exists())
+        names = set(sentinel.read_text().split())
+        self.assertEqual(names, {"performance", "security"})
+        # No aggregator — we don't post half-broken reviews.
+        self.assertFalse((self.run_dir / "agents" / "aggregator" / "output.md").exists())
+
+    @patch("pipeline.subprocess.run")
+    def test_momentum_timeout_tolerated_writes_scratch_stub(self, mock_run):
+        """Momentum is opportunistic — its timeout is the same as a
+        specialist's for tolerance accounting, but the stub goes at
+        scratch/momentum.md (its aggregator-visible path), not
+        .codex-scratch/specialists/. Without the stub, the success-path
+        _relink would error on the missing source."""
+        (self.run_dir / "inputs" / "previous-review.md").write_text("prior\n")
+        mock_run.side_effect = _make_codex_stub(plan={
+            "intent": (0, "Inferred intent: stub.\n"),
+            "dead-code-search": (0, "dc\n"),
+            "momentum": "TIMEOUT",
+            "aggregator": (0, "# Review\nVERDICT: APPROVE\n"),
+        })
+        rc = pipeline.run_pipeline(
+            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
+            prompts_dir=str(self.prompts),
+            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
+        )
+        self.assertEqual(rc, 0)
+        momentum_scratch = self.repo_dir / ".codex-scratch" / "momentum.md"
+        self.assertTrue(momentum_scratch.exists())
+        self.assertIn("momentum timed out", momentum_scratch.read_text())
+        # Warning for the bash worker mentions momentum specifically.
+        warning = (self.run_dir / "_wave_b_warning.txt").read_text()
+        self.assertIn("Momentum", warning)
+
+    @patch("pipeline.subprocess.run")
+    def test_hard_failure_not_tolerated_even_when_solo(self, mock_run):
+        """Non-timeout failures (contract violations, codex non-zero rc that
+        isn't 124) are bugs, not flakes — no 1-tolerance window. A single
+        rc=5 specialist still aborts (preserves pre-existing strictness for
+        hard failures while only loosening the timeout case)."""
+        mock_run.side_effect = _make_codex_stub(plan={
+            "intent": (0, "Inferred intent: stub.\n"),
+            "dead-code-search": (0, "dc\n"),
+            "shape": (5, ""),  # hard failure, NOT a timeout
+        })
+        rc = pipeline.run_pipeline(
+            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
+            prompts_dir=str(self.prompts),
+            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
+        )
+        self.assertNotEqual(rc, 0)
+        # No warning / timeouts sentinels — this was a hard failure path.
+        self.assertFalse((self.run_dir / "_wave_b_warning.txt").exists())
+        self.assertFalse((self.run_dir / "_wave_b_timeouts.txt").exists())
 
 
 class TestPipelineCLI(unittest.TestCase):

@@ -15,6 +15,15 @@ SPECIALISTS = (
     "security", "data-integrity", "architecture", "simplification",
     "tests", "shape", "performance", "consumers",
 )
+
+# Per-codex-invocation hard cap. Successful specialists complete in 1–5 min
+# in production (Wave B aggregate ≈ 5–10 min); 45 min means the codex
+# subprocess is wedged, not slow. Without this, a single hung specialist
+# blocks the `with ThreadPoolExecutor as ex:` context exit indefinitely,
+# the bash worker stays in `wait`, and the 90 min outer `timeout` fires
+# SIGTERM at a point the EXIT trap may not survive — leaving the 👀
+# placeholder orphaned (PR cncorp/plow#594, 2026-05-12T20:04Z).
+SPECIALIST_TIMEOUT_SEC = 45 * 60
 _PROBE_BLOCK_RE = re.compile(r"^### Probe |^No probes\.$", re.MULTILINE)
 _PROBE_HEADER_RE = re.compile(r"^### Probe (\d+)\b", re.MULTILINE)
 _CRITIC_H2_RE = re.compile(r"^## Critic counter-arguments\s*$", re.MULTILINE)
@@ -72,9 +81,21 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
         "-o", str(out_file),
         prompt,
     ]
-    with log_file.open("a") as lf:
-        proc = subprocess.run(argv, stdout=lf, stderr=lf)
-    exit_code = proc.returncode
+    try:
+        with log_file.open("a") as lf:
+            proc = subprocess.run(
+                argv, stdout=lf, stderr=lf, timeout=SPECIALIST_TIMEOUT_SEC,
+            )
+        exit_code = proc.returncode
+    except subprocess.TimeoutExpired:
+        # subprocess.run already SIGKILL'd the direct codex child. Codex's
+        # node + sandbox subprocesses are reparented to PID 1 and reaped by
+        # systemd KillMode=process cycling. 124 matches GNU `timeout`'s exit
+        # code — Wave B in run_pipeline distinguishes 124 (tolerable, up to 1)
+        # from other non-zero rcs (hard failures, no tolerance).
+        exit_code = 124
+        with log_file.open("a") as lf:
+            lf.write(f"[{_ts()}] agent={name} timed out after {SPECIALIST_TIMEOUT_SEC}s (SIGKILL'd)\n")
 
     with log_file.open("a") as lf:
         lf.write(f"[{_ts()}] agent={name} exit={exit_code}\n")
@@ -383,7 +404,12 @@ def run_pipeline(
     has_prev = prev_review.exists() and prev_review.stat().st_size > 0
     label = f"{len(SPECIALISTS)} specialists" + (" + momentum" if has_prev else "")
     log(f"{pr_id}: Wave B — {label}")
-    failure: str | None = None
+    timed_out: list[str] = []
+    hard_failures: list[str] = []
+    # Collect ALL results — never `break` early. Early break left the with-
+    # block's __exit__ to call ex.shutdown(wait=True) on a hung future and
+    # the pipeline blocked indefinitely (see SPECIALIST_TIMEOUT_SEC docstring).
+    # With run_codex's 45m subprocess timeout, every future now resolves.
     with ThreadPoolExecutor(max_workers=len(SPECIALISTS) + 1) as ex:
         futures = {
             ex.submit(run_specialist, specialist=s, **common_kwargs): s
@@ -396,17 +422,75 @@ def run_pipeline(
             try:
                 rc = fut.result()
             except Exception as exc:
-                failure = f"{pr_id}: {name} raised {type(exc).__name__}: {exc} — aborting"
-                break
-            if rc != 0:
-                failure = (
-                    f"{pr_id}: {name} exited non-zero (rc={rc}, see {run}/agents/{name}/log.txt) "
-                    "— aborting"
+                hard_failures.append(f"{name}: raised {type(exc).__name__}: {exc}")
+                continue
+            if rc == 124:
+                timed_out.append(name)
+                log(f"{pr_id}: specialist {name} timed out after {SPECIALIST_TIMEOUT_SEC}s")
+            elif rc != 0:
+                hard_failures.append(
+                    f"{name}: exited non-zero (rc={rc}, see {run}/agents/{name}/log.txt)"
                 )
-                break
-    if failure is not None:
-        return _abort(repo, failure)
-    if has_prev:
+
+    # Hard failures (non-timeout) are bugs / contract violations, not flakes —
+    # no tolerance threshold.
+    if hard_failures:
+        return _abort(
+            repo, f"{pr_id}: Wave B hard failures: {'; '.join(hard_failures)} — aborting"
+        )
+
+    # Fail-loud threshold: 2+ specialists hung means a systemic codex problem,
+    # not a single flake. Skip the aggregator and let the bash worker replace
+    # the 👀 placeholder with an explicit error (read from this sentinel) so
+    # the author isn't left with an orphan reviewing-marker for 90 min.
+    if len(timed_out) >= 2:
+        (run / "_wave_b_timeouts.txt").write_text("\n".join(timed_out) + "\n")
+        return _abort(
+            repo,
+            f"{pr_id}: {len(timed_out)} specialists timed out "
+            f"({', '.join(timed_out)}) — aborting (fail-loud threshold reached)",
+        )
+
+    # Exactly 1 timeout: tolerable degradation. Write a "No probes." stub at the
+    # path the aggregator reads from so the aggregator can run cleanly, and
+    # drop a banner sentinel for the bash worker to inject above the review
+    # body. The author sees the partial coverage explicitly, not silently.
+    if timed_out:
+        [name] = timed_out
+        if name == "momentum":
+            # Momentum's aggregator-visible path is scratch/momentum.md
+            # (linked from agents/momentum/output.md in the happy path); the
+            # _relink below would error on the missing source, so we write
+            # the stub here and skip the relink.
+            (scratch / "momentum.md").write_text(
+                f"<!-- momentum timed out after {SPECIALIST_TIMEOUT_SEC}s — no prior-review momentum available -->\n"
+            )
+            warning = (
+                f"⚠️ Momentum input unavailable: timed out after "
+                f"{SPECIALIST_TIMEOUT_SEC // 60} min — review reflects 8/8 "
+                "specialist angles but did not benefit from prior-review momentum"
+            )
+        else:
+            # Specialist: layered stub at agents/<name>/layered.md (for
+            # forensics + bakeoff roster math) AND .codex-scratch/specialists/
+            # (where the aggregator reads from). "No probes." is the documented
+            # zero-probe sentinel the critic contract already accepts.
+            stub = (
+                f"<!-- specialist {name} timed out after {SPECIALIST_TIMEOUT_SEC}s — no analysis available -->\n"
+                "No probes.\n\n---\n\nNo probes.\n"
+            )
+            (run / "agents" / name / "layered.md").write_text(stub)
+            scratch_specialists = repo / ".codex-scratch" / "specialists"
+            scratch_specialists.mkdir(parents=True, exist_ok=True)
+            (scratch_specialists / f"{name}.md").write_text(stub)
+            warning = (
+                f"⚠️ Specialist `{name}` timed out after "
+                f"{SPECIALIST_TIMEOUT_SEC // 60} min — review reflects "
+                f"{len(SPECIALISTS) - 1}/{len(SPECIALISTS)} angles"
+            )
+        (run / "_wave_b_warning.txt").write_text(warning)
+
+    if has_prev and "momentum" not in timed_out:
         _relink(scratch / "momentum.md", run / "agents" / "momentum" / "output.md")
     log(f"{pr_id}: Wave B complete")
 

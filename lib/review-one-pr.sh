@@ -1176,6 +1176,26 @@ AGG_OUT="$RUN_DIR/agents/aggregator/output.md"
 # the safety-net check below handles any race or unexpected exit.
 if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
     log "$PR_ID: pipeline failed (exit=$PIPELINE_EXIT, agg empty=$([ ! -s "$AGG_OUT" ] && echo true || echo false)) — aborting"
+    # Wave B fail-loud threshold (≥2 specialists timed out): pipeline.py
+    # wrote a sentinel naming the hung specialists. Replace the 👀
+    # placeholder with an explicit error so the author isn't left with an
+    # orphan "reviewing" marker. Only set EYES_RESOLVED=true on PATCH
+    # success — if gh fails, leave the generic cleanup_eyes path as a
+    # safety net.
+    TIMEOUTS_SENTINEL="$RUN_DIR/_wave_b_timeouts.txt"
+    if [ -s "$TIMEOUTS_SENTINEL" ] && [ -n "$EYES_COMMENT_ID" ]; then
+        TIMED_OUT=$(paste -sd, "$TIMEOUTS_SENTINEL")
+        if gh api "repos/$REPO/issues/comments/$EYES_COMMENT_ID" --method PATCH \
+                -f body="$BOT_AUTO_POST_MARKER
+$BOT_AI_AUTHOR_MARKER
+❌ Review aborted — multiple specialists timed out (\`$TIMED_OUT\`). See knightwatch-reviewer logs; will retry on the next \`/${BOT_CMD_PREFIX}-update-review\` or push." \
+                >/dev/null 2>&1; then
+            EYES_RESOLVED=true
+            log "$PR_ID: replaced placeholder with timeouts-error (specialists=$TIMED_OUT)"
+        else
+            log "$PR_ID: failed to PATCH placeholder with timeouts-error; falling back to generic cleanup_eyes"
+        fi
+    fi
     [ -d "$REPO_DIR" ] && rm -rf "$REPO_DIR"
     exit 1
 fi
@@ -1280,6 +1300,12 @@ REVIEW_NOTES+=("$KID_NOTE")
 # absent + no STRICT_TYPING_CMDS entry) or the checker errored (logged
 # loud above). Both cases are correctly silent in the header.
 [ -n "$STRICT_TYPING_NOTE" ] && REVIEW_NOTES+=("$STRICT_TYPING_NOTE")
+# Wave B tolerated 1 timeout: pipeline.py wrote a one-line banner describing
+# the missing angle. Surface it in REVIEW_NOTES so the author sees the
+# partial coverage explicitly — silent degradation is the failure mode this
+# guards against.
+WAVE_B_WARNING_SENTINEL="$RUN_DIR/_wave_b_warning.txt"
+[ -s "$WAVE_B_WARNING_SENTINEL" ] && REVIEW_NOTES+=("$(cat "$WAVE_B_WARNING_SENTINEL")")
 log "$PR_ID: review-notes = ${#REVIEW_NOTES[@]} (${REVIEW_NOTES[*]:-none})"
 
 if ! COMMENT_BODY=$(prepend_review_header "$COMMENT_BODY" "${REVIEW_NOTES[@]}"); then
