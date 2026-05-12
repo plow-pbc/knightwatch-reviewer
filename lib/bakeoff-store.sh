@@ -53,8 +53,10 @@ CREATE INDEX IF NOT EXISTS idx_runs_spec_time
     ON specialist_runs(specialist, ran_at);
 
 CREATE TABLE IF NOT EXISTS walks (
-    repo            TEXT PRIMARY KEY,
-    last_walked_at  TEXT NOT NULL
+    repo                            TEXT PRIMARY KEY,
+    last_walked_at                  TEXT    NOT NULL,
+    reviews_total_in_window         INTEGER NOT NULL DEFAULT 0,
+    reviews_with_marker_in_window   INTEGER NOT NULL DEFAULT 0
 );
 SQL
 
@@ -67,6 +69,14 @@ SQL
     # Migration: add edited_after column to pre-existing DBs (added 2026-05-12).
     if ! sqlite3 "$db" "SELECT 1 FROM pragma_table_info('specialist_runs') WHERE name='edited_after';" | grep -q 1; then
         sqlite3 "$db" "ALTER TABLE specialist_runs ADD COLUMN edited_after INTEGER NOT NULL DEFAULT 0;"
+    fi
+
+    # Migration: add coverage columns to pre-existing DBs (added 2026-05-12).
+    if ! sqlite3 "$db" "SELECT 1 FROM pragma_table_info('walks') WHERE name='reviews_total_in_window';" | grep -q 1; then
+        sqlite3 "$db" "ALTER TABLE walks ADD COLUMN reviews_total_in_window INTEGER NOT NULL DEFAULT 0;"
+    fi
+    if ! sqlite3 "$db" "SELECT 1 FROM pragma_table_info('walks') WHERE name='reviews_with_marker_in_window';" | grep -q 1; then
+        sqlite3 "$db" "ALTER TABLE walks ADD COLUMN reviews_with_marker_in_window INTEGER NOT NULL DEFAULT 0;"
     fi
 }
 
@@ -123,6 +133,30 @@ set_walk_watermark() {
 INSERT INTO walks (repo, last_walked_at) VALUES ('$repo', '$ts')
 ON CONFLICT(repo) DO UPDATE SET last_walked_at = excluded.last_walked_at;
 SQL
+}
+
+# Persist per-repo coverage counters — substantive bot reviews seen in the
+# WINDOW_DAYS lookback, total vs marker-equipped. Renormalized per walk.
+# Upsert so the row exists even if get_walk_watermark hasn't been called
+# (e.g. coverage-only run on a brand-new DB).
+set_repo_coverage() {
+    local db="$1" repo="$2" total="$3" with_marker="$4"
+    # Integer fields (total, with_marker) — caller guarantees jq-extracted int.
+    sqlite3 "$db" <<SQL
+INSERT INTO walks (repo, last_walked_at, reviews_total_in_window, reviews_with_marker_in_window)
+VALUES ('$repo', '$(date -u +%FT%TZ)', $total, $with_marker)
+ON CONFLICT(repo) DO UPDATE SET
+    reviews_total_in_window = excluded.reviews_total_in_window,
+    reviews_with_marker_in_window = excluded.reviews_with_marker_in_window;
+SQL
+}
+
+# Returns "total|with_marker". Empty walks row → "0|0".
+query_coverage() {
+    local db="$1" repo="$2"
+    local row
+    row=$(sqlite3 "$db" "SELECT reviews_total_in_window || '|' || reviews_with_marker_in_window FROM walks WHERE repo='$repo';")
+    [ -n "$row" ] && echo "$row" || echo "0|0"
 }
 
 # Severity ordering — single source of truth. Higher number = worse.
