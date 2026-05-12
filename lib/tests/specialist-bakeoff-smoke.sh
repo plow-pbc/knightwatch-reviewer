@@ -738,4 +738,69 @@ echo "$TESTS_ROW" | grep -qE '\| 1 \|' \
 
 unset MOCK_PULLS_COMMITS_FILE
 
+# ---- scenario 21: transient pulls/commits failure preserves prior edited_after ----
+echo "    scenario 21: pulls/commits failure does NOT erase a previously-true edited_after..."
+rm -f "$DB_FILE"
+TS_REVIEW_21=$(hours_ago 30)
+TS_COMMIT_21=$(hours_ago 20)   # AFTER review
+
+python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
+import json
+body = "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=tests -->\n\n**Probes**\n\n1. [blocking] [from: tests] [tests] Touched-later. Files: src/a.py. Edit: do x.\n\n_How to use: auto-reviews every new PR..._"
+print(json.dumps([{"id": 110, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/70", "created_at": "${TS_REVIEW_21}", "user": {"login": "testbot"}, "body": body}]))
+PYEOF
+export MOCK_PULLS_FILES_FILE="$TMPDIR_SMOKE/pulls-files.txt"
+printf 'src/a.py\t10\t0\n' > "$MOCK_PULLS_FILES_FILE"
+printf 'sha-after\t%s\n' "$TS_COMMIT_21" > "$TMPDIR_SMOKE/commits.tsv"
+export MOCK_PULLS_COMMITS_FILE="$TMPDIR_SMOKE/commits.tsv"
+mkdir -p "$TMPDIR_SMOKE/commit-files-21"
+echo "src/a.py" > "$TMPDIR_SMOKE/commit-files-21/sha-after.tsv"
+export MOCK_COMMIT_FILES_DIR="$TMPDIR_SMOKE/commit-files-21"
+
+# First walk: commits fetch succeeds → edited_after=1.
+run_driver
+ROW=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE specialist='tests' AND comment_id=110;")
+[ "$ROW" = "1" ] || { echo "FAIL scenario 21 (setup): pre-fail edited_after '$ROW' expected '1'"; exit 1; }
+
+# Re-walk: simulate pulls/commits transient failure. edited_after must NOT flip to 0.
+MOCK_GH_PULLS_COMMITS_FAIL=1 run_driver
+ROW=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE specialist='tests' AND comment_id=110;")
+[ "$ROW" = "1" ] || { echo "FAIL scenario 21: edited_after erased by transient pulls/commits failure ('$ROW' expected '1')"; exit 1; }
+
+unset MOCK_PULLS_COMMITS_FILE MOCK_COMMIT_FILES_DIR
+
+# ---- scenario 22: two reviews on one PR, commit between them → per-review fence ----
+echo "    scenario 22: two reviews on one PR with intervening commit — cache key per-review fences edited_after..."
+rm -f "$DB_FILE"
+TS_R1_22=$(hours_ago 40)
+TS_COMMIT_22=$(hours_ago 30)   # between R1 and R2
+TS_R2_22=$(hours_ago 20)
+
+python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
+import json
+body = "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=tests -->\n\n**Probes**\n\n1. [blocking] [from: tests] [tests] Edited. Files: src/a.py. Edit: do x.\n\n_How to use: auto-reviews every new PR..._"
+comments = [
+    {"id": 120, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/80", "created_at": "${TS_R1_22}", "user": {"login": "testbot"}, "body": body},
+    {"id": 121, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/80", "created_at": "${TS_R2_22}", "user": {"login": "testbot"}, "body": body},
+]
+print(json.dumps(comments))
+PYEOF
+printf 'src/a.py\t1\t0\n' > "$MOCK_PULLS_FILES_FILE"
+printf 'sha-mid\t%s\n' "$TS_COMMIT_22" > "$TMPDIR_SMOKE/commits.tsv"
+export MOCK_PULLS_COMMITS_FILE="$TMPDIR_SMOKE/commits.tsv"
+mkdir -p "$TMPDIR_SMOKE/commit-files-22"
+echo "src/a.py" > "$TMPDIR_SMOKE/commit-files-22/sha-mid.tsv"
+export MOCK_COMMIT_FILES_DIR="$TMPDIR_SMOKE/commit-files-22"
+
+run_driver
+
+# R1 saw the commit AFTER it → edited_after=1.
+ROW1=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE specialist='tests' AND comment_id=120;")
+[ "$ROW1" = "1" ] || { echo "FAIL scenario 22: R1 edited_after '$ROW1' expected '1' (commit landed after R1)"; exit 1; }
+# R2 saw no commits after it → edited_after=0.
+ROW2=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE specialist='tests' AND comment_id=121;")
+[ "$ROW2" = "0" ] || { echo "FAIL scenario 22: R2 edited_after '$ROW2' expected '0' (no commits after R2)"; exit 1; }
+
+unset MOCK_PULLS_COMMITS_FILE MOCK_COMMIT_FILES_DIR
+
 echo "PASS"

@@ -186,17 +186,32 @@ UPDATE specialist_runs
 SQL
 }
 
-# Reset applied + applied_added + applied_removed + edited_after for every
-# (specialist) row of a given (repo, comment_id). Called by the walker
-# BEFORE recomputing applied matches, so that stale credit (PR diff stopped
-# touching the previously-matched path) gets cleared. Only call AFTER
-# pulls/files succeeds — otherwise you'd nuke previously-correct data on a
-# transient API failure.
+# Reset applied + applied_added + applied_removed for every (specialist)
+# row of a given (repo, comment_id). Called by the walker BEFORE recomputing
+# applied matches, so that stale credit (PR diff stopped touching the
+# previously-matched path) gets cleared. Only call AFTER pulls/files
+# succeeds — otherwise you'd nuke previously-correct data on a transient
+# API failure. edited_after has its own clearer (see below) gated on a
+# separate fetch's success.
 clear_applied_for_review() {
     local db="$1" repo="$2" comment_id="$3"
     sqlite3 "$db" <<SQL
 UPDATE specialist_runs
-   SET applied = 0, applied_added = 0, applied_removed = 0, edited_after = 0
+   SET applied = 0, applied_added = 0, applied_removed = 0
+ WHERE repo = '$repo' AND comment_id = $comment_id;
+SQL
+}
+
+# Reset edited_after for every (specialist) row of a given (repo, comment_id).
+# Split from clear_applied_for_review because edited_after depends on a
+# different fetch chain (pulls/commits + commits/<sha>); clearing it when
+# only pulls/files succeeded would erase prior-correct signal on a transient
+# commits-fetch failure.
+clear_edited_after_for_review() {
+    local db="$1" repo="$2" comment_id="$3"
+    sqlite3 "$db" <<SQL
+UPDATE specialist_runs
+   SET edited_after = 0
  WHERE repo = '$repo' AND comment_id = $comment_id;
 SQL
 }

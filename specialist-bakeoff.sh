@@ -74,6 +74,7 @@ for repo in "${REPOS[@]}"; do
     declare -A pr_files_cache=()
     declare -A pr_files_ok_cache=()
     declare -A pr_post_paths_cache=()
+    declare -A pr_post_paths_ok_cache=()
 
     # Pass 1: walk substantive bot reviews. Each row is one (review × specialist).
     # The roster marker drives row creation; probe parsing drives flag updates.
@@ -148,12 +149,13 @@ for repo in "${REPOS[@]}"; do
         # Per-PR set of paths touched by commits LANDING AFTER the review's
         # created_at — fetched lazily (once per cache_key) and intersected
         # with each specialist's cited paths to drive `edited_after`. A
-        # pulls/commits or commits/<sha> failure logs WARN and treats the
-        # set as empty for this review (edited_after stays 0); does not
-        # short-circuit Applied accounting.
+        # pulls/commits or commits/<sha> failure logs WARN and marks
+        # post_paths_ok=0; downstream skips both clear and recompute so a
+        # transient failure can't erase a previously-correct edited_after.
         post_review_key="${cache_key}#after#${created_at}"
         if [[ -z "${pr_post_paths_cache[$post_review_key]+set}" ]]; then
             post_paths=""
+            post_paths_ok=1
             if commits_json=$(gh api --paginate "repos/$repo/pulls/$pr_num/commits" 2>>"$LOG_FILE"); then
                 shas=$(printf '%s\n' "$commits_json" \
                     | jq -rs --arg t "$created_at" 'add // [] | .[] | select(.commit.author.date > $t) | .sha')
@@ -163,23 +165,29 @@ for repo in "${REPOS[@]}"; do
                         commit_paths=$(printf '%s\n' "$commit_json" | jq -r '.files[]?.filename')
                         post_paths=$(printf '%s\n%s\n' "$post_paths" "$commit_paths")
                     else
-                        log "WARN: gh api commits/$sha failed for $repo, post-review paths may be incomplete"
+                        log "WARN: gh api commits/$sha failed for $repo, holding edited_after"
+                        post_paths_ok=0
                     fi
                 done <<< "$shas"
                 post_paths=$(printf '%s\n' "$post_paths" | grep -v '^$' | sort -u || true)
             else
-                log "WARN: gh api pulls/commits failed for $repo#$pr_num, skipping edited_after for this review"
+                log "WARN: gh api pulls/commits failed for $repo#$pr_num, holding edited_after"
+                post_paths_ok=0
             fi
             pr_post_paths_cache["$post_review_key"]="$post_paths"
+            pr_post_paths_ok_cache["$post_review_key"]="$post_paths_ok"
         fi
         post_paths="${pr_post_paths_cache[$post_review_key]}"
+        post_paths_ok="${pr_post_paths_ok_cache[$post_review_key]}"
 
         if [ "$pr_files_ok" = "1" ]; then
-            # Clear stale Applied/+LOC/edited_after before recomputing — handles
-            # the rewalk case where the PR diff stopped touching a previously-
-            # matched cited path (incl. the empty-diff force-push edge case
-            # where pulls/files succeeds with an empty list).
+            # Clear stale Applied/+LOC before recomputing — handles the rewalk
+            # case where the PR diff stopped touching a previously-matched
+            # cited path (incl. the empty-diff force-push edge case where
+            # pulls/files succeeds with an empty list). edited_after is
+            # cleared separately below, gated on post_paths_ok.
             clear_applied_for_review "$DB_FILE" "$repo" "$review_id"
+            [ "$post_paths_ok" = "1" ] && clear_edited_after_for_review "$DB_FILE" "$repo" "$review_id"
 
             # Collect deduped (specialist, path) pairs across all probes in this review.
             # Empty $pr_paths is a no-op below — the path-intersection grep matches
@@ -218,8 +226,10 @@ for repo in "${REPOS[@]}"; do
             done
 
             # Pass 1b: edited_after — intersect each specialist's cited paths
-            # with paths touched by post-review commits.
-            if [ -n "$post_paths" ]; then
+            # with paths touched by post-review commits. Skip entirely on
+            # partial fetch (post_paths_ok=0) so a half-built post_paths
+            # set can't under-mark a previously-correct edited_after.
+            if [ "$post_paths_ok" = "1" ] && [ -n "$post_paths" ]; then
                 declare -A spec_edited=()
                 for key in "${!spec_paths_seen[@]}"; do
                     specialist="${key%%	*}"

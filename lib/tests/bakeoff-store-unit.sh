@@ -81,10 +81,18 @@ mark_edited_after "$DB" srosro/repo 300 tests
 ROW=$(sqlite3 "$DB" "SELECT edited_after FROM specialist_runs WHERE comment_id=300 AND specialist='tests';")
 [ "$ROW" = "1" ] || { echo "FAIL: edited_after not 1 after mark: $ROW"; exit 1; }
 
-echo "  clear_applied_for_review also resets edited_after..."
+echo "  clear_applied_for_review preserves edited_after (separate clearer)..."
+mark_edited_after "$DB" srosro/repo 300 tests
+mark_applied "$DB" srosro/repo 300 tests
 clear_applied_for_review "$DB" srosro/repo 300
 ROW=$(sqlite3 "$DB" "SELECT applied, edited_after FROM specialist_runs WHERE comment_id=300 AND specialist='tests';")
-[ "$ROW" = "0|0" ] || { echo "FAIL: clear_applied_for_review did not reset edited_after: $ROW"; exit 1; }
+[ "$ROW" = "0|1" ] || { echo "FAIL: clear_applied_for_review should NOT touch edited_after: $ROW"; exit 1; }
+
+echo "  clear_edited_after_for_review resets only edited_after..."
+mark_applied "$DB" srosro/repo 300 tests
+clear_edited_after_for_review "$DB" srosro/repo 300
+ROW=$(sqlite3 "$DB" "SELECT applied, edited_after FROM specialist_runs WHERE comment_id=300 AND specialist='tests';")
+[ "$ROW" = "1|0" ] || { echo "FAIL: clear_edited_after_for_review should leave applied untouched: $ROW"; exit 1; }
 
 echo "  pre-existing DB (without edited_after) migrates idempotently..."
 LEGACY="$TMP/legacy.db"
