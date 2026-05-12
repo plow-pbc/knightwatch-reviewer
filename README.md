@@ -121,8 +121,6 @@ The store is append-only — historical reviews continue accumulating data, and 
 
 Use it to inform collapse-or-keep decisions on specialist agents.
 
-See `docs/specialist-bakeoff-sample.md` for an example snapshot.
-
 ## Repo layout
 
 - `review.sh` / `lib/review-one-pr.sh` — per-PR review driver
