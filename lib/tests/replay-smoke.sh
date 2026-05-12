@@ -71,4 +71,40 @@ bash "$REPO_ROOT/lib/replay-batch.sh" \
 grep -qF '|---|---|---|' "$BATCH_OUT/index.md" \
     || { echo "FAIL scenario 3: index.md missing the table separator row"; cat "$BATCH_OUT/index.md"; exit 1; }
 
-echo "OK: replay-smoke (absent-note appears; present-note suppressed; replay-batch index.md emitted)"
+# Scenario 4: Wave B warning sentinel is consumed identically by both
+# review-one-pr.sh and replay.sh (`[ -s "$f" ] && REVIEW_NOTES+=("$(cat
+# "$f")")`). Drives the consumer pattern + prepend_review_header to fence
+# the parity. Round-2 probe 2.
+echo "  scenario 4: _wave_b_warning.txt → banner appears in stitched output..."
+RUN_DIR="$TMPDIR/run4"
+mkdir -p "$RUN_DIR"
+printf '%s\n' '⚠️ Specialist `performance` timed out after 45 min — review reflects 7/8 angles' \
+    > "$RUN_DIR/_wave_b_warning.txt"
+(
+    set +u
+    . "$REPO_ROOT/lib/run-dir.sh"
+    MARKER='<!-- knightwatch-reviewer:auto-post -->'
+    SYNTHETIC_BODY="$(printf '%s\nSome review content.\n' "$MARKER")"
+    REVIEW_NOTES=()
+    REVIEW_NOTES+=("🎬 Replay of \`abc1234\` (\`gh pr view --repo owner/repo 7\`)")
+    # Mirror the exact consumer line from lib/review-one-pr.sh + lib/replay.sh.
+    [ -s "$RUN_DIR/_wave_b_warning.txt" ] && REVIEW_NOTES+=("$(cat "$RUN_DIR/_wave_b_warning.txt")")
+    STITCHED=$(prepend_review_header "$SYNTHETIC_BODY" "${REVIEW_NOTES[@]}")
+    printf '%s\n' "$STITCHED" > "$TMPDIR/warning-out.md"
+)
+grep -qF '⚠️ Specialist `performance` timed out' "$TMPDIR/warning-out.md" \
+    || { echo "FAIL scenario 4: warning sentinel not surfaced in stitched header"; cat "$TMPDIR/warning-out.md"; exit 1; }
+
+# Scenario 5: review-one-pr.sh's timeouts-sentinel → EYES_ABORT_BODY shape.
+# Mirror the exact `paste -sd,` join used in lib/review-one-pr.sh's pipeline
+# failure branch so a refactor that changes the sentinel format (e.g. one
+# specialist per line vs. CSV) gets caught here before it ships.
+echo "  scenario 5: _wave_b_timeouts.txt → comma-joined names for EYES_ABORT_BODY..."
+RUN_DIR5="$TMPDIR/run5"
+mkdir -p "$RUN_DIR5"
+printf '%s\n' "performance" "security" > "$RUN_DIR5/_wave_b_timeouts.txt"
+TIMED_OUT=$(paste -sd, "$RUN_DIR5/_wave_b_timeouts.txt")
+[ "$TIMED_OUT" = "performance,security" ] \
+    || { echo "FAIL scenario 5: expected 'performance,security', got '$TIMED_OUT'"; exit 1; }
+
+echo "OK: replay-smoke (absent-note appears; present-note suppressed; replay-batch index.md emitted; Wave B warning surfaced; timeouts sentinel comma-joined)"

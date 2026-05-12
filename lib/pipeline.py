@@ -8,6 +8,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -27,9 +28,54 @@ SPECIALISTS = (
 # enforces this via Popen + start_new_session + killpg on TimeoutExpired,
 # so codex's tool descendants are reaped too (not orphaned to PID 1).
 SPECIALIST_TIMEOUT_SEC = 45 * 60
+
+# Internal sentinel returned by run_codex when subprocess.TimeoutExpired
+# fires. Chosen above the Unix exit-code range (0–255) so codex's own
+# process.exit(N) (truncated to 0–255) cannot ever collide with it. Wave B
+# checks `rc == SPECIALIST_TIMEOUT_RC` — not `rc == 124` — so a codex
+# specialist that happens to exit(124) for non-timeout reasons can't be
+# silently misclassified as the one tolerated timeout.
+SPECIALIST_TIMEOUT_RC = 1024
 _PROBE_BLOCK_RE = re.compile(r"^### Probe |^No probes\.$", re.MULTILINE)
 _PROBE_HEADER_RE = re.compile(r"^### Probe (\d+)\b", re.MULTILINE)
 _CRITIC_H2_RE = re.compile(r"^## Critic counter-arguments\s*$", re.MULTILINE)
+
+# Registry of live codex process-group IDs. Each codex child runs in its own
+# session (start_new_session=True in run_codex), so when bash's outer
+# `timeout 55m python3 ...` (or the 90m worker outer) fires SIGTERM at
+# python3's pgrp, those children DO NOT receive the signal — they reparent
+# to PID 1 with reviewer credentials and disabled sandboxing. The SIGTERM
+# handler installed in main() killpg's every entry here before exit.
+_active_codex_pgrps: set[int] = set()
+_codex_pgrps_lock = threading.Lock()
+
+
+def _track_codex_pgrp(pgid: int) -> None:
+    with _codex_pgrps_lock:
+        _active_codex_pgrps.add(pgid)
+
+
+def _untrack_codex_pgrp(pgid: int) -> None:
+    with _codex_pgrps_lock:
+        _active_codex_pgrps.discard(pgid)
+
+
+def _killpg_all_codex() -> int:
+    """SIGKILL every live codex pgrp; clear the registry. Returns the number
+    of pgrps actually signalled (the rest were already reaped — race window
+    between os.killpg call and waitpid in run_codex's TimeoutExpired branch
+    on a busy host)."""
+    with _codex_pgrps_lock:
+        pgrps = list(_active_codex_pgrps)
+        _active_codex_pgrps.clear()
+    killed = 0
+    for pgid in pgrps:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+            killed += 1
+        except ProcessLookupError:
+            pass
+    return killed
 
 
 def _ts() -> str:
@@ -91,8 +137,13 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
     # children then reparent to PID 1, where pr-reviewer.service's
     # KillMode=process leaves them running with reviewer credentials and
     # disabled sandboxing until they die on their own (potentially never).
+    # The pgrp is also registered with _active_codex_pgrps so a SIGTERM
+    # delivered to python3's pgrp (by bash's outer `timeout`) reaches the
+    # codex children via main()'s signal handler before python3 exits —
+    # otherwise the same leak resurfaces one layer up.
     with log_file.open("a") as lf:
         proc = subprocess.Popen(argv, stdout=lf, stderr=lf, start_new_session=True)
+    _track_codex_pgrp(proc.pid)
     try:
         exit_code = proc.wait(timeout=SPECIALIST_TIMEOUT_SEC)
     except subprocess.TimeoutExpired:
@@ -101,10 +152,11 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
         except ProcessLookupError:
             pass  # leader already reaped; kernel cleaned up
         proc.wait()  # reap zombie
-        exit_code = 124  # GNU `timeout` convention — Wave B distinguishes
-                         # 124 (tolerable, up to 1) from other non-zero rcs.
+        exit_code = SPECIALIST_TIMEOUT_RC
         with log_file.open("a") as lf:
             lf.write(f"[{_ts()}] agent={name} timed out after {SPECIALIST_TIMEOUT_SEC}s — killpg'd whole group\n")
+    finally:
+        _untrack_codex_pgrp(proc.pid)
 
     with log_file.open("a") as lf:
         lf.write(f"[{_ts()}] agent={name} exit={exit_code}\n")
@@ -433,7 +485,7 @@ def run_pipeline(
             except Exception as exc:
                 hard_failures.append(f"{name}: raised {type(exc).__name__}: {exc}")
                 continue
-            if rc == 124:
+            if rc == SPECIALIST_TIMEOUT_RC:
                 timed_out.append(name)
                 log(f"{pr_id}: specialist {name} timed out after {SPECIALIST_TIMEOUT_SEC}s")
             elif rc != 0:
@@ -517,10 +569,32 @@ def run_pipeline(
     return 0
 
 
+def _install_codex_cleanup_signal_handlers() -> None:
+    """SIGTERM/SIGINT cleanup: bash wraps python3 in `timeout 55m` (and the
+    outer worker in `timeout 90m bash`), both of which send their signal
+    to python3's pgrp. Codex children run in their own sessions via
+    start_new_session=True and DO NOT receive that signal — so without
+    this handler, an upstream timeout firing leaves codex+tool processes
+    alive as PID-1 orphans with reviewer credentials. We killpg the
+    tracked codex pgrps before re-raising the exit status.
+    """
+    def _handler(signum: int, frame: object) -> None:
+        n = _killpg_all_codex()
+        sys.stderr.write(
+            f"[pipeline] received signal {signum}; killpg'd {n} active codex pgrp(s) "
+            "before exit\n"
+        )
+        # Conventional exit code for signal-killed processes: 128 + signum.
+        os._exit(128 + signum)
+    signal.signal(signal.SIGTERM, _handler)
+    signal.signal(signal.SIGINT, _handler)
+
+
 def main() -> int:
     if len(sys.argv) != 3:
         sys.stderr.write(f"usage: {sys.argv[0]} REPO_DIR RUN_DIR\n")
         return 2
+    _install_codex_cleanup_signal_handlers()
     repo_dir, run_dir = sys.argv[1], sys.argv[2]
     prompts_dir = os.environ.get("PROMPTS_DIR", os.path.expanduser("~/.pr-reviewer/prompts"))
     return run_pipeline(
