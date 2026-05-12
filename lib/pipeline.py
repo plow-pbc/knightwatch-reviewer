@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -19,10 +20,12 @@ SPECIALISTS = (
 # Per-codex-invocation hard cap. Successful specialists complete in 1–5 min
 # in production (Wave B aggregate ≈ 5–10 min); 45 min means the codex
 # subprocess is wedged, not slow. Without this, a single hung specialist
-# blocks the `with ThreadPoolExecutor as ex:` context exit indefinitely,
-# the bash worker stays in `wait`, and the 90 min outer `timeout` fires
-# SIGTERM at a point the EXIT trap may not survive — leaving the 👀
-# placeholder orphaned (PR cncorp/plow#594, 2026-05-12T20:04Z).
+# blocked the `with ThreadPoolExecutor as ex:` context exit indefinitely,
+# the bash worker stayed in `wait`, and the 90 min outer `timeout` fired
+# SIGTERM at a point the EXIT trap didn't complete — leaving the 👀
+# placeholder orphaned (PR cncorp/plow#594, 2026-05-12T20:04Z). run_codex
+# enforces this via Popen + start_new_session + killpg on TimeoutExpired,
+# so codex's tool descendants are reaped too (not orphaned to PID 1).
 SPECIALIST_TIMEOUT_SEC = 45 * 60
 _PROBE_BLOCK_RE = re.compile(r"^### Probe |^No probes\.$", re.MULTILINE)
 _PROBE_HEADER_RE = re.compile(r"^### Probe (\d+)\b", re.MULTILINE)
@@ -81,21 +84,27 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
         "-o", str(out_file),
         prompt,
     ]
+    # Popen + start_new_session=True puts codex (a node process that spawns
+    # tool subprocesses) in its own process group. On timeout we SIGKILL the
+    # whole group with os.killpg, reaping the descendants too. Bare
+    # subprocess.run(timeout=) kills only the direct child — codex's tool
+    # children then reparent to PID 1, where pr-reviewer.service's
+    # KillMode=process leaves them running with reviewer credentials and
+    # disabled sandboxing until they die on their own (potentially never).
+    with log_file.open("a") as lf:
+        proc = subprocess.Popen(argv, stdout=lf, stderr=lf, start_new_session=True)
     try:
-        with log_file.open("a") as lf:
-            proc = subprocess.run(
-                argv, stdout=lf, stderr=lf, timeout=SPECIALIST_TIMEOUT_SEC,
-            )
-        exit_code = proc.returncode
+        exit_code = proc.wait(timeout=SPECIALIST_TIMEOUT_SEC)
     except subprocess.TimeoutExpired:
-        # subprocess.run already SIGKILL'd the direct codex child. Codex's
-        # node + sandbox subprocesses are reparented to PID 1 and reaped by
-        # systemd KillMode=process cycling. 124 matches GNU `timeout`'s exit
-        # code — Wave B in run_pipeline distinguishes 124 (tolerable, up to 1)
-        # from other non-zero rcs (hard failures, no tolerance).
-        exit_code = 124
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass  # leader already reaped; kernel cleaned up
+        proc.wait()  # reap zombie
+        exit_code = 124  # GNU `timeout` convention — Wave B distinguishes
+                         # 124 (tolerable, up to 1) from other non-zero rcs.
         with log_file.open("a") as lf:
-            lf.write(f"[{_ts()}] agent={name} timed out after {SPECIALIST_TIMEOUT_SEC}s (SIGKILL'd)\n")
+            lf.write(f"[{_ts()}] agent={name} timed out after {SPECIALIST_TIMEOUT_SEC}s — killpg'd whole group\n")
 
     with log_file.open("a") as lf:
         lf.write(f"[{_ts()}] agent={name} exit={exit_code}\n")

@@ -1,5 +1,6 @@
 """Tests for lib/pipeline.py — mocked codex subprocess."""
 import os
+import signal
 import stat
 import subprocess
 import sys
@@ -37,15 +38,33 @@ def _write_minimal_prompts(prompts_dir: Path) -> None:
     )
 
 
-class FakeCompletedProcess:
-    """Minimal stand-in for subprocess.CompletedProcess."""
-    def __init__(self, returncode):
-        self.returncode = returncode
+class FakePopen:
+    """Stand-in for subprocess.Popen. Mirrors only the surface run_codex
+    actually uses: `.pid` (for os.killpg) and `.wait(timeout=)`. Set
+    `raise_timeout=True` to make the first wait() raise TimeoutExpired,
+    exercising run_codex's killpg branch; subsequent waits (the reaper
+    call after killpg) return `returncode` cleanly."""
+    _pid_counter = 0
+
+    def __init__(self, returncode, raise_timeout=False):
+        FakePopen._pid_counter += 1
+        self.pid = 100000 + FakePopen._pid_counter
+        self._returncode = returncode
+        self._raise_timeout = raise_timeout
+        self._wait_calls = 0
+        self.last_wait_timeout = None
+
+    def wait(self, timeout=None):
+        self._wait_calls += 1
+        self.last_wait_timeout = timeout
+        if self._raise_timeout and self._wait_calls == 1:
+            raise subprocess.TimeoutExpired(cmd="codex", timeout=timeout or 1)
+        return self._returncode
 
 
 def _make_codex_stub(plan=None, default=(0, "### Probe 1\nstub\n"),
                      before_write=None):
-    """Module-level fake-codex side_effect for `subprocess.run`. Owns the
+    """Module-level fake-codex side_effect for `subprocess.Popen`. Owns the
     full agent contract surface so callers only specify what they care
     about. `plan` maps agent name → (exit_code, output_text); explicit
     entries are used verbatim. Agents NOT in plan fall through to
@@ -62,11 +81,11 @@ def _make_codex_stub(plan=None, default=(0, "### Probe 1\nstub\n"),
         if agent_name in plan:
             entry = plan[agent_name]
             # "TIMEOUT" sentinel: simulate run_codex's 45m hard cap firing.
-            # subprocess.run with timeout= raises TimeoutExpired; the same
-            # exception is propagated unchanged from the mock so run_codex
-            # exercises its real timeout-handling branch.
+            # Codex actually started (Popen returned) but never finished —
+            # output.md was not written. wait(timeout=) will raise
+            # TimeoutExpired, exercising run_codex's killpg branch.
             if entry == "TIMEOUT":
-                raise subprocess.TimeoutExpired(cmd=argv, timeout=1)
+                return FakePopen(returncode=-signal.SIGKILL, raise_timeout=True)
             ec, out = entry
         else:
             ec, out = default
@@ -78,7 +97,7 @@ def _make_codex_stub(plan=None, default=(0, "### Probe 1\nstub\n"),
                     "### Probe 1\n- **Answer:** yes\n- **Evidence:** stub\n"
                 )
         out_path.write_text(out)
-        return FakeCompletedProcess(ec)
+        return FakePopen(returncode=ec)
     return side_effect
 
 
@@ -99,10 +118,10 @@ class TestRunCodex(unittest.TestCase):
         resolves to this test's agent."""
         return Path(self.tmp.name) / "agents" / name
 
-    @patch("pipeline.subprocess.run")
-    def test_success_path_writes_artifacts(self, mock_run):
+    @patch("pipeline.subprocess.Popen")
+    def test_success_path_writes_artifacts(self, mock_popen):
         agent_dir = self._agent_dir("intent")
-        mock_run.side_effect = _make_codex_stub(plan={"intent": (0, "### Probe 1\nstub\n")})
+        mock_popen.side_effect = _make_codex_stub(plan={"intent": (0, "### Probe 1\nstub\n")})
         rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(agent_dir))
         self.assertEqual(rc, 0)
         self.assertEqual((agent_dir / "prompt.txt").read_text(), "PROMPT")
@@ -110,28 +129,28 @@ class TestRunCodex(unittest.TestCase):
         self.assertIn("agent=intent starting", (agent_dir / "log.txt").read_text())
         self.assertIn("agent=intent exit=0", (agent_dir / "log.txt").read_text())
 
-    @patch("pipeline.subprocess.run")
-    def test_codex_argv_pins_model(self, mock_run):
+    @patch("pipeline.subprocess.Popen")
+    def test_codex_argv_pins_model(self, mock_popen):
         """The model=gpt-5.5 pin must reach codex (regression fence)."""
-        mock_run.side_effect = _make_codex_stub(plan={"intent": (0, "### Probe 1\nstub\n")})
+        mock_popen.side_effect = _make_codex_stub(plan={"intent": (0, "### Probe 1\nstub\n")})
         pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(self._agent_dir("intent")))
-        argv = mock_run.call_args[0][0]
+        argv = mock_popen.call_args[0][0]
         self.assertIn("model=gpt-5.5", argv)
         self.assertIn("--dangerously-bypass-approvals-and-sandbox", argv)
 
-    @patch("pipeline.subprocess.run")
-    def test_codex_nonzero_exit_propagates(self, mock_run):
-        mock_run.side_effect = _make_codex_stub(plan={"intent": (7, "")})
+    @patch("pipeline.subprocess.Popen")
+    def test_codex_nonzero_exit_propagates(self, mock_popen):
+        mock_popen.side_effect = _make_codex_stub(plan={"intent": (7, "")})
         rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(self._agent_dir("intent")))
         self.assertEqual(rc, 7)
 
-    @patch("pipeline.subprocess.run")
-    def test_codex_subprocess_timeout_returns_124(self, mock_run):
+    @patch("pipeline.subprocess.Popen")
+    def test_codex_subprocess_timeout_returns_124(self, mock_popen):
         """45m subprocess timeout → 124 (GNU timeout convention) + log line.
         Fence: without this branch, a wedged codex hangs the future, hangs
         the ThreadPoolExecutor context exit, hangs the pipeline, hangs the
         bash worker, and the 90m outer timeout kills the worker mid-trap."""
-        mock_run.side_effect = _make_codex_stub(plan={"intent": "TIMEOUT"})
+        mock_popen.side_effect = _make_codex_stub(plan={"intent": "TIMEOUT"})
         rc = pipeline.run_codex(
             "intent", str(self.repo_dir), "PROMPT", str(self._agent_dir("intent"))
         )
@@ -140,54 +159,103 @@ class TestRunCodex(unittest.TestCase):
         self.assertIn("timed out", log_text)
         self.assertIn("agent=intent exit=124", log_text)
 
-    @patch("pipeline.subprocess.run")
-    def test_codex_subprocess_passes_timeout_arg(self, mock_run):
-        """subprocess.run must be called with timeout=SPECIALIST_TIMEOUT_SEC."""
-        mock_run.side_effect = _make_codex_stub(plan={"intent": (0, "### Probe 1\nstub\n")})
+    @patch("pipeline.subprocess.Popen")
+    def test_codex_subprocess_new_session_and_wait_timeout(self, mock_popen):
+        """Two fences in one: Popen must set start_new_session=True (so codex
+        is its own pgrp leader and killpg reaches all descendants), and
+        proc.wait must be called with timeout=SPECIALIST_TIMEOUT_SEC (the
+        budget the killpg branch enforces)."""
+        captured = []
+        plan_stub = _make_codex_stub(plan={"intent": (0, "### Probe 1\nstub\n")})
+        def factory(*args, **kwargs):
+            fp = plan_stub(*args, **kwargs)
+            captured.append((args, kwargs, fp))
+            return fp
+        mock_popen.side_effect = factory
         pipeline.run_codex(
             "intent", str(self.repo_dir), "PROMPT", str(self._agent_dir("intent"))
         )
-        _, kwargs = mock_run.call_args
-        self.assertEqual(kwargs.get("timeout"), pipeline.SPECIALIST_TIMEOUT_SEC)
+        _, popen_kwargs, fake_proc = captured[0]
+        self.assertTrue(popen_kwargs.get("start_new_session"),
+                        "codex must run in its own session/pgrp so killpg on "
+                        "timeout reaps node + tool descendants")
+        self.assertEqual(fake_proc.last_wait_timeout, pipeline.SPECIALIST_TIMEOUT_SEC)
 
-    @patch("pipeline.subprocess.run")
-    def test_codex_zero_exit_empty_output_returns_3(self, mock_run):
+    @patch("pipeline.os.killpg")
+    @patch("pipeline.subprocess.Popen")
+    def test_codex_timeout_kills_whole_process_group(self, mock_popen, mock_killpg):
+        """Regression fence for the PID-1 orphan leak: on TimeoutExpired,
+        run_codex must SIGKILL the codex pgrp (proc.pid == pgid because of
+        start_new_session=True). Without killpg, codex's reparented node/tool
+        children survive with reviewer credentials and disabled sandboxing."""
+        captured = []
+        plan_stub = _make_codex_stub(plan={"intent": "TIMEOUT"})
+        def factory(*args, **kwargs):
+            fp = plan_stub(*args, **kwargs)
+            captured.append(fp)
+            return fp
+        mock_popen.side_effect = factory
+        rc = pipeline.run_codex(
+            "intent", str(self.repo_dir), "PROMPT", str(self._agent_dir("intent"))
+        )
+        self.assertEqual(rc, 124)
+        pgid_arg, sig_arg = mock_killpg.call_args.args
+        self.assertEqual(sig_arg, signal.SIGKILL)
+        # pgid passed to killpg must be the Popen pid (start_new_session=True
+        # makes them equal).
+        self.assertEqual(pgid_arg, captured[0].pid)
+
+    @patch("pipeline.os.killpg")
+    @patch("pipeline.subprocess.Popen")
+    def test_codex_timeout_swallows_processlookuperror(self, mock_popen, mock_killpg):
+        """If the codex leader was already reaped between TimeoutExpired and
+        the killpg call (kernel race), ProcessLookupError must not propagate
+        — run_codex still returns 124 cleanly."""
+        mock_popen.side_effect = _make_codex_stub(plan={"intent": "TIMEOUT"})
+        mock_killpg.side_effect = ProcessLookupError()
+        rc = pipeline.run_codex(
+            "intent", str(self.repo_dir), "PROMPT", str(self._agent_dir("intent"))
+        )
+        self.assertEqual(rc, 124)
+
+    @patch("pipeline.subprocess.Popen")
+    def test_codex_zero_exit_empty_output_returns_3(self, mock_popen):
         """Codex says success but wrote nothing — fail loud as exit 3."""
         agent_dir = self._agent_dir("intent")
-        mock_run.side_effect = _make_codex_stub(plan={"intent": (0, "")})
+        mock_popen.side_effect = _make_codex_stub(plan={"intent": (0, "")})
         rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(agent_dir))
         self.assertEqual(rc, 3)
         self.assertIn("produced empty output", (agent_dir / "log.txt").read_text())
 
-    @patch("pipeline.subprocess.run")
-    def test_specialist_must_emit_probe_or_no_probes_sentinel(self, mock_run):
+    @patch("pipeline.subprocess.Popen")
+    def test_specialist_must_emit_probe_or_no_probes_sentinel(self, mock_popen):
         """Probe-emitting roles must include `### Probe ` or `No probes.` — exit 4 otherwise."""
-        mock_run.side_effect = _make_codex_stub(
+        mock_popen.side_effect = _make_codex_stub(
             plan={"security": (0, "garbage that doesn't look like a probe\n")},
         )
         rc = pipeline.run_codex("security", str(self.repo_dir), "PROMPT", str(self._agent_dir("security")))
         self.assertEqual(rc, 4)
 
-    @patch("pipeline.subprocess.run")
-    def test_specialist_no_probes_sentinel_passes(self, mock_run):
-        mock_run.side_effect = _make_codex_stub(plan={"security": (0, "No probes.\n")})
+    @patch("pipeline.subprocess.Popen")
+    def test_specialist_no_probes_sentinel_passes(self, mock_popen):
+        mock_popen.side_effect = _make_codex_stub(plan={"security": (0, "No probes.\n")})
         rc = pipeline.run_codex("security", str(self.repo_dir), "PROMPT", str(self._agent_dir("security")))
         self.assertEqual(rc, 0)
 
-    @patch("pipeline.subprocess.run")
-    def test_intent_exempt_from_probe_gate(self, mock_run):
+    @patch("pipeline.subprocess.Popen")
+    def test_intent_exempt_from_probe_gate(self, mock_popen):
         """Non-probe-emitting roles (intent, critic, aggregator, etc.) skip the gate."""
-        mock_run.side_effect = _make_codex_stub(plan={"intent": (0, "Inferred intent: doing X.\n")})
+        mock_popen.side_effect = _make_codex_stub(plan={"intent": (0, "Inferred intent: doing X.\n")})
         rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(self._agent_dir("intent")))
         self.assertEqual(rc, 0)
 
-    @patch("pipeline.subprocess.run")
-    def test_critic_per_angle_exempt_from_run_codex_gate(self, mock_run):
+    @patch("pipeline.subprocess.Popen")
+    def test_critic_per_angle_exempt_from_run_codex_gate(self, mock_popen):
         """Per-angle critic correctness is validated at the run_specialist
         boundary (where both specialist + critic outputs are available), not
         here. run_codex passes any critic output through; the semantic checks
         in TestValidateCriticOutput cover the contract."""
-        mock_run.side_effect = _make_codex_stub(
+        mock_popen.side_effect = _make_codex_stub(
             plan={"critic-security": (0, "anything goes through run_codex\n")},
         )
         rc = pipeline.run_codex("critic-security", str(self.repo_dir), "PROMPT", str(self._agent_dir("critic-security")))
@@ -510,11 +578,11 @@ class TestRunSpecialist(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    @patch("pipeline.subprocess.run")
-    def test_specialist_then_critic_writes_layered_file(self, mock_run):
+    @patch("pipeline.subprocess.Popen")
+    def test_specialist_then_critic_writes_layered_file(self, mock_popen):
         # Critic owns the '## Critic counter-arguments' H2 — pipeline.py only
         # adds the '---' separator, so the critic output must include the H2.
-        mock_run.side_effect = _make_codex_stub({
+        mock_popen.side_effect = _make_codex_stub({
             "security": (0, "### Probe 1\nspecialist body\n"),
             "critic-security": (0,
                 "## Critic counter-arguments\n\n### Probe 1\n"
@@ -536,8 +604,8 @@ class TestRunSpecialist(unittest.TestCase):
         self.assertEqual(layered.count("## Critic counter-arguments"), 1)
         self.assertIn("- **Answer:** yes", layered)
 
-    @patch("pipeline.subprocess.run")
-    def test_scratch_staged_before_critic_runs(self, mock_run):
+    @patch("pipeline.subprocess.Popen")
+    def test_scratch_staged_before_critic_runs(self, mock_popen):
         """The per-angle critic prompt cites .codex-scratch/specialists/<angle>.md
         as input. Verify the file exists with raw spec output at the moment the
         critic is invoked (not just after the layered overwrite)."""
@@ -546,7 +614,7 @@ class TestRunSpecialist(unittest.TestCase):
         def snapshot_at_critic(name, _out_path):
             if name == "critic-security":
                 captured["scratch_at_critic"] = scratch_path.read_text()
-        mock_run.side_effect = _make_codex_stub(
+        mock_popen.side_effect = _make_codex_stub(
             plan={
                 "security": (0, "### Probe 1\nspecialist body\n"),
                 "critic-security": (0,
@@ -567,9 +635,9 @@ class TestRunSpecialist(unittest.TestCase):
         self.assertIn("specialist body", captured["scratch_at_critic"])
         self.assertNotIn("## Critic counter-arguments", captured["scratch_at_critic"])
 
-    @patch("pipeline.subprocess.run")
-    def test_specialist_failure_skips_critic(self, mock_run):
-        mock_run.side_effect = _make_codex_stub({
+    @patch("pipeline.subprocess.Popen")
+    def test_specialist_failure_skips_critic(self, mock_popen):
+        mock_popen.side_effect = _make_codex_stub({
             "security": (7, ""),
         })
         rc = pipeline.run_specialist(
@@ -586,13 +654,13 @@ class TestRunSpecialist(unittest.TestCase):
             (self.repo_dir / ".codex-scratch" / "specialists" / "security.md").exists()
         )
 
-    @patch("pipeline.subprocess.run")
-    def test_critic_contract_violation_returns_4(self, mock_run):
+    @patch("pipeline.subprocess.Popen")
+    def test_critic_contract_violation_returns_4(self, mock_popen):
         """Critic returns 0 from codex but its output skips a specialist
         probe — the run_specialist validator catches it and returns 4 before the
         layered file is written, so malformed critic output never reaches
         aggregation."""
-        mock_run.side_effect = _make_codex_stub({
+        mock_popen.side_effect = _make_codex_stub({
             "security": (0, "### Probe 1\nspec body\n\n### Probe 2\nmore\n"),
             # Critic addresses Probe 1 but skips Probe 2 — semantic violation.
             "critic-security": (0,
@@ -613,9 +681,9 @@ class TestRunSpecialist(unittest.TestCase):
         ).read_text()
         self.assertNotIn("## Critic counter-arguments", scratch)
 
-    @patch("pipeline.subprocess.run")
-    def test_specialist_success_critic_failure_returns_critic_rc(self, mock_run):
-        mock_run.side_effect = _make_codex_stub({
+    @patch("pipeline.subprocess.Popen")
+    def test_specialist_success_critic_failure_returns_critic_rc(self, mock_popen):
+        mock_popen.side_effect = _make_codex_stub({
             "security": (0, "### Probe 1\nstub\n"),
             "critic-security": (5, ""),
         })
@@ -655,9 +723,9 @@ class TestRunPipeline(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    @patch("pipeline.subprocess.run")
-    def test_first_review_runs_intent_dc_angles_aggregator(self, mock_run):
-        mock_run.side_effect = _make_codex_stub({
+    @patch("pipeline.subprocess.Popen")
+    def test_first_review_runs_intent_dc_angles_aggregator(self, mock_popen):
+        mock_popen.side_effect = _make_codex_stub({
             "intent": (0, "Inferred intent: stub.\n"),
             "dead-code-search": (0, "dc evidence\n"),
             "aggregator": (0, "# Review\nVERDICT: APPROVE\n"),
@@ -677,10 +745,10 @@ class TestRunPipeline(unittest.TestCase):
         # Momentum did NOT run (no previous-review.md)
         self.assertFalse((self.run_dir / "agents" / "momentum" / "output.md").exists())
 
-    @patch("pipeline.subprocess.run")
-    def test_re_review_runs_momentum(self, mock_run):
+    @patch("pipeline.subprocess.Popen")
+    def test_re_review_runs_momentum(self, mock_popen):
         (self.run_dir / "inputs" / "previous-review.md").write_text("prior review body\n")
-        mock_run.side_effect = _make_codex_stub({
+        mock_popen.side_effect = _make_codex_stub({
             "intent": (0, "Inferred intent: stub.\n"),
             "dead-code-search": (0, "dc\n"),
             "momentum": (0, "momentum body\n"),
@@ -694,9 +762,9 @@ class TestRunPipeline(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertTrue((self.run_dir / "agents" / "momentum" / "output.md").exists())
 
-    @patch("pipeline.subprocess.run")
-    def test_intent_failure_aborts(self, mock_run):
-        mock_run.side_effect = _make_codex_stub({
+    @patch("pipeline.subprocess.Popen")
+    def test_intent_failure_aborts(self, mock_popen):
+        mock_popen.side_effect = _make_codex_stub({
             "intent": (7, ""),
         })
         rc = pipeline.run_pipeline(
@@ -708,10 +776,10 @@ class TestRunPipeline(unittest.TestCase):
         # Repo dir should be cleaned up
         self.assertFalse(self.repo_dir.exists())
 
-    @patch("pipeline.subprocess.run")
-    def test_dead_code_failure_aborts_loud(self, mock_run):
+    @patch("pipeline.subprocess.Popen")
+    def test_dead_code_failure_aborts_loud(self, mock_popen):
         """dead-code-search becomes fail-loud (was fail-soft in shell pipeline)."""
-        mock_run.side_effect = _make_codex_stub({
+        mock_popen.side_effect = _make_codex_stub({
             "intent": (0, "Inferred intent: stub.\n"),
             "dead-code-search": (7, ""),
         })
@@ -723,9 +791,9 @@ class TestRunPipeline(unittest.TestCase):
         self.assertNotEqual(rc, 0)
         self.assertFalse(self.repo_dir.exists())
 
-    @patch("pipeline.subprocess.run")
-    def test_one_angle_failure_aborts_pipeline(self, mock_run):
-        mock_run.side_effect = _make_codex_stub({
+    @patch("pipeline.subprocess.Popen")
+    def test_one_angle_failure_aborts_pipeline(self, mock_popen):
+        mock_popen.side_effect = _make_codex_stub({
             "intent": (0, "Inferred intent: stub.\n"),
             "dead-code-search": (0, "dc\n"),
             "shape": (5, ""),  # one angle fails
@@ -738,9 +806,9 @@ class TestRunPipeline(unittest.TestCase):
         self.assertNotEqual(rc, 0)
         self.assertFalse(self.repo_dir.exists())
 
-    @patch("pipeline.subprocess.run")
-    def test_aggregator_failure_aborts(self, mock_run):
-        mock_run.side_effect = _make_codex_stub({
+    @patch("pipeline.subprocess.Popen")
+    def test_aggregator_failure_aborts(self, mock_popen):
+        mock_popen.side_effect = _make_codex_stub({
             "intent": (0, "Inferred intent: stub.\n"),
             "dead-code-search": (0, "dc\n"),
             "aggregator": (8, ""),
@@ -753,9 +821,9 @@ class TestRunPipeline(unittest.TestCase):
         self.assertNotEqual(rc, 0)
         self.assertFalse(self.repo_dir.exists())
 
-    @patch("pipeline.subprocess.run")
-    def test_intent_must_have_inferred_intent_prefix(self, mock_run):
-        mock_run.side_effect = _make_codex_stub({
+    @patch("pipeline.subprocess.Popen")
+    def test_intent_must_have_inferred_intent_prefix(self, mock_popen):
+        mock_popen.side_effect = _make_codex_stub({
             "intent": (0, "wrong prefix\n"),  # missing "Inferred intent: "
         })
         rc = pipeline.run_pipeline(
@@ -766,8 +834,8 @@ class TestRunPipeline(unittest.TestCase):
         self.assertNotEqual(rc, 0)
         self.assertFalse(self.repo_dir.exists())
 
-    @patch("pipeline.subprocess.run")
-    def test_wave_a_runs_intent_and_dead_code_in_parallel(self, mock_run):
+    @patch("pipeline.subprocess.Popen")
+    def test_wave_a_runs_intent_and_dead_code_in_parallel(self, mock_popen):
         """Wave A's intent + dead-code-search must run concurrently. Use
         threading.Barrier(2): both stubs wait at the barrier — if Wave A
         is serial, the first stub blocks alone and BrokenBarrierError
@@ -777,7 +845,7 @@ class TestRunPipeline(unittest.TestCase):
         def hit_barrier(name, _out_path):
             if name in ("intent", "dead-code-search"):
                 barrier.wait()
-        mock_run.side_effect = _make_codex_stub(before_write=hit_barrier)
+        mock_popen.side_effect = _make_codex_stub(before_write=hit_barrier)
         rc = pipeline.run_pipeline(
             repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
             prompts_dir=str(self.prompts),
@@ -785,8 +853,8 @@ class TestRunPipeline(unittest.TestCase):
         )
         self.assertEqual(rc, 0)
 
-    @patch("pipeline.subprocess.run")
-    def test_wave_b_runs_specialists_concurrently(self, mock_run):
+    @patch("pipeline.subprocess.Popen")
+    def test_wave_b_runs_specialists_concurrently(self, mock_popen):
         """Wave B's 8-specialist fan-out must run concurrently. Pick two
         deterministic specialists (security, performance) and gate them
         on a shared Barrier(2). Serial Wave B regression → first stub
@@ -795,7 +863,7 @@ class TestRunPipeline(unittest.TestCase):
         def hit_barrier(name, _out_path):
             if name in ("security", "performance"):
                 barrier.wait()
-        mock_run.side_effect = _make_codex_stub(before_write=hit_barrier)
+        mock_popen.side_effect = _make_codex_stub(before_write=hit_barrier)
         rc = pipeline.run_pipeline(
             repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
             prompts_dir=str(self.prompts),
@@ -803,8 +871,8 @@ class TestRunPipeline(unittest.TestCase):
         )
         self.assertEqual(rc, 0)
 
-    @patch("pipeline.subprocess.run")
-    def test_wave_b_starts_after_wave_a_artifacts_linked(self, mock_run):
+    @patch("pipeline.subprocess.Popen")
+    def test_wave_b_starts_after_wave_a_artifacts_linked(self, mock_popen):
         """Wave A → Wave B is a hard barrier: every specialist (and momentum
         on re-review) must see `.codex-scratch/inferred-intent.md` and
         `.codex-scratch/dead-code.md` linked at the moment they start."""
@@ -819,7 +887,7 @@ class TestRunPipeline(unittest.TestCase):
                         name,
                         {p.name for p in scratch.iterdir() if p.is_symlink()},
                     ))
-        mock_run.side_effect = _make_codex_stub(before_write=capture_scratch_links)
+        mock_popen.side_effect = _make_codex_stub(before_write=capture_scratch_links)
         rc = pipeline.run_pipeline(
             repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
             prompts_dir=str(self.prompts),
@@ -833,13 +901,13 @@ class TestRunPipeline(unittest.TestCase):
             self.assertIn("dead-code.md", links,
                           f"{name} started before Wave A linked dead-code.md")
 
-    @patch("pipeline.subprocess.run")
-    def test_one_specialist_timeout_tolerated_aggregator_runs(self, mock_run):
+    @patch("pipeline.subprocess.Popen")
+    def test_one_specialist_timeout_tolerated_aggregator_runs(self, mock_popen):
         """≤1 timeout: aggregator runs on 7/8 specialists, a stub fills the
         missing slot so .codex-scratch/specialists/<name>.md exists, and a
         warning sentinel is written for the bash worker to surface above
         the posted review."""
-        mock_run.side_effect = _make_codex_stub(plan={
+        mock_popen.side_effect = _make_codex_stub(plan={
             "intent": (0, "Inferred intent: stub.\n"),
             "dead-code-search": (0, "dc\n"),
             "performance": "TIMEOUT",
@@ -866,12 +934,12 @@ class TestRunPipeline(unittest.TestCase):
         # The 2+ sentinel must NOT exist (1 timeout is tolerated).
         self.assertFalse((self.run_dir / "_wave_b_timeouts.txt").exists())
 
-    @patch("pipeline.subprocess.run")
-    def test_two_specialist_timeouts_fail_loud(self, mock_run):
+    @patch("pipeline.subprocess.Popen")
+    def test_two_specialist_timeouts_fail_loud(self, mock_popen):
         """≥2 timeouts: pipeline aborts, no aggregator runs, sentinel lists
         the hung specialists so review-one-pr.sh can replace the 👀
         placeholder with an explicit error naming them."""
-        mock_run.side_effect = _make_codex_stub(plan={
+        mock_popen.side_effect = _make_codex_stub(plan={
             "intent": (0, "Inferred intent: stub.\n"),
             "dead-code-search": (0, "dc\n"),
             "performance": "TIMEOUT",
@@ -892,15 +960,15 @@ class TestRunPipeline(unittest.TestCase):
         # No aggregator — we don't post half-broken reviews.
         self.assertFalse((self.run_dir / "agents" / "aggregator" / "output.md").exists())
 
-    @patch("pipeline.subprocess.run")
-    def test_momentum_timeout_tolerated_writes_scratch_stub(self, mock_run):
+    @patch("pipeline.subprocess.Popen")
+    def test_momentum_timeout_tolerated_writes_scratch_stub(self, mock_popen):
         """Momentum is opportunistic — its timeout is the same as a
         specialist's for tolerance accounting, but the stub goes at
         scratch/momentum.md (its aggregator-visible path), not
         .codex-scratch/specialists/. Without the stub, the success-path
         _relink would error on the missing source."""
         (self.run_dir / "inputs" / "previous-review.md").write_text("prior\n")
-        mock_run.side_effect = _make_codex_stub(plan={
+        mock_popen.side_effect = _make_codex_stub(plan={
             "intent": (0, "Inferred intent: stub.\n"),
             "dead-code-search": (0, "dc\n"),
             "momentum": "TIMEOUT",
@@ -919,13 +987,13 @@ class TestRunPipeline(unittest.TestCase):
         warning = (self.run_dir / "_wave_b_warning.txt").read_text()
         self.assertIn("Momentum", warning)
 
-    @patch("pipeline.subprocess.run")
-    def test_hard_failure_not_tolerated_even_when_solo(self, mock_run):
+    @patch("pipeline.subprocess.Popen")
+    def test_hard_failure_not_tolerated_even_when_solo(self, mock_popen):
         """Non-timeout failures (contract violations, codex non-zero rc that
         isn't 124) are bugs, not flakes — no 1-tolerance window. A single
         rc=5 specialist still aborts (preserves pre-existing strictness for
         hard failures while only loosening the timeout case)."""
-        mock_run.side_effect = _make_codex_stub(plan={
+        mock_popen.side_effect = _make_codex_stub(plan={
             "intent": (0, "Inferred intent: stub.\n"),
             "dead-code-search": (0, "dc\n"),
             "shape": (5, ""),  # hard failure, NOT a timeout

@@ -216,6 +216,9 @@ REVIEW_NOTES+=("🎬 Replay of \`$SHA\` (\`gh pr view --repo $REPO $PR\`)")
 if [ "$KNIGHTWATCH_PRESENT" = "0" ]; then
     REVIEW_NOTES+=("⚙️ No .knightwatch/ config (review using defaults)")
 fi
+# Mirror lib/review-one-pr.sh's Wave-B-warning consumer so replay output
+# stays comparable to production when pipeline.py tolerates 1 timeout.
+[ -s "$RUN_DIR/_wave_b_warning.txt" ] && REVIEW_NOTES+=("$(cat "$RUN_DIR/_wave_b_warning.txt")")
 
 AGG_BODY=$(cat "$AGG_OUT_FILE")
 STITCHED=$(prepend_review_header "$AGG_BODY" "${REVIEW_NOTES[@]}")

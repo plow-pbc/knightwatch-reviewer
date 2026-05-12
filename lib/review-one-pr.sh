@@ -242,6 +242,11 @@ fi
 # gate now.
 EYES_COMMENT_ID=""
 EYES_RESOLVED=false
+# Default placeholder body for any abort path; specific aborts (e.g. the
+# Wave B ≥2-timeout branch in the pipeline block below) override this with
+# a more informative message before the EXIT trap fires. Single PATCH
+# lifecycle — cleanup_eyes is the only writer of the abort placeholder.
+EYES_ABORT_BODY="review aborted before completion — see knightwatch-reviewer logs; will retry on the next tick if the PR head hasn't moved."
 cleanup_eyes() {
     if [ "$EYES_RESOLVED" = "true" ] || [ -z "$EYES_COMMENT_ID" ]; then
         return 0
@@ -249,7 +254,7 @@ cleanup_eyes() {
     gh api "repos/$REPO/issues/comments/$EYES_COMMENT_ID" --method PATCH \
         -f body="$BOT_AUTO_POST_MARKER
 $BOT_AI_AUTHOR_MARKER
-review aborted before completion — see knightwatch-reviewer logs; will retry on the next tick if the PR head hasn't moved." \
+$EYES_ABORT_BODY" \
         >/dev/null 2>&1 || true
 }
 trap 'finalize_run; cleanup_eyes' EXIT
@@ -1159,6 +1164,17 @@ write_scratch "$REPO_DIR" "commits.md" "$COMMITS"
 # Per-angle critics run inline within each angle pipeline; no central
 # critic, no splitter. Aggregator output written to a deterministic path
 # we read after.
+# Inner pipeline budget. Per-codex 45m caps (pipeline.py SPECIALIST_TIMEOUT_SEC)
+# bound each stage, but Wave B (specialist+critic = up to 90m) + aggregator
+# (45m) can cumulatively exceed the 90m outer worker timeout. Wrapping
+# pipeline.py here means bash always regains control before the outer fires,
+# so the EXIT trap's cleanup_eyes/finalize_run path runs in every overrun
+# scenario (the failure mode this PR's commit message names). The 55m budget
+# leaves ~35m headroom under the 90m outer for `just test` (capped at 30m)
+# and the placeholder-PATCH window. timeout sends SIGTERM to its child's
+# process group, which here is python3 + its codex thread-pool children;
+# pipeline.py exits with rc=124 when killed, which the existing abort branch
+# below handles uniformly.
 PR_ID="$PR_ID" \
 PR_TITLE="$PR_TITLE" \
 PR_URL="$PR_URL" \
@@ -1166,7 +1182,7 @@ PR_AUTHOR="$PR_AUTHOR" \
 PROMPTS_DIR="${PROMPTS_DIR:-$HOME/.pr-reviewer/prompts}" \
 LOG_FILE="$LOG_FILE" \
 OPERATOR_NAME="${OPERATOR_NAME:-Sam}" \
-    python3 "$_LIB_DIR/pipeline.py" "$REPO_DIR" "$RUN_DIR"
+    timeout 55m python3 "$_LIB_DIR/pipeline.py" "$REPO_DIR" "$RUN_DIR"
 PIPELINE_EXIT=$?
 AGG_OUT="$RUN_DIR/agents/aggregator/output.md"
 
@@ -1177,24 +1193,15 @@ AGG_OUT="$RUN_DIR/agents/aggregator/output.md"
 if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
     log "$PR_ID: pipeline failed (exit=$PIPELINE_EXIT, agg empty=$([ ! -s "$AGG_OUT" ] && echo true || echo false)) — aborting"
     # Wave B fail-loud threshold (≥2 specialists timed out): pipeline.py
-    # wrote a sentinel naming the hung specialists. Replace the 👀
-    # placeholder with an explicit error so the author isn't left with an
-    # orphan "reviewing" marker. Only set EYES_RESOLVED=true on PATCH
-    # success — if gh fails, leave the generic cleanup_eyes path as a
-    # safety net.
+    # wrote a sentinel naming the hung specialists. Hand a specific abort
+    # body to cleanup_eyes so the EXIT trap PATCHes the placeholder with
+    # the names rather than the generic abort message — single PATCH
+    # lifecycle, same trap.
     TIMEOUTS_SENTINEL="$RUN_DIR/_wave_b_timeouts.txt"
-    if [ -s "$TIMEOUTS_SENTINEL" ] && [ -n "$EYES_COMMENT_ID" ]; then
+    if [ -s "$TIMEOUTS_SENTINEL" ]; then
         TIMED_OUT=$(paste -sd, "$TIMEOUTS_SENTINEL")
-        if gh api "repos/$REPO/issues/comments/$EYES_COMMENT_ID" --method PATCH \
-                -f body="$BOT_AUTO_POST_MARKER
-$BOT_AI_AUTHOR_MARKER
-❌ Review aborted — multiple specialists timed out (\`$TIMED_OUT\`). See knightwatch-reviewer logs; will retry on the next \`/${BOT_CMD_PREFIX}-update-review\` or push." \
-                >/dev/null 2>&1; then
-            EYES_RESOLVED=true
-            log "$PR_ID: replaced placeholder with timeouts-error (specialists=$TIMED_OUT)"
-        else
-            log "$PR_ID: failed to PATCH placeholder with timeouts-error; falling back to generic cleanup_eyes"
-        fi
+        EYES_ABORT_BODY="❌ Review aborted — multiple specialists timed out (\`$TIMED_OUT\`). See knightwatch-reviewer logs; will retry on the next tick."
+        log "$PR_ID: handing timeouts-error to cleanup_eyes (specialists=$TIMED_OUT)"
     fi
     [ -d "$REPO_DIR" ] && rm -rf "$REPO_DIR"
     exit 1
