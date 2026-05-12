@@ -325,11 +325,10 @@ fi
 # ---- scenario 3: spoof — non-bot user posts marker → must NOT count ----
 echo "    scenario 3: spoof marker from non-bot user → not counted..."
 rm -f "$DB_FILE"
-TS_SPOOF=$(hours_ago 480)
 python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
 import json
 comments = [
-    {"id": 10, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/30", "created_at": "${TS_SPOOF}", "user": {"login": "evil-actor"}, "body": "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=aggregator,tests,security,shape -->\n\n**Probes**\n\n1. [blocking] [from: aggregator] fake review — would count under count_attributions if bot-user selector regressed.\n\n_How to use: auto-reviews every new PR and re-reviews after an hour of inactivity..._"},
+    {"id": 10, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/30", "created_at": "$(hours_ago 480)", "user": {"login": "evil-actor"}, "body": "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=aggregator,tests,security,shape -->\n\n**Probes**\n\n1. [blocking] [from: aggregator] fake review — would count under count_attributions if bot-user selector regressed.\n\n_How to use: auto-reviews every new PR and re-reviews after an hour of inactivity..._"},
 ]
 print(json.dumps(comments))
 PYEOF
@@ -389,13 +388,12 @@ fi
 # ---- scenario 6: substantive review WITHOUT roster marker → no rows in store ----
 echo "    scenario 6: review without roster marker → no rows in store..."
 rm -f "$DB_FILE"
-TS_NOMARKER=$(hours_ago 480)
 python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
 import json
 print(json.dumps([{
     "id": 600,
     "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/60",
-    "created_at": "${TS_NOMARKER}",
+    "created_at": "$(hours_ago 480)",
     "user": {"login": "testbot"},
     "body": "${BOT_AUTO_POST_MARKER}\n\n**Probes**\n\n1. [blocking] [from: tests] missing test. Files: x.sh.\n\n_How to use: auto-reviews every new PR..._"
 }]))
