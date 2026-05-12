@@ -323,6 +323,15 @@ assert_grep "Path 2 trigger should use the strict-decrease test" \
     "count[N] < count[N-1]" prompts/aggregator.md
 assert_grep "Path 2 trigger should skip pause rounds when selecting the 3-round window" \
     "Skip Path 2 pause rounds" prompts/aggregator.md
+# Positive fence: without a non-zero guard on count[N], the
+# strict-decrease test vacuously holds for a 0 → 0 → 0 series (neither
+# transition is a strict decrease because both deltas are zero), and
+# Path 2 trips on healthy PRs that never had blockers. Observed
+# regression: plow-pbc/seed-autoresearch PR #3 (5-line docs change,
+# 8 srosro re-reviews each at 0 blockers, "Why this PR isn't
+# converging?" callout shipped on round 3).
+assert_grep "Path 2 trigger must guard on count[N] > 0 — a 0 → 0 → 0 series satisfies the strict-decrease test vacuously and would otherwise fire on healthy PRs with no blockers" \
+    "count[N] > 0" prompts/aggregator.md
 
 echo "  asserting Path 2 halt action skips the Probes block in aggregator.md..."
 assert_grep "Path 2 must skip the per-angle Probes block on halt" \
