@@ -14,17 +14,22 @@
 # and flag updates are separate UPDATE statements.
 
 # SQL injection invariant: every string field interpolated below ($repo,
-# $specialist, $ts, $before_ts) MUST be pre-validated by callers — the
+# $specialist, $ts, $before_ts, $sev) MUST be pre-validated by callers — the
 # parsers in lib/bakeoff-parsers.sh constrain inputs to [a-z][a-z,-]*
 # (specialist names) and ISO8601 timestamps (timestamps); $repo comes from
-# operator-controlled tracked-repos.sh; integer fields (comment_id,
-# pr_number) are unquoted and rely on jq -r .id producing integers.
+# operator-controlled tracked-repos.sh; $sev comes from probe_severity() in
+# lib/bakeoff-parsers.sh which constrains to [a-z]+ via the `^N. [<sev>]`
+# probe shape, and callers MUST pass a value from severity_rank()'s key set
+# (blocking|medium|low|nit|open|''); integer fields (comment_id, pr_number) are
+# unquoted and rely on jq -r .id producing integers.
 # If you add a new helper that interpolates a new field, audit its
 # upstream parser/validator before merging.
 
 # Bootstrap the schema. Idempotent — safe to call on every walk.
 store_init() {
     local db="$1"
+    # Schema note: max_severity (added 2026-05-07) is in CREATE TABLE below
+    # AND in the pragma-gated ALTER below (handles pre-existing DBs from PR #66).
     sqlite3 "$db" <<'SQL'
 CREATE TABLE IF NOT EXISTS specialist_runs (
     repo            TEXT    NOT NULL,
@@ -38,6 +43,7 @@ CREATE TABLE IF NOT EXISTS specialist_runs (
     applied_removed INTEGER NOT NULL DEFAULT 0,
     loved_positive  INTEGER NOT NULL DEFAULT 0,
     critiqued       INTEGER NOT NULL DEFAULT 0,
+    max_severity    TEXT    NOT NULL DEFAULT '',
     last_walked_at  TEXT    NOT NULL,
     PRIMARY KEY (repo, comment_id, specialist)
 );
@@ -49,6 +55,12 @@ CREATE TABLE IF NOT EXISTS walks (
     last_walked_at  TEXT NOT NULL
 );
 SQL
+
+    # Migration: add max_severity column to pre-existing DBs (added 2026-05-07).
+    # SQLite has no ALTER TABLE ... ADD COLUMN IF NOT EXISTS; check via pragma.
+    if ! sqlite3 "$db" "SELECT 1 FROM pragma_table_info('specialist_runs') WHERE name='max_severity';" | grep -q 1; then
+        sqlite3 "$db" "ALTER TABLE specialist_runs ADD COLUMN max_severity TEXT NOT NULL DEFAULT '';"
+    fi
 }
 
 # Insert a (repo, comment_id, specialist) row if absent. Preserves any
@@ -102,6 +114,48 @@ set_walk_watermark() {
     sqlite3 "$db" <<SQL
 INSERT INTO walks (repo, last_walked_at) VALUES ('$repo', '$ts')
 ON CONFLICT(repo) DO UPDATE SET last_walked_at = excluded.last_walked_at;
+SQL
+}
+
+# Severity ordering — single source of truth. Higher number = worse.
+# blocking > medium > low > nit > open > '' (empty = no probes yet).
+severity_rank() {
+    case "${1:-}" in
+        blocking) echo 5 ;;
+        medium)   echo 4 ;;
+        low)      echo 3 ;;
+        nit)      echo 2 ;;
+        open)     echo 1 ;;
+        *)        echo 0 ;;
+    esac
+}
+
+# Set max_severity to the given value. Caller is responsible for picking
+# the max via severity_rank — this helper is a plain SET so SQL stays
+# simple and severity_rank stays the only seam that knows the order.
+set_max_severity() {
+    local db="$1" repo="$2" comment_id="$3" specialist="$4" sev="$5"
+    # $sev MUST be from severity_rank()'s key set: blocking|medium|low|nit|open|''
+    # (validated upstream by probe_severity() in lib/bakeoff-parsers.sh).
+    sqlite3 "$db" <<SQL
+UPDATE specialist_runs
+   SET max_severity = '$sev'
+ WHERE repo = '$repo' AND comment_id = $comment_id AND specialist = '$specialist';
+SQL
+}
+
+# Reset applied + applied_added + applied_removed for every (specialist) row
+# of a given (repo, comment_id). Called by the walker BEFORE recomputing
+# applied matches, so that stale credit (PR diff stopped touching the
+# previously-matched path) gets cleared. Only call AFTER pulls/files
+# succeeds — otherwise you'd nuke previously-correct data on a transient
+# API failure.
+clear_applied_for_review() {
+    local db="$1" repo="$2" comment_id="$3"
+    sqlite3 "$db" <<SQL
+UPDATE specialist_runs
+   SET applied = 0, applied_added = 0, applied_removed = 0
+ WHERE repo = '$repo' AND comment_id = $comment_id;
 SQL
 }
 

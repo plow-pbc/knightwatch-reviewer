@@ -51,4 +51,12 @@ echo "  extract_roster_marker: tolerates extra whitespace before -->..."
 OUT=$(printf '<!-- knightwatch-bakeoff: specialists=tests,shape   -->\n' | extract_roster_marker | sort | paste -sd, -)
 [ "$OUT" = "shape,tests" ] || { echo "FAIL: whitespace tolerance: $OUT"; exit 1; }
 
+echo "  probe_severity: extracts [blocking] from a probe line..."
+OUT=$(printf '1. [blocking] [from: tests] missing case. Files: x.sh.\n' | probe_severity)
+[ "$OUT" = "blocking" ] || { echo "FAIL: severity: $OUT"; exit 1; }
+
+echo "  probe_severity: emits one severity per probe line for multi-line input..."
+OUT=$(printf '1. [medium] [from: shape] foo.\n2. [low] [from: tests] bar.\n' | probe_severity | paste -sd, -)
+[ "$OUT" = "medium,low" ] || { echo "FAIL: multi-line: $OUT"; exit 1; }
+
 echo "PASS"

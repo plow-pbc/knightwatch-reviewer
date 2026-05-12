@@ -72,6 +72,7 @@ for repo in "${REPOS[@]}"; do
 
     declare -A pr_paths_cache=()
     declare -A pr_files_cache=()
+    declare -A pr_files_ok_cache=()
 
     # Pass 1: walk substantive bot reviews. Each row is one (review × specialist).
     # The roster marker drives row creation; probe parsing drives flag updates.
@@ -107,17 +108,52 @@ for repo in "${REPOS[@]}"; do
             if pr_files_tsv=$(gh api --paginate "repos/$repo/pulls/$pr_num/files" --jq '.[] | [.filename, .additions, .deletions] | @tsv' 2>>"$LOG_FILE"); then
                 pr_files_cache["$cache_key"]="$pr_files_tsv"
                 pr_paths_cache["$cache_key"]=$(printf '%s\n' "$pr_files_tsv" | cut -f1)
+                pr_files_ok_cache["$cache_key"]="1"
             else
                 log "WARN: gh api pulls/files failed for $repo#$pr_num, skipping applied check"
                 fetch_failures=$((fetch_failures + 1))
                 repo_failures=$((repo_failures + 1))
                 pr_paths_cache["$cache_key"]=""
                 pr_files_cache["$cache_key"]=""
+                pr_files_ok_cache["$cache_key"]="0"
             fi
         fi
         pr_paths="${pr_paths_cache[$cache_key]}"
-        if [ -n "$pr_paths" ]; then
+        pr_files_ok="${pr_files_ok_cache[$cache_key]}"
+        # Track max severity per specialist across the review's probes. Runs
+        # unconditionally (severity is a property of the review body, not the PR
+        # diff — so it should be tracked even when pulls/files fails).
+        declare -A spec_max_sev=()
+        while IFS= read -r probe_line; do
+            specialist=$(printf '%s\n' "$probe_line" | count_attributions || true)
+            [ -z "$specialist" ] && continue
+            sev=$(printf '%s\n' "$probe_line" | probe_severity)
+            [ -z "$sev" ] && continue
+            cur="${spec_max_sev[$specialist]:-}"
+            if [ "$(severity_rank "$sev")" -gt "$(severity_rank "$cur")" ]; then
+                spec_max_sev["$specialist"]="$sev"
+            fi
+        done < <(printf '%s\n' "$review_body" | grep -E '^[0-9]+\.' || true)
+        for specialist in "${!spec_max_sev[@]}"; do
+            set_max_severity "$DB_FILE" "$repo" "$review_id" "$specialist" "${spec_max_sev[$specialist]}"
+        done
+        unset spec_max_sev
+        # Applied accuracy note: clear_applied_for_review only runs when this
+        # walk actually fetched the review (since=watermark - OVERLAP_HOURS).
+        # A PR force-pushed >24h after its last review activity won't have its
+        # Applied/+LOC reset until the next bot review on that PR. Acceptable
+        # at current scale — bake-off aggregates many PRs per specialist, so a
+        # few stale rows from late force-pushes are noise, not signal.
+        if [ "$pr_files_ok" = "1" ]; then
+            # Clear stale Applied/+LOC before recomputing — handles the rewalk
+            # case where the PR diff stopped touching a previously-matched cited
+            # path (incl. the empty-diff force-push edge case where pulls/files
+            # succeeds with an empty list).
+            clear_applied_for_review "$DB_FILE" "$repo" "$review_id"
+
             # Collect deduped (specialist, path) pairs across all probes in this review.
+            # Empty $pr_paths is a no-op below — the path-intersection grep matches
+            # nothing, spec_matched stays empty, no marks issued. No special case needed.
             declare -A spec_paths_seen=()
             while IFS= read -r probe_line; do
                 specialist=$(printf '%s\n' "$probe_line" | count_attributions || true)
