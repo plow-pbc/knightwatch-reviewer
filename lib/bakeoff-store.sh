@@ -217,6 +217,10 @@ SQL
 }
 
 # TSV: specialist\treviews\tshipped\tapplied\tadded\tremoved\tloved\tcritiqued
+#      \tedited\tblocking\tmedium\tlow_nit\topen
+# Severity buckets count reviews where max_severity falls in each tier.
+# `low_nit` collapses [low] + [nit] (adjacent on the severity ladder).
+# Reviews with unset max_severity (no probes) fall outside every bucket.
 # Caller passes window cutoff to keep the function pure (no date math).
 query_window_aggregates() {
     local db="$1" window_iso="$2"
@@ -229,7 +233,12 @@ SELECT
     SUM(applied_added) AS added,
     SUM(applied_removed) AS removed,
     SUM(loved_positive) AS loved,
-    SUM(critiqued) AS critiqued
+    SUM(critiqued) AS critiqued,
+    SUM(edited_after) AS edited,
+    SUM(CASE WHEN max_severity = 'blocking' THEN 1 ELSE 0 END) AS blocking,
+    SUM(CASE WHEN max_severity = 'medium'   THEN 1 ELSE 0 END) AS medium,
+    SUM(CASE WHEN max_severity IN ('low','nit') THEN 1 ELSE 0 END) AS low_nit,
+    SUM(CASE WHEN max_severity = 'open'     THEN 1 ELSE 0 END) AS open_cnt
 FROM specialist_runs
 WHERE ran_at >= '$window_iso'
 GROUP BY specialist

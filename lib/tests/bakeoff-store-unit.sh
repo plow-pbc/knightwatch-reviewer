@@ -115,7 +115,7 @@ echo "  query_window_aggregates: in-window row counted, out-of-window excluded..
 upsert_specialist_run "$DB2" srosro/repo 1 tests 5 2026-04-01T00:00:00Z
 upsert_specialist_run "$DB2" srosro/repo 2 tests 6 2025-01-01T00:00:00Z
 OUT=$(query_window_aggregates "$DB2" "2026-03-01T00:00:00Z")
-[ "$OUT" = $'tests\t1\t0\t0\t0\t0\t0\t0' ] || { echo "FAIL: window filter: '$OUT'"; exit 1; }
+[ "$OUT" = $'tests\t1\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0' ] || { echo "FAIL: window filter: '$OUT'"; exit 1; }
 
 echo "  query_window_aggregates: ORDER BY shipped DESC (more-published first)..."
 upsert_specialist_run "$DB2" srosro/repo 10 alpha 9 2026-04-10T00:00:00Z
@@ -127,6 +127,48 @@ mark_published "$DB2" srosro/repo 12 beta
 OUT=$(query_window_aggregates "$DB2" "2026-04-01T00:00:00Z")
 FIRST_SPEC=$(printf '%s\n' "$OUT" | head -1 | cut -f1)
 [ "$FIRST_SPEC" = "alpha" ] || { echo "FAIL: ordering — first='$FIRST_SPEC' expected 'alpha'"; exit 1; }
+
+echo "  query_window_aggregates: severity buckets via max_severity..."
+DB4="$TMP/bakeoff4.db"
+store_init "$DB4"
+# Three runs of specialist gamma in window: one with max_severity=blocking,
+# one with max_severity=low, one with max_severity=open.
+upsert_specialist_run "$DB4" srosro/repo 20 gamma 5 2026-04-20T00:00:00Z
+mark_published "$DB4" srosro/repo 20 gamma
+set_max_severity "$DB4" srosro/repo 20 gamma blocking
+upsert_specialist_run "$DB4" srosro/repo 21 gamma 5 2026-04-21T00:00:00Z
+mark_published "$DB4" srosro/repo 21 gamma
+set_max_severity "$DB4" srosro/repo 21 gamma low
+upsert_specialist_run "$DB4" srosro/repo 22 gamma 5 2026-04-22T00:00:00Z
+mark_published "$DB4" srosro/repo 22 gamma
+set_max_severity "$DB4" srosro/repo 22 gamma open
+# One run of specialist delta with max_severity=nit (bucketed as low+nit).
+upsert_specialist_run "$DB4" srosro/repo 23 delta 5 2026-04-23T00:00:00Z
+mark_published "$DB4" srosro/repo 23 delta
+set_max_severity "$DB4" srosro/repo 23 delta nit
+# One run of specialist epsilon with no max_severity set (open/unset bucket).
+upsert_specialist_run "$DB4" srosro/repo 24 epsilon 5 2026-04-24T00:00:00Z
+
+OUT=$(query_window_aggregates "$DB4" "2026-04-01T00:00:00Z")
+GAMMA=$(printf '%s\n' "$OUT" | awk -F'\t' '$1=="gamma"')
+# Expected TSV columns: specialist reviews shipped applied added removed
+#                       loved critiqued edited blocking medium low_nit open
+[ "$GAMMA" = $'gamma\t3\t3\t0\t0\t0\t0\t0\t0\t1\t0\t1\t1' ] \
+    || { echo "FAIL: gamma severity buckets: '$GAMMA'"; exit 1; }
+DELTA=$(printf '%s\n' "$OUT" | awk -F'\t' '$1=="delta"')
+[ "$DELTA" = $'delta\t1\t1\t0\t0\t0\t0\t0\t0\t0\t0\t1\t0' ] \
+    || { echo "FAIL: delta severity buckets: '$DELTA'"; exit 1; }
+EPSILON=$(printf '%s\n' "$OUT" | awk -F'\t' '$1=="epsilon"')
+# Unset max_severity → not counted in any severity bucket; published=0.
+[ "$EPSILON" = $'epsilon\t1\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0' ] \
+    || { echo "FAIL: epsilon severity buckets: '$EPSILON'"; exit 1; }
+
+echo "  query_window_aggregates: edited_after sums..."
+mark_edited_after "$DB4" srosro/repo 20 gamma
+OUT=$(query_window_aggregates "$DB4" "2026-04-01T00:00:00Z")
+GAMMA=$(printf '%s\n' "$OUT" | awk -F'\t' '$1=="gamma"')
+[ "$GAMMA" = $'gamma\t3\t3\t0\t0\t0\t0\t0\t1\t1\t0\t1\t1' ] \
+    || { echo "FAIL: gamma edited_after sum: '$GAMMA'"; exit 1; }
 
 echo "  find_target_review_for_feedback: empty when no rows..."
 DB3="$TMP/bakeoff3.db"
@@ -170,7 +212,8 @@ mark_applied "$DB5" srosro/repo 8000 tests
 set_applied_loc "$DB5" srosro/repo 8000 tests 30 10
 OUT=$(query_window_aggregates "$DB5" "2026-04-01T00:00:00Z")
 # TSV: specialist  reviews  shipped  applied  added  removed  loved  critiqued
-[ "$OUT" = $'tests\t1\t1\t1\t30\t10\t0\t0' ] || { echo "FAIL: TSV shape: $OUT"; exit 1; }
+#      edited  blocking  medium  low_nit  open
+[ "$OUT" = $'tests\t1\t1\t1\t30\t10\t0\t0\t0\t0\t0\t0\t0' ] || { echo "FAIL: TSV shape: $OUT"; exit 1; }
 
 echo "  severity_rank: blocking > medium > low > nit > open > '' (empty)..."
 [ "$(severity_rank blocking)" = "5" ] || { echo "FAIL: blocking rank"; exit 1; }
