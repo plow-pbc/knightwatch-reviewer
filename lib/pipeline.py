@@ -303,7 +303,12 @@ def run_specialist(
     crit_rc = run_codex(f"critic-{specialist}", str(repo), crit_prompt, str(crit_agent_dir))
     if crit_rc != 0:
         log(f"{pr_id}: critic-{specialist} exited non-zero (see {crit_agent_dir}/log.txt)")
-        return crit_rc
+        # A critic timeout (rc=124) at this point means the specialist
+        # produced REAL output already staged at scratch_path. We don't
+        # want Wave B to overwrite that with a "No probes." stub — promote
+        # the rc so Wave B classifies this as a hard failure, not the
+        # tolerable-timeout case.
+        return 125 if crit_rc == 124 else crit_rc
     crit_out = (crit_agent_dir / "output.md").read_text()
 
     err = _validate_critic_output(spec_out, crit_out)
@@ -427,7 +432,14 @@ def run_pipeline(
             except Exception as exc:
                 hard_failures.append(f"{name}: raised {type(exc).__name__}: {exc}")
                 continue
-            if rc == 124:
+            if rc == 124 and name != "security":
+                # Specialist timed out pre-output (run_specialist promotes
+                # critic-stage timeouts to rc=125 so they land in
+                # hard_failures below). Tolerable for non-security angles —
+                # the aggregator can render a useful review on 7/8 with a
+                # warning banner. Security is excluded because a silent
+                # absence of security findings + VERDICT: APPROVE is a
+                # quiet bypass of the review's main user-protecting angle.
                 timed_out.append(name)
                 log(f"{pr_id}: specialist {name} timed out after {SPECIALIST_TIMEOUT_SEC}s")
             elif rc != 0:

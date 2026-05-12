@@ -880,12 +880,14 @@ class TestRunPipeline(unittest.TestCase):
     def test_two_specialist_timeouts_fail_loud(self, mock_popen):
         """≥2 timeouts: pipeline aborts, no aggregator runs, sentinel lists
         the hung specialists so review-one-pr.sh can replace the 👀
-        placeholder with an explicit error naming them."""
+        placeholder with an explicit error naming them. Use non-security
+        specialists — security timeouts are hard-failed individually
+        (separate fence: test_security_specialist_timeout_is_hard_failure)."""
         mock_popen.side_effect = _make_codex_stub(plan={
             "intent": (0, "Inferred intent: stub.\n"),
             "dead-code-search": (0, "dc\n"),
             "performance": "TIMEOUT",
-            "security": "TIMEOUT",
+            "shape": "TIMEOUT",
         })
         rc = pipeline.run_pipeline(
             repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
@@ -898,16 +900,16 @@ class TestRunPipeline(unittest.TestCase):
         sentinel = self.run_dir / "_wave_b_timeouts.txt"
         self.assertTrue(sentinel.exists())
         names = set(sentinel.read_text().split())
-        self.assertEqual(names, {"performance", "security"})
+        self.assertEqual(names, {"performance", "shape"})
         # No aggregator — we don't post half-broken reviews.
         self.assertFalse((self.run_dir / "agents" / "aggregator" / "output.md").exists())
 
     @patch("pipeline.subprocess.Popen")
     def test_hard_failure_not_tolerated_even_when_solo(self, mock_popen):
         """Non-timeout failures (contract violations, codex non-zero rc that
-        isn't SPECIALIST_TIMEOUT_RC) are bugs, not flakes — no 1-tolerance
-        window. A single rc=5 specialist still aborts (preserves pre-existing
-        strictness for hard failures while only loosening the timeout case)."""
+        isn't 124) are bugs, not flakes — no 1-tolerance window. A single
+        rc=5 specialist still aborts (preserves pre-existing strictness for
+        hard failures while only loosening the timeout case)."""
         mock_popen.side_effect = _make_codex_stub(plan={
             "intent": (0, "Inferred intent: stub.\n"),
             "dead-code-search": (0, "dc\n"),
@@ -922,6 +924,57 @@ class TestRunPipeline(unittest.TestCase):
         # No warning / timeouts sentinels — this was a hard failure path.
         self.assertFalse((self.run_dir / "_wave_b_warning.txt").exists())
         self.assertFalse((self.run_dir / "_wave_b_timeouts.txt").exists())
+
+    @patch("pipeline.subprocess.Popen")
+    def test_security_specialist_timeout_is_hard_failure(self, mock_popen):
+        """A timed-out security specialist would let the aggregator emit
+        VERDICT: APPROVE on 7/8 angles without ever having looked at the
+        security side — a silent bypass. Treat as hard failure so the
+        author sees an abort, not an unsafe approval."""
+        mock_popen.side_effect = _make_codex_stub(plan={
+            "intent": (0, "Inferred intent: stub.\n"),
+            "dead-code-search": (0, "dc\n"),
+            "security": "TIMEOUT",
+        })
+        rc = pipeline.run_pipeline(
+            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
+            prompts_dir=str(self.prompts),
+            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
+        )
+        self.assertNotEqual(rc, 0)
+        # No "tolerable timeout" sentinels — security can't be silently
+        # absent from a review whose verdict gates an approval flow.
+        self.assertFalse((self.run_dir / "_wave_b_warning.txt").exists())
+
+    @patch("pipeline.subprocess.Popen")
+    def test_critic_timeout_is_hard_failure_not_tolerable(self, mock_popen):
+        """If the SPECIALIST succeeded (real output staged) and only the
+        CRITIC timed out, treating the rc as the tolerable-timeout case
+        would silently overwrite the real specialist output with a
+        `No probes.` stub. run_specialist promotes critic-stage timeouts
+        to rc=125 so Wave B classifies them as hard failures, and the
+        author sees an abort instead of a degraded review with the real
+        finding dropped."""
+        mock_popen.side_effect = _make_codex_stub(plan={
+            "intent": (0, "Inferred intent: stub.\n"),
+            "dead-code-search": (0, "dc\n"),
+            # shape specialist succeeds, its critic times out
+            "shape": (0, "### Probe 1\nreal shape finding\n"),
+            "critic-shape": "TIMEOUT",
+        })
+        rc = pipeline.run_pipeline(
+            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
+            prompts_dir=str(self.prompts),
+            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
+        )
+        # Hard-failure abort (not the 1-tolerable path) and no warning sentinel.
+        self.assertNotEqual(rc, 0)
+        self.assertFalse((self.run_dir / "_wave_b_warning.txt").exists())
+        # The real specialist output is preserved in the run dir (the
+        # scratch path under repo_dir gets cleaned up by _abort, but the
+        # forensic record at run/agents/shape/output.md is untouched).
+        shape_out = self.run_dir / "agents" / "shape" / "output.md"
+        self.assertIn("real shape finding", shape_out.read_text())
 
 
 class TestPipelineCLI(unittest.TestCase):
