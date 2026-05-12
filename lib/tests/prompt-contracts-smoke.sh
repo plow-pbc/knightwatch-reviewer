@@ -334,10 +334,18 @@ assert_grep "Path 2 trigger should skip pause rounds when selecting the 3-round 
 #     after a clean two-round history; the halt action would suppress
 #     the very probes the author needs to see — caught by knightwatch
 #     data-integrity specialist on PR #71).
-assert_grep "Path 2 trigger must guard on count[N] > 0 — a 0 → 0 → 0 series satisfies the strict-decrease test vacuously and would otherwise fire on healthy PRs with no blockers" \
-    "count[N] > 0" prompts/aggregator.md
-assert_grep "Path 2 trigger must guard on count[N-2] > 0 — a 0 → 0 → 5 series (blockers newly appeared) satisfies the strict-decrease test and would fire the halt action, suppressing the Probes block that would surface the new blockers" \
-    "count[N-2] > 0" prompts/aggregator.md
+# Each fence pins the guard AS AN AND-JOINED CONJUNCT in the trigger
+# fire condition. The "AND `count[N] > 0`" / "AND `count[N-2] > 0`"
+# prefixes only render that way inside the Path 2 trigger paragraph;
+# the rationale paragraph below uses different phrasing ("without
+# `count[N] > 0`, a healthy PR..."), so a regression that demoted the
+# guards from the fire condition to only the rationale would no
+# longer satisfy these fences. Caught by knightwatch tests
+# specialist on PR #71.
+assert_grep "Path 2 trigger fire condition must AND-join count[N] > 0 — a 0 → 0 → 0 series satisfies the strict-decrease test vacuously and would otherwise fire on healthy PRs with no blockers" \
+    "AND \`count[N] > 0\`" prompts/aggregator.md
+assert_grep "Path 2 trigger fire condition must AND-join count[N-2] > 0 — a 0 → 0 → 5 series (blockers newly appeared) satisfies the strict-decrease test and would fire the halt action, suppressing the Probes block that would surface the new blockers" \
+    "AND \`count[N-2] > 0\`" prompts/aggregator.md
 
 echo "  asserting Path 2 halt action skips the Probes block in aggregator.md..."
 assert_grep "Path 2 must skip the per-angle Probes block on halt" \
