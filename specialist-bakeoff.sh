@@ -303,9 +303,12 @@ for repo in "${REPOS[@]}"; do
     # subset with the roster marker. Uses a dedicated since=window_floor fetch
     # (not the incremental walker fetch above, which uses since=slack_floor).
     # Numerator/denominator drive the snapshot's honest "based on N of M" caption.
+    # Fetch failure increments fetch_failures so the end-of-script gate
+    # preserves the prior OUT_FILE — a snapshot rendered with stale coverage
+    # alongside fresh per-specialist data would mislead more than no snapshot.
     if [ "$repo_failures" -eq 0 ]; then
         window_comments=$(gh api --paginate "repos/$repo/issues/comments?since=$window_floor" 2>>"$LOG_FILE" | jq -s 'add // []') \
-            || { log "WARN: coverage denominator fetch failed for $repo, leaving coverage stale"; window_comments=""; }
+            || { log "WARN: coverage denominator fetch failed for $repo"; fetch_failures=$((fetch_failures + 1)); repo_failures=$((repo_failures + 1)); window_comments=""; }
         if [ -n "$window_comments" ]; then
             total_in_window=$(printf '%s' "$window_comments" \
                 | jq --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" \
