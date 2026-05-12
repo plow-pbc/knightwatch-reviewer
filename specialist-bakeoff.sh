@@ -289,6 +289,24 @@ for repo in "${REPOS[@]}"; do
                   and (.body | contains($marker) | not)
               ) | [.user.login, .issue_url, .body, .created_at] | @tsv')
 
+    # Coverage pass: count substantive bot reviews in the full window vs the
+    # subset with the roster marker. Uses a dedicated since=window_floor fetch
+    # (not the incremental walker fetch above, which uses since=slack_floor).
+    # Numerator/denominator drive the snapshot's honest "based on N of M" caption.
+    if [ "$repo_failures" -eq 0 ]; then
+        window_comments=$(gh api --paginate "repos/$repo/issues/comments?since=$window_floor" 2>>"$LOG_FILE" | jq -s 'add // []') \
+            || { log "WARN: coverage denominator fetch failed for $repo, leaving coverage stale"; window_comments=""; }
+        if [ -n "$window_comments" ]; then
+            total_in_window=$(printf '%s' "$window_comments" \
+                | jq --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" \
+                     "[.[] | select($SUBSTANTIVE_REVIEW_JQ)] | length")
+            with_marker_in_window=$(printf '%s' "$window_comments" \
+                | jq --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" \
+                     "[.[] | select($SUBSTANTIVE_REVIEW_JQ and (.body | test(\"knightwatch-bakeoff\")))] | length")
+            set_repo_coverage "$DB_FILE" "$repo" "$total_in_window" "$with_marker_in_window"
+        fi
+    fi
+
     if [ "$repo_failures" -eq 0 ]; then
         if [ -n "$max_review_ts" ]; then
             set_walk_watermark "$DB_FILE" "$repo" "$max_review_ts"

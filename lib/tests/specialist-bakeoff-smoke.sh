@@ -665,4 +665,35 @@ ROW=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE special
 
 unset MOCK_PULLS_COMMITS_FILE MOCK_COMMIT_FILES_DIR
 
+# ---- scenario 19: coverage denominator from mixed marker/no-marker reviews ----
+echo "    scenario 19: coverage counts substantive bot reviews — total vs with-marker..."
+rm -f "$DB_FILE"
+TS_R1=$(hours_ago 100)
+TS_R2=$(hours_ago 90)
+TS_R3=$(hours_ago 80)
+
+python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
+import json
+marker_body = "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=tests -->\n\n**Probes**\n\n1. [blocking] [from: tests] [tests] X. Files: src/a.py. Edit: do x.\n\n_How to use: auto-reviews every new PR..._"
+no_marker_body = "${BOT_AUTO_POST_MARKER}\n\n**Probes**\n\n1. [blocking] [from: tests] [tests] X.\n\n_How to use: auto-reviews every new PR..._"
+ack_body = "${BOT_AUTO_POST_MARKER}\n\n\U0001f440 reviewing..."
+comments = [
+    {"id": 80, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/50", "created_at": "${TS_R1}", "user": {"login": "testbot"}, "body": marker_body},
+    {"id": 81, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/51", "created_at": "${TS_R2}", "user": {"login": "testbot"}, "body": no_marker_body},
+    {"id": 82, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/52", "created_at": "${TS_R3}", "user": {"login": "testbot"}, "body": ack_body},
+]
+print(json.dumps(comments))
+PYEOF
+printf 'src/a.py\t1\t0\n' > "$MOCK_PULLS_FILES_FILE"
+: > "$TMPDIR_SMOKE/commits.tsv"
+export MOCK_PULLS_COMMITS_FILE="$TMPDIR_SMOKE/commits.tsv"
+
+run_driver
+
+COV=$(sqlite3 "$DB_FILE" "SELECT reviews_total_in_window || '|' || reviews_with_marker_in_window FROM walks WHERE repo='test-org/bakeoff-probe';")
+# Expected: 2 substantive bot reviews (id 80 + 81; ACK 82 excluded because it lacks the "How to use" footer), 1 with marker.
+[ "$COV" = "2|1" ] || { echo "FAIL scenario 19: coverage '$COV' expected '2|1'"; sqlite3 "$DB_FILE" "SELECT * FROM walks;"; exit 1; }
+
+unset MOCK_PULLS_COMMITS_FILE
+
 echo "PASS"
