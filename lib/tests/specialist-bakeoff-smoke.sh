@@ -703,13 +703,9 @@ run_driver
 grep -qE 'Based on [0-9]+ of [0-9]+' "$OUT_FILE" \
     || { echo "FAIL scenario 20: missing 'Based on N of M' caption"; cat "$OUT_FILE"; exit 1; }
 
-# Header lists the new columns.
-grep -qE '\| Blocking \|' "$OUT_FILE" \
-    || { echo "FAIL scenario 20: missing Blocking column header"; cat "$OUT_FILE"; exit 1; }
-grep -qE '\| Edited \|' "$OUT_FILE" \
-    || { echo "FAIL scenario 20: missing Edited column header"; cat "$OUT_FILE"; exit 1; }
-grep -qE '\| Cited \|' "$OUT_FILE" \
-    || { echo "FAIL scenario 20: missing Cited column header"; cat "$OUT_FILE"; exit 1; }
+# Header row pins all 6 operator-facing column labels in their rendered order.
+grep -qF '| Cited | Edited | Blocking | Medium | Low+Nit | Open |' "$OUT_FILE" \
+    || { echo "FAIL scenario 20: header missing one of: Cited|Edited|Blocking|Medium|Low+Nit|Open"; cat "$OUT_FILE"; exit 1; }
 
 # Per-repo coverage subtable is present with the test-org/bakeoff-probe row.
 grep -qE '\*\*Per-repo coverage\*\*' "$OUT_FILE" \
