@@ -23,6 +23,10 @@
 declare -a REPOS=()
 declare -A KID_PATHS=()
 declare -A SOURCE_PATHS=()
+# ORGS — optional GitHub orgs that org-sync.sh discovers + folds into
+# REPOS hourly. Pre-declared empty so consumers that don't enable
+# org-sync still load cleanly under `set -u`.
+declare -a ORGS=()
 # `[ -f X ] && . X` would trip errexit at the top level when X is
 # absent (the && chain returns 1, errexit exits). `if/then/fi`
 # is errexit-exempt — same effect, but safe under `set -e`.

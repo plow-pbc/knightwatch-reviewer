@@ -54,3 +54,19 @@ declare -A KID_PATHS=(
 declare -A SOURCE_PATHS=(
     ["your-org/example-repo"]="$HOME/Hacking/example-repo"
 )
+
+# Orgs auto-synced hourly by org-sync.sh / pr-reviewer-org-sync.timer.
+# Each entry is a GitHub org name (NOT org/repo). For each org, the
+# sync runs `gh repo list <org> --source --no-archived` (excludes
+# archived + forks), clones any missing repos into $HOME/Hacking/<name>,
+# and appends entries below in the AUTO-SYNC marker block. Leave empty
+# to disable auto-sync entirely.
+ORGS=()
+
+# === BEGIN AUTO-SYNC ===
+# Managed by org-sync.sh — entries between these markers are fully
+# regenerated on each sync tick. Do NOT edit by hand; manual entries
+# belong above, in REPOS / KID_PATHS / SOURCE_PATHS. Entries here use
+# bash array-append + assoc-key assignment, which is valid because
+# REPOS / KID_PATHS / SOURCE_PATHS are already declared above.
+# === END AUTO-SYNC ===

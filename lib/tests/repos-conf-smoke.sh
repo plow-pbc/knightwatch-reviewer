@@ -134,6 +134,7 @@ CONSUMERS=(
     "approve-from-replies.sh"
     "lib/review-one-pr.sh"
     "plow-kid-refresh.sh"
+    "org-sync.sh"
 )
 for c in "${CONSUMERS[@]}"; do
     f="$PROJECT_ROOT/$c"

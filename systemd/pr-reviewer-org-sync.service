@@ -1,0 +1,43 @@
+[Unit]
+Description=Plow PR reviewer — discover org repos and fold them into repos.conf
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=odio
+Group=odio
+WorkingDirectory=/home/odio/.pr-reviewer
+Environment=HOME=/home/odio
+# PATH: system dirs FIRST (see pr-reviewer.service for rationale —
+# defense-in-depth on top of the ~/.local-not-in-ReadWritePaths fix).
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/odio/.nvm/versions/node/v24.15.0/bin:/home/odio/.local/bin
+ExecStart=/home/odio/.pr-reviewer/org-sync.sh
+TimeoutStartSec=10min
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pr-reviewer-org-sync
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectHome=read-only
+# ReadWritePaths surface is intentionally broader than the sibling
+# review/refresh units: org-sync.sh creates NEW checkout directories
+# under /home/odio/Hacking that are not yet in @KID_RW_PATHS@ (which
+# is rendered from KID_PATHS at install time and therefore can't know
+# about repos discovered after the last install). Granting RW on the
+# whole /home/odio/Hacking parent is the only sandbox shape that lets
+# `gh repo clone <new> /home/odio/Hacking/<new>` succeed without a
+# preceding install.sh re-render. The blast radius is one script
+# (org-sync.sh) doing only `gh repo clone` + a tmp-file rewrite of
+# repos.conf — narrower than dropping ProtectHome entirely.
+# repos.conf lives at /home/odio/services/knightwatch-reviewer/repos.conf
+# (the source-tree copy that install.sh symlinks into ~/.pr-reviewer/).
+# Grant RW on the parent so org-sync.sh's atomic tmp+mv rewrite lands.
+ReadWritePaths=/home/odio/.pr-reviewer /home/odio/Hacking /home/odio/services/knightwatch-reviewer /home/odio/.cache /home/odio/.config
+
+[Install]
+WantedBy=multi-user.target

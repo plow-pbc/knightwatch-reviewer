@@ -134,6 +134,10 @@ test:
     bash lib/tests/plow-kid-refresh-smoke.sh
 
     echo ""
+    echo "=== org-sync smoke test ==="
+    bash lib/tests/org-sync-smoke.sh
+
+    echo ""
     echo "=== install smoke test ==="
     bash lib/tests/install-smoke.sh
 
