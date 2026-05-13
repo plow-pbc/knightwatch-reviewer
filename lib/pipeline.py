@@ -455,27 +455,32 @@ def run_pipeline(
             repo, f"{pr_id}: Wave B hard failures: {'; '.join(hard_failures)} — aborting"
         )
 
-    # Fail-loud cases:
+    # Single-sentinel contract with the bash worker: write the timed-out
+    # specialist names whenever ANY timed out. The pipeline exit code
+    # disambiguates how the bash side uses it — non-zero = fail-loud
+    # (placeholder gets named-error body); zero = tolerable (names go in
+    # the review-header banner). Bash reads one file and branches on
+    # PIPELINE_EXIT instead of polling two sentinels.
+    if timed_out:
+        (run / "_wave_b_timeouts.txt").write_text("\n".join(timed_out) + "\n")
+
+    # Fail-loud thresholds:
     #   - 2+ specialists timed out → systemic codex problem, not one flake.
     #   - security specialist timed out → a silent absence of security
     #     findings + VERDICT: APPROVE is a quiet bypass of the review's
     #     main user-protecting angle.
-    # Both paths write the same sentinel so the bash worker patches the
-    # placeholder with named specialists rather than the generic abort
-    # body. Non-security count == 1 falls through to the tolerable stub
-    # below.
     if "security" in timed_out or len(timed_out) >= 2:
-        (run / "_wave_b_timeouts.txt").write_text("\n".join(timed_out) + "\n")
         return _abort(
             repo,
             f"{pr_id}: {len(timed_out)} specialists timed out "
             f"({', '.join(timed_out)}) — aborting (fail-loud threshold reached)",
         )
 
-    # Exactly 1 timeout: tolerable degradation. Write a "No probes." stub at the
-    # path the aggregator reads from so the aggregator can run cleanly, and
-    # drop a banner sentinel for the bash worker to inject above the review
-    # body. The author sees the partial coverage explicitly, not silently.
+    # Exactly 1 non-security timeout: tolerable degradation. Write a "No
+    # probes." stub at the path the aggregator reads from so the aggregator
+    # can run cleanly. The bash worker reads `_wave_b_timeouts.txt` (already
+    # written above), sees PIPELINE_EXIT=0, and formats the banner from the
+    # name list — same name-source as the fail-loud abort body.
     if timed_out:
         [name] = timed_out
         if name == "momentum":
@@ -485,11 +490,6 @@ def run_pipeline(
             # the stub here and skip the relink.
             (scratch / "momentum.md").write_text(
                 f"<!-- momentum timed out after {SPECIALIST_TIMEOUT_SEC}s — no prior-review momentum available -->\n"
-            )
-            warning = (
-                f"⚠️ Momentum input unavailable: timed out after "
-                f"{SPECIALIST_TIMEOUT_SEC // 60} min — review reflects 8/8 "
-                "specialist angles but did not benefit from prior-review momentum"
             )
         else:
             # Specialist: layered stub at agents/<name>/layered.md (for
@@ -504,12 +504,6 @@ def run_pipeline(
             scratch_specialists = repo / ".codex-scratch" / "specialists"
             scratch_specialists.mkdir(parents=True, exist_ok=True)
             (scratch_specialists / f"{name}.md").write_text(stub)
-            warning = (
-                f"⚠️ Specialist `{name}` timed out after "
-                f"{SPECIALIST_TIMEOUT_SEC // 60} min — review reflects "
-                f"{len(SPECIALISTS) - 1}/{len(SPECIALISTS)} angles"
-            )
-        (run / "_wave_b_warning.txt").write_text(warning)
 
     if has_prev and "momentum" not in timed_out:
         _relink(scratch / "momentum.md", run / "agents" / "momentum" / "output.md")

@@ -1296,12 +1296,14 @@ REVIEW_NOTES+=("$KID_NOTE")
 # absent + no STRICT_TYPING_CMDS entry) or the checker errored (logged
 # loud above). Both cases are correctly silent in the header.
 [ -n "$STRICT_TYPING_NOTE" ] && REVIEW_NOTES+=("$STRICT_TYPING_NOTE")
-# Wave B tolerated 1 timeout: pipeline.py wrote a one-line banner describing
-# the missing angle. Surface it in REVIEW_NOTES so the author sees the
-# partial coverage explicitly — silent degradation is the failure mode this
-# guards against.
-WAVE_B_WARNING_SENTINEL="$RUN_DIR/_wave_b_warning.txt"
-[ -s "$WAVE_B_WARNING_SENTINEL" ] && REVIEW_NOTES+=("$(cat "$WAVE_B_WARNING_SENTINEL")")
+# Wave B tolerated a single non-security timeout: pipeline.py wrote the
+# names to _wave_b_timeouts.txt and returned 0 (the fail-loud branch
+# returns non-zero, handled above). Format the banner from the name —
+# same name-source as the fail-loud abort body, single sentinel file.
+if [ -s "$RUN_DIR/_wave_b_timeouts.txt" ]; then
+    TIMED_OUT=$(paste -sd, "$RUN_DIR/_wave_b_timeouts.txt")
+    REVIEW_NOTES+=("⚠️ \`$TIMED_OUT\` timed out — review reflects partial Wave B coverage")
+fi
 log "$PR_ID: review-notes = ${#REVIEW_NOTES[@]} (${REVIEW_NOTES[*]:-none})"
 
 if ! COMMENT_BODY=$(prepend_review_header "$COMMENT_BODY" "${REVIEW_NOTES[@]}"); then

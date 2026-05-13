@@ -817,9 +817,10 @@ class TestRunPipeline(unittest.TestCase):
     @patch("pipeline.subprocess.Popen")
     def test_one_specialist_timeout_tolerated_aggregator_runs(self, mock_popen):
         """≤1 timeout: aggregator runs on 7/8 specialists, a stub fills the
-        missing slot so .codex-scratch/specialists/<name>.md exists, and a
-        warning sentinel is written for the bash worker to surface above
-        the posted review."""
+        missing slot so .codex-scratch/specialists/<name>.md exists, and
+        the timeouts sentinel names the hung specialist for the bash
+        worker (which uses PIPELINE_EXIT=0 here to choose banner-mode
+        over fail-loud-mode)."""
         mock_popen.side_effect = _make_codex_stub(plan={
             "intent": (0, "Inferred intent: stub.\n"),
             "dead-code-search": (0, "dc\n"),
@@ -836,12 +837,10 @@ class TestRunPipeline(unittest.TestCase):
         self.assertIn("No probes.", scratch_specialist.read_text())
         # Forensic stub at the run-dir for bakeoff roster math.
         self.assertTrue((self.run_dir / "agents" / "performance" / "layered.md").exists())
-        # Banner sentinel for review-one-pr.sh.
-        warning = (self.run_dir / "_wave_b_warning.txt").read_text()
-        self.assertIn("performance", warning)
-        self.assertIn("timed out", warning)
-        # The 2+ sentinel must NOT exist (1 timeout is tolerated).
-        self.assertFalse((self.run_dir / "_wave_b_timeouts.txt").exists())
+        # Single sentinel — pipeline rc=0 + name in the file tells bash to
+        # banner-mode (the fail-loud-mode contract is rc!=0 + same file).
+        sentinel = self.run_dir / "_wave_b_timeouts.txt"
+        self.assertEqual(sentinel.read_text().strip(), "performance")
 
     @patch("pipeline.subprocess.Popen")
     def test_two_specialist_timeouts_fail_loud(self, mock_popen):
@@ -880,18 +879,17 @@ class TestRunPipeline(unittest.TestCase):
         })
         rc = self._run()
         self.assertNotEqual(rc, 0)
-        # No warning / timeouts sentinels — this was a hard failure path.
-        self.assertFalse((self.run_dir / "_wave_b_warning.txt").exists())
+        # No timeouts sentinel — this was a hard failure path (rc != 124).
         self.assertFalse((self.run_dir / "_wave_b_timeouts.txt").exists())
 
     @patch("pipeline.subprocess.Popen")
     def test_security_specialist_timeout_is_hard_failure(self, mock_popen):
         """A timed-out security specialist would let the aggregator emit
         VERDICT: APPROVE on 7/8 angles without ever having looked at the
-        security side — a silent bypass. Treat as hard failure so the
-        author sees an abort, not an unsafe approval. The timeouts sentinel
-        is written so review-one-pr.sh names `security` in the placeholder
-        body (not the generic abort message)."""
+        security side — a silent bypass. Treat as hard failure (rc != 0)
+        so the author sees an abort. The single sentinel file names
+        `security` for the bash worker; rc != 0 selects the fail-loud
+        placeholder body."""
         mock_popen.side_effect = _make_codex_stub(plan={
             "intent": (0, "Inferred intent: stub.\n"),
             "dead-code-search": (0, "dc\n"),
@@ -899,10 +897,6 @@ class TestRunPipeline(unittest.TestCase):
         })
         rc = self._run()
         self.assertNotEqual(rc, 0)
-        # No tolerable-timeout warning sentinel.
-        self.assertFalse((self.run_dir / "_wave_b_warning.txt").exists())
-        # But the multi-timeout sentinel IS written, naming `security` —
-        # the author-visible placeholder gets the specific specialist name.
         sentinel = self.run_dir / "_wave_b_timeouts.txt"
         self.assertTrue(sentinel.exists())
         self.assertIn("security", sentinel.read_text())
@@ -943,9 +937,12 @@ class TestRunPipeline(unittest.TestCase):
             "critic-shape": "TIMEOUT",
         })
         rc = self._run()
-        # Hard-failure abort (not the 1-tolerable path) and no warning sentinel.
+        # Hard-failure abort (not the 1-tolerable path) — rc != 0 AND the
+        # timeouts sentinel is NOT written, because run_specialist promoted
+        # the critic-stage 124 to 125 so this never reached the timed_out
+        # accumulator.
         self.assertNotEqual(rc, 0)
-        self.assertFalse((self.run_dir / "_wave_b_warning.txt").exists())
+        self.assertFalse((self.run_dir / "_wave_b_timeouts.txt").exists())
         # The real specialist output is preserved in the run dir (the
         # scratch path under repo_dir gets cleaned up by _abort, but the
         # forensic record at run/agents/shape/output.md is untouched).

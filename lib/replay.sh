@@ -216,9 +216,15 @@ REVIEW_NOTES+=("🎬 Replay of \`$SHA\` (\`gh pr view --repo $REPO $PR\`)")
 if [ "$KNIGHTWATCH_PRESENT" = "0" ]; then
     REVIEW_NOTES+=("⚙️ No .knightwatch/ config (review using defaults)")
 fi
-# Mirror lib/review-one-pr.sh's Wave-B-warning consumer so replay output
-# stays comparable to production when pipeline.py tolerates 1 timeout.
-[ -s "$RUN_DIR/_wave_b_warning.txt" ] && REVIEW_NOTES+=("$(cat "$RUN_DIR/_wave_b_warning.txt")")
+# Mirror lib/review-one-pr.sh's single Wave-B-timeouts consumer so replay
+# output stays comparable to production when pipeline.py tolerates 1
+# timeout (the names land in _wave_b_timeouts.txt regardless of fatal/
+# tolerable; pipeline rc disambiguates, but replay reaches this point
+# only on success, so the banner-formatting branch is the right one).
+if [ -s "$RUN_DIR/_wave_b_timeouts.txt" ]; then
+    TIMED_OUT=$(paste -sd, "$RUN_DIR/_wave_b_timeouts.txt")
+    REVIEW_NOTES+=("⚠️ \`$TIMED_OUT\` timed out — review reflects partial Wave B coverage")
+fi
 
 AGG_BODY=$(cat "$AGG_OUT_FILE")
 STITCHED=$(prepend_review_header "$AGG_BODY" "${REVIEW_NOTES[@]}")
