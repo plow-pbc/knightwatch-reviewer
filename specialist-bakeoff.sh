@@ -37,7 +37,8 @@ store_init "$DB_FILE"
 SUBSTANTIVE_REVIEW_JQ='.user.login == $bot_user
     and (.body | contains($marker))
     and (.body | contains("👀 reviewing") | not)
-    and (.body | contains("How to use: auto-reviews"))'
+    and (.body | contains("How to use: auto-reviews"))
+    and (.created_at >= $window_floor)'
 
 walked_reviews=0
 fetch_failures=0
@@ -233,7 +234,7 @@ for repo in "${REPOS[@]}"; do
 
         walked_reviews=$((walked_reviews + 1))
     done < <(printf '%s' "$comments_json" \
-        | jq -r --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" \
+        | jq -r --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" --arg window_floor "$window_floor" \
              ".[] | select($SUBSTANTIVE_REVIEW_JQ) | [.id, .issue_url, .created_at, .body] | @tsv")
 
     # Pass 2: feedback comments. For each feedback signal, find the most-recent
@@ -288,10 +289,10 @@ for repo in "${REPOS[@]}"; do
     # "based on N of M" caption.
     if [ "$repo_failures" -eq 0 ]; then
         total_in_window=$(printf '%s' "$comments_json" \
-            | jq --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" \
+            | jq --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" --arg window_floor "$window_floor" \
                  "[.[] | select($SUBSTANTIVE_REVIEW_JQ)] | length")
         with_marker_in_window=$(printf '%s' "$comments_json" \
-            | jq --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" --arg roster "$ROSTER_MARKER_REGEX" \
+            | jq --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" --arg roster "$ROSTER_MARKER_REGEX" --arg window_floor "$window_floor" \
                  "[.[] | select($SUBSTANTIVE_REVIEW_JQ and (.body | test(\$roster)))] | length")
         set_repo_coverage "$DB_FILE" "$repo" "$total_in_window" "$with_marker_in_window"
     fi

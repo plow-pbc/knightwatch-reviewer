@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Unit tests for lib/bakeoff-store.sh — schema bootstrap, upserts, watermark.
+# Unit tests for lib/bakeoff-store.sh — schema bootstrap, upserts, coverage.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/../bakeoff-store.sh"

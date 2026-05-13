@@ -135,21 +135,12 @@ if [ "$1" = "api" ]; then
         exit 1
     fi
     if [[ "$endpoint" == */issues/comments* ]]; then
-        # Honor since= query param: filter mock comments by created_at >= since.
-        # If no since= present, return all (for scenarios that don't care about
-        # watermark behavior).
-        SINCE=""
-        if [[ "$endpoint" == *since=* ]]; then
-            SINCE="${endpoint#*since=}"
-            SINCE="${SINCE%%&*}"
-        fi
-        _filter() {
-            if [ -n "$SINCE" ]; then
-                jq --arg since "$SINCE" '[.[] | select(.created_at >= $since)]'
-            else
-                jq '.'
-            fi
-        }
+        # Return the mock comments unfiltered — real GitHub's since= filters
+        # on updated_at (not created_at), so an old comment with a recent
+        # edit would still come back. The walker must defend itself via its
+        # own .created_at >= $window_floor jq fence; the stub mirrors the
+        # "API may return out-of-window comments" reality.
+        _filter() { jq '.'; }
         if [ -n "$paginate" ] && [ -s "${MOCK_COMMENTS_FILE_PAGE2:-/dev/null}" ]; then
             cat "$MOCK_COMMENTS_FILE" | _filter
             cat "$MOCK_COMMENTS_FILE_PAGE2" | _filter
@@ -887,5 +878,40 @@ ROW=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE special
 [ "$ROW" = "0" ] || { echo "FAIL scenario 27: stale edited_after not cleared on successful rewalk ('$ROW' expected '0')"; exit 1; }
 
 unset MOCK_PULLS_COMMITS_FILE MOCK_COMMIT_FILES_DIR
+
+# ---- scenario 28: out-of-window comment returned by since= filter is rejected by .created_at fence ----
+echo "    scenario 28: comment with created_at older than WINDOW_DAYS is rejected even when returned by since=..."
+rm -f "$DB_FILE"
+TS_OLD=$(date -u -d '60 days ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+        || date -u -v "-60d" +%Y-%m-%dT%H:%M:%SZ)
+TS_RECENT=$(hours_ago 50)
+
+# Two reviews — one with created_at 60 days ago (outside WINDOW_DAYS=30), one
+# with created_at 50h ago (in window). GitHub's since= filter is updated_at-
+# based; the stub returns BOTH since it doesn't filter by created_at. The
+# walker's jq predicate must reject the old one via the .created_at >=
+# $window_floor fence regardless of what the API returned.
+{ build_bot_review 180 140 "$TS_OLD" tests \
+    '1. [blocking] [from: tests] [tests] old. Files: src/a.py. Edit: do x.'
+  build_bot_review 181 141 "$TS_RECENT" tests \
+    '1. [blocking] [from: tests] [tests] recent. Files: src/b.py. Edit: do y.'
+} | jq -s . > "$MOCK_COMMENTS_FILE"
+printf 'src/a.py\t1\t0\nsrc/b.py\t1\t0\n' > "$MOCK_PULLS_FILES_FILE"
+: > "$TMPDIR_SMOKE/commits.tsv"
+export MOCK_PULLS_COMMITS_FILE="$TMPDIR_SMOKE/commits.tsv"
+
+run_driver
+
+# Old review must not have created a row.
+OLD_ROWS=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM specialist_runs WHERE comment_id=180;")
+[ "$OLD_ROWS" = "0" ] || { echo "FAIL scenario 28: out-of-window review created $OLD_ROWS rows (expected 0)"; exit 1; }
+# Recent review should have created its tests row.
+NEW_PUB=$(sqlite3 "$DB_FILE" "SELECT published FROM specialist_runs WHERE comment_id=181 AND specialist='tests';")
+[ "$NEW_PUB" = "1" ] || { echo "FAIL scenario 28: in-window review's tests row missing or unpublished ('$NEW_PUB')"; exit 1; }
+# Coverage caption should count 1 of 1, NOT 2 of 2.
+COV=$(sqlite3 "$DB_FILE" "SELECT reviews_total_in_window || '|' || reviews_with_marker_in_window FROM walks WHERE repo='test-org/bakeoff-probe';")
+[ "$COV" = "1|1" ] || { echo "FAIL scenario 28: coverage '$COV' expected '1|1' (out-of-window review must NOT count)"; exit 1; }
+
+unset MOCK_PULLS_COMMITS_FILE
 
 echo "PASS"
