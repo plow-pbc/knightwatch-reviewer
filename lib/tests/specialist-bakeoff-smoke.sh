@@ -668,6 +668,9 @@ COV=$(sqlite3 "$DB_FILE" "SELECT reviews_total_in_window || '|' || reviews_with_
 # it lacks the "How to use" footer); 1 with marker (id 80 only — id 83 has the
 # marker token in prose but not the real <!-- ... --> shape).
 [ "$COV" = "3|1" ] || { echo "FAIL scenario 19: coverage '$COV' expected '3|1' (prose mention of marker must NOT count)"; sqlite3 "$DB_FILE" "SELECT * FROM walks;"; exit 1; }
+# Rendered caption must reflect the exact 1-of-3 → 33% derived from that DB row.
+grep -qF "Based on 1 of 3 substantive bot reviews in window (33% coverage" "$OUT_FILE" \
+    || { echo "FAIL scenario 19: caption missing 'Based on 1 of 3 ... (33% coverage'"; grep -F "Based on" "$OUT_FILE"; exit 1; }
 
 unset MOCK_PULLS_COMMITS_FILE
 
@@ -676,9 +679,19 @@ echo "    scenario 20: rendered table — honest caption, severity + edited cols
 rm -f "$DB_FILE"
 TS=$(hours_ago 50)
 
-build_bot_review 90 60 "$TS" tests,aggregator \
-    '1. [blocking] [from: tests] [tests] X. Files: src/a.py. Edit: do x.' \
-    | jq -s . > "$MOCK_COMMENTS_FILE"
+# Four reviews on four PRs, each with a different max severity so the rendered
+# tests row has 1 in every severity bucket. Catches drift in Medium/Low+Nit/
+# Open columns independently of Blocking (which the prior single-fixture
+# version was the only check for).
+{ build_bot_review 90 60 "$TS" tests,aggregator \
+    '1. [blocking] [from: tests] [tests] X. Files: src/a.py. Edit: do x.'
+  build_bot_review 91 61 "$TS" tests,aggregator \
+    '1. [medium] [from: tests] [tests] X. Files: src/a.py. Edit: do x.'
+  build_bot_review 92 62 "$TS" tests,aggregator \
+    '1. [nit] [from: tests] [tests] X. Files: src/a.py. Edit: do x.'
+  build_bot_review 93 63 "$TS" tests,aggregator \
+    '1. [open] [from: tests] [tests] **Q: foo?** — Q text.'
+} | jq -s . > "$MOCK_COMMENTS_FILE"
 export MOCK_PULLS_FILES_FILE="$TMPDIR_SMOKE/pulls-files.txt"
 printf 'src/a.py\t1\t0\n' > "$MOCK_PULLS_FILES_FILE"
 : > "$TMPDIR_SMOKE/commits.tsv"
@@ -701,8 +714,8 @@ grep -qE '\| Cited \|' "$OUT_FILE" \
 # Per-repo coverage subtable is present with the test-org/bakeoff-probe row.
 grep -qE '\*\*Per-repo coverage\*\*' "$OUT_FILE" \
     || { echo "FAIL scenario 20: missing **Per-repo coverage** header"; cat "$OUT_FILE"; exit 1; }
-grep -qE '\| `test-org/bakeoff-probe` \| 1 \| 1 \| 100%' "$OUT_FILE" \
-    || { echo "FAIL scenario 20: per-repo row missing or wrong: expected 1/1/100% for test-org/bakeoff-probe"; cat "$OUT_FILE"; exit 1; }
+grep -qE '\| `test-org/bakeoff-probe` \| 4 \| 4 \| 100%' "$OUT_FILE" \
+    || { echo "FAIL scenario 20: per-repo row missing or wrong: expected 4/4/100% for test-org/bakeoff-probe"; cat "$OUT_FILE"; exit 1; }
 
 # aggregator must not appear as a data row.
 if grep -qE '^\| aggregator ' "$OUT_FILE"; then
@@ -711,13 +724,15 @@ if grep -qE '^\| aggregator ' "$OUT_FILE"; then
     exit 1
 fi
 
-# tests row — exact field-positional assertion (Blocking is column 7, not "any 1 in the row").
-# Columns: Specialist | Reviews | Shipped | Cited | Edited | Blocking | Medium | Low+Nit | Open | +LOC | -LOC
+# tests row — field-positional assertion on all 4 severity columns.
+# Awk fields with FS=' | ' (the markdown table separator):
+#   $1 "| tests", $2 Reviews, $3 Shipped, $4 Cited, $5 Edited,
+#   $6 Blocking, $7 Medium, $8 Low+Nit, $9 Open, $10 +LOC, $11 "-LOC |"
 TESTS_ROW=$(grep -E '^\| tests ' "$OUT_FILE")
 [ -n "$TESTS_ROW" ] || { echo "FAIL scenario 20: tests row missing"; cat "$OUT_FILE"; exit 1; }
-TESTS_BLOCKING=$(echo "$TESTS_ROW" | awk -F' \\| ' '{print $6}')
-[ "$TESTS_BLOCKING" = "1" ] \
-    || { echo "FAIL scenario 20: tests Blocking column='$TESTS_BLOCKING' expected '1' (row: $TESTS_ROW)"; exit 1; }
+SEV=$(echo "$TESTS_ROW" | awk -F' \\| ' '{print $6"|"$7"|"$8"|"$9}')
+[ "$SEV" = "1|1|1|1" ] \
+    || { echo "FAIL scenario 20: tests severity (Blocking|Medium|Low+Nit|Open)='$SEV' expected '1|1|1|1' (row: $TESTS_ROW)"; exit 1; }
 
 unset MOCK_PULLS_COMMITS_FILE
 
