@@ -64,13 +64,19 @@ probe_cited_paths() {
     '
 }
 
+# Roster marker grammar — single source of truth used by both the bash
+# parser below (extract_roster_marker) AND the coverage tally in
+# specialist-bakeoff.sh (consumed via jq's test()). Tolerate optional
+# whitespace before the closing `-->` since markdown comment writers
+# commonly insert it. POSIX ERE and Oniguruma (jq's engine) both accept
+# this character-class shape.
+ROSTER_MARKER_REGEX='<!-- knightwatch-bakeoff: specialists=[a-z][a-z,-]*[[:space:]]*-->'
+
 # Specialists invoked on this review, from the write-time bake-off marker.
 # Format on the wire: `<!-- knightwatch-bakeoff: specialists=a,b,c -->` (one
-# line, comma-separated). Tolerate optional whitespace before the closing
-# `-->` since markdown comment writers commonly insert it. Emits one
-# specialist per line.
+# line, comma-separated). Emits one specialist per line.
 extract_roster_marker() {
-    grep -oE '<!-- knightwatch-bakeoff: specialists=[a-z][a-z,-]*[[:space:]]*-->' \
+    grep -oE "$ROSTER_MARKER_REGEX" \
         | sed -E 's/.*specialists=([a-z,-]+).*/\1/' \
         | tr ',' '\n' \
         | grep -v '^$' || true

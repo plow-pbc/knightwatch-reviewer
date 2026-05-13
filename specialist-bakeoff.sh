@@ -2,19 +2,18 @@
 # Hourly: walk new GitHub state into ~/.pr-reviewer/bakeoff.db and
 # regenerate ~/.pr-reviewer/specialist-bakeoff.md.
 #
-# Architecture: walker (writes to SQLite store, watermark per repo) →
-# reporter (queries the store, renders markdown). The store is the
-# source of truth for time-series; the markdown is a snapshot view.
-#
-# The 30-day window is now a query parameter, not an API-cost ceiling —
-# subsequent walks only fetch comments newer than the per-repo watermark
-# (with OVERLAP_HOURS slack for late-edited memorize comments).
+# Architecture: walker (writes to SQLite store) → reporter (queries the
+# store, renders markdown). Walker fetches the full WINDOW_DAYS comment
+# window every cron so every in-window review gets edited_after re-
+# evaluated against the current commit graph — an older in-window
+# review whose post-review commit landed between cron runs must still
+# get its flag flipped/cleared, which an incremental-since-watermark
+# fetch would miss once newer reviews advance the watermark past it.
 set -euo pipefail
 [ -n "${BASH_VERSION:-}" ] || { echo "FATAL: bash required"; exit 1; }
 
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 WINDOW_DAYS="${WINDOW_DAYS:-30}"
-OVERLAP_HOURS="${OVERLAP_HOURS:-24}"
 DB_FILE="${DB_FILE:-$STATE_DIR/bakeoff.db}"
 OUT_FILE="${OUT_FILE:-$STATE_DIR/specialist-bakeoff.md}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/bakeoff.log}"
@@ -38,7 +37,8 @@ store_init "$DB_FILE"
 SUBSTANTIVE_REVIEW_JQ='.user.login == $bot_user
     and (.body | contains($marker))
     and (.body | contains("👀 reviewing") | not)
-    and (.body | contains("How to use: auto-reviews"))'
+    and (.body | contains("How to use: auto-reviews"))
+    and (.created_at >= $window_floor)'
 
 walked_reviews=0
 fetch_failures=0
@@ -47,22 +47,10 @@ for repo in "${REPOS[@]}"; do
     repo_failures=0
     window_floor=$(date -u -d "$WINDOW_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
                   || date -u -v "-${WINDOW_DAYS}d" +%Y-%m-%dT%H:%M:%SZ)
-    watermark=$(get_walk_watermark "$DB_FILE" "$repo")
-    if [ -n "$watermark" ]; then
-        slack_floor=$(date -u -d "$watermark -$OVERLAP_HOURS hours" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
-                     || date -u -v "-${OVERLAP_HOURS}H" -j -f "%Y-%m-%dT%H:%M:%SZ" "$watermark" +%Y-%m-%dT%H:%M:%SZ)
-        if [[ "$slack_floor" > "$window_floor" ]]; then
-            since="$slack_floor"
-        else
-            since="$window_floor"
-        fi
-    else
-        since="$window_floor"
-    fi
-    log "scanning $repo since $since (watermark=${watermark:-<none>})..."
+    log "scanning $repo since $window_floor (full window — every cron re-evaluates edited_after)..."
 
     comments_json=$(gh api --paginate \
-        "repos/$repo/issues/comments?since=$since" \
+        "repos/$repo/issues/comments?since=$window_floor" \
         2>>"$LOG_FILE" | jq -s 'add // []') \
         || { log "WARN: gh api comments failed for $repo, skipping"; fetch_failures=$((fetch_failures + 1)); repo_failures=$((repo_failures + 1)); continue; }
 
@@ -73,10 +61,11 @@ for repo in "${REPOS[@]}"; do
     declare -A pr_paths_cache=()
     declare -A pr_files_cache=()
     declare -A pr_files_ok_cache=()
+    declare -A pr_post_paths_cache=()
+    declare -A pr_post_paths_ok_cache=()
 
     # Pass 1: walk substantive bot reviews. Each row is one (review × specialist).
     # The roster marker drives row creation; probe parsing drives flag updates.
-    max_review_ts=""
     while IFS=$'\t' read -r review_id issue_url created_at review_body; do
         [ -z "$review_id" ] && continue
         pr_num="${issue_url##*/}"
@@ -138,18 +127,59 @@ for repo in "${REPOS[@]}"; do
             set_max_severity "$DB_FILE" "$repo" "$review_id" "$specialist" "${spec_max_sev[$specialist]}"
         done
         unset spec_max_sev
-        # Applied accuracy note: clear_applied_for_review only runs when this
-        # walk actually fetched the review (since=watermark - OVERLAP_HOURS).
-        # A PR force-pushed >24h after its last review activity won't have its
-        # Applied/+LOC reset until the next bot review on that PR. Acceptable
-        # at current scale — bake-off aggregates many PRs per specialist, so a
-        # few stale rows from late force-pushes are noise, not signal.
+        # Per-PR set of paths touched by commits LANDING AFTER the review's
+        # created_at — fetched lazily (once per cache_key) and intersected
+        # with each specialist's cited paths to drive `edited_after`. A
+        # pulls/commits or commits/<sha> failure logs WARN and marks
+        # post_paths_ok=0; downstream skips both clear and recompute so a
+        # transient failure can't erase a previously-correct edited_after.
+        post_review_key="${cache_key}#after#${created_at}"
+        if [[ -z "${pr_post_paths_cache[$post_review_key]+set}" ]]; then
+            post_paths=""
+            post_paths_ok=1
+            if commits_json=$(gh api --paginate "repos/$repo/pulls/$pr_num/commits" 2>>"$LOG_FILE"); then
+                # committer.date (not author.date) is the "landed on branch" timestamp —
+                # rebased or prewritten commits keep their original author.date but get
+                # a fresh committer.date when they land, which is what "after the review"
+                # needs to mean for Edited to count correctly.
+                shas=$(printf '%s\n' "$commits_json" \
+                    | jq -rs --arg t "$created_at" 'add // [] | .[] | select(.commit.committer.date > $t) | .sha')
+                while IFS= read -r sha; do
+                    [ -z "$sha" ] && continue
+                    if commit_json=$(gh api "repos/$repo/commits/$sha" 2>>"$LOG_FILE"); then
+                        # Emit both filename AND previous_filename so a post-review
+                        # rename (commit changes old.py → new.py) still matches a
+                        # probe citing the pre-rename path.
+                        commit_paths=$(printf '%s\n' "$commit_json" | jq -r '.files[]? | (.filename, .previous_filename // empty)')
+                        post_paths=$(printf '%s\n%s\n' "$post_paths" "$commit_paths")
+                    else
+                        log "WARN: gh api commits/$sha failed for $repo"
+                        post_paths_ok=0
+                        fetch_failures=$((fetch_failures + 1))
+                        repo_failures=$((repo_failures + 1))
+                    fi
+                done <<< "$shas"
+                post_paths=$(printf '%s\n' "$post_paths" | grep -v '^$' | sort -u || true)
+            else
+                log "WARN: gh api pulls/commits failed for $repo#$pr_num"
+                post_paths_ok=0
+                fetch_failures=$((fetch_failures + 1))
+                repo_failures=$((repo_failures + 1))
+            fi
+            pr_post_paths_cache["$post_review_key"]="$post_paths"
+            pr_post_paths_ok_cache["$post_review_key"]="$post_paths_ok"
+        fi
+        post_paths="${pr_post_paths_cache[$post_review_key]}"
+        post_paths_ok="${pr_post_paths_ok_cache[$post_review_key]}"
+
         if [ "$pr_files_ok" = "1" ]; then
             # Clear stale Applied/+LOC before recomputing — handles the rewalk
-            # case where the PR diff stopped touching a previously-matched cited
-            # path (incl. the empty-diff force-push edge case where pulls/files
-            # succeeds with an empty list).
+            # case where the PR diff stopped touching a previously-matched
+            # cited path (incl. the empty-diff force-push edge case where
+            # pulls/files succeeds with an empty list). edited_after is
+            # cleared separately below, gated on post_paths_ok.
             clear_applied_for_review "$DB_FILE" "$repo" "$review_id"
+            [ "$post_paths_ok" = "1" ] && clear_edited_after_for_review "$DB_FILE" "$repo" "$review_id"
 
             # Collect deduped (specialist, path) pairs across all probes in this review.
             # Empty $pr_paths is a no-op below — the path-intersection grep matches
@@ -164,11 +194,18 @@ for repo in "${REPOS[@]}"; do
                 done < <(printf '%s\n' "$probe_line" | probe_cited_paths)
             done < <(printf '%s\n' "$review_body" | grep -E '^[0-9]+\.' || true)
 
-            # Per specialist: sum LOC across paths that touched the PR; mark + record.
+            # Single intersection pass — for each (specialist, cited_path):
+            #   - if path ∈ PR diff: accumulate +LOC/−LOC + mark applied
+            #   - if path ∈ post-review-touched (only when post_paths_ok=1
+            #     and the path set is non-empty — guards a half-built set
+            #     from under-marking a previously-correct edited_after)
             declare -A spec_added=()
             declare -A spec_removed=()
             declare -A spec_matched=()
+            declare -A spec_edited=()
             pr_files_tsv="${pr_files_cache[$cache_key]}"
+            check_edited=0
+            [ "$post_paths_ok" = "1" ] && [ -n "$post_paths" ] && check_edited=1
             for key in "${!spec_paths_seen[@]}"; do
                 specialist="${key%%	*}"
                 path="${key#*	}"
@@ -180,21 +217,24 @@ for repo in "${REPOS[@]}"; do
                     spec_removed["$specialist"]=$((${spec_removed[$specialist]:-0} + ${r:-0}))
                     spec_matched["$specialist"]=1
                 fi
+                if [ "$check_edited" = "1" ] && grep -qFx "$path" <<< "$post_paths"; then
+                    spec_edited["$specialist"]=1
+                fi
             done
             for specialist in "${!spec_matched[@]}"; do
                 mark_applied "$DB_FILE" "$repo" "$review_id" "$specialist"
                 set_applied_loc "$DB_FILE" "$repo" "$review_id" "$specialist" \
                     "${spec_added[$specialist]:-0}" "${spec_removed[$specialist]:-0}"
             done
-            unset spec_paths_seen spec_added spec_removed spec_matched
+            for specialist in "${!spec_edited[@]}"; do
+                mark_edited_after "$DB_FILE" "$repo" "$review_id" "$specialist"
+            done
+            unset spec_paths_seen spec_added spec_removed spec_matched spec_edited
         fi
 
         walked_reviews=$((walked_reviews + 1))
-        if [[ "$created_at" > "$max_review_ts" ]]; then
-            max_review_ts="$created_at"
-        fi
     done < <(printf '%s' "$comments_json" \
-        | jq -r --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" \
+        | jq -r --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" --arg window_floor "$window_floor" \
              ".[] | select($SUBSTANTIVE_REVIEW_JQ) | [.id, .issue_url, .created_at, .body] | @tsv")
 
     # Pass 2: feedback comments. For each feedback signal, find the most-recent
@@ -242,12 +282,19 @@ for repo in "${REPOS[@]}"; do
                   and (.body | contains($marker) | not)
               ) | [.user.login, .issue_url, .body, .created_at] | @tsv')
 
+    # Coverage tally: reuse comments_json (already full-window). Numerator
+    # matches the canonical roster-marker regex from lib/bakeoff-parsers.sh —
+    # NOT a permissive substring check, which would falsely count bodies
+    # discussing the marker token in prose. Drives the snapshot's
+    # "based on N of M" caption.
     if [ "$repo_failures" -eq 0 ]; then
-        if [ -n "$max_review_ts" ]; then
-            set_walk_watermark "$DB_FILE" "$repo" "$max_review_ts"
-        else
-            set_walk_watermark "$DB_FILE" "$repo" "$(date -u +%FT%TZ)"
-        fi
+        total_in_window=$(printf '%s' "$comments_json" \
+            | jq --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" --arg window_floor "$window_floor" \
+                 "[.[] | select($SUBSTANTIVE_REVIEW_JQ)] | length")
+        with_marker_in_window=$(printf '%s' "$comments_json" \
+            | jq --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" --arg roster "$ROSTER_MARKER_REGEX" --arg window_floor "$window_floor" \
+                 "[.[] | select($SUBSTANTIVE_REVIEW_JQ and (.body | test(\$roster)))] | length")
+        set_repo_coverage "$DB_FILE" "$repo" "$total_in_window" "$with_marker_in_window"
     fi
 done
 
@@ -265,25 +312,53 @@ window_iso=$(date -u -d "$WINDOW_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null 
 total_reviews=$(sqlite3 "$DB_FILE" \
     "SELECT COUNT(DISTINCT comment_id) FROM specialist_runs WHERE ran_at >= '$window_iso';")
 
+# Coverage caption: sum per-repo total + with-marker.
+coverage_total=$(sqlite3 "$DB_FILE" "SELECT COALESCE(SUM(reviews_total_in_window), 0) FROM walks;")
+coverage_with_marker=$(sqlite3 "$DB_FILE" "SELECT COALESCE(SUM(reviews_with_marker_in_window), 0) FROM walks;")
+if [ "$coverage_total" -gt 0 ]; then
+    coverage_pct=$(awk -v w="$coverage_with_marker" -v t="$coverage_total" 'BEGIN{printf "%.0f", 100*w/t}')
+else
+    coverage_pct="—"
+fi
+
 {
     echo "# Specialist bake-off — last $WINDOW_DAYS days"
     echo
-    echo "_Generated $(date -u +%FT%TZ) from $total_reviews posted reviews across ${#REPOS[@]} tracked repos. Source: \`$DB_FILE\`._"
+    echo "_Generated $(date -u +%FT%TZ). Based on $coverage_with_marker of $coverage_total substantive bot reviews in window (${coverage_pct}% coverage; reviews without the roster marker are not measured). Source: \`$DB_FILE\`._"
     echo
     if [ "$total_reviews" = "0" ]; then
         echo "_Awaiting first reviews with the roster marker — table populates as new reviews land._"
     else
-        echo "| Specialist | Reviews | Shipped | Applied | +LOC | -LOC | Loved | Critiqued | Loved/Shipped |"
-        echo "|---|---:|---:|---:|---:|---:|---:|---:|---:|"
-        query_window_aggregates "$DB_FILE" "$window_iso" \
-        | while IFS=$'\t' read -r spec reviews shipped applied added removed loved critiqued; do
-            if [ "$shipped" -gt 0 ]; then
-                ratio=$(awk -v l="$loved" -v s="$shipped" 'BEGIN{printf "%.2f", l/s}')
+        echo "**Per-repo coverage**"
+        echo
+        echo "| Repo | With marker | Total | Coverage |"
+        echo "|---|---:|---:|---:|"
+        sqlite3 -separator '|' "$DB_FILE" \
+            "SELECT repo, reviews_with_marker_in_window, reviews_total_in_window FROM walks ORDER BY reviews_total_in_window DESC;" \
+        | while IFS='|' read -r repo wm total; do
+            if [ "${total:-0}" -gt 0 ]; then
+                pct=$(awk -v w="${wm:-0}" -v t="$total" 'BEGIN{printf "%.0f%%", 100*w/t}')
             else
-                ratio="—"
+                pct="—"
             fi
-            echo "| $spec | $reviews | $shipped | $applied | $added | $removed | $loved | $critiqued | $ratio |"
+            echo "| \`$repo\` | $wm | $total | $pct |"
+          done
+        echo
+        echo "**Per-specialist (current window)**"
+        echo
+        echo "| Specialist | Reviews | Shipped | Cited | Edited | Blocking | Medium | Low+Nit | Open | +LOC | −LOC |"
+        echo "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
+        query_window_aggregates "$DB_FILE" "$window_iso" \
+        | while IFS=$'\t' read -r spec reviews shipped applied added removed edited blocking medium low_nit open_cnt; do
+            # Drop aggregator's row only when it had zero shipped probes —
+            # noise reduction for the common case. If the aggregator prompt
+            # uses its `From: aggregator` escape hatch for a cross-angle
+            # finding, render the row so the decision table reflects it.
+            [ "$spec" = "aggregator" ] && [ "${shipped:-0}" -eq 0 ] && continue
+            echo "| $spec | $reviews | $shipped | $applied | $edited | $blocking | $medium | $low_nit | $open_cnt | $added | $removed |"
         done
+        echo
+        echo "_Loved=$( sqlite3 "$DB_FILE" "SELECT COALESCE(SUM(loved_positive), 0) FROM specialist_runs WHERE ran_at >= '$window_iso';") · Critiqued=$( sqlite3 "$DB_FILE" "SELECT COALESCE(SUM(critiqued), 0) FROM specialist_runs WHERE ran_at >= '$window_iso';") in window — still persisted per-(review × specialist) in the DB but not rendered here; the qualitative signal is too sparse to drive collapse/keep decisions._"
     fi
 } > "$OUT_FILE"
 
