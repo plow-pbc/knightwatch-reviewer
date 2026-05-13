@@ -444,9 +444,10 @@ def run_pipeline(
                 timed_out.append(name)
                 log(f"{pr_id}: specialist {name} timed out after {SPECIALIST_TIMEOUT_SEC}s")
             elif rc != 0:
-                hard_failures.append(
-                    f"{name}: exited non-zero (rc={rc}, see {run}/agents/{name}/log.txt)"
-                )
+                # run_specialist's own log line (specialist or critic-stage,
+                # whichever failed) names the right log.txt path; don't
+                # second-guess it here with the always-specialist path.
+                hard_failures.append(f"{name}: exited non-zero (rc={rc})")
 
     # Hard failures (non-timeout) are bugs / contract violations, not flakes —
     # no tolerance threshold.
@@ -455,21 +456,18 @@ def run_pipeline(
             repo, f"{pr_id}: Wave B hard failures: {'; '.join(hard_failures)} — aborting"
         )
 
-    # Single-sentinel contract with the bash worker: write the timed-out
-    # specialist names whenever ANY timed out. The pipeline exit code
-    # disambiguates how the bash side uses it — non-zero = fail-loud
-    # (placeholder gets named-error body); zero = tolerable (names go in
-    # the review-header banner). Bash reads one file and branches on
-    # PIPELINE_EXIT instead of polling two sentinels.
-    if timed_out:
-        (run / "_wave_b_timeouts.txt").write_text("\n".join(timed_out) + "\n")
-
-    # Fail-loud thresholds:
+    # Fail-loud thresholds — write the sentinel and abort:
     #   - 2+ specialists timed out → systemic codex problem, not one flake.
     #   - security specialist timed out → a silent absence of security
     #     findings + VERDICT: APPROVE is a quiet bypass of the review's
     #     main user-protecting angle.
+    # Sentinel-present + pipeline rc != 0 = fail-loud abort (bash patches
+    # placeholder with named timeout error). The tolerable case writes its
+    # sentinel only AFTER aggregator success below — otherwise an
+    # aggregator failure would let bash misread sentinel-present-and-rc!=0
+    # as a timeout abort when the real cause was the aggregator.
     if "security" in timed_out or len(timed_out) >= 2:
+        (run / "_wave_b_timeouts.txt").write_text("\n".join(timed_out) + "\n")
         return _abort(
             repo,
             f"{pr_id}: {len(timed_out)} specialists timed out "
@@ -478,9 +476,7 @@ def run_pipeline(
 
     # Exactly 1 non-security timeout: tolerable degradation. Write a "No
     # probes." stub at the path the aggregator reads from so the aggregator
-    # can run cleanly. The bash worker reads `_wave_b_timeouts.txt` (already
-    # written above), sees PIPELINE_EXIT=0, and formats the banner from the
-    # name list — same name-source as the fail-loud abort body.
+    # can run cleanly.
     if timed_out:
         [name] = timed_out
         if name == "momentum":
@@ -518,8 +514,18 @@ def run_pipeline(
     agg_dir = run / "agents" / "aggregator"
     rc = run_codex("aggregator", str(repo), agg_prompt, str(agg_dir))
     if rc != 0:
+        # No sentinel write: aggregator failure is not a timeout, and
+        # bash's sentinel-present-and-rc!=0 branch must remain reserved
+        # for the real fail-loud-timeout case.
         return _abort(repo, f"{pr_id}: aggregator failed (exit={rc}) — aborting")
     log(f"{pr_id}: aggregator complete")
+
+    # Aggregator succeeded — NOW write the tolerable-timeout sentinel so
+    # bash formats the partial-coverage banner. Same single-sentinel
+    # contract; the write site shifts based on which path we landed on.
+    if timed_out:
+        (run / "_wave_b_timeouts.txt").write_text("\n".join(timed_out) + "\n")
+
     return 0
 
 

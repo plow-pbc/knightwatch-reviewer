@@ -921,6 +921,26 @@ class TestRunPipeline(unittest.TestCase):
         self.assertEqual(sentinel_names, {"security", "performance"})
 
     @patch("pipeline.subprocess.Popen")
+    def test_tolerable_timeout_plus_aggregator_failure_omits_timeouts_sentinel(self, mock_popen):
+        """When a single non-security specialist times out (tolerable) AND
+        the aggregator later fails, the timeouts sentinel must NOT exist —
+        otherwise bash's sentinel-present-and-rc!=0 branch misreports the
+        abort as a timeout fail-loud when the actual cause was the
+        aggregator. The tolerable-case sentinel is written only after
+        aggregator success."""
+        mock_popen.side_effect = _make_codex_stub(plan={
+            "intent": (0, "Inferred intent: stub.\n"),
+            "dead-code-search": (0, "dc\n"),
+            "performance": "TIMEOUT",
+            "aggregator": (8, ""),  # aggregator hard failure
+        })
+        rc = self._run()
+        self.assertNotEqual(rc, 0)
+        # No sentinel → bash falls back to generic abort body (aggregator
+        # failure), not the timeout-named placeholder.
+        self.assertFalse((self.run_dir / "_wave_b_timeouts.txt").exists())
+
+    @patch("pipeline.subprocess.Popen")
     def test_critic_timeout_is_hard_failure_not_tolerable(self, mock_popen):
         """If the SPECIALIST succeeded (real output staged) and only the
         CRITIC timed out, treating the rc as the tolerable-timeout case
