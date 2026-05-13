@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -15,6 +16,15 @@ SPECIALISTS = (
     "security", "data-integrity", "architecture", "simplification",
     "tests", "shape", "performance", "consumers",
 )
+
+# Per-codex hard cap. Successful specialists complete in 1–5 min; 45 min
+# means the codex subprocess is wedged, not slow. Originating incident:
+# cncorp/plow#594, 2026-05-12T20:04Z — one hung specialist blocked
+# `with ThreadPoolExecutor as ex:` indefinitely and the 90 min outer
+# bash timeout killed the worker before its cleanup trap completed.
+# Any specialist timeout fails the run loudly; authors re-trigger via
+# push or /srosro-update-review for a fresh review.
+SPECIALIST_TIMEOUT_SEC = 45 * 60
 _PROBE_BLOCK_RE = re.compile(r"^### Probe |^No probes\.$", re.MULTILINE)
 _PROBE_HEADER_RE = re.compile(r"^### Probe (\d+)\b", re.MULTILINE)
 _CRITIC_H2_RE = re.compile(r"^## Critic counter-arguments\s*$", re.MULTILINE)
@@ -72,9 +82,25 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
         "-o", str(out_file),
         prompt,
     ]
+    # Popen + start_new_session puts codex (a node process that spawns tool
+    # subprocesses) in its own process group, so on timeout `os.killpg`
+    # reaps the descendants too — bare `subprocess.run(timeout=)` kills
+    # only the direct child and leaves tool processes orphaned to PID 1
+    # with reviewer credentials (sandbox disabled by `pr-reviewer.service`).
     with log_file.open("a") as lf:
-        proc = subprocess.run(argv, stdout=lf, stderr=lf)
-    exit_code = proc.returncode
+        proc = subprocess.Popen(argv, stdout=lf, stderr=lf, start_new_session=True)
+    try:
+        exit_code = proc.wait(timeout=SPECIALIST_TIMEOUT_SEC)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()
+        exit_code = 124  # GNU timeout convention; Wave B treats this rc as
+                         # the fail-loud-timeout signal.
+        with log_file.open("a") as lf:
+            lf.write(f"[{_ts()}] agent={name} timed out after {SPECIALIST_TIMEOUT_SEC}s — killpg'd whole group\n")
 
     with log_file.open("a") as lf:
         lf.write(f"[{_ts()}] agent={name} exit={exit_code}\n")
@@ -383,7 +409,12 @@ def run_pipeline(
     has_prev = prev_review.exists() and prev_review.stat().st_size > 0
     label = f"{len(SPECIALISTS)} specialists" + (" + momentum" if has_prev else "")
     log(f"{pr_id}: Wave B — {label}")
-    failure: str | None = None
+    timed_out: list[str] = []
+    hard_failures: list[str] = []
+    # Collect ALL results — never `break` early. Early break left the with-
+    # block's __exit__ to call ex.shutdown(wait=True) on a hung future and
+    # the pipeline blocked indefinitely (see SPECIALIST_TIMEOUT_SEC docstring).
+    # With run_codex's 45m subprocess timeout, every future now resolves.
     with ThreadPoolExecutor(max_workers=len(SPECIALISTS) + 1) as ex:
         futures = {
             ex.submit(run_specialist, specialist=s, **common_kwargs): s
@@ -396,16 +427,35 @@ def run_pipeline(
             try:
                 rc = fut.result()
             except Exception as exc:
-                failure = f"{pr_id}: {name} raised {type(exc).__name__}: {exc} — aborting"
-                break
-            if rc != 0:
-                failure = (
-                    f"{pr_id}: {name} exited non-zero (rc={rc}, see {run}/agents/{name}/log.txt) "
-                    "— aborting"
-                )
-                break
-    if failure is not None:
-        return _abort(repo, failure)
+                hard_failures.append(f"{name}: raised {type(exc).__name__}: {exc}")
+                continue
+            if rc == 124:
+                timed_out.append(name)
+                log(f"{pr_id}: specialist {name} timed out after {SPECIALIST_TIMEOUT_SEC}s")
+            elif rc != 0:
+                # run_specialist's own log line names the failing stage's
+                # log.txt; don't second-guess with the always-specialist path.
+                hard_failures.append(f"{name}: exited non-zero (rc={rc})")
+
+    # Any specialist timeout aborts loudly. The sentinel names the hung
+    # specialists so the bash worker patches the placeholder with the names
+    # rather than the generic abort body. Authors re-trigger via push or
+    # /srosro-update-review for a fresh review — partial-coverage posting
+    # was traded for simpler infra (no carve-outs, no stubs, no second
+    # write site).
+    if timed_out:
+        (run / "_wave_b_timeouts.txt").write_text("\n".join(timed_out) + "\n")
+        return _abort(
+            repo,
+            f"{pr_id}: {len(timed_out)} specialist(s) timed out "
+            f"({', '.join(timed_out)}) — aborting",
+        )
+
+    if hard_failures:
+        return _abort(
+            repo, f"{pr_id}: Wave B hard failures: {'; '.join(hard_failures)} — aborting"
+        )
+
     if has_prev:
         _relink(scratch / "momentum.md", run / "agents" / "momentum" / "output.md")
     log(f"{pr_id}: Wave B complete")
