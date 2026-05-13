@@ -11,15 +11,13 @@
 # would basename to "plow" (greedy `.*/` eats through the last `/` in
 # `cncorp/plow`) and silently drop review.sh from the managed list.
 
-# list_execstart_shell_scripts <repo_dir> <unit_files...>
+# _iter_execstart_scripts <unit_files...>
 #
-# Emit one *.sh basename per line for every ExecStart= directive that
-# resolves to an existing file under <repo_dir>. Non-.sh entries (e.g.
-# /bin/true in test fixtures) and missing files are silently skipped —
-# callers that need strict drift-detection use
-# assert_execstart_shell_scripts_present instead.
-list_execstart_shell_scripts() {
-    local repo_dir="$1"; shift
+# Private emitter. Walks every ExecStart= line in the given unit files
+# and emits the *.sh basenames (one per line). Pure parse — no
+# file-existence test. The public functions below wrap this with the
+# tests they need.
+_iter_execstart_scripts() {
     local execstart cmd_path script
     while IFS= read -r execstart; do
         cmd_path="${execstart#ExecStart=}"
@@ -27,8 +25,22 @@ list_execstart_shell_scripts() {
         script="${cmd_path##*/}"
         [[ -n "$script" ]] || continue
         [[ "$script" == *.sh ]] || continue
-        [[ -f "$repo_dir/$script" ]] && echo "$script"
+        echo "$script"
     done < <(grep -h "^ExecStart=" "$@" | sort -u)
+}
+
+# list_execstart_shell_scripts <repo_dir> <unit_files...>
+#
+# Emit one *.sh basename per line for every ExecStart= that resolves
+# to an existing file under <repo_dir>. Missing files are silently
+# skipped — callers that need strict drift-detection use
+# assert_execstart_shell_scripts_present instead.
+list_execstart_shell_scripts() {
+    local repo_dir="$1"; shift
+    local script
+    while IFS= read -r script; do
+        [[ -f "$repo_dir/$script" ]] && echo "$script"
+    done < <(_iter_execstart_scripts "$@")
 }
 
 # assert_execstart_shell_scripts_present <repo_dir> <unit_files...>
@@ -39,16 +51,11 @@ list_execstart_shell_scripts() {
 # missing .sh would ship a broken systemd unit.
 assert_execstart_shell_scripts_present() {
     local repo_dir="$1"; shift
-    local execstart cmd_path script
-    while IFS= read -r execstart; do
-        cmd_path="${execstart#ExecStart=}"
-        cmd_path="${cmd_path%% *}"
-        script="${cmd_path##*/}"
-        [[ -n "$script" ]] || continue
-        [[ "$script" == *.sh ]] || continue
+    local script
+    while IFS= read -r script; do
         [[ -f "$repo_dir/$script" ]] || {
             echo "unit ExecStart references '$script' but $repo_dir/$script doesn't exist" >&2
             return 1
         }
-    done < <(grep -h "^ExecStart=" "$@" | sort -u)
+    done < <(_iter_execstart_scripts "$@")
 }

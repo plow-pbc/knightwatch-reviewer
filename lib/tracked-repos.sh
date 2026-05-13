@@ -32,16 +32,21 @@ declare -a ORGS=()
 #                         Pre-PR-#75 it could override REPOS too; that
 #                         seam was retired.
 #   2. repos.conf       — operator-owned manifest (manual REPOS,
-#                         KID_PATHS, SOURCE_PATHS, ORGS).
+#                         KID_PATHS, SOURCE_PATHS, ORGS). Operator
+#                         edits use bare `REPOS=(...)` and
+#                         `declare -A KID_PATHS=(...)` (replace, not
+#                         append) so this MUST be sourced before any
+#                         file that depends on those arrays existing.
 #   3. repos.conf.auto  — tool-owned, regenerated hourly by org-sync.sh.
-#                         Appends to REPOS via `REPOS+=("...")` and
-#                         adds KID_PATHS / SOURCE_PATHS keys. Sourced
-#                         LAST so org-sync entries land on top of
-#                         repos.conf's manual declarations. org-sync
-#                         excludes already-manual repos from this file,
-#                         so collisions don't happen in practice — the
-#                         contract is "manual wins" enforced at the
-#                         producer, not via source-order tie-breaking.
+#                         Appends with `REPOS+=("...")` and uses the
+#                         CONDITIONAL form `KID_PATHS[k]="${KID_PATHS[k]:-default}"`
+#                         for the path assignments. The conditional
+#                         form is load-bearing for manual-wins-on-
+#                         collision: an operator promoting an
+#                         auto-tracked repo to manual (with a custom
+#                         KID_PATHS) takes effect immediately, even in
+#                         the window before the next hourly sync prunes
+#                         the now-redundant auto entry.
 #
 # `[ -f X ] && . X` would trip errexit at the top level when X is
 # absent (the && chain returns 1, errexit exits). `if/then/fi`

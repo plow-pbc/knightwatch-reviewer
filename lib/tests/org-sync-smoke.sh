@@ -294,4 +294,21 @@ if grep -q 'acme/special' "$AUTO_CONF"; then
     cat "$AUTO_CONF"; exit 1
 fi
 
-echo "  PASS (9 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded)"
+# --- Scenario 10: clone failure aborts before rewrite ------------------------
+# The clone branch is wired to abort on `gh repo clone` failure (probe 4,
+# PR #75 round 4). Without this scenario, a regression that swallowed
+# clone errors would silently ship — auto file would still get written
+# referencing a non-existent local checkout, and kid-refresh would
+# index-fail forever after.
+echo "  scenario 10: gh repo clone failure — fail loud, auto file unchanged..."
+write_baseline_conf '"acme"'
+rm -f "$AUTO_CONF"
+SHA=$(auto_sha)
+rm -rf "$SOURCE_BASE/cant-clone"
+if MOCK_GH_LIST_acme="cant-clone" MOCK_GH_CLONE_EXIT=1 run_sync; then
+    echo "FAIL scenario 10: org-sync returned 0 on clone failure"; cat "$LOG"; exit 1
+fi
+assert_auto_unchanged "$SHA"
+grep -q 'gh repo clone acme/cant-clone failed' "$LOG" || { echo "FAIL scenario 10: expected clone-failure log line"; cat "$LOG"; exit 1; }
+
+echo "  PASS (10 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, clone-failure-no-mutation)"

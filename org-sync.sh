@@ -165,11 +165,16 @@ trap 'rm -f "$LOCK" "$TMP_NEW"' EXIT
     echo "# manual REPOS in repos.conf. Sourced by lib/tracked-repos.sh"
     echo "# AFTER repos.conf. Do NOT edit by hand; manual entries"
     echo "# belong in repos.conf."
+    echo "#"
+    echo "# KID_PATHS / SOURCE_PATHS assignments use the conditional"
+    echo "# \${var:-default} form so an operator promoting an auto-tracked"
+    echo "# repo to manual (with a custom path) wins immediately, without"
+    echo "# waiting for the next sync tick to prune the auto entry."
     for full in "${AUTO[@]}"; do
         name="${full#*/}"
         echo "REPOS+=(\"$full\")"
-        echo "KID_PATHS[\"$full\"]=\"\$HOME/Hacking/$name\""
-        echo "SOURCE_PATHS[\"$full\"]=\"\$HOME/Hacking/$name\""
+        echo "KID_PATHS[\"$full\"]=\"\${KID_PATHS[\"$full\"]:-\$HOME/Hacking/$name}\""
+        echo "SOURCE_PATHS[\"$full\"]=\"\${SOURCE_PATHS[\"$full\"]:-\$HOME/Hacking/$name}\""
     done
 } > "$TMP_NEW"
 

@@ -128,6 +128,36 @@ rm -f "$SAND_STATE/repos.conf" "$SAND_STATE/config.env"
 out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; REPO=cncorp/nonexistent; echo \"v=[\${KID_PATHS[\$REPO]:-}]\"" 2>&1)
 [ "$out" = "v=[]" ] || { echo "FAIL B4: loader output: $out"; exit 1; }
 
+echo "  B5: repos.conf.auto consumer — loader merges + manual wins on collision..."
+# Pin the split-file manifest contract (PR #75 round 3):
+#   - Loader sources both files and exposes the merged view.
+#   - When the same REPO key appears in BOTH (e.g., operator promoted
+#     an auto-tracked repo to manual mid-tick before org-sync prunes
+#     the auto entry), the operator's manual KID_PATHS WINS.
+# The collision shape is real: org-sync writes the auto file once an
+# hour; an operator edit lands instantly. Source-order alone isn't
+# enough — repos.conf uses `KID_PATHS=(...)` (replace) while the auto
+# file uses the conditional `${KID_PATHS[k]:-default}` form so manual
+# entries survive even when sourced FIRST.
+rm -f "$SAND_STATE/repos.conf" "$SAND_STATE/config.env" "$SAND_STATE/repos.conf.auto"
+cat > "$SAND_STATE/repos.conf" <<'CONF'
+REPOS=("manual/keep" "acme/promoted")
+declare -A KID_PATHS=([manual/keep]=/var/manual [acme/promoted]=/var/operator/custom)
+declare -A SOURCE_PATHS=([manual/keep]=/var/manual [acme/promoted]=/var/operator/custom)
+CONF
+cat > "$SAND_STATE/repos.conf.auto" <<'CONF'
+# Stale auto entry from a prior org-sync tick — operator just promoted
+# acme/promoted to manual in repos.conf above; next sync would prune.
+REPOS+=("acme/promoted")
+REPOS+=("acme/other")
+KID_PATHS["acme/promoted"]="${KID_PATHS["acme/promoted"]:-/should/not/win}"
+KID_PATHS["acme/other"]="${KID_PATHS["acme/other"]:-/auto/other}"
+SOURCE_PATHS["acme/promoted"]="${SOURCE_PATHS["acme/promoted"]:-/should/not/win}"
+SOURCE_PATHS["acme/other"]="${SOURCE_PATHS["acme/other"]:-/auto/other}"
+CONF
+out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; echo \"promoted=\${KID_PATHS[acme/promoted]} other=\${KID_PATHS[acme/other]}\"")
+[ "$out" = "promoted=/var/operator/custom other=/auto/other" ] || { echo "FAIL B5: loader output: $out (expected manual KID_PATHS to win on collision)"; exit 1; }
+
 # ----- Contract C: every production consumer goes through the loader ------
 echo "  C: every production consumer sources lib/tracked-repos.sh..."
 # Hard list of every script that needs the manifest. Adding a new
@@ -255,6 +285,17 @@ REPOS=("custom-org/custom-repo")
 declare -A KID_PATHS=(["custom-org/custom-repo"]="/var/operator/custom-checkout")
 declare -A SOURCE_PATHS=(["custom-org/custom-repo"]="/var/operator/custom-checkout")
 CONF
+# Pre-stage an org-sync-written auto manifest in the install dir so
+# install.sh's KID render covers BOTH the operator's manual entries
+# and the auto-tracked ones. install.sh sources
+# $INSTALL_DIR/repos.conf.auto if present (it's runtime state, not a
+# source-tree symlink). Auto entries use the conditional form so a
+# colliding manual KID_PATHS would survive — none collide here.
+cat > "$SAND_INSTALL2/repos.conf.auto" <<'CONF'
+REPOS+=("auto-org/auto-repo")
+KID_PATHS["auto-org/auto-repo"]="${KID_PATHS["auto-org/auto-repo"]:-/var/auto/auto-checkout}"
+SOURCE_PATHS["auto-org/auto-repo"]="${SOURCE_PATHS["auto-org/auto-repo"]:-/var/auto/auto-checkout}"
+CONF
 LIVE_BEFORE=$(sha1sum "$OVERLAY2/repos.conf" | awk '{print $1}')
 run_overlay_install "$OVERLAY2" "$SAND_INSTALL2" "$SAND_SYSTEMD2"
 # Symlink delivery
@@ -273,6 +314,12 @@ KID_REFRESH_UNIT="$SAND_SYSTEMD2/pr-reviewer-kid-refresh.service"
 [ -f "$KID_REFRESH_UNIT" ] || { echo "FAIL D.2: kid-refresh unit not installed"; ls -la "$SAND_SYSTEMD2"; exit 1; }
 grep -q "/var/operator/custom-checkout" "$KID_REFRESH_UNIT" || { echo "FAIL D.2: kid-refresh unit missing operator path /var/operator/custom-checkout"; grep '^ReadWritePaths=' "$KID_REFRESH_UNIT"; exit 1; }
 grep -q "/should/not/appear" "$KID_REFRESH_UNIT" && { echo "FAIL D.2: kid-refresh unit contains template path /should/not/appear — .example was sourced instead of live"; grep '^ReadWritePaths=' "$KID_REFRESH_UNIT"; exit 1; }
+# Auto-manifest render fence: install.sh must also source repos.conf.auto
+# when building ReadWritePaths, so kid-refresh's sandbox covers
+# org-sync-tracked repos on the next manual install. Without this, every
+# newly-discovered org repo waits an extra install run before its
+# .keepitdry path is in the sandbox.
+grep -q "/var/auto/auto-checkout" "$KID_REFRESH_UNIT" || { echo "FAIL D.2 (auto-manifest render): kid-refresh unit missing auto path /var/auto/auto-checkout — install.sh didn't source repos.conf.auto"; grep '^ReadWritePaths=' "$KID_REFRESH_UNIT"; exit 1; }
 
 # D.3: byte-for-byte template copy is treated as unconfigured
 echo "  D.3: byte-for-byte template copy — install.sh exits early without symlinking..."
