@@ -300,15 +300,28 @@ fi
 # clone errors would silently ship — auto file would still get written
 # referencing a non-existent local checkout, and kid-refresh would
 # index-fail forever after.
-echo "  scenario 10: gh repo clone failure — fail loud, auto file unchanged..."
+echo "  scenario 10: gh repo clone failure — fail loud + no partial left + recovery on next tick..."
 write_baseline_conf '"acme"'
 rm -f "$AUTO_CONF"
 SHA=$(auto_sha)
 rm -rf "$SOURCE_BASE/cant-clone"
+# The smoke `gh` stub creates $dest with .git + origin BEFORE honoring
+# MOCK_GH_CLONE_EXIT, faithfully simulating production gh's failure
+# behavior. Without org-sync's rm -rf $dest on failure, next tick's
+# branches would treat the partial as a complete clone and silently
+# publish an empty checkout into the auto manifest (probe 1, round 5).
 if MOCK_GH_LIST_acme="cant-clone" MOCK_GH_CLONE_EXIT=1 run_sync; then
     echo "FAIL scenario 10: org-sync returned 0 on clone failure"; cat "$LOG"; exit 1
 fi
 assert_auto_unchanged "$SHA"
 grep -q 'gh repo clone acme/cant-clone failed' "$LOG" || { echo "FAIL scenario 10: expected clone-failure log line"; cat "$LOG"; exit 1; }
+# Partial-clone cleanup pin: $dest MUST be gone after failure.
+[ ! -e "$SOURCE_BASE/cant-clone" ] || { echo "FAIL scenario 10: partial clone left behind at $SOURCE_BASE/cant-clone"; ls -la "$SOURCE_BASE/cant-clone"; exit 1; }
+# Recovery tick: with MOCK_GH_CLONE_EXIT unset, clone succeeds; auto
+# file gains the new entry. The dest is fresh — no smuggled state
+# from the prior failed attempt.
+MOCK_GH_LIST_acme="cant-clone" run_sync || { echo "FAIL scenario 10 recovery: org-sync exited non-zero"; cat "$LOG"; exit 1; }
+[ -d "$SOURCE_BASE/cant-clone/.git" ] || { echo "FAIL scenario 10 recovery: clone didn't happen on recovery tick"; exit 1; }
+grep -q '"acme/cant-clone"' "$AUTO_CONF" || { echo "FAIL scenario 10 recovery: auto file missing recovered repo"; cat "$AUTO_CONF"; exit 1; }
 
 echo "  PASS (10 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, clone-failure-no-mutation)"

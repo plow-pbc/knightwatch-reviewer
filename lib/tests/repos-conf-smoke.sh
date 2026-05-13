@@ -157,6 +157,13 @@ SOURCE_PATHS["acme/other"]="${SOURCE_PATHS["acme/other"]:-/auto/other}"
 CONF
 out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; echo \"promoted=\${KID_PATHS[acme/promoted]} other=\${KID_PATHS[acme/other]}\"")
 [ "$out" = "promoted=/var/operator/custom other=/auto/other" ] || { echo "FAIL B5: loader output: $out (expected manual KID_PATHS to win on collision)"; exit 1; }
+# REPOS dedup: the auto file's REPOS+=("acme/promoted") is
+# unconditional, but the loader dedups so consumers iterating REPOS
+# see acme/promoted EXACTLY ONCE (probe 2, PR #75 round 5). Without
+# this, review.sh / learn-from-replies.sh / etc. would process the
+# same PR set twice during the operator-promotion window.
+out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; n=0; for r in \"\${REPOS[@]}\"; do [ \"\$r\" = acme/promoted ] && n=\$((n+1)); done; echo \"count=\$n\"")
+[ "$out" = "count=1" ] || { echo "FAIL B5: REPOS contains acme/promoted $out times (expected exactly 1)"; exit 1; }
 
 # ----- Contract C: every production consumer goes through the loader ------
 echo "  C: every production consumer sources lib/tracked-repos.sh..."

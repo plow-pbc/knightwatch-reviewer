@@ -55,6 +55,20 @@ if [ -f "${STATE_DIR}/config.env" ];      then . "${STATE_DIR}/config.env"; fi
 if [ -f "${STATE_DIR}/repos.conf" ];      then . "${STATE_DIR}/repos.conf"; fi
 if [ -f "${STATE_DIR}/repos.conf.auto" ]; then . "${STATE_DIR}/repos.conf.auto"; fi
 
+# Dedup REPOS preserving order. The conditional `${var:-default}` form
+# in repos.conf.auto already protects KID_PATHS / SOURCE_PATHS from
+# collisions, but the auto file's `REPOS+=("...")` is unconditional
+# (bash indexed arrays don't have a clean "append only if not present"
+# primitive). During the operator-promotion window — operator pins an
+# auto-tracked repo in repos.conf before the next sync prunes the auto
+# entry — REPOS would otherwise carry the slug twice, and consumers
+# iterating it (review.sh, learn-from-replies.sh, etc.) would process
+# the same PR set twice. Loader-side dedup is one fix for all
+# consumers (PR #75 round 5).
+if [ "${#REPOS[@]}" -gt 0 ]; then
+    mapfile -t REPOS < <(printf '%s\n' "${REPOS[@]}" | awk '!seen[$0]++')
+fi
+
 # Single owner of the post-config TMPDIR policy. pr-reviewer.service
 # combines PrivateTmp=yes (sandbox) with KillMode=process (workers
 # survive orchestrator exit); the unit-private /tmp tears down when the

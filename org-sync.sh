@@ -146,7 +146,16 @@ for full in "${AUTO[@]}"; do
     else
         log "cloning $full → $dest"
         if ! gh repo clone "$full" "$dest" >>"$LOG" 2>&1; then
-            log "FATAL: gh repo clone $full failed"
+            # gh repo clone can leave $dest with a partial .git +
+            # origin behind on certain failure paths (e.g., network
+            # interrupted mid-clone). Without cleanup, next tick's
+            # `if [ -d $dest/.git ]` branch finds a matching-origin
+            # partial and reuses it as if it were a complete clone —
+            # silently publishing an empty checkout into the auto
+            # manifest. Remove the partial so the next tick attempts
+            # a fresh clone (PR #75 round 5).
+            rm -rf "$dest"
+            log "FATAL: gh repo clone $full failed (cleaned up partial $dest)"
             exit 1
         fi
         NEW_CLONES=$((NEW_CLONES + 1))
