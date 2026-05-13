@@ -176,22 +176,15 @@ assert_grep "aggregator.md should reference momentum specialist output" \
 # above this block carries the overarching "why absolute shebang +
 # system-PATH-first + .local-not-writable" attack-class context.
 echo "  asserting systemd-chain scripts: absolute /bin/bash shebang + no writable-PATH prepend..."
-# ExecStart-derived list — the unit files are the source of truth for
-# which scripts systemd launches directly. A new poller landing as
+# ExecStart-derived list via the shared parser in lib/systemd-units.sh
+# (also used by install.sh + install-smoke). A new poller landing as
 # <name>.service automatically picks up the shebang + PATH fence on
-# the next test run, without a parallel hand-maintained registry that
-# drifts (probe 4, PR #75 round 1 — org-sync.sh shipped without being
-# in this list). Mirrors install.sh's command-token-then-basename
-# parse so argv-bearing ExecStart= variants resolve identically.
-SYSTEMD_CHAIN_SCRIPTS=()
-while IFS= read -r execstart; do
-    cmd_path="${execstart#ExecStart=}"
-    cmd_path="${cmd_path%% *}"
-    script="${cmd_path##*/}"
-    [[ -n "$script" ]] || continue
-    [[ "$script" == *.sh ]] || continue
-    [[ -f "$script" ]] && SYSTEMD_CHAIN_SCRIPTS+=("$script")
-done < <(grep -h "^ExecStart=" systemd/*.service | sort -u)
+# the next test run, without a parallel hand-maintained registry —
+# org-sync.sh shipped round-0 without coverage exactly because three
+# copies of this parser had to be updated by hand.
+# shellcheck source=lib/systemd-units.sh
+. lib/systemd-units.sh
+mapfile -t SYSTEMD_CHAIN_SCRIPTS < <(list_execstart_shell_scripts . systemd/*.service)
 # lib/review-one-pr.sh isn't an ExecStart script but is exec'd as a
 # sub-process from review.sh — same shebang + writable-PATH attack
 # surface, so include it in the fence by hand.

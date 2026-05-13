@@ -105,16 +105,21 @@ rm -f "$SAND_STATE/repos.conf"
 out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; echo \"REPOS=\${#REPOS[@]} KID_PATHS=\${#KID_PATHS[@]} SOURCE_PATHS=\${#SOURCE_PATHS[@]}\"")
 [ "$out" = "REPOS=0 KID_PATHS=0 SOURCE_PATHS=0" ] || { echo "FAIL B2: loader output: $out"; exit 1; }
 
-echo "  B3: config.env override wins over repos.conf (legacy seam)..."
+echo "  B3: repos.conf wins over config.env (legacy override retired in PR #75)..."
+# Source order is now config.env FIRST, repos.conf SECOND so the
+# manifest source of truth (rewritten hourly by org-sync.sh) is not
+# silently shadowed by a stale config.env REPOS=. If a host's
+# config.env still defines REPOS, it's a no-op — the assertion below
+# is what guarantees that going forward.
 cat > "$SAND_STATE/repos.conf" <<'CONF'
 REPOS=("acme/foo")
 declare -A KID_PATHS=([acme/foo]=/x/foo)
 CONF
 cat > "$SAND_STATE/config.env" <<'CONF'
-REPOS=("acme/override")
+REPOS=("acme/legacy-override")
 CONF
 out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; echo \"REPOS=\${REPOS[0]}\"")
-[ "$out" = "REPOS=acme/override" ] || { echo "FAIL B3: loader output: $out"; exit 1; }
+[ "$out" = "REPOS=acme/foo" ] || { echo "FAIL B3: loader output: $out (expected repos.conf to win)"; exit 1; }
 
 echo "  B4: lookup of an unknown REPO returns empty, not a set-u error..."
 # Catches the regression where the worker's KID_PROJECT_PATH lookup

@@ -27,11 +27,22 @@ declare -A SOURCE_PATHS=()
 # REPOS hourly. Pre-declared empty so consumers that don't enable
 # org-sync still load cleanly under `set -u`.
 declare -a ORGS=()
+# Source order: config.env FIRST, repos.conf SECOND. repos.conf is the
+# manifest source of truth — org-sync.sh rewrites it and the smoke
+# enforces its shape (Contract A). Sourcing it last means it wins for
+# REPOS / KID_PATHS / SOURCE_PATHS. config.env is reserved for ops
+# knobs that DON'T overlap with the manifest (BOT_USER, BOT_CMD_PREFIX,
+# TMPDIR overrides, etc.) — those defaults already pre-declare in
+# their consumers and config.env can still tweak them. Historically
+# config.env could override REPOS too; that seam was retired in PR #75
+# because it'd let an operator's config.env shadow an org-sync rewrite
+# and calcify a split source of truth.
+#
 # `[ -f X ] && . X` would trip errexit at the top level when X is
 # absent (the && chain returns 1, errexit exits). `if/then/fi`
 # is errexit-exempt — same effect, but safe under `set -e`.
-if [ -f "${STATE_DIR}/repos.conf" ]; then . "${STATE_DIR}/repos.conf"; fi
 if [ -f "${STATE_DIR}/config.env" ]; then . "${STATE_DIR}/config.env"; fi
+if [ -f "${STATE_DIR}/repos.conf" ]; then . "${STATE_DIR}/repos.conf"; fi
 
 # Single owner of the post-config TMPDIR policy. pr-reviewer.service
 # combines PrivateTmp=yes (sandbox) with KillMode=process (workers

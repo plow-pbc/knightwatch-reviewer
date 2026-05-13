@@ -70,16 +70,12 @@ if [ "${#ORGS[@]}" -eq 0 ]; then
     exit 0
 fi
 
-# Legacy override seam: lib/tracked-repos.sh sources $STATE_DIR/config.env
-# AFTER repos.conf, and config.env's REPOS=(...) wins. Letting org-sync
-# rewrite repos.conf while a config.env override is in force would
-# calcify a split source of truth — consumers would resolve to the
-# override while operators read the rewritten manifest. Fail loud here;
-# the operator picks one (retire config.env or unset ORGS).
-if [ -f "$STATE_DIR/config.env" ] && grep -qE '^[[:space:]]*REPOS[+]?=' "$STATE_DIR/config.env"; then
-    log "FATAL: $STATE_DIR/config.env defines REPOS — refusing to rewrite $CONF_REAL while a legacy override is active. Either retire the config.env REPOS line or unset ORGS in repos.conf."
-    exit 1
-fi
+# TOCTOU guard: snapshot the conf hash NOW (before any time-consuming gh
+# calls). If the operator edits repos.conf during the sync — even just
+# adding a manual entry to the AUTO-managed org — the rewrite below
+# would silently clobber that edit. Re-checked right before mv to fail
+# loud on a stale snapshot. (probe 1, PR #75 round 2)
+CONF_SHA_AT_READ=$(sha1sum "$CONF_REAL" | awk '{print $1}')
 
 command -v gh >/dev/null 2>&1 || { log "FATAL: gh not on PATH"; exit 1; }
 
@@ -217,6 +213,15 @@ sed -e :a -e '/^$/{$d;N;ba' -e '}' "$MANUAL_FRAGMENT" > "$TMP_NEW"
 if cmp -s "$TMP_NEW" "$CONF_REAL"; then
     log "no changes (${#AUTO[@]} auto-tracked, ${#MANUAL[@]} manual)"
 else
+    # TOCTOU recheck: if the operator edited repos.conf during gh
+    # listing or cloning, TMP_NEW is built from a stale manual view
+    # and the mv would erase that edit. Abort cleanly; the next sync
+    # tick re-derives from the operator's latest state.
+    CONF_SHA_NOW=$(sha1sum "$CONF_REAL" | awk '{print $1}')
+    if [ "$CONF_SHA_AT_READ" != "$CONF_SHA_NOW" ]; then
+        log "FATAL: $CONF_REAL changed during sync (concurrent operator edit?) — refusing to overwrite. Re-run org-sync.sh to pick up the latest manual state."
+        exit 1
+    fi
     mv "$TMP_NEW" "$CONF_REAL"
     log "rewrote $CONF_REAL: ${#AUTO[@]} auto-tracked, $NEW_CLONES newly cloned"
 fi
