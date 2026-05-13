@@ -12,22 +12,22 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TMPDIR=$(mktemp -d -t org-sync-smoke-XXXXXX)
 trap 'rm -rf "$TMPDIR"' EXIT
 
+# HOME first so $HOME/Hacking lands inside the sandbox. Clone path is
+# always $HOME/Hacking/<name> in production (no SOURCE_BASE knob), so
+# the smoke and prod share one path contract — no risk of cloning to
+# one place while asserting another.
+export HOME="$TMPDIR/home"
+mkdir -p "$HOME/.local/bin" "$HOME/Hacking"
+export PATH="$HOME/.local/bin:$PATH"
+
 export STATE_DIR="$TMPDIR/state"
 export LOG="$STATE_DIR/org-sync.log"
-# LOCK is intentionally NOT overridden — the production default is
-# $STATE_DIR/org-sync.lock, and $STATE_DIR is already sandboxed to
-# $TMPDIR/state, so leaving the default flow means the smoke exercises
-# the exact shared-lock path systemd uses. Overriding to e.g.
-# /$TMPDIR/lock would bypass the very shape the round-6 fix
-# established (PrivateTmp-vs-shell shared lock).
-export SOURCE_BASE="$TMPDIR/Hacking"
+# LOCK NOT overridden — production default $STATE_DIR/org-sync.lock
+# flows through (STATE_DIR is sandboxed), exercising the shared-lock
+# path systemd uses.
 export CONF="$STATE_DIR/repos.conf"
 export AUTO_CONF="$STATE_DIR/repos.conf.auto"
-mkdir -p "$STATE_DIR" "$SOURCE_BASE"
-
-export HOME="$TMPDIR/home"
-mkdir -p "$HOME/.local/bin"
-export PATH="$HOME/.local/bin:$PATH"
+mkdir -p "$STATE_DIR"
 
 export REVIEWER_LIB_DIR="$TMPDIR/lib"
 mkdir -p "$REVIEWER_LIB_DIR"
@@ -58,13 +58,24 @@ echo "GH $*" >> "${STUB_GH_LOG:-/dev/null}"
 case "$1 $2" in
     "repo list")
         org="$3"
-        has_source=0; has_no_archived=0
+        # All four flags are behavior-bearing: --source excludes forks,
+        # --no-archived excludes archived, --limit raises gh's default
+        # 30-repo ceiling, and --json name + --jq '.[].name' coerce the
+        # output to one bare name per line (org-sync's read-loop assumes
+        # that shape). Dropping any of them silently changes coverage
+        # or parsing without test failure.
+        has_source=0; has_no_archived=0; has_limit=0; has_json=0; has_jq=0
         for a in "$@"; do
-            [ "$a" = "--source" ] && has_source=1
-            [ "$a" = "--no-archived" ] && has_no_archived=1
+            case "$a" in
+                --source)       has_source=1 ;;
+                --no-archived)  has_no_archived=1 ;;
+                --limit)        has_limit=1 ;;
+                --json)         has_json=1 ;;
+                --jq)           has_jq=1 ;;
+            esac
         done
-        if [ "$has_source" -eq 0 ] || [ "$has_no_archived" -eq 0 ]; then
-            echo "STUB FAIL: gh repo list missing --source or --no-archived: $*" >&2
+        if [ "$has_source" -eq 0 ] || [ "$has_no_archived" -eq 0 ] || [ "$has_limit" -eq 0 ] || [ "$has_json" -eq 0 ] || [ "$has_jq" -eq 0 ]; then
+            echo "STUB FAIL: gh repo list missing one of --source/--no-archived/--limit/--json/--jq: $*" >&2
             exit 2
         fi
         sanitized="${org//[^a-zA-Z0-9]/_}"
@@ -88,11 +99,8 @@ chmod +x "$HOME/.local/bin/gh"
 
 run_sync() {
     : > "$STUB_GH_LOG"
-    # Do NOT rm the lock file — flock releases on FD close (process
-    # exit), so successive runs don't conflict. Production never
-    # touches the lock file's presence; the smoke shouldn't either.
+    # Do NOT rm the lock file — flock releases on FD close.
     bash "$PROJECT_ROOT/org-sync.sh" >/dev/null 2>&1
-    return $?
 }
 
 count_gh() { grep -c "^GH $1" "$STUB_GH_LOG" 2>/dev/null || true; }
@@ -155,8 +163,8 @@ write_baseline_conf '"acme"'
 MOCK_GH_LIST_acme=$'foo\nbar' run_sync || { echo "FAIL scenario 2: org-sync exited non-zero"; cat "$LOG"; exit 1; }
 n=$(count_gh "repo clone")
 [ "$n" -eq 2 ] || { echo "FAIL scenario 2: expected 2 clone calls, got $n"; cat "$STUB_GH_LOG"; exit 1; }
-[ -d "$SOURCE_BASE/foo/.git" ] || { echo "FAIL scenario 2: $SOURCE_BASE/foo not cloned"; exit 1; }
-[ -d "$SOURCE_BASE/bar/.git" ] || { echo "FAIL scenario 2: $SOURCE_BASE/bar not cloned"; exit 1; }
+[ -d "$HOME/Hacking/foo/.git" ] || { echo "FAIL scenario 2: $HOME/Hacking/foo not cloned"; exit 1; }
+[ -d "$HOME/Hacking/bar/.git" ] || { echo "FAIL scenario 2: $HOME/Hacking/bar not cloned"; exit 1; }
 # repos.conf MUST NOT be modified — that's the structural promise of
 # the split-file design. Bit-exact assert beats the prior marker-block
 # grep (which only proved the markers existed).
@@ -180,8 +188,6 @@ if grep -q '^SOURCE_PATHS\[' "$AUTO_CONF"; then
     grep '^SOURCE_PATHS\[' "$AUTO_CONF"; exit 1
 fi
 got=$(
-    declare -a REPOS=() ORGS=()
-    declare -A KID_PATHS=() SOURCE_PATHS=()
     # shellcheck disable=SC1090
     . "$REVIEWER_LIB_DIR/tracked-repos.sh"
     echo "${SOURCE_PATHS[acme/foo]:-}"
@@ -200,10 +206,10 @@ n=$(count_gh "repo clone")
 echo "  scenario 4: existing checkout with matching origin — reused, no clone..."
 write_baseline_conf '"acme"'
 rm -f "$AUTO_CONF"
-rm -rf "$SOURCE_BASE/baz"
-mkdir -p "$SOURCE_BASE/baz"
-git -C "$SOURCE_BASE/baz" init -q
-git -C "$SOURCE_BASE/baz" remote add origin "git@github.com:acme/baz.git"
+rm -rf "$HOME/Hacking/baz"
+mkdir -p "$HOME/Hacking/baz"
+git -C "$HOME/Hacking/baz" init -q
+git -C "$HOME/Hacking/baz" remote add origin "git@github.com:acme/baz.git"
 MOCK_GH_LIST_acme="baz" run_sync || { echo "FAIL scenario 4: org-sync exited non-zero"; cat "$LOG"; exit 1; }
 n=$(count_gh "repo clone")
 [ "$n" -eq 0 ] || { echo "FAIL scenario 4: expected 0 clones (existing checkout), got $n"; cat "$STUB_GH_LOG"; exit 1; }
@@ -214,10 +220,10 @@ echo "  scenario 5: existing checkout with WRONG origin — fail loud, auto unch
 write_baseline_conf '"acme"'
 rm -f "$AUTO_CONF"
 SHA=$(auto_sha)
-rm -rf "$SOURCE_BASE/evil"
-mkdir -p "$SOURCE_BASE/evil"
-git -C "$SOURCE_BASE/evil" init -q
-git -C "$SOURCE_BASE/evil" remote add origin "git@github.com:attacker/evil.git"
+rm -rf "$HOME/Hacking/evil"
+mkdir -p "$HOME/Hacking/evil"
+git -C "$HOME/Hacking/evil" init -q
+git -C "$HOME/Hacking/evil" remote add origin "git@github.com:attacker/evil.git"
 if MOCK_GH_LIST_acme="evil" run_sync; then
     echo "FAIL scenario 5: org-sync returned 0 on wrong-origin checkout"; cat "$LOG"; exit 1
 fi
@@ -233,10 +239,10 @@ echo "  scenario 6: spoof-host origin (evilgithub.com) — fail loud, auto uncha
 write_baseline_conf '"acme"'
 rm -f "$AUTO_CONF"
 SHA=$(auto_sha)
-rm -rf "$SOURCE_BASE/spoof"
-mkdir -p "$SOURCE_BASE/spoof"
-git -C "$SOURCE_BASE/spoof" init -q
-git -C "$SOURCE_BASE/spoof" remote add origin "git@evilgithub.com:acme/spoof.git"
+rm -rf "$HOME/Hacking/spoof"
+mkdir -p "$HOME/Hacking/spoof"
+git -C "$HOME/Hacking/spoof" init -q
+git -C "$HOME/Hacking/spoof" remote add origin "git@evilgithub.com:acme/spoof.git"
 if MOCK_GH_LIST_acme="spoof" run_sync; then
     echo "FAIL scenario 6: org-sync accepted evilgithub.com spoof"; cat "$LOG"; exit 1
 fi
@@ -301,7 +307,7 @@ echo "  scenario 10: gh repo clone failure — fail loud + no partial left + rec
 write_baseline_conf '"acme"'
 rm -f "$AUTO_CONF"
 SHA=$(auto_sha)
-rm -rf "$SOURCE_BASE/cant-clone"
+rm -rf "$HOME/Hacking/cant-clone"
 # The smoke `gh` stub creates $dest with .git + origin BEFORE honoring
 # MOCK_GH_CLONE_EXIT, faithfully simulating production gh's failure
 # behavior. Without org-sync's rm -rf $dest on failure, next tick's
@@ -313,12 +319,12 @@ fi
 assert_auto_unchanged "$SHA"
 grep -q 'gh repo clone acme/cant-clone failed' "$LOG" || { echo "FAIL scenario 10: expected clone-failure log line"; cat "$LOG"; exit 1; }
 # Partial-clone cleanup pin: $dest MUST be gone after failure.
-[ ! -e "$SOURCE_BASE/cant-clone" ] || { echo "FAIL scenario 10: partial clone left behind at $SOURCE_BASE/cant-clone"; ls -la "$SOURCE_BASE/cant-clone"; exit 1; }
+[ ! -e "$HOME/Hacking/cant-clone" ] || { echo "FAIL scenario 10: partial clone left behind at $HOME/Hacking/cant-clone"; ls -la "$HOME/Hacking/cant-clone"; exit 1; }
 # Recovery tick: with MOCK_GH_CLONE_EXIT unset, clone succeeds; auto
 # file gains the new entry. The dest is fresh — no smuggled state
 # from the prior failed attempt.
 MOCK_GH_LIST_acme="cant-clone" run_sync || { echo "FAIL scenario 10 recovery: org-sync exited non-zero"; cat "$LOG"; exit 1; }
-[ -d "$SOURCE_BASE/cant-clone/.git" ] || { echo "FAIL scenario 10 recovery: clone didn't happen on recovery tick"; exit 1; }
+[ -d "$HOME/Hacking/cant-clone/.git" ] || { echo "FAIL scenario 10 recovery: clone didn't happen on recovery tick"; exit 1; }
 grep -q '"acme/cant-clone"' "$AUTO_CONF" || { echo "FAIL scenario 10 recovery: auto file missing recovered repo"; cat "$AUTO_CONF"; exit 1; }
 
 # --- Scenario 11: lock contention — concurrent run defers ------------------

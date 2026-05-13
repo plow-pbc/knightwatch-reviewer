@@ -19,7 +19,6 @@ LOG="${LOG:-$STATE_DIR/org-sync.log}"
 # otherwise split the timer run's lock from an operator shell run's.
 LOCK="${LOCK:-$STATE_DIR/org-sync.lock}"
 REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$STATE_DIR/lib}"
-SOURCE_BASE="${SOURCE_BASE:-$HOME/Hacking}"
 CONF="${CONF:-$STATE_DIR/repos.conf}"
 AUTO_CONF="${AUTO_CONF:-$STATE_DIR/repos.conf.auto}"
 
@@ -96,7 +95,7 @@ fi
 NEW_CLONES=0
 for full in "${AUTO[@]}"; do
     name="${full#*/}"
-    dest="$SOURCE_BASE/$name"
+    dest="$HOME/Hacking/$name"
     if [ -d "$dest/.git" ]; then
         if ! url=$(git -C "$dest" remote get-url origin 2>/dev/null); then
             log "FATAL: $dest has no origin remote configured"
