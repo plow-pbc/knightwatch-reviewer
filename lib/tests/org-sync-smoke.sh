@@ -58,26 +58,20 @@ echo "GH $*" >> "${STUB_GH_LOG:-/dev/null}"
 case "$1 $2" in
     "repo list")
         org="$3"
-        # All four flags are behavior-bearing: --source excludes forks,
-        # --no-archived excludes archived, --limit raises gh's default
-        # 30-repo ceiling, and --json name + --jq '.[].name' coerce the
-        # output to one bare name per line (org-sync's read-loop assumes
-        # that shape). Dropping any of them silently changes coverage
-        # or parsing without test failure.
-        has_source=0; has_no_archived=0; has_limit=0; has_json=0; has_jq=0
-        for a in "$@"; do
-            case "$a" in
-                --source)       has_source=1 ;;
-                --no-archived)  has_no_archived=1 ;;
-                --limit)        has_limit=1 ;;
-                --json)         has_json=1 ;;
-                --jq)           has_jq=1 ;;
+        # Each flag pair is behavior-bearing AT ITS VALUE — not just
+        # presence. --jq '.[].nameWithOwner' would still trigger a
+        # presence-only check and pass, but it returns "org/name"
+        # which org-sync would prefix again into "org/org/name".
+        argv=" $* "
+        for needle in "--source" "--no-archived" "--limit 1000" "--json name" "--jq .[].name"; do
+            case "$argv" in
+                *" $needle "*) ;;
+                *)
+                    echo "STUB FAIL: gh repo list missing '$needle': $*" >&2
+                    exit 2
+                    ;;
             esac
         done
-        if [ "$has_source" -eq 0 ] || [ "$has_no_archived" -eq 0 ] || [ "$has_limit" -eq 0 ] || [ "$has_json" -eq 0 ] || [ "$has_jq" -eq 0 ]; then
-            echo "STUB FAIL: gh repo list missing one of --source/--no-archived/--limit/--json/--jq: $*" >&2
-            exit 2
-        fi
         sanitized="${org//[^a-zA-Z0-9]/_}"
         list_var="MOCK_GH_LIST_${sanitized}"
         exit_var="MOCK_GH_LIST_EXIT_${sanitized}"
@@ -117,6 +111,13 @@ ORGS=($orgs)
 CONF
 }
 auto_sha() { [ -f "$AUTO_CONF" ] && sha1sum "$AUTO_CONF" | awk '{print $1}' || echo "absent"; }
+make_checkout() {
+    local dest="$HOME/Hacking/$1"
+    rm -rf "$dest"
+    mkdir -p "$dest"
+    git -C "$dest" init -q
+    git -C "$dest" remote add origin "$2"
+}
 assert_auto_unchanged() {
     local before="$1" after
     after=$(auto_sha)
@@ -206,10 +207,7 @@ n=$(count_gh "repo clone")
 echo "  scenario 4: existing checkout with matching origin — reused, no clone..."
 write_baseline_conf '"acme"'
 rm -f "$AUTO_CONF"
-rm -rf "$HOME/Hacking/baz"
-mkdir -p "$HOME/Hacking/baz"
-git -C "$HOME/Hacking/baz" init -q
-git -C "$HOME/Hacking/baz" remote add origin "git@github.com:acme/baz.git"
+make_checkout baz "git@github.com:acme/baz.git"
 MOCK_GH_LIST_acme="baz" run_sync || { echo "FAIL scenario 4: org-sync exited non-zero"; cat "$LOG"; exit 1; }
 n=$(count_gh "repo clone")
 [ "$n" -eq 0 ] || { echo "FAIL scenario 4: expected 0 clones (existing checkout), got $n"; cat "$STUB_GH_LOG"; exit 1; }
@@ -220,10 +218,7 @@ echo "  scenario 5: existing checkout with WRONG origin — fail loud, auto unch
 write_baseline_conf '"acme"'
 rm -f "$AUTO_CONF"
 SHA=$(auto_sha)
-rm -rf "$HOME/Hacking/evil"
-mkdir -p "$HOME/Hacking/evil"
-git -C "$HOME/Hacking/evil" init -q
-git -C "$HOME/Hacking/evil" remote add origin "git@github.com:attacker/evil.git"
+make_checkout evil "git@github.com:attacker/evil.git"
 if MOCK_GH_LIST_acme="evil" run_sync; then
     echo "FAIL scenario 5: org-sync returned 0 on wrong-origin checkout"; cat "$LOG"; exit 1
 fi
@@ -239,10 +234,7 @@ echo "  scenario 6: spoof-host origin (evilgithub.com) — fail loud, auto uncha
 write_baseline_conf '"acme"'
 rm -f "$AUTO_CONF"
 SHA=$(auto_sha)
-rm -rf "$HOME/Hacking/spoof"
-mkdir -p "$HOME/Hacking/spoof"
-git -C "$HOME/Hacking/spoof" init -q
-git -C "$HOME/Hacking/spoof" remote add origin "git@evilgithub.com:acme/spoof.git"
+make_checkout spoof "git@evilgithub.com:acme/spoof.git"
 if MOCK_GH_LIST_acme="spoof" run_sync; then
     echo "FAIL scenario 6: org-sync accepted evilgithub.com spoof"; cat "$LOG"; exit 1
 fi

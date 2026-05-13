@@ -39,7 +39,11 @@ ProtectHome=read-only
 # (= /home/odio/.pr-reviewer/repos.conf.auto), not to a source-tree
 # symlink target. Blast radius is one script doing only `gh repo clone`
 # + a tmp-file write inside the bot's own state dir.
-ReadWritePaths=/home/odio/.pr-reviewer /home/odio/Hacking /home/odio/.cache /home/odio/.config
+# gh repo list / clone are read-only against ~/.config — token refresh
+# happens through `gh auth login`, not hourly. ~/.cache holds gh's
+# command-history sink so keep that writable. Drop ~/.config to tighten
+# the sandbox; restore if operator hits a write-attempt in journalctl.
+ReadWritePaths=/home/odio/.pr-reviewer /home/odio/Hacking /home/odio/.cache
 
 [Install]
 WantedBy=multi-user.target
