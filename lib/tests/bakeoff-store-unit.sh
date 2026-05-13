@@ -138,8 +138,9 @@ FIRST_SPEC=$(printf '%s\n' "$OUT" | head -1 | cut -f1)
 echo "  query_window_aggregates: severity buckets via max_severity..."
 DB4="$TMP/bakeoff4.db"
 store_init "$DB4"
-# Three runs of specialist gamma in window: one with max_severity=blocking,
-# one with max_severity=low, one with max_severity=open.
+# Four runs of specialist gamma in window: one each at blocking/medium/low/open
+# — exercises every severity bucket independently so any one branch can't
+# regress without a focused assertion failing.
 upsert_specialist_run "$DB4" srosro/repo 20 gamma 5 2026-04-20T00:00:00Z
 mark_published "$DB4" srosro/repo 20 gamma
 set_max_severity "$DB4" srosro/repo 20 gamma blocking
@@ -149,6 +150,9 @@ set_max_severity "$DB4" srosro/repo 21 gamma low
 upsert_specialist_run "$DB4" srosro/repo 22 gamma 5 2026-04-22T00:00:00Z
 mark_published "$DB4" srosro/repo 22 gamma
 set_max_severity "$DB4" srosro/repo 22 gamma open
+upsert_specialist_run "$DB4" srosro/repo 25 gamma 5 2026-04-25T00:00:00Z
+mark_published "$DB4" srosro/repo 25 gamma
+set_max_severity "$DB4" srosro/repo 25 gamma medium
 # One run of specialist delta with max_severity=nit (bucketed as low+nit).
 upsert_specialist_run "$DB4" srosro/repo 23 delta 5 2026-04-23T00:00:00Z
 mark_published "$DB4" srosro/repo 23 delta
@@ -160,7 +164,7 @@ OUT=$(query_window_aggregates "$DB4" "2026-04-01T00:00:00Z")
 GAMMA=$(printf '%s\n' "$OUT" | awk -F'\t' '$1=="gamma"')
 # Expected TSV columns: specialist reviews shipped applied added removed
 #                       edited blocking medium low_nit open
-[ "$GAMMA" = $'gamma\t3\t3\t0\t0\t0\t0\t1\t0\t1\t1' ] \
+[ "$GAMMA" = $'gamma\t4\t4\t0\t0\t0\t0\t1\t1\t1\t1' ] \
     || { echo "FAIL: gamma severity buckets: '$GAMMA'"; exit 1; }
 DELTA=$(printf '%s\n' "$OUT" | awk -F'\t' '$1=="delta"')
 [ "$DELTA" = $'delta\t1\t1\t0\t0\t0\t0\t0\t0\t1\t0' ] \
@@ -174,7 +178,7 @@ echo "  query_window_aggregates: edited_after sums..."
 mark_edited_after "$DB4" srosro/repo 20 gamma
 OUT=$(query_window_aggregates "$DB4" "2026-04-01T00:00:00Z")
 GAMMA=$(printf '%s\n' "$OUT" | awk -F'\t' '$1=="gamma"')
-[ "$GAMMA" = $'gamma\t3\t3\t0\t0\t0\t1\t1\t0\t1\t1' ] \
+[ "$GAMMA" = $'gamma\t4\t4\t0\t0\t0\t1\t1\t1\t1\t1' ] \
     || { echo "FAIL: gamma edited_after sum: '$GAMMA'"; exit 1; }
 
 echo "  find_target_review_for_feedback: empty when no rows..."

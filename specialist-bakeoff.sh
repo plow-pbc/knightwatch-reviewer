@@ -291,8 +291,8 @@ for repo in "${REPOS[@]}"; do
             | jq --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" \
                  "[.[] | select($SUBSTANTIVE_REVIEW_JQ)] | length")
         with_marker_in_window=$(printf '%s' "$comments_json" \
-            | jq --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" \
-                 "[.[] | select($SUBSTANTIVE_REVIEW_JQ and (.body | test(\"<!-- knightwatch-bakeoff: specialists=[a-z][a-z,-]*[[:space:]]*-->\")))] | length")
+            | jq --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" --arg roster "$ROSTER_MARKER_REGEX" \
+                 "[.[] | select($SUBSTANTIVE_REVIEW_JQ and (.body | test(\$roster)))] | length")
         set_repo_coverage "$DB_FILE" "$repo" "$total_in_window" "$with_marker_in_window"
     fi
 done

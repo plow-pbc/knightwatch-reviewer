@@ -298,6 +298,25 @@ build_feedback_comment() {
         '{id: $id, issue_url: $url, created_at: $ts, user: {login: "trusted-human"}, body: $body}'
 }
 
+# Stand up the simplest edited_after scenario: one bot review citing one path,
+# one post-review commit (single sha) touching that same path. Each test that
+# uses this then drives its own walks (run_driver / failure variations) and
+# DB assertions.
+# Args: $1 review_id, $2 pr_num, $3 review_ts, $4 cited_path, $5 commit_sha,
+#       $6 commit_ts, $7 files_dir_basename (under $TMPDIR_SMOKE).
+setup_edited_after_one_commit() {
+    local rid=$1 pr=$2 rts=$3 path=$4 sha=$5 cts=$6 dir=$7
+    build_bot_review "$rid" "$pr" "$rts" tests \
+        "1. [blocking] [from: tests] [tests] Cited. Files: $path. Edit: do x." \
+        | jq -s . > "$MOCK_COMMENTS_FILE"
+    printf '%s\t1\t0\n' "$path" > "$MOCK_PULLS_FILES_FILE"
+    printf '%s\t%s\n' "$sha" "$cts" > "$TMPDIR_SMOKE/commits.tsv"
+    export MOCK_PULLS_COMMITS_FILE="$TMPDIR_SMOKE/commits.tsv"
+    mkdir -p "$TMPDIR_SMOKE/$dir"
+    echo "$path" > "$TMPDIR_SMOKE/$dir/$sha.tsv"
+    export MOCK_COMMIT_FILES_DIR="$TMPDIR_SMOKE/$dir"
+}
+
 # ---- scenario 1: no comments → empty table (placeholder text) ----
 echo "    scenario 1: no comments → placeholder text, no data rows..."
 rm -f "$DB_FILE"
@@ -630,15 +649,23 @@ TS_R1=$(hours_ago 100)
 TS_R2=$(hours_ago 90)
 TS_R3=$(hours_ago 80)
 
+TS_R4=$(hours_ago 70)
+
 python3 - <<PYEOF > "$MOCK_COMMENTS_FILE"
 import json
 marker_body = "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=tests -->\n\n**Probes**\n\n1. [blocking] [from: tests] [tests] X. Files: src/a.py. Edit: do x.\n\n_How to use: auto-reviews every new PR..._"
 no_marker_body = "${BOT_AUTO_POST_MARKER}\n\n**Probes**\n\n1. [blocking] [from: tests] [tests] X.\n\n_How to use: auto-reviews every new PR..._"
 ack_body = "${BOT_AUTO_POST_MARKER}\n\n\U0001f440 reviewing..."
+# Substantive bot review that MENTIONS knightwatch-bakeoff in prose but lacks
+# the real roster marker — must count as in_window (denominator) but NOT as
+# with_marker (numerator). Guards against a regression to a permissive
+# substring check.
+prose_only_body = "${BOT_AUTO_POST_MARKER}\n\n**Overview** — discussing the knightwatch-bakeoff marker shape in this PR.\n\n_How to use: auto-reviews every new PR..._"
 comments = [
     {"id": 80, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/50", "created_at": "${TS_R1}", "user": {"login": "testbot"}, "body": marker_body},
     {"id": 81, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/51", "created_at": "${TS_R2}", "user": {"login": "testbot"}, "body": no_marker_body},
     {"id": 82, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/52", "created_at": "${TS_R3}", "user": {"login": "testbot"}, "body": ack_body},
+    {"id": 83, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/53", "created_at": "${TS_R4}", "user": {"login": "testbot"}, "body": prose_only_body},
 ]
 print(json.dumps(comments))
 PYEOF
@@ -649,8 +676,10 @@ export MOCK_PULLS_COMMITS_FILE="$TMPDIR_SMOKE/commits.tsv"
 run_driver
 
 COV=$(sqlite3 "$DB_FILE" "SELECT reviews_total_in_window || '|' || reviews_with_marker_in_window FROM walks WHERE repo='test-org/bakeoff-probe';")
-# Expected: 2 substantive bot reviews (id 80 + 81; ACK 82 excluded because it lacks the "How to use" footer), 1 with marker.
-[ "$COV" = "2|1" ] || { echo "FAIL scenario 19: coverage '$COV' expected '2|1'"; sqlite3 "$DB_FILE" "SELECT * FROM walks;"; exit 1; }
+# Expected: 3 substantive bot reviews (id 80 + 81 + 83; ACK 82 excluded because
+# it lacks the "How to use" footer); 1 with marker (id 80 only — id 83 has the
+# marker token in prose but not the real <!-- ... --> shape).
+[ "$COV" = "3|1" ] || { echo "FAIL scenario 19: coverage '$COV' expected '3|1' (prose mention of marker must NOT count)"; sqlite3 "$DB_FILE" "SELECT * FROM walks;"; exit 1; }
 
 unset MOCK_PULLS_COMMITS_FILE
 
@@ -709,16 +738,8 @@ rm -f "$DB_FILE"
 TS_REVIEW_21=$(hours_ago 30)
 TS_COMMIT_21=$(hours_ago 20)   # AFTER review
 
-build_bot_review 110 70 "$TS_REVIEW_21" tests \
-    '1. [blocking] [from: tests] [tests] Touched-later. Files: src/a.py. Edit: do x.' \
-    | jq -s . > "$MOCK_COMMENTS_FILE"
 export MOCK_PULLS_FILES_FILE="$TMPDIR_SMOKE/pulls-files.txt"
-printf 'src/a.py\t10\t0\n' > "$MOCK_PULLS_FILES_FILE"
-printf 'sha-after\t%s\n' "$TS_COMMIT_21" > "$TMPDIR_SMOKE/commits.tsv"
-export MOCK_PULLS_COMMITS_FILE="$TMPDIR_SMOKE/commits.tsv"
-mkdir -p "$TMPDIR_SMOKE/commit-files-21"
-echo "src/a.py" > "$TMPDIR_SMOKE/commit-files-21/sha-after.tsv"
-export MOCK_COMMIT_FILES_DIR="$TMPDIR_SMOKE/commit-files-21"
+setup_edited_after_one_commit 110 70 "$TS_REVIEW_21" src/a.py sha-after "$TS_COMMIT_21" commit-files-21
 
 # First walk: commits fetch succeeds → edited_after=1, OUT_FILE rendered with SENTINEL replaced.
 echo SENTINEL > "$OUT_FILE"
@@ -825,15 +846,7 @@ rm -f "$DB_FILE"
 TS_REVIEW_26=$(hours_ago 30)
 TS_COMMIT_26=$(hours_ago 20)
 
-build_bot_review 160 120 "$TS_REVIEW_26" tests \
-    '1. [blocking] [from: tests] [tests] Cited. Files: src/a.py. Edit: do x.' \
-    | jq -s . > "$MOCK_COMMENTS_FILE"
-printf 'src/a.py\t1\t0\n' > "$MOCK_PULLS_FILES_FILE"
-printf 'sha-x\t%s\n' "$TS_COMMIT_26" > "$TMPDIR_SMOKE/commits.tsv"
-export MOCK_PULLS_COMMITS_FILE="$TMPDIR_SMOKE/commits.tsv"
-mkdir -p "$TMPDIR_SMOKE/commit-files-26"
-echo "src/a.py" > "$TMPDIR_SMOKE/commit-files-26/sha-x.tsv"
-export MOCK_COMMIT_FILES_DIR="$TMPDIR_SMOKE/commit-files-26"
+setup_edited_after_one_commit 160 120 "$TS_REVIEW_26" src/a.py sha-x "$TS_COMMIT_26" commit-files-26
 
 # First walk: success → edited_after=1.
 echo SENTINEL > "$OUT_FILE"
@@ -859,16 +872,7 @@ rm -f "$DB_FILE"
 TS_REVIEW_27=$(hours_ago 30)
 TS_COMMIT_27=$(hours_ago 20)
 
-build_bot_review 170 130 "$TS_REVIEW_27" tests \
-    '1. [blocking] [from: tests] [tests] Cited. Files: src/a.py. Edit: do x.' \
-    | jq -s . > "$MOCK_COMMENTS_FILE"
-printf 'src/a.py\t1\t0\n' > "$MOCK_PULLS_FILES_FILE"
-printf 'sha-y\t%s\n' "$TS_COMMIT_27" > "$TMPDIR_SMOKE/commits.tsv"
-export MOCK_PULLS_COMMITS_FILE="$TMPDIR_SMOKE/commits.tsv"
-mkdir -p "$TMPDIR_SMOKE/commit-files-27"
-# Initially, sha-y touched src/a.py → edited_after will be 1.
-echo "src/a.py" > "$TMPDIR_SMOKE/commit-files-27/sha-y.tsv"
-export MOCK_COMMIT_FILES_DIR="$TMPDIR_SMOKE/commit-files-27"
+setup_edited_after_one_commit 170 130 "$TS_REVIEW_27" src/a.py sha-y "$TS_COMMIT_27" commit-files-27
 
 run_driver
 ROW=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE specialist='tests' AND comment_id=170;")
