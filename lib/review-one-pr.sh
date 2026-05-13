@@ -243,7 +243,7 @@ fi
 EYES_COMMENT_ID=""
 EYES_RESOLVED=false
 # Default placeholder body for any abort path; specific aborts (e.g. the
-# Wave B ≥2-timeout branch in the pipeline block below) override this with
+# Wave B timeout branch in the pipeline block below) override this with
 # a more informative message before the EXIT trap fires. Single PATCH
 # lifecycle — cleanup_eyes is the only writer of the abort placeholder.
 EYES_ABORT_BODY="review aborted before completion — see knightwatch-reviewer logs; will retry on the next tick if the PR head hasn't moved."
@@ -1181,11 +1181,10 @@ AGG_OUT="$RUN_DIR/agents/aggregator/output.md"
 # the safety-net check below handles any race or unexpected exit.
 if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
     log "$PR_ID: pipeline failed (exit=$PIPELINE_EXIT, agg empty=$([ ! -s "$AGG_OUT" ] && echo true || echo false)) — aborting"
-    # Wave B fail-loud threshold (≥2 specialists timed out): pipeline.py
-    # wrote a sentinel naming the hung specialists. Hand a specific abort
-    # body to cleanup_eyes so the EXIT trap PATCHes the placeholder with
-    # the names rather than the generic abort message — single PATCH
-    # lifecycle, same trap.
+    # Wave B specialist timeout: pipeline.py wrote a sentinel naming the
+    # hung specialists. Hand a specific abort body to cleanup_eyes so the
+    # EXIT trap PATCHes the placeholder with the names rather than the
+    # generic abort message — single PATCH lifecycle, same trap.
     TIMEOUTS_SENTINEL="$RUN_DIR/_wave_b_timeouts.txt"
     if [ -s "$TIMEOUTS_SENTINEL" ]; then
         TIMED_OUT=$(paste -sd, "$TIMEOUTS_SENTINEL")

@@ -98,7 +98,7 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
             pass
         proc.wait()
         exit_code = 124  # GNU timeout convention; Wave B treats this rc as
-                         # the tolerable-timeout signal.
+                         # the fail-loud-timeout signal.
         with log_file.open("a") as lf:
             lf.write(f"[{_ts()}] agent={name} timed out after {SPECIALIST_TIMEOUT_SEC}s — killpg'd whole group\n")
 
