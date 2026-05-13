@@ -1,36 +1,8 @@
 #!/usr/bin/env bash
-# Smoke test for org-sync.sh.
-#
-# Closes the runtime-coverage gap on the manifest *producer* — the
-# hourly poller that folds GitHub orgs into a tool-owned auto file.
-# Same shape as the per-consumer smokes: sandbox STATE_DIR + a
-# tmpdir-rooted SOURCE_BASE, stub `gh` (list + clone) via PATH, run
-# org-sync.sh end-to-end, assert on the rewritten auto file shape +
-# which `gh` invocations fired.
-#
-# Manifest split: org-sync writes
-# $STATE_DIR/repos.conf.auto, never touches $STATE_DIR/repos.conf.
-# Multiple failure modes that the rewriting-in-place variant carried
-# are now structurally impossible (no TOCTOU on a shared file, no
-# malformed-conf erasure, no marker-block management), so the smoke is
-# lighter than it was at HEAD~1.
-#
-# Scenarios — each maps to a clear business requirement:
-#   1. Empty ORGS → no-op + truncate stale auto file. (Feature disabled
-#      drops coverage instead of silently retaining a prior tick's set.)
-#   2. New repo discovered + missing checkout → cloned, auto file
-#      contains expected entries, sourced manifest = (manual ∪ auto).
-#   3. Idempotent re-run → cmp-skip, no new clones, no file churn.
-#   4. Existing matching checkout → reused, no clone.
-#   5. Wrong-origin checkout → fail loud, auto file unchanged, no
-#      credential leak in log.
-#   6. Spoof-host origin (git@evilgithub.com:...) → exact-match case
-#      patterns reject the substring spoof.
-#   7. `gh repo list` failure → fail loud, auto file unchanged
-#      (transient API errors mustn't erase coverage).
-#   8. Auto-prune → repo disappears from gh, next rewrite drops it.
-#   9. Same-org manual entry → org-sync's exclusion logic keeps it
-#      out of the auto file, so the operator's KID_PATHS wins.
+# Smoke test for org-sync.sh — the hourly producer that writes
+# $STATE_DIR/repos.conf.auto from `gh repo list <ORGS>` minus the
+# operator's manual REPOS in repos.conf. Each scenario's echo line
+# names the business requirement; read the scenarios for details.
 
 set -euo pipefail
 
