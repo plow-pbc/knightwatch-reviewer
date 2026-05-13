@@ -57,8 +57,13 @@ class FakePopen:
     def wait(self, timeout=None):
         self._wait_calls += 1
         self.last_wait_timeout = timeout
-        if self._raise_timeout and self._wait_calls == 1:
-            raise subprocess.TimeoutExpired(cmd="codex", timeout=timeout or 1)
+        # Only simulate TimeoutExpired when production actually passes a
+        # timeout. A regression that drops the timeout kwarg from
+        # run_codex's proc.wait() then flips the test from rc=124 to
+        # rc=-SIGKILL (and skips the killpg call) — the existing fences
+        # in test_codex_timeout_returns_124_and_killpgs_subtree catch it.
+        if self._raise_timeout and self._wait_calls == 1 and timeout is not None:
+            raise subprocess.TimeoutExpired(cmd="codex", timeout=timeout)
         return self._returncode
 
 
