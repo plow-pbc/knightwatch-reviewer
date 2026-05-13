@@ -815,98 +815,29 @@ class TestRunPipeline(unittest.TestCase):
                           f"{name} started before Wave A linked dead-code.md")
 
     @patch("pipeline.subprocess.Popen")
-    def test_one_specialist_timeout_tolerated_aggregator_runs(self, mock_popen):
-        """≤1 timeout: aggregator runs on 7/8 specialists, a stub fills the
-        missing slot so .codex-scratch/specialists/<name>.md exists, and
-        the timeouts sentinel names the hung specialist for the bash
-        worker (which uses PIPELINE_EXIT=0 here to choose banner-mode
-        over fail-loud-mode)."""
+    def test_specialist_timeout_aborts_with_named_sentinel(self, mock_popen):
+        """Any specialist timeout aborts the pipeline. The sentinel names
+        the hung specialist(s) so review-one-pr.sh patches the placeholder
+        with the names rather than the generic abort body. Authors
+        re-trigger via push or /srosro-update-review."""
         mock_popen.side_effect = _make_codex_stub(plan={
             "intent": (0, "Inferred intent: stub.\n"),
             "dead-code-search": (0, "dc\n"),
             "performance": "TIMEOUT",
-            "aggregator": (0, "# Review\nVERDICT: APPROVE\n"),
-        })
-        rc = self._run()
-        self.assertEqual(rc, 0)
-        # Aggregator still ran on the surviving 7 specialists.
-        self.assertTrue((self.run_dir / "agents" / "aggregator" / "output.md").exists())
-        # Stub at the aggregator's read path so it didn't choke on a missing file.
-        scratch_specialist = self.repo_dir / ".codex-scratch" / "specialists" / "performance.md"
-        self.assertTrue(scratch_specialist.exists())
-        self.assertIn("No probes.", scratch_specialist.read_text())
-        # Forensic stub at the run-dir for bakeoff roster math.
-        self.assertTrue((self.run_dir / "agents" / "performance" / "layered.md").exists())
-        # Single sentinel — pipeline rc=0 + name in the file tells bash to
-        # banner-mode (the fail-loud-mode contract is rc!=0 + same file).
-        sentinel = self.run_dir / "_wave_b_timeouts.txt"
-        self.assertEqual(sentinel.read_text().strip(), "performance")
-
-    @patch("pipeline.subprocess.Popen")
-    def test_two_specialist_timeouts_fail_loud(self, mock_popen):
-        """≥2 timeouts: pipeline aborts, no aggregator runs, sentinel lists
-        the hung specialists so review-one-pr.sh can replace the 👀
-        placeholder with an explicit error naming them. Use non-security
-        specialists — security timeouts are hard-failed individually
-        (separate fence: test_security_specialist_timeout_is_hard_failure)."""
-        mock_popen.side_effect = _make_codex_stub(plan={
-            "intent": (0, "Inferred intent: stub.\n"),
-            "dead-code-search": (0, "dc\n"),
-            "performance": "TIMEOUT",
-            "shape": "TIMEOUT",
         })
         rc = self._run()
         self.assertNotEqual(rc, 0)
-        # _abort cleans up the workdir → assert sentinel was written to run_dir
-        # (which is NOT REPO_DIR) so the bash worker can still read it.
+        # _abort cleans up REPO_DIR; sentinel lives in RUN_DIR so bash
+        # reads it after pipeline.py exits.
         sentinel = self.run_dir / "_wave_b_timeouts.txt"
-        self.assertTrue(sentinel.exists())
-        names = set(sentinel.read_text().split())
-        self.assertEqual(names, {"performance", "shape"})
-        # No aggregator — we don't post half-broken reviews.
+        self.assertEqual(sentinel.read_text().strip(), "performance")
+        # No aggregator on the timeout path.
         self.assertFalse((self.run_dir / "agents" / "aggregator" / "output.md").exists())
 
     @patch("pipeline.subprocess.Popen")
-    def test_hard_failure_not_tolerated_even_when_solo(self, mock_popen):
-        """Non-timeout failures (contract violations, codex non-zero rc that
-        isn't 124) are bugs, not flakes — no 1-tolerance window. A single
-        rc=5 specialist still aborts (preserves pre-existing strictness for
-        hard failures while only loosening the timeout case)."""
-        mock_popen.side_effect = _make_codex_stub(plan={
-            "intent": (0, "Inferred intent: stub.\n"),
-            "dead-code-search": (0, "dc\n"),
-            "shape": (5, ""),  # hard failure, NOT a timeout
-        })
-        rc = self._run()
-        self.assertNotEqual(rc, 0)
-        # No timeouts sentinel — this was a hard failure path (rc != 124).
-        self.assertFalse((self.run_dir / "_wave_b_timeouts.txt").exists())
-
-    @patch("pipeline.subprocess.Popen")
-    def test_security_specialist_timeout_is_hard_failure(self, mock_popen):
-        """A timed-out security specialist would let the aggregator emit
-        VERDICT: APPROVE on 7/8 angles without ever having looked at the
-        security side — a silent bypass. Treat as hard failure (rc != 0)
-        so the author sees an abort. The single sentinel file names
-        `security` for the bash worker; rc != 0 selects the fail-loud
-        placeholder body."""
-        mock_popen.side_effect = _make_codex_stub(plan={
-            "intent": (0, "Inferred intent: stub.\n"),
-            "dead-code-search": (0, "dc\n"),
-            "security": "TIMEOUT",
-        })
-        rc = self._run()
-        self.assertNotEqual(rc, 0)
-        sentinel = self.run_dir / "_wave_b_timeouts.txt"
-        self.assertTrue(sentinel.exists())
-        self.assertIn("security", sentinel.read_text())
-
-    @patch("pipeline.subprocess.Popen")
-    def test_security_plus_other_timeout_lists_both_in_sentinel(self, mock_popen):
-        """When security AND a non-security specialist both time out, the
-        sentinel must list both names — earlier code path put security in
-        hard_failures before the sentinel write, so the author got the
-        generic abort body instead of the named multi-timeout message."""
+    def test_multiple_specialist_timeouts_all_named_in_sentinel(self, mock_popen):
+        """All timed-out specialists land in the sentinel (no carve-outs,
+        no thresholds — any timeout aborts with names)."""
         mock_popen.side_effect = _make_codex_stub(plan={
             "intent": (0, "Inferred intent: stub.\n"),
             "dead-code-search": (0, "dc\n"),
@@ -921,53 +852,37 @@ class TestRunPipeline(unittest.TestCase):
         self.assertEqual(sentinel_names, {"security", "performance"})
 
     @patch("pipeline.subprocess.Popen")
-    def test_tolerable_timeout_plus_aggregator_failure_omits_timeouts_sentinel(self, mock_popen):
-        """When a single non-security specialist times out (tolerable) AND
-        the aggregator later fails, the timeouts sentinel must NOT exist —
-        otherwise bash's sentinel-present-and-rc!=0 branch misreports the
-        abort as a timeout fail-loud when the actual cause was the
-        aggregator. The tolerable-case sentinel is written only after
-        aggregator success."""
+    def test_critic_timeout_aborts_without_data_loss(self, mock_popen):
+        """If the SPECIALIST succeeded (real output produced) and only the
+        CRITIC timed out, the run still aborts loudly — but the real
+        specialist output is preserved at run/agents/<name>/output.md for
+        forensic inspection. No stub-overwrite, no silent degradation."""
         mock_popen.side_effect = _make_codex_stub(plan={
             "intent": (0, "Inferred intent: stub.\n"),
             "dead-code-search": (0, "dc\n"),
-            "performance": "TIMEOUT",
-            "aggregator": (8, ""),  # aggregator hard failure
-        })
-        rc = self._run()
-        self.assertNotEqual(rc, 0)
-        # No sentinel → bash falls back to generic abort body (aggregator
-        # failure), not the timeout-named placeholder.
-        self.assertFalse((self.run_dir / "_wave_b_timeouts.txt").exists())
-
-    @patch("pipeline.subprocess.Popen")
-    def test_critic_timeout_is_hard_failure_not_tolerable(self, mock_popen):
-        """If the SPECIALIST succeeded (real output staged) and only the
-        CRITIC timed out, treating the rc as the tolerable-timeout case
-        would silently overwrite the real specialist output with a
-        `No probes.` stub. run_specialist promotes critic-stage timeouts
-        to rc=125 so Wave B classifies them as hard failures, and the
-        author sees an abort instead of a degraded review with the real
-        finding dropped."""
-        mock_popen.side_effect = _make_codex_stub(plan={
-            "intent": (0, "Inferred intent: stub.\n"),
-            "dead-code-search": (0, "dc\n"),
-            # shape specialist succeeds, its critic times out
             "shape": (0, "### Probe 1\nreal shape finding\n"),
             "critic-shape": "TIMEOUT",
         })
         rc = self._run()
-        # Hard-failure abort (not the 1-tolerable path) — rc != 0 AND the
-        # timeouts sentinel is NOT written, because run_specialist promoted
-        # the critic-stage 124 to 125 so this never reached the timed_out
-        # accumulator.
         self.assertNotEqual(rc, 0)
-        self.assertFalse((self.run_dir / "_wave_b_timeouts.txt").exists())
-        # The real specialist output is preserved in the run dir (the
-        # scratch path under repo_dir gets cleaned up by _abort, but the
-        # forensic record at run/agents/shape/output.md is untouched).
+        # Real specialist output is preserved on disk.
         shape_out = self.run_dir / "agents" / "shape" / "output.md"
         self.assertIn("real shape finding", shape_out.read_text())
+
+    @patch("pipeline.subprocess.Popen")
+    def test_hard_failure_aborts_without_timeouts_sentinel(self, mock_popen):
+        """Non-timeout hard failures (rc != 0 and != 124) abort without
+        writing the timeouts sentinel — bash falls back to the generic
+        abort body (not the timeout-named placeholder), which is the
+        correct cause."""
+        mock_popen.side_effect = _make_codex_stub(plan={
+            "intent": (0, "Inferred intent: stub.\n"),
+            "dead-code-search": (0, "dc\n"),
+            "shape": (5, ""),
+        })
+        rc = self._run()
+        self.assertNotEqual(rc, 0)
+        self.assertFalse((self.run_dir / "_wave_b_timeouts.txt").exists())
 
 
 class TestPipelineCLI(unittest.TestCase):

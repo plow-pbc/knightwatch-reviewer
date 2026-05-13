@@ -22,6 +22,8 @@ SPECIALISTS = (
 # cncorp/plow#594, 2026-05-12T20:04Z — one hung specialist blocked
 # `with ThreadPoolExecutor as ex:` indefinitely and the 90 min outer
 # bash timeout killed the worker before its cleanup trap completed.
+# Any specialist timeout fails the run loudly; authors re-trigger via
+# push or /srosro-update-review for a fresh review.
 SPECIALIST_TIMEOUT_SEC = 45 * 60
 _PROBE_BLOCK_RE = re.compile(r"^### Probe |^No probes\.$", re.MULTILINE)
 _PROBE_HEADER_RE = re.compile(r"^### Probe (\d+)\b", re.MULTILINE)
@@ -303,12 +305,7 @@ def run_specialist(
     crit_rc = run_codex(f"critic-{specialist}", str(repo), crit_prompt, str(crit_agent_dir))
     if crit_rc != 0:
         log(f"{pr_id}: critic-{specialist} exited non-zero (see {crit_agent_dir}/log.txt)")
-        # A critic timeout (rc=124) at this point means the specialist
-        # produced REAL output already staged at scratch_path. We don't
-        # want Wave B to overwrite that with a "No probes." stub — promote
-        # the rc so Wave B classifies this as a hard failure, not the
-        # tolerable-timeout case.
-        return 125 if crit_rc == 124 else crit_rc
+        return crit_rc
     crit_out = (crit_agent_dir / "output.md").read_text()
 
     err = _validate_critic_output(spec_out, crit_out)
@@ -433,75 +430,33 @@ def run_pipeline(
                 hard_failures.append(f"{name}: raised {type(exc).__name__}: {exc}")
                 continue
             if rc == 124:
-                # All timeouts (including security) land here so the
-                # _wave_b_timeouts.txt sentinel below names them when we
-                # fail loud — author-visible "timed out (security,
-                # performance)" beats the generic abort message.
-                # run_specialist promotes critic-stage timeouts to rc=125
-                # so a critic timeout never reaches this branch (it lands
-                # in hard_failures below, preserving the real specialist
-                # output instead of stub-overwriting it).
                 timed_out.append(name)
                 log(f"{pr_id}: specialist {name} timed out after {SPECIALIST_TIMEOUT_SEC}s")
             elif rc != 0:
-                # run_specialist's own log line (specialist or critic-stage,
-                # whichever failed) names the right log.txt path; don't
-                # second-guess it here with the always-specialist path.
+                # run_specialist's own log line names the failing stage's
+                # log.txt; don't second-guess with the always-specialist path.
                 hard_failures.append(f"{name}: exited non-zero (rc={rc})")
 
-    # Hard failures (non-timeout) are bugs / contract violations, not flakes —
-    # no tolerance threshold.
+    # Any specialist timeout aborts loudly. The sentinel names the hung
+    # specialists so the bash worker patches the placeholder with the names
+    # rather than the generic abort body. Authors re-trigger via push or
+    # /srosro-update-review for a fresh review — partial-coverage posting
+    # was traded for simpler infra (no carve-outs, no stubs, no second
+    # write site).
+    if timed_out:
+        (run / "_wave_b_timeouts.txt").write_text("\n".join(timed_out) + "\n")
+        return _abort(
+            repo,
+            f"{pr_id}: {len(timed_out)} specialist(s) timed out "
+            f"({', '.join(timed_out)}) — aborting",
+        )
+
     if hard_failures:
         return _abort(
             repo, f"{pr_id}: Wave B hard failures: {'; '.join(hard_failures)} — aborting"
         )
 
-    # Fail-loud thresholds — write the sentinel and abort:
-    #   - 2+ specialists timed out → systemic codex problem, not one flake.
-    #   - security specialist timed out → a silent absence of security
-    #     findings + VERDICT: APPROVE is a quiet bypass of the review's
-    #     main user-protecting angle.
-    # Sentinel-present + pipeline rc != 0 = fail-loud abort (bash patches
-    # placeholder with named timeout error). The tolerable case writes its
-    # sentinel only AFTER aggregator success below — otherwise an
-    # aggregator failure would let bash misread sentinel-present-and-rc!=0
-    # as a timeout abort when the real cause was the aggregator.
-    if "security" in timed_out or len(timed_out) >= 2:
-        (run / "_wave_b_timeouts.txt").write_text("\n".join(timed_out) + "\n")
-        return _abort(
-            repo,
-            f"{pr_id}: {len(timed_out)} specialists timed out "
-            f"({', '.join(timed_out)}) — aborting (fail-loud threshold reached)",
-        )
-
-    # Exactly 1 non-security timeout: tolerable degradation. Write a "No
-    # probes." stub at the path the aggregator reads from so the aggregator
-    # can run cleanly.
-    if timed_out:
-        [name] = timed_out
-        if name == "momentum":
-            # Momentum's aggregator-visible path is scratch/momentum.md
-            # (linked from agents/momentum/output.md in the happy path); the
-            # _relink below would error on the missing source, so we write
-            # the stub here and skip the relink.
-            (scratch / "momentum.md").write_text(
-                f"<!-- momentum timed out after {SPECIALIST_TIMEOUT_SEC}s — no prior-review momentum available -->\n"
-            )
-        else:
-            # Specialist: layered stub at agents/<name>/layered.md (for
-            # forensics + bakeoff roster math) AND .codex-scratch/specialists/
-            # (where the aggregator reads from). "No probes." is the documented
-            # zero-probe sentinel the critic contract already accepts.
-            stub = (
-                f"<!-- specialist {name} timed out after {SPECIALIST_TIMEOUT_SEC}s — no analysis available -->\n"
-                "No probes.\n\n---\n\nNo probes.\n"
-            )
-            (run / "agents" / name / "layered.md").write_text(stub)
-            scratch_specialists = repo / ".codex-scratch" / "specialists"
-            scratch_specialists.mkdir(parents=True, exist_ok=True)
-            (scratch_specialists / f"{name}.md").write_text(stub)
-
-    if has_prev and "momentum" not in timed_out:
+    if has_prev:
         _relink(scratch / "momentum.md", run / "agents" / "momentum" / "output.md")
     log(f"{pr_id}: Wave B complete")
 
@@ -514,18 +469,8 @@ def run_pipeline(
     agg_dir = run / "agents" / "aggregator"
     rc = run_codex("aggregator", str(repo), agg_prompt, str(agg_dir))
     if rc != 0:
-        # No sentinel write: aggregator failure is not a timeout, and
-        # bash's sentinel-present-and-rc!=0 branch must remain reserved
-        # for the real fail-loud-timeout case.
         return _abort(repo, f"{pr_id}: aggregator failed (exit={rc}) — aborting")
     log(f"{pr_id}: aggregator complete")
-
-    # Aggregator succeeded — NOW write the tolerable-timeout sentinel so
-    # bash formats the partial-coverage banner. Same single-sentinel
-    # contract; the write site shifts based on which path we landed on.
-    if timed_out:
-        (run / "_wave_b_timeouts.txt").write_text("\n".join(timed_out) + "\n")
-
     return 0
 
 

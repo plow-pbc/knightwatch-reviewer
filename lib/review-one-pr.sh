@@ -1189,7 +1189,7 @@ if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
     TIMEOUTS_SENTINEL="$RUN_DIR/_wave_b_timeouts.txt"
     if [ -s "$TIMEOUTS_SENTINEL" ]; then
         TIMED_OUT=$(paste -sd, "$TIMEOUTS_SENTINEL")
-        EYES_ABORT_BODY="❌ Review aborted — specialist timeout threshold reached (\`$TIMED_OUT\`). See knightwatch-reviewer logs; will retry on the next tick."
+        EYES_ABORT_BODY="❌ Review aborted — specialist(s) timed out (\`$TIMED_OUT\`). See knightwatch-reviewer logs; will retry on the next tick."
         log "$PR_ID: handing timeouts-error to cleanup_eyes (specialists=$TIMED_OUT)"
     fi
     [ -d "$REPO_DIR" ] && rm -rf "$REPO_DIR"
@@ -1296,14 +1296,6 @@ REVIEW_NOTES+=("$KID_NOTE")
 # absent + no STRICT_TYPING_CMDS entry) or the checker errored (logged
 # loud above). Both cases are correctly silent in the header.
 [ -n "$STRICT_TYPING_NOTE" ] && REVIEW_NOTES+=("$STRICT_TYPING_NOTE")
-# Wave B tolerated a single non-security timeout: pipeline.py wrote the
-# names to _wave_b_timeouts.txt and returned 0 (the fail-loud branch
-# returns non-zero, handled above). Format the banner from the name —
-# same name-source as the fail-loud abort body, single sentinel file.
-if [ -s "$RUN_DIR/_wave_b_timeouts.txt" ]; then
-    TIMED_OUT=$(paste -sd, "$RUN_DIR/_wave_b_timeouts.txt")
-    REVIEW_NOTES+=("⚠️ \`$TIMED_OUT\` timed out — review reflects partial Wave B coverage")
-fi
 log "$PR_ID: review-notes = ${#REVIEW_NOTES[@]} (${REVIEW_NOTES[*]:-none})"
 
 if ! COMMENT_BODY=$(prepend_review_header "$COMMENT_BODY" "${REVIEW_NOTES[@]}"); then
