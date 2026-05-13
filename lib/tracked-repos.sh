@@ -56,7 +56,7 @@ if [ -f "${STATE_DIR}/repos.conf" ];      then . "${STATE_DIR}/repos.conf"; fi
 if [ -f "${STATE_DIR}/repos.conf.auto" ]; then . "${STATE_DIR}/repos.conf.auto"; fi
 
 # Dedup REPOS preserving order. The conditional `${var:-default}` form
-# in repos.conf.auto already protects KID_PATHS / SOURCE_PATHS from
+# in repos.conf.auto already protects KID_PATHS from
 # collisions, but the auto file's `REPOS+=("...")` is unconditional
 # (bash indexed arrays don't have a clean "append only if not present"
 # primitive). During the operator-promotion window — operator pins an

@@ -152,8 +152,6 @@ REPOS+=("acme/promoted")
 REPOS+=("acme/other")
 KID_PATHS["acme/promoted"]="${KID_PATHS["acme/promoted"]:-/should/not/win}"
 KID_PATHS["acme/other"]="${KID_PATHS["acme/other"]:-/auto/other}"
-SOURCE_PATHS["acme/promoted"]="${SOURCE_PATHS["acme/promoted"]:-/should/not/win}"
-SOURCE_PATHS["acme/other"]="${SOURCE_PATHS["acme/other"]:-/auto/other}"
 CONF
 out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; echo \"promoted=\${KID_PATHS[acme/promoted]} other=\${KID_PATHS[acme/other]}\"")
 [ "$out" = "promoted=/var/operator/custom other=/auto/other" ] || { echo "FAIL B5: loader output: $out (expected manual KID_PATHS to win on collision)"; exit 1; }
@@ -301,7 +299,6 @@ CONF
 cat > "$SAND_INSTALL2/repos.conf.auto" <<'CONF'
 REPOS+=("auto-org/auto-repo")
 KID_PATHS["auto-org/auto-repo"]="${KID_PATHS["auto-org/auto-repo"]:-/var/auto/auto-checkout}"
-SOURCE_PATHS["auto-org/auto-repo"]="${SOURCE_PATHS["auto-org/auto-repo"]:-/var/auto/auto-checkout}"
 CONF
 LIVE_BEFORE=$(sha1sum "$OVERLAY2/repos.conf" | awk '{print $1}')
 run_overlay_install "$OVERLAY2" "$SAND_INSTALL2" "$SAND_SYSTEMD2"

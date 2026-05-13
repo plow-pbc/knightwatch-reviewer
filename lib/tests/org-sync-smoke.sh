@@ -42,7 +42,12 @@ trap 'rm -rf "$TMPDIR"' EXIT
 
 export STATE_DIR="$TMPDIR/state"
 export LOG="$STATE_DIR/org-sync.log"
-export LOCK="$TMPDIR/lock"
+# LOCK is intentionally NOT overridden — the production default is
+# $STATE_DIR/org-sync.lock, and $STATE_DIR is already sandboxed to
+# $TMPDIR/state, so leaving the default flow means the smoke exercises
+# the exact shared-lock path systemd uses. Overriding to e.g.
+# /$TMPDIR/lock would bypass the very shape the round-6 fix
+# established (PrivateTmp-vs-shell shared lock).
 export SOURCE_BASE="$TMPDIR/Hacking"
 export CONF="$STATE_DIR/repos.conf"
 export AUTO_CONF="$STATE_DIR/repos.conf.auto"
@@ -111,7 +116,9 @@ chmod +x "$HOME/.local/bin/gh"
 
 run_sync() {
     : > "$STUB_GH_LOG"
-    rm -f "$LOCK"
+    # Do NOT rm the lock file — flock releases on FD close (process
+    # exit), so successive runs don't conflict. Production never
+    # touches the lock file's presence; the smoke shouldn't either.
     bash "$PROJECT_ROOT/org-sync.sh" >/dev/null 2>&1
     return $?
 }
@@ -192,6 +199,22 @@ got=$(resolved_repos)
 [ "$got" = "$expected" ] || { echo "FAIL scenario 2: resolved REPOS mismatch — got"; echo "$got"; exit 1; }
 got=$(resolved_kid_path "acme/foo")
 [ "$got" = "$HOME/Hacking/foo" ] || { echo "FAIL scenario 2: KID_PATHS[acme/foo] = '$got'"; exit 1; }
+# SOURCE_PATHS regression fence: cross-repo grep surface stays an
+# explicit operator opt-in. Auto-discovered repos MUST NOT appear in
+# SOURCE_PATHS — re-introducing them re-opens the private-sibling
+# exposure path through materialize_sibling_symlinks.
+if grep -q '^SOURCE_PATHS\[' "$AUTO_CONF"; then
+    echo "FAIL scenario 2: auto file emits SOURCE_PATHS — re-opens cross-repo source exposure"
+    grep '^SOURCE_PATHS\[' "$AUTO_CONF"; exit 1
+fi
+got=$(
+    declare -a REPOS=() ORGS=()
+    declare -A KID_PATHS=() SOURCE_PATHS=()
+    # shellcheck disable=SC1090
+    . "$REVIEWER_LIB_DIR/tracked-repos.sh"
+    echo "${SOURCE_PATHS[acme/foo]:-}"
+)
+[ -z "$got" ] || { echo "FAIL scenario 2: resolved SOURCE_PATHS[acme/foo] = '$got' (expected empty)"; exit 1; }
 
 # --- Scenario 3: idempotent re-run --------------------------------------------
 echo "  scenario 3: rerun with same gh state — cmp-skip, no rewrite, no new clones..."
@@ -326,4 +349,25 @@ MOCK_GH_LIST_acme="cant-clone" run_sync || { echo "FAIL scenario 10 recovery: or
 [ -d "$SOURCE_BASE/cant-clone/.git" ] || { echo "FAIL scenario 10 recovery: clone didn't happen on recovery tick"; exit 1; }
 grep -q '"acme/cant-clone"' "$AUTO_CONF" || { echo "FAIL scenario 10 recovery: auto file missing recovered repo"; cat "$AUTO_CONF"; exit 1; }
 
-echo "  PASS (10 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, clone-failure-no-mutation)"
+# --- Scenario 11: lock contention — concurrent run defers ------------------
+# When the systemd timer fires while an operator's shell-launched run
+# is mid-clone (or vice-versa), the second invocation must skip cleanly
+# instead of racing on the same checkout. flock on $STATE_DIR/org-sync.lock
+# is the seam — both runs see the same lock file (no PrivateTmp split).
+echo "  scenario 11: lock held by concurrent run — sync exits 0, no gh calls, no file change..."
+write_baseline_conf '"acme"'
+rm -f "$AUTO_CONF"
+# Hold the lock on a background FD. flock blocks on FD close — keep
+# the background shell alive long enough to span our sync attempt.
+exec 8>"$STATE_DIR/org-sync.lock"
+flock -n 8 || { echo "FAIL scenario 11 setup: could not acquire lock pre-test"; exit 1; }
+SHA=$(auto_sha)
+# Foreground sync should detect the held lock and exit 0.
+MOCK_GH_LIST_acme="held" run_sync || { echo "FAIL scenario 11: sync exited non-zero despite lock-held"; cat "$LOG"; exit 1; }
+n=$(count_gh "repo list")
+[ "$n" -eq 0 ] || { echo "FAIL scenario 11: sync made $n gh repo list calls while lock held"; cat "$STUB_GH_LOG"; exit 1; }
+assert_auto_unchanged "$SHA"
+grep -q 'sync already running' "$LOG" || { echo "FAIL scenario 11: expected 'sync already running' log line"; cat "$LOG"; exit 1; }
+exec 8>&-  # Release the background lock.
+
+echo "  PASS (11 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, clone-failure-no-mutation, lock-held-defers)"
