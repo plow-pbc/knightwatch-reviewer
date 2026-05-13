@@ -139,14 +139,6 @@ ON CONFLICT(repo) DO UPDATE SET
 SQL
 }
 
-# Returns "total|with_marker". Empty walks row → "0|0".
-query_coverage() {
-    local db="$1" repo="$2"
-    local row
-    row=$(sqlite3 "$db" "SELECT reviews_total_in_window || '|' || reviews_with_marker_in_window FROM walks WHERE repo='$repo';")
-    [ -n "$row" ] && echo "$row" || echo "0|0"
-}
-
 # Severity ordering — single source of truth. Higher number = worse.
 # blocking > medium > low > nit > open > '' (empty = no probes yet).
 severity_rank() {

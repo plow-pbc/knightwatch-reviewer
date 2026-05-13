@@ -39,23 +39,25 @@ mark_loved_positive "$DB" srosro/repo 200 security
 ROW=$(sqlite3 "$DB" "SELECT loved_positive FROM specialist_runs WHERE comment_id=200 AND specialist='security';")
 [ "$ROW" = "1" ] || { echo "FAIL: loved_positive not bool: $ROW"; exit 1; }
 
+_coverage() { sqlite3 "$1" "SELECT COALESCE((SELECT reviews_total_in_window || '|' || reviews_with_marker_in_window FROM walks WHERE repo='$2'), '0|0');"; }
+
 echo "  coverage: defaults to (0, 0) when unset..."
-COV=$(query_coverage "$DB" srosro/repo)
+COV=$(_coverage "$DB" srosro/repo)
 [ "$COV" = "0|0" ] || { echo "FAIL: coverage default '$COV' expected '0|0'"; exit 1; }
 
 echo "  coverage: set_repo_coverage round-trips..."
 set_repo_coverage "$DB" srosro/repo 42 17
-COV=$(query_coverage "$DB" srosro/repo)
+COV=$(_coverage "$DB" srosro/repo)
 [ "$COV" = "42|17" ] || { echo "FAIL: coverage round-trip '$COV' expected '42|17'"; exit 1; }
 
 echo "  coverage: set is upsert (overwrites prior value)..."
 set_repo_coverage "$DB" srosro/repo 100 50
-COV=$(query_coverage "$DB" srosro/repo)
+COV=$(_coverage "$DB" srosro/repo)
 [ "$COV" = "100|50" ] || { echo "FAIL: coverage overwrite '$COV' expected '100|50'"; exit 1; }
 
 echo "  coverage: set_repo_coverage on a fresh repo creates the walks row..."
 set_repo_coverage "$DB" srosro/other-repo 5 3
-COV=$(query_coverage "$DB" srosro/other-repo)
+COV=$(_coverage "$DB" srosro/other-repo)
 [ "$COV" = "5|3" ] || { echo "FAIL: coverage fresh-repo '$COV' expected '5|3'"; exit 1; }
 
 echo "  edited_after defaults to 0..."

@@ -135,17 +135,14 @@ if [ "$1" = "api" ]; then
         exit 1
     fi
     if [[ "$endpoint" == */issues/comments* ]]; then
-        # Return the mock comments unfiltered — real GitHub's since= filters
-        # on updated_at (not created_at), so an old comment with a recent
-        # edit would still come back. The walker must defend itself via its
-        # own .created_at >= $window_floor jq fence; the stub mirrors the
-        # "API may return out-of-window comments" reality.
-        _filter() { jq '.'; }
+        # Return mock comments unfiltered — real GitHub's since= is
+        # updated_at-based, so an old comment with a recent edit comes
+        # back. The walker defends itself via its own .created_at >=
+        # $window_floor jq fence; stub mirrors that "API may return
+        # out-of-window comments" reality.
+        cat "$MOCK_COMMENTS_FILE"
         if [ -n "$paginate" ] && [ -s "${MOCK_COMMENTS_FILE_PAGE2:-/dev/null}" ]; then
-            cat "$MOCK_COMMENTS_FILE" | _filter
-            cat "$MOCK_COMMENTS_FILE_PAGE2" | _filter
-        else
-            cat "$MOCK_COMMENTS_FILE" | _filter
+            cat "$MOCK_COMMENTS_FILE_PAGE2"
         fi
     elif [[ "$endpoint" == */collaborators* ]]; then
         printf '[{"login":"trusted-human","permissions":{"push":true}},{"login":"untrusted-user","permissions":{"push":false}}]\n'
@@ -714,12 +711,13 @@ if grep -qE '^\| aggregator ' "$OUT_FILE"; then
     exit 1
 fi
 
-# tests row contains the new bucket counts.
+# tests row — exact field-positional assertion (Blocking is column 7, not "any 1 in the row").
+# Columns: Specialist | Reviews | Shipped | Cited | Edited | Blocking | Medium | Low+Nit | Open | +LOC | -LOC
 TESTS_ROW=$(grep -E '^\| tests ' "$OUT_FILE")
 [ -n "$TESTS_ROW" ] || { echo "FAIL scenario 20: tests row missing"; cat "$OUT_FILE"; exit 1; }
-# Probe was [blocking] → Blocking bucket should be 1.
-echo "$TESTS_ROW" | grep -qE '\| 1 \|' \
-    || { echo "FAIL scenario 20: tests row missing blocking=1: $TESTS_ROW"; exit 1; }
+TESTS_BLOCKING=$(echo "$TESTS_ROW" | awk -F' \\| ' '{print $6}')
+[ "$TESTS_BLOCKING" = "1" ] \
+    || { echo "FAIL scenario 20: tests Blocking column='$TESTS_BLOCKING' expected '1' (row: $TESTS_ROW)"; exit 1; }
 
 unset MOCK_PULLS_COMMITS_FILE
 
