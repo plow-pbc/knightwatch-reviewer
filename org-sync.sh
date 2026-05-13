@@ -4,7 +4,7 @@
 # the resulting auto-tracked set. Runs hourly via the
 # pr-reviewer-org-sync.timer systemd unit.
 #
-# Manifest split (the round-3 architectural reframe — PR #75):
+# Manifest split:
 #   repos.conf        — operator-owned. Manual entries + ORGS knob. We
 #                       only ever READ this file.
 #   repos.conf.auto   — tool-owned. Regenerated from scratch each tick
@@ -32,7 +32,13 @@ set -euo pipefail
 
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 LOG="${LOG:-$STATE_DIR/org-sync.log}"
-LOCK="${LOCK:-/tmp/pr-reviewer-org-sync.lock}"
+# Lock must live under $STATE_DIR, NOT /tmp. The systemd unit runs
+# with PrivateTmp=yes, so a timer run's /tmp is a private namespace
+# the operator's shell-launched run never sees — both runs would
+# acquire the same-named lock in different namespaces, race on the
+# same missing checkout, and the loser's `rm -rf "$dest"` could
+# delete the winner's clone. $STATE_DIR is shared across both.
+LOCK="${LOCK:-$STATE_DIR/org-sync.lock}"
 REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$STATE_DIR/lib}"
 SOURCE_BASE="${SOURCE_BASE:-$HOME/Hacking}"
 CONF="${CONF:-$STATE_DIR/repos.conf}"
@@ -47,12 +53,17 @@ AUTO_CONF="${AUTO_CONF:-$STATE_DIR/repos.conf.auto}"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG"; }
 
-if [ -e "$LOCK" ]; then
-    log "sync already running (lock $LOCK present) — skipping"
+command -v flock >/dev/null 2>&1 || { log "FATAL: flock not on PATH (util-linux)"; exit 1; }
+# Open the lock file on FD 9 and acquire non-blocking. flock releases
+# on FD close (process exit), so no trap-based cleanup needed — the
+# kernel handles release even on SIGKILL. The file itself persists
+# across runs (it's a lock anchor, not a presence flag) which is fine.
+mkdir -p "$STATE_DIR"
+exec 9>"$LOCK"
+if ! flock -n 9; then
+    log "sync already running (lock $LOCK held) — skipping"
     exit 0
 fi
-touch "$LOCK"
-trap 'rm -f "$LOCK"' EXIT
 
 # Empty ORGS = feature disabled. Truncate any prior auto file so
 # disabling the feature actually drops auto-tracked coverage on the
@@ -132,7 +143,7 @@ for full in "${AUTO[@]}"; do
         # `*` would let `git@evilgithub.com:$full.git` pass (substring
         # `github.com:$full.git` is contained in the spoof URL), and
         # token-bearing https URLs would leak credentials through any
-        # log line that echoes $url. (PR #75 rounds 1+2.)
+        # log line that echoes $url.
         case "$url" in
             "git@github.com:${full}.git"|"git@github.com:${full}"|"https://github.com/${full}.git"|"https://github.com/${full}") ;;
             *)
@@ -153,7 +164,7 @@ for full in "${AUTO[@]}"; do
             # partial and reuses it as if it were a complete clone —
             # silently publishing an empty checkout into the auto
             # manifest. Remove the partial so the next tick attempts
-            # a fresh clone (PR #75 round 5).
+            # a fresh clone.
             rm -rf "$dest"
             log "FATAL: gh repo clone $full failed (cleaned up partial $dest)"
             exit 1
@@ -167,7 +178,7 @@ done
 # a concurrent loader sees either the prior tick's contents or this
 # tick's — never a half-written file.
 TMP_NEW=$(mktemp)
-trap 'rm -f "$LOCK" "$TMP_NEW"' EXIT
+trap 'rm -f "$TMP_NEW"' EXIT
 {
     echo "# Managed by org-sync.sh — regenerated each sync tick from"
     echo "# \`gh repo list <ORGS> --source --no-archived\` minus the"
@@ -175,15 +186,21 @@ trap 'rm -f "$LOCK" "$TMP_NEW"' EXIT
     echo "# AFTER repos.conf. Do NOT edit by hand; manual entries"
     echo "# belong in repos.conf."
     echo "#"
-    echo "# KID_PATHS / SOURCE_PATHS assignments use the conditional"
-    echo "# \${var:-default} form so an operator promoting an auto-tracked"
-    echo "# repo to manual (with a custom path) wins immediately, without"
-    echo "# waiting for the next sync tick to prune the auto entry."
+    echo "# KID_PATHS assignment uses the conditional \${var:-default}"
+    echo "# form so an operator promoting an auto-tracked repo to manual"
+    echo "# (with a custom path) wins immediately without waiting for"
+    echo "# the next sync tick to prune the auto entry."
+    echo "#"
+    echo "# SOURCE_PATHS is intentionally NOT auto-generated: the"
+    echo "# cross-repo grep surface (search-roots, sibling materialization)"
+    echo "# is a security-sensitive opt-in. Org-sync covers basic review"
+    echo "# coverage; exposing an auto-discovered repo's source to other"
+    echo "# repos' reviewers stays an explicit manual decision in"
+    echo "# repos.conf."
     for full in "${AUTO[@]}"; do
         name="${full#*/}"
         echo "REPOS+=(\"$full\")"
         echo "KID_PATHS[\"$full\"]=\"\${KID_PATHS[\"$full\"]:-\$HOME/Hacking/$name}\""
-        echo "SOURCE_PATHS[\"$full\"]=\"\${SOURCE_PATHS[\"$full\"]:-\$HOME/Hacking/$name}\""
     done
 } > "$TMP_NEW"
 

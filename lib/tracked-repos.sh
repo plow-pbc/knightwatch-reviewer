@@ -64,7 +64,7 @@ if [ -f "${STATE_DIR}/repos.conf.auto" ]; then . "${STATE_DIR}/repos.conf.auto";
 # entry — REPOS would otherwise carry the slug twice, and consumers
 # iterating it (review.sh, learn-from-replies.sh, etc.) would process
 # the same PR set twice. Loader-side dedup is one fix for all
-# consumers (PR #75 round 5).
+# consumers.
 if [ "${#REPOS[@]}" -gt 0 ]; then
     mapfile -t REPOS < <(printf '%s\n' "${REPOS[@]}" | awk '!seen[$0]++')
 fi

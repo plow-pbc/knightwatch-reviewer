@@ -8,7 +8,7 @@
 # org-sync.sh end-to-end, assert on the rewritten auto file shape +
 # which `gh` invocations fired.
 #
-# Manifest split (PR #75 round 3): org-sync writes
+# Manifest split: org-sync writes
 # $STATE_DIR/repos.conf.auto, never touches $STATE_DIR/repos.conf.
 # Multiple failure modes that the rewriting-in-place variant carried
 # are now structurally impossible (no TOCTOU on a shared file, no
@@ -55,6 +55,14 @@ export PATH="$HOME/.local/bin:$PATH"
 export REVIEWER_LIB_DIR="$TMPDIR/lib"
 mkdir -p "$REVIEWER_LIB_DIR"
 cp "$PROJECT_ROOT/lib/tracked-repos.sh" "$REVIEWER_LIB_DIR/tracked-repos.sh"
+
+# Provide a flock(1) stub on platforms where the binary is missing
+# (notably brew on macOS, which excludes flock from util-linux). The
+# stub uses python3 + fcntl.flock(2) so OFD-tied lock semantics match
+# Linux production. Inlined-then-shared pattern, same as the worker
+# smokes — see lib/tests/worker-smoke-helpers.sh.
+. "$PROJECT_ROOT/lib/tests/worker-smoke-helpers.sh"
+write_worker_flock_stub_if_missing "$HOME/.local/bin"
 
 export STUB_GH_LOG="$STATE_DIR/gh-calls.log"
 
@@ -131,28 +139,22 @@ assert_auto_unchanged() {
     fi
 }
 
-# Production-shaped resolution: source repos.conf THEN repos.conf.auto
-# in a sub-shell, same order as lib/tracked-repos.sh. Verifies the
-# bash-visible contract end-to-end, not just text shape.
+# Source the REAL loader in a sub-shell to verify end-to-end contract.
+# Pinning at the loader (not a smoke-private duplicate that hand-sources
+# repos.conf + repos.conf.auto) means future loader changes — source
+# order, dedup, dedup algorithm — propagate to this smoke automatically
+# instead of needing parallel updates here.
 resolved_repos() {
     (
-        declare -a REPOS=() ORGS=()
-        declare -A KID_PATHS=() SOURCE_PATHS=()
         # shellcheck disable=SC1090
-        [ -f "$CONF" ] && . "$CONF"
-        # shellcheck disable=SC1090
-        [ -f "$AUTO_CONF" ] && . "$AUTO_CONF"
+        . "$REVIEWER_LIB_DIR/tracked-repos.sh"
         printf '%s\n' "${REPOS[@]}" | sort
     )
 }
 resolved_kid_path() {
     (
-        declare -a REPOS=() ORGS=()
-        declare -A KID_PATHS=() SOURCE_PATHS=()
         # shellcheck disable=SC1090
-        [ -f "$CONF" ] && . "$CONF"
-        # shellcheck disable=SC1090
-        [ -f "$AUTO_CONF" ] && . "$AUTO_CONF"
+        . "$REVIEWER_LIB_DIR/tracked-repos.sh"
         echo "${KID_PATHS[$1]:-}"
     )
 }
@@ -295,11 +297,11 @@ if grep -q 'acme/special' "$AUTO_CONF"; then
 fi
 
 # --- Scenario 10: clone failure aborts before rewrite ------------------------
-# The clone branch is wired to abort on `gh repo clone` failure (probe 4,
-# PR #75 round 4). Without this scenario, a regression that swallowed
-# clone errors would silently ship — auto file would still get written
-# referencing a non-existent local checkout, and kid-refresh would
-# index-fail forever after.
+# The clone branch is wired to abort on `gh repo clone` failure.
+# Without this scenario, a regression that swallowed clone errors
+# would silently ship — auto file would still get written referencing
+# a non-existent local checkout, and kid-refresh would index-fail
+# forever after.
 echo "  scenario 10: gh repo clone failure — fail loud + no partial left + recovery on next tick..."
 write_baseline_conf '"acme"'
 rm -f "$AUTO_CONF"
@@ -309,7 +311,7 @@ rm -rf "$SOURCE_BASE/cant-clone"
 # MOCK_GH_CLONE_EXIT, faithfully simulating production gh's failure
 # behavior. Without org-sync's rm -rf $dest on failure, next tick's
 # branches would treat the partial as a complete clone and silently
-# publish an empty checkout into the auto manifest (probe 1, round 5).
+# publish an empty checkout into the auto manifest.
 if MOCK_GH_LIST_acme="cant-clone" MOCK_GH_CLONE_EXIT=1 run_sync; then
     echo "FAIL scenario 10: org-sync returned 0 on clone failure"; cat "$LOG"; exit 1
 fi

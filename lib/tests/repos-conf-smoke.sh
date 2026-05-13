@@ -105,7 +105,7 @@ rm -f "$SAND_STATE/repos.conf"
 out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; echo \"REPOS=\${#REPOS[@]} KID_PATHS=\${#KID_PATHS[@]} SOURCE_PATHS=\${#SOURCE_PATHS[@]}\"")
 [ "$out" = "REPOS=0 KID_PATHS=0 SOURCE_PATHS=0" ] || { echo "FAIL B2: loader output: $out"; exit 1; }
 
-echo "  B3: repos.conf wins over config.env (legacy override retired in PR #75)..."
+echo "  B3: repos.conf wins over config.env (legacy override retired)..."
 # Source order is now config.env FIRST, repos.conf SECOND so the
 # manifest source of truth (rewritten hourly by org-sync.sh) is not
 # silently shadowed by a stale config.env REPOS=. If a host's
@@ -129,7 +129,7 @@ out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; REPO=cnco
 [ "$out" = "v=[]" ] || { echo "FAIL B4: loader output: $out"; exit 1; }
 
 echo "  B5: repos.conf.auto consumer — loader merges + manual wins on collision..."
-# Pin the split-file manifest contract (PR #75 round 3):
+# Pin the split-file manifest contract:
 #   - Loader sources both files and exposes the merged view.
 #   - When the same REPO key appears in BOTH (e.g., operator promoted
 #     an auto-tracked repo to manual mid-tick before org-sync prunes
@@ -159,9 +159,9 @@ out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; echo \"pr
 [ "$out" = "promoted=/var/operator/custom other=/auto/other" ] || { echo "FAIL B5: loader output: $out (expected manual KID_PATHS to win on collision)"; exit 1; }
 # REPOS dedup: the auto file's REPOS+=("acme/promoted") is
 # unconditional, but the loader dedups so consumers iterating REPOS
-# see acme/promoted EXACTLY ONCE (probe 2, PR #75 round 5). Without
-# this, review.sh / learn-from-replies.sh / etc. would process the
-# same PR set twice during the operator-promotion window.
+# see acme/promoted EXACTLY ONCE. Without this, review.sh /
+# learn-from-replies.sh / etc. would process the same PR set twice
+# during the operator-promotion window.
 out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; n=0; for r in \"\${REPOS[@]}\"; do [ \"\$r\" = acme/promoted ] && n=\$((n+1)); done; echo \"count=\$n\"")
 [ "$out" = "count=1" ] || { echo "FAIL B5: REPOS contains acme/promoted $out times (expected exactly 1)"; exit 1; }
 
