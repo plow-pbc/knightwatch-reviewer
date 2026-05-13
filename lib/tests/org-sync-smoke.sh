@@ -56,7 +56,11 @@ export STUB_GH_LOG="$STATE_DIR/gh-calls.log"
 # `gh` stub:
 #   - `gh repo list <org> ... --jq '.[].name'` emits repo names from
 #     MOCK_GH_LIST_<ORG> (newline-separated). Exit code controlled by
-#     MOCK_GH_LIST_EXIT_<ORG> (default 0).
+#     MOCK_GH_LIST_EXIT_<ORG> (default 0). The stub ALSO asserts the
+#     invocation carries the behavior-bearing filters `--source` and
+#     `--no-archived` — dropping either would silently let archived
+#     repos / forks slip into the auto-block, and a stub that accepts
+#     any args would mask that regression (probe 5, PR #75 round 1).
 #   - `gh repo clone <full> <dest>` creates <dest> as a real git repo
 #     with origin = git@github.com:<full>.git. Real `git` is used so
 #     the script's remote-validation check exercises actual git
@@ -67,6 +71,17 @@ echo "GH $*" >> "${STUB_GH_LOG:-/dev/null}"
 case "$1 $2" in
     "repo list")
         org="$3"
+        # Required filter contract — drop either and archived/fork
+        # repos pollute coverage on real gh state.
+        has_source=0; has_no_archived=0
+        for a in "$@"; do
+            [ "$a" = "--source" ] && has_source=1
+            [ "$a" = "--no-archived" ] && has_no_archived=1
+        done
+        if [ "$has_source" -eq 0 ] || [ "$has_no_archived" -eq 0 ]; then
+            echo "STUB FAIL: gh repo list missing --source or --no-archived: $*" >&2
+            exit 2
+        fi
         sanitized="${org//[^a-zA-Z0-9]/_}"
         list_var="MOCK_GH_LIST_${sanitized}"
         exit_var="MOCK_GH_LIST_EXIT_${sanitized}"
@@ -209,7 +224,14 @@ if MOCK_GH_LIST_acme="evil" run_sync; then
 fi
 SHA_AFTER=$(sha1sum "$CONF" | awk '{print $1}')
 [ "$SHA_BEFORE" = "$SHA_AFTER" ] || { echo "FAIL scenario 5: repos.conf was mutated despite fail-loud abort"; exit 1; }
-grep -q 'expected github.com/acme/evil' "$LOG" || { echo "FAIL scenario 5: expected origin-mismatch log line"; cat "$LOG"; exit 1; }
+grep -q 'origin does not match github.com/acme/evil' "$LOG" || { echo "FAIL scenario 5: expected origin-mismatch log line"; cat "$LOG"; exit 1; }
+# Credential-bearing URLs MUST NOT leak into the log on mismatch.
+# attacker-controlled remote stays out of the operator's log surface
+# regardless of whether it carried inline credentials (probe 3, PR #75).
+if grep -q 'attacker/evil' "$LOG"; then
+    echo "FAIL scenario 5: raw remote URL leaked into log — credential exposure risk"
+    cat "$LOG"; exit 1
+fi
 
 # --- Scenario 6: gh list failure aborts cleanly ------------------------------
 echo "  scenario 6: gh repo list failure — fail loud, no rewrite, no clone..."
@@ -253,4 +275,97 @@ if grep -q 'acme/beta' "$CONF"; then
     cat "$CONF"; exit 1
 fi
 
-echo "  PASS (7 scenarios: empty-orgs-noop, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, gh-list-failure-no-mutation, auto-prune-on-disappear)"
+# --- Scenario 8: spoof-host origin (substring vs exact) ---------------------
+# Probe 2, PR #75 round 1: a `*"github.com:$full"` glob would let
+# `git@evilgithub.com:$full.git` pass — the substring is contained in
+# the spoof URL. Exact canonical-form match closes that.
+echo "  scenario 8: spoof-host origin (evilgithub.com) — fail loud, no rewrite..."
+cat > "$CONF" <<'CONF'
+REPOS=("manual/keep")
+declare -A KID_PATHS=(["manual/keep"]="/var/manual")
+declare -A SOURCE_PATHS=(["manual/keep"]="/var/manual")
+ORGS=("acme")
+CONF
+SHA_BEFORE=$(sha1sum "$CONF" | awk '{print $1}')
+rm -rf "$SOURCE_BASE/spoof"
+mkdir -p "$SOURCE_BASE/spoof"
+git -C "$SOURCE_BASE/spoof" init -q
+git -C "$SOURCE_BASE/spoof" remote add origin "git@evilgithub.com:acme/spoof.git"
+if MOCK_GH_LIST_acme="spoof" run_sync; then
+    echo "FAIL scenario 8: org-sync accepted evilgithub.com spoof"
+    cat "$LOG"; exit 1
+fi
+SHA_AFTER=$(sha1sum "$CONF" | awk '{print $1}')
+[ "$SHA_BEFORE" = "$SHA_AFTER" ] || { echo "FAIL scenario 8: repos.conf mutated after spoof-host rejection"; exit 1; }
+
+# --- Scenario 9: same-org manual entry preserved -----------------------------
+# Probe 6, PR #75 round 1: existing scenarios only cover manual entries
+# in a DIFFERENT org from the synced one. The contract that matters is
+# "manual wins for the same org" — operator can pin a custom KID_PATHS
+# for `acme/foo` and have org-sync of `acme` skip adding it to AUTO.
+echo "  scenario 9: same-org manual entry — auto-block must NOT shadow it..."
+cat > "$CONF" <<'CONF'
+REPOS=("acme/special")
+declare -A KID_PATHS=(["acme/special"]="/var/operator/custom-special")
+declare -A SOURCE_PATHS=(["acme/special"]="/var/operator/custom-special")
+ORGS=("acme")
+CONF
+MOCK_GH_LIST_acme=$'special\nother' run_sync || { echo "FAIL scenario 9: org-sync exited non-zero"; cat "$LOG"; exit 1; }
+# `acme/special` stays in MANUAL section with the operator's custom path.
+got=$(resolved_kid_path "acme/special")
+[ "$got" = "/var/operator/custom-special" ] || { echo "FAIL scenario 9: KID_PATHS[acme/special] = '$got', expected '/var/operator/custom-special' — auto-block shadowed manual entry"; exit 1; }
+# `acme/other` got added to the auto-block.
+got=$(resolved_kid_path "acme/other")
+[ "$got" = "$HOME/Hacking/other" ] || { echo "FAIL scenario 9: KID_PATHS[acme/other] = '$got', expected '$HOME/Hacking/other'"; exit 1; }
+# No duplicate `acme/special` entry inside the auto-block (would resolve
+# last-wins under bash and silently overwrite the manual custom path).
+auto_block_specials=$(awk '/^# === BEGIN AUTO-SYNC ===/,/^# === END AUTO-SYNC ===/' "$CONF" | grep -c 'acme/special' || true)
+[ "$auto_block_specials" -eq 0 ] || { echo "FAIL scenario 9: 'acme/special' appears in auto-block ($auto_block_specials times) — would shadow manual custom path"; awk '/^# === BEGIN AUTO-SYNC ===/,/^# === END AUTO-SYNC ===/' "$CONF"; exit 1; }
+
+# --- Scenario 10: malformed repos.conf aborts before rewrite -----------------
+# Probe 1, PR #75 round 1: a bash syntax error in repos.conf must abort
+# org-sync.sh BEFORE the manual-fragment source produces a clipped REPOS
+# view that erases legitimate manual entries on rewrite.
+echo "  scenario 10: malformed repos.conf — abort, no rewrite, no clone..."
+cat > "$CONF" <<'CONF'
+REPOS=("manual/keep"
+declare -A KID_PATHS=(["manual/keep"]="/var/manual")
+ORGS=("acme")
+CONF
+SHA_BEFORE=$(sha1sum "$CONF" | awk '{print $1}')
+if MOCK_GH_LIST_acme="foo" run_sync; then
+    echo "FAIL scenario 10: org-sync returned 0 on malformed repos.conf"
+    cat "$LOG"; exit 1
+fi
+SHA_AFTER=$(sha1sum "$CONF" | awk '{print $1}')
+[ "$SHA_BEFORE" = "$SHA_AFTER" ] || { echo "FAIL scenario 10: repos.conf mutated despite malformed source"; exit 1; }
+n=$(count_gh "repo clone")
+[ "$n" -eq 0 ] || { echo "FAIL scenario 10: expected 0 clones on malformed source, got $n"; cat "$STUB_GH_LOG"; exit 1; }
+
+# --- Scenario 11: config.env REPOS override conflict -------------------------
+# Probe 7, PR #75 round 1: lib/tracked-repos.sh sources config.env AFTER
+# repos.conf so config.env's REPOS=(...) wins. Letting org-sync rewrite
+# repos.conf while a config.env override is in force would calcify a
+# split source of truth (consumers resolve to override; operators read
+# rewritten manifest). Fail loud.
+echo "  scenario 11: config.env defines REPOS — abort, no rewrite..."
+cat > "$CONF" <<'CONF'
+REPOS=("manual/keep")
+declare -A KID_PATHS=(["manual/keep"]="/var/manual")
+declare -A SOURCE_PATHS=(["manual/keep"]="/var/manual")
+ORGS=("acme")
+CONF
+cat > "$STATE_DIR/config.env" <<'CONF'
+REPOS=("legacy/override")
+CONF
+SHA_BEFORE=$(sha1sum "$CONF" | awk '{print $1}')
+if MOCK_GH_LIST_acme="foo" run_sync; then
+    echo "FAIL scenario 11: org-sync returned 0 with config.env REPOS override active"
+    cat "$LOG"; exit 1
+fi
+SHA_AFTER=$(sha1sum "$CONF" | awk '{print $1}')
+[ "$SHA_BEFORE" = "$SHA_AFTER" ] || { echo "FAIL scenario 11: repos.conf mutated despite config.env REPOS override"; exit 1; }
+grep -q 'config.env defines REPOS' "$LOG" || { echo "FAIL scenario 11: expected config.env-override log line"; cat "$LOG"; exit 1; }
+rm -f "$STATE_DIR/config.env"
+
+echo "  PASS (11 scenarios: empty-orgs-noop, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, gh-list-failure-no-mutation, auto-prune-on-disappear, spoof-host-fail-loud, same-org-manual-preserved, malformed-conf-abort, config.env-override-abort)"

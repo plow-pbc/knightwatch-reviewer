@@ -24,9 +24,17 @@
 # the index doesn't exist, so reviews still happen on newly-added
 # repos — just without kid context until the next manual reinstall.
 
-set -u
+set -euo pipefail
 # PATH inherited from systemd unit (system dirs first; writable user
 # dirs trailing). See review.sh for the writable-PATH security context.
+#
+# -e + -o pipefail are load-bearing: the manual-fragment sub-shell
+# below sources a user-edited repos.conf; without -e a syntax error
+# midway through the source leaves REPOS partially populated, the
+# sub-shell prints whatever made it in, MANUAL collapses below the
+# real set, and the next rewrite would erase legitimate manual entries
+# by misclassifying them as "discovered, not manual." Fail-loud before
+# any mv.
 
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 LOG="${LOG:-$STATE_DIR/org-sync.log}"
@@ -62,6 +70,17 @@ if [ "${#ORGS[@]}" -eq 0 ]; then
     exit 0
 fi
 
+# Legacy override seam: lib/tracked-repos.sh sources $STATE_DIR/config.env
+# AFTER repos.conf, and config.env's REPOS=(...) wins. Letting org-sync
+# rewrite repos.conf while a config.env override is in force would
+# calcify a split source of truth — consumers would resolve to the
+# override while operators read the rewritten manifest. Fail loud here;
+# the operator picks one (retire config.env or unset ORGS).
+if [ -f "$STATE_DIR/config.env" ] && grep -qE '^[[:space:]]*REPOS[+]?=' "$STATE_DIR/config.env"; then
+    log "FATAL: $STATE_DIR/config.env defines REPOS — refusing to rewrite $CONF_REAL while a legacy override is active. Either retire the config.env REPOS line or unset ORGS in repos.conf."
+    exit 1
+fi
+
 command -v gh >/dev/null 2>&1 || { log "FATAL: gh not on PATH"; exit 1; }
 
 # Manual fragment = repos.conf with the AUTO-SYNC marker block stripped.
@@ -80,8 +99,14 @@ awk '
 
 # Sub-shell sourcing keeps the parent's REPOS / KID_PATHS / ORGS state
 # (the live, auto-block-inclusive view) untouched while we extract the
-# manual-only view.
-MANUAL_LIST=$(
+# manual-only view. `set -e` inside the sub-shell propagates a malformed
+# repos.conf (bash syntax error during source) as a non-zero exit code;
+# parent's `if !` then aborts the script BEFORE any rewrite — without
+# this, a partial source leaves REPOS clipped, the auto-set
+# misclassifies legitimate manual entries as "newly discovered," and
+# the rewrite erases them.
+if ! MANUAL_LIST=$(
+    set -e
     declare -a REPOS=()
     declare -A KID_PATHS=()
     declare -A SOURCE_PATHS=()
@@ -89,7 +114,10 @@ MANUAL_LIST=$(
     # shellcheck disable=SC1090
     . "$MANUAL_FRAGMENT"
     printf '%s\n' "${REPOS[@]}"
-)
+); then
+    log "FATAL: failed to source manual fragment of $CONF_REAL — repos.conf may be malformed; aborting before rewrite"
+    exit 1
+fi
 declare -A MANUAL=()
 while IFS= read -r r; do [ -n "$r" ] && MANUAL[$r]=1; done <<< "$MANUAL_LIST"
 
@@ -130,11 +158,18 @@ for full in "${AUTO[@]}"; do
             log "FATAL: $dest has no origin remote configured"
             exit 1
         fi
-        # Accept both ssh + https canonical forms, with or without .git.
+        # Exact canonical forms only — NO leading wildcard. A leading
+        # `*` would let `git@evilgithub.com:$full.git` pass (substring
+        # `github.com:$full.git` is contained in the spoof URL), and
+        # a token-bearing https URL would silently leak credentials
+        # through the next log line (probe 2/3, PR #75 round 1).
         case "$url" in
-            *"github.com:${full}.git"|*"github.com:${full}"|*"github.com/${full}.git"|*"github.com/${full}") ;;
+            "git@github.com:${full}.git"|"git@github.com:${full}"|"https://github.com/${full}.git"|"https://github.com/${full}") ;;
             *)
-                log "FATAL: $dest origin=$url, expected github.com/$full — refusing to overwrite"
+                # Do NOT echo $url — it can contain inline credentials
+                # (e.g., https://user:ghp_xxx@github.com/...). Log only
+                # the expected canonical form and the dest path.
+                log "FATAL: $dest origin does not match github.com/$full — refusing to overwrite"
                 exit 1
                 ;;
         esac
