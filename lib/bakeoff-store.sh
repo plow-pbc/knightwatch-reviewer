@@ -122,23 +122,11 @@ UPDATE specialist_runs
 SQL
 }
 
-get_walk_watermark() {
-    local db="$1" repo="$2"
-    sqlite3 "$db" "SELECT last_walked_at FROM walks WHERE repo='$repo';"
-}
-
-set_walk_watermark() {
-    local db="$1" repo="$2" ts="$3"
-    sqlite3 "$db" <<SQL
-INSERT INTO walks (repo, last_walked_at) VALUES ('$repo', '$ts')
-ON CONFLICT(repo) DO UPDATE SET last_walked_at = excluded.last_walked_at;
-SQL
-}
-
 # Persist per-repo coverage counters — substantive bot reviews seen in the
 # WINDOW_DAYS lookback, total vs marker-equipped. Renormalized per walk.
-# Upsert so the row exists even if get_walk_watermark hasn't been called
-# (e.g. coverage-only run on a brand-new DB).
+# Sets last_walked_at on first write; preserves it on subsequent updates
+# (the column is now informational — the walker fetches the full window
+# every cron, so there's no incremental-since-watermark logic to drive).
 set_repo_coverage() {
     local db="$1" repo="$2" total="$3" with_marker="$4"
     # Integer fields (total, with_marker) — caller guarantees jq-extracted int.

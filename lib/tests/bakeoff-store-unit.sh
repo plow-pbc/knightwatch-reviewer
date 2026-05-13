@@ -39,18 +39,6 @@ mark_loved_positive "$DB" srosro/repo 200 security
 ROW=$(sqlite3 "$DB" "SELECT loved_positive FROM specialist_runs WHERE comment_id=200 AND specialist='security';")
 [ "$ROW" = "1" ] || { echo "FAIL: loved_positive not bool: $ROW"; exit 1; }
 
-echo "  watermark: get returns empty when unset, set+get round-trips..."
-EMPTY=$(get_walk_watermark "$DB" srosro/repo)
-[ -z "$EMPTY" ] || { echo "FAIL: empty watermark not empty: '$EMPTY'"; exit 1; }
-set_walk_watermark "$DB" srosro/repo 2026-05-06T12:00:00Z
-WM=$(get_walk_watermark "$DB" srosro/repo)
-[ "$WM" = "2026-05-06T12:00:00Z" ] || { echo "FAIL: watermark round-trip: $WM"; exit 1; }
-
-echo "  watermark: set is upsert (overwrites prior value)..."
-set_walk_watermark "$DB" srosro/repo 2026-05-07T00:00:00Z
-WM=$(get_walk_watermark "$DB" srosro/repo)
-[ "$WM" = "2026-05-07T00:00:00Z" ] || { echo "FAIL: watermark overwrite: $WM"; exit 1; }
-
 echo "  coverage: defaults to (0, 0) when unset..."
 COV=$(query_coverage "$DB" srosro/repo)
 [ "$COV" = "0|0" ] || { echo "FAIL: coverage default '$COV' expected '0|0'"; exit 1; }

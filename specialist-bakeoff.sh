@@ -2,19 +2,18 @@
 # Hourly: walk new GitHub state into ~/.pr-reviewer/bakeoff.db and
 # regenerate ~/.pr-reviewer/specialist-bakeoff.md.
 #
-# Architecture: walker (writes to SQLite store, watermark per repo) →
-# reporter (queries the store, renders markdown). The store is the
-# source of truth for time-series; the markdown is a snapshot view.
-#
-# The 30-day window is now a query parameter, not an API-cost ceiling —
-# subsequent walks only fetch comments newer than the per-repo watermark
-# (with OVERLAP_HOURS slack for late-edited memorize comments).
+# Architecture: walker (writes to SQLite store) → reporter (queries the
+# store, renders markdown). Walker fetches the full WINDOW_DAYS comment
+# window every cron so every in-window review gets edited_after re-
+# evaluated against the current commit graph — an older in-window
+# review whose post-review commit landed between cron runs must still
+# get its flag flipped/cleared, which an incremental-since-watermark
+# fetch would miss once newer reviews advance the watermark past it.
 set -euo pipefail
 [ -n "${BASH_VERSION:-}" ] || { echo "FATAL: bash required"; exit 1; }
 
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 WINDOW_DAYS="${WINDOW_DAYS:-30}"
-OVERLAP_HOURS="${OVERLAP_HOURS:-24}"
 DB_FILE="${DB_FILE:-$STATE_DIR/bakeoff.db}"
 OUT_FILE="${OUT_FILE:-$STATE_DIR/specialist-bakeoff.md}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/bakeoff.log}"
@@ -47,22 +46,10 @@ for repo in "${REPOS[@]}"; do
     repo_failures=0
     window_floor=$(date -u -d "$WINDOW_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
                   || date -u -v "-${WINDOW_DAYS}d" +%Y-%m-%dT%H:%M:%SZ)
-    watermark=$(get_walk_watermark "$DB_FILE" "$repo")
-    if [ -n "$watermark" ]; then
-        slack_floor=$(date -u -d "$watermark -$OVERLAP_HOURS hours" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
-                     || date -u -v "-${OVERLAP_HOURS}H" -j -f "%Y-%m-%dT%H:%M:%SZ" "$watermark" +%Y-%m-%dT%H:%M:%SZ)
-        if [[ "$slack_floor" > "$window_floor" ]]; then
-            since="$slack_floor"
-        else
-            since="$window_floor"
-        fi
-    else
-        since="$window_floor"
-    fi
-    log "scanning $repo since $since (watermark=${watermark:-<none>})..."
+    log "scanning $repo since $window_floor (full window — every cron re-evaluates edited_after)..."
 
     comments_json=$(gh api --paginate \
-        "repos/$repo/issues/comments?since=$since" \
+        "repos/$repo/issues/comments?since=$window_floor" \
         2>>"$LOG_FILE" | jq -s 'add // []') \
         || { log "WARN: gh api comments failed for $repo, skipping"; fetch_failures=$((fetch_failures + 1)); repo_failures=$((repo_failures + 1)); continue; }
 
@@ -78,7 +65,6 @@ for repo in "${REPOS[@]}"; do
 
     # Pass 1: walk substantive bot reviews. Each row is one (review × specialist).
     # The roster marker drives row creation; probe parsing drives flag updates.
-    max_review_ts=""
     while IFS=$'\t' read -r review_id issue_url created_at review_body; do
         [ -z "$review_id" ] && continue
         pr_num="${issue_url##*/}"
@@ -140,12 +126,6 @@ for repo in "${REPOS[@]}"; do
             set_max_severity "$DB_FILE" "$repo" "$review_id" "$specialist" "${spec_max_sev[$specialist]}"
         done
         unset spec_max_sev
-        # Applied accuracy note: clear_applied_for_review only runs when this
-        # walk actually fetched the review (since=watermark - OVERLAP_HOURS).
-        # A PR force-pushed >24h after its last review activity won't have its
-        # Applied/+LOC reset until the next bot review on that PR. Acceptable
-        # at current scale — bake-off aggregates many PRs per specialist, so a
-        # few stale rows from late force-pushes are noise, not signal.
         # Per-PR set of paths touched by commits LANDING AFTER the review's
         # created_at — fetched lazily (once per cache_key) and intersected
         # with each specialist's cited paths to drive `edited_after`. A
@@ -252,9 +232,6 @@ for repo in "${REPOS[@]}"; do
         fi
 
         walked_reviews=$((walked_reviews + 1))
-        if [[ "$created_at" > "$max_review_ts" ]]; then
-            max_review_ts="$created_at"
-        fi
     done < <(printf '%s' "$comments_json" \
         | jq -r --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" \
              ".[] | select($SUBSTANTIVE_REVIEW_JQ) | [.id, .issue_url, .created_at, .body] | @tsv")
@@ -304,33 +281,19 @@ for repo in "${REPOS[@]}"; do
                   and (.body | contains($marker) | not)
               ) | [.user.login, .issue_url, .body, .created_at] | @tsv')
 
-    # Coverage pass: count substantive bot reviews in the full window vs the
-    # subset with the roster marker. Uses a dedicated since=window_floor fetch
-    # (not the incremental walker fetch above, which uses since=slack_floor).
-    # Numerator/denominator drive the snapshot's honest "based on N of M" caption.
-    # Fetch failure increments fetch_failures so the end-of-script gate
-    # preserves the prior OUT_FILE — a snapshot rendered with stale coverage
-    # alongside fresh per-specialist data would mislead more than no snapshot.
+    # Coverage tally: reuse comments_json (already full-window). Numerator
+    # matches the canonical roster-marker regex from lib/bakeoff-parsers.sh —
+    # NOT a permissive substring check, which would falsely count bodies
+    # discussing the marker token in prose. Drives the snapshot's
+    # "based on N of M" caption.
     if [ "$repo_failures" -eq 0 ]; then
-        window_comments=$(gh api --paginate "repos/$repo/issues/comments?since=$window_floor" 2>>"$LOG_FILE" | jq -s 'add // []') \
-            || { log "WARN: coverage denominator fetch failed for $repo"; fetch_failures=$((fetch_failures + 1)); repo_failures=$((repo_failures + 1)); window_comments=""; }
-        if [ -n "$window_comments" ]; then
-            total_in_window=$(printf '%s' "$window_comments" \
-                | jq --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" \
-                     "[.[] | select($SUBSTANTIVE_REVIEW_JQ)] | length")
-            with_marker_in_window=$(printf '%s' "$window_comments" \
-                | jq --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" \
-                     "[.[] | select($SUBSTANTIVE_REVIEW_JQ and (.body | test(\"knightwatch-bakeoff\")))] | length")
-            set_repo_coverage "$DB_FILE" "$repo" "$total_in_window" "$with_marker_in_window"
-        fi
-    fi
-
-    if [ "$repo_failures" -eq 0 ]; then
-        if [ -n "$max_review_ts" ]; then
-            set_walk_watermark "$DB_FILE" "$repo" "$max_review_ts"
-        else
-            set_walk_watermark "$DB_FILE" "$repo" "$(date -u +%FT%TZ)"
-        fi
+        total_in_window=$(printf '%s' "$comments_json" \
+            | jq --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" \
+                 "[.[] | select($SUBSTANTIVE_REVIEW_JQ)] | length")
+        with_marker_in_window=$(printf '%s' "$comments_json" \
+            | jq --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" \
+                 "[.[] | select($SUBSTANTIVE_REVIEW_JQ and (.body | test(\"<!-- knightwatch-bakeoff: specialists=[a-z][a-z,-]*[[:space:]]*-->\")))] | length")
+        set_repo_coverage "$DB_FILE" "$repo" "$total_in_window" "$with_marker_in_window"
     fi
 done
 
@@ -386,10 +349,11 @@ fi
         echo "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
         query_window_aggregates "$DB_FILE" "$window_iso" \
         | while IFS=$'\t' read -r spec reviews shipped applied added removed edited blocking medium low_nit open_cnt; do
-            # Drop aggregator: hardcoded in the roster marker (write-time
-            # invariant) but emits no probes by design — would be a
-            # permanently-zero row that adds noise to the decision view.
-            [ "$spec" = "aggregator" ] && continue
+            # Drop aggregator's row only when it had zero shipped probes —
+            # noise reduction for the common case. If the aggregator prompt
+            # uses its `From: aggregator` escape hatch for a cross-angle
+            # finding, render the row so the decision table reflects it.
+            [ "$spec" = "aggregator" ] && [ "${shipped:-0}" -eq 0 ] && continue
             echo "| $spec | $reviews | $shipped | $applied | $edited | $blocking | $medium | $low_nit | $open_cnt | $added | $removed |"
         done
         echo

@@ -134,16 +134,6 @@ if [ "$1" = "api" ]; then
         echo "gh api: simulated failure" >&2
         exit 1
     fi
-    if [[ "$endpoint" == */issues/comments* ]] && [ -n "${MOCK_FAIL_NTH_COMMENTS:-}" ]; then
-        ctr_file="${TMPDIR_SMOKE:-/tmp}/.comments-call-counter"
-        n=$(cat "$ctr_file" 2>/dev/null || echo 0)
-        n=$((n + 1))
-        echo "$n" > "$ctr_file"
-        if [ "$n" = "$MOCK_FAIL_NTH_COMMENTS" ]; then
-            echo "gh api: simulated failure on issues/comments call #$n" >&2
-            exit 1
-        fi
-    fi
     if [[ "$endpoint" == */issues/comments* ]]; then
         # Honor since= query param: filter mock comments by created_at >= since.
         # If no since= present, return all (for scenarios that don't care about
@@ -363,12 +353,14 @@ run_driver
 unset MOCK_COMMENTS_FILE_PAGE2
 rm -f "$TMPDIR_SMOKE/comments-page2.json"
 
-if grep -q '^| aggregator ' "$OUT_FILE"; then
-    echo "FAIL scenario 2: aggregator row must be filtered out of rendered table"
+# aggregator emitted a [from: aggregator] probe → shipped=1 → row IS rendered
+# (conditional skip is shipped=0 only, so a real cross-angle finding shows).
+if ! grep -q '^| aggregator ' "$OUT_FILE"; then
+    echo "FAIL scenario 2: aggregator row should render when it has shipped probes"
     cat "$OUT_FILE"
     exit 1
 fi
-# But aggregator's loved_positive should still be persisted in the DB.
+# loved_positive is persisted whether the row renders or not.
 LOVED_AGG=$(sqlite3 "$DB_FILE" "SELECT loved_positive FROM specialist_runs WHERE specialist='aggregator' AND comment_id=1;")
 if [ "$LOVED_AGG" != "1" ]; then
     echo "FAIL scenario 2: aggregator loved_positive not persisted (got '$LOVED_AGG')"
@@ -490,34 +482,11 @@ run_driver
 AFTER=$(sqlite3 "$DB_FILE" "SELECT COUNT(*), SUM(critiqued) FROM specialist_runs;")
 [ "$BEFORE" = "$AFTER" ] || { echo "FAIL scenario 9: re-walk changed state (before=$BEFORE after=$AFTER)"; exit 1; }
 
-# ---- scenario 10: successful walk advances watermark to max review created_at ----
-echo "    scenario 10: watermark advances to max review created_at on success..."
-rm -f "$DB_FILE"
-TS_FIRST=$(hours_ago 480)
-TS_SECOND=$(hours_ago 456)  # 24h after TS_FIRST → 19 days ago
-{ build_bot_review 1000 100 "$TS_FIRST" tests \
-    '1. [blocking] [from: tests] missing test. Files: x.sh.'
-  build_bot_review 1001 100 "$TS_SECOND" tests \
-    '1. [blocking] [from: tests] another missing test. Files: y.sh.'; } \
-    | jq -s '.' > "$MOCK_COMMENTS_FILE"
-run_driver
-WM=$(sqlite3 "$DB_FILE" "SELECT last_walked_at FROM walks WHERE repo='test-org/bakeoff-probe';")
-[ "$WM" = "$TS_SECOND" ] || { echo "FAIL scenario 10: watermark='$WM' (expected the later timestamp $TS_SECOND)"; exit 1; }
-
-# ---- scenario 11: pulls/files failure HOLDS the watermark (does not advance) ----
-echo "    scenario 11: pulls/files failure holds watermark (per-repo failure gating)..."
+# ---- scenario 11: pulls/files failure → non-zero exit, OUT_FILE preserved ----
+echo "    scenario 11: pulls/files failure → non-zero exit, OUT_FILE preserved..."
 rm -f "$DB_FILE"
 TS_SEED=$(hours_ago 480)
-TS_NEW=$(hours_ago 240)  # 10 days ago — both safely in window, new > seed
-# Seed a watermark via a successful initial run
-build_bot_review 1100 110 "$TS_SEED" tests \
-    '1. [blocking] [from: tests] foo. Files: x.sh.' \
-    | jq -s '.' > "$MOCK_COMMENTS_FILE"
-run_driver
-SEEDED_WM=$(sqlite3 "$DB_FILE" "SELECT last_walked_at FROM walks WHERE repo='test-org/bakeoff-probe';")
-
-# Now run again with new comments + simulated pulls/files failure
-build_bot_review 1101 111 "$TS_NEW" tests \
+build_bot_review 1101 111 "$TS_SEED" tests \
     '1. [blocking] [from: tests] bar. Files: y.sh.' \
     | jq -s '.' > "$MOCK_COMMENTS_FILE"
 echo "SENTINEL" > "$OUT_FILE"
@@ -526,8 +495,6 @@ MOCK_GH_PULLS_FILES_FAIL=1 bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null 2>
     exit 1
 }
 unset MOCK_GH_PULLS_FILES_FAIL
-HELD_WM=$(sqlite3 "$DB_FILE" "SELECT last_walked_at FROM walks WHERE repo='test-org/bakeoff-probe';")
-[ "$HELD_WM" = "$SEEDED_WM" ] || { echo "FAIL scenario 11: watermark advanced despite pulls/files failure (was '$SEEDED_WM' now '$HELD_WM')"; exit 1; }
 grep -q "SENTINEL" "$OUT_FILE" || { echo "FAIL scenario 11: OUT_FILE was overwritten despite failure"; exit 1; }
 
 # ---- scenario 12: max_severity tracks the worst severity per specialist ----
@@ -563,34 +530,6 @@ A2=$(sqlite3 "$DB_FILE" "SELECT applied, applied_added, applied_removed FROM spe
 rm -f "$MOCK_PULLS_FILES_FILE"
 unset MOCK_PULLS_FILES_FILE
 
-# ---- scenario 14: late-arriving /srosro-props within OVERLAP_HOURS is still credited ----
-echo "    scenario 14: late /srosro-props within OVERLAP_HOURS=24 still marks loved_positive..."
-rm -f "$DB_FILE"
-
-# First walk: seed a review at T1 (watermark advances to T1).
-T1=$(hours_ago 480)
-build_bot_review 1400 140 "$T1" tests '1. [blocking] [from: tests] foo. Files: x.sh.' \
-    | jq -s '.' > "$MOCK_COMMENTS_FILE"
-run_driver
-WM=$(sqlite3 "$DB_FILE" "SELECT last_walked_at FROM walks WHERE repo='test-org/bakeoff-probe';")
-[ "$WM" = "$T1" ] || { echo "FAIL scenario 14 setup: watermark='$WM'"; exit 1; }
-
-# Second walk: a previously-unseen earlier review at T1 - 12h plus its
-# /srosro-props at T1 - 2h. Both are "behind the watermark" (created_at < T1)
-# but within OVERLAP_HOURS=24 lookback. Without the overlap slack the walker
-# would compute since=$T1 raw, the gh stub's since= filter would drop both,
-# and the loved_positive flag would never get set. With OVERLAP=24h the walker
-# computes since=T1 - 24h, both comments are returned, and the feedback at
-# T1 - 2h attributes to the new review at T1 - 12h.
-T_PRIOR=$(hours_ago 492)  # T1 - 12h
-T_LATE=$(hours_ago 482)   # T1 - 2h (still > T_PRIOR)
-{ build_bot_review 1400 140 "$T1" tests '1. [blocking] [from: tests] foo. Files: x.sh.'
-  build_bot_review 1402 140 "$T_PRIOR" tests '1. [blocking] [from: tests] earlier finding. Files: x.sh.'
-  build_feedback_comment 1401 140 "$T_LATE" '/srosro-props [from: tests] late but real'; } \
-    | jq -s '.' > "$MOCK_COMMENTS_FILE"
-run_driver
-LOVED=$(sqlite3 "$DB_FILE" "SELECT loved_positive FROM specialist_runs WHERE specialist='tests' AND comment_id=1402;")
-[ "$LOVED" = "1" ] || { echo "FAIL scenario 14: late /srosro-props within overlap not credited (loved_positive='$LOVED')"; exit 1; }
 
 # ---- scenario 15: max_severity=nit when specialist emits only [nit] probes ----
 echo "    scenario 15: max_severity = nit when specialist emits only [nit] probes..."
@@ -721,8 +660,7 @@ rm -f "$DB_FILE"
 TS=$(hours_ago 50)
 
 build_bot_review 90 60 "$TS" tests,aggregator \
-    '1. [blocking] [from: tests] [tests] X. Files: src/a.py. Edit: do x.
-2. [open] [from: aggregator] **Q: foo?** — Q text.' \
+    '1. [blocking] [from: tests] [tests] X. Files: src/a.py. Edit: do x.' \
     | jq -s . > "$MOCK_COMMENTS_FILE"
 export MOCK_PULLS_FILES_FILE="$TMPDIR_SMOKE/pulls-files.txt"
 printf 'src/a.py\t1\t0\n' > "$MOCK_PULLS_FILES_FILE"
@@ -857,30 +795,6 @@ ROW=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE special
 
 unset MOCK_PULLS_COMMITS_FILE MOCK_COMMIT_FILES_DIR
 
-# ---- scenario 24: coverage-only fetch failure → non-zero exit + OUT_FILE preserved ----
-echo "    scenario 24: coverage-fetch failure (2nd issues/comments call) preserves OUT_FILE..."
-rm -f "$DB_FILE"
-TS_REVIEW_24=$(hours_ago 50)
-build_bot_review 140 100 "$TS_REVIEW_24" tests \
-    '1. [blocking] [from: tests] [tests] X. Files: src/a.py. Edit: do x.' \
-    | jq -s . > "$MOCK_COMMENTS_FILE"
-printf 'src/a.py\t1\t0\n' > "$MOCK_PULLS_FILES_FILE"
-: > "$TMPDIR_SMOKE/commits.tsv"
-export MOCK_PULLS_COMMITS_FILE="$TMPDIR_SMOKE/commits.tsv"
-
-echo SENTINEL > "$OUT_FILE"
-# Reset counter, then fail the SECOND issues/comments call. Walker's main fetch
-# (1st call) succeeds; coverage fetch (2nd call) fails.
-rm -f "$TMPDIR_SMOKE/.comments-call-counter"
-MOCK_FAIL_NTH_COMMENTS=2 bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null 2>&1 && {
-    echo "FAIL scenario 24: expected non-zero exit when coverage fetch fails"
-    exit 1
-}
-grep -q "SENTINEL" "$OUT_FILE" || { echo "FAIL scenario 24: OUT_FILE was overwritten despite coverage fetch failure"; cat "$OUT_FILE"; exit 1; }
-
-unset MOCK_PULLS_COMMITS_FILE
-rm -f "$TMPDIR_SMOKE/.comments-call-counter"
-
 # ---- scenario 25: post-review RENAME matches the cited (pre-rename) path ----
 echo "    scenario 25: post-review rename of cited path → edited_after=1 via previous_filename..."
 rm -f "$DB_FILE"
@@ -936,6 +850,37 @@ MOCK_GH_COMMIT_FAIL_SHA=sha-x bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null
 ROW=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE specialist='tests' AND comment_id=160;")
 [ "$ROW" = "1" ] || { echo "FAIL scenario 26: edited_after erased by commits/<sha> failure ('$ROW' expected '1')"; exit 1; }
 grep -q "SENTINEL" "$OUT_FILE" || { echo "FAIL scenario 26: OUT_FILE overwritten despite commits/<sha> failure"; exit 1; }
+
+unset MOCK_PULLS_COMMITS_FILE MOCK_COMMIT_FILES_DIR
+
+# ---- scenario 27: successful rewalk where post-review commit no longer touches cited path → edited_after flips 1→0 ----
+echo "    scenario 27: successful rewalk drops stale edited_after when post-review path is no longer touched..."
+rm -f "$DB_FILE"
+TS_REVIEW_27=$(hours_ago 30)
+TS_COMMIT_27=$(hours_ago 20)
+
+build_bot_review 170 130 "$TS_REVIEW_27" tests \
+    '1. [blocking] [from: tests] [tests] Cited. Files: src/a.py. Edit: do x.' \
+    | jq -s . > "$MOCK_COMMENTS_FILE"
+printf 'src/a.py\t1\t0\n' > "$MOCK_PULLS_FILES_FILE"
+printf 'sha-y\t%s\n' "$TS_COMMIT_27" > "$TMPDIR_SMOKE/commits.tsv"
+export MOCK_PULLS_COMMITS_FILE="$TMPDIR_SMOKE/commits.tsv"
+mkdir -p "$TMPDIR_SMOKE/commit-files-27"
+# Initially, sha-y touched src/a.py → edited_after will be 1.
+echo "src/a.py" > "$TMPDIR_SMOKE/commit-files-27/sha-y.tsv"
+export MOCK_COMMIT_FILES_DIR="$TMPDIR_SMOKE/commit-files-27"
+
+run_driver
+ROW=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE specialist='tests' AND comment_id=170;")
+[ "$ROW" = "1" ] || { echo "FAIL scenario 27 (setup): pre-rewalk edited_after '$ROW' expected '1'"; exit 1; }
+
+# Rewalk: same post-review commit, but it no longer touches src/a.py
+# (e.g. operator amended the commit to drop that file). Successful fetch,
+# successful re-evaluation, edited_after should flip 1→0.
+echo "src/other.py" > "$TMPDIR_SMOKE/commit-files-27/sha-y.tsv"
+run_driver
+ROW=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE specialist='tests' AND comment_id=170;")
+[ "$ROW" = "0" ] || { echo "FAIL scenario 27: stale edited_after not cleared on successful rewalk ('$ROW' expected '0')"; exit 1; }
 
 unset MOCK_PULLS_COMMITS_FILE MOCK_COMMIT_FILES_DIR
 
