@@ -169,6 +169,15 @@ shopt -u nullglob
 # disabled) from getting writes to entire repo source trees.
 # shellcheck disable=SC1091
 . "$REPO_DIR/repos.conf"
+# Also source repos.conf.auto if it exists, so org-sync-tracked repos
+# get their .keepitdry write paths included in the sandbox render on
+# the next install. The auto file is purely runtime state (in
+# $INSTALL_DIR, not the source tree) — install.sh never bootstraps it
+# and never delivers it.
+if [ -f "$INSTALL_DIR/repos.conf.auto" ]; then
+    # shellcheck disable=SC1091
+    . "$INSTALL_DIR/repos.conf.auto"
+fi
 # Dedupe + sort for stable rendering across runs so cmp-based idempotency
 # doesn't trigger spurious copies when bash hashing reorders the assoc
 # array between runs.

@@ -24,20 +24,17 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 ProtectHome=read-only
-# ReadWritePaths surface is intentionally broader than the sibling
-# review/refresh units: org-sync.sh creates NEW checkout directories
-# under /home/odio/Hacking that are not yet in @KID_RW_PATHS@ (which
-# is rendered from KID_PATHS at install time and therefore can't know
-# about repos discovered after the last install). Granting RW on the
-# whole /home/odio/Hacking parent is the only sandbox shape that lets
-# `gh repo clone <new> /home/odio/Hacking/<new>` succeed without a
-# preceding install.sh re-render. The blast radius is one script
-# (org-sync.sh) doing only `gh repo clone` + a tmp-file rewrite of
-# repos.conf — narrower than dropping ProtectHome entirely.
-# repos.conf lives at /home/odio/services/knightwatch-reviewer/repos.conf
-# (the source-tree copy that install.sh symlinks into ~/.pr-reviewer/).
-# Grant RW on the parent so org-sync.sh's atomic tmp+mv rewrite lands.
-ReadWritePaths=/home/odio/.pr-reviewer /home/odio/Hacking /home/odio/services/knightwatch-reviewer /home/odio/.cache /home/odio/.config
+# ReadWritePaths: broader than the sibling review/refresh units because
+# org-sync.sh creates NEW checkout directories under /home/odio/Hacking
+# that aren't yet in @KID_RW_PATHS@ (rendered at install time, can't
+# know about repos discovered after the last install). Granting RW on
+# /home/odio/Hacking is the only shape that lets `gh repo clone <new>`
+# succeed without a preceding install.sh re-render. We do NOT need RW
+# on the source-tree dir — org-sync writes to $STATE_DIR/repos.conf.auto
+# (= /home/odio/.pr-reviewer/repos.conf.auto), not to a source-tree
+# symlink target. Blast radius is one script doing only `gh repo clone`
+# + a tmp-file write inside the bot's own state dir.
+ReadWritePaths=/home/odio/.pr-reviewer /home/odio/Hacking /home/odio/.cache /home/odio/.config
 
 [Install]
 WantedBy=multi-user.target
