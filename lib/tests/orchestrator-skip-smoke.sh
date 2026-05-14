@@ -96,7 +96,11 @@ if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
         fi
     done
     if [ "$repo" = "cncorp/plow" ]; then
-        echo '[{"number":1,"title":"Test PR","headRefName":"feat/test","headRefOid":"abc123"}]'
+        # MOCK_PR_TITLE override lets a scenario inject control chars / tabs
+        # into the GitHub title via env (default: "Test PR"). Used by the
+        # title-sanitizer scenario to assert downstream field alignment.
+        title="${MOCK_PR_TITLE:-Test PR}"
+        printf '[{"number":1,"title":%s,"headRefName":"feat/test","headRefOid":"abc123"}]\n' "$(jq -nR --arg t "$title" '$t')"
     else
         echo '[]'
     fi
@@ -908,4 +912,40 @@ if ! grep -qE 'dispatcher_tick=20[0-9][0-9]-[01][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5
     exit 1
 fi
 
-echo "  PASS (19 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough)"
+# Scenario 20: GitHub PR title made entirely of control chars doesn't
+# shift spec fields downstream. tr -d would leave PR_TITLE empty,
+# bash's whitespace IFS would collapse the consecutive tabs, and
+# FORCE_WHOLE_PR / DISPATCHER_TICK_AT / TRIGGER_FILE would shift left
+# into the wrong slots. Replace-with-space + default-to-space keeps
+# PR_TITLE non-empty so the spec stays aligned.
+echo "  scenario 20: control-only PR title doesn't shift spec fields..."
+clear_seeded_runs
+MOCK_TRUSTED_USERS="srosro,someuser" \
+    seed_run "cncorp_plow" "1" "20260429T143000000Z" "older_sha_999" "COMMENT" >/dev/null
+printf '[{"created_at":"2026-04-30T16:00:00Z","user":{"login":"someuser"},"body":"/srosro-review"}]\n' > "$MOCK_COMMENTS_FILE"
+MOCK_PR_TITLE=$'\t\t\t' run_orchestrator
+n=$(count_dispatches)
+if [ "$n" -ne 1 ]; then
+    echo "FAIL scenario 20 (title-empty-after-strip regression): expected 1 dispatch, got $n"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+# /srosro-review trigger must still force whole-PR. If the strip emptied
+# PR_TITLE and bash collapsed the tab, FORCE_WHOLE_PR would land an ISO
+# timestamp and the `$6 == "true"` test in the worker stub would fail.
+if ! grep -qF "force_whole=true" "$LOG_FILE"; then
+    echo "FAIL scenario 20 (field-shift regression): expected force_whole=true, got:"
+    grep 'WORKER_DISPATCHED' "$LOG_FILE" || true
+    echo "Empty PR_TITLE collapsed the spec's consecutive tabs and shifted FORCE_WHOLE_PR / DISPATCHER_TICK_AT / TRIGGER_FILE into the wrong slots."
+    exit 1
+fi
+# DISPATCHER_TICK_AT must remain an ISO timestamp. If it shifted, it
+# would carry the trigger-file path instead — meta.json.started_at
+# would persist a non-timestamp string downstream.
+if ! grep -qE 'dispatcher_tick=20[0-9][0-9]-[01][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9]Z' "$LOG_FILE"; then
+    echo "FAIL scenario 20 (dispatcher_tick shifted to non-timestamp): got:"
+    grep 'WORKER_DISPATCHED' "$LOG_FILE" || true
+    exit 1
+fi
+
+echo "  PASS (20 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, control-only-title-no-field-shift)"
