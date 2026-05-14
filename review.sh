@@ -78,9 +78,24 @@ if [[ ! -x "$REVIEWER_LIB_DIR/review-one-pr.sh" ]]; then
     exit 1
 fi
 
-# ---------- enumerate eligible PRs ----------
-declare -a ELIGIBLE=()
+# ---------- enumerate + dispatch (single-pass) ----------
+# Per-worker timeout. With detached workers (KillMode=process), the
+# service-level TimeoutStartSec=90min no longer bounds worker runtime
+# (orchestrator returns before workers complete). A wedged Codex phase
+# could hold the per-PR flock indefinitely, blocking all future
+# /srosro-update-review for that PR. `timeout 90m` re-establishes the
+# pre-detach ceiling at the worker level; the worker exits, the flock
+# releases, and the next tick can re-dispatch.
+WORKER_TIMEOUT="${WORKER_TIMEOUT:-90m}"
+log "Fan-out: max $MAX_CONCURRENT concurrent, per-worker timeout $WORKER_TIMEOUT"
 
+# Single-pass: enumerate PRs and dispatch eligible ones inline. No
+# tab-delimited spec serialization, no field-shift attack surface —
+# shell variable boundaries are explicit when the worker is invoked
+# directly with positional args + env vars. Per-PR flock in
+# lib/review-one-pr.sh prevents duplicate-dispatch races.
+active=0
+dispatched=0
 for REPO in "${REPOS[@]}"; do
     PR_LIST=$(gh pr list --repo "$REPO" --json number,title,headRefName,headRefOid 2>/dev/null) || {
         log "Failed to list PRs for $REPO"
@@ -90,17 +105,7 @@ for REPO in "${REPOS[@]}"; do
 
     while IFS= read -r PR_JSON; do
         PR_NUM=$(echo "$PR_JSON" | jq -r '.number')
-        # Normalize control chars (U+0000-001F, U+007F) in the GitHub PR
-        # title before it lands in the tab-delimited ELIGIBLE spec.
-        # GitHub allows control chars via the REST API (only the web UI
-        # rejects them); `jq -r` outputs the literal bytes. REPLACE with
-        # space (not delete) and default to a single space if the title
-        # is empty/all-control-chars — `tr -d` would leave PR_TITLE
-        # empty, and an empty middle field with bash's whitespace IFS
-        # would collapse and shift FORCE_WHOLE_PR, DISPATCHER_TICK_AT,
-        # and TRIGGER_FILE into the wrong slots downstream.
-        PR_TITLE=$(echo "$PR_JSON" | jq -r '.title // ""' | tr '\000-\037\177' ' ')
-        PR_TITLE="${PR_TITLE:- }"
+        PR_TITLE=$(echo "$PR_JSON" | jq -r '.title // ""')
         PR_BRANCH=$(echo "$PR_JSON" | jq -r '.headRefName')
         PR_SHA=$(echo "$PR_JSON" | jq -r '.headRefOid')
         PR_ID="${REPO}#${PR_NUM}"
@@ -275,64 +280,34 @@ for REPO in "${REPOS[@]}"; do
             printf 'Comment by @%s:\n\n%s\n' "$TRIGGER_USER" "$TRIGGER_BODY" > "$TRIGGER_FILE"
         fi
 
-        # Tab-separated spec so titles with spaces survive.
-        # TICK_FETCHED_AT_ISO is placed BEFORE TRIGGER_FILE so the
-        # trailing potentially-empty TRIGGER_FILE remains the last
-        # field — tab is whitespace in bash's IFS, so consecutive
-        # empty-field tabs would collapse and shift later fields.
-        # TICK is always set (captured at the top of the inner loop),
-        # so the worst case is just one trailing empty field.
-        ELIGIBLE+=("$REPO"$'\t'"$PR_NUM"$'\t'"$PR_SHA"$'\t'"$PR_BRANCH"$'\t'"$PR_TITLE"$'\t'"$FORCE_WHOLE_PR"$'\t'"$TICK_FETCHED_AT_ISO"$'\t'"$TRIGGER_FILE")
+        # Throttle to MAX_CONCURRENT in-flight workers per tick. We don't
+        # track outcomes here — workers detach (KillMode=process on the
+        # unit) and the next tick runs regardless of this tick's per-worker
+        # results. Per-worker outcomes live in $STATE_DIR/runs/<id>/run.log
+        # and the systemd journal.
+        while [ "$active" -ge "$MAX_CONCURRENT" ]; do
+            wait -n || true
+            active=$((active - 1))
+        done
+
+        TRIGGER_COMMENT_FILE="$TRIGGER_FILE" \
+        DISPATCHER_TICK_AT="$TICK_FETCHED_AT_ISO" \
+        REVIEWER_LIB_DIR="$REVIEWER_LIB_DIR" \
+            timeout "$WORKER_TIMEOUT" "$REVIEWER_LIB_DIR/review-one-pr.sh" \
+            "$REPO" "$PR_NUM" "$PR_SHA" "$PR_BRANCH" "$PR_TITLE" "$FORCE_WHOLE_PR" &
+        active=$((active + 1))
+        dispatched=$((dispatched + 1))
     done < <(echo "$PR_LIST" | jq -c '.[]')
 done
 
-if [ ${#ELIGIBLE[@]} -eq 0 ]; then
+# Detached fan-out: workers run past this script's exit (KillMode=process
+# on the systemd unit; children reparent to PID 1). We don't wait —
+# enumerate + dispatch is the orchestrator's job, per-worker outcomes
+# land in $STATE_DIR/runs/<id>/run.log. Without detach, the next 2-min
+# timer tick would block on the slowest worker (15–20 min in prod).
+if [ "$dispatched" -eq 0 ]; then
     log "No PRs need review"
-    exit 0
+else
+    log "Fan-out: dispatched $dispatched worker(s) (detached, running in background)"
 fi
-
-# Per-worker timeout. With detached workers (KillMode=process), the
-# service-level TimeoutStartSec=90min no longer bounds worker runtime
-# (orchestrator returns before workers complete). A wedged Codex phase
-# could hold the per-PR flock indefinitely, blocking all future
-# /srosro-update-review for that PR. `timeout 90m` re-establishes the
-# pre-detach ceiling at the worker level; the worker exits, the flock
-# releases, and the next tick can re-dispatch.
-WORKER_TIMEOUT="${WORKER_TIMEOUT:-90m}"
-
-log "Fan-out: ${#ELIGIBLE[@]} eligible PR(s), max $MAX_CONCURRENT concurrent, per-worker timeout $WORKER_TIMEOUT"
-
-# ---------- fan out with bounded concurrency ----------
-# Rate-limit fan-out to MAX_CONCURRENT in-flight workers per tick. We
-# don't track outcomes here — workers detach (KillMode=process on the
-# unit) and the next tick runs regardless of this tick's per-worker
-# results. Per-worker outcomes live in $STATE_DIR/runs/<id>/run.log
-# and the systemd journal. Per-PR flock in lib/review-one-pr.sh
-# prevents duplicate-dispatch races for the same PR.
-active=0
-for spec in "${ELIGIBLE[@]}"; do
-    IFS=$'\t' read -r REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR DISPATCHER_TICK_AT TRIGGER_FILE <<< "$spec"
-
-    while [ "$active" -ge "$MAX_CONCURRENT" ]; do
-        wait -n || true
-        active=$((active - 1))
-    done
-
-    TRIGGER_COMMENT_FILE="$TRIGGER_FILE" \
-    DISPATCHER_TICK_AT="$DISPATCHER_TICK_AT" \
-    REVIEWER_LIB_DIR="$REVIEWER_LIB_DIR" \
-        timeout "$WORKER_TIMEOUT" "$REVIEWER_LIB_DIR/review-one-pr.sh" \
-        "$REPO" "$PR_NUM" "$PR_SHA" "$PR_BRANCH" "$PR_TITLE" "$FORCE_WHOLE_PR" &
-    active=$((active + 1))
-done
-
-# Detached fan-out: workers are running in the background and will
-# continue past this script's exit (KillMode=process on the systemd
-# unit; children reparent to PID 1). We do NOT wait for them — the
-# orchestrator's job is to enumerate eligible PRs and dispatch; per-
-# worker outcomes land in $STATE_DIR/runs/<id>/run.log and the systemd
-# journal. Without this, the next 2-min timer tick is blocked until the
-# slowest worker finishes (15–20 min in production), making
-# /srosro-update-review pickup unboundedly slow.
-log "Fan-out: dispatched ${#ELIGIBLE[@]} worker(s) (detached, running in background)"
 exit 0
