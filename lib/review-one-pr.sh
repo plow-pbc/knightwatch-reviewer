@@ -138,24 +138,6 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # internally; multi-source is idempotent.
 . "$_LIB_DIR/decline-history.sh"
 
-# --- worker-level dedup gate -------------------------------------------------
-# Mirrors the dispatcher's gate at review.sh:217 (PR_SHA == KNOWN_SHA &&
-# !FORCE_WHOLE_PR → skip), but re-checks AFTER the per-PR flock. The
-# dispatcher reads meta.json BEFORE an in-flight worker's finalize_run
-# has committed the new SHA back, so two ticks that target the same
-# /srosro-update-review trigger can both pass the gate; the first wins
-# and the second arrives here with PR_SHA matching the just-committed
-# KNOWN_SHA. Without this re-check the second worker posts a placeholder
-# and immediately PATCHes it to "review aborted" via the empty-diff path
-# at line ~626 — noisy on the PR for no useful signal.
-if [ "$FORCE_WHOLE_PR" != "true" ]; then
-    KNOWN_SHA_GATE=$(latest_author_visible_review_sha "$STATE_DIR" "${REPO//\//_}" "$PR_NUM" "")
-    if [ -n "$KNOWN_SHA_GATE" ] && [ "$PR_SHA" = "$KNOWN_SHA_GATE" ]; then
-        log "$PR_ID: head SHA $PR_SHA already reviewed by concurrent worker — skipping cleanly"
-        exit 0
-    fi
-fi
-
 # --- per-run dir -------------------------------------------------------------
 # Every worker invocation gets its own runs/<RUN_ID>/ dir holding the run log,
 # input scratch, and one subdir per agent (prompt + output + log). The git
@@ -343,19 +325,21 @@ if ! fetch_err=$(git -C "$CANONICAL_DIR" fetch origin "+refs/pull/$PR_NUM/head:$
     exit 0
 fi
 
-# --- post-fetch dedup gate ---------------------------------------------------
-# Second-seam check using the fetched PR head SHA. The pre-fetch gate
-# above runs against PR_SHA (dispatcher-enumerated head); a new commit
-# can land between the dispatcher's `gh pr list` and this worker's
-# `git fetch refs/pull/N/head`, so the fetched head can differ from
-# PR_SHA. If that new head happens to be a SHA another worker just
-# reviewed (rapid push + concurrent review), the pre-fetch gate misses
-# the skip. Re-check here against the actual fetched head, before any
-# GitHub side effect.
+# --- worker-level dedup gate -------------------------------------------------
+# Mirrors the dispatcher's gate at review.sh:217 (PR_SHA == KNOWN_SHA &&
+# !FORCE_WHOLE_PR → skip), but uses the FETCHED head SHA — the truth as
+# of this worker's point in time — not the dispatcher's stale enumeration.
+# The dispatcher reads meta.json BEFORE an in-flight worker's finalize_run
+# has committed the new SHA back, so two ticks targeting the same trigger
+# can both pass the gate. By this point (post per-PR flock + canonical
+# fetch), any prior holder's meta.json write is durable AND we have the
+# actual head we'd be reviewing. Without this re-check the second worker
+# posts a placeholder and immediately PATCHes it to "review aborted" via
+# the empty-diff path at line ~626 — noisy on the PR for no useful signal.
 if [ "$FORCE_WHOLE_PR" != "true" ]; then
     FETCHED_HEAD_SHA=$(git -C "$CANONICAL_DIR" rev-parse "refs/heads/$PR_BRANCH" 2>/dev/null)
-    KNOWN_SHA_GATE_POST=$(latest_author_visible_review_sha "$STATE_DIR" "${REPO//\//_}" "$PR_NUM" "")
-    if [ -n "$FETCHED_HEAD_SHA" ] && [ "$FETCHED_HEAD_SHA" = "$KNOWN_SHA_GATE_POST" ]; then
+    KNOWN_SHA_GATE=$(latest_author_visible_review_sha "$STATE_DIR" "${REPO//\//_}" "$PR_NUM" "")
+    if [ -n "$FETCHED_HEAD_SHA" ] && [ "$FETCHED_HEAD_SHA" = "$KNOWN_SHA_GATE" ]; then
         log "$PR_ID: fetched head $FETCHED_HEAD_SHA already reviewed by concurrent worker — skipping cleanly"
         exit 0
     fi
