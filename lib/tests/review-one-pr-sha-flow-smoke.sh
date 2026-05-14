@@ -544,3 +544,51 @@ if ! grep -q "PR feature content" "$FULL_DIFF3"; then
 fi
 
 echo "  PASS (3 scenarios: orchestrator/worker SHA race + non-default-base canonical→workdir ref propagation + canonical heads/main aligned with origin/main; both diff and commits consumers fenced)"
+
+# ===== Scenario 4: pre-fetch dedup gate fires on SHA already reviewed =====
+# Fences the worker-level gate at lib/review-one-pr.sh (post-lock, pre-
+# allocate_run_dir, pre-canonical-fetch). When the dispatcher's snapshot
+# of meta.json was stale and another worker has since finalized a review
+# at the same SHA, the loser of the race must exit cleanly WITHOUT
+# allocating a run-dir or posting a placeholder. Observable: no new run
+# dir under $STATE_DIR/runs/ for the gated invocation.
+echo "  scenario: pre-fetch dedup gate fires when PR_SHA matches prior author-visible reviewed_sha..."
+
+# Seed a fake prior author-visible run (meta.json with posted_at flips
+# is_run_author_visible → true; reviewed_sha is what the gate compares
+# against).
+GATE_SHA="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+FAKE_RUN_ID="test-org_probe-repo__1__20260101T000000000Z__dead123"
+FAKE_RUN_DIR="$STATE_DIR/runs/$FAKE_RUN_ID"
+mkdir -p "$FAKE_RUN_DIR"
+cat > "$FAKE_RUN_DIR/meta.json" <<EOF
+{
+  "pr_id": "test-org/probe-repo#1",
+  "reviewed_sha": "$GATE_SHA",
+  "posted_at": "2026-01-01T00:00:00Z"
+}
+EOF
+
+BEFORE_COUNT=$(find "$STATE_DIR/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' | wc -l)
+
+TRIGGER_COMMENT_FILE="" \
+    bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
+    "test-org/probe-repo" "1" "$GATE_SHA" "feat/test" "Test PR" "false" \
+    >/dev/null 2>&1
+GATE_EC=$?
+
+AFTER_COUNT=$(find "$STATE_DIR/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' | wc -l)
+
+# Gate must (a) exit 0, (b) not allocate a new run-dir. The placeholder
+# POST happens later in the worker (line ~368), so "no new run dir"
+# implies "no placeholder posted" — the gate fires upstream of both.
+if [ "$GATE_EC" -ne 0 ]; then
+    echo "FAIL: scenario 4 — worker exited $GATE_EC (expected 0 from clean skip)"
+    exit 1
+fi
+if [ "$AFTER_COUNT" -ne "$BEFORE_COUNT" ]; then
+    echo "FAIL: scenario 4 — gate did not fire (before=$BEFORE_COUNT, after=$AFTER_COUNT). New run dir allocated, which means the gate was bypassed."
+    exit 1
+fi
+
+echo "  PASS (4 scenarios: SHA race + non-default-base + canonical alignment + pre-fetch dedup gate)"

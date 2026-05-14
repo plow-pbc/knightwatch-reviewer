@@ -343,6 +343,24 @@ if ! fetch_err=$(git -C "$CANONICAL_DIR" fetch origin "+refs/pull/$PR_NUM/head:$
     exit 0
 fi
 
+# --- post-fetch dedup gate ---------------------------------------------------
+# Second-seam check using the fetched PR head SHA. The pre-fetch gate
+# above runs against PR_SHA (dispatcher-enumerated head); a new commit
+# can land between the dispatcher's `gh pr list` and this worker's
+# `git fetch refs/pull/N/head`, so the fetched head can differ from
+# PR_SHA. If that new head happens to be a SHA another worker just
+# reviewed (rapid push + concurrent review), the pre-fetch gate misses
+# the skip. Re-check here against the actual fetched head, before any
+# GitHub side effect.
+if [ "$FORCE_WHOLE_PR" != "true" ]; then
+    FETCHED_HEAD_SHA=$(git -C "$CANONICAL_DIR" rev-parse "refs/heads/$PR_BRANCH" 2>/dev/null)
+    KNOWN_SHA_GATE_POST=$(latest_author_visible_review_sha "$STATE_DIR" "${REPO//\//_}" "$PR_NUM" "")
+    if [ -n "$FETCHED_HEAD_SHA" ] && [ "$FETCHED_HEAD_SHA" = "$KNOWN_SHA_GATE_POST" ]; then
+        log "$PR_ID: fetched head $FETCHED_HEAD_SHA already reviewed by concurrent worker — skipping cleanly"
+        exit 0
+    fi
+fi
+
 # Post the "reviewing" placeholder NOW that the canonical fetch confirmed
 # the PR head is reachable. The full run (`just test` up to 30m + 6
 # specialists + critic + aggregator) can take many minutes; the
