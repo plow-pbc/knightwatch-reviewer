@@ -90,7 +90,16 @@ for REPO in "${REPOS[@]}"; do
 
     while IFS= read -r PR_JSON; do
         PR_NUM=$(echo "$PR_JSON" | jq -r '.number')
-        PR_TITLE=$(echo "$PR_JSON" | jq -r '.title')
+        # Strip control chars (U+0000-001F, U+007F) from PR_TITLE before
+        # it lands in the \x1f-delimited ELIGIBLE spec. GitHub allows
+        # control chars in titles via the REST API (only the web UI
+        # rejects them), and `jq -r` outputs the literal bytes — so a
+        # title like "x\x1fevil\x1f/path" would shift TRIGGER_FILE to an
+        # attacker-controlled path on dispatch. REPO/PR_NUM/PR_SHA are
+        # restricted character sets and PR_BRANCH per git refs spec
+        # can't contain control chars; PR_TITLE is the only PR-derived
+        # field that needs this defense.
+        PR_TITLE=$(echo "$PR_JSON" | jq -r '.title' | tr -d '\000-\037\177')
         PR_BRANCH=$(echo "$PR_JSON" | jq -r '.headRefName')
         PR_SHA=$(echo "$PR_JSON" | jq -r '.headRefOid')
         PR_ID="${REPO}#${PR_NUM}"
@@ -115,16 +124,19 @@ for REPO in "${REPOS[@]}"; do
         if [ -n "$KNOWN_SHA" ]; then
             # Cutoff timestamp sources from runs/ (meta.json.started_at)
             # — single source of truth since state.json was retired in
-            # PR #38. started_at is now stamped from the DISPATCHER's
-            # tick-fetch time (passed to the worker via env var
-            # DISPATCHER_TICK_AT, captured AFTER fetch_issue_comments
-            # returns below), NOT the worker's script-entry time. That
-            # closes the race where a /srosro-review posted in the
-            # ~10s gap between dispatcher fetch and worker init would
-            # have a created_at older than the worker's started_at,
-            # making the next tick's "created_at > started_at" filter
-            # silently drop the trigger. Helper returns ISO 8601
-            # directly — meta.json.started_at is already in that format.
+            # PR #38. started_at is now stamped from max(.created_at) of
+            # the dispatcher's fetched comments snapshot (passed to the
+            # worker via DISPATCHER_TICK_AT, computed below), NOT the
+            # worker's script-entry time NOR our local wall clock. That
+            # closes the race where a /srosro-review posted in the gap
+            # between dispatcher fetch and worker init would have a
+            # created_at older than the worker's started_at, making the
+            # next tick's "created_at > started_at" filter silently drop
+            # the trigger. Anchoring in GitHub-stamped created_at values
+            # also closes the sub-second wall-clock window between the
+            # API's processing-time and our post-fetch local clock.
+            # Helper returns ISO 8601 directly — meta.json.started_at is
+            # already in that format.
             REVIEWED_AT_ISO=$(latest_author_visible_review_started_at "$STATE_DIR" "$REPO_SLUG_FOR_GATE" "$PR_NUM" "")
             # Fail loud on a transient gh outage rather than treating
             # "API broken" as "no comments" and silently missing a
@@ -134,12 +146,18 @@ for REPO in "${REPOS[@]}"; do
                 log "$PR_ID: comments fetch failed — skipping this PR for this tick"
                 continue
             }
-            # Capture AFTER the fetch so any comment in COMMENTS_JSON has
-            # created_at <= TICK_FETCHED_AT_ISO. The next tick's filter
-            # `created_at > TICK_FETCHED_AT_ISO` then correctly classifies:
-            # comments visible at THIS tick are consumed (filtered out);
-            # comments posted AFTER this point are fresh (still eligible).
-            TICK_FETCHED_AT_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            # Cutoff = max(.created_at) of fetched snapshot, lower-bounded
+            # by the prior REVIEWED_AT_ISO so the cutoff never regresses.
+            # Anchoring the cutoff in GitHub-stamped created_at values
+            # (rather than our local wall clock post-fetch) closes the
+            # remaining sub-second race where a comment created BETWEEN
+            # GitHub's API-processing-time and our local capture would be
+            # absent from the snapshot yet stamped as "consumed" and lost
+            # on the next tick. Empty/missing max falls back to
+            # REVIEWED_AT_ISO; this keeps the watermark intact when this
+            # tick saw no comments.
+            TICK_FETCHED_AT_ISO=$(printf '%s' "$COMMENTS_JSON" | jq -r --arg fb "$REVIEWED_AT_ISO" \
+                '[(map(.created_at) | max // empty), $fb] | max')
             # Exclude the bot's own auto-posts (review ack, final review,
             # learn-from-replies acks, and the usage footer that appears on
             # every review and itself contains the slash commands) by
