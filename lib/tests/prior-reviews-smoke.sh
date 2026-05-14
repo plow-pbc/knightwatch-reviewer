@@ -325,14 +325,14 @@ if [ -n "$appr_result" ]; then
     exit 1
 fi
 
-# ---- scenario 11: latest_author_visible_slash_cutoff_at — returns latest run's started_at ----
+# ---- scenario 11: latest_author_visible_review_started_at — returns latest run's started_at ----
 # Round-10 BCR fence: review.sh's slash-command cutoff timestamp now reads
 # from runs/ (meta.json.started_at) instead of state.json.reviewed_at,
 # closing the 4th leak of the gh-success + state_set-failure race. The
 # helper must (a) select the SAME run as the body/sha/approved siblings
 # (latest author-visible) and (b) return the started_at field verbatim
 # (already ISO 8601, no conversion).
-echo "  scenario 11: latest_author_visible_slash_cutoff_at — returns latest run's started_at ISO..."
+echo "  scenario 11: latest_author_visible_review_started_at — returns latest run's started_at ISO..."
 TS_PR=801
 ts_current=$(make_run "$REPO_SLUG" "$TS_PR" "20260429T120000000Z" "ggggggg" "## current run for started_at test")
 ts_run_a=$(make_run "$REPO_SLUG" "$TS_PR" "20260429T100000000Z" "1111112" "## ts review one")
@@ -342,46 +342,22 @@ jq --arg s "2026-04-29T10:00:00Z" '. + {started_at: $s}' \
    "$ts_run_a/meta.json" > "$ts_run_a/meta.json.tmp" && mv "$ts_run_a/meta.json.tmp" "$ts_run_a/meta.json"
 jq --arg s "2026-04-29T11:00:00Z" '. + {started_at: $s}' \
    "$ts_run_b/meta.json" > "$ts_run_b/meta.json.tmp" && mv "$ts_run_b/meta.json.tmp" "$ts_run_b/meta.json"
-result=$(latest_author_visible_slash_cutoff_at "$TMPDIR/state" "$REPO_SLUG" "$TS_PR" "$ts_current")
+result=$(latest_author_visible_review_started_at "$TMPDIR/state" "$REPO_SLUG" "$TS_PR" "$ts_current")
 if [ "$result" != "2026-04-29T11:00:00Z" ]; then
     echo "FAIL: scenario 11 — expected latest run's started_at (2026-04-29T11:00:00Z), got: '$result'"
     exit 1
 fi
 
-# ---- scenario 11b: latest_author_visible_slash_cutoff_at — empty when no prior ----
+# ---- scenario 11b: latest_author_visible_review_started_at — empty when no prior ----
 # Mirrors scenario 10 for the new helper. First review on the PR returns
 # empty; review.sh treats that as "no prior cutoff" and falls into the
 # unchanged-SHA branch with KNOWN_SHA also empty (the gate above the
 # cutoff read keys off KNOWN_SHA, so this is consistent).
-echo "  scenario 11b: latest_author_visible_slash_cutoff_at with no prior runs → empty..."
-result=$(latest_author_visible_slash_cutoff_at "$TMPDIR/state" "$REPO_SLUG" "999997" "$ts_current")
+echo "  scenario 11b: latest_author_visible_review_started_at with no prior runs → empty..."
+result=$(latest_author_visible_review_started_at "$TMPDIR/state" "$REPO_SLUG" "999997" "$ts_current")
 if [ -n "$result" ]; then
     echo "FAIL: scenario 11b — expected empty for PR with no prior runs, got: '$result'"
     exit 1
 fi
 
-# ---- scenario 12: latest_author_visible_slash_cutoff_at — slash_cutoff_at field wins over started_at ----
-# The read side of the field split (probe round 2). meta.json now carries
-# TWO distinct timestamps: started_at (run lifecycle clock) and
-# slash_cutoff_at (comment-cutoff watermark). When BOTH are present, the
-# helper MUST return slash_cutoff_at — started_at is the fallback for
-# legacy runs that predate the split, NOT a co-equal alternative.
-echo "  scenario 12: latest_author_visible_slash_cutoff_at — slash_cutoff_at wins when both fields present..."
-SC_PR=802
-sc_current=$(make_run "$REPO_SLUG" "$SC_PR" "20260429T130000000Z" "hhhhhhh" "## current run for cutoff precedence test")
-sc_prior=$(make_run "$REPO_SLUG" "$SC_PR" "20260429T120000000Z" "3333334" "## sc prior review")
-# Stamp distinct values; slash_cutoff_at is OLDER than started_at on purpose
-# so a regression to "return started_at" would surface the LATER value
-# and fail the assert (matches the production shape where the cutoff is
-# bound to GitHub-comment created_at while started_at is worker-init time
-# — cutoff can well predate started_at on push-only carry-forward).
-jq --arg s "2026-04-29T12:00:00Z" --arg c "2026-04-29T09:00:00Z" \
-   '. + {started_at: $s, slash_cutoff_at: $c}' \
-   "$sc_prior/meta.json" > "$sc_prior/meta.json.tmp" && mv "$sc_prior/meta.json.tmp" "$sc_prior/meta.json"
-result=$(latest_author_visible_slash_cutoff_at "$TMPDIR/state" "$REPO_SLUG" "$SC_PR" "$sc_current")
-if [ "$result" != "2026-04-29T09:00:00Z" ]; then
-    echo "FAIL: scenario 12 — expected slash_cutoff_at (2026-04-29T09:00:00Z), got '$result' (likely a regression returning started_at which would silently widen the trigger filter window)"
-    exit 1
-fi
-
-echo "  PASS (19 scenarios: no-runs, self-excluded, chronological-prior, aborted-skipped, no-meta-skipped, posted-but-aborted-INCLUDED, legacy-completed-no-posted-at-INCLUDED, foreign-pr-filtered, latest-author-visible-review, latest-empty-on-first-review, sha-reviewed_sha-precedence, sha-falls-back-to-sha, approved-APPROVE-true, approved-APPROVE-pending-true, approved-COMMENT-false, no-prior-empty, started_at-latest-wins, started_at-empty-no-prior, slash_cutoff_at-precedence-over-started_at)"
+echo "  PASS (18 scenarios: no-runs, self-excluded, chronological-prior, aborted-skipped, no-meta-skipped, posted-but-aborted-INCLUDED, legacy-completed-no-posted-at-INCLUDED, foreign-pr-filtered, latest-author-visible-review, latest-empty-on-first-review, sha-reviewed_sha-precedence, sha-falls-back-to-sha, approved-APPROVE-true, approved-APPROVE-pending-true, approved-COMMENT-false, no-prior-empty, started_at-latest-wins, started_at-empty-no-prior)"

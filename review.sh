@@ -78,24 +78,9 @@ if [[ ! -x "$REVIEWER_LIB_DIR/review-one-pr.sh" ]]; then
     exit 1
 fi
 
-# ---------- enumerate + dispatch (single-pass) ----------
-# Per-worker timeout. With detached workers (KillMode=process), the
-# service-level TimeoutStartSec=90min no longer bounds worker runtime
-# (orchestrator returns before workers complete). A wedged Codex phase
-# could hold the per-PR flock indefinitely, blocking all future
-# /srosro-update-review for that PR. `timeout 90m` re-establishes the
-# pre-detach ceiling at the worker level; the worker exits, the flock
-# releases, and the next tick can re-dispatch.
-WORKER_TIMEOUT="${WORKER_TIMEOUT:-90m}"
-log "Fan-out: max $MAX_CONCURRENT concurrent, per-worker timeout $WORKER_TIMEOUT"
+# ---------- enumerate eligible PRs ----------
+declare -a ELIGIBLE=()
 
-# Single-pass: enumerate PRs and dispatch eligible ones inline. No
-# ELIGIBLE serialization, no \x1f delimiter, no PR-title scrub — shell
-# variable boundaries are explicit when we invoke the worker directly
-# with positional args + env vars. Per-PR flock in lib/review-one-pr.sh
-# prevents duplicate-dispatch races for the same PR.
-active=0
-dispatched=0
 for REPO in "${REPOS[@]}"; do
     PR_LIST=$(gh pr list --repo "$REPO" --json number,title,headRefName,headRefOid 2>/dev/null) || {
         log "Failed to list PRs for $REPO"
@@ -109,6 +94,13 @@ for REPO in "${REPOS[@]}"; do
         PR_BRANCH=$(echo "$PR_JSON" | jq -r '.headRefName')
         PR_SHA=$(echo "$PR_JSON" | jq -r '.headRefOid')
         PR_ID="${REPO}#${PR_NUM}"
+        # Capture per-PR cutoff at the dispatcher BEFORE fetch + dispatch
+        # so the worker can stamp meta.json.started_at from this value
+        # instead of its own process-entry time. Closes the race where a
+        # comment posted in the gap between dispatcher and worker init
+        # would have created_at < worker's started_at, making the next
+        # tick's "created_at > started_at" filter drop the trigger.
+        TICK_FETCHED_AT_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
         # KNOWN_SHA at the dispatch gate reads from runs/<id>/meta.json
         # — the single source of truth since PR #38 retired state.json.
@@ -125,18 +117,17 @@ for REPO in "${REPOS[@]}"; do
         TRIGGER_FILE=""
         TRIGGER_USER=""
         TRIGGER_BODY=""
-        NEXT_SLASH_CUTOFF_AT=""
 
         if [ -n "$KNOWN_SHA" ]; then
-            # Prior slash cutoff sources from runs/<latest>/meta.json's
-            # slash_cutoff_at field (helper falls back to legacy
-            # .started_at for run-dirs pre-dating the field split). See
-            # latest_author_visible_slash_cutoff_at in lib/run-dir.sh for
-            # the full contract: cutoff = .created_at of the highest-
-            # priority slash command the dispatcher has consumed so far;
-            # advanced only on whole-PR consume, held on incremental
-            # consume + push-only dispatch.
-            SLASH_CUTOFF_AT=$(latest_author_visible_slash_cutoff_at "$STATE_DIR" "$REPO_SLUG_FOR_GATE" "$PR_NUM" "")
+            # Cutoff timestamp sources from runs/ (meta.json.started_at)
+            # — single source of truth since state.json was retired in
+            # PR #38. started_at is stamped at run init (line ~165 of
+            # lib/review-one-pr.sh) BEFORE the worker can crash, so a
+            # /srosro-review posted while a review is in flight always
+            # falls AFTER the recorded started_at and re-qualifies for
+            # the next tick. Helper returns ISO 8601 directly —
+            # meta.json.started_at is already in that format.
+            REVIEWED_AT_ISO=$(latest_author_visible_review_started_at "$STATE_DIR" "$REPO_SLUG_FOR_GATE" "$PR_NUM" "")
             # Fail loud on a transient gh outage rather than treating
             # "API broken" as "no comments" and silently missing a
             # /srosro-update-review trigger. Same wrapper shape as
@@ -145,81 +136,69 @@ for REPO in "${REPOS[@]}"; do
                 log "$PR_ID: comments fetch failed — skipping this PR for this tick"
                 continue
             }
-            # NEXT_SLASH_CUTOFF_AT is set below (after FORCE_REVIEW is
-            # determined) — only advance to the snapshot max when a slash
-            # trigger was actually consumed, otherwise carry the prior
-            # SLASH_CUTOFF_AT forward. Advancing on push-only dispatches
-            # would let eventual-consistency hide a slash command: if a
-            # /srosro-* comment is older than a newer non-trigger comment
-            # in the fetched snapshot but propagation delay omits the
-            # slash command from THIS tick, advancing past the newer
-            # comment would orphan the slash command on the next tick.
-            # Single source for the consumed slash trigger: ONE jq call
-            # selects the highest-priority comment newer than the prior
-            # cutoff and returns it (or empty). Priority is /srosro-review
-            # (whole-PR) over /srosro-update-review (incremental); within
-            # each kind, the latest by created_at wins. Bot auto-posts are
-            # excluded via the HTML-comment marker (review acks, the usage
-            # footer that itself contains the slash commands, etc.); the
-            # marker filter is more reliable than .user.login != $user
-            # because single-account deployments run the bot AS the human,
-            # so user-based filtering also drops the human's legitimate
-            # slash commands.
+            # Exclude the bot's own auto-posts (review ack, final review,
+            # learn-from-replies acks, and the usage footer that appears on
+            # every review and itself contains the slash commands) by
+            # matching the hidden HTML-comment marker every auto-post
+            # template prepends. The earlier `.user.login != $user` filter
+            # (e1d91a0) over-excluded: in single-account deployments
+            # BOT_USER is the human's own GH identity, so user-based
+            # filtering also drops legitimate slash-command comments the
+            # human posts.
             #
-            # FORCE_REVIEW / FORCE_WHOLE_PR / TRIGGER_* / NEXT_SLASH_CUTOFF_AT
-            # all derive from this one selection, so the cutoff and the
-            # staged trigger body can never drift apart. Empty selection =
-            # no slash trigger this tick = carry the prior cutoff forward
-            # (push-only dispatch path); this is the eventual-consistency
-            # fail-loud shape — if GitHub hid an older /srosro-* comment
-            # behind a newer non-trigger in this tick's snapshot, the next
-            # tick's filter still sees it.
-            TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
-                jq -c --arg since "$SLASH_CUTOFF_AT" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" '
-                    def is_whole: (.body | test("/" + $cmd_prefix + "-review"; "i")) and ((.body | test("/" + $cmd_prefix + "-update-review"; "i")) | not);
-                    def is_incr:  .body | test("/" + $cmd_prefix + "-update-review"; "i");
-                    [.[] | select((.body | contains($mark) | not) and .created_at > $since)] as $eligible |
-                    (([$eligible[] | select(is_whole)] | sort_by(.created_at) | last) | if . then . + {_is_whole_pr: true} else empty end) //
-                    (([$eligible[] | select(is_incr)]  | sort_by(.created_at) | last) | if . then . + {_is_whole_pr: false} else empty end) //
-                    empty' 2>/dev/null)
-            if [ -n "$TRIGGER_JSON" ]; then
+            # Two slash commands; substring tests are sufficient because
+            # the strings are disjoint (neither contains the other as a
+            # substring). Whole-PR check excludes /srosro-update-review so
+            # the longer command doesn't accidentally satisfy both paths.
+            WHOLE_TRIGGER=$(printf '%s' "$COMMENTS_JSON" |
+                jq --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
+                    '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/" + $cmd_prefix + "-review"; "i")) and ((.body | test("/" + $cmd_prefix + "-update-review"; "i")) | not))] | length')
+            INCREMENTAL_TRIGGER=$(printf '%s' "$COMMENTS_JSON" |
+                jq --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
+                    '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/" + $cmd_prefix + "-update-review"; "i")))] | length')
+            if [ "${WHOLE_TRIGGER:-0}" -gt 0 ]; then
                 FORCE_REVIEW=true
-                TRIGGER_USER=$(printf '%s' "$TRIGGER_JSON" | jq -r '.user.login // ""')
-                TRIGGER_BODY_RAW=$(printf '%s' "$TRIGGER_JSON" | jq -r '.body // ""')
-                if [ "$(printf '%s' "$TRIGGER_JSON" | jq -r '._is_whole_pr // false')" = "true" ]; then
-                    FORCE_WHOLE_PR=true
-                    # Whole-PR consumed: advance cutoff to this trigger's
-                    # .created_at (lower-bounded by prior SLASH_CUTOFF_AT).
-                    # Whole-PR is the highest-priority slash; nothing can
-                    # supersede it, so the watermark is safe to advance.
-                    TRIGGER_CREATED_AT=$(printf '%s' "$TRIGGER_JSON" | jq -r '.created_at // ""')
-                    NEXT_SLASH_CUTOFF_AT=$(printf '%s\n%s\n' "$TRIGGER_CREATED_AT" "$SLASH_CUTOFF_AT" | sort | tail -1)
+                FORCE_WHOLE_PR=true
+            elif [ "${INCREMENTAL_TRIGGER:-0}" -gt 0 ]; then
+                FORCE_REVIEW=true
+            fi
+            # If a comment triggered this re-review, capture the latest matching
+            # comment's author + body to a tmp file so the worker can stage it
+            # as `.codex-scratch/trigger-comment.md`. Lets the requester's own
+            # framing ("trying to DRY but ended up adding 2k LoC...") shape the
+            # inferred intent and the review's emphasis. Path is passed via the
+            # 7th spec field; the worker reads and rm -fs it once received.
+            if [ "$FORCE_REVIEW" = "true" ]; then
+                if [ "$FORCE_WHOLE_PR" = "true" ]; then
+                    TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
+                        jq -c --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
+                            '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/" + $cmd_prefix + "-review"; "i")) and ((.body | test("/" + $cmd_prefix + "-update-review"; "i")) | not))] | sort_by(.created_at) | last // empty' 2>/dev/null)
                 else
-                    FORCE_WHOLE_PR=false
-                    # Incremental consumed: DO NOT advance cutoff. A hidden
-                    # whole-PR /srosro-review at an older .created_at could
-                    # still surface on a later tick (GitHub eventual
-                    # consistency), and an advanced cutoff would orphan it.
-                    # Re-detection on subsequent ticks is gated by the
-                    # PR_SHA==KNOWN_SHA && FORCE_WHOLE_PR=false skip rule
-                    # below: incremental on unchanged SHA skips loudly, so
-                    # holding the cutoff doesn't cause a redispatch loop.
-                    NEXT_SLASH_CUTOFF_AT="$SLASH_CUTOFF_AT"
+                    TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
+                        jq -c --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
+                            '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/" + $cmd_prefix + "-update-review"; "i")))] | sort_by(.created_at) | last // empty' 2>/dev/null)
                 fi
-                # Trust gate: honor the trigger regardless of who posted
-                # it (the re-request-poller and external requesters need
-                # to keep working), but the body only gets staged as
-                # `.codex-scratch/trigger-comment.md` when the commenter
-                # has push access. Otherwise drive-by commenters could
-                # shape intent inference + aggregator on the auto-approve
-                # path.
-                if is_trusted_repo_author "$REPO" "$TRIGGER_USER"; then
-                    TRIGGER_BODY="$TRIGGER_BODY_RAW"
-                else
-                    log "$PR_ID: trigger from @$TRIGGER_USER — not staging trigger-comment.md (no push access)"
+                if [ -n "$TRIGGER_JSON" ]; then
+                    TRIGGER_USER=$(printf '%s' "$TRIGGER_JSON" | jq -r '.user.login // ""')
+                    # Trust gate: the slash-command trigger itself is
+                    # honored regardless of who posted it (re-request-poller
+                    # and external requesters need to keep working), but the
+                    # comment's prose only gets staged as
+                    # `.codex-scratch/trigger-comment.md` when the commenter
+                    # has push access. Otherwise drive-by commenters could
+                    # shape intent inference + aggregator on the
+                    # auto-approve path.
+                    if is_trusted_repo_author "$REPO" "$TRIGGER_USER"; then
+                        # Capture body now; materialize the file post-skip
+                        # (below) so an unchanged-SHA /srosro-update-review
+                        # never allocates a tempfile only the worker would
+                        # have cleaned up. STATE_DIR/tmp is durable now
+                        # (no PrivateTmp tear-down to mask the leak).
+                        TRIGGER_BODY=$(printf '%s' "$TRIGGER_JSON" | jq -r '.body // ""')
+                    else
+                        log "$PR_ID: trigger from @$TRIGGER_USER — not staging trigger-comment.md (no push access)"
+                    fi
                 fi
-            else
-                NEXT_SLASH_CUTOFF_AT="$SLASH_CUTOFF_AT"
             fi
         fi
 
@@ -286,31 +265,56 @@ for REPO in "${REPOS[@]}"; do
             printf 'Comment by @%s:\n\n%s\n' "$TRIGGER_USER" "$TRIGGER_BODY" > "$TRIGGER_FILE"
         fi
 
-        # Throttle to MAX_CONCURRENT in-flight workers per tick. We don't
-        # track outcomes here — workers detach (KillMode=process on the
-        # unit) and the next tick runs regardless of this tick's per-worker
-        # results. Per-worker outcomes live in $STATE_DIR/runs/<id>/run.log
-        # and the systemd journal. Per-PR flock in lib/review-one-pr.sh
-        # prevents duplicate-dispatch races for the same PR.
-        while [ "$active" -ge "$MAX_CONCURRENT" ]; do
-            wait -n || true
-            active=$((active - 1))
-        done
-
-        TRIGGER_COMMENT_FILE="$TRIGGER_FILE" \
-        SLASH_CUTOFF_AT="$NEXT_SLASH_CUTOFF_AT" \
-        REVIEWER_LIB_DIR="$REVIEWER_LIB_DIR" \
-            timeout "$WORKER_TIMEOUT" "$REVIEWER_LIB_DIR/review-one-pr.sh" \
-            "$REPO" "$PR_NUM" "$PR_SHA" "$PR_BRANCH" "$PR_TITLE" "$FORCE_WHOLE_PR" &
-        active=$((active + 1))
-        dispatched=$((dispatched + 1))
+        # Tab-separated spec so titles with spaces survive.
+        # TICK_FETCHED_AT_ISO is placed BEFORE TRIGGER_FILE so the
+        # trailing potentially-empty TRIGGER_FILE remains the last
+        # field — tab is whitespace in bash's IFS, so consecutive
+        # empty-field tabs would collapse and shift later fields.
+        # TICK is always set (captured at the top of the inner loop),
+        # so the worst case is just one trailing empty field.
+        ELIGIBLE+=("$REPO"$'\t'"$PR_NUM"$'\t'"$PR_SHA"$'\t'"$PR_BRANCH"$'\t'"$PR_TITLE"$'\t'"$FORCE_WHOLE_PR"$'\t'"$TICK_FETCHED_AT_ISO"$'\t'"$TRIGGER_FILE")
     done < <(echo "$PR_LIST" | jq -c '.[]')
 done
 
-if [ "$dispatched" -eq 0 ]; then
+if [ ${#ELIGIBLE[@]} -eq 0 ]; then
     log "No PRs need review"
     exit 0
 fi
+
+# Per-worker timeout. With detached workers (KillMode=process), the
+# service-level TimeoutStartSec=90min no longer bounds worker runtime
+# (orchestrator returns before workers complete). A wedged Codex phase
+# could hold the per-PR flock indefinitely, blocking all future
+# /srosro-update-review for that PR. `timeout 90m` re-establishes the
+# pre-detach ceiling at the worker level; the worker exits, the flock
+# releases, and the next tick can re-dispatch.
+WORKER_TIMEOUT="${WORKER_TIMEOUT:-90m}"
+
+log "Fan-out: ${#ELIGIBLE[@]} eligible PR(s), max $MAX_CONCURRENT concurrent, per-worker timeout $WORKER_TIMEOUT"
+
+# ---------- fan out with bounded concurrency ----------
+# Rate-limit fan-out to MAX_CONCURRENT in-flight workers per tick. We
+# don't track outcomes here — workers detach (KillMode=process on the
+# unit) and the next tick runs regardless of this tick's per-worker
+# results. Per-worker outcomes live in $STATE_DIR/runs/<id>/run.log
+# and the systemd journal. Per-PR flock in lib/review-one-pr.sh
+# prevents duplicate-dispatch races for the same PR.
+active=0
+for spec in "${ELIGIBLE[@]}"; do
+    IFS=$'\t' read -r REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR DISPATCHER_TICK_AT TRIGGER_FILE <<< "$spec"
+
+    while [ "$active" -ge "$MAX_CONCURRENT" ]; do
+        wait -n || true
+        active=$((active - 1))
+    done
+
+    TRIGGER_COMMENT_FILE="$TRIGGER_FILE" \
+    DISPATCHER_TICK_AT="$DISPATCHER_TICK_AT" \
+    REVIEWER_LIB_DIR="$REVIEWER_LIB_DIR" \
+        timeout "$WORKER_TIMEOUT" "$REVIEWER_LIB_DIR/review-one-pr.sh" \
+        "$REPO" "$PR_NUM" "$PR_SHA" "$PR_BRANCH" "$PR_TITLE" "$FORCE_WHOLE_PR" &
+    active=$((active + 1))
+done
 
 # Detached fan-out: workers are running in the background and will
 # continue past this script's exit (KillMode=process on the systemd
@@ -320,5 +324,5 @@ fi
 # journal. Without this, the next 2-min timer tick is blocked until the
 # slowest worker finishes (15–20 min in production), making
 # /srosro-update-review pickup unboundedly slow.
-log "Fan-out: dispatched $dispatched worker(s) (detached, running in background)"
+log "Fan-out: dispatched ${#ELIGIBLE[@]} worker(s) (detached, running in background)"
 exit 0

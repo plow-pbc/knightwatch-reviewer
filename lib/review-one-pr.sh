@@ -34,27 +34,19 @@ if [ -n "${TRIGGER_COMMENT_FILE:-}" ] && [ -f "${TRIGGER_COMMENT_FILE}" ]; then
     rm -f "${TRIGGER_COMMENT_FILE}"
 fi
 
-# Two distinct semantics, two meta.json fields:
-#
-#   - started_at      = worker process-entry time. Round's lifecycle
-#                       timestamp; rendered in the LoC trend table by
-#                       author_visible_rounds(). Distinct per round.
-#   - slash_cutoff_at = the comment-cutoff watermark. Stamped from the
-#                       SLASH_CUTOFF_AT env var (review.sh sets it from
-#                       the .created_at of the consumed slash trigger,
-#                       or carries the prior cutoff forward when no
-#                       higher-priority slash was consumed). See
-#                       latest_author_visible_slash_cutoff_at in
-#                       lib/run-dir.sh for the read-side contract.
-#
-# Fallback for direct invocations (tests, manual runs) where the env
-# var isn't set: slash_cutoff_at falls back to worker-entry ISO.
+# REVIEW_START_TS (epoch) drives internal elapsed-time accounting on the
+# worker clock. REVIEW_START_ISO drives meta.json.started_at, which
+# review.sh's NEXT tick uses as the slash-command cutoff. Prefer the
+# dispatcher's tick-fetch time (DISPATCHER_TICK_AT env var, captured by
+# review.sh at the top of each per-PR loop iteration) so a comment
+# posted in the gap between dispatcher and worker init isn't silently
+# dropped by the next tick's "created_at > started_at" filter. Fall
+# back to worker-entry time for direct invocations (tests, manual runs).
 REVIEW_START_TS=$(date +%s)
 # Portable epoch→ISO conversion — `date -u -d "@<epoch>"` is GNU-only and
 # breaks on macOS BSD date. Use python3 (already a project dep) for both
 # platforms. Same fix as lib/tests/divergent-clock-smoke.sh.
-REVIEW_START_ISO=$(python3 -c "import datetime; print(datetime.datetime.fromtimestamp(int('$REVIEW_START_TS'), tz=datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))")
-SLASH_CUTOFF_ISO="${SLASH_CUTOFF_AT:-$REVIEW_START_ISO}"
+REVIEW_START_ISO="${DISPATCHER_TICK_AT:-$(python3 -c "import datetime; print(datetime.datetime.fromtimestamp(int('$REVIEW_START_TS'), tz=datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))")}"
 
 # --- per-PR advisory lock ----------------------------------------------------
 # Prevents two concurrent invocations from stepping on each other for the same
@@ -493,16 +485,12 @@ mkdir -p "$REPO_DIR/.codex-scratch"
 # rather than at run-dir allocation so `sha` records what was actually
 # reviewed (REVIEWED_SHA) instead of the orchestrator's enumeration SHA
 # (PR_SHA). Worker abort paths between RUN_DIR allocation and this point
-# leave no meta.json; finalize_meta_json's missing-file path is tolerant.
-#
-# Two distinct timestamps (see the REVIEW_START_TS/SLASH_CUTOFF_ISO block
-# upstream for the rationale): started_at is the round's lifecycle clock
-# (worker process-entry time, distinct per round so author_visible_rounds'
-# LoC-table render shows one row per round), slash_cutoff_at is the
-# comment-cutoff watermark for review.sh's next-tick filter (sourced from
-# SLASH_CUTOFF_AT, only advanced when a slash trigger was consumed).
-# Title is JSON-escaped via jq so titles with quotes / newlines don't
-# break the file.
+# leave no meta.json; finalize_meta_json's missing-file path is
+# tolerant. started_at uses REVIEW_START_ISO (captured at script entry,
+# single-clock-read alongside REVIEW_START_TS) so review.sh's "comments
+# newer than this review" cutoff doesn't drift past comments posted
+# during the worker's setup window. Title is JSON-escaped via jq so
+# titles with quotes / newlines don't break the file.
 if ! jq -n \
         --arg repo "$REPO" \
         --arg pr_id "$PR_ID" \
@@ -514,8 +502,7 @@ if ! jq -n \
         --arg force_whole_pr "$FORCE_WHOLE_PR" \
         --arg workdir "$WORKDIRS_DIR/${REPO_SLUG_FOR_RUN}__${PR_NUM}" \
         --arg started_at "$REVIEW_START_ISO" \
-        --arg slash_cutoff_at "$SLASH_CUTOFF_ISO" \
-        '{repo: $repo, pr_id: $pr_id, pr_num: $pr_num, sha: $sha, branch: $branch, base_ref: $base_ref, title: $title, force_whole_pr: ($force_whole_pr == "true"), workdir: $workdir, started_at: $started_at, slash_cutoff_at: $slash_cutoff_at}' \
+        '{repo: $repo, pr_id: $pr_id, pr_num: $pr_num, sha: $sha, branch: $branch, base_ref: $base_ref, title: $title, force_whole_pr: ($force_whole_pr == "true"), workdir: $workdir, started_at: $started_at}' \
         > "$RUN_DIR/meta.json"; then
     log "$PR_ID: failed to write $RUN_DIR/meta.json — aborting"
     rm -rf "$REPO_DIR"
@@ -1390,7 +1377,7 @@ else
 fi
 
 # state.json retired: every runtime-decision seam reads runs/ now (KNOWN_SHA
-# at the orchestrator gate, slash_cutoff_at, worker's PREV_BODY /
+# at the orchestrator gate, slash-cutoff started_at, worker's PREV_BODY /
 # KNOWN_SHA / PREV_APPROVED). The four pieces of round state the legacy
 # state_set call used to persist are already on disk in runs/ at this point:
 #   - body       → agents/aggregator/output.md (already written above)

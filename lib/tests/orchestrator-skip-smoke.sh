@@ -222,8 +222,8 @@ cp "$PROJECT_ROOT/lib/run-dir.sh"       "$REVIEWER_LIB_DIR/run-dir.sh"
 cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<'WORKER'
 #!/bin/bash
 # Args from review.sh: REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR
-# TRIGGER_COMMENT_FILE + SLASH_CUTOFF_AT come through as env vars.
-echo "WORKER_DISPATCHED repo=$1 pr=$2 sha=$3 force_whole=$6 trigger_file=${TRIGGER_COMMENT_FILE:-} dispatcher_tick=${SLASH_CUTOFF_AT:-}" >> "$LOG_FILE"
+# TRIGGER_COMMENT_FILE comes through as an env var.
+echo "WORKER_DISPATCHED repo=$1 pr=$2 sha=$3 force_whole=$6 trigger_file=${TRIGGER_COMMENT_FILE:-} dispatcher_tick=${DISPATCHER_TICK_AT:-}" >> "$LOG_FILE"
 WORKER
 chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
 
@@ -232,7 +232,7 @@ chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
 # Seed runs/ with an author-visible run for this PR. The orchestrator's
 # dispatch gate (KNOWN_SHA via latest_author_visible_review_sha) and
 # slash-command cutoff (started_at via
-# latest_author_visible_slash_cutoff_at) read exclusively from runs/
+# latest_author_visible_review_started_at) read exclusively from runs/
 # — state.json was retired entirely in PR #38. Most scenarios want
 # "we already reviewed abc123" → seed a posted run with
 # reviewed_sha=abc123.
@@ -242,13 +242,11 @@ seed_run() {
     local rd="$STATE_DIR/runs/${slug}__${pr}__${ts}__${sha:0:7}"
     mkdir -p "$rd/agents/aggregator"
     printf '## prior review\n\nVERDICT: %s\n' "$verdict" > "$rd/agents/aggregator/output.md"
-    # Legacy meta.json shape (started_at as the slash-cutoff value, no
-    # slash_cutoff_at field) — exercises the fallback path in
-    # latest_author_visible_slash_cutoff_at (.slash_cutoff_at //
-    # .started_at), keeping these scenarios valid across the field split.
-    # posted_at + reviewed_sha remain for KNOWN_SHA + author-visible
-    # filtering. All four live in the SAME meta.json so a regression
-    # that re-routes any of them back to state.json shows up here.
+    # started_at is what review.sh's slash-command cutoff now reads (via
+    # latest_author_visible_review_started_at). posted_at + reviewed_sha
+    # remain for KNOWN_SHA + author-visible filtering. All three live in
+    # the SAME meta.json so a regression that re-routes any of the three
+    # back to state.json shows up here.
     printf '{"status":"completed","posted_at":"2026-04-29T15:00:00Z","started_at":"%s","reviewed_sha":"%s"}' "$started_at" "$sha" > "$rd/meta.json"
     echo "$rd"
 }
@@ -713,7 +711,7 @@ echo "  scenario 13: /srosro-update-review on page 2 of comments — page-2 pagi
 # under timeout) left it in non-default state.
 cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<'WORKER'
 #!/bin/bash
-echo "WORKER_DISPATCHED repo=$1 pr=$2 sha=$3 force_whole=$6 trigger_file=${TRIGGER_COMMENT_FILE:-} dispatcher_tick=${SLASH_CUTOFF_AT:-}" >> "$LOG_FILE"
+echo "WORKER_DISPATCHED repo=$1 pr=$2 sha=$3 force_whole=$6 trigger_file=${TRIGGER_COMMENT_FILE:-} dispatcher_tick=${DISPATCHER_TICK_AT:-}" >> "$LOG_FILE"
 WORKER
 chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
 
@@ -863,14 +861,14 @@ if [ "$n" -ne 0 ]; then
 fi
 
 # Scenario 18: structural fences — review.sh wires
-# latest_author_visible_slash_cutoff_at, and NO production code path
+# latest_author_visible_review_started_at, and NO production code path
 # (review.sh, lib/review-one-pr.sh) calls state_get/state_set or
 # touches state.json. State.json was retired entirely in PR #38; this
 # guard fails loud if a regression re-introduces any state.json read or
 # write at a runtime-decision seam.
-echo "  scenario 18: review.sh wires latest_author_visible_slash_cutoff_at + no state.json residue in production (static gate)..."
-if ! grep -q 'latest_author_visible_slash_cutoff_at' "$PROJECT_ROOT/review.sh"; then
-    echo "FAIL scenario 18: review.sh no longer references latest_author_visible_slash_cutoff_at — slash-cutoff has been re-routed off runs/, reopens 4th-leak race"
+echo "  scenario 18: review.sh wires latest_author_visible_review_started_at + no state.json residue in production (static gate)..."
+if ! grep -q 'latest_author_visible_review_started_at' "$PROJECT_ROOT/review.sh"; then
+    echo "FAIL scenario 18: review.sh no longer references latest_author_visible_review_started_at — slash-cutoff has been re-routed off runs/, reopens 4th-leak race"
     exit 1
 fi
 # state_get / state_set are deleted; any production CALL site re-introducing
@@ -885,24 +883,17 @@ for f in "$PROJECT_ROOT/review.sh" "$PROJECT_ROOT/lib/review-one-pr.sh"; do
     fi
 done
 
-# Scenario 19: SLASH_CUTOFF_AT env var equals the EXACT .created_at of
-# the CONSUMED slash trigger (NOT the snapshot max). This is the
-# WRITE-side of the slash-cutoff contract: anchoring in the specific
-# comment we consumed (not the all-comment max) ensures a hidden
-# higher-scope command behind a visible lower-scope one doesn't get
-# filtered out next tick. The exact-value pin also guards against a
-# regression to `date -u +...` (which would still produce an
-# ISO-looking string and pass a shape-only assert but reopen the
-# wall-clock-vs-snapshot-derived race).
-echo "  scenario 19: review.sh passes consumed-trigger .created_at to worker as SLASH_CUTOFF_AT (NOT the snapshot max)..."
+# Scenario 19: review.sh passes DISPATCHER_TICK_AT env var to the worker.
+# The worker stamps meta.json.started_at from this value so the next
+# tick's "created_at > started_at" cutoff doesn't slip past a comment
+# posted in the gap between dispatcher and worker init. ISO-shape match
+# is sufficient — the value is `date -u +...` at the top of the per-PR
+# loop, so its actual contents are runtime-dependent.
+echo "  scenario 19: review.sh passes DISPATCHER_TICK_AT env var to the worker..."
 clear_seeded_runs
 MOCK_TRUSTED_USERS="srosro,someuser" \
     seed_run "cncorp_plow" "1" "20260429T143000000Z" "abc123" "COMMENT" >/dev/null
-# Two comments — the slash trigger AND a NEWER non-trigger. A regression
-# to "advance to snapshot max" would write the newer-non-trigger ts;
-# the correct behavior writes the trigger's own ts.
-EXPECTED_TICK="2026-04-30T16:00:00Z"
-printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"},{"created_at":"2026-04-30T16:02:00Z","user":{"login":"someuser"},"body":"thanks"}]\n' "$EXPECTED_TICK" > "$MOCK_COMMENTS_FILE"
+printf '[{"created_at":"2026-04-30T16:00:00Z","user":{"login":"someuser"},"body":"/srosro-review"}]\n' > "$MOCK_COMMENTS_FILE"
 run_orchestrator
 n=$(count_dispatches)
 if [ "$n" -ne 1 ]; then
@@ -910,107 +901,11 @@ if [ "$n" -ne 1 ]; then
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
-if ! grep -qF "dispatcher_tick=$EXPECTED_TICK" "$LOG_FILE"; then
-    echo "FAIL scenario 19 (slash-cutoff write-side regression): expected exact dispatcher_tick=$EXPECTED_TICK (the trigger's ts) in WORKER_DISPATCHED, got:"
+if ! grep -qE 'dispatcher_tick=20[0-9][0-9]-[01][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9]Z' "$LOG_FILE"; then
+    echo "FAIL scenario 19 (slash-cutoff regression): expected dispatcher_tick=<ISO8601> in WORKER_DISPATCHED, got:"
     grep 'WORKER_DISPATCHED' "$LOG_FILE" || true
-    echo "review.sh must derive SLASH_CUTOFF_AT from the CONSUMED trigger's .created_at (not the snapshot max — that would orphan a hidden higher-scope command behind a visible lower-scope one)."
+    echo "review.sh must pass DISPATCHER_TICK_AT (captured per-PR before fetch + dispatch) to the worker so meta.json.started_at is stamped from the dispatcher's tick-fetch time, not the worker's process-entry time."
     exit 1
 fi
 
-# Scenario 20: push-only dispatch with a newer non-trigger comment in the
-# snapshot — cutoff MUST NOT advance to the newer comment's timestamp.
-# This fences the eventual-consistency hole: GitHub can omit an older
-# /srosro-* comment from the response while including a newer non-trigger
-# comment; if we advanced past the newer comment, the slash command
-# would be orphaned forever once it propagates.
-echo "  scenario 20: push-only dispatch + newer non-trigger comment — cutoff stays at prior slash_cutoff_at..."
-clear_seeded_runs
-PRIOR_CUTOFF="2026-04-29T14:00:00Z"
-NEWER_TS="2026-04-30T17:00:00Z"
-# Seed with cutoff at PRIOR_CUTOFF on the old sha so the dispatch fires
-# on SHA change (gh stub returns abc123; seeded sha is older_sha_999).
-MOCK_TRUSTED_USERS="srosro,someuser" \
-    seed_run "cncorp_plow" "1" "20260429T120000000Z" "older_sha_999" "COMMENT" "$PRIOR_CUTOFF" >/dev/null
-# Snapshot has only a non-trigger comment newer than the prior cutoff;
-# NO slash command is visible at this tick (eventual-consistency scenario).
-printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"thanks for the work"}]\n' "$NEWER_TS" > "$MOCK_COMMENTS_FILE"
-run_orchestrator
-n=$(count_dispatches)
-if [ "$n" -ne 1 ]; then
-    echo "FAIL scenario 20 (setup): expected 1 dispatch (SHA change), got $n"
-    echo "--- log ---"; cat "$LOG_FILE"
-    exit 1
-fi
-if ! grep -qF "dispatcher_tick=$PRIOR_CUTOFF" "$LOG_FILE"; then
-    echo "FAIL scenario 20 (push-only carry-forward regression): expected dispatcher_tick=$PRIOR_CUTOFF (carry forward from prior run's slash_cutoff_at), got:"
-    grep 'WORKER_DISPATCHED' "$LOG_FILE" || true
-    echo "On push-only dispatches (no slash trigger consumed), review.sh must keep NEXT_SLASH_CUTOFF_AT at the prior SLASH_CUTOFF_AT — advancing to the snapshot max would orphan a slash command that eventual-consistency hid from this tick."
-    exit 1
-fi
-
-# Scenario 21: whole-PR trigger + newer non-trigger comment — cutoff
-# MUST be the consumed trigger's .created_at, NOT the all-snapshot max.
-# Anchoring in the SPECIFIC consumed whole-PR (not the snapshot max)
-# means a future hidden /srosro-update-review at a lower ts would still
-# be eligible — but more importantly, advancing past a newer non-trigger
-# would orphan ANY older slash command that's still propagating.
-echo "  scenario 21: whole-PR trigger + newer non-trigger — cutoff = trigger's .created_at (not snapshot max)..."
-clear_seeded_runs
-TRIGGER_TS="2026-04-30T16:00:00Z"
-NEWER_NONTRIGGER_TS="2026-04-30T16:05:00Z"
-MOCK_TRUSTED_USERS="srosro,someuser" \
-    seed_run "cncorp_plow" "1" "20260429T143000000Z" "older_sha_999" "COMMENT" >/dev/null
-printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"},{"created_at":"%s","user":{"login":"someuser"},"body":"thanks"}]\n' "$TRIGGER_TS" "$NEWER_NONTRIGGER_TS" > "$MOCK_COMMENTS_FILE"
-run_orchestrator
-n=$(count_dispatches)
-if [ "$n" -ne 1 ]; then
-    echo "FAIL scenario 21 (setup): expected 1 dispatch, got $n"
-    echo "--- log ---"; cat "$LOG_FILE"
-    exit 1
-fi
-if ! grep -qF "dispatcher_tick=$TRIGGER_TS" "$LOG_FILE"; then
-    echo "FAIL scenario 21 (snapshot-max regression): expected dispatcher_tick=$TRIGGER_TS (the consumed whole-PR's ts), got:"
-    grep 'WORKER_DISPATCHED' "$LOG_FILE" || true
-    echo "review.sh must anchor NEXT_SLASH_CUTOFF_AT in the consumed trigger's .created_at — using the snapshot max would orphan any older slash command still propagating."
-    exit 1
-fi
-if ! grep -qF "force_whole=true" "$LOG_FILE"; then
-    echo "FAIL scenario 21: expected force_whole=true (consumed trigger is /srosro-review)"
-    grep 'WORKER_DISPATCHED' "$LOG_FILE" || true
-    exit 1
-fi
-
-# Scenario 22: incremental consume does NOT advance cutoff. Closes the
-# hidden-whole-PR-behind-visible-incremental hole: if a /srosro-review is
-# hidden by eventual consistency and only the /srosro-update-review is
-# visible at this tick, advancing the cutoff to the incremental's ts
-# would orphan the whole-PR command once it propagates. Cutoff stays at
-# the prior watermark; the whole-PR is detected on the next tick that
-# sees it.
-echo "  scenario 22: incremental consume holds cutoff at prior SLASH_CUTOFF_AT (hidden-whole-PR fence)..."
-clear_seeded_runs
-PRIOR_CUTOFF_22="2026-04-29T13:00:00Z"
-INCR_TS="2026-04-30T16:00:00Z"
-MOCK_TRUSTED_USERS="srosro,someuser" \
-    seed_run "cncorp_plow" "1" "20260429T130000000Z" "older_sha_999" "COMMENT" "$PRIOR_CUTOFF_22" >/dev/null
-printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-update-review"}]\n' "$INCR_TS" > "$MOCK_COMMENTS_FILE"
-run_orchestrator
-n=$(count_dispatches)
-if [ "$n" -ne 1 ]; then
-    echo "FAIL scenario 22 (setup): expected 1 dispatch, got $n"
-    echo "--- log ---"; cat "$LOG_FILE"
-    exit 1
-fi
-if ! grep -qF "dispatcher_tick=$PRIOR_CUTOFF_22" "$LOG_FILE"; then
-    echo "FAIL scenario 22 (hidden-whole-PR-behind-incremental regression): expected dispatcher_tick=$PRIOR_CUTOFF_22 (carry forward — incremental consumes don't advance cutoff), got:"
-    grep 'WORKER_DISPATCHED' "$LOG_FILE" || true
-    echo "review.sh must hold NEXT_SLASH_CUTOFF_AT at the prior cutoff when the consumed trigger is incremental — a hidden /srosro-review with an older .created_at could still propagate, and advancing past the incremental's ts would orphan it."
-    exit 1
-fi
-if ! grep -qF "force_whole=false" "$LOG_FILE"; then
-    echo "FAIL scenario 22: expected force_whole=false (consumed trigger is /srosro-update-review)"
-    grep 'WORKER_DISPATCHED' "$LOG_FILE" || true
-    exit 1
-fi
-
-echo "  PASS (22 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, consumed-trigger-write-side, push-only-carry-forward-cutoff, mixed-trigger-cutoff-bound-to-trigger, incremental-consume-holds-cutoff)"
+echo "  PASS (19 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough)"
