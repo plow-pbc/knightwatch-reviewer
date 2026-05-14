@@ -78,9 +78,24 @@ if [[ ! -x "$REVIEWER_LIB_DIR/review-one-pr.sh" ]]; then
     exit 1
 fi
 
-# ---------- enumerate eligible PRs ----------
-declare -a ELIGIBLE=()
+# ---------- enumerate + dispatch (single-pass) ----------
+# Per-worker timeout. With detached workers (KillMode=process), the
+# service-level TimeoutStartSec=90min no longer bounds worker runtime
+# (orchestrator returns before workers complete). A wedged Codex phase
+# could hold the per-PR flock indefinitely, blocking all future
+# /srosro-update-review for that PR. `timeout 90m` re-establishes the
+# pre-detach ceiling at the worker level; the worker exits, the flock
+# releases, and the next tick can re-dispatch.
+WORKER_TIMEOUT="${WORKER_TIMEOUT:-90m}"
+log "Fan-out: max $MAX_CONCURRENT concurrent, per-worker timeout $WORKER_TIMEOUT"
 
+# Single-pass: enumerate PRs and dispatch eligible ones inline. No
+# ELIGIBLE serialization, no \x1f delimiter, no PR-title scrub — shell
+# variable boundaries are explicit when we invoke the worker directly
+# with positional args + env vars. Per-PR flock in lib/review-one-pr.sh
+# prevents duplicate-dispatch races for the same PR.
+active=0
+dispatched=0
 for REPO in "${REPOS[@]}"; do
     PR_LIST=$(gh pr list --repo "$REPO" --json number,title,headRefName,headRefOid 2>/dev/null) || {
         log "Failed to list PRs for $REPO"
@@ -90,16 +105,7 @@ for REPO in "${REPOS[@]}"; do
 
     while IFS= read -r PR_JSON; do
         PR_NUM=$(echo "$PR_JSON" | jq -r '.number')
-        # Strip control chars (U+0000-001F, U+007F) from PR_TITLE before
-        # it lands in the \x1f-delimited ELIGIBLE spec. GitHub allows
-        # control chars in titles via the REST API (only the web UI
-        # rejects them), and `jq -r` outputs the literal bytes — so a
-        # title like "x\x1fevil\x1f/path" would shift TRIGGER_FILE to an
-        # attacker-controlled path on dispatch. REPO/PR_NUM/PR_SHA are
-        # restricted character sets and PR_BRANCH per git refs spec
-        # can't contain control chars; PR_TITLE is the only PR-derived
-        # field that needs this defense.
-        PR_TITLE=$(echo "$PR_JSON" | jq -r '.title' | tr -d '\000-\037\177')
+        PR_TITLE=$(echo "$PR_JSON" | jq -r '.title')
         PR_BRANCH=$(echo "$PR_JSON" | jq -r '.headRefName')
         PR_SHA=$(echo "$PR_JSON" | jq -r '.headRefOid')
         PR_ID="${REPO}#${PR_NUM}"
@@ -119,7 +125,7 @@ for REPO in "${REPOS[@]}"; do
         TRIGGER_FILE=""
         TRIGGER_USER=""
         TRIGGER_BODY=""
-        TICK_FETCHED_AT_ISO=""
+        NEXT_SLASH_CUTOFF_AT=""
 
         if [ -n "$KNOWN_SHA" ]; then
             # Cutoff timestamp sources from runs/ (meta.json.started_at)
@@ -137,7 +143,7 @@ for REPO in "${REPOS[@]}"; do
             # API's processing-time and our post-fetch local clock.
             # Helper returns ISO 8601 directly — meta.json.started_at is
             # already in that format.
-            REVIEWED_AT_ISO=$(latest_author_visible_review_started_at "$STATE_DIR" "$REPO_SLUG_FOR_GATE" "$PR_NUM" "")
+            SLASH_CUTOFF_AT=$(latest_author_visible_slash_cutoff_at "$STATE_DIR" "$REPO_SLUG_FOR_GATE" "$PR_NUM" "")
             # Fail loud on a transient gh outage rather than treating
             # "API broken" as "no comments" and silently missing a
             # /srosro-update-review trigger. Same wrapper shape as
@@ -146,10 +152,10 @@ for REPO in "${REPOS[@]}"; do
                 log "$PR_ID: comments fetch failed — skipping this PR for this tick"
                 continue
             }
-            # TICK_FETCHED_AT_ISO is set below (after FORCE_REVIEW is
+            # NEXT_SLASH_CUTOFF_AT is set below (after FORCE_REVIEW is
             # determined) — only advance to the snapshot max when a slash
             # trigger was actually consumed, otherwise carry the prior
-            # REVIEWED_AT_ISO forward. Advancing on push-only dispatches
+            # SLASH_CUTOFF_AT forward. Advancing on push-only dispatches
             # would let eventual-consistency hide a slash command: if a
             # /srosro-* comment is older than a newer non-trigger comment
             # in the fetched snapshot but propagation delay omits the
@@ -170,10 +176,10 @@ for REPO in "${REPOS[@]}"; do
             # substring). Whole-PR check excludes /srosro-update-review so
             # the longer command doesn't accidentally satisfy both paths.
             WHOLE_TRIGGER=$(printf '%s' "$COMMENTS_JSON" |
-                jq --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
+                jq --arg since "$SLASH_CUTOFF_AT" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
                     '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/" + $cmd_prefix + "-review"; "i")) and ((.body | test("/" + $cmd_prefix + "-update-review"; "i")) | not))] | length')
             INCREMENTAL_TRIGGER=$(printf '%s' "$COMMENTS_JSON" |
-                jq --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
+                jq --arg since "$SLASH_CUTOFF_AT" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
                     '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/" + $cmd_prefix + "-update-review"; "i")))] | length')
             if [ "${WHOLE_TRIGGER:-0}" -gt 0 ]; then
                 FORCE_REVIEW=true
@@ -182,10 +188,10 @@ for REPO in "${REPOS[@]}"; do
                 FORCE_REVIEW=true
             fi
             # Cutoff = max(.created_at) of fetched snapshot, lower-bounded
-            # by the prior REVIEWED_AT_ISO so the watermark never regresses
+            # by the prior SLASH_CUTOFF_AT so the watermark never regresses
             # — but ONLY when a slash trigger was actually consumed at this
             # tick. On push-only dispatches (FORCE_REVIEW=false), keep the
-            # cutoff at REVIEWED_AT_ISO: eventual-consistency can hide a
+            # cutoff at SLASH_CUTOFF_AT: eventual-consistency can hide a
             # /srosro-* comment from this tick's snapshot while exposing a
             # newer non-trigger comment, and advancing past the newer one
             # would orphan the slash command forever once it propagates.
@@ -193,10 +199,10 @@ for REPO in "${REPOS[@]}"; do
             # clock) also closes the sub-second window between the API's
             # processing-time and our post-fetch local clock.
             if [ "$FORCE_REVIEW" = "true" ]; then
-                TICK_FETCHED_AT_ISO=$(printf '%s' "$COMMENTS_JSON" | jq -r --arg fb "$REVIEWED_AT_ISO" \
+                NEXT_SLASH_CUTOFF_AT=$(printf '%s' "$COMMENTS_JSON" | jq -r --arg fb "$SLASH_CUTOFF_AT" \
                     '[(map(.created_at) | max // empty), $fb] | max')
             else
-                TICK_FETCHED_AT_ISO="$REVIEWED_AT_ISO"
+                NEXT_SLASH_CUTOFF_AT="$SLASH_CUTOFF_AT"
             fi
             # If a comment triggered this re-review, capture the latest matching
             # comment's author + body to a tmp file so the worker can stage it
@@ -207,11 +213,11 @@ for REPO in "${REPOS[@]}"; do
             if [ "$FORCE_REVIEW" = "true" ]; then
                 if [ "$FORCE_WHOLE_PR" = "true" ]; then
                     TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
-                        jq -c --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
+                        jq -c --arg since "$SLASH_CUTOFF_AT" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
                             '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/" + $cmd_prefix + "-review"; "i")) and ((.body | test("/" + $cmd_prefix + "-update-review"; "i")) | not))] | sort_by(.created_at) | last // empty' 2>/dev/null)
                 else
                     TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
-                        jq -c --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
+                        jq -c --arg since "$SLASH_CUTOFF_AT" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
                             '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/" + $cmd_prefix + "-update-review"; "i")))] | sort_by(.created_at) | last // empty' 2>/dev/null)
                 fi
                 if [ -n "$TRIGGER_JSON" ]; then
@@ -301,55 +307,31 @@ for REPO in "${REPOS[@]}"; do
             printf 'Comment by @%s:\n\n%s\n' "$TRIGGER_USER" "$TRIGGER_BODY" > "$TRIGGER_FILE"
         fi
 
-        # ASCII Unit Separator (\x1f, non-whitespace) so titles with
-        # spaces survive AND adjacent empty fields don't collapse —
-        # bash's `read` with whitespace IFS treats consecutive
-        # delimiters as one, which would silently shift later fields
-        # left (e.g., DISPATCHER_TICK_AT would land in TRIGGER_FILE
-        # whenever TRIGGER_FILE was empty).
-        ELIGIBLE+=("$REPO"$'\x1f'"$PR_NUM"$'\x1f'"$PR_SHA"$'\x1f'"$PR_BRANCH"$'\x1f'"$PR_TITLE"$'\x1f'"$FORCE_WHOLE_PR"$'\x1f'"$TRIGGER_FILE"$'\x1f'"$TICK_FETCHED_AT_ISO")
+        # Throttle to MAX_CONCURRENT in-flight workers per tick. We don't
+        # track outcomes here — workers detach (KillMode=process on the
+        # unit) and the next tick runs regardless of this tick's per-worker
+        # results. Per-worker outcomes live in $STATE_DIR/runs/<id>/run.log
+        # and the systemd journal. Per-PR flock in lib/review-one-pr.sh
+        # prevents duplicate-dispatch races for the same PR.
+        while [ "$active" -ge "$MAX_CONCURRENT" ]; do
+            wait -n || true
+            active=$((active - 1))
+        done
+
+        TRIGGER_COMMENT_FILE="$TRIGGER_FILE" \
+        DISPATCHER_TICK_AT="$NEXT_SLASH_CUTOFF_AT" \
+        REVIEWER_LIB_DIR="$REVIEWER_LIB_DIR" \
+            timeout "$WORKER_TIMEOUT" "$REVIEWER_LIB_DIR/review-one-pr.sh" \
+            "$REPO" "$PR_NUM" "$PR_SHA" "$PR_BRANCH" "$PR_TITLE" "$FORCE_WHOLE_PR" &
+        active=$((active + 1))
+        dispatched=$((dispatched + 1))
     done < <(echo "$PR_LIST" | jq -c '.[]')
 done
 
-if [ ${#ELIGIBLE[@]} -eq 0 ]; then
+if [ "$dispatched" -eq 0 ]; then
     log "No PRs need review"
     exit 0
 fi
-
-# Per-worker timeout. With detached workers (KillMode=process), the
-# service-level TimeoutStartSec=90min no longer bounds worker runtime
-# (orchestrator returns before workers complete). A wedged Codex phase
-# could hold the per-PR flock indefinitely, blocking all future
-# /srosro-update-review for that PR. `timeout 90m` re-establishes the
-# pre-detach ceiling at the worker level; the worker exits, the flock
-# releases, and the next tick can re-dispatch.
-WORKER_TIMEOUT="${WORKER_TIMEOUT:-90m}"
-
-log "Fan-out: ${#ELIGIBLE[@]} eligible PR(s), max $MAX_CONCURRENT concurrent, per-worker timeout $WORKER_TIMEOUT"
-
-# ---------- fan out with bounded concurrency ----------
-# Rate-limit fan-out to MAX_CONCURRENT in-flight workers per tick. We
-# don't track outcomes here — workers detach (KillMode=process on the
-# unit) and the next tick runs regardless of this tick's per-worker
-# results. Per-worker outcomes live in $STATE_DIR/runs/<id>/run.log
-# and the systemd journal. Per-PR flock in lib/review-one-pr.sh
-# prevents duplicate-dispatch races for the same PR.
-active=0
-for spec in "${ELIGIBLE[@]}"; do
-    IFS=$'\x1f' read -r REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR TRIGGER_FILE DISPATCHER_TICK_AT <<< "$spec"
-
-    while [ "$active" -ge "$MAX_CONCURRENT" ]; do
-        wait -n || true
-        active=$((active - 1))
-    done
-
-    TRIGGER_COMMENT_FILE="$TRIGGER_FILE" \
-    DISPATCHER_TICK_AT="$DISPATCHER_TICK_AT" \
-    REVIEWER_LIB_DIR="$REVIEWER_LIB_DIR" \
-        timeout "$WORKER_TIMEOUT" "$REVIEWER_LIB_DIR/review-one-pr.sh" \
-        "$REPO" "$PR_NUM" "$PR_SHA" "$PR_BRANCH" "$PR_TITLE" "$FORCE_WHOLE_PR" &
-    active=$((active + 1))
-done
 
 # Detached fan-out: workers are running in the background and will
 # continue past this script's exit (KillMode=process on the systemd
@@ -359,5 +341,5 @@ done
 # journal. Without this, the next 2-min timer tick is blocked until the
 # slowest worker finishes (15–20 min in production), making
 # /srosro-update-review pickup unboundedly slow.
-log "Fan-out: dispatched ${#ELIGIBLE[@]} worker(s) (detached, running in background)"
+log "Fan-out: dispatched $dispatched worker(s) (detached, running in background)"
 exit 0

@@ -491,7 +491,7 @@ latest_author_visible_review_approved() {
     fi
 }
 
-# latest_author_visible_review_started_at <state_dir> <repo_slug> <pr_num> <current_run_dir>
+# latest_author_visible_slash_cutoff_at <state_dir> <repo_slug> <pr_num> <current_run_dir>
 #   stdout: ISO 8601 timestamp from meta.json's `started_at` field of the
 #           latest author-visible run, or empty if no prior author-visible
 #           run exists.
@@ -518,9 +518,7 @@ latest_author_visible_review_approved() {
 # split; older runs had cutoff-overloaded-as-started_at semantics, so
 # reading .started_at as a fallback preserves the prior behavior on
 # legacy meta.json files (eventually drains as new rounds land).
-# Function name retained for backward compat with callers; the
-# returned value is the slash cutoff, not the run lifecycle start.
-latest_author_visible_review_started_at() {
+latest_author_visible_slash_cutoff_at() {
     local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"
     local latest
     latest=$(_latest_author_visible_run_dir "$state_dir" "$repo_slug" "$pr_num" "$current_run_dir")

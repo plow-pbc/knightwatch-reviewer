@@ -232,7 +232,7 @@ chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
 # Seed runs/ with an author-visible run for this PR. The orchestrator's
 # dispatch gate (KNOWN_SHA via latest_author_visible_review_sha) and
 # slash-command cutoff (started_at via
-# latest_author_visible_review_started_at) read exclusively from runs/
+# latest_author_visible_slash_cutoff_at) read exclusively from runs/
 # — state.json was retired entirely in PR #38. Most scenarios want
 # "we already reviewed abc123" → seed a posted run with
 # reviewed_sha=abc123.
@@ -244,7 +244,7 @@ seed_run() {
     printf '## prior review\n\nVERDICT: %s\n' "$verdict" > "$rd/agents/aggregator/output.md"
     # Legacy meta.json shape (started_at as the slash-cutoff value, no
     # slash_cutoff_at field) — exercises the fallback path in
-    # latest_author_visible_review_started_at (.slash_cutoff_at //
+    # latest_author_visible_slash_cutoff_at (.slash_cutoff_at //
     # .started_at), keeping these scenarios valid across the field split.
     # posted_at + reviewed_sha remain for KNOWN_SHA + author-visible
     # filtering. All four live in the SAME meta.json so a regression
@@ -863,14 +863,14 @@ if [ "$n" -ne 0 ]; then
 fi
 
 # Scenario 18: structural fences — review.sh wires
-# latest_author_visible_review_started_at, and NO production code path
+# latest_author_visible_slash_cutoff_at, and NO production code path
 # (review.sh, lib/review-one-pr.sh) calls state_get/state_set or
 # touches state.json. State.json was retired entirely in PR #38; this
 # guard fails loud if a regression re-introduces any state.json read or
 # write at a runtime-decision seam.
-echo "  scenario 18: review.sh wires latest_author_visible_review_started_at + no state.json residue in production (static gate)..."
-if ! grep -q 'latest_author_visible_review_started_at' "$PROJECT_ROOT/review.sh"; then
-    echo "FAIL scenario 18: review.sh no longer references latest_author_visible_review_started_at — slash-cutoff has been re-routed off runs/, reopens 4th-leak race"
+echo "  scenario 18: review.sh wires latest_author_visible_slash_cutoff_at + no state.json residue in production (static gate)..."
+if ! grep -q 'latest_author_visible_slash_cutoff_at' "$PROJECT_ROOT/review.sh"; then
+    echo "FAIL scenario 18: review.sh no longer references latest_author_visible_slash_cutoff_at — slash-cutoff has been re-routed off runs/, reopens 4th-leak race"
     exit 1
 fi
 # state_get / state_set are deleted; any production CALL site re-introducing
@@ -916,4 +916,35 @@ if ! grep -qF "dispatcher_tick=$EXPECTED_TICK" "$LOG_FILE"; then
     exit 1
 fi
 
-echo "  PASS (19 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, snapshot-max-write-side)"
+# Scenario 20: push-only dispatch with a newer non-trigger comment in the
+# snapshot — cutoff MUST NOT advance to the newer comment's timestamp.
+# This fences the eventual-consistency hole: GitHub can omit an older
+# /srosro-* comment from the response while including a newer non-trigger
+# comment; if we advanced past the newer comment, the slash command
+# would be orphaned forever once it propagates.
+echo "  scenario 20: push-only dispatch + newer non-trigger comment — cutoff stays at prior slash_cutoff_at..."
+clear_seeded_runs
+PRIOR_CUTOFF="2026-04-29T14:00:00Z"
+NEWER_TS="2026-04-30T17:00:00Z"
+# Seed with cutoff at PRIOR_CUTOFF on the old sha so the dispatch fires
+# on SHA change (gh stub returns abc123; seeded sha is older_sha_999).
+MOCK_TRUSTED_USERS="srosro,someuser" \
+    seed_run "cncorp_plow" "1" "20260429T120000000Z" "older_sha_999" "COMMENT" "$PRIOR_CUTOFF" >/dev/null
+# Snapshot has only a non-trigger comment newer than the prior cutoff;
+# NO slash command is visible at this tick (eventual-consistency scenario).
+printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"thanks for the work"}]\n' "$NEWER_TS" > "$MOCK_COMMENTS_FILE"
+run_orchestrator
+n=$(count_dispatches)
+if [ "$n" -ne 1 ]; then
+    echo "FAIL scenario 20 (setup): expected 1 dispatch (SHA change), got $n"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+if ! grep -qF "dispatcher_tick=$PRIOR_CUTOFF" "$LOG_FILE"; then
+    echo "FAIL scenario 20 (push-only carry-forward regression): expected dispatcher_tick=$PRIOR_CUTOFF (carry forward from prior run's slash_cutoff_at), got:"
+    grep 'WORKER_DISPATCHED' "$LOG_FILE" || true
+    echo "On push-only dispatches (no slash trigger consumed), review.sh must keep TICK_FETCHED_AT_ISO at REVIEWED_AT_ISO — advancing to the snapshot max would orphan a slash command that eventual-consistency hid from this tick."
+    exit 1
+fi
+
+echo "  PASS (20 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, snapshot-max-write-side, push-only-carry-forward-cutoff)"
