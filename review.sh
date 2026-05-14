@@ -90,7 +90,14 @@ for REPO in "${REPOS[@]}"; do
 
     while IFS= read -r PR_JSON; do
         PR_NUM=$(echo "$PR_JSON" | jq -r '.number')
-        PR_TITLE=$(echo "$PR_JSON" | jq -r '.title')
+        # Strip control chars (U+0000-001F, U+007F) from the GitHub PR
+        # title before it lands in the tab-delimited ELIGIBLE spec.
+        # GitHub allows control chars in titles via the REST API (only
+        # the web UI rejects them); `jq -r` outputs the literal bytes.
+        # Defense-in-depth at the system boundary — strips the
+        # spec-field-shift attack surface regardless of how the
+        # downstream `read -r` joins fields.
+        PR_TITLE=$(echo "$PR_JSON" | jq -r '.title' | tr -d '\000-\037\177')
         PR_BRANCH=$(echo "$PR_JSON" | jq -r '.headRefName')
         PR_SHA=$(echo "$PR_JSON" | jq -r '.headRefOid')
         PR_ID="${REPO}#${PR_NUM}"
