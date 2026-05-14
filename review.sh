@@ -132,7 +132,7 @@ for REPO in "${REPOS[@]}"; do
             # — single source of truth since state.json was retired in
             # PR #38. started_at is now stamped from max(.created_at) of
             # the dispatcher's fetched comments snapshot (passed to the
-            # worker via DISPATCHER_TICK_AT, computed below), NOT the
+            # worker via SLASH_CUTOFF_AT, computed below), NOT the
             # worker's script-entry time NOR our local wall clock. That
             # closes the race where a /srosro-review posted in the gap
             # between dispatcher fetch and worker init would have a
@@ -161,86 +161,66 @@ for REPO in "${REPOS[@]}"; do
             # in the fetched snapshot but propagation delay omits the
             # slash command from THIS tick, advancing past the newer
             # comment would orphan the slash command on the next tick.
-            # Exclude the bot's own auto-posts (review ack, final review,
-            # learn-from-replies acks, and the usage footer that appears on
-            # every review and itself contains the slash commands) by
-            # matching the hidden HTML-comment marker every auto-post
-            # template prepends. The earlier `.user.login != $user` filter
-            # (e1d91a0) over-excluded: in single-account deployments
-            # BOT_USER is the human's own GH identity, so user-based
-            # filtering also drops legitimate slash-command comments the
-            # human posts.
+            # Single source for the consumed slash trigger: ONE jq call
+            # selects the highest-priority comment newer than the prior
+            # cutoff and returns it (or empty). Priority is /srosro-review
+            # (whole-PR) over /srosro-update-review (incremental); within
+            # each kind, the latest by created_at wins. Bot auto-posts are
+            # excluded via the HTML-comment marker (review acks, the usage
+            # footer that itself contains the slash commands, etc.); the
+            # marker filter is more reliable than .user.login != $user
+            # because single-account deployments run the bot AS the human,
+            # so user-based filtering also drops the human's legitimate
+            # slash commands.
             #
-            # Two slash commands; substring tests are sufficient because
-            # the strings are disjoint (neither contains the other as a
-            # substring). Whole-PR check excludes /srosro-update-review so
-            # the longer command doesn't accidentally satisfy both paths.
-            WHOLE_TRIGGER=$(printf '%s' "$COMMENTS_JSON" |
-                jq --arg since "$SLASH_CUTOFF_AT" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                    '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/" + $cmd_prefix + "-review"; "i")) and ((.body | test("/" + $cmd_prefix + "-update-review"; "i")) | not))] | length')
-            INCREMENTAL_TRIGGER=$(printf '%s' "$COMMENTS_JSON" |
-                jq --arg since "$SLASH_CUTOFF_AT" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                    '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/" + $cmd_prefix + "-update-review"; "i")))] | length')
-            if [ "${WHOLE_TRIGGER:-0}" -gt 0 ]; then
+            # FORCE_REVIEW / FORCE_WHOLE_PR / TRIGGER_* / NEXT_SLASH_CUTOFF_AT
+            # all derive from this one selection, so the cutoff and the
+            # staged trigger body can never drift apart. Empty selection =
+            # no slash trigger this tick = carry the prior cutoff forward
+            # (push-only dispatch path); this is the eventual-consistency
+            # fail-loud shape — if GitHub hid an older /srosro-* comment
+            # behind a newer non-trigger in this tick's snapshot, the next
+            # tick's filter still sees it.
+            TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
+                jq -c --arg since "$SLASH_CUTOFF_AT" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" '
+                    def is_whole: (.body | test("/" + $cmd_prefix + "-review"; "i")) and ((.body | test("/" + $cmd_prefix + "-update-review"; "i")) | not);
+                    def is_incr:  .body | test("/" + $cmd_prefix + "-update-review"; "i");
+                    [.[] | select((.body | contains($mark) | not) and .created_at > $since)] as $eligible |
+                    ([$eligible[] | select(is_whole)] | sort_by(.created_at) | last) //
+                    ([$eligible[] | select(is_incr)]  | sort_by(.created_at) | last) //
+                    empty' 2>/dev/null)
+            if [ -n "$TRIGGER_JSON" ]; then
                 FORCE_REVIEW=true
-                FORCE_WHOLE_PR=true
-            elif [ "${INCREMENTAL_TRIGGER:-0}" -gt 0 ]; then
-                FORCE_REVIEW=true
-            fi
-            # Cutoff = max(.created_at) of fetched snapshot, lower-bounded
-            # by the prior SLASH_CUTOFF_AT so the watermark never regresses
-            # — but ONLY when a slash trigger was actually consumed at this
-            # tick. On push-only dispatches (FORCE_REVIEW=false), keep the
-            # cutoff at SLASH_CUTOFF_AT: eventual-consistency can hide a
-            # /srosro-* comment from this tick's snapshot while exposing a
-            # newer non-trigger comment, and advancing past the newer one
-            # would orphan the slash command forever once it propagates.
-            # Anchoring in GitHub-stamped .created_at (vs. local wall
-            # clock) also closes the sub-second window between the API's
-            # processing-time and our post-fetch local clock.
-            if [ "$FORCE_REVIEW" = "true" ]; then
-                NEXT_SLASH_CUTOFF_AT=$(printf '%s' "$COMMENTS_JSON" | jq -r --arg fb "$SLASH_CUTOFF_AT" \
-                    '[(map(.created_at) | max // empty), $fb] | max')
+                TRIGGER_USER=$(printf '%s' "$TRIGGER_JSON" | jq -r '.user.login // ""')
+                TRIGGER_BODY_RAW=$(printf '%s' "$TRIGGER_JSON" | jq -r '.body // ""')
+                TRIGGER_CREATED_AT=$(printf '%s' "$TRIGGER_JSON" | jq -r '.created_at // ""')
+                # Whole-PR if body matches /srosro-review WITHOUT /srosro-update-review.
+                if printf '%s' "$TRIGGER_BODY_RAW" | grep -qiE "/${BOT_CMD_PREFIX}-update-review"; then
+                    FORCE_WHOLE_PR=false
+                else
+                    FORCE_WHOLE_PR=true
+                fi
+                # Cutoff = consumed trigger's .created_at, lower-bounded by
+                # prior SLASH_CUTOFF_AT so the watermark never regresses.
+                # Anchored in the SPECIFIC comment we consumed (not the
+                # snapshot max), so a hidden higher-scope command behind
+                # a visible lower-scope one doesn't get filtered out next
+                # tick. ISO 8601 sorts lexicographically.
+                NEXT_SLASH_CUTOFF_AT=$(printf '%s\n%s\n' "$TRIGGER_CREATED_AT" "$SLASH_CUTOFF_AT" | sort | tail -1)
+                # Trust gate: honor the trigger regardless of who posted
+                # it (the re-request-poller and external requesters need
+                # to keep working), but the body only gets staged as
+                # `.codex-scratch/trigger-comment.md` when the commenter
+                # has push access. Otherwise drive-by commenters could
+                # shape intent inference + aggregator on the auto-approve
+                # path.
+                if is_trusted_repo_author "$REPO" "$TRIGGER_USER"; then
+                    TRIGGER_BODY="$TRIGGER_BODY_RAW"
+                else
+                    log "$PR_ID: trigger from @$TRIGGER_USER — not staging trigger-comment.md (no push access)"
+                fi
             else
                 NEXT_SLASH_CUTOFF_AT="$SLASH_CUTOFF_AT"
-            fi
-            # If a comment triggered this re-review, capture the latest matching
-            # comment's author + body to a tmp file so the worker can stage it
-            # as `.codex-scratch/trigger-comment.md`. Lets the requester's own
-            # framing ("trying to DRY but ended up adding 2k LoC...") shape the
-            # inferred intent and the review's emphasis. Path is passed via the
-            # 7th spec field; the worker reads and rm -fs it once received.
-            if [ "$FORCE_REVIEW" = "true" ]; then
-                if [ "$FORCE_WHOLE_PR" = "true" ]; then
-                    TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
-                        jq -c --arg since "$SLASH_CUTOFF_AT" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                            '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/" + $cmd_prefix + "-review"; "i")) and ((.body | test("/" + $cmd_prefix + "-update-review"; "i")) | not))] | sort_by(.created_at) | last // empty' 2>/dev/null)
-                else
-                    TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
-                        jq -c --arg since "$SLASH_CUTOFF_AT" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                            '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/" + $cmd_prefix + "-update-review"; "i")))] | sort_by(.created_at) | last // empty' 2>/dev/null)
-                fi
-                if [ -n "$TRIGGER_JSON" ]; then
-                    TRIGGER_USER=$(printf '%s' "$TRIGGER_JSON" | jq -r '.user.login // ""')
-                    # Trust gate: the slash-command trigger itself is
-                    # honored regardless of who posted it (re-request-poller
-                    # and external requesters need to keep working), but the
-                    # comment's prose only gets staged as
-                    # `.codex-scratch/trigger-comment.md` when the commenter
-                    # has push access. Otherwise drive-by commenters could
-                    # shape intent inference + aggregator on the
-                    # auto-approve path.
-                    if is_trusted_repo_author "$REPO" "$TRIGGER_USER"; then
-                        # Capture body now; materialize the file post-skip
-                        # (below) so an unchanged-SHA /srosro-update-review
-                        # never allocates a tempfile only the worker would
-                        # have cleaned up. STATE_DIR/tmp is durable now
-                        # (no PrivateTmp tear-down to mask the leak).
-                        TRIGGER_BODY=$(printf '%s' "$TRIGGER_JSON" | jq -r '.body // ""')
-                    else
-                        log "$PR_ID: trigger from @$TRIGGER_USER — not staging trigger-comment.md (no push access)"
-                    fi
-                fi
             fi
         fi
 
@@ -319,7 +299,7 @@ for REPO in "${REPOS[@]}"; do
         done
 
         TRIGGER_COMMENT_FILE="$TRIGGER_FILE" \
-        DISPATCHER_TICK_AT="$NEXT_SLASH_CUTOFF_AT" \
+        SLASH_CUTOFF_AT="$NEXT_SLASH_CUTOFF_AT" \
         REVIEWER_LIB_DIR="$REVIEWER_LIB_DIR" \
             timeout "$WORKER_TIMEOUT" "$REVIEWER_LIB_DIR/review-one-pr.sh" \
             "$REPO" "$PR_NUM" "$PR_SHA" "$PR_BRANCH" "$PR_TITLE" "$FORCE_WHOLE_PR" &

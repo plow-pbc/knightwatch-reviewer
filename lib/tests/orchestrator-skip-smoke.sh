@@ -222,8 +222,8 @@ cp "$PROJECT_ROOT/lib/run-dir.sh"       "$REVIEWER_LIB_DIR/run-dir.sh"
 cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<'WORKER'
 #!/bin/bash
 # Args from review.sh: REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR
-# TRIGGER_COMMENT_FILE + DISPATCHER_TICK_AT come through as env vars.
-echo "WORKER_DISPATCHED repo=$1 pr=$2 sha=$3 force_whole=$6 trigger_file=${TRIGGER_COMMENT_FILE:-} dispatcher_tick=${DISPATCHER_TICK_AT:-}" >> "$LOG_FILE"
+# TRIGGER_COMMENT_FILE + SLASH_CUTOFF_AT come through as env vars.
+echo "WORKER_DISPATCHED repo=$1 pr=$2 sha=$3 force_whole=$6 trigger_file=${TRIGGER_COMMENT_FILE:-} dispatcher_tick=${SLASH_CUTOFF_AT:-}" >> "$LOG_FILE"
 WORKER
 chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
 
@@ -713,7 +713,7 @@ echo "  scenario 13: /srosro-update-review on page 2 of comments — page-2 pagi
 # under timeout) left it in non-default state.
 cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<'WORKER'
 #!/bin/bash
-echo "WORKER_DISPATCHED repo=$1 pr=$2 sha=$3 force_whole=$6 trigger_file=${TRIGGER_COMMENT_FILE:-} dispatcher_tick=${DISPATCHER_TICK_AT:-}" >> "$LOG_FILE"
+echo "WORKER_DISPATCHED repo=$1 pr=$2 sha=$3 force_whole=$6 trigger_file=${TRIGGER_COMMENT_FILE:-} dispatcher_tick=${SLASH_CUTOFF_AT:-}" >> "$LOG_FILE"
 WORKER
 chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
 
@@ -885,23 +885,24 @@ for f in "$PROJECT_ROOT/review.sh" "$PROJECT_ROOT/lib/review-one-pr.sh"; do
     fi
 done
 
-# Scenario 19: DISPATCHER_TICK_AT env var equals the EXACT max .created_at
-# from the fetched snapshot (not just an ISO-looking placeholder). This is
-# the WRITE-side of the slash-cutoff contract: the dispatcher anchors
-# meta.json.slash_cutoff_at in GitHub-stamped .created_at values so a
-# /srosro-* comment created in the gap between the dispatcher's fetch and
-# the worker's process entry isn't silently dropped on the next tick. The
-# exact-value pin guards against a regression to `date -u +...` (which
-# would still produce an ISO-looking string and pass a shape-only assert
-# but reopen the wall-clock-vs-snapshot-max race).
-echo "  scenario 19: review.sh passes max(.created_at) of fetched snapshot to worker as DISPATCHER_TICK_AT..."
+# Scenario 19: SLASH_CUTOFF_AT env var equals the EXACT .created_at of
+# the CONSUMED slash trigger (NOT the snapshot max). This is the
+# WRITE-side of the slash-cutoff contract: anchoring in the specific
+# comment we consumed (not the all-comment max) ensures a hidden
+# higher-scope command behind a visible lower-scope one doesn't get
+# filtered out next tick. The exact-value pin also guards against a
+# regression to `date -u +...` (which would still produce an
+# ISO-looking string and pass a shape-only assert but reopen the
+# wall-clock-vs-snapshot-derived race).
+echo "  scenario 19: review.sh passes consumed-trigger .created_at to worker as SLASH_CUTOFF_AT (NOT the snapshot max)..."
 clear_seeded_runs
 MOCK_TRUSTED_USERS="srosro,someuser" \
     seed_run "cncorp_plow" "1" "20260429T143000000Z" "abc123" "COMMENT" >/dev/null
-# Two comments — the trigger AND a newer non-trigger. max(.created_at) is
-# the newer one, so the assertion below pins to that exact timestamp.
-EXPECTED_TICK="2026-04-30T16:02:00Z"
-printf '[{"created_at":"2026-04-30T16:00:00Z","user":{"login":"someuser"},"body":"/srosro-review"},{"created_at":"%s","user":{"login":"someuser"},"body":"thanks"}]\n' "$EXPECTED_TICK" > "$MOCK_COMMENTS_FILE"
+# Two comments — the slash trigger AND a NEWER non-trigger. A regression
+# to "advance to snapshot max" would write the newer-non-trigger ts;
+# the correct behavior writes the trigger's own ts.
+EXPECTED_TICK="2026-04-30T16:00:00Z"
+printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"},{"created_at":"2026-04-30T16:02:00Z","user":{"login":"someuser"},"body":"thanks"}]\n' "$EXPECTED_TICK" > "$MOCK_COMMENTS_FILE"
 run_orchestrator
 n=$(count_dispatches)
 if [ "$n" -ne 1 ]; then
@@ -910,9 +911,9 @@ if [ "$n" -ne 1 ]; then
     exit 1
 fi
 if ! grep -qF "dispatcher_tick=$EXPECTED_TICK" "$LOG_FILE"; then
-    echo "FAIL scenario 19 (slash-cutoff write-side regression): expected exact dispatcher_tick=$EXPECTED_TICK in WORKER_DISPATCHED, got:"
+    echo "FAIL scenario 19 (slash-cutoff write-side regression): expected exact dispatcher_tick=$EXPECTED_TICK (the trigger's ts) in WORKER_DISPATCHED, got:"
     grep 'WORKER_DISPATCHED' "$LOG_FILE" || true
-    echo "review.sh must derive DISPATCHER_TICK_AT from max(.created_at) of the fetched snapshot — a shape-only ISO match (\\d{4}-\\d{2}-\\d{2}T...Z) would silently accept a regression to local wall-clock \`date -u\`."
+    echo "review.sh must derive SLASH_CUTOFF_AT from the CONSUMED trigger's .created_at (not the snapshot max — that would orphan a hidden higher-scope command behind a visible lower-scope one)."
     exit 1
 fi
 
@@ -943,8 +944,45 @@ fi
 if ! grep -qF "dispatcher_tick=$PRIOR_CUTOFF" "$LOG_FILE"; then
     echo "FAIL scenario 20 (push-only carry-forward regression): expected dispatcher_tick=$PRIOR_CUTOFF (carry forward from prior run's slash_cutoff_at), got:"
     grep 'WORKER_DISPATCHED' "$LOG_FILE" || true
-    echo "On push-only dispatches (no slash trigger consumed), review.sh must keep TICK_FETCHED_AT_ISO at REVIEWED_AT_ISO — advancing to the snapshot max would orphan a slash command that eventual-consistency hid from this tick."
+    echo "On push-only dispatches (no slash trigger consumed), review.sh must keep NEXT_SLASH_CUTOFF_AT at the prior SLASH_CUTOFF_AT — advancing to the snapshot max would orphan a slash command that eventual-consistency hid from this tick."
     exit 1
 fi
 
-echo "  PASS (20 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, snapshot-max-write-side, push-only-carry-forward-cutoff)"
+# Scenario 21: visible /srosro-update-review (lower-scope) + newer non-trigger
+# comment — cutoff MUST be the consumed trigger's .created_at, NOT the
+# all-snapshot max. Closes the mixed-trigger eventual-consistency hole:
+# if a hidden /srosro-review (higher-scope) lands BEHIND a visible
+# /srosro-update-review, advancing past the newer non-trigger would
+# orphan the whole-PR command once it propagates. Anchoring the cutoff
+# in the SPECIFIC consumed comment keeps the higher-scope trigger
+# eligible on the next tick.
+echo "  scenario 21: incremental trigger + newer non-trigger comment — cutoff = trigger's .created_at (not snapshot max)..."
+clear_seeded_runs
+TRIGGER_TS="2026-04-30T16:00:00Z"
+NEWER_NONTRIGGER_TS="2026-04-30T16:05:00Z"
+# Seed with older_sha_999 so PR_SHA (abc123 from gh stub) differs and
+# /srosro-update-review on an unchanged SHA doesn't trigger the skip
+# gate. The cutoff assertion below is what we actually care about.
+MOCK_TRUSTED_USERS="srosro,someuser" \
+    seed_run "cncorp_plow" "1" "20260429T143000000Z" "older_sha_999" "COMMENT" >/dev/null
+printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-update-review"},{"created_at":"%s","user":{"login":"someuser"},"body":"thanks"}]\n' "$TRIGGER_TS" "$NEWER_NONTRIGGER_TS" > "$MOCK_COMMENTS_FILE"
+run_orchestrator
+n=$(count_dispatches)
+if [ "$n" -ne 1 ]; then
+    echo "FAIL scenario 21 (setup): expected 1 dispatch, got $n"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+if ! grep -qF "dispatcher_tick=$TRIGGER_TS" "$LOG_FILE"; then
+    echo "FAIL scenario 21 (mixed-trigger eventual-consistency regression): expected dispatcher_tick=$TRIGGER_TS (the consumed trigger's ts), got:"
+    grep 'WORKER_DISPATCHED' "$LOG_FILE" || true
+    echo "review.sh must anchor NEXT_SLASH_CUTOFF_AT in the consumed trigger's .created_at — using the snapshot max would orphan a hidden higher-scope /srosro-review behind a visible /srosro-update-review."
+    exit 1
+fi
+if ! grep -qF "force_whole=false" "$LOG_FILE"; then
+    echo "FAIL scenario 21: expected force_whole=false (consumed trigger is /srosro-update-review)"
+    grep 'WORKER_DISPATCHED' "$LOG_FILE" || true
+    exit 1
+fi
+
+echo "  PASS (21 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, consumed-trigger-write-side, push-only-carry-forward-cutoff, mixed-trigger-cutoff-bound-to-trigger)"

@@ -492,9 +492,9 @@ latest_author_visible_review_approved() {
 }
 
 # latest_author_visible_slash_cutoff_at <state_dir> <repo_slug> <pr_num> <current_run_dir>
-#   stdout: ISO 8601 timestamp from meta.json's `started_at` field of the
-#           latest author-visible run, or empty if no prior author-visible
-#           run exists.
+#   stdout: ISO 8601 timestamp from meta.json's `slash_cutoff_at` field
+#           (with `started_at` fallback for legacy run-dirs), or empty
+#           if no prior author-visible run exists.
 #
 # Used by review.sh's slash-command cutoff logic ("are there /srosro-*
 # comments newer than the last review?"). Replaces a stale
@@ -502,21 +502,20 @@ latest_author_visible_review_approved() {
 # gh-success + state_set-failure race leaking through the trigger
 # cutoff.
 #
-# Field choice: slash_cutoff_at (with .started_at fallback for legacy run
-# meta.json files). Cutoff semantic is "any comment newer than the
-# highest .created_at the dispatcher has consumed for slash-command
-# detection." slash_cutoff_at is stamped by lib/review-one-pr.sh from
-# DISPATCHER_TICK_AT, which review.sh computes per-tick as the max
-# .created_at of the fetched comment snapshot AND only advances when a
-# slash trigger was actually consumed at that tick (push-only dispatches
-# carry the prior cutoff forward to avoid filtering out a slash command
-# that eventual-consistency hid from this tick's snapshot but exposed
-# next tick). posted_at is later (after gh succeeds), so a
-# /srosro-review posted DURING the review would fall before posted_at
-# and be silently lost on the next tick if we keyed off it. The
-# `// .started_at` fallback handles run-dirs written before the field
-# split; older runs had cutoff-overloaded-as-started_at semantics, so
-# reading .started_at as a fallback preserves the prior behavior on
+# Field choice: slash_cutoff_at. Cutoff semantic is "the .created_at of
+# the highest-priority slash command the dispatcher has consumed so
+# far." review.sh anchors it in the SPECIFIC consumed trigger's
+# .created_at (not the snapshot max) so a hidden higher-scope command
+# behind a visible lower-scope one doesn't get filtered out next tick.
+# Push-only dispatches carry the prior cutoff forward — eventual-
+# consistency can hide a /srosro-* comment from this tick's snapshot
+# but expose it next tick, and keeping the cutoff pinned preserves the
+# trigger's eligibility. posted_at would be later (after gh succeeds),
+# so a /srosro-review posted DURING the review would fall before
+# posted_at and be silently lost on the next tick if we keyed off it.
+# The `// .started_at` fallback handles run-dirs written before the
+# field split — older runs overloaded started_at with cutoff semantics,
+# so reading .started_at as a fallback preserves prior behavior on
 # legacy meta.json files (eventually drains as new rounds land).
 latest_author_visible_slash_cutoff_at() {
     local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"

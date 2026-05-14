@@ -44,7 +44,7 @@ fi
 #                       each round has a distinct ts even when no new comments
 #                       landed since the prior round (round-driven dispatches).
 #   - slash_cutoff_at = the comment-cutoff watermark. Stamped from
-#                       DISPATCHER_TICK_AT (review.sh's per-tick computed
+#                       SLASH_CUTOFF_AT (review.sh's per-tick computed
 #                       max(.created_at) of the fetched snapshot, only
 #                       advanced when a slash trigger was actually consumed).
 #                       review.sh's NEXT tick reads this via
@@ -56,16 +56,17 @@ fi
 # would inherit the prior round's started_at (because the cutoff didn't
 # advance), yielding duplicate (ts, sha) rows in the LoC trend table.
 #
-# Fallback for direct invocations (tests, manual runs) where DISPATCHER_TICK_AT
+# Fallback for direct invocations (tests, manual runs) where SLASH_CUTOFF_AT
 # isn't set: slash_cutoff_at uses the worker-entry ISO. For real runs from
-# review.sh the env var is always set (possibly to REVIEWED_AT_ISO when the
-# dispatcher decided not to advance the cutoff).
+# review.sh the env var is always set (possibly carrying forward the
+# prior cutoff when the dispatcher decided not to advance it on a
+# push-only dispatch).
 REVIEW_START_TS=$(date +%s)
 # Portable epoch→ISO conversion — `date -u -d "@<epoch>"` is GNU-only and
 # breaks on macOS BSD date. Use python3 (already a project dep) for both
 # platforms. Same fix as lib/tests/divergent-clock-smoke.sh.
 REVIEW_START_ISO=$(python3 -c "import datetime; print(datetime.datetime.fromtimestamp(int('$REVIEW_START_TS'), tz=datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))")
-SLASH_CUTOFF_ISO="${DISPATCHER_TICK_AT:-$REVIEW_START_ISO}"
+SLASH_CUTOFF_ISO="${SLASH_CUTOFF_AT:-$REVIEW_START_ISO}"
 
 # --- per-PR advisory lock ----------------------------------------------------
 # Prevents two concurrent invocations from stepping on each other for the same
@@ -511,7 +512,7 @@ mkdir -p "$REPO_DIR/.codex-scratch"
 # (worker process-entry time, distinct per round so author_visible_rounds'
 # LoC-table render shows one row per round), slash_cutoff_at is the
 # comment-cutoff watermark for review.sh's next-tick filter (sourced from
-# DISPATCHER_TICK_AT, only advanced when a slash trigger was consumed).
+# SLASH_CUTOFF_AT, only advanced when a slash trigger was consumed).
 # Title is JSON-escaped via jq so titles with quotes / newlines don't
 # break the file.
 if ! jq -n \
@@ -1401,7 +1402,7 @@ else
 fi
 
 # state.json retired: every runtime-decision seam reads runs/ now (KNOWN_SHA
-# at the orchestrator gate, slash-cutoff started_at, worker's PREV_BODY /
+# at the orchestrator gate, slash_cutoff_at, worker's PREV_BODY /
 # KNOWN_SHA / PREV_APPROVED). The four pieces of round state the legacy
 # state_set call used to persist are already on disk in runs/ at this point:
 #   - body       → agents/aggregator/output.md (already written above)
