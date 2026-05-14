@@ -138,6 +138,24 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # internally; multi-source is idempotent.
 . "$_LIB_DIR/decline-history.sh"
 
+# --- worker-level dedup gate -------------------------------------------------
+# Mirrors the dispatcher's gate at review.sh:217 (PR_SHA == KNOWN_SHA &&
+# !FORCE_WHOLE_PR → skip), but re-checks AFTER the per-PR flock. The
+# dispatcher reads meta.json BEFORE an in-flight worker's finalize_run
+# has committed the new SHA back, so two ticks that target the same
+# /srosro-update-review trigger can both pass the gate; the first wins
+# and the second arrives here with PR_SHA matching the just-committed
+# KNOWN_SHA. Without this re-check the second worker posts a placeholder
+# and immediately PATCHes it to "review aborted" via the empty-diff path
+# at line ~626 — noisy on the PR for no useful signal.
+if [ "$FORCE_WHOLE_PR" != "true" ]; then
+    KNOWN_SHA_GATE=$(latest_author_visible_review_sha "$STATE_DIR" "${REPO//\//_}" "$PR_NUM" "")
+    if [ -n "$KNOWN_SHA_GATE" ] && [ "$PR_SHA" = "$KNOWN_SHA_GATE" ]; then
+        log "$PR_ID: head SHA $PR_SHA already reviewed by concurrent worker — skipping cleanly"
+        exit 0
+    fi
+fi
+
 # --- per-run dir -------------------------------------------------------------
 # Every worker invocation gets its own runs/<RUN_ID>/ dir holding the run log,
 # input scratch, and one subdir per agent (prompt + output + log). The git
