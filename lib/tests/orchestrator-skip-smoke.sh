@@ -948,24 +948,19 @@ if ! grep -qF "dispatcher_tick=$PRIOR_CUTOFF" "$LOG_FILE"; then
     exit 1
 fi
 
-# Scenario 21: visible /srosro-update-review (lower-scope) + newer non-trigger
-# comment — cutoff MUST be the consumed trigger's .created_at, NOT the
-# all-snapshot max. Closes the mixed-trigger eventual-consistency hole:
-# if a hidden /srosro-review (higher-scope) lands BEHIND a visible
-# /srosro-update-review, advancing past the newer non-trigger would
-# orphan the whole-PR command once it propagates. Anchoring the cutoff
-# in the SPECIFIC consumed comment keeps the higher-scope trigger
-# eligible on the next tick.
-echo "  scenario 21: incremental trigger + newer non-trigger comment — cutoff = trigger's .created_at (not snapshot max)..."
+# Scenario 21: whole-PR trigger + newer non-trigger comment — cutoff
+# MUST be the consumed trigger's .created_at, NOT the all-snapshot max.
+# Anchoring in the SPECIFIC consumed whole-PR (not the snapshot max)
+# means a future hidden /srosro-update-review at a lower ts would still
+# be eligible — but more importantly, advancing past a newer non-trigger
+# would orphan ANY older slash command that's still propagating.
+echo "  scenario 21: whole-PR trigger + newer non-trigger — cutoff = trigger's .created_at (not snapshot max)..."
 clear_seeded_runs
 TRIGGER_TS="2026-04-30T16:00:00Z"
 NEWER_NONTRIGGER_TS="2026-04-30T16:05:00Z"
-# Seed with older_sha_999 so PR_SHA (abc123 from gh stub) differs and
-# /srosro-update-review on an unchanged SHA doesn't trigger the skip
-# gate. The cutoff assertion below is what we actually care about.
 MOCK_TRUSTED_USERS="srosro,someuser" \
     seed_run "cncorp_plow" "1" "20260429T143000000Z" "older_sha_999" "COMMENT" >/dev/null
-printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-update-review"},{"created_at":"%s","user":{"login":"someuser"},"body":"thanks"}]\n' "$TRIGGER_TS" "$NEWER_NONTRIGGER_TS" > "$MOCK_COMMENTS_FILE"
+printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"},{"created_at":"%s","user":{"login":"someuser"},"body":"thanks"}]\n' "$TRIGGER_TS" "$NEWER_NONTRIGGER_TS" > "$MOCK_COMMENTS_FILE"
 run_orchestrator
 n=$(count_dispatches)
 if [ "$n" -ne 1 ]; then
@@ -974,15 +969,48 @@ if [ "$n" -ne 1 ]; then
     exit 1
 fi
 if ! grep -qF "dispatcher_tick=$TRIGGER_TS" "$LOG_FILE"; then
-    echo "FAIL scenario 21 (mixed-trigger eventual-consistency regression): expected dispatcher_tick=$TRIGGER_TS (the consumed trigger's ts), got:"
+    echo "FAIL scenario 21 (snapshot-max regression): expected dispatcher_tick=$TRIGGER_TS (the consumed whole-PR's ts), got:"
     grep 'WORKER_DISPATCHED' "$LOG_FILE" || true
-    echo "review.sh must anchor NEXT_SLASH_CUTOFF_AT in the consumed trigger's .created_at — using the snapshot max would orphan a hidden higher-scope /srosro-review behind a visible /srosro-update-review."
+    echo "review.sh must anchor NEXT_SLASH_CUTOFF_AT in the consumed trigger's .created_at — using the snapshot max would orphan any older slash command still propagating."
     exit 1
 fi
-if ! grep -qF "force_whole=false" "$LOG_FILE"; then
-    echo "FAIL scenario 21: expected force_whole=false (consumed trigger is /srosro-update-review)"
+if ! grep -qF "force_whole=true" "$LOG_FILE"; then
+    echo "FAIL scenario 21: expected force_whole=true (consumed trigger is /srosro-review)"
     grep 'WORKER_DISPATCHED' "$LOG_FILE" || true
     exit 1
 fi
 
-echo "  PASS (21 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, consumed-trigger-write-side, push-only-carry-forward-cutoff, mixed-trigger-cutoff-bound-to-trigger)"
+# Scenario 22: incremental consume does NOT advance cutoff. Closes the
+# hidden-whole-PR-behind-visible-incremental hole: if a /srosro-review is
+# hidden by eventual consistency and only the /srosro-update-review is
+# visible at this tick, advancing the cutoff to the incremental's ts
+# would orphan the whole-PR command once it propagates. Cutoff stays at
+# the prior watermark; the whole-PR is detected on the next tick that
+# sees it.
+echo "  scenario 22: incremental consume holds cutoff at prior SLASH_CUTOFF_AT (hidden-whole-PR fence)..."
+clear_seeded_runs
+PRIOR_CUTOFF_22="2026-04-29T13:00:00Z"
+INCR_TS="2026-04-30T16:00:00Z"
+MOCK_TRUSTED_USERS="srosro,someuser" \
+    seed_run "cncorp_plow" "1" "20260429T130000000Z" "older_sha_999" "COMMENT" "$PRIOR_CUTOFF_22" >/dev/null
+printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-update-review"}]\n' "$INCR_TS" > "$MOCK_COMMENTS_FILE"
+run_orchestrator
+n=$(count_dispatches)
+if [ "$n" -ne 1 ]; then
+    echo "FAIL scenario 22 (setup): expected 1 dispatch, got $n"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+if ! grep -qF "dispatcher_tick=$PRIOR_CUTOFF_22" "$LOG_FILE"; then
+    echo "FAIL scenario 22 (hidden-whole-PR-behind-incremental regression): expected dispatcher_tick=$PRIOR_CUTOFF_22 (carry forward — incremental consumes don't advance cutoff), got:"
+    grep 'WORKER_DISPATCHED' "$LOG_FILE" || true
+    echo "review.sh must hold NEXT_SLASH_CUTOFF_AT at the prior cutoff when the consumed trigger is incremental — a hidden /srosro-review with an older .created_at could still propagate, and advancing past the incremental's ts would orphan it."
+    exit 1
+fi
+if ! grep -qF "force_whole=false" "$LOG_FILE"; then
+    echo "FAIL scenario 22: expected force_whole=false (consumed trigger is /srosro-update-review)"
+    grep 'WORKER_DISPATCHED' "$LOG_FILE" || true
+    exit 1
+fi
+
+echo "  PASS (22 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, consumed-trigger-write-side, push-only-carry-forward-cutoff, mixed-trigger-cutoff-bound-to-trigger, incremental-consume-holds-cutoff)"

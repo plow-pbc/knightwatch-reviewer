@@ -34,33 +34,21 @@ if [ -n "${TRIGGER_COMMENT_FILE:-}" ] && [ -f "${TRIGGER_COMMENT_FILE}" ]; then
     rm -f "${TRIGGER_COMMENT_FILE}"
 fi
 
-# Captured here (before anything that can take minutes: just test, specialists,
-# aggregator) and stamped into meta.json.started_at below. Two distinct
-# semantics, two fields:
+# Two distinct semantics, two meta.json fields:
 #
-#   - started_at      = worker process-entry time. The round's lifecycle
+#   - started_at      = worker process-entry time. Round's lifecycle
 #                       timestamp; rendered in the LoC trend table by
-#                       author_visible_rounds(). Stays on the worker clock so
-#                       each round has a distinct ts even when no new comments
-#                       landed since the prior round (round-driven dispatches).
-#   - slash_cutoff_at = the comment-cutoff watermark. Stamped from
-#                       SLASH_CUTOFF_AT (review.sh's per-tick computed
-#                       max(.created_at) of the fetched snapshot, only
-#                       advanced when a slash trigger was actually consumed).
-#                       review.sh's NEXT tick reads this via
-#                       latest_author_visible_review_started_at and filters
-#                       comments with created_at > slash_cutoff_at.
+#                       author_visible_rounds(). Distinct per round.
+#   - slash_cutoff_at = the comment-cutoff watermark. Stamped from the
+#                       SLASH_CUTOFF_AT env var (review.sh sets it from
+#                       the .created_at of the consumed slash trigger,
+#                       or carries the prior cutoff forward when no
+#                       higher-priority slash was consumed). See
+#                       latest_author_visible_slash_cutoff_at in
+#                       lib/run-dir.sh for the read-side contract.
 #
-# Field split closes the prior overload where started_at carried both
-# lifecycle and cutoff meaning — a push-driven dispatch with no new comments
-# would inherit the prior round's started_at (because the cutoff didn't
-# advance), yielding duplicate (ts, sha) rows in the LoC trend table.
-#
-# Fallback for direct invocations (tests, manual runs) where SLASH_CUTOFF_AT
-# isn't set: slash_cutoff_at uses the worker-entry ISO. For real runs from
-# review.sh the env var is always set (possibly carrying forward the
-# prior cutoff when the dispatcher decided not to advance it on a
-# push-only dispatch).
+# Fallback for direct invocations (tests, manual runs) where the env
+# var isn't set: slash_cutoff_at falls back to worker-entry ISO.
 REVIEW_START_TS=$(date +%s)
 # Portable epoch→ISO conversion — `date -u -d "@<epoch>"` is GNU-only and
 # breaks on macOS BSD date. Use python3 (already a project dep) for both

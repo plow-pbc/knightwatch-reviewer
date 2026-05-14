@@ -128,21 +128,14 @@ for REPO in "${REPOS[@]}"; do
         NEXT_SLASH_CUTOFF_AT=""
 
         if [ -n "$KNOWN_SHA" ]; then
-            # Cutoff timestamp sources from runs/ (meta.json.started_at)
-            # — single source of truth since state.json was retired in
-            # PR #38. started_at is now stamped from max(.created_at) of
-            # the dispatcher's fetched comments snapshot (passed to the
-            # worker via SLASH_CUTOFF_AT, computed below), NOT the
-            # worker's script-entry time NOR our local wall clock. That
-            # closes the race where a /srosro-review posted in the gap
-            # between dispatcher fetch and worker init would have a
-            # created_at older than the worker's started_at, making the
-            # next tick's "created_at > started_at" filter silently drop
-            # the trigger. Anchoring in GitHub-stamped created_at values
-            # also closes the sub-second wall-clock window between the
-            # API's processing-time and our post-fetch local clock.
-            # Helper returns ISO 8601 directly — meta.json.started_at is
-            # already in that format.
+            # Prior slash cutoff sources from runs/<latest>/meta.json's
+            # slash_cutoff_at field (helper falls back to legacy
+            # .started_at for run-dirs pre-dating the field split). See
+            # latest_author_visible_slash_cutoff_at in lib/run-dir.sh for
+            # the full contract: cutoff = .created_at of the highest-
+            # priority slash command the dispatcher has consumed so far;
+            # advanced only on whole-PR consume, held on incremental
+            # consume + push-only dispatch.
             SLASH_CUTOFF_AT=$(latest_author_visible_slash_cutoff_at "$STATE_DIR" "$REPO_SLUG_FOR_GATE" "$PR_NUM" "")
             # Fail loud on a transient gh outage rather than treating
             # "API broken" as "no comments" and silently missing a
@@ -186,27 +179,33 @@ for REPO in "${REPOS[@]}"; do
                     def is_whole: (.body | test("/" + $cmd_prefix + "-review"; "i")) and ((.body | test("/" + $cmd_prefix + "-update-review"; "i")) | not);
                     def is_incr:  .body | test("/" + $cmd_prefix + "-update-review"; "i");
                     [.[] | select((.body | contains($mark) | not) and .created_at > $since)] as $eligible |
-                    ([$eligible[] | select(is_whole)] | sort_by(.created_at) | last) //
-                    ([$eligible[] | select(is_incr)]  | sort_by(.created_at) | last) //
+                    (([$eligible[] | select(is_whole)] | sort_by(.created_at) | last) | if . then . + {_is_whole_pr: true} else empty end) //
+                    (([$eligible[] | select(is_incr)]  | sort_by(.created_at) | last) | if . then . + {_is_whole_pr: false} else empty end) //
                     empty' 2>/dev/null)
             if [ -n "$TRIGGER_JSON" ]; then
                 FORCE_REVIEW=true
                 TRIGGER_USER=$(printf '%s' "$TRIGGER_JSON" | jq -r '.user.login // ""')
                 TRIGGER_BODY_RAW=$(printf '%s' "$TRIGGER_JSON" | jq -r '.body // ""')
-                TRIGGER_CREATED_AT=$(printf '%s' "$TRIGGER_JSON" | jq -r '.created_at // ""')
-                # Whole-PR if body matches /srosro-review WITHOUT /srosro-update-review.
-                if printf '%s' "$TRIGGER_BODY_RAW" | grep -qiE "/${BOT_CMD_PREFIX}-update-review"; then
-                    FORCE_WHOLE_PR=false
-                else
+                if [ "$(printf '%s' "$TRIGGER_JSON" | jq -r '._is_whole_pr // false')" = "true" ]; then
                     FORCE_WHOLE_PR=true
+                    # Whole-PR consumed: advance cutoff to this trigger's
+                    # .created_at (lower-bounded by prior SLASH_CUTOFF_AT).
+                    # Whole-PR is the highest-priority slash; nothing can
+                    # supersede it, so the watermark is safe to advance.
+                    TRIGGER_CREATED_AT=$(printf '%s' "$TRIGGER_JSON" | jq -r '.created_at // ""')
+                    NEXT_SLASH_CUTOFF_AT=$(printf '%s\n%s\n' "$TRIGGER_CREATED_AT" "$SLASH_CUTOFF_AT" | sort | tail -1)
+                else
+                    FORCE_WHOLE_PR=false
+                    # Incremental consumed: DO NOT advance cutoff. A hidden
+                    # whole-PR /srosro-review at an older .created_at could
+                    # still surface on a later tick (GitHub eventual
+                    # consistency), and an advanced cutoff would orphan it.
+                    # Re-detection on subsequent ticks is gated by the
+                    # PR_SHA==KNOWN_SHA && FORCE_WHOLE_PR=false skip rule
+                    # below: incremental on unchanged SHA skips loudly, so
+                    # holding the cutoff doesn't cause a redispatch loop.
+                    NEXT_SLASH_CUTOFF_AT="$SLASH_CUTOFF_AT"
                 fi
-                # Cutoff = consumed trigger's .created_at, lower-bounded by
-                # prior SLASH_CUTOFF_AT so the watermark never regresses.
-                # Anchored in the SPECIFIC comment we consumed (not the
-                # snapshot max), so a hidden higher-scope command behind
-                # a visible lower-scope one doesn't get filtered out next
-                # tick. ISO 8601 sorts lexicographically.
-                NEXT_SLASH_CUTOFF_AT=$(printf '%s\n%s\n' "$TRIGGER_CREATED_AT" "$SLASH_CUTOFF_AT" | sort | tail -1)
                 # Trust gate: honor the trigger regardless of who posted
                 # it (the re-request-poller and external requesters need
                 # to keep working), but the body only gets staged as
