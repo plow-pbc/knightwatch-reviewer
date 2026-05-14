@@ -162,7 +162,7 @@ if [ -f "$PROBE_SCHEMA_SRC" ]; then
 fi
 
 PR_ID="$REPO#$PR"
-PR_TITLE="$(gh pr view "$PR" --repo "$REPO" --json title --jq .title)"
+PR_TITLE="$(gh pr view "$PR" --repo "$REPO" --json title --jq .title | tr '\000-\037\177' ' ')"
 PR_URL="https://github.com/$REPO/pull/$PR"
 PR_AUTHOR="$(gh pr view "$PR" --repo "$REPO" --json author --jq .author.login)"
 LOG_FILE="$OUT/run.log"

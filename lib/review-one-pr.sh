@@ -1138,7 +1138,7 @@ write_scratch "$REPO_DIR" "file-history.md" "${FILE_HISTORY:-(no touched files)}
 # PR_DATA + PR_AUTHOR were fetched earlier (above the env mirror) so the
 # trust gate could see the author. Reuse them here.
 AUTHOR_INTENT="## PR Title
-$(printf '%s' "$PR_DATA" | jq -r '.title // empty')
+$(printf '%s' "$PR_DATA" | jq -r '.title // empty' | tr '\000-\037\177' ' ')
 
 ## PR Description (author's own explanation)
 
