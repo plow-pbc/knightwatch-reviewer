@@ -16,7 +16,14 @@ REPO="$1"
 PR_NUM="$2"
 PR_SHA="$3"
 PR_BRANCH="$4"
-PR_TITLE="$5"
+# Normalize control bytes (U+0000-001F, U+007F) in PR_TITLE at the
+# worker boundary — GitHub allows them via the REST API, jq -r outputs
+# the literal bytes, and PR_TITLE flows into both prompts/common-header.md
+# ({{PR_TITLE}}) and meta.json.title. Newlines in the title would inject
+# prompt content past the read-only fence; control chars in JSON could
+# break downstream consumers. Replace-with-space is non-destructive
+# (preserves visible structure) and avoids the empty-field hazard.
+PR_TITLE=$(printf '%s' "$5" | tr '\000-\037\177' ' ')
 FORCE_WHOLE_PR="${6:-false}"
 
 PR_ID="${REPO}#${PR_NUM}"
