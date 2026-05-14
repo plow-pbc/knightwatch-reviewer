@@ -16,7 +16,14 @@ REPO="$1"
 PR_NUM="$2"
 PR_SHA="$3"
 PR_BRANCH="$4"
-PR_TITLE="$5"
+# Normalize control bytes (U+0000-001F, U+007F) in PR_TITLE at the
+# worker boundary — GitHub allows them via the REST API, jq -r outputs
+# the literal bytes, and PR_TITLE flows into both prompts/common-header.md
+# ({{PR_TITLE}}) and meta.json.title. Newlines in the title would inject
+# prompt content past the read-only fence; control chars in JSON could
+# break downstream consumers. Replace-with-space is non-destructive
+# (preserves visible structure) and avoids the empty-field hazard.
+PR_TITLE=$(printf '%s' "$5" | tr '\000-\037\177' ' ')
 FORCE_WHOLE_PR="${6:-false}"
 
 PR_ID="${REPO}#${PR_NUM}"
@@ -34,22 +41,19 @@ if [ -n "${TRIGGER_COMMENT_FILE:-}" ] && [ -f "${TRIGGER_COMMENT_FILE}" ]; then
     rm -f "${TRIGGER_COMMENT_FILE}"
 fi
 
-# Captured here (before anything that can take minutes: just test, specialists,
-# aggregator) and stamped into meta.json.started_at below. The orchestrator
-# filters "new comments since last review" with created_at > started_at, so if
-# we stamped completion time instead, a /review posted during this run would
-# fall before the stamp and be invisible to the next tick.
-#
-# A SINGLE captured value drives BOTH the epoch form used by internal helpers
-# AND the ISO 8601 form written to meta.json. Two `date` calls (one here, one
-# at the meta.json write below) drift by sub-seconds under load, and a
-# /srosro-review trigger landing in that drift window would be silently
-# filtered out by review.sh's cutoff (created_at > meta.json.started_at).
+# REVIEW_START_TS (epoch) drives internal elapsed-time accounting on the
+# worker clock. REVIEW_START_ISO drives meta.json.started_at, which
+# review.sh's NEXT tick uses as the slash-command cutoff. Prefer the
+# dispatcher's tick-fetch time (DISPATCHER_TICK_AT env var, captured by
+# review.sh at the top of each per-PR loop iteration) so a comment
+# posted in the gap between dispatcher and worker init isn't silently
+# dropped by the next tick's "created_at > started_at" filter. Fall
+# back to worker-entry time for direct invocations (tests, manual runs).
 REVIEW_START_TS=$(date +%s)
 # Portable epoch→ISO conversion — `date -u -d "@<epoch>"` is GNU-only and
 # breaks on macOS BSD date. Use python3 (already a project dep) for both
 # platforms. Same fix as lib/tests/divergent-clock-smoke.sh.
-REVIEW_START_ISO=$(python3 -c "import datetime; print(datetime.datetime.fromtimestamp(int('$REVIEW_START_TS'), tz=datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+REVIEW_START_ISO="${DISPATCHER_TICK_AT:-$(python3 -c "import datetime; print(datetime.datetime.fromtimestamp(int('$REVIEW_START_TS'), tz=datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))")}"
 
 # --- per-PR advisory lock ----------------------------------------------------
 # Prevents two concurrent invocations from stepping on each other for the same
@@ -1134,7 +1138,7 @@ write_scratch "$REPO_DIR" "file-history.md" "${FILE_HISTORY:-(no touched files)}
 # PR_DATA + PR_AUTHOR were fetched earlier (above the env mirror) so the
 # trust gate could see the author. Reuse them here.
 AUTHOR_INTENT="## PR Title
-$(printf '%s' "$PR_DATA" | jq -r '.title // empty')
+$(printf '%s' "$PR_DATA" | jq -r '.title // empty' | tr '\000-\037\177' ' ')
 
 ## PR Description (author's own explanation)
 

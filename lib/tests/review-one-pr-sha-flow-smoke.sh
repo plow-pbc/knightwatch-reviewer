@@ -153,9 +153,20 @@ write_probe_repos_conf "$STATE_DIR/repos.conf"
 # infrastructure, etc.) — that's fine. We verify meta.json BEFORE
 # that abort.
 echo "  scenario: PR_SHA != REVIEWED_SHA — meta.json must record REVIEWED_SHA..."
+# Fixed DISPATCHER_TICK_AT (real worker invocation) so the meta.json
+# started_at assertion below proves lib/review-one-pr.sh honors the
+# env var. orchestrator-skip-smoke scenario 19 fences the orchestrator
+# pass-through; this fences the worker write.
+EXPECTED_TICK_AT="2026-04-30T16:14:23Z"
+# Title with embedded LF + DEL byte to fence the worker-boundary
+# control-byte normalization (review-one-pr.sh:19). Without the strip,
+# `Bad\nTitle\177X` would land in meta.json.title and the prompt
+# {{PR_TITLE}} header, injecting prompt content past the read-only fence.
+DIRTY_TITLE=$'Bad\nTitle\177X'
 TRIGGER_COMMENT_FILE="" \
+DISPATCHER_TICK_AT="$EXPECTED_TICK_AT" \
     bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
-    "test-org/probe-repo" "1" "$OLD_PR_SHA" "feat/test" "Test PR" "false" \
+    "test-org/probe-repo" "1" "$OLD_PR_SHA" "feat/test" "$DIRTY_TITLE" "false" \
     >/dev/null 2>&1 || true
 
 # ---- assertions ----
@@ -193,6 +204,24 @@ fi
 meta_base=$(jq -r '.base_ref' "$META")
 if [ "$meta_base" != "main" ]; then
     echo "FAIL: meta.json.base_ref = $meta_base (expected 'main' from gh pr view --json baseRefName)"
+    exit 1
+fi
+
+meta_started_at=$(jq -r '.started_at' "$META")
+if [ "$meta_started_at" != "$EXPECTED_TICK_AT" ]; then
+    echo "FAIL: meta.json.started_at = $meta_started_at (expected $EXPECTED_TICK_AT from DISPATCHER_TICK_AT env var — worker fell back to script-entry time, reopening the slash-cutoff race the PR fixes)"
+    exit 1
+fi
+
+# Title sanitizer fence: control bytes from the worker-arg title must be
+# replaced with spaces before meta.json.title is written. A regression
+# that drops the `tr '\000-\037\177' ' '` at lib/review-one-pr.sh:19
+# would land literal LF / DEL in meta.json.title and reopen the prompt-
+# injection vector at prompts/common-header.md.
+meta_title=$(jq -r '.title' "$META")
+expected_title="Bad Title X"
+if [ "$meta_title" != "$expected_title" ]; then
+    echo "FAIL: meta.json.title = [$meta_title] (expected [$expected_title] — control bytes should be normalized to space at the worker boundary)"
     exit 1
 fi
 
