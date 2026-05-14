@@ -146,18 +146,15 @@ for REPO in "${REPOS[@]}"; do
                 log "$PR_ID: comments fetch failed — skipping this PR for this tick"
                 continue
             }
-            # Cutoff = max(.created_at) of fetched snapshot, lower-bounded
-            # by the prior REVIEWED_AT_ISO so the cutoff never regresses.
-            # Anchoring the cutoff in GitHub-stamped created_at values
-            # (rather than our local wall clock post-fetch) closes the
-            # remaining sub-second race where a comment created BETWEEN
-            # GitHub's API-processing-time and our local capture would be
-            # absent from the snapshot yet stamped as "consumed" and lost
-            # on the next tick. Empty/missing max falls back to
-            # REVIEWED_AT_ISO; this keeps the watermark intact when this
-            # tick saw no comments.
-            TICK_FETCHED_AT_ISO=$(printf '%s' "$COMMENTS_JSON" | jq -r --arg fb "$REVIEWED_AT_ISO" \
-                '[(map(.created_at) | max // empty), $fb] | max')
+            # TICK_FETCHED_AT_ISO is set below (after FORCE_REVIEW is
+            # determined) — only advance to the snapshot max when a slash
+            # trigger was actually consumed, otherwise carry the prior
+            # REVIEWED_AT_ISO forward. Advancing on push-only dispatches
+            # would let eventual-consistency hide a slash command: if a
+            # /srosro-* comment is older than a newer non-trigger comment
+            # in the fetched snapshot but propagation delay omits the
+            # slash command from THIS tick, advancing past the newer
+            # comment would orphan the slash command on the next tick.
             # Exclude the bot's own auto-posts (review ack, final review,
             # learn-from-replies acks, and the usage footer that appears on
             # every review and itself contains the slash commands) by
@@ -183,6 +180,23 @@ for REPO in "${REPOS[@]}"; do
                 FORCE_WHOLE_PR=true
             elif [ "${INCREMENTAL_TRIGGER:-0}" -gt 0 ]; then
                 FORCE_REVIEW=true
+            fi
+            # Cutoff = max(.created_at) of fetched snapshot, lower-bounded
+            # by the prior REVIEWED_AT_ISO so the watermark never regresses
+            # — but ONLY when a slash trigger was actually consumed at this
+            # tick. On push-only dispatches (FORCE_REVIEW=false), keep the
+            # cutoff at REVIEWED_AT_ISO: eventual-consistency can hide a
+            # /srosro-* comment from this tick's snapshot while exposing a
+            # newer non-trigger comment, and advancing past the newer one
+            # would orphan the slash command forever once it propagates.
+            # Anchoring in GitHub-stamped .created_at (vs. local wall
+            # clock) also closes the sub-second window between the API's
+            # processing-time and our post-fetch local clock.
+            if [ "$FORCE_REVIEW" = "true" ]; then
+                TICK_FETCHED_AT_ISO=$(printf '%s' "$COMMENTS_JSON" | jq -r --arg fb "$REVIEWED_AT_ISO" \
+                    '[(map(.created_at) | max // empty), $fb] | max')
+            else
+                TICK_FETCHED_AT_ISO="$REVIEWED_AT_ISO"
             fi
             # If a comment triggered this re-review, capture the latest matching
             # comment's author + body to a tmp file so the worker can stage it

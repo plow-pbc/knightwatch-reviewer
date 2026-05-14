@@ -35,31 +35,37 @@ if [ -n "${TRIGGER_COMMENT_FILE:-}" ] && [ -f "${TRIGGER_COMMENT_FILE}" ]; then
 fi
 
 # Captured here (before anything that can take minutes: just test, specialists,
-# aggregator) and stamped into meta.json.started_at below. The orchestrator
-# filters "new comments since last review" with created_at > started_at, so if
-# we stamped completion time instead, a /review posted during this run would
-# fall before the stamp and be invisible to the next tick.
+# aggregator) and stamped into meta.json.started_at below. Two distinct
+# semantics, two fields:
 #
-# REVIEW_START_TS (epoch) drives elapsed-time accounting internally; it always
-# uses the worker's process-entry clock so durations are local-accurate.
+#   - started_at      = worker process-entry time. The round's lifecycle
+#                       timestamp; rendered in the LoC trend table by
+#                       author_visible_rounds(). Stays on the worker clock so
+#                       each round has a distinct ts even when no new comments
+#                       landed since the prior round (round-driven dispatches).
+#   - slash_cutoff_at = the comment-cutoff watermark. Stamped from
+#                       DISPATCHER_TICK_AT (review.sh's per-tick computed
+#                       max(.created_at) of the fetched snapshot, only
+#                       advanced when a slash trigger was actually consumed).
+#                       review.sh's NEXT tick reads this via
+#                       latest_author_visible_review_started_at and filters
+#                       comments with created_at > slash_cutoff_at.
 #
-# REVIEW_START_ISO drives meta.json.started_at, which review.sh's NEXT tick
-# uses as the trigger cutoff. Prefer the dispatcher's tick-fetch time
-# (DISPATCHER_TICK_AT env var, captured by review.sh AFTER fetch_issue_comments
-# at the tick that dispatched this worker) so that a /srosro-review posted in
-# the gap between dispatcher fetch and this worker's process entry isn't
-# silently dropped by the next tick's "created_at > started_at" filter. Fall
-# back to worker-entry time for direct invocations (tests, manual runs) where
-# the dispatcher didn't set the env var.
+# Field split closes the prior overload where started_at carried both
+# lifecycle and cutoff meaning — a push-driven dispatch with no new comments
+# would inherit the prior round's started_at (because the cutoff didn't
+# advance), yielding duplicate (ts, sha) rows in the LoC trend table.
+#
+# Fallback for direct invocations (tests, manual runs) where DISPATCHER_TICK_AT
+# isn't set: slash_cutoff_at uses the worker-entry ISO. For real runs from
+# review.sh the env var is always set (possibly to REVIEWED_AT_ISO when the
+# dispatcher decided not to advance the cutoff).
 REVIEW_START_TS=$(date +%s)
-if [ -n "${DISPATCHER_TICK_AT:-}" ]; then
-    REVIEW_START_ISO="$DISPATCHER_TICK_AT"
-else
-    # Portable epoch→ISO conversion — `date -u -d "@<epoch>"` is GNU-only and
-    # breaks on macOS BSD date. Use python3 (already a project dep) for both
-    # platforms. Same fix as lib/tests/divergent-clock-smoke.sh.
-    REVIEW_START_ISO=$(python3 -c "import datetime; print(datetime.datetime.fromtimestamp(int('$REVIEW_START_TS'), tz=datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))")
-fi
+# Portable epoch→ISO conversion — `date -u -d "@<epoch>"` is GNU-only and
+# breaks on macOS BSD date. Use python3 (already a project dep) for both
+# platforms. Same fix as lib/tests/divergent-clock-smoke.sh.
+REVIEW_START_ISO=$(python3 -c "import datetime; print(datetime.datetime.fromtimestamp(int('$REVIEW_START_TS'), tz=datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+SLASH_CUTOFF_ISO="${DISPATCHER_TICK_AT:-$REVIEW_START_ISO}"
 
 # --- per-PR advisory lock ----------------------------------------------------
 # Prevents two concurrent invocations from stepping on each other for the same
@@ -498,16 +504,16 @@ mkdir -p "$REPO_DIR/.codex-scratch"
 # rather than at run-dir allocation so `sha` records what was actually
 # reviewed (REVIEWED_SHA) instead of the orchestrator's enumeration SHA
 # (PR_SHA). Worker abort paths between RUN_DIR allocation and this point
-# leave no meta.json; finalize_meta_json's missing-file path is
-# tolerant. started_at uses REVIEW_START_ISO — when review.sh sets
-# DISPATCHER_TICK_AT, this is the dispatcher's tick-fetch time (captured
-# AFTER fetch_issue_comments at the launching tick); otherwise it falls
-# back to worker-entry time. The dispatcher-time path closes the race
-# where a /srosro-review posted in the gap between dispatcher fetch and
-# worker init would have a created_at older than the worker's started_at,
-# making the next tick's "created_at > started_at" filter silently drop
-# the trigger. Title is JSON-escaped via jq so titles with quotes /
-# newlines don't break the file.
+# leave no meta.json; finalize_meta_json's missing-file path is tolerant.
+#
+# Two distinct timestamps (see the REVIEW_START_TS/SLASH_CUTOFF_ISO block
+# upstream for the rationale): started_at is the round's lifecycle clock
+# (worker process-entry time, distinct per round so author_visible_rounds'
+# LoC-table render shows one row per round), slash_cutoff_at is the
+# comment-cutoff watermark for review.sh's next-tick filter (sourced from
+# DISPATCHER_TICK_AT, only advanced when a slash trigger was consumed).
+# Title is JSON-escaped via jq so titles with quotes / newlines don't
+# break the file.
 if ! jq -n \
         --arg repo "$REPO" \
         --arg pr_id "$PR_ID" \
@@ -519,7 +525,8 @@ if ! jq -n \
         --arg force_whole_pr "$FORCE_WHOLE_PR" \
         --arg workdir "$WORKDIRS_DIR/${REPO_SLUG_FOR_RUN}__${PR_NUM}" \
         --arg started_at "$REVIEW_START_ISO" \
-        '{repo: $repo, pr_id: $pr_id, pr_num: $pr_num, sha: $sha, branch: $branch, base_ref: $base_ref, title: $title, force_whole_pr: ($force_whole_pr == "true"), workdir: $workdir, started_at: $started_at}' \
+        --arg slash_cutoff_at "$SLASH_CUTOFF_ISO" \
+        '{repo: $repo, pr_id: $pr_id, pr_num: $pr_num, sha: $sha, branch: $branch, base_ref: $base_ref, title: $title, force_whole_pr: ($force_whole_pr == "true"), workdir: $workdir, started_at: $started_at, slash_cutoff_at: $slash_cutoff_at}' \
         > "$RUN_DIR/meta.json"; then
     log "$PR_ID: failed to write $RUN_DIR/meta.json — aborting"
     rm -rf "$REPO_DIR"

@@ -154,10 +154,10 @@ write_probe_repos_conf "$STATE_DIR/repos.conf"
 # that abort.
 echo "  scenario: PR_SHA != REVIEWED_SHA — meta.json must record REVIEWED_SHA..."
 # Fixed DISPATCHER_TICK_AT (real worker invocation) so the meta.json
-# started_at assertion below proves lib/review-one-pr.sh actually
+# slash_cutoff_at assertion below proves lib/review-one-pr.sh actually
 # stamps the dispatcher's value rather than falling back to its
 # script-entry time. orchestrator-skip-smoke scenario 19 fences the
-# pass-through; this fences the write.
+# pass-through; this fences the write into the new slash_cutoff_at field.
 EXPECTED_TICK_AT="2026-04-30T16:14:23Z"
 TRIGGER_COMMENT_FILE="" \
 DISPATCHER_TICK_AT="$EXPECTED_TICK_AT" \
@@ -203,9 +203,9 @@ if [ "$meta_base" != "main" ]; then
     exit 1
 fi
 
-meta_started_at=$(jq -r '.started_at' "$META")
-if [ "$meta_started_at" != "$EXPECTED_TICK_AT" ]; then
-    echo "FAIL: meta.json.started_at = $meta_started_at (expected $EXPECTED_TICK_AT from DISPATCHER_TICK_AT env var — worker fell back to script-entry time, reopening the slash-cutoff race PR fixed)"
+meta_slash_cutoff=$(jq -r '.slash_cutoff_at' "$META")
+if [ "$meta_slash_cutoff" != "$EXPECTED_TICK_AT" ]; then
+    echo "FAIL: meta.json.slash_cutoff_at = $meta_slash_cutoff (expected $EXPECTED_TICK_AT from DISPATCHER_TICK_AT env var — worker fell back to script-entry time or stopped writing the cutoff field, reopening the slash-cutoff race PR fixed)"
     exit 1
 fi
 

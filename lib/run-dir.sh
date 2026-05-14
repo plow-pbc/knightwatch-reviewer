@@ -502,21 +502,30 @@ latest_author_visible_review_approved() {
 # gh-success + state_set-failure race leaking through the trigger
 # cutoff.
 #
-# Field choice: started_at, NOT posted_at. Cutoff semantic is "any comment
-# the dispatcher had not yet fetched at the tick that launched the last
-# review is fresh and should requalify on the next tick." started_at is
-# stamped from the dispatcher's tick-fetch time (review.sh sets it from
-# `date -u +...` captured AFTER fetch_issue_comments returns, passed to
-# the worker via DISPATCHER_TICK_AT env var). posted_at is later (after
-# gh succeeds), so a /srosro-review posted DURING the review would fall
-# before posted_at and be silently lost on the next tick if we keyed
-# off it.
+# Field choice: slash_cutoff_at (with .started_at fallback for legacy run
+# meta.json files). Cutoff semantic is "any comment newer than the
+# highest .created_at the dispatcher has consumed for slash-command
+# detection." slash_cutoff_at is stamped by lib/review-one-pr.sh from
+# DISPATCHER_TICK_AT, which review.sh computes per-tick as the max
+# .created_at of the fetched comment snapshot AND only advances when a
+# slash trigger was actually consumed at that tick (push-only dispatches
+# carry the prior cutoff forward to avoid filtering out a slash command
+# that eventual-consistency hid from this tick's snapshot but exposed
+# next tick). posted_at is later (after gh succeeds), so a
+# /srosro-review posted DURING the review would fall before posted_at
+# and be silently lost on the next tick if we keyed off it. The
+# `// .started_at` fallback handles run-dirs written before the field
+# split; older runs had cutoff-overloaded-as-started_at semantics, so
+# reading .started_at as a fallback preserves the prior behavior on
+# legacy meta.json files (eventually drains as new rounds land).
+# Function name retained for backward compat with callers; the
+# returned value is the slash cutoff, not the run lifecycle start.
 latest_author_visible_review_started_at() {
     local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"
     local latest
     latest=$(_latest_author_visible_run_dir "$state_dir" "$repo_slug" "$pr_num" "$current_run_dir")
     [ -z "$latest" ] && return 0
-    jq -r '.started_at // empty' "$latest/meta.json" 2>/dev/null
+    jq -r '.slash_cutoff_at // .started_at // empty' "$latest/meta.json" 2>/dev/null
 }
 
 # author_visible_rounds <state_dir> <repo_slug> <pr_num> <current_run_dir>

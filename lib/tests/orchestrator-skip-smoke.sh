@@ -242,11 +242,13 @@ seed_run() {
     local rd="$STATE_DIR/runs/${slug}__${pr}__${ts}__${sha:0:7}"
     mkdir -p "$rd/agents/aggregator"
     printf '## prior review\n\nVERDICT: %s\n' "$verdict" > "$rd/agents/aggregator/output.md"
-    # started_at is what review.sh's slash-command cutoff now reads (via
-    # latest_author_visible_review_started_at). posted_at + reviewed_sha
-    # remain for KNOWN_SHA + author-visible filtering. All three live in
-    # the SAME meta.json so a regression that re-routes any of the three
-    # back to state.json shows up here.
+    # Legacy meta.json shape (started_at as the slash-cutoff value, no
+    # slash_cutoff_at field) — exercises the fallback path in
+    # latest_author_visible_review_started_at (.slash_cutoff_at //
+    # .started_at), keeping these scenarios valid across the field split.
+    # posted_at + reviewed_sha remain for KNOWN_SHA + author-visible
+    # filtering. All four live in the SAME meta.json so a regression
+    # that re-routes any of them back to state.json shows up here.
     printf '{"status":"completed","posted_at":"2026-04-29T15:00:00Z","started_at":"%s","reviewed_sha":"%s"}' "$started_at" "$sha" > "$rd/meta.json"
     echo "$rd"
 }
@@ -883,19 +885,23 @@ for f in "$PROJECT_ROOT/review.sh" "$PROJECT_ROOT/lib/review-one-pr.sh"; do
     fi
 done
 
-# Scenario 19: DISPATCHER_TICK_AT env var is set when the worker is
-# invoked. This is the WRITE-side of the slash-cutoff contract: the
-# dispatcher stamps its tick-fetch time into meta.json.started_at
-# (via DISPATCHER_TICK_AT, captured AFTER fetch_issue_comments). If
-# review.sh stops passing it through, a /srosro-review posted in the
-# ~10s gap between the dispatcher's fetch and the worker's process
-# entry will silently land BEFORE the worker-init-time started_at and
-# get filtered out by the next tick's "created_at > started_at" cutoff.
-echo "  scenario 19: review.sh passes DISPATCHER_TICK_AT env var to the worker..."
+# Scenario 19: DISPATCHER_TICK_AT env var equals the EXACT max .created_at
+# from the fetched snapshot (not just an ISO-looking placeholder). This is
+# the WRITE-side of the slash-cutoff contract: the dispatcher anchors
+# meta.json.slash_cutoff_at in GitHub-stamped .created_at values so a
+# /srosro-* comment created in the gap between the dispatcher's fetch and
+# the worker's process entry isn't silently dropped on the next tick. The
+# exact-value pin guards against a regression to `date -u +...` (which
+# would still produce an ISO-looking string and pass a shape-only assert
+# but reopen the wall-clock-vs-snapshot-max race).
+echo "  scenario 19: review.sh passes max(.created_at) of fetched snapshot to worker as DISPATCHER_TICK_AT..."
 clear_seeded_runs
 MOCK_TRUSTED_USERS="srosro,someuser" \
     seed_run "cncorp_plow" "1" "20260429T143000000Z" "abc123" "COMMENT" >/dev/null
-printf '[{"created_at":"2026-04-30T16:00:00Z","user":{"login":"someuser"},"body":"/srosro-review"}]\n' > "$MOCK_COMMENTS_FILE"
+# Two comments — the trigger AND a newer non-trigger. max(.created_at) is
+# the newer one, so the assertion below pins to that exact timestamp.
+EXPECTED_TICK="2026-04-30T16:02:00Z"
+printf '[{"created_at":"2026-04-30T16:00:00Z","user":{"login":"someuser"},"body":"/srosro-review"},{"created_at":"%s","user":{"login":"someuser"},"body":"thanks"}]\n' "$EXPECTED_TICK" > "$MOCK_COMMENTS_FILE"
 run_orchestrator
 n=$(count_dispatches)
 if [ "$n" -ne 1 ]; then
@@ -903,11 +909,11 @@ if [ "$n" -ne 1 ]; then
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
-if ! grep -q 'dispatcher_tick=20[0-9][0-9]-[01][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9]Z' "$LOG_FILE"; then
-    echo "FAIL scenario 19 (slash-cutoff write-side regression): expected dispatcher_tick=<ISO8601> in WORKER_DISPATCHED, got:"
+if ! grep -qF "dispatcher_tick=$EXPECTED_TICK" "$LOG_FILE"; then
+    echo "FAIL scenario 19 (slash-cutoff write-side regression): expected exact dispatcher_tick=$EXPECTED_TICK in WORKER_DISPATCHED, got:"
     grep 'WORKER_DISPATCHED' "$LOG_FILE" || true
-    echo "review.sh must pass DISPATCHER_TICK_AT (captured AFTER fetch_issue_comments) to the worker so the worker stamps meta.json.started_at from the dispatcher's tick-fetch time, not the worker's process-entry time."
+    echo "review.sh must derive DISPATCHER_TICK_AT from max(.created_at) of the fetched snapshot — a shape-only ISO match (\\d{4}-\\d{2}-\\d{2}T...Z) would silently accept a regression to local wall-clock \`date -u\`."
     exit 1
 fi
 
-echo "  PASS (19 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-write-side)"
+echo "  PASS (19 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, snapshot-max-write-side)"
