@@ -544,3 +544,63 @@ if ! grep -q "PR feature content" "$FULL_DIFF3"; then
 fi
 
 echo "  PASS (3 scenarios: orchestrator/worker SHA race + non-default-base canonical→workdir ref propagation + canonical heads/main aligned with origin/main; both diff and commits consumers fenced)"
+
+# ===== Scenario 4: worker dedup gate fires on fetched head =====
+# Fences the gate at lib/review-one-pr.sh (post canonical fetch, pre
+# placeholder POST). Setup reuses scenario 1's bare repo so refs/pull/1/
+# head is NEW_PR_SHA; we seed a prior author-visible run with
+# reviewed_sha = NEW_PR_SHA AND invoke the worker with PR_SHA =
+# OLD_PR_SHA (stale dispatcher). The worker fetches refs/pull/1/head →
+# FETCHED_HEAD_SHA = NEW_PR_SHA, matches reviewed_sha → gate fires.
+# Observable: run.log contains the skip line AND does NOT contain a
+# "posted reviewing placeholder" log line.
+#
+# Specifically fencing the FETCHED-head comparison (not just any
+# PR_SHA == reviewed_sha equivalence) is what catches regressions that
+# would skip the gate when the dispatcher's PR_SHA disagrees with the
+# truth post-fetch.
+echo "  scenario: worker dedup gate fires when fetched head matches prior author-visible reviewed_sha..."
+
+GATE_RUN_ID="test-org_probe-repo__1__20260101T000000000Z__newpr12"
+GATE_RUN_DIR="$STATE_DIR/runs/$GATE_RUN_ID"
+mkdir -p "$GATE_RUN_DIR"
+cat > "$GATE_RUN_DIR/meta.json" <<EOF
+{
+  "pr_id": "test-org/probe-repo#1",
+  "reviewed_sha": "$NEW_PR_SHA",
+  "posted_at": "2026-01-01T00:00:00Z"
+}
+EOF
+
+TRIGGER_COMMENT_FILE="" \
+    bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
+    "test-org/probe-repo" "1" "$OLD_PR_SHA" "feat/test" "Test PR" "false" \
+    >/dev/null 2>&1
+GATE_EC=$?
+
+# The worker DOES allocate a run-dir before the gate fires; find the new
+# one (excluding the seeded fake run-dir and scenario 1's run-dir).
+GATE_RUN=$(find "$STATE_DIR/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' -newer "$GATE_RUN_DIR" | head -1)
+if [ -z "$GATE_RUN" ]; then
+    echo "FAIL: scenario 4 — worker allocated no run-dir (aborted before allocate_run_dir)"
+    exit 1
+fi
+GATE_LOG="$GATE_RUN/run.log"
+
+if [ "$GATE_EC" -ne 0 ]; then
+    echo "FAIL: scenario 4 — worker exited $GATE_EC (expected 0 from clean gate skip)"
+    [ -f "$GATE_LOG" ] && { echo "--- run.log ---"; cat "$GATE_LOG"; }
+    exit 1
+fi
+if ! grep -q "fetched head .* already reviewed by concurrent worker" "$GATE_LOG"; then
+    echo "FAIL: scenario 4 — run.log missing the post-fetch dedup-gate skip line"
+    [ -f "$GATE_LOG" ] && { echo "--- run.log ---"; cat "$GATE_LOG"; }
+    exit 1
+fi
+if grep -q "posted reviewing placeholder" "$GATE_LOG"; then
+    echo "FAIL: scenario 4 — placeholder WAS posted (gate fired too late / not at all)"
+    cat "$GATE_LOG"
+    exit 1
+fi
+
+echo "  PASS (4 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate on fetched head)"

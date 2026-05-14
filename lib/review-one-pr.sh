@@ -325,6 +325,26 @@ if ! fetch_err=$(git -C "$CANONICAL_DIR" fetch origin "+refs/pull/$PR_NUM/head:$
     exit 0
 fi
 
+# --- worker-level dedup gate -------------------------------------------------
+# Mirrors the dispatcher's gate at review.sh:217 (PR_SHA == KNOWN_SHA &&
+# !FORCE_WHOLE_PR → skip), but uses the FETCHED head SHA — the truth as
+# of this worker's point in time — not the dispatcher's stale enumeration.
+# The dispatcher reads meta.json BEFORE an in-flight worker's finalize_run
+# has committed the new SHA back, so two ticks targeting the same trigger
+# can both pass the gate. By this point (post per-PR flock + canonical
+# fetch), any prior holder's meta.json write is durable AND we have the
+# actual head we'd be reviewing. Without this re-check the second worker
+# posts a placeholder and immediately PATCHes it to "review aborted" via
+# the empty-diff path at line ~626 — noisy on the PR for no useful signal.
+if [ "$FORCE_WHOLE_PR" != "true" ]; then
+    FETCHED_HEAD_SHA=$(git -C "$CANONICAL_DIR" rev-parse "refs/heads/$PR_BRANCH" 2>/dev/null)
+    KNOWN_SHA_GATE=$(latest_author_visible_review_sha "$STATE_DIR" "${REPO//\//_}" "$PR_NUM" "")
+    if [ -n "$FETCHED_HEAD_SHA" ] && [ "$FETCHED_HEAD_SHA" = "$KNOWN_SHA_GATE" ]; then
+        log "$PR_ID: fetched head $FETCHED_HEAD_SHA already reviewed by concurrent worker — skipping cleanly"
+        exit 0
+    fi
+fi
+
 # Post the "reviewing" placeholder NOW that the canonical fetch confirmed
 # the PR head is reachable. The full run (`just test` up to 30m + 6
 # specialists + critic + aggregator) can take many minutes; the
