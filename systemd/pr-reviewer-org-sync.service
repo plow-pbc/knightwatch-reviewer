@@ -1,0 +1,49 @@
+[Unit]
+Description=Plow PR reviewer — discover org repos and fold them into repos.conf
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=odio
+Group=odio
+WorkingDirectory=/home/odio/.pr-reviewer
+Environment=HOME=/home/odio
+# PATH: system dirs FIRST (see pr-reviewer.service for rationale —
+# defense-in-depth on top of the ~/.local-not-in-ReadWritePaths fix).
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/odio/.nvm/versions/node/v24.15.0/bin:/home/odio/.local/bin
+ExecStart=/home/odio/.pr-reviewer/org-sync.sh
+# First-sync budget: cloning N missing checkouts is serial and each
+# clone can take seconds-to-tens-of-seconds for a non-trivial repo.
+# Bootstrap on a large org (~100 repos) can exceed 10min; subsequent
+# ticks are seconds because there's nothing to clone. 1h is the
+# bootstrap budget — fail-slow once, fast forever after.
+TimeoutStartSec=1h
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pr-reviewer-org-sync
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectHome=read-only
+# ReadWritePaths: broader than the sibling review/refresh units because
+# org-sync.sh creates NEW checkout directories under /home/odio/Hacking
+# that aren't yet in @KID_RW_PATHS@ (rendered at install time, can't
+# know about repos discovered after the last install). Granting RW on
+# /home/odio/Hacking is the only shape that lets `gh repo clone <new>`
+# succeed without a preceding install.sh re-render. We do NOT need RW
+# on the source-tree dir — org-sync writes to $STATE_DIR/repos.conf.auto
+# (= /home/odio/.pr-reviewer/repos.conf.auto), not to a source-tree
+# symlink target. Blast radius is one script doing only `gh repo clone`
+# + a tmp-file write inside the bot's own state dir.
+# gh repo list / clone are read-only against ~/.config — token refresh
+# happens through `gh auth login`, not hourly. ~/.cache holds gh's
+# command-history sink so keep that writable. Drop ~/.config to tighten
+# the sandbox; restore if operator hits a write-attempt in journalctl.
+ReadWritePaths=/home/odio/.pr-reviewer /home/odio/Hacking /home/odio/.cache
+
+[Install]
+WantedBy=multi-user.target

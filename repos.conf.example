@@ -54,3 +54,13 @@ declare -A KID_PATHS=(
 declare -A SOURCE_PATHS=(
     ["your-org/example-repo"]="$HOME/Hacking/example-repo"
 )
+
+# Orgs auto-synced hourly by org-sync.sh / pr-reviewer-org-sync.timer.
+# Each entry is a GitHub org name (NOT org/repo). For each org, the
+# sync runs `gh repo list <org> --source --no-archived` (excludes
+# archived + forks), clones any missing repos into $HOME/Hacking/<name>,
+# and writes the resulting auto-tracked set to a separate file —
+# $STATE_DIR/repos.conf.auto — that lib/tracked-repos.sh sources after
+# this one. We never write THIS file. Leave ORGS empty to disable
+# auto-sync entirely (and to truncate any prior repos.conf.auto).
+ORGS=()

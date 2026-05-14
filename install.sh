@@ -105,37 +105,21 @@ fi
 # directives — the units are the source of truth for what runs in
 # production. A new poller landing as <name>.service (with its
 # ExecStart=$INSTALL_DIR/<script>.sh) automatically gets symlinked here
-# without a parallel manifest to keep in sync.
+# without a parallel manifest to keep in sync. Parser lives in
+# lib/systemd-units.sh and is shared with install-smoke +
+# prompt-contracts-smoke so the contract has one definition, not three.
+# shellcheck source=lib/systemd-units.sh
+. "$REPO_DIR/lib/systemd-units.sh"
+
 shopt -s nullglob
 service_units=( systemd/*.service )
 shopt -u nullglob
 [[ ${#service_units[@]} -ge 1 ]] || fail "no systemd .service files in $REPO_DIR/systemd/"
 
-SCRIPTS=()
-while IFS= read -r execstart; do
-    # An ExecStart= line is `ExecStart=/path/to/cmd [arg1] [arg2] ...`.
-    # Strip the directive prefix, then split off everything after the
-    # first whitespace so we ONLY take the command path. Without this
-    # split, a future `ExecStart=/home/odio/.pr-reviewer/review.sh
-    # --repo cncorp/plow` would basename to "plow" (greedy `.*/` eats
-    # through the last `/` in `cncorp/plow`) and silently drop
-    # review.sh from the managed list.
-    cmd_path="${execstart#ExecStart=}"
-    cmd_path="${cmd_path%% *}"   # everything before the first space
-    script="${cmd_path##*/}"     # basename
-    [[ -n "$script" ]] || continue
-    if [[ -f "$REPO_DIR/$script" ]]; then
-        SCRIPTS+=("$script")
-    elif [[ "$script" == *.sh ]]; then
-        # ExecStart points at a *.sh basename but the repo doesn't have it —
-        # drift between the unit file and the repo. Fail loud rather than
-        # silently dropping the symlink and shipping a broken install.
-        fail "unit ExecStart references '$script' but $REPO_DIR/$script doesn't exist"
-    fi
-    # else: ExecStart points at a non-script path (e.g. /bin/true in test
-    # fixtures, or a hypothetical absolute /usr/bin/something). Nothing
-    # to symlink for those; skip without warning.
-done < <(grep -h "^ExecStart=" "${service_units[@]}" | sort -u)
+# Drift check first (fail-loud surfaces missing .sh before we build
+# the symlink list); then the list itself.
+assert_execstart_shell_scripts_present "$REPO_DIR" "${service_units[@]}" || exit 1
+mapfile -t SCRIPTS < <(list_execstart_shell_scripts "$REPO_DIR" "${service_units[@]}")
 [[ ${#SCRIPTS[@]} -ge 1 ]] || fail "no scripts discovered from ExecStart= directives — check systemd/*.service shape"
 
 DIRS=(lib docs prompts)
@@ -185,6 +169,15 @@ shopt -u nullglob
 # disabled) from getting writes to entire repo source trees.
 # shellcheck disable=SC1091
 . "$REPO_DIR/repos.conf"
+# Also source repos.conf.auto if it exists, so org-sync-tracked repos
+# get their .keepitdry write paths included in the sandbox render on
+# the next install. The auto file is purely runtime state (in
+# $INSTALL_DIR, not the source tree) — install.sh never bootstraps it
+# and never delivers it.
+if [ -f "$INSTALL_DIR/repos.conf.auto" ]; then
+    # shellcheck disable=SC1091
+    . "$INSTALL_DIR/repos.conf.auto"
+fi
 # Dedupe + sort for stable rendering across runs so cmp-based idempotency
 # doesn't trigger spurious copies when bash hashing reorders the assoc
 # array between runs.

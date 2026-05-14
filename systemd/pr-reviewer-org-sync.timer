@@ -1,0 +1,11 @@
+[Unit]
+Description=Plow PR reviewer org-sync (hourly at :45)
+
+[Timer]
+OnCalendar=*:45
+Persistent=false
+AccuracySec=10s
+Unit=pr-reviewer-org-sync.service
+
+[Install]
+WantedBy=timers.target

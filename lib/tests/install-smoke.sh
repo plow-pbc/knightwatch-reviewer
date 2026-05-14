@@ -107,20 +107,13 @@ PROD_UNITS=( "$PROJECT_ROOT"/systemd/*.service "$PROJECT_ROOT"/systemd/*.timer )
 PROD_TIMERS=( "$PROJECT_ROOT"/systemd/*.timer )
 shopt -u nullglob
 
-# Discover the same script list install.sh now derives from the unit
-# files' ExecStart= directives, so the assertion in scenario 1 stays
-# in sync without a parallel hand-maintained list. Mirror install.sh's
-# command-token-then-basename parse so both code paths handle argv'd
-# ExecStart= variants identically.
-PROD_SCRIPTS=()
-while IFS= read -r execstart; do
-    cmd_path="${execstart#ExecStart=}"
-    cmd_path="${cmd_path%% *}"
-    script="${cmd_path##*/}"
-    [[ -n "$script" ]] || continue
-    [[ "$script" == *.sh ]] || continue
-    [[ -f "$PROJECT_ROOT/$script" ]] && PROD_SCRIPTS+=("$script")
-done < <(grep -h "^ExecStart=" "$PROJECT_ROOT"/systemd/*.service | sort -u)
+# Discover the same script list install.sh derives from the unit files'
+# ExecStart= directives, via the shared parser in lib/systemd-units.sh.
+# A new poller landing as <name>.service picks up coverage here without
+# a parallel hand-maintained list to keep in sync.
+# shellcheck source=lib/systemd-units.sh
+. "$PROJECT_ROOT/lib/systemd-units.sh"
+mapfile -t PROD_SCRIPTS < <(list_execstart_shell_scripts "$PROJECT_ROOT" "$PROJECT_ROOT"/systemd/*.service)
 [[ ${#PROD_SCRIPTS[@]} -ge 1 ]] || { echo "FAIL setup: no scripts discovered from production unit files"; exit 1; }
 
 # All scenarios run install.sh from a temp overlay (symlinks of the
