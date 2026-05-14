@@ -222,8 +222,8 @@ cp "$PROJECT_ROOT/lib/run-dir.sh"       "$REVIEWER_LIB_DIR/run-dir.sh"
 cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<'WORKER'
 #!/bin/bash
 # Args from review.sh: REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR
-# TRIGGER_COMMENT_FILE comes through as an env var.
-echo "WORKER_DISPATCHED repo=$1 pr=$2 sha=$3 force_whole=$6 trigger_file=${TRIGGER_COMMENT_FILE:-}" >> "$LOG_FILE"
+# TRIGGER_COMMENT_FILE + DISPATCHER_TICK_AT come through as env vars.
+echo "WORKER_DISPATCHED repo=$1 pr=$2 sha=$3 force_whole=$6 trigger_file=${TRIGGER_COMMENT_FILE:-} dispatcher_tick=${DISPATCHER_TICK_AT:-}" >> "$LOG_FILE"
 WORKER
 chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
 
@@ -711,7 +711,7 @@ echo "  scenario 13: /srosro-update-review on page 2 of comments — page-2 pagi
 # under timeout) left it in non-default state.
 cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<'WORKER'
 #!/bin/bash
-echo "WORKER_DISPATCHED repo=$1 pr=$2 sha=$3 force_whole=$6 trigger_file=${TRIGGER_COMMENT_FILE:-}" >> "$LOG_FILE"
+echo "WORKER_DISPATCHED repo=$1 pr=$2 sha=$3 force_whole=$6 trigger_file=${TRIGGER_COMMENT_FILE:-} dispatcher_tick=${DISPATCHER_TICK_AT:-}" >> "$LOG_FILE"
 WORKER
 chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
 
@@ -883,4 +883,31 @@ for f in "$PROJECT_ROOT/review.sh" "$PROJECT_ROOT/lib/review-one-pr.sh"; do
     fi
 done
 
-echo "  PASS (18 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue)"
+# Scenario 19: DISPATCHER_TICK_AT env var is set when the worker is
+# invoked. This is the WRITE-side of the slash-cutoff contract: the
+# dispatcher stamps its tick-fetch time into meta.json.started_at
+# (via DISPATCHER_TICK_AT, captured AFTER fetch_issue_comments). If
+# review.sh stops passing it through, a /srosro-review posted in the
+# ~10s gap between the dispatcher's fetch and the worker's process
+# entry will silently land BEFORE the worker-init-time started_at and
+# get filtered out by the next tick's "created_at > started_at" cutoff.
+echo "  scenario 19: review.sh passes DISPATCHER_TICK_AT env var to the worker..."
+clear_seeded_runs
+MOCK_TRUSTED_USERS="srosro,someuser" \
+    seed_run "cncorp_plow" "1" "20260429T143000000Z" "abc123" "COMMENT" >/dev/null
+printf '[{"created_at":"2026-04-30T16:00:00Z","user":{"login":"someuser"},"body":"/srosro-review"}]\n' > "$MOCK_COMMENTS_FILE"
+run_orchestrator
+n=$(count_dispatches)
+if [ "$n" -ne 1 ]; then
+    echo "FAIL scenario 19 (setup): expected 1 dispatch, got $n"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+if ! grep -q 'dispatcher_tick=20[0-9][0-9]-[01][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9]Z' "$LOG_FILE"; then
+    echo "FAIL scenario 19 (slash-cutoff write-side regression): expected dispatcher_tick=<ISO8601> in WORKER_DISPATCHED, got:"
+    grep 'WORKER_DISPATCHED' "$LOG_FILE" || true
+    echo "review.sh must pass DISPATCHER_TICK_AT (captured AFTER fetch_issue_comments) to the worker so the worker stamps meta.json.started_at from the dispatcher's tick-fetch time, not the worker's process-entry time."
+    exit 1
+fi
+
+echo "  PASS (19 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-write-side)"

@@ -110,16 +110,21 @@ for REPO in "${REPOS[@]}"; do
         TRIGGER_FILE=""
         TRIGGER_USER=""
         TRIGGER_BODY=""
+        TICK_FETCHED_AT_ISO=""
 
         if [ -n "$KNOWN_SHA" ]; then
             # Cutoff timestamp sources from runs/ (meta.json.started_at)
             # — single source of truth since state.json was retired in
-            # PR #38. started_at is stamped at run init (line ~165 of
-            # lib/review-one-pr.sh) BEFORE the worker can crash, so a
-            # /srosro-review posted while a review is in flight always
-            # falls AFTER the recorded started_at and re-qualifies for
-            # the next tick. Helper returns ISO 8601 directly —
-            # meta.json.started_at is already in that format.
+            # PR #38. started_at is now stamped from the DISPATCHER's
+            # tick-fetch time (passed to the worker via env var
+            # DISPATCHER_TICK_AT, captured AFTER fetch_issue_comments
+            # returns below), NOT the worker's script-entry time. That
+            # closes the race where a /srosro-review posted in the
+            # ~10s gap between dispatcher fetch and worker init would
+            # have a created_at older than the worker's started_at,
+            # making the next tick's "created_at > started_at" filter
+            # silently drop the trigger. Helper returns ISO 8601
+            # directly — meta.json.started_at is already in that format.
             REVIEWED_AT_ISO=$(latest_author_visible_review_started_at "$STATE_DIR" "$REPO_SLUG_FOR_GATE" "$PR_NUM" "")
             # Fail loud on a transient gh outage rather than treating
             # "API broken" as "no comments" and silently missing a
@@ -129,6 +134,12 @@ for REPO in "${REPOS[@]}"; do
                 log "$PR_ID: comments fetch failed — skipping this PR for this tick"
                 continue
             }
+            # Capture AFTER the fetch so any comment in COMMENTS_JSON has
+            # created_at <= TICK_FETCHED_AT_ISO. The next tick's filter
+            # `created_at > TICK_FETCHED_AT_ISO` then correctly classifies:
+            # comments visible at THIS tick are consumed (filtered out);
+            # comments posted AFTER this point are fresh (still eligible).
+            TICK_FETCHED_AT_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
             # Exclude the bot's own auto-posts (review ack, final review,
             # learn-from-replies acks, and the usage footer that appears on
             # every review and itself contains the slash commands) by
@@ -258,8 +269,13 @@ for REPO in "${REPOS[@]}"; do
             printf 'Comment by @%s:\n\n%s\n' "$TRIGGER_USER" "$TRIGGER_BODY" > "$TRIGGER_FILE"
         fi
 
-        # Tab-separated spec so titles with spaces survive.
-        ELIGIBLE+=("$REPO"$'\t'"$PR_NUM"$'\t'"$PR_SHA"$'\t'"$PR_BRANCH"$'\t'"$PR_TITLE"$'\t'"$FORCE_WHOLE_PR"$'\t'"$TRIGGER_FILE")
+        # ASCII Unit Separator (\x1f, non-whitespace) so titles with
+        # spaces survive AND adjacent empty fields don't collapse —
+        # bash's `read` with whitespace IFS treats consecutive
+        # delimiters as one, which would silently shift later fields
+        # left (e.g., DISPATCHER_TICK_AT would land in TRIGGER_FILE
+        # whenever TRIGGER_FILE was empty).
+        ELIGIBLE+=("$REPO"$'\x1f'"$PR_NUM"$'\x1f'"$PR_SHA"$'\x1f'"$PR_BRANCH"$'\x1f'"$PR_TITLE"$'\x1f'"$FORCE_WHOLE_PR"$'\x1f'"$TRIGGER_FILE"$'\x1f'"$TICK_FETCHED_AT_ISO")
     done < <(echo "$PR_LIST" | jq -c '.[]')
 done
 
@@ -288,7 +304,7 @@ log "Fan-out: ${#ELIGIBLE[@]} eligible PR(s), max $MAX_CONCURRENT concurrent, pe
 # prevents duplicate-dispatch races for the same PR.
 active=0
 for spec in "${ELIGIBLE[@]}"; do
-    IFS=$'\t' read -r REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR TRIGGER_FILE <<< "$spec"
+    IFS=$'\x1f' read -r REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR TRIGGER_FILE DISPATCHER_TICK_AT <<< "$spec"
 
     while [ "$active" -ge "$MAX_CONCURRENT" ]; do
         wait -n || true
@@ -296,6 +312,7 @@ for spec in "${ELIGIBLE[@]}"; do
     done
 
     TRIGGER_COMMENT_FILE="$TRIGGER_FILE" \
+    DISPATCHER_TICK_AT="$DISPATCHER_TICK_AT" \
     REVIEWER_LIB_DIR="$REVIEWER_LIB_DIR" \
         timeout "$WORKER_TIMEOUT" "$REVIEWER_LIB_DIR/review-one-pr.sh" \
         "$REPO" "$PR_NUM" "$PR_SHA" "$PR_BRANCH" "$PR_TITLE" "$FORCE_WHOLE_PR" &

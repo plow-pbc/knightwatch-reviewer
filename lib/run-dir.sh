@@ -500,16 +500,17 @@ latest_author_visible_review_approved() {
 # comments newer than the last review?"). Replaces a stale
 # `state_get "reviewed_at"` read on state.json that left the
 # gh-success + state_set-failure race leaking through the trigger
-# cutoff: meta.json's started_at is stamped at run init (well before
-# state_set), so the cutoff stays accurate even when the post-review
-# state.json write never landed.
+# cutoff.
 #
 # Field choice: started_at, NOT posted_at. Cutoff semantic is "any comment
-# arriving after this review STARTED is fresh and should requalify on
-# the next tick" — matches the existing REVIEW_START_TS plumbing in
-# lib/review-one-pr.sh. posted_at is later (after gh succeeds), so a
-# /srosro-review posted DURING the review would fall before posted_at
-# and be silently lost on the next tick if we keyed off it.
+# the dispatcher had not yet fetched at the tick that launched the last
+# review is fresh and should requalify on the next tick." started_at is
+# stamped from the dispatcher's tick-fetch time (review.sh sets it from
+# `date -u +...` captured AFTER fetch_issue_comments returns, passed to
+# the worker via DISPATCHER_TICK_AT env var). posted_at is later (after
+# gh succeeds), so a /srosro-review posted DURING the review would fall
+# before posted_at and be silently lost on the next tick if we keyed
+# off it.
 latest_author_visible_review_started_at() {
     local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"
     local latest

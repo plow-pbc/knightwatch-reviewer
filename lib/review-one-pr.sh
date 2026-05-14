@@ -40,16 +40,26 @@ fi
 # we stamped completion time instead, a /review posted during this run would
 # fall before the stamp and be invisible to the next tick.
 #
-# A SINGLE captured value drives BOTH the epoch form used by internal helpers
-# AND the ISO 8601 form written to meta.json. Two `date` calls (one here, one
-# at the meta.json write below) drift by sub-seconds under load, and a
-# /srosro-review trigger landing in that drift window would be silently
-# filtered out by review.sh's cutoff (created_at > meta.json.started_at).
+# REVIEW_START_TS (epoch) drives elapsed-time accounting internally; it always
+# uses the worker's process-entry clock so durations are local-accurate.
+#
+# REVIEW_START_ISO drives meta.json.started_at, which review.sh's NEXT tick
+# uses as the trigger cutoff. Prefer the dispatcher's tick-fetch time
+# (DISPATCHER_TICK_AT env var, captured by review.sh AFTER fetch_issue_comments
+# at the tick that dispatched this worker) so that a /srosro-review posted in
+# the gap between dispatcher fetch and this worker's process entry isn't
+# silently dropped by the next tick's "created_at > started_at" filter. Fall
+# back to worker-entry time for direct invocations (tests, manual runs) where
+# the dispatcher didn't set the env var.
 REVIEW_START_TS=$(date +%s)
-# Portable epoch→ISO conversion — `date -u -d "@<epoch>"` is GNU-only and
-# breaks on macOS BSD date. Use python3 (already a project dep) for both
-# platforms. Same fix as lib/tests/divergent-clock-smoke.sh.
-REVIEW_START_ISO=$(python3 -c "import datetime; print(datetime.datetime.fromtimestamp(int('$REVIEW_START_TS'), tz=datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+if [ -n "${DISPATCHER_TICK_AT:-}" ]; then
+    REVIEW_START_ISO="$DISPATCHER_TICK_AT"
+else
+    # Portable epoch→ISO conversion — `date -u -d "@<epoch>"` is GNU-only and
+    # breaks on macOS BSD date. Use python3 (already a project dep) for both
+    # platforms. Same fix as lib/tests/divergent-clock-smoke.sh.
+    REVIEW_START_ISO=$(python3 -c "import datetime; print(datetime.datetime.fromtimestamp(int('$REVIEW_START_TS'), tz=datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+fi
 
 # --- per-PR advisory lock ----------------------------------------------------
 # Prevents two concurrent invocations from stepping on each other for the same
@@ -489,11 +499,15 @@ mkdir -p "$REPO_DIR/.codex-scratch"
 # reviewed (REVIEWED_SHA) instead of the orchestrator's enumeration SHA
 # (PR_SHA). Worker abort paths between RUN_DIR allocation and this point
 # leave no meta.json; finalize_meta_json's missing-file path is
-# tolerant. started_at uses REVIEW_START_ISO (captured at script entry,
-# single-clock-read alongside REVIEW_START_TS) so review.sh's "comments
-# newer than this review" cutoff doesn't drift past comments posted
-# during the worker's setup window. Title is JSON-escaped via jq so
-# titles with quotes / newlines don't break the file.
+# tolerant. started_at uses REVIEW_START_ISO — when review.sh sets
+# DISPATCHER_TICK_AT, this is the dispatcher's tick-fetch time (captured
+# AFTER fetch_issue_comments at the launching tick); otherwise it falls
+# back to worker-entry time. The dispatcher-time path closes the race
+# where a /srosro-review posted in the gap between dispatcher fetch and
+# worker init would have a created_at older than the worker's started_at,
+# making the next tick's "created_at > started_at" filter silently drop
+# the trigger. Title is JSON-escaped via jq so titles with quotes /
+# newlines don't break the file.
 if ! jq -n \
         --arg repo "$REPO" \
         --arg pr_id "$PR_ID" \
