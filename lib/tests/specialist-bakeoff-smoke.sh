@@ -962,4 +962,36 @@ fi
 
 unset MOCK_PULLS_COMMITS_FILE
 
+# ---- scenario 30: bare defaults — REWALK_HOURS=24, SCORECARD_DAYS=14 unset ----
+# Existing scenarios pin both vars to wider values to keep legacy fixtures in window,
+# so the production-default contract is otherwise untested. This scenario runs the
+# driver with both vars explicitly removed from the environment (env -u) and asserts:
+#   1. Rendered header says "last 14 days"  (SCORECARD_DAYS default)
+#   2. Coverage heading says "last 24 h walk"  (REWALK_HOURS default)
+echo "    scenario 30: bare defaults (REWALK_HOURS=24, SCORECARD_DAYS=14) — header + coverage label..."
+rm -f "$DB_FILE"
+
+# One bot review 2h ago — safely inside the default 24h walker window.
+TS_30=$(hours_ago 2)
+build_bot_review 200 200 "$TS_30" tests \
+    '1. [blocking] [from: tests] [tests] default-window probe. Files: src/probe.py. Edit: fix it.' \
+    | jq -s . > "$MOCK_COMMENTS_FILE"
+printf 'src/probe.py\t1\t0\n' > "$MOCK_PULLS_FILES_FILE"
+: > "$TMPDIR_SMOKE/commits-30.tsv"
+export MOCK_PULLS_COMMITS_FILE="$TMPDIR_SMOKE/commits-30.tsv"
+
+# Run with BOTH knobs absent — uses the script defaults (24 / 14).
+env -u REWALK_HOURS -u SCORECARD_DAYS bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null 2>&1
+
+# Header must reflect the 14-day default scorecard horizon.
+grep -qF '# Specialist bake-off — last 14 days' "$OUT_FILE" \
+    || { echo "FAIL scenario 30: default header missing 'last 14 days'"; cat "$OUT_FILE"; exit 1; }
+
+# Coverage heading must reflect the 24h default walk window.
+# (total_reviews > 0 because the review above landed a specialist_runs row.)
+grep -qF '**Per-repo coverage (last 24 h walk)**' "$OUT_FILE" \
+    || { echo "FAIL scenario 30: coverage heading missing '(last 24 h walk)' under defaults"; cat "$OUT_FILE"; exit 1; }
+
+unset MOCK_PULLS_COMMITS_FILE
+
 echo "PASS"
