@@ -297,12 +297,12 @@ ROW=$(sqlite3 "$DB8" "SELECT comment_id, specialist FROM specialist_runs;")
 SEV=$(sqlite3 "$DB8" "SELECT max_severity FROM specialist_runs WHERE comment_id=100;")
 [ "$SEV" = "" ] || { echo "FAIL: migrated row should have empty max_severity, got '$SEV'"; exit 1; }
 
-echo "  coverage: set_repo_coverage refreshes last_walked_at on re-call..."
-set_repo_coverage "$DB" srosro/refresh-repo 1 1 "$(date -u +%FT%TZ)"
-FIRST=$(sqlite3 "$DB" "SELECT last_walked_at FROM walks WHERE repo='srosro/refresh-repo';")
-sleep 1
-set_repo_coverage "$DB" srosro/refresh-repo 2 2 "$(date -u +%FT%TZ)"
+echo "  coverage: set_repo_coverage stores caller-supplied timestamp (overwrites on re-call)..."
+T1=2026-05-18T20:00:00Z
+T2=2026-05-18T20:00:10Z
+set_repo_coverage "$DB" srosro/refresh-repo 1 1 "$T1"
+set_repo_coverage "$DB" srosro/refresh-repo 2 2 "$T2"
 SECOND=$(sqlite3 "$DB" "SELECT last_walked_at FROM walks WHERE repo='srosro/refresh-repo';")
-[ "$FIRST" != "$SECOND" ] || { echo "FAIL: last_walked_at not refreshed (first=$FIRST second=$SECOND)"; exit 1; }
+[ "$SECOND" = "$T2" ] || { echo "FAIL: last_walked_at not overwritten on re-call (got '$SECOND', expected '$T2')"; exit 1; }
 
 echo "PASS"
