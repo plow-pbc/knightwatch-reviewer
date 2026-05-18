@@ -59,7 +59,14 @@ for repo in "${REPOS[@]}"; do
     walk_started_at=$(date -u +%FT%TZ)
     rewalk_floor=$(date -u -d "$REWALK_HOURS hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
                   || date -u -v "-${REWALK_HOURS}H" +%Y-%m-%dT%H:%M:%SZ)
-    last_walked=$(sqlite3 "$DB_FILE" "SELECT last_walked_at FROM walks WHERE repo='$repo';")
+    # strftime normalizes both ISO (the walker's own writes) and
+    # SQLite's space-separated datetime('now') format into a single
+    # ISO shape. Without normalization, a same-day operator-seeded
+    # space-format watermark would lex-sort before an ISO rewalk_floor
+    # (ASCII space < T), making the watermark falsely look "earlier"
+    # and skipping comments between the true REWALK_HOURS floor and
+    # the manual stamp.
+    last_walked=$(sqlite3 "$DB_FILE" "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', last_walked_at) FROM walks WHERE repo='$repo';")
     # Walk floor: the EARLIER of (REWALK_HOURS_ago, last_walked_at). The
     # rewalk floor refreshes edited_after on recent reviews; last_walked_at
     # extends the scan further back when crons were missed. ISO8601 strings

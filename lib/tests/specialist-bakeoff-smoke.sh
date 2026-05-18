@@ -1058,4 +1058,83 @@ GOT_31=$(sqlite3 "$DB_FILE" "SELECT last_walked_at FROM walks WHERE repo='test-o
 rm -rf "$DATE_STUB_DIR"
 unset MOCK_PULLS_COMMITS_FILE DATE_STUB_PRE DATE_STUB_POST DATE_STUB_COUNTER
 
+# ---- scenario 32: operator-seeded space-format watermark normalizes correctly ----
+# Regression for round-4 blocker: an operator who runs the documented deploy
+# step (sqlite3 ... datetime('now')) writes last_walked_at in SQLite's space-
+# separated format ("2026-05-18 23:00:00"). Without strftime normalization on
+# read, that value lex-sorts before an ISO rewalk_floor on the SAME calendar
+# day (ASCII space 0x20 < T 0x54), so the buggy comparison
+#   "2026-05-18 23:xx:xx" < "2026-05-18T22:xx:xxZ"  (REWALK_HOURS=3)
+# yields TRUE, and window_floor is set to the seeded space-format value instead
+# of rewalk_floor.
+#
+# The bug only manifests when seeded-date and rewalk_floor share the same
+# calendar day. With REWALK_HOURS=3 the rewalk_floor is ~3h ago (intraday),
+# so seeded NOW and rewalk_floor are on the same date — day chars match, char
+# index 10 is the decisive one: space(0x20) vs T(0x54).
+#
+# The critical observable: with the bug, the log entry reads
+#   "scanning ... since <SPACE-FORMAT-DATE-ONLY>" (sed stops at first space)
+# With the fix, the log reads
+#   "scanning ... since <ISO-REWALK_FLOOR>" (contains T)
+#
+# We assert on the log's "since ..." segment — it must contain T (ISO format).
+echo "    scenario 32: operator-seeded space-format watermark normalizes correctly (strftime fix)..."
+rm -f "$DB_FILE" "$LOG_FILE"
+
+# Switch the tracked repo to normalize-probe so we have an isolated DB state.
+cat > "$STATE_DIR/repos.conf" <<'CONF32'
+REPOS=("test-org/normalize-probe")
+CONF32
+
+# A bot review created 1h ago — well within REWALK_HOURS=3.
+TS_32=$(hours_ago 1)
+build_bot_review 320 320 "$TS_32" tests \
+    '1. [blocking] [from: tests] [tests] normalize probe. Files: src/probe.py. Edit: fix it.' \
+    | jq -s . > "$MOCK_COMMENTS_FILE"
+printf 'src/probe.py\t1\t0\n' > "$MOCK_PULLS_FILES_FILE"
+: > "$TMPDIR_SMOKE/commits-32.tsv"
+export MOCK_PULLS_COMMITS_FILE="$TMPDIR_SMOKE/commits-32.tsv"
+
+# Seed the walks table with a space-separated watermark — mirrors the operator
+# deploy SQL: sqlite3 ... "UPDATE walks SET last_walked_at = datetime('now');"
+# datetime('now') returns "YYYY-MM-DD HH:MM:SS" (no T, no Z), not ISO 8601.
+. "$REPO_ROOT/lib/bakeoff-store.sh"
+store_init "$DB_FILE"
+sqlite3 "$DB_FILE" "INSERT INTO walks (repo, last_walked_at, reviews_total_in_window, reviews_with_marker_in_window) VALUES ('test-org/normalize-probe', datetime('now'), 0, 0);"
+
+# Sanity: confirm the seed is in space-format.
+SEEDED_32=$(sqlite3 "$DB_FILE" "SELECT last_walked_at FROM walks WHERE repo='test-org/normalize-probe';")
+if [[ "$SEEDED_32" == *"T"* ]]; then
+    echo "WARN scenario 32: seeded value '$SEEDED_32' looks ISO — SQLite datetime('now') behavior changed?"
+fi
+
+# Run with REWALK_HOURS=3 so the rewalk_floor is intraday (same calendar day
+# as the seeded NOW watermark). This is the condition where the lex-sort bug
+# fires: both share "YYYY-MM-DD" prefix so char-10 (space vs T) is decisive.
+REWALK_HOURS=3 bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null 2>&1
+
+# Assertion: the log "scanning ... since <window_floor>" line must contain T.
+# Without strftime: window_floor = space-format seeded value → log reads
+#   "scanning ... since 2026-05-18 23:xx:xx ..." → sed '[^ ]*' captures
+#   "2026-05-18" (stops at space) → no T → FAIL.
+# With strftime: normalized last_walked is ISO NOW > ISO rewalk_floor (same day
+#   but 3h earlier) → comparison FALSE → window_floor = rewalk_floor (ISO) →
+#   log reads "scanning ... since 2026-05-18T20:xx:xxZ" → contains T → PASS.
+LOG_SINCE=$(grep "scanning test-org/normalize-probe since" "$LOG_FILE" \
+    | sed 's/.*since \([^ ]*\) .*/\1/' | tail -1)
+if [[ "$LOG_SINCE" != *"T"* ]]; then
+    echo "FAIL scenario 32: window_floor in log is '$LOG_SINCE' (space-format / missing T); strftime normalization regressed"
+    echo "  seeded watermark: $SEEDED_32"
+    grep "scanning test-org/normalize-probe" "$LOG_FILE" || true
+    exit 1
+fi
+
+# Restore the default tracked repo for any future scenarios.
+cat > "$STATE_DIR/repos.conf" <<'CONF'
+REPOS=("test-org/bakeoff-probe")
+CONF
+
+unset MOCK_PULLS_COMMITS_FILE
+
 echo "PASS"
