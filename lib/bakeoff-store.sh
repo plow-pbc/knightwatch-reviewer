@@ -139,6 +139,13 @@ ON CONFLICT(repo) DO UPDATE SET
 SQL
 }
 
+# Read the last walk timestamp for a repo. Returns empty string for unknown
+# repos (so callers can fall back to a default floor without sentinel checks).
+get_last_walked_at() {
+    local db="$1" repo="$2"
+    sqlite3 "$db" "SELECT last_walked_at FROM walks WHERE repo='$repo';"
+}
+
 # Severity ordering — single source of truth. Higher number = worse.
 # blocking > medium > low > nit > open > '' (empty = no probes yet).
 severity_rank() {
