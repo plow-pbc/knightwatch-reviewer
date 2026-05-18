@@ -102,6 +102,10 @@ export LOG_FILE="$STATE_DIR/bakeoff.log"
 export DB_FILE="$STATE_DIR/bakeoff.db"
 export BOT_USER="testbot"
 export BOT_AUTO_POST_MARKER="<!-- knightwatch-reviewer:auto-post -->"
+# REWALK_HOURS wide enough to cover all fixture timestamps (max 480 h = 20 days).
+# SCORECARD_DAYS wide enough to cover the same (default 14 would exclude them).
+export REWALK_HOURS=720
+export SCORECARD_DAYS=30
 mkdir -p "$STATE_DIR/tmp"
 
 export STUB_BIN="$TMPDIR_SMOKE/bin"
@@ -251,7 +255,7 @@ run_driver() {
 }
 
 # ISO8601 timestamp N hours ago. All fixture timestamps in this file derive
-# from this so they stay safely inside the walker's WINDOW_DAYS=30 lookback
+# from this so they stay safely inside the walker's REWALK_HOURS=720 lookback
 # regardless of when the suite is run. (Hardcoded calendar dates drift out
 # of the window as the wall clock advances and the gh stub's since= filter
 # starts dropping fixtures.) GNU date primary, BSD date fallback — same
@@ -669,8 +673,8 @@ COV=$(sqlite3 "$DB_FILE" "SELECT reviews_total_in_window || '|' || reviews_with_
 # marker token in prose but not the real <!-- ... --> shape).
 [ "$COV" = "3|1" ] || { echo "FAIL scenario 19: coverage '$COV' expected '3|1' (prose mention of marker must NOT count)"; sqlite3 "$DB_FILE" "SELECT * FROM walks;"; exit 1; }
 # Rendered caption must reflect the exact 1-of-3 → 33% derived from that DB row.
-grep -qF "Based on 1 of 3 substantive bot reviews in window (33% coverage" "$OUT_FILE" \
-    || { echo "FAIL scenario 19: caption missing 'Based on 1 of 3 ... (33% coverage'"; grep -F "Based on" "$OUT_FILE"; exit 1; }
+grep -qF "1 of 3 substantive bot reviews carried the roster marker (33%" "$OUT_FILE" \
+    || { echo "FAIL scenario 19: caption missing '1 of 3 ... (33%'"; grep -F "carried the roster marker" "$OUT_FILE"; exit 1; }
 
 unset MOCK_PULLS_COMMITS_FILE
 
@@ -700,15 +704,15 @@ export MOCK_PULLS_COMMITS_FILE="$TMPDIR_SMOKE/commits.tsv"
 run_driver
 
 # Header includes coverage caption.
-grep -qE 'Based on [0-9]+ of [0-9]+' "$OUT_FILE" \
-    || { echo "FAIL scenario 20: missing 'Based on N of M' caption"; cat "$OUT_FILE"; exit 1; }
+grep -qE '[0-9]+ of [0-9]+ substantive bot reviews carried the roster marker' "$OUT_FILE" \
+    || { echo "FAIL scenario 20: missing 'N of M ... carried the roster marker' caption"; cat "$OUT_FILE"; exit 1; }
 
 # Header row pins all 6 operator-facing column labels in their rendered order.
 grep -qF '| Cited | Edited | Blocking | Medium | Low+Nit | Open |' "$OUT_FILE" \
     || { echo "FAIL scenario 20: header missing one of: Cited|Edited|Blocking|Medium|Low+Nit|Open"; cat "$OUT_FILE"; exit 1; }
 
 # Per-repo coverage subtable is present with the test-org/bakeoff-probe row.
-grep -qE '\*\*Per-repo coverage\*\*' "$OUT_FILE" \
+grep -qE '\*\*Per-repo coverage' "$OUT_FILE" \
     || { echo "FAIL scenario 20: missing **Per-repo coverage** header"; cat "$OUT_FILE"; exit 1; }
 grep -qE '\| `test-org/bakeoff-probe` \| 4 \| 4 \| 100%' "$OUT_FILE" \
     || { echo "FAIL scenario 20: per-repo row missing or wrong: expected 4/4/100% for test-org/bakeoff-probe"; cat "$OUT_FILE"; exit 1; }
@@ -889,13 +893,13 @@ ROW=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE special
 unset MOCK_PULLS_COMMITS_FILE MOCK_COMMIT_FILES_DIR
 
 # ---- scenario 28: out-of-window comment returned by since= filter is rejected by .created_at fence ----
-echo "    scenario 28: comment with created_at older than WINDOW_DAYS is rejected even when returned by since=..."
+echo "    scenario 28: comment with created_at older than REWALK_HOURS is rejected even when returned by since=..."
 rm -f "$DB_FILE"
 TS_OLD=$(date -u -d '60 days ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
         || date -u -v "-60d" +%Y-%m-%dT%H:%M:%SZ)
 TS_RECENT=$(hours_ago 50)
 
-# Two reviews — one with created_at 60 days ago (outside WINDOW_DAYS=30), one
+# Two reviews — one with created_at 60 days ago (outside REWALK_HOURS=720), one
 # with created_at 50h ago (in window). GitHub's since= filter is updated_at-
 # based; the stub returns BOTH since it doesn't filter by created_at. The
 # walker's jq predicate must reject the old one via the .created_at >=

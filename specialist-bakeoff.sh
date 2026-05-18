@@ -1,14 +1,16 @@
 #!/bin/bash
-# Hourly: walk new GitHub state into ~/.pr-reviewer/bakeoff.db and
+# Daily: walk new GitHub state into ~/.pr-reviewer/bakeoff.db and
 # regenerate ~/.pr-reviewer/specialist-bakeoff.md.
 #
 # Architecture: walker (writes to SQLite store) → reporter (queries the
-# store, renders markdown). Walker fetches the full WINDOW_DAYS comment
-# window every cron so every in-window review gets edited_after re-
-# evaluated against the current commit graph — an older in-window
-# review whose post-review commit landed between cron runs must still
-# get its flag flipped/cleared, which an incremental-since-watermark
-# fetch would miss once newer reviews advance the watermark past it.
+# store, renders markdown). Per-repo, the walker fetches comments since
+# min(REWALK_HOURS_ago, last_walked_at) — covers new comments since the
+# last cron AND re-evaluates edited_after on reviews from the last
+# REWALK_HOURS. Tradeoff: an edit landing >REWALK_HOURS after a review
+# (on a slow-moving PR) won't flip edited_after — accepted for the
+# ~30x reduction in steady-state fetch volume vs the prior full-window
+# every-cron scan. Renderer reads SCORECARD_DAYS of accumulated DB
+# state, independent of walker behavior.
 set -euo pipefail
 [ -n "${BASH_VERSION:-}" ] || { echo "FATAL: bash required"; exit 1; }
 
@@ -322,8 +324,8 @@ if [ "$fetch_failures" -gt 0 ]; then
 fi
 
 # ---- reporter: render markdown from store ----
-window_iso=$(date -u -d "$WINDOW_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
-            || date -u -v "-${WINDOW_DAYS}d" +%Y-%m-%dT%H:%M:%SZ)
+window_iso=$(date -u -d "$SCORECARD_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+            || date -u -v "-${SCORECARD_DAYS}d" +%Y-%m-%dT%H:%M:%SZ)
 total_reviews=$(sqlite3 "$DB_FILE" \
     "SELECT COUNT(DISTINCT comment_id) FROM specialist_runs WHERE ran_at >= '$window_iso';")
 
@@ -337,14 +339,14 @@ else
 fi
 
 {
-    echo "# Specialist bake-off — last $WINDOW_DAYS days"
+    echo "# Specialist bake-off — last $SCORECARD_DAYS days"
     echo
-    echo "_Generated $(date -u +%FT%TZ). Based on $coverage_with_marker of $coverage_total substantive bot reviews in window (${coverage_pct}% coverage; reviews without the roster marker are not measured). Source: \`$DB_FILE\`._"
+    echo "_Generated $(date -u +%FT%TZ). Scorecard horizon: last $SCORECARD_DAYS days from \`$DB_FILE\`. Per-repo coverage below reflects the last $REWALK_HOURS h walker pass: $coverage_with_marker of $coverage_total substantive bot reviews carried the roster marker (${coverage_pct}%; unmarked reviews are not scored)._"
     echo
     if [ "$total_reviews" = "0" ]; then
         echo "_Awaiting first reviews with the roster marker — table populates as new reviews land._"
     else
-        echo "**Per-repo coverage**"
+        echo "**Per-repo coverage (last $REWALK_HOURS h walk)**"
         echo
         echo "| Repo | With marker | Total | Coverage |"
         echo "|---|---:|---:|---:|"
