@@ -52,6 +52,11 @@ fetch_failures=0
 
 for repo in "${REPOS[@]}"; do
     repo_failures=0
+    # Capture the walk's start time BEFORE any gh fetch — this becomes the
+    # next cron's window_floor, so the fetch round-trip can't create a blind
+    # window for comments posted during it. Re-stamping at end-of-walk would
+    # skip everything created between fetch-start and stamp time, forever.
+    walk_started_at=$(date -u +%FT%TZ)
     rewalk_floor=$(date -u -d "$REWALK_HOURS hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
                   || date -u -v "-${REWALK_HOURS}H" +%Y-%m-%dT%H:%M:%SZ)
     last_walked=$(get_last_walked_at "$DB_FILE" "$repo")
@@ -304,14 +309,18 @@ for repo in "${REPOS[@]}"; do
     # NOT a permissive substring check, which would falsely count bodies
     # discussing the marker token in prose. Drives the snapshot's
     # "based on N of M" caption.
+    # Coverage uses rewalk_floor (not window_floor) so the caption's
+    # "(last $REWALK_HOURS h walk)" label stays accurate even when missed
+    # crons widen the scan back to last_walked_at — the metric becomes a
+    # clean rolling REWALK_HOURS rate, not a variable backfill width.
     if [ "$repo_failures" -eq 0 ]; then
         total_in_window=$(printf '%s' "$comments_json" \
-            | jq --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" --arg window_floor "$window_floor" \
+            | jq --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" --arg window_floor "$rewalk_floor" \
                  "[.[] | select($SUBSTANTIVE_REVIEW_JQ)] | length")
         with_marker_in_window=$(printf '%s' "$comments_json" \
-            | jq --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" --arg roster "$ROSTER_MARKER_REGEX" --arg window_floor "$window_floor" \
+            | jq --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" --arg roster "$ROSTER_MARKER_REGEX" --arg window_floor "$rewalk_floor" \
                  "[.[] | select($SUBSTANTIVE_REVIEW_JQ and (.body | test(\$roster)))] | length")
-        set_repo_coverage "$DB_FILE" "$repo" "$total_in_window" "$with_marker_in_window"
+        set_repo_coverage "$DB_FILE" "$repo" "$total_in_window" "$with_marker_in_window" "$walk_started_at"
     fi
 done
 

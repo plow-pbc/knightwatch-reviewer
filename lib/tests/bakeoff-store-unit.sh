@@ -46,17 +46,17 @@ COV=$(_coverage "$DB" srosro/repo)
 [ "$COV" = "0|0" ] || { echo "FAIL: coverage default '$COV' expected '0|0'"; exit 1; }
 
 echo "  coverage: set_repo_coverage round-trips..."
-set_repo_coverage "$DB" srosro/repo 42 17
+set_repo_coverage "$DB" srosro/repo 42 17 "$(date -u +%FT%TZ)"
 COV=$(_coverage "$DB" srosro/repo)
 [ "$COV" = "42|17" ] || { echo "FAIL: coverage round-trip '$COV' expected '42|17'"; exit 1; }
 
 echo "  coverage: set is upsert (overwrites prior value)..."
-set_repo_coverage "$DB" srosro/repo 100 50
+set_repo_coverage "$DB" srosro/repo 100 50 "$(date -u +%FT%TZ)"
 COV=$(_coverage "$DB" srosro/repo)
 [ "$COV" = "100|50" ] || { echo "FAIL: coverage overwrite '$COV' expected '100|50'"; exit 1; }
 
 echo "  coverage: set_repo_coverage on a fresh repo creates the walks row..."
-set_repo_coverage "$DB" srosro/other-repo 5 3
+set_repo_coverage "$DB" srosro/other-repo 5 3 "$(date -u +%FT%TZ)"
 COV=$(_coverage "$DB" srosro/other-repo)
 [ "$COV" = "5|3" ] || { echo "FAIL: coverage fresh-repo '$COV' expected '5|3'"; exit 1; }
 
@@ -298,15 +298,15 @@ SEV=$(sqlite3 "$DB8" "SELECT max_severity FROM specialist_runs WHERE comment_id=
 [ "$SEV" = "" ] || { echo "FAIL: migrated row should have empty max_severity, got '$SEV'"; exit 1; }
 
 echo "  coverage: set_repo_coverage refreshes last_walked_at on re-call..."
-set_repo_coverage "$DB" srosro/refresh-repo 1 1
+set_repo_coverage "$DB" srosro/refresh-repo 1 1 "$(date -u +%FT%TZ)"
 FIRST=$(sqlite3 "$DB" "SELECT last_walked_at FROM walks WHERE repo='srosro/refresh-repo';")
 sleep 1
-set_repo_coverage "$DB" srosro/refresh-repo 2 2
+set_repo_coverage "$DB" srosro/refresh-repo 2 2 "$(date -u +%FT%TZ)"
 SECOND=$(sqlite3 "$DB" "SELECT last_walked_at FROM walks WHERE repo='srosro/refresh-repo';")
 [ "$FIRST" != "$SECOND" ] || { echo "FAIL: last_walked_at not refreshed (first=$FIRST second=$SECOND)"; exit 1; }
 
 echo "  get_last_walked_at: returns ISO timestamp after set_repo_coverage..."
-set_repo_coverage "$DB" srosro/getter-test 10 5
+set_repo_coverage "$DB" srosro/getter-test 10 5 "$(date -u +%FT%TZ)"
 TS=$(get_last_walked_at "$DB" srosro/getter-test)
 echo "$TS" | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T' || { echo "FAIL: expected ISO timestamp, got '$TS'"; exit 1; }
 
