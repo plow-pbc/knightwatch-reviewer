@@ -122,11 +122,10 @@ UPDATE specialist_runs
 SQL
 }
 
-# Persist per-repo coverage counters — substantive bot reviews seen in the
-# WINDOW_DAYS lookback, total vs marker-equipped. Renormalized per walk.
-# Sets last_walked_at on first write; preserves it on subsequent updates
-# (the column is now informational — the walker fetches the full window
-# every cron, so there's no incremental-since-watermark logic to drive).
+# Persist per-repo coverage counters AND record this walk's timestamp.
+# last_walked_at drives the next cron's per-repo walk_floor in
+# specialist-bakeoff.sh — refreshing it here means each cron only refetches
+# comments since the previous successful walk (bounded below by REWALK_HOURS).
 set_repo_coverage() {
     local db="$1" repo="$2" total="$3" with_marker="$4"
     # Integer fields (total, with_marker) — caller guarantees jq-extracted int.
@@ -134,6 +133,7 @@ set_repo_coverage() {
 INSERT INTO walks (repo, last_walked_at, reviews_total_in_window, reviews_with_marker_in_window)
 VALUES ('$repo', '$(date -u +%FT%TZ)', $total, $with_marker)
 ON CONFLICT(repo) DO UPDATE SET
+    last_walked_at = excluded.last_walked_at,
     reviews_total_in_window = excluded.reviews_total_in_window,
     reviews_with_marker_in_window = excluded.reviews_with_marker_in_window;
 SQL

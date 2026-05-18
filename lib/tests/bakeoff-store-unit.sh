@@ -297,4 +297,12 @@ ROW=$(sqlite3 "$DB8" "SELECT comment_id, specialist FROM specialist_runs;")
 SEV=$(sqlite3 "$DB8" "SELECT max_severity FROM specialist_runs WHERE comment_id=100;")
 [ "$SEV" = "" ] || { echo "FAIL: migrated row should have empty max_severity, got '$SEV'"; exit 1; }
 
+echo "  coverage: set_repo_coverage refreshes last_walked_at on re-call..."
+set_repo_coverage "$DB" srosro/refresh-repo 1 1
+FIRST=$(sqlite3 "$DB" "SELECT last_walked_at FROM walks WHERE repo='srosro/refresh-repo';")
+sleep 1
+set_repo_coverage "$DB" srosro/refresh-repo 2 2
+SECOND=$(sqlite3 "$DB" "SELECT last_walked_at FROM walks WHERE repo='srosro/refresh-repo';")
+[ "$FIRST" != "$SECOND" ] || { echo "FAIL: last_walked_at not refreshed (first=$FIRST second=$SECOND)"; exit 1; }
+
 echo "PASS"
