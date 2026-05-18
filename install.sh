@@ -214,23 +214,32 @@ if [[ "$CHANGED" -gt 0 ]]; then
   sudo systemctl daemon-reload
 fi
 
-# --- 4. enable + start each timer that isn't already enabled+active ---------
+# --- 4. enable + start each timer (restart already-active timers when any
+#        unit file changed — daemon-reload alone doesn't apply schedule
+#        changes to running timers) -------------------------------------
 shopt -s nullglob
 timers=( systemd/*.timer )
 shopt -u nullglob
 
 ENABLED=0
+RESTARTED=0
 for timer in "${timers[@]}"; do
   name="$(basename "$timer")"
-  if systemctl is-enabled "$name" --quiet 2>/dev/null \
-      && systemctl is-active "$name" --quiet 2>/dev/null; then
-    continue   # already enabled+running
+  if ! systemctl is-enabled "$name" --quiet 2>/dev/null \
+      || ! systemctl is-active "$name" --quiet 2>/dev/null; then
+    info "enable --now $name (sudo)"
+    sudo systemctl enable --now "$name"
+    ENABLED=$((ENABLED + 1))
+  elif [[ "$CHANGED" -gt 0 ]]; then
+    # Already enabled+active, but a unit file changed this install — restart
+    # so the new schedule takes effect. Cheap and idempotent (stop+start of
+    # the timer unit, no service trigger).
+    info "restart $name (sudo) — unit files changed"
+    sudo systemctl restart "$name"
+    RESTARTED=$((RESTARTED + 1))
   fi
-  info "enable --now $name (sudo)"
-  sudo systemctl enable --now "$name"
-  ENABLED=$((ENABLED + 1))
 done
-ok "timers: ${#timers[@]} present, $ENABLED newly enabled+started"
+ok "timers: ${#timers[@]} present, $ENABLED newly enabled+started, $RESTARTED restarted"
 
 echo
 ok "install complete"
