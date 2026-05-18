@@ -994,4 +994,68 @@ grep -qF '**Per-repo coverage (last 24 h walk)**' "$OUT_FILE" \
 
 unset MOCK_PULLS_COMMITS_FILE
 
+# ---- scenario 31: fetch-start watermark regression guard ----
+# Locks in the contract that walks.last_walked_at is captured BEFORE the
+# gh api comments fetch — not after. Stubs date(1) on PATH with a counter
+# file: first bare invocation returns T_PRE, all subsequent ones return T_POST.
+# -d / -v forms pass through to the real binary so the renderer's window
+# math still works. If a future change moves walk_started_at=$(date -u ...) to
+# AFTER the fetch (or restores an internal date -u inside set_repo_coverage),
+# this scenario fails loudly: walks.last_walked_at would equal T_POST instead
+# of T_PRE.
+echo "    scenario 31: fetch-start watermark — walks.last_walked_at equals pre-fetch timestamp..."
+rm -f "$DB_FILE"
+
+DATE_STUB_PRE="2026-05-18T20:00:00Z"
+DATE_STUB_POST="2026-05-18T20:00:10Z"
+DATE_STUB_COUNTER="$TMPDIR_SMOKE/date-stub-counter"
+
+# Build a dedicated stub dir so we can remove it cleanly without touching
+# STUB_BIN (which holds the gh stub used by all other scenarios).
+DATE_STUB_DIR="$TMPDIR_SMOKE/date-stub"
+mkdir -p "$DATE_STUB_DIR"
+
+cat > "$DATE_STUB_DIR/date" <<'DATESTUB'
+#!/bin/bash
+# Pass through -d / -v invocations to the real date binary — these are
+# the renderer's window-math calls (e.g. date -u -d "14 days ago" ...).
+# Only intercept the bare `date -u +%FT%TZ` form used for walk timestamps.
+for arg in "$@"; do
+    case "$arg" in
+        -d|-v|--date=*) exec /bin/date "$@" ;;
+    esac
+done
+count=$(cat "$DATE_STUB_COUNTER" 2>/dev/null || echo 0)
+echo $((count + 1)) > "$DATE_STUB_COUNTER"
+if [ "$count" = "0" ]; then
+    echo "$DATE_STUB_PRE"
+else
+    echo "$DATE_STUB_POST"
+fi
+DATESTUB
+chmod +x "$DATE_STUB_DIR/date"
+
+# One bot review 2h ago — safely inside any walker window.
+TS_31=$(hours_ago 2)
+build_bot_review 210 210 "$TS_31" tests \
+    '1. [blocking] [from: tests] [tests] watermark probe. Files: src/watermark.py. Edit: fix it.' \
+    | jq -s . > "$MOCK_COMMENTS_FILE"
+printf 'src/watermark.py\t1\t0\n' > "$MOCK_PULLS_FILES_FILE"
+: > "$TMPDIR_SMOKE/commits-31.tsv"
+export MOCK_PULLS_COMMITS_FILE="$TMPDIR_SMOKE/commits-31.tsv"
+
+rm -f "$DATE_STUB_COUNTER"
+export DATE_STUB_PRE DATE_STUB_POST DATE_STUB_COUNTER
+PATH="$DATE_STUB_DIR:$PATH" bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null 2>&1
+
+GOT_31=$(sqlite3 "$DB_FILE" "SELECT last_walked_at FROM walks WHERE repo='test-org/bakeoff-probe';")
+[ "$GOT_31" = "$DATE_STUB_PRE" ] || {
+    echo "FAIL scenario 31: walks.last_walked_at = '$GOT_31', expected '$DATE_STUB_PRE'"
+    echo "  (regression — walk_started_at stamp captured AFTER fetch instead of BEFORE)"
+    exit 1
+}
+
+rm -rf "$DATE_STUB_DIR"
+unset MOCK_PULLS_COMMITS_FILE DATE_STUB_PRE DATE_STUB_POST DATE_STUB_COUNTER
+
 echo "PASS"
