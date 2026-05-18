@@ -305,13 +305,4 @@ set_repo_coverage "$DB" srosro/refresh-repo 2 2 "$(date -u +%FT%TZ)"
 SECOND=$(sqlite3 "$DB" "SELECT last_walked_at FROM walks WHERE repo='srosro/refresh-repo';")
 [ "$FIRST" != "$SECOND" ] || { echo "FAIL: last_walked_at not refreshed (first=$FIRST second=$SECOND)"; exit 1; }
 
-echo "  get_last_walked_at: returns ISO timestamp after set_repo_coverage..."
-set_repo_coverage "$DB" srosro/getter-test 10 5 "$(date -u +%FT%TZ)"
-TS=$(get_last_walked_at "$DB" srosro/getter-test)
-echo "$TS" | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T' || { echo "FAIL: expected ISO timestamp, got '$TS'"; exit 1; }
-
-echo "  get_last_walked_at: returns empty for unknown repo..."
-TS=$(get_last_walked_at "$DB" srosro/never-walked)
-[ -z "$TS" ] || { echo "FAIL: expected empty for unknown repo, got '$TS'"; exit 1; }
-
 echo "PASS"

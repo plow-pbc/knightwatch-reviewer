@@ -59,7 +59,7 @@ for repo in "${REPOS[@]}"; do
     walk_started_at=$(date -u +%FT%TZ)
     rewalk_floor=$(date -u -d "$REWALK_HOURS hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
                   || date -u -v "-${REWALK_HOURS}H" +%Y-%m-%dT%H:%M:%SZ)
-    last_walked=$(get_last_walked_at "$DB_FILE" "$repo")
+    last_walked=$(sqlite3 "$DB_FILE" "SELECT last_walked_at FROM walks WHERE repo='$repo';")
     # Walk floor: the EARLIER of (REWALK_HOURS_ago, last_walked_at). The
     # rewalk floor refreshes edited_after on recent reviews; last_walked_at
     # extends the scan further back when crons were missed. ISO8601 strings
