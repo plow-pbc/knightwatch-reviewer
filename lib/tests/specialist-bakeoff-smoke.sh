@@ -712,8 +712,8 @@ grep -qF '| Cited | Edited | Blocking | Medium | Low+Nit | Open |' "$OUT_FILE" \
     || { echo "FAIL scenario 20: header missing one of: Cited|Edited|Blocking|Medium|Low+Nit|Open"; cat "$OUT_FILE"; exit 1; }
 
 # Per-repo coverage subtable is present with the test-org/bakeoff-probe row.
-grep -qE '\*\*Per-repo coverage' "$OUT_FILE" \
-    || { echo "FAIL scenario 20: missing **Per-repo coverage** header"; cat "$OUT_FILE"; exit 1; }
+grep -qF '**Per-repo coverage (last 720 h walk)**' "$OUT_FILE" \
+    || { echo "FAIL scenario 20: missing **Per-repo coverage (last 720 h walk)** header"; cat "$OUT_FILE"; exit 1; }
 grep -qE '\| `test-org/bakeoff-probe` \| 4 \| 4 \| 100%' "$OUT_FILE" \
     || { echo "FAIL scenario 20: per-repo row missing or wrong: expected 4/4/100% for test-org/bakeoff-probe"; cat "$OUT_FILE"; exit 1; }
 
