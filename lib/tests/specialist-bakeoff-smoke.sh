@@ -1064,21 +1064,23 @@ unset MOCK_PULLS_COMMITS_FILE DATE_STUB_PRE DATE_STUB_POST DATE_STUB_COUNTER
 # separated format ("2026-05-18 23:00:00"). Without strftime normalization on
 # read, that value lex-sorts before an ISO rewalk_floor on the SAME calendar
 # day (ASCII space 0x20 < T 0x54), so the buggy comparison
-#   "2026-05-18 23:xx:xx" < "2026-05-18T22:xx:xxZ"  (REWALK_HOURS=3)
+#   "2026-05-18 23:00:00" < "2026-05-18T20:00:00Z"  (REWALK_HOURS=3)
 # yields TRUE, and window_floor is set to the seeded space-format value instead
 # of rewalk_floor.
 #
-# The bug only manifests when seeded-date and rewalk_floor share the same
-# calendar day. With REWALK_HOURS=3 the rewalk_floor is ~3h ago (intraday),
-# so seeded NOW and rewalk_floor are on the same date — day chars match, char
-# index 10 is the decisive one: space(0x20) vs T(0x54).
+# Determinism: stubs `date -u -d "3 hours ago" ...` to return a FIXED same-day
+# ISO value (2026-05-18T20:00:00Z) via the PATH seam. The seeded watermark is
+# also a literal (2026-05-18 23:00:00 space-format). Pure literals — no
+# wall-clock dependency, so the test exercises the bug regardless of when it
+# runs (including the 00:00–02:59 UTC window where live datetime('now') and
+# live date-3h cross calendar days and the bug wouldn't fire).
 #
-# The critical observable: with the bug, the log entry reads
-#   "scanning ... since <SPACE-FORMAT-DATE-ONLY>" (sed stops at first space)
-# With the fix, the log reads
-#   "scanning ... since <ISO-REWALK_FLOOR>" (contains T)
-#
-# We assert on the log's "since ..." segment — it must contain T (ISO format).
+# The critical observable: with the bug, window_floor = the seeded space-format
+# value → log reads "scanning ... since 2026-05-18 23:00:00 ..." → sed captures
+# "2026-05-18" (stops at space) ≠ rewalk stub value.
+# With the fix: normalized last_walked = 2026-05-18T23:00:00Z > rewalk stub
+# 2026-05-18T20:00:00Z → comparison FALSE → window_floor = rewalk_floor (ISO)
+# → log reads "scanning ... since 2026-05-18T20:00:00Z".
 echo "    scenario 32: operator-seeded space-format watermark normalizes correctly (strftime fix)..."
 rm -f "$DB_FILE" "$LOG_FILE"
 
@@ -1096,45 +1098,61 @@ printf 'src/probe.py\t1\t0\n' > "$MOCK_PULLS_FILES_FILE"
 : > "$TMPDIR_SMOKE/commits-32.tsv"
 export MOCK_PULLS_COMMITS_FILE="$TMPDIR_SMOKE/commits-32.tsv"
 
-# Seed the walks table with a space-separated watermark — mirrors the operator
-# deploy SQL: sqlite3 ... "UPDATE walks SET last_walked_at = datetime('now');"
+# Seed the walks table with a LITERAL space-format watermark — mirrors the
+# operator deploy SQL: sqlite3 ... "UPDATE walks SET last_walked_at = datetime('now');"
 # datetime('now') returns "YYYY-MM-DD HH:MM:SS" (no T, no Z), not ISO 8601.
+# Using a fixed literal makes the test independent of wall-clock.
 . "$REPO_ROOT/lib/bakeoff-store.sh"
 store_init "$DB_FILE"
-sqlite3 "$DB_FILE" "INSERT INTO walks (repo, last_walked_at, reviews_total_in_window, reviews_with_marker_in_window) VALUES ('test-org/normalize-probe', datetime('now'), 0, 0);"
+sqlite3 "$DB_FILE" "INSERT INTO walks (repo, last_walked_at, reviews_total_in_window, reviews_with_marker_in_window) VALUES ('test-org/normalize-probe', '2026-05-18 23:00:00', 0, 0);"
 
-# Sanity: confirm the seed is in space-format.
-SEEDED_32=$(sqlite3 "$DB_FILE" "SELECT last_walked_at FROM walks WHERE repo='test-org/normalize-probe';")
-if [[ "$SEEDED_32" == *"T"* ]]; then
-    echo "WARN scenario 32: seeded value '$SEEDED_32' looks ISO — SQLite datetime('now') behavior changed?"
+# Build a date stub: intercept ONLY the walker's rewalk_floor query
+# `date -u -d "3 hours ago" +...` and return a fixed same-day ISO value.
+# Everything else (bare date -u +%FT%TZ for walk_started_at, the renderer's
+# date -u -d "$SCORECARD_DAYS days ago", etc.) passes through to real /bin/date.
+DATE_STUB_32_DIR="$TMPDIR_SMOKE/date-stub-32"
+mkdir -p "$DATE_STUB_32_DIR"
+cat > "$DATE_STUB_32_DIR/date" <<'DATESTUB32'
+#!/bin/bash
+# Intercept: date -u -d "3 hours ago" +<fmt>  (walker's rewalk_floor call)
+# Return a fixed same-day ISO value so the space-vs-T comparison is exercised
+# regardless of what the real wall clock says.
+if [ "$1" = "-u" ] && [ "$2" = "-d" ] && [ "$3" = "3 hours ago" ]; then
+    echo "2026-05-18T20:00:00Z"
+    exit 0
 fi
+exec /bin/date "$@"
+DATESTUB32
+chmod +x "$DATE_STUB_32_DIR/date"
 
-# Run with REWALK_HOURS=3 so the rewalk_floor is intraday (same calendar day
-# as the seeded NOW watermark). This is the condition where the lex-sort bug
-# fires: both share "YYYY-MM-DD" prefix so char-10 (space vs T) is decisive.
-REWALK_HOURS=3 bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null 2>&1
+# Run with REWALK_HOURS=3 (arg that produces the "3 hours ago" -d form the stub
+# intercepts) and date stub on PATH. With the strftime fix:
+#   normalized last_walked = 2026-05-18T23:00:00Z
+#   rewalk_floor (stub)    = 2026-05-18T20:00:00Z
+#   last_walked > rewalk_floor → comparison FALSE → window_floor = rewalk_floor
+# Without the fix:
+#   last_walked = "2026-05-18 23:00:00" (raw space-format)
+#   lex compare: "2026-05-18 " < "2026-05-18T" → TRUE → window_floor = seeded value
+PATH="$DATE_STUB_32_DIR:$PATH" REWALK_HOURS=3 bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null 2>&1
 
-# Assertion: the log "scanning ... since <window_floor>" line must contain T.
-# Without strftime: window_floor = space-format seeded value → log reads
-#   "scanning ... since 2026-05-18 23:xx:xx ..." → sed '[^ ]*' captures
-#   "2026-05-18" (stops at space) → no T → FAIL.
-# With strftime: normalized last_walked is ISO NOW > ISO rewalk_floor (same day
-#   but 3h earlier) → comparison FALSE → window_floor = rewalk_floor (ISO) →
-#   log reads "scanning ... since 2026-05-18T20:xx:xxZ" → contains T → PASS.
-LOG_SINCE=$(grep "scanning test-org/normalize-probe since" "$LOG_FILE" \
+# Assertion: log must show the rewalk_floor stub value as window_floor.
+# A regression to non-normalized read would log the seeded space-format value
+# ("2026-05-18 23:00:00"), causing sed to capture only "2026-05-18" (stops at
+# space) — definitively not the rewalk stub.
+FLOOR_LOGGED_32=$(grep "scanning test-org/normalize-probe since" "$LOG_FILE" \
     | sed 's/.*since \([^ ]*\) .*/\1/' | tail -1)
-if [[ "$LOG_SINCE" != *"T"* ]]; then
-    echo "FAIL scenario 32: window_floor in log is '$LOG_SINCE' (space-format / missing T); strftime normalization regressed"
-    echo "  seeded watermark: $SEEDED_32"
+[ "$FLOOR_LOGGED_32" = "2026-05-18T20:00:00Z" ] || {
+    echo "FAIL scenario 32: window_floor in log was '$FLOOR_LOGGED_32', expected '2026-05-18T20:00:00Z' (strftime normalization regressed?)"
     grep "scanning test-org/normalize-probe" "$LOG_FILE" || true
     exit 1
-fi
+}
 
 # Restore the default tracked repo for any future scenarios.
 cat > "$STATE_DIR/repos.conf" <<'CONF'
 REPOS=("test-org/bakeoff-probe")
 CONF
 
+rm -rf "$DATE_STUB_32_DIR"
 unset MOCK_PULLS_COMMITS_FILE
 
 echo "PASS"
