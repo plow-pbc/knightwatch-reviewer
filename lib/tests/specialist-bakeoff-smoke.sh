@@ -927,4 +927,39 @@ COV=$(sqlite3 "$DB_FILE" "SELECT reviews_total_in_window || '|' || reviews_with_
 
 unset MOCK_PULLS_COMMITS_FILE
 
+# ---- scenario 29: walker/renderer window split — walker sees 2, scorecard renders 1 ----
+echo "    scenario 29: REWALK_HOURS=720 vs SCORECARD_DAYS=14 — walker counts both reviews, scorecard renders only the recent one..."
+rm -f "$DB_FILE"
+
+# Review A: 20 days (480h) ago — inside walker window (720h) but outside scorecard (14d = 336h).
+# Review B: 2 days (48h) ago — inside both windows.
+TS_OLD_29=$(hours_ago 480)
+TS_RECENT_29=$(hours_ago 48)
+
+{ build_bot_review 190 190 "$TS_OLD_29" tests \
+    '1. [blocking] [from: tests] [tests] old-review. Files: src/old.py. Edit: fix it.'
+  build_bot_review 191 191 "$TS_RECENT_29" tests \
+    '1. [blocking] [from: tests] [tests] recent-review. Files: src/new.py. Edit: fix it.'
+} | jq -s . > "$MOCK_COMMENTS_FILE"
+printf 'src/old.py\t1\t0\nsrc/new.py\t1\t0\n' > "$MOCK_PULLS_FILES_FILE"
+: > "$TMPDIR_SMOKE/commits-29.tsv"
+export MOCK_PULLS_COMMITS_FILE="$TMPDIR_SMOKE/commits-29.tsv"
+
+# Run with the production-default split: walker 30d, scorecard 14d.
+REWALK_HOURS=720 SCORECARD_DAYS=14 bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null 2>&1
+
+# Walker should have counted BOTH reviews (both inside 720h window).
+WALKER_COV=$(sqlite3 "$DB_FILE" "SELECT reviews_with_marker_in_window FROM walks WHERE repo='test-org/bakeoff-probe';")
+[ "$WALKER_COV" = "2" ] || { echo "FAIL scenario 29: walker coverage '$WALKER_COV' expected '2' (both reviews in 720h window)"; cat "$OUT_FILE"; exit 1; }
+
+# Renderer's SCORECARD_DAYS=14 horizon must exclude the 20-day-old review.
+# Per-specialist table row for 'tests' must show Reviews=1 (only 48h review in window).
+if ! grep -qE '^\| tests \| +1 \|' "$OUT_FILE"; then
+    echo "FAIL scenario 29: expected '| tests | 1 |' in per-specialist table (only recent review in 14d scorecard)"
+    cat "$OUT_FILE"
+    exit 1
+fi
+
+unset MOCK_PULLS_COMMITS_FILE
+
 echo "PASS"
