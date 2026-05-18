@@ -13,7 +13,12 @@ set -euo pipefail
 [ -n "${BASH_VERSION:-}" ] || { echo "FATAL: bash required"; exit 1; }
 
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
-WINDOW_DAYS="${WINDOW_DAYS:-30}"
+# REWALK_HOURS bounds the walker's per-repo comment-fetch floor (with
+# last_walked_at as the further-back fallback for missed-cron backfill).
+# SCORECARD_DAYS bounds the renderer's scorecard horizon — read from the
+# persistent store, independent of walker state.
+REWALK_HOURS="${REWALK_HOURS:-24}"
+SCORECARD_DAYS="${SCORECARD_DAYS:-14}"
 DB_FILE="${DB_FILE:-$STATE_DIR/bakeoff.db}"
 OUT_FILE="${OUT_FILE:-$STATE_DIR/specialist-bakeoff.md}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/bakeoff.log}"
@@ -45,9 +50,19 @@ fetch_failures=0
 
 for repo in "${REPOS[@]}"; do
     repo_failures=0
-    window_floor=$(date -u -d "$WINDOW_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
-                  || date -u -v "-${WINDOW_DAYS}d" +%Y-%m-%dT%H:%M:%SZ)
-    log "scanning $repo since $window_floor (full window — every cron re-evaluates edited_after)..."
+    rewalk_floor=$(date -u -d "$REWALK_HOURS hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+                  || date -u -v "-${REWALK_HOURS}H" +%Y-%m-%dT%H:%M:%SZ)
+    last_walked=$(get_last_walked_at "$DB_FILE" "$repo")
+    # Walk floor: the EARLIER of (REWALK_HOURS_ago, last_walked_at). The
+    # rewalk floor refreshes edited_after on recent reviews; last_walked_at
+    # extends the scan further back when crons were missed. ISO8601 strings
+    # sort lexicographically the same as chronologically.
+    if [ -n "$last_walked" ] && [ "$last_walked" \< "$rewalk_floor" ]; then
+        window_floor="$last_walked"
+    else
+        window_floor="$rewalk_floor"
+    fi
+    log "scanning $repo since $window_floor (rewalk_floor=$rewalk_floor last_walked=${last_walked:-never})..."
 
     comments_json=$(gh api --paginate \
         "repos/$repo/issues/comments?since=$window_floor" \
