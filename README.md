@@ -105,7 +105,7 @@ Reviews fire on PR open and again after one hour of idle. To force a fresh revie
 
 ### Specialist bake-off
 
-A small post-hoc measurement that helps decide which specialists are earning their place. `specialist-bakeoff.sh` runs hourly via systemd (`*:30`), walks the tracked repos in `repos.conf` for bot reviews + feedback comments in the full `WINDOW_DAYS` lookback (every cron, so `edited_after` re-evaluates against the current commit graph), and persists one row per (review × specialist) into `~/.pr-reviewer/bakeoff.db`. A markdown snapshot is regenerated at `~/.pr-reviewer/specialist-bakeoff.md` with the following columns per specialist over a rolling 30-day window (configurable via `WINDOW_DAYS`):
+A small post-hoc measurement that helps decide which specialists are earning their place. `specialist-bakeoff.sh` runs daily at 03:30 UTC via systemd, walks the tracked repos in `repos.conf` for bot reviews + feedback comments since the per-repo `min(REWALK_HOURS_ago, walks.last_walked_at)` floor — covers new comments since the last cron and refreshes `edited_after` on recent reviews — and persists one row per (review × specialist) into `~/.pr-reviewer/bakeoff.db`. A markdown snapshot is regenerated at `~/.pr-reviewer/specialist-bakeoff.md` with the following columns per specialist over a rolling 14-day window (configurable via `SCORECARD_DAYS`; the renderer reads accumulated DB state, decoupled from the walker's `REWALK_HOURS`):
 
 - **Reviews** — total reviews where this specialist was invoked (the denominator). Comes from the write-time `<!-- knightwatch-bakeoff: specialists=... -->` marker on every posted review.
 - **Shipped** — reviews where this specialist contributed at least one probe (per-review bool, not probe count).
@@ -115,9 +115,9 @@ A small post-hoc measurement that helps decide which specialists are earning the
 - **+LOC / −LOC** — sum of `additions` / `deletions` across the specialist's Cited (deduped) paths in the PR's diff.
 - **Loved / Critiqued** *(persisted but not rendered)* — reviews where a trusted (push-access) collaborator posted `/srosro-props [from: <specialist>]` (or `/srosro-memorize` quoting the tag) / `/srosro-critique [from: <specialist>]`. Still tracked per-(review × specialist) in `bakeoff.db` for inspection; omitted from the rendered snapshot because the qualitative signal is currently too sparse to drive collapse/keep decisions (0 props, 0 critique, single-digit memorize across a 30-day window).
 
-The store is append-only — historical reviews continue accumulating data; the rolling 30-day window is a query parameter (`WINDOW_DAYS`) rather than an API-cost ceiling. Every cron re-fetches the full window so `edited_after` and coverage re-evaluate against the current commit graph; transient fetch failures preserve the prior snapshot rather than republishing with partial data.
+The store is append-only — historical reviews continue accumulating data; the rolling 14-day window is a renderer query parameter (`SCORECARD_DAYS`) rather than an API-cost ceiling. Tradeoff: edits or feedback landing >`REWALK_HOURS` after a review (on still-active PRs) won't flip `edited_after` / `loved_positive` / `critiqued` on a re-walk — that's the cost of the incremental window. Transient fetch failures preserve the prior snapshot rather than republishing with partial data.
 
-> **First-run note:** the table will be empty for ~30 days after this ships, then populates as new reviews land. The roster marker only goes on new reviews; old reviews are skipped by the walker.
+> **First-run note:** the table will be empty for ~14 days after this ships, then populates as new reviews land. The roster marker only goes on new reviews; old reviews are skipped by the walker.
 
 Use it to inform collapse-or-keep decisions on specialist agents.
 

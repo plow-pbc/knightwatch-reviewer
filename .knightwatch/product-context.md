@@ -14,7 +14,7 @@
 
 **Persistent stores:**
 - `~/.pr-reviewer/state.json` — legacy "what did we last review?" cache (no longer read or written by production paths; preserved for transition).
-- `~/.pr-reviewer/bakeoff.db` — SQLite store for the specialist bake-off (per-(review × specialist) rows, full-WINDOW_DAYS walker every cron, write-time roster marker on every posted review). The carve-out is justified by needing time-series queries for cull/promote decisions on specialists; flat JSON would have required re-implementing GROUP BY + window cutoffs in awk on every walk. This is the ONLY SQLite seam — new state needs should default to JSON files + flock unless they have the same time-series-query shape.
+- `~/.pr-reviewer/bakeoff.db` — SQLite store for the specialist bake-off (per-(review × specialist) rows, daily incremental walker since `min(REWALK_HOURS_ago, walks.last_walked_at)`, write-time roster marker on every posted review). The carve-out is justified by needing time-series queries for cull/promote decisions on specialists; flat JSON would have required re-implementing GROUP BY + window cutoffs in awk on every walk. This is the ONLY SQLite seam — new state needs should default to JSON files + flock unless they have the same time-series-query shape.
 
 **Known near-term migrations / roadmap items:**
 - None tracked here. This tool is intentionally done-ish; changes happen organically when a specific pain point surfaces.
