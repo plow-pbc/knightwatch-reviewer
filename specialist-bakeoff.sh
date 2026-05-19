@@ -301,12 +301,9 @@ for repo in "${REPOS[@]}"; do
             done <<< "$negatives"
         fi
     done < <(printf '%s' "$comments_json" \
-        | jq -r --arg marker "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-              '.[] | select(
-                  ((.body | test("^/" + $cmd_prefix + "-props "; "m"))
-                   or (.body | test("^/" + $cmd_prefix + "-critique "; "m")))
-                  and (.body | contains($marker) | not)
-              ) | [.user.login, .issue_url, .body, .created_at] | @tsv')
+        | jq -r --arg marker "$BOT_AUTO_POST_MARKER" \
+              '.[] | select(.body | contains($marker) | not)
+                   | [.user.login, .issue_url, .body, .created_at] | @tsv')
 
     # Coverage tally: reuse comments_json (already full-window). Numerator
     # matches the canonical roster-marker regex from lib/bakeoff-parsers.sh —
