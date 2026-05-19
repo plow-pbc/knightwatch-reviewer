@@ -174,10 +174,7 @@ DISPATCHER_TICK_AT="$EXPECTED_TICK_AT" \
 # ---- assertions ----
 # Find the run dir produced by this invocation.
 RUN_DIR=$(find "$STATE_DIR/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
-if [ -z "$RUN_DIR" ]; then
-    echo "FAIL: worker produced no run dir under $STATE_DIR/runs"
-    exit 1
-fi
+assert_not_empty "$RUN_DIR" "worker produced no run dir under $STATE_DIR/runs"
 
 META="$RUN_DIR/meta.json"
 LOG="$RUN_DIR/run.log"
@@ -322,10 +319,7 @@ write_gh_stub "$HOME/.local/bin/gh" "release-1.0" "$PR_SHA2"
 )
 
 RUN_DIR2=$(find "$STATE2/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
-if [ -z "$RUN_DIR2" ]; then
-    echo "FAIL: scenario 2 — worker produced no run dir under $STATE2/runs"
-    exit 1
-fi
+assert_not_empty "$RUN_DIR2" "scenario 2 — worker produced no run dir under $STATE2/runs"
 META2="$RUN_DIR2/meta.json"
 LOG2="$RUN_DIR2/run.log"
 
@@ -501,10 +495,7 @@ write_gh_stub "$HOME/.local/bin/gh" "main" "$PR_SHA3"
 )
 
 RUN_DIR3=$(find "$STATE3/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
-if [ -z "$RUN_DIR3" ]; then
-    echo "FAIL: scenario 3 — worker produced no run dir under $STATE3/runs"
-    exit 1
-fi
+assert_not_empty "$RUN_DIR3" "scenario 3 — worker produced no run dir under $STATE3/runs"
 LOG3="$RUN_DIR3/run.log"
 
 # Worker MUST NOT abort with the empty-diff message — that's the
@@ -594,10 +585,7 @@ GATE_EC=$?
 # The worker DOES allocate a run-dir before the gate fires; find the new
 # one (excluding the seeded fake run-dir and scenario 1's run-dir).
 GATE_RUN=$(find "$STATE_DIR/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' -newer "$GATE_RUN_DIR" | head -1)
-if [ -z "$GATE_RUN" ]; then
-    echo "FAIL: scenario 4 — worker allocated no run-dir (aborted before allocate_run_dir)"
-    exit 1
-fi
+assert_not_empty "$GATE_RUN" "scenario 4 — worker allocated no run-dir (aborted before allocate_run_dir)"
 GATE_LOG="$GATE_RUN/run.log"
 
 if [ "$GATE_EC" -ne 0 ]; then
