@@ -458,6 +458,21 @@ run_driver
 LOVED=$(sqlite3 "$DB_FILE" "SELECT loved_positive FROM specialist_runs WHERE specialist='tests';")
 [ "$LOVED" = "1" ] || { echo "FAIL scenario 7: srosro-props did not mark loved_positive (got '$LOVED')"; exit 1; }
 
+# ---- scenario 7b: trusted /srosro-memorize quoting [from: <spec>] does NOT credit loved_positive ----
+# Pins the behavior this PR removes: memorize is calibration-only, not a bake-off vote.
+# A regression that re-adds extract_memorize_attributions to the positives union would
+# flip loved_positive=1 here and trip this assertion.
+echo "    scenario 7b: trusted /srosro-memorize quoting [from: tests] → loved_positive=0..."
+rm -f "$DB_FILE"
+TS_REVIEW=$(hours_ago 480)
+TS_FEEDBACK=$(hours_ago 479)
+{ build_bot_review 750 75 "$TS_REVIEW" tests,shape '1. [blocking] [from: tests] missing test. Files: x.sh.'
+  build_feedback_comment 751 75 "$TS_FEEDBACK" '/srosro-memorize the [from: tests] feedback was a misread'; } \
+    | jq -s '.' > "$MOCK_COMMENTS_FILE"
+run_driver
+LOVED=$(sqlite3 "$DB_FILE" "SELECT COALESCE(loved_positive, 0) FROM specialist_runs WHERE specialist='tests';")
+[ "$LOVED" = "0" ] || { echo "FAIL scenario 7b: srosro-memorize must not credit loved_positive (got '$LOVED')"; exit 1; }
+
 # ---- scenario 8: trusted /srosro-critique after substantive review → critiqued=1 ----
 echo "    scenario 8: trusted /srosro-critique after substantive review → critiqued=1..."
 rm -f "$DB_FILE"
