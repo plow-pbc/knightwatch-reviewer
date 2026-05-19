@@ -33,6 +33,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=./assert.sh
+. "$SCRIPT_DIR/tests/assert.sh"
 
 TMPDIR=$(mktemp -d -t orch-skip-XXXXXX)
 trap 'rm -rf "$TMPDIR"' EXIT
@@ -867,10 +869,7 @@ fi
 # guard fails loud if a regression re-introduces any state.json read or
 # write at a runtime-decision seam.
 echo "  scenario 18: review.sh wires latest_author_visible_review_started_at + no state.json residue in production (static gate)..."
-if ! grep -q 'latest_author_visible_review_started_at' "$PROJECT_ROOT/review.sh"; then
-    echo "FAIL scenario 18: review.sh no longer references latest_author_visible_review_started_at — slash-cutoff has been re-routed off runs/, reopens 4th-leak race"
-    exit 1
-fi
+assert_contains "$(cat "$PROJECT_ROOT/review.sh")" 'latest_author_visible_review_started_at' "scenario 18: review.sh must reference latest_author_visible_review_started_at (slash-cutoff)"
 # state_get / state_set are deleted; any production CALL site re-introducing
 # them reopens the BCR class that drove rounds 7-12. The grep skips lines
 # that start with `#` so historical comments referencing the retired
