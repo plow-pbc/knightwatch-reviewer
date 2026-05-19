@@ -130,10 +130,7 @@ assert_tracked_file_copy "scenario 1: foo/main.py" "acme/foo" "main.py"     "$TM
 assert_tracked_file_copy "scenario 1: foo/pkg"     "acme/foo" "pkg/util.py" "$TMPDIR/foo/pkg/util.py"
 assert_tracked_file_copy "scenario 1: bar/main.py" "acme/bar" "main.py"     "$TMPDIR/bar/main.py"
 # baz is in SOURCE_PATHS but was NOT in the included list — must NOT exist.
-if [ -e "$WORKDIR/.siblings/acme/baz" ]; then
-    echo "FAIL: baz symlink should not exist (not in included list)"
-    exit 1
-fi
+assert_not_exists "$WORKDIR/.siblings/acme/baz" "baz symlink should not exist (not in included list)"
 
 # --- scenario 2: missing checkout → fail-loud (no silent skip) --------
 # The materializer used to silently `continue` past missing-dir slugs.
@@ -143,10 +140,7 @@ fi
 echo "  scenario 2: missing on-disk checkout → non-zero rc..."
 rc=0
 materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/foo" "acme/qux" 2>/dev/null || rc=$?
-if [ "$rc" -eq 0 ]; then
-    echo "FAIL: missing on-disk checkout should have returned non-zero"
-    exit 1
-fi
+assert_neq "$rc" "0" "missing on-disk checkout should have returned non-zero"
 
 # --- scenario 3: defeat committed-symlink path-redirect attack --------
 # Three sub-scenarios — all stage `.siblings/<owner>` AS THE SYMLINK
@@ -296,16 +290,10 @@ echo "would-leak" > "$TMPDIR/not-a-repo/leak.txt"
 SOURCE_PATHS["acme/notgit"]="$TMPDIR/not-a-repo"
 rc=0
 materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/notgit" 2>/dev/null || rc=$?
-if [ "$rc" -eq 0 ]; then
-    echo "FAIL: non-git source should have returned non-zero (got rc=0)"
-    exit 1
-fi
+assert_neq "$rc" "0" "non-git source should have returned non-zero"
 # Whatever state the slug ended up in, the raw-root content must NOT
 # be reachable through it.
-if [ -e "$WORKDIR/.siblings/acme/notgit/leak.txt" ]; then
-    echo "FAIL: non-git source leaked raw-root content into materialized tree"
-    exit 1
-fi
+assert_not_exists "$WORKDIR/.siblings/acme/notgit/leak.txt" "non-git source leaked raw-root content into materialized tree"
 
 # --- scenario 8: tracked symlink in source = excluded (no deref leak) -
 # Load-bearing: `cp` follows symlinks by default, so a sibling tracking
@@ -368,10 +356,7 @@ echo "garbage" > "$DOOMED_PATH"
 SOURCE_PATHS["acme/corrupt"]="$TMPDIR/corruptrepo"
 rc=0
 materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/corrupt" 2>/dev/null || rc=$?
-if [ "$rc" -eq 0 ]; then
-    echo "FAIL: materialize_sibling_symlinks should have returned non-zero on git show failure"
-    exit 1
-fi
+assert_neq "$rc" "0" "materialize_sibling_symlinks should have returned non-zero on git show failure"
 
 # --- scenario 10: uncommitted worktree edits don't leak --------------
 # Bot review 4 finding 1 (BCR — 2nd instance of local-bytes-escape):
@@ -406,18 +391,12 @@ echo "  scenario 11: empty src in SOURCE_PATHS → fail-loud..."
 SOURCE_PATHS["acme/emptyentry"]=""
 rc=0
 materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/emptyentry" 2>/dev/null || rc=$?
-if [ "$rc" -eq 0 ]; then
-    echo "FAIL: empty src should have returned non-zero"
-    exit 1
-fi
+assert_neq "$rc" "0" "empty src should have returned non-zero"
 echo "  scenario 11: src dir vanished after classification → fail-loud..."
 SOURCE_PATHS["acme/vanished"]="$TMPDIR/vanished-no-such-dir"
 rc=0
 materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/vanished" 2>/dev/null || rc=$?
-if [ "$rc" -eq 0 ]; then
-    echo "FAIL: missing src dir should have returned non-zero"
-    exit 1
-fi
+assert_neq "$rc" "0" "missing src dir should have returned non-zero"
 
 # --- scenario 12: snap_sha pinning behavioral fence ------------------
 # Directly exercises the race the SHA-pin fix prevents:
@@ -466,18 +445,12 @@ PATH="$RACE_SHIM:$PATH" materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "ac
 # is refactored (e.g., `ls-tree -z -r` instead of `ls-tree -r -z`),
 # the shim's substring match misses and the test silently passes
 # without exercising the race. Bot review 8 finding 1.
-if [ ! -e "$RACE_MARKER" ]; then
-    echo "FAIL: shim never advanced HEAD — race scenario didn't actually run (substring match missed?)"
-    exit 1
-fi
+assert_exists "$RACE_MARKER" "shim never advanced HEAD — race scenario didn't actually run (substring match missed?)"
 assert_eq "$rc" "0" "scenario 12: helper must return 0 when snap_sha is pinned before HEAD advance (ls-tree should use pre-advance SHA)"
 got=$(cat "$WORKDIR/.siblings/acme/race/file.py" 2>/dev/null || true)
 assert_eq "$got" "v1-content" "scenario 12: file.py must contain v1-content (show used pinned SHA, not post-advance HEAD)"
 # Defense: new_file.py must NOT appear (it didn't exist at snap_sha)
-if [ -e "$WORKDIR/.siblings/acme/race/new_file.py" ]; then
-    echo "FAIL: new_file.py from post-advance commit leaked into materialized tree"
-    exit 1
-fi
+assert_not_exists "$WORKDIR/.siblings/acme/race/new_file.py" "new_file.py from post-advance commit leaked into materialized tree"
 rm -rf "$RACE_SHIM" "$RACE_MARKER"
 
 # --- scenario 13: unsafe tree path (../escape) → fail-loud -----------
@@ -527,10 +500,7 @@ echo "PRE_EXISTING_SENTINEL" > "$SENTINEL_TARGET"
 SOURCE_PATHS["acme/escape"]="$TMPDIR/escaperepo"
 rc=0
 PATH="$ESCAPE_SHIM:$PATH" materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/escape" 2>/dev/null || rc=$?
-if [ "$rc" -eq 0 ]; then
-    echo "FAIL: unsafe tree path '../../../escape.txt' should have returned non-zero"
-    exit 1
-fi
+assert_neq "$rc" "0" "unsafe tree path '../../../escape.txt' should have returned non-zero"
 got=$(cat "$SENTINEL_TARGET" 2>/dev/null)
 assert_eq "$got" "PRE_EXISTING_SENTINEL" "scenario 13: sentinel outside slug dir must not be clobbered (path traversal must not escape)"
 rm -f "$SENTINEL_TARGET"
