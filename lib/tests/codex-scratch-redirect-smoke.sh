@@ -34,6 +34,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+. "$(dirname "${BASH_SOURCE[0]}")/assert.sh"
 
 TMPDIR=$(mktemp -d -t codex-scratch-redirect-XXXXXX)
 trap 'rm -rf "$TMPDIR"' EXIT
@@ -44,22 +45,16 @@ trap 'rm -rf "$TMPDIR"' EXIT
 # re-opening the redirect. Catch the structural regression at the suite
 # gate before any scenario runs.
 WORKER="$PROJECT_ROOT/lib/review-one-pr.sh"
-if ! grep -qE '^[[:space:]]*rm -rf "\$REPO_DIR/\.codex-scratch"[[:space:]]*$' "$WORKER"; then
-    echo "FAIL setup: lib/review-one-pr.sh is missing 'rm -rf \"\$REPO_DIR/.codex-scratch\"' — the redirect-defeating wipe is gone, mkdir -p alone is a no-op on a symlink-to-dir"
-    exit 1
-fi
-if ! grep -qE '^[[:space:]]*mkdir -p "\$REPO_DIR/\.codex-scratch"[[:space:]]*$' "$WORKER"; then
-    echo "FAIL setup: lib/review-one-pr.sh is missing 'mkdir -p \"\$REPO_DIR/.codex-scratch\"' after the wipe"
-    exit 1
-fi
+rm_present=$(grep -cE '^[[:space:]]*rm -rf "\$REPO_DIR/\.codex-scratch"[[:space:]]*$' "$WORKER" || echo 0)
+assert_eq "$rm_present" "1" "setup: lib/review-one-pr.sh is missing 'rm -rf \"\$REPO_DIR/.codex-scratch\"' — the redirect-defeating wipe is gone, mkdir -p alone is a no-op on a symlink-to-dir"
+mkdir_present=$(grep -cE '^[[:space:]]*mkdir -p "\$REPO_DIR/\.codex-scratch"[[:space:]]*$' "$WORKER" || echo 0)
+assert_eq "$mkdir_present" "1" "setup: lib/review-one-pr.sh is missing 'mkdir -p \"\$REPO_DIR/.codex-scratch\"' after the wipe"
 # Adjacency: the mkdir must immediately follow the rm (no intervening
 # code that would race with the wipe or write to .codex-scratch first).
 RM_LINE=$(grep -nE '^[[:space:]]*rm -rf "\$REPO_DIR/\.codex-scratch"[[:space:]]*$' "$WORKER" | head -1 | cut -d: -f1)
 MKDIR_LINE=$(grep -nE '^[[:space:]]*mkdir -p "\$REPO_DIR/\.codex-scratch"[[:space:]]*$' "$WORKER" | head -1 | cut -d: -f1)
-if [ "$((MKDIR_LINE - RM_LINE))" -ne 1 ]; then
-    echo "FAIL setup: rm -rf and mkdir -p for .codex-scratch must be adjacent in lib/review-one-pr.sh (rm@$RM_LINE, mkdir@$MKDIR_LINE)"
-    exit 1
-fi
+adjacency=$((MKDIR_LINE - RM_LINE))
+assert_eq "$adjacency" "1" "setup: rm -rf and mkdir -p for .codex-scratch must be adjacent in lib/review-one-pr.sh (rm@$RM_LINE, mkdir@$MKDIR_LINE)"
 
 # Function under test: the exact two-line sequence the worker runs at the
 # redirect-fence point. Sourcing review-one-pr.sh end-to-end would pull in
@@ -93,19 +88,15 @@ assert_redirect_defeated() {
     # Behavioral: write into .codex-scratch, then verify the bytes
     # landed under REPO_DIR (not under the attacker's target).
     printf 'review payload\n' > "$REPO_DIR/.codex-scratch/diff.patch"
-    if [ ! -f "$REPO_DIR/.codex-scratch/diff.patch" ]; then
-        echo "FAIL ($label): write into .codex-scratch did not land at the expected path"
-        exit 1
-    fi
+    patch_missing=$([ ! -f "$REPO_DIR/.codex-scratch/diff.patch" ] && echo "missing" || echo "")
+    assert_empty "$patch_missing" "($label): write into .codex-scratch did not land at the expected path"
     if [ -e "$ATTACK_TARGET/diff.patch" ] || [ -L "$ATTACK_TARGET/diff.patch" ]; then
         echo "FAIL ($label): attacker target gained a 'diff.patch' entry — write escaped REPO_DIR"
         ls -la "$ATTACK_TARGET/"
         exit 1
     fi
-    if [ ! -e "$ATTACK_TARGET/sentinel" ]; then
-        echo "FAIL ($label): attacker target sentinel was modified — write escaped REPO_DIR"
-        exit 1
-    fi
+    sentinel_missing=$([ ! -e "$ATTACK_TARGET/sentinel" ] && echo "missing" || echo "")
+    assert_empty "$sentinel_missing" "($label): attacker target sentinel was modified — write escaped REPO_DIR"
 }
 
 # --- scenario 1: .codex-scratch is itself a symlink to attacker dir ---
@@ -131,10 +122,8 @@ ln -sfn "$ATTACK_TARGET/diff.patch.intercept" "$REPO_DIR/.codex-scratch/diff.pat
 assert_redirect_defeated "2 (leaf-symlink-redirect)"
 # Intercept file in attacker dir must remain unmodified (the wipe took
 # the LEAF symlink, not its target — exactly what we want).
-if [ ! -f "$ATTACK_TARGET/diff.patch.intercept" ]; then
-    echo "FAIL scenario 2: wipe followed the leaf symlink and deleted the attacker target file — rm without -L isn't symlink-traversing, this should not happen"
-    exit 1
-fi
+intercept_missing=$([ ! -f "$ATTACK_TARGET/diff.patch.intercept" ] && echo "missing" || echo "")
+assert_empty "$intercept_missing" "scenario 2: wipe followed the leaf symlink and deleted the attacker target file — rm without -L isn't symlink-traversing, this should not happen"
 
 # --- scenario 3: .codex-scratch is a dangling symlink. mkdir -p alone
 # would error (EEXIST on the symlink) and leave the symlink in place; the
@@ -164,13 +153,9 @@ if [ ! -f "$REPO_DIR/README.md" ] || [ "$(cat "$REPO_DIR/README.md")" != "kept" 
     ls -la "$REPO_DIR/"
     exit 1
 fi
-if [ -e "$REPO_DIR/.codex-scratch/leftover.txt" ]; then
-    echo "FAIL scenario 4: stale .codex-scratch/leftover.txt survived — wipe didn't take prior contents"
-    exit 1
-fi
-if [ ! -d "$REPO_DIR/.codex-scratch" ] || [ -L "$REPO_DIR/.codex-scratch" ]; then
-    echo "FAIL scenario 4: .codex-scratch is not a fresh real dir after stage"
-    exit 1
-fi
+leftover=$([ -e "$REPO_DIR/.codex-scratch/leftover.txt" ] && echo "exists" || echo "")
+assert_empty "$leftover" "scenario 4: stale .codex-scratch/leftover.txt survived — wipe didn't take prior contents"
+not_fresh_dir=$({ [ ! -d "$REPO_DIR/.codex-scratch" ] || [ -L "$REPO_DIR/.codex-scratch" ]; } && echo "not-fresh" || echo "")
+assert_empty "$not_fresh_dir" "scenario 4: .codex-scratch is not a fresh real dir after stage"
 
 echo "  ok: .codex-scratch staging is redirect-safe (symlink-to-dir, leaf-symlink, dangling, and idempotent on real-dir all defeated)"
