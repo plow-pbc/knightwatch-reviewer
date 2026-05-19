@@ -20,6 +20,7 @@ TMPDIR=$(mktemp -d -t divergent-clock-smoke-XXXXXX)
 trap 'rm -rf "$TMPDIR"' EXIT
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+. "$(dirname "${BASH_SOURCE[0]}")/assert.sh"
 
 echo "  scenario 1: structural — meta.json write uses REVIEW_START_ISO, not a fresh date call..."
 # Locate the meta.json `started_at` write. It must reference
@@ -140,20 +141,13 @@ bash -c '
 EXPECTED_TS=$(cat "$RUN_DIR/expected-ts")
 EXPECTED_ISO=$(python3 -c "import datetime; print(datetime.datetime.fromtimestamp(int('$EXPECTED_TS'), tz=datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))")
 GOT_ISO=$(jq -r '.started_at' "$RUN_DIR/meta.json")
-if [ "$GOT_ISO" != "$EXPECTED_ISO" ]; then
-    echo "FAIL scenario 2: meta.json.started_at = $GOT_ISO, expected $EXPECTED_ISO (REVIEW_START_TS=$EXPECTED_TS)"
-    cat "$RUN_DIR/meta.json"
-    exit 1
-fi
+assert_eq "$GOT_ISO" "$EXPECTED_ISO" "scenario 2: meta.json.started_at mismatch (REVIEW_START_TS=$EXPECTED_TS)"
 
 # The shim's call counter should be exactly 2 (one `date +%s` + one
 # `date -u -d @<epoch>`) — a regression that called `date -u
 # +%Y-%m-%dT%H:%M:%SZ` for started_at would push the counter to 3 AND
 # the started_at value would be 100s later than EXPECTED_ISO.
 COUNTER_FINAL=$(cat "$COUNTER_FILE")
-if [ "$COUNTER_FINAL" -gt 2 ]; then
-    echo "FAIL scenario 2 (extra clock read): date called $COUNTER_FINAL times, expected exactly 2 — extra date call between capture and meta.json write reopens round-11 BCR"
-    exit 1
-fi
+assert_eq "$COUNTER_FINAL" "2" "scenario 2 (extra clock read): date called $COUNTER_FINAL times, expected exactly 2 — extra date call between capture and meta.json write reopens round-11 BCR"
 
 echo "  PASS (2 scenarios: structural-grep + behavioral-divergent-clock)"
