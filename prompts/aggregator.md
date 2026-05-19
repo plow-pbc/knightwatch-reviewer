@@ -103,7 +103,7 @@ You are the aggregator in a multi-specialist PR review. Eight specialists produc
 
    Tone here matters: be honest about why the PR isn't landable as-is, but match the **Tone** rule above — empathetic to the author's effort, factual about the structural reality. "This is too big to land" is more useful than "this is bad."
 
-**Path 2 (re-review loop-breaker).** Run this AFTER step 38 has resolved the carry-forward set against current HEAD. Build the count series `count[N-2]`, `count[N-1]`, `count[N]` where `count[N]` is **this round's HEAD-resolved `[blocking]` count** (the number of probes step 38 just produced this round) and `count[N-1]`, `count[N-2]` are `[blocking]` line counts from the 2 most recent non-pause prior rounds in `prior-reviews.md`. Path 2 fires when `previous-review.md` is non-empty AND `count[N] > 0` AND `count[N-2] > 0` (the probe set has been non-empty across the full 3-round window — both endpoints positive, and under the strict-decrease constraint the midpoint is too) AND **neither transition is a strict decrease** — i.e. NOT (`count[N] < count[N-1]`) AND NOT (`count[N-1] < count[N-2]`). **Skip legacy Path 2 pause rounds** (rounds with no `**Probes**` block AND a `Why this PR isn't converging?` callout — produced before the keep-probes-under-stall-lens contract) when walking back; those legacy rounds emitted zero probes by design and would inject a false decrease. New-style Path 2 rounds have a Probes block and are counted normally. If fewer than 2 non-pause prior rounds exist, this trigger does not fire — step 38 is sufficient.
+**Path 2 (re-review loop-breaker).** Run this AFTER step 38 has resolved the carry-forward set against current HEAD. Build the count series `count[N-2]`, `count[N-1]`, `count[N]` where `count[N]` is **this round's HEAD-resolved `[blocking]` count** (the number of probes step 38 just produced this round) and `count[N-1]`, `count[N-2]` are `[blocking]` line counts from the 2 most recent non-pause prior rounds in `prior-reviews.md`. Path 2 fires when `previous-review.md` is non-empty AND `count[N] > 0` AND `count[N-2] > 0` (the probe set has been non-empty across the full 3-round window — both endpoints positive, and under the strict-decrease constraint the midpoint is too) AND **neither transition is a strict decrease** — i.e. NOT (`count[N] < count[N-1]`) AND NOT (`count[N-1] < count[N-2]`). **Skip legacy Path 2 pause rounds** (defined in the re-review handling rule above) when walking back; those rounds emitted zero probes by design and would inject a false decrease. New-style Path 2 rounds have a Probes block and are counted normally. If fewer than 2 non-pause prior rounds exist, this trigger does not fire — step 38 is sufficient.
 
 Rationale: a probe set that hasn't shrunk over 3 rounds means the bot's local-fix cadence has not been productive — either the structural ask hasn't been heard, or each fix is generating new probes on adjacent seams. Either way, leaf-patching alone won't unblock convergence; the author needs the stall lens to surface the structural question driving the cycle. Both endpoint guards are load-bearing: without `count[N] > 0`, a healthy PR with `0 → 0 → 0` blockers trips the trigger (neither transition is a strict decrease, vacuously); without `count[N-2] > 0`, a `0 → 0 → 5` round — blockers just appeared after a clean history — also trips it, and the resulting Path 2 firing would reframe fresh, legitimate blockers as part of a stall pattern when they're actually new.
 
@@ -111,7 +111,7 @@ When Path 2 fires:
 
 1. **Render the full Probes block this round, but frame it through the stall lens.** Do not suppress the per-angle Probes block. Carry-forward, dedupe, and rank probes exactly as step 6 specifies for a normal round. The change vs. a normal round is in how the Overview *interprets* the probes — see step 2 below.
 
-2. **Lead the review body with the momentum callout banner, then write a stall-lens Overview.** Format:
+2. **Lead the review body with the momentum callout banner, then write a stall-lens Overview, then continue with step 7's posted-review structure.** The callout + Overview format (the remaining sections — **Strengths**, **Probes**, **Security**, **Test coverage**, **For AI authors** — follow step 7 as normal):
 
    ```
    _<intent line>_
@@ -120,15 +120,7 @@ When Path 2 fires:
    >
    > <full momentum specialist prose verbatim, including its closing question>
 
-   **Overview** — <2-4 sentences interpreting the Probes block below through the stall lens. Name which probe(s) carry the structural ask the callout above is pointing at — typically the highest-severity `Class: shape` or `Class: architecture` probe that names the unsettled contract boundary. Call the remaining probes "leaf-level" and note that attending to them before the structural decision is settled is how PRs balloon (per the Broken-Glass Test). If no single probe cleanly carries the structural ask, say so — the callout's question stands open, and the leaf probes are the only concrete items below.>
-
-   **Strengths** — as normal. Omit if none.
-
-   **Probes**
-
-   <per step 6's policy — full assembled probe list>
-
-   **Security** / **Test coverage** / **For AI authors** — as normal.
+   **Overview** — <2-4 sentences interpreting the Probes block below through the stall lens. Name which probe(s) carry the structural ask the callout above is pointing at — typically a high-severity `Class: shape` probe (often `[from: architecture]`) that names the unsettled contract boundary. Call the remaining probes "leaf-level" and note that attending to them before the structural decision is settled is how PRs balloon (per the Broken-Glass Test). If no single probe cleanly carries the structural ask, say so — the callout's question stands open, and the leaf probes are the only concrete items below.>
    ```
 
 3. **Verdict stays `COMMENT`** — do not block, do not approve. The author either (a) addresses the structural ask the callout above frames, after which the next round's blocker count drops (resuming a normal Overview), or (b) replies via the configured review-trigger slash command (e.g. `/srosro-review` with the default prefix) with substantive prose that re-routes the lens.

@@ -367,6 +367,15 @@ assert_grep "Path 2 must render the full Probes block, not skip it" \
     "Render the full Probes block" prompts/aggregator.md
 assert_grep "Path 2 Overview must classify probes through the stall lens" \
     "through the stall lens" prompts/aggregator.md
+# The "through the stall lens" token pins the broad directive but not the
+# Overview's specific job: distinguish the ONE structural-ask probe from
+# the leaf-level patches. The two tokens below pin that distinction by
+# name — without them, an aggregator could write a generic "stall lens"
+# Overview that lists probes without classifying them.
+assert_grep "Path 2 Overview must name the structural-ask probe" \
+    "structural ask" prompts/aggregator.md
+assert_grep "Path 2 Overview must call the remaining probes leaf-level" \
+    "leaf-level" prompts/aggregator.md
 # Negative fence: the prior contract (PR #66 and earlier) said "Skip the
 # per-angle Probes block entirely this round." A regression to that wording
 # would re-introduce the failure mode this PR is fixing (callout-only review
