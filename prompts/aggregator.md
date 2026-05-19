@@ -111,7 +111,7 @@ When Path 2 fires:
 
 1. **Render the full Probes block this round, but frame it through the stall lens.** Do not suppress the per-angle Probes block. Carry-forward, dedupe, and rank probes exactly as step 6 specifies for a normal round. The change vs. a normal round is in how the Overview *interprets* the probes — see step 2 below.
 
-2. **Lead the review body with the momentum callout banner, then write a stall-lens Overview, then continue with step 7's posted-review structure.** The callout + Overview format (the remaining sections — **Strengths**, **Probes**, **Security**, **Test coverage**, **For AI authors** — follow step 7 as normal):
+2. **Lead the review body with the momentum callout banner, then write a stall-lens Overview, then continue with step 7's posted-review structure.** The callout + Overview format:
 
    ```
    _<intent line>_
