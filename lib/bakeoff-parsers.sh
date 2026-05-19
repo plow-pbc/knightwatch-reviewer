@@ -17,7 +17,7 @@ SPECIALIST_LIST_RE='[a-z][a-z0-9,-]*'  # comma-separated list: a,b,c
 # `sort | uniq -c`. grep exits 1 on no match — normalize to 0.
 count_attributions() {
     grep -oE "^[0-9]+\. \[[^]]+\] \[from: ${SPECIALIST_NAME_RE}\]" \
-        | sed -E 's/.*\[from: ([a-z0-9-]+)\]/\1/' \
+        | sed -E "s/.*\[from: (${SPECIALIST_NAME_RE})\]/\1/" \
         || true
 }
 
@@ -28,7 +28,7 @@ count_attributions() {
 # grep exits 1 when no match — normalize to 0 same reason as above.
 extract_memorize_attributions() {
     grep -oE "\[from: ${SPECIALIST_NAME_RE}\]" \
-        | sed -E 's/\[from: ([a-z0-9-]+)\]/\1/' \
+        | sed -E "s/\[from: (${SPECIALIST_NAME_RE})\]/\1/" \
         | sort -u \
         || true
 }
@@ -82,7 +82,7 @@ ROSTER_MARKER_REGEX="<!-- knightwatch-bakeoff: specialists=${SPECIALIST_LIST_RE}
 # line, comma-separated). Emits one specialist per line.
 extract_roster_marker() {
     grep -oE "$ROSTER_MARKER_REGEX" \
-        | sed -E 's/.*specialists=([a-z0-9,-]+).*/\1/' \
+        | sed -E "s/.*specialists=(${SPECIALIST_LIST_RE}).*/\1/" \
         | tr ',' '\n' \
         | grep -v '^$' || true
 }
@@ -94,7 +94,7 @@ extract_roster_marker() {
 extract_props_attributions() {
     local prefix="${BOT_CMD_PREFIX:-srosro}"
     grep -oE "^/${prefix}-props \[from: ${SPECIALIST_NAME_RE}\]" \
-        | sed -E 's/^.*\[from: ([a-z0-9-]+)\]/\1/' \
+        | sed -E "s/^.*\[from: (${SPECIALIST_NAME_RE})\]/\1/" \
         | sort -u || true
 }
 
@@ -105,7 +105,7 @@ extract_props_attributions() {
 extract_critique_attributions() {
     local prefix="${BOT_CMD_PREFIX:-srosro}"
     grep -oE "^/${prefix}-critique \[from: ${SPECIALIST_NAME_RE}\]" \
-        | sed -E 's/^.*\[from: ([a-z0-9-]+)\]/\1/' \
+        | sed -E "s/^.*\[from: (${SPECIALIST_NAME_RE})\]/\1/" \
         | sort -u || true
 }
 
