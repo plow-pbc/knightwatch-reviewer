@@ -164,6 +164,26 @@ echo "  asserting re-review loop-breaker (Path 2) in aggregator.md..."
 assert_grep "aggregator.md should reference momentum specialist output" \
     "momentum.md" prompts/aggregator.md
 
+# Negative fence: the Hypothetical-future-regression decline rule in
+# critic.md is what stops the bot from shipping medium-severity probes
+# whose failing path is "a future commit could drift X without a red
+# test" (Anti-Bloat: companion tests for unreachable scenarios). Without
+# this rule, ~30 LOC of preemptive smoke scaffolding accumulated across
+# 7 rounds on srosro/vibe-engineering#41 r3-r7. Three assertions:
+# (1) the rule's title is present in critic.md (catches deletion);
+# (2) the Anti-Bloat anchor phrase is present (catches water-down
+#     rewrites that drop the rationale);
+# (3) the aggregator inherits the rule via its cross-reference line
+#     (catches one-side-only deletes that would let aggregator-emitted
+#     cross-angle probes bypass the decline).
+echo "  asserting Hypothetical-future-regression decline rule in critic.md..."
+assert_grep "critic.md should carry the Hypothetical-future-regression decline rule" \
+    "Hypothetical-future-regression decline" prompts/critic.md
+assert_grep "critic.md should name the Anti-Bloat anchor for the decline rule" \
+    "CI fences for unreachable scenarios calcify wrong contracts" prompts/critic.md
+assert_grep "aggregator.md should inherit the decline rule for cross-angle probes" \
+    "Hypothetical-future-regression decline" prompts/aggregator.md
+
 # ====================================================================
 # Section 2: systemd-chain shebang security
 # ====================================================================
