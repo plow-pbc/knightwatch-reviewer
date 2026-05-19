@@ -11,8 +11,8 @@
 # unnumbered surface are excluded by construction. Caller pipes through
 # `sort | uniq -c`. grep exits 1 on no match — normalize to 0.
 count_attributions() {
-    grep -oE '^[0-9]+\. \[[^]]+\] \[from: [a-z][a-z-]*\]' \
-        | sed -E 's/.*\[from: ([a-z-]+)\]/\1/' \
+    grep -oE '^[0-9]+\. \[[^]]+\] \[from: [a-z][a-z0-9-]*\]' \
+        | sed -E 's/.*\[from: ([a-z0-9-]+)\]/\1/' \
         || true
 }
 
@@ -22,8 +22,8 @@ count_attributions() {
 # If it has no tags, emit nothing — we don't attribute the love to anyone.
 # grep exits 1 when no match — normalize to 0 same reason as above.
 extract_memorize_attributions() {
-    grep -oE '\[from: [a-z][a-z-]*\]' \
-        | sed -E 's/\[from: ([a-z-]+)\]/\1/' \
+    grep -oE '\[from: [a-z][a-z0-9-]*\]' \
+        | sed -E 's/\[from: ([a-z0-9-]+)\]/\1/' \
         | sort -u \
         || true
 }
@@ -38,7 +38,7 @@ extract_memorize_attributions() {
 # Caller pipes through grep/sort/uniq for set ops or counting.
 probe_cited_paths() {
     awk '
-    /^[0-9]+\. \[[^]]+\] \[from: [a-z][a-z-]*\]/ {
+    /^[0-9]+\. \[[^]]+\] \[from: [a-z][a-z0-9-]*\]/ {
         # Extract the Files: segment. Terminator: " Edit:" (yes probes),
         # " If yes," (open probes that gain Files: in the future), or
         # end of line. Trim trailing punctuation.
@@ -70,14 +70,14 @@ probe_cited_paths() {
 # whitespace before the closing `-->` since markdown comment writers
 # commonly insert it. POSIX ERE and Oniguruma (jq's engine) both accept
 # this character-class shape.
-ROSTER_MARKER_REGEX='<!-- knightwatch-bakeoff: specialists=[a-z][a-z,-]*[[:space:]]*-->'
+ROSTER_MARKER_REGEX='<!-- knightwatch-bakeoff: specialists=[a-z][a-z0-9,-]*[[:space:]]*-->'
 
 # Specialists invoked on this review, from the write-time bake-off marker.
 # Format on the wire: `<!-- knightwatch-bakeoff: specialists=a,b,c -->` (one
 # line, comma-separated). Emits one specialist per line.
 extract_roster_marker() {
     grep -oE "$ROSTER_MARKER_REGEX" \
-        | sed -E 's/.*specialists=([a-z,-]+).*/\1/' \
+        | sed -E 's/.*specialists=([a-z0-9,-]+).*/\1/' \
         | tr ',' '\n' \
         | grep -v '^$' || true
 }
@@ -88,8 +88,8 @@ extract_roster_marker() {
 # ignored — one comment is one bool credit per specialist.
 extract_props_attributions() {
     local prefix="${BOT_CMD_PREFIX:-srosro}"
-    grep -oE "^/${prefix}-props \[from: [a-z][a-z-]*\]" \
-        | sed -E 's/^.*\[from: ([a-z-]+)\]/\1/' \
+    grep -oE "^/${prefix}-props \[from: [a-z][a-z0-9-]*\]" \
+        | sed -E 's/^.*\[from: ([a-z0-9-]+)\]/\1/' \
         | sort -u || true
 }
 
@@ -99,8 +99,8 @@ extract_props_attributions() {
 # ignored — one comment is one bool credit per specialist.
 extract_critique_attributions() {
     local prefix="${BOT_CMD_PREFIX:-srosro}"
-    grep -oE "^/${prefix}-critique \[from: [a-z][a-z-]*\]" \
-        | sed -E 's/^.*\[from: ([a-z-]+)\]/\1/' \
+    grep -oE "^/${prefix}-critique \[from: [a-z][a-z0-9-]*\]" \
+        | sed -E 's/^.*\[from: ([a-z0-9-]+)\]/\1/' \
         | sort -u || true
 }
 
