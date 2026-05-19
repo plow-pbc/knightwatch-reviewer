@@ -164,6 +164,20 @@ echo "  asserting re-review loop-breaker (Path 2) in aggregator.md..."
 assert_grep "aggregator.md should reference momentum specialist output" \
     "momentum.md" prompts/aggregator.md
 
+# Token fence: the Hypothetical-future-regression decline rule in
+# critic.md is what stops the bot from shipping medium-severity probes
+# whose failing path is "a future commit could drift X without a red
+# test" (Anti-Bloat: companion tests for unreachable scenarios). Pin
+# the rule title as a structural token on both surfaces — critic.md
+# owns the rule, aggregator.md inherits it via its existing critic.md
+# cross-reference. Per `.knightwatch/review-priority.md:12`, do not
+# pin the rule's rationale prose — token-level fences only.
+echo "  asserting Hypothetical-future-regression decline rule in critic.md..."
+assert_grep "critic.md should carry the Hypothetical-future-regression decline rule" \
+    "Hypothetical-future-regression decline" prompts/critic.md
+assert_grep "aggregator.md should inherit the decline rule for cross-angle probes" \
+    "Hypothetical-future-regression decline" prompts/aggregator.md
+
 # ====================================================================
 # Section 2: systemd-chain shebang security
 # ====================================================================
