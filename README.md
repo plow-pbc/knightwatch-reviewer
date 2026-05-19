@@ -99,9 +99,9 @@ Reviews fire on PR open and again after one hour of idle. To force a fresh revie
 | `/srosro-update-review` | Incremental re-review against the prior reviewed SHA |
 | `/srosro-review` | Whole-PR re-review from scratch |
 | `/srosro-approve` | Approve the PR (push-access collaborators only) |
-| `/srosro-props [from: <specialist>]` | +1 a specialist's contribution (persisted to `bakeoff.db.loved_positive` — surfaced in the snapshot footer total, not a main-table column) |
-| `/srosro-critique [from: <specialist>]` | Flag a specialist's contribution as a misread (persisted to `bakeoff.db.critiqued` — surfaced in the snapshot footer total, not a main-table column) |
-| `/srosro-memorize` | Teach the bot a calibration lesson from your reply (also credits `loved_positive` when you quote a [from: <specialist>] tag, for back-compat) |
+| `/srosro-props [from: <specialist>]` | Give props to a specialist's contribution |
+| `/srosro-critique [from: <specialist>]` | Flag a specialist's contribution as a misread |
+| `/srosro-memorize` | Teach the bot a calibration lesson from your reply |
 
 ### Specialist bake-off
 
@@ -113,7 +113,7 @@ A small post-hoc measurement that helps decide which specialists are earning the
 - **Edited** — reviews where any of this specialist's cited paths was touched by a commit landing AFTER the bot review. Stronger signal than Cited: the developer went back to that path after seeing the probe. Doesn't prove the *specific* suggestion was applied, only that the area got more attention.
 - **Blocking / Medium / Low+Nit / Open** — reviews bucketed by the specialist's *max* probe severity in that review. Sums to ≤ Shipped (a review where the specialist raised no probes contributes to none). Helps tell apart specialists that ship load-bearing findings from those mostly raising open questions.
 - **+LOC / −LOC** — sum of `additions` / `deletions` across the specialist's Cited (deduped) paths in the PR's diff.
-- **Loved / Critiqued** *(persisted but not rendered)* — reviews where a trusted (push-access) collaborator posted `/srosro-props [from: <specialist>]` (or `/srosro-memorize` quoting the tag) / `/srosro-critique [from: <specialist>]`. Still tracked per-(review × specialist) in `bakeoff.db` for inspection; omitted from the rendered snapshot because the qualitative signal is currently too sparse to drive collapse/keep decisions (0 props, 0 critique, single-digit memorize across a 30-day window).
+- **Loved / Critiqued** *(persisted but not rendered)* — reviews where a trusted (push-access) collaborator posted `/srosro-props [from: <specialist>]` / `/srosro-critique [from: <specialist>]`. Still tracked per-(review × specialist) in `bakeoff.db` for inspection; omitted from the rendered snapshot because the qualitative signal is currently too sparse to drive collapse/keep decisions.
 
 The store is append-only — historical reviews continue accumulating data; the rolling 14-day window is a renderer query parameter (`SCORECARD_DAYS`) rather than an API-cost ceiling. Tradeoff: edits or feedback landing >`REWALK_HOURS` after a review (on still-active PRs) won't flip `edited_after` / `loved_positive` / `critiqued` on a re-walk — that's the cost of the incremental window. Transient fetch failures preserve the prior snapshot rather than republishing with partial data.
 

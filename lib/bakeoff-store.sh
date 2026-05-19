@@ -6,7 +6,7 @@
 # findings. Booleans capture the per-review per-specialist outcome:
 #   - published:      did this specialist contribute any probe to the review
 #   - applied:        was any cited path of any of its probes touched by the PR
-#   - loved_positive: did a /srosro-props or /srosro-memorize quoting it land
+#   - loved_positive: did a /srosro-props quoting it land
 #   - critiqued:      did a /srosro-critique quoting it land
 #   - edited_after:   did any cited path of any of its probes get touched by a commit landing AFTER the bot review (stronger signal than `applied`)
 #

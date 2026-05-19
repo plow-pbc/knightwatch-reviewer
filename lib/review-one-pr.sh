@@ -1252,9 +1252,9 @@ _How to use: auto-reviews every new PR and re-reviews after an hour of inactivit
 
 **For humans only:** push-access collaborators can post:
 - \`/${BOT_CMD_PREFIX}-approve\` — APPROVE the PR.
-- \`/${BOT_CMD_PREFIX}-props [from: <specialist>]\` — +1 a specialist's contribution (persisted to the bake-off DB and surfaced in the snapshot footer total).
-- \`/${BOT_CMD_PREFIX}-critique [from: <specialist>]\` — flag a specialist's contribution as a misread (persisted to the bake-off DB and surfaced in the snapshot footer total).
-- \`/${BOT_CMD_PREFIX}-memorize <feedback>\` — teach a calibration lesson (\`learn-from-replies\` updates \`COMMENT_REVIEW_MISTAKES.md\` from your body, sentiment-aware via LLM). Quoting \`[from: <specialist>]\` in the body also credits the bake-off DB for back-compat.
+- \`/${BOT_CMD_PREFIX}-props [from: <specialist>]\` — give props to a specialist's contribution.
+- \`/${BOT_CMD_PREFIX}-critique [from: <specialist>]\` — flag a specialist's contribution as a misread.
+- \`/${BOT_CMD_PREFIX}-memorize <feedback>\` — teach a calibration lesson (\`learn-from-replies\` updates \`COMMENT_REVIEW_MISTAKES.md\` from your body, sentiment-aware via LLM).
 
 > Props: \`/${BOT_CMD_PREFIX}-props [from: shape] caught a real layering bug we'd have shipped.\`
 > Critique: \`/${BOT_CMD_PREFIX}-critique [from: simplification] DRY suggestion misread distinct seams.\`

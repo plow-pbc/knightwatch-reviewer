@@ -21,18 +21,6 @@ count_attributions() {
         || true
 }
 
-# extract_memorize_attributions: read a /srosro-memorize comment body on
-# stdin. If it contains quoted `[from: <specialist>]` tags from a prior
-# bot review, emit those specialist names (one per line, deduplicated).
-# If it has no tags, emit nothing — we don't attribute the love to anyone.
-# grep exits 1 when no match — normalize to 0 same reason as above.
-extract_memorize_attributions() {
-    grep -oE "\[from: ${SPECIALIST_NAME_RE}\]" \
-        | sed -E "s/\[from: (${SPECIALIST_NAME_RE})\]/\1/" \
-        | sort -u \
-        || true
-}
-
 # probe_cited_paths: read review body(ies) on stdin, emit one cited path
 # per line for every probe that has a `Files:` clause. Anchored to the
 # probe-line shape `N. [<sev>] [from: <spec>] [<class>] ...` per

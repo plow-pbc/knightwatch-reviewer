@@ -68,10 +68,6 @@ echo "  count_attributions: accepts [from: architecture-v2] in probe line..."
 OUT=$(printf '1. [medium] [from: architecture-v2] some finding. Files: foo.sh.\n' | count_attributions)
 [ "$OUT" = "architecture-v2" ] || { echo "FAIL: digit name in attribution: $OUT"; exit 1; }
 
-echo "  extract_memorize_attributions: accepts [from: architecture-v2] tag..."
-OUT=$(printf 'quoting prior [from: architecture-v2] tag from review\n' | extract_memorize_attributions)
-[ "$OUT" = "architecture-v2" ] || { echo "FAIL: digit name in memorize: $OUT"; exit 1; }
-
 echo "  extract_props_attributions: accepts /srosro-props [from: architecture-v2]..."
 OUT=$(printf '/srosro-props [from: architecture-v2] great catch\n' | extract_props_attributions)
 [ "$OUT" = "architecture-v2" ] || { echo "FAIL: digit name in props: $OUT"; exit 1; }

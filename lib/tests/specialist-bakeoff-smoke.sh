@@ -41,21 +41,6 @@ if [ "$got" != "$want" ]; then
     exit 1
 fi
 
-echo "  extract_memorize_attributions: quoted memorize names simplification..."
-got=$(extract_memorize_attributions < "$FIX_DIR/memorize-quoted.md")
-want="simplification"
-if [ "$got" != "$want" ]; then
-    echo "FAIL: memorize-quoted should attribute to simplification, got '$got'"
-    exit 1
-fi
-
-echo "  extract_memorize_attributions: unquoted memorize attributes to nobody..."
-got=$(extract_memorize_attributions < "$FIX_DIR/memorize-no-quote.md") || true
-if [ -n "$got" ]; then
-    echo "FAIL: memorize-no-quote should produce no attribution, got '$got'"
-    exit 1
-fi
-
 echo "  probe_cited_paths: Files-only extract; Edit clause excluded..."
 input=$(cat <<'PROBES'
 1. [blocking] [from: shape] [shape] Foo. Files: a.sh:1, b.md. Edit: see fake.sh:99.
@@ -91,7 +76,7 @@ fi
 # Driver smoke: specialist-bakeoff.sh end-to-end, no network.
 # Mirrors the gh-stub pattern from learn-from-replies-smoke.sh.
 # ============================================================
-echo "  driver smoke: paginated gh, trusted/untrusted memorize, ACK filter..."
+echo "  driver smoke: paginated gh, trusted/untrusted props, ACK filter..."
 
 export TMPDIR_SMOKE=$(mktemp -d)
 trap 'rm -rf "$TMPDIR_SMOKE"' EXIT
@@ -324,15 +309,15 @@ if ! grep -qF "Awaiting first reviews" "$OUT_FILE"; then
     exit 1
 fi
 
-# ---- scenario 2: substantive review, ACK, untrusted memorize, trusted memorize ----
-echo "    scenario 2: review + ACK + memorize (trusted+untrusted) → aggregator row..."
+# ---- scenario 2: substantive review, ACK, untrusted props, trusted props ----
+echo "    scenario 2: review + ACK + props (trusted+untrusted) → aggregator row..."
 # Four comments split across two pages — load-bearing comment D is on page 2:
 #   A: substantive bot review — has marker, roster, footer, [from: aggregator]
 #   B: same-bot ACK — has marker, NO footer — must NOT count as a review
-#   C: untrusted /srosro-memorize quoting [from: aggregator] — must be ignored
-#   D: (PAGE 2) trusted /srosro-memorize quoting [from: aggregator] — must count
+#   C: untrusted /srosro-props [from: aggregator] — must be ignored
+#   D: (PAGE 2) trusted /srosro-props [from: aggregator] — must count
 # A regression that drops --paginate would still produce Loved=0 (page-2
-# trusted memorize never reaches extract_memorize_attributions), so the
+# trusted props never reaches extract_props_attributions), so the
 # Loved=1 assertion below is the load-bearing pagination check.
 rm -f "$DB_FILE"
 
@@ -346,7 +331,7 @@ import json
 comments = [
     {"id": 1, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/20", "created_at": "${TS_REVIEW}", "user": {"login": "testbot"},        "body": "${BOT_AUTO_POST_MARKER}\n<!-- knightwatch-bakeoff: specialists=aggregator,tests,security,shape -->\n\n**Probes**\n\n1. [blocking] [from: aggregator] The aggregator logic is overfit.\n\n_How to use: auto-reviews every new PR and re-reviews after an hour of inactivity..._"},
     {"id": 2, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/20", "created_at": "${TS_ACK}", "user": {"login": "testbot"},        "body": "${BOT_AUTO_POST_MARKER}\n\n\U0001f440 reviewing..."},
-    {"id": 3, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/20", "created_at": "${TS_UNTRUSTED}", "user": {"login": "untrusted-user"}, "body": "Thanks! /srosro-memorize I agree with [from: aggregator] finding."},
+    {"id": 3, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/20", "created_at": "${TS_UNTRUSTED}", "user": {"login": "untrusted-user"}, "body": "/srosro-props [from: aggregator]"},
 ]
 print(json.dumps(comments))
 PYEOF
@@ -355,7 +340,7 @@ export MOCK_COMMENTS_FILE_PAGE2="$TMPDIR_SMOKE/comments-page2.json"
 python3 - <<PYEOF > "$MOCK_COMMENTS_FILE_PAGE2"
 import json
 comments = [
-    {"id": 4, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/20", "created_at": "${TS_TRUSTED}", "user": {"login": "trusted-human"},  "body": "/srosro-memorize The [from: aggregator] tip was great."},
+    {"id": 4, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/20", "created_at": "${TS_TRUSTED}", "user": {"login": "trusted-human"},  "body": "/srosro-props [from: aggregator]"},
 ]
 print(json.dumps(comments))
 PYEOF
@@ -472,6 +457,21 @@ TS_FEEDBACK=$(hours_ago 479)
 run_driver
 LOVED=$(sqlite3 "$DB_FILE" "SELECT loved_positive FROM specialist_runs WHERE specialist='tests';")
 [ "$LOVED" = "1" ] || { echo "FAIL scenario 7: srosro-props did not mark loved_positive (got '$LOVED')"; exit 1; }
+
+# ---- scenario 7b: trusted /srosro-memorize quoting [from: <spec>] does NOT credit loved_positive ----
+# Pins the behavior this PR removes: memorize is calibration-only, not a bake-off vote.
+# A regression that re-adds extract_memorize_attributions to the positives union would
+# flip loved_positive=1 here and trip this assertion.
+echo "    scenario 7b: trusted /srosro-memorize quoting [from: tests] → loved_positive=0..."
+rm -f "$DB_FILE"
+TS_REVIEW=$(hours_ago 480)
+TS_FEEDBACK=$(hours_ago 479)
+{ build_bot_review 750 75 "$TS_REVIEW" tests,shape '1. [blocking] [from: tests] missing test. Files: x.sh.'
+  build_feedback_comment 751 75 "$TS_FEEDBACK" '/srosro-memorize the [from: tests] feedback was a misread'; } \
+    | jq -s '.' > "$MOCK_COMMENTS_FILE"
+run_driver
+LOVED=$(sqlite3 "$DB_FILE" "SELECT COALESCE(loved_positive, 0) FROM specialist_runs WHERE specialist='tests';")
+[ "$LOVED" = "0" ] || { echo "FAIL scenario 7b: srosro-memorize must not credit loved_positive (got '$LOVED')"; exit 1; }
 
 # ---- scenario 8: trusted /srosro-critique after substantive review → critiqued=1 ----
 echo "    scenario 8: trusted /srosro-critique after substantive review → critiqued=1..."
