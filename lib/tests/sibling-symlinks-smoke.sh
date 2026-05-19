@@ -34,6 +34,8 @@ trap 'rm -rf "$TMPDIR"' EXIT
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../sibling-symlinks.sh
 . "$SCRIPT_DIR/sibling-symlinks.sh"
+# shellcheck source=./assert.sh
+. "$SCRIPT_DIR/tests/assert.sh"
 
 WORKDIR="$TMPDIR/work"
 mkdir -p "$WORKDIR/.git"  # mimic a real workdir
@@ -388,10 +390,7 @@ echo "DIRTY_SECRET" > "$TMPDIR/dirtyrepo/file.py"
 SOURCE_PATHS["acme/dirty"]="$TMPDIR/dirtyrepo"
 materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/dirty"
 got=$(cat "$WORKDIR/.siblings/acme/dirty/file.py" 2>/dev/null)
-if [ "$got" != "committed-source" ]; then
-    echo "FAIL: expected committed content 'committed-source', got '$got'"
-    exit 1
-fi
+assert_eq "$got" "committed-source" "scenario 10: materialized content must be committed version, not dirty worktree"
 if grep -rn "DIRTY_SECRET" "$WORKDIR/.siblings/acme/dirty/" >/dev/null 2>&1; then
     echo "FAIL: uncommitted worktree bytes leaked into materialized tree"
     exit 1
@@ -471,15 +470,9 @@ if [ ! -e "$RACE_MARKER" ]; then
     echo "FAIL: shim never advanced HEAD — race scenario didn't actually run (substring match missed?)"
     exit 1
 fi
-if [ "$rc" -ne 0 ]; then
-    echo "FAIL: helper returned $rc — ls-tree picked up post-advance paths (including new_file.py) and show couldn't find them at the pinned SHA"
-    exit 1
-fi
+assert_eq "$rc" "0" "scenario 12: helper must return 0 when snap_sha is pinned before HEAD advance (ls-tree should use pre-advance SHA)"
 got=$(cat "$WORKDIR/.siblings/acme/race/file.py" 2>/dev/null || true)
-if [ "$got" != "v1-content" ]; then
-    echo "FAIL: file.py content '$got' (want 'v1-content') — show used HEAD instead of pinned SHA, picked up post-advance bytes"
-    exit 1
-fi
+assert_eq "$got" "v1-content" "scenario 12: file.py must contain v1-content (show used pinned SHA, not post-advance HEAD)"
 # Defense: new_file.py must NOT appear (it didn't exist at snap_sha)
 if [ -e "$WORKDIR/.siblings/acme/race/new_file.py" ]; then
     echo "FAIL: new_file.py from post-advance commit leaked into materialized tree"
@@ -539,10 +532,7 @@ if [ "$rc" -eq 0 ]; then
     exit 1
 fi
 got=$(cat "$SENTINEL_TARGET" 2>/dev/null)
-if [ "$got" != "PRE_EXISTING_SENTINEL" ]; then
-    echo "FAIL: sentinel outside slug dir was clobbered ('$got') — path traversal escaped"
-    exit 1
-fi
+assert_eq "$got" "PRE_EXISTING_SENTINEL" "scenario 13: sentinel outside slug dir must not be clobbered (path traversal must not escape)"
 rm -f "$SENTINEL_TARGET"
 rm -rf "$ESCAPE_SHIM"
 
