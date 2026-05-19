@@ -109,8 +109,9 @@ Rationale: a probe set that hasn't shrunk over 3 rounds means the bot's local-fi
 
 When Path 2 fires:
 
-1. **Skip the per-angle Probes block entirely this round.** Do not render any local probes; do not render any carry-forward probes. The probe loop is paused.
-2. **Ship the momentum specialist's prose AS the review body**, immediately after the intent line. Format:
+1. **Render the full Probes block this round, but frame it through the stall lens.** Do not suppress the per-angle Probes block. Carry-forward, dedupe, and rank probes exactly as step 6 specifies for a normal round. The change vs. a normal round is in how the Overview *interprets* the probes — see step 2 below.
+
+2. **Lead the review body with the momentum callout banner, then write a stall-lens Overview.** Format:
 
    ```
    _<intent line>_
@@ -118,10 +119,21 @@ When Path 2 fires:
    > **Why this PR isn't converging?**
    >
    > <full momentum specialist prose verbatim, including its closing question>
+
+   **Overview** — <2-4 sentences interpreting the Probes block below through the stall lens. Name which probe(s) carry the structural ask the callout above is pointing at — typically the highest-severity `Class: shape` or `Class: architecture` probe that names the unsettled contract boundary. Call the remaining probes "leaf-level" and note that attending to them before the structural decision is settled is how PRs balloon (per the Broken-Glass Test). If no single probe cleanly carries the structural ask, say so — the callout's question stands open, and the leaf probes are the only concrete items below.>
+
+   **Strengths** — as normal. Omit if none.
+
+   **Probes**
+
+   <per step 6's policy — full assembled probe list>
+
+   **Security** / **Test coverage** / **For AI authors** — as normal.
    ```
 
-3. **Verdict stays `COMMENT`** — do not block, do not approve. The author either (a) addresses the structural ask and the next round's blocker count drops (resuming normal review), or (b) replies via the configured review-trigger slash command (e.g. `/srosro-review` with the default prefix) with substantive prose that re-routes the lens.
-4. **Length: 100-200 words** (just the intent + the momentum callout). No Overview, no Strengths, no Probes, no test/kid notes — those resume on the next round once the trigger clears.
+3. **Verdict stays `COMMENT`** — do not block, do not approve. The author either (a) addresses the structural ask the callout above frames, after which the next round's blocker count drops (resuming a normal Overview), or (b) replies via the configured review-trigger slash command (e.g. `/srosro-review` with the default prefix) with substantive prose that re-routes the lens.
+
+4. **Length: normal 300-500 word range from step 7.** The momentum callout adds ~80-150 words on top of an otherwise-normal review; that's fine. Don't pad the Overview to fit; don't drop probes to hit a ceiling. The callout's job is to focus attention, not to replace the review.
 
 6. **Probe assembly — pre-template policy. Do NOT publish any of the instructions below verbatim; they govern how you build the `**Probes**` block inside the posted-review fence.**
 
@@ -139,7 +151,7 @@ When Path 2 fires:
    - For `Answer: yes`: `N. [<severity>] [from: <specialist>] [<class>] <Q recast as declarative outcome — name the failing path / structural shape / cost — one paragraph>. Files: <path:line>, …. Edit: <If yes, edit: clause verbatim>.`
    - For `Answer: unknown`: `N. [open] [from: <specialist>] [<class>] **Q: <Q in 5-10 words>** — <Q full text>. If yes, <If yes, edit clause>. If no, <If no, cost clause>.`
 
-7. Produce the final posted review in EXACTLY this structure. Target 300-500 words for typical PRs. For large diffs (>500 KB) or PRs with many substantive probes, you may flex up to 1000 words — but only if the extra length carries real content. Quality over length: don't pad to hit the floor, and don't drop important probes to hit the ceiling. **Step-back signal mode (above) overrides this length contract** — a redirect review is 200-400 words even when the underlying PR has 20 probes, because the redirect is the review.
+7. Produce the final posted review in EXACTLY this structure. Target 300-500 words for typical PRs. For large diffs (>500 KB) or PRs with many substantive probes, you may flex up to 1000 words — but only if the extra length carries real content. Quality over length: don't pad to hit the floor, and don't drop important probes to hit the ceiling. **Path 1 (first-review redirect mode, above) overrides this length contract** — a redirect review is 200-400 words even when the underlying PR has 20 probes, because the redirect is the review. **Path 2 does NOT override the length contract** — it renders the full body plus the momentum callout banner, so the typical Path 2 round lands in the upper half of the 300-500 word range.
 
 ```
 _<intent line, italicized — see formatting rule below>_
