@@ -293,8 +293,8 @@ assert_grep "simplification.md should anchor on the inferred-intent scratch arti
 # HEAD. Two competing "is the PR converging?" signals (loc-trend trichotomy,
 # BCR-fired-N-rounds counter) collapsed into ONE: when the carried-forward
 # [blocking] set has not strictly decreased over the last 3 rounds, Path 2
-# halts the probe loop. These token + negative fences catch accidental
-# re-introduction of any of the deleted patterns.
+# fires and reframes the Probes block through the stall lens. These token +
+# negative fences catch accidental re-introduction of any of the deleted patterns.
 
 echo "  asserting carry-forward rule cites Files: shape at HEAD in aggregator.md..."
 # Positive token fences — the rule pivots on the cited Files: field and
@@ -329,13 +329,13 @@ assert_grep "Path 2 trigger should skip pause rounds when selecting the 3-round 
     "Skip legacy Path 2 pause rounds" prompts/aggregator.md
 # Positive fences: without non-zero guards on BOTH endpoints, the
 # strict-decrease test admits two false-positive shapes that would
-# fire the Path 2 halt action and reframe the Probes block under the stall lens when the PR is actually healthy.
+# fire Path 2 and reframe the Probes block under the stall lens when the PR is actually healthy.
 #   - count[N] > 0 closes the 0 → 0 → 0 hole (vacuous strict-decrease
 #     on a healthy PR — observed regression: plow-pbc/seed-autoresearch
 #     PR #3, 8 re-reviews at 0 blockers, "Why this PR isn't converging?"
 #     callout shipped on round 3).
 #   - count[N-2] > 0 closes the 0 → 0 → 5 hole (blockers just appeared
-#     after a clean two-round history; the halt action would reframe
+#     after a clean two-round history; Path 2 firing would reframe
 #     the very probes the author needs to act on under the stall lens,
 #     burying fresh blockers behind a "not converging" callout — caught
 #     by knightwatch data-integrity specialist on PR #71).
@@ -349,7 +349,7 @@ assert_grep "Path 2 trigger should skip pause rounds when selecting the 3-round 
 # specialist on PR #71.
 assert_grep "Path 2 trigger fire condition must AND-join count[N] > 0 — a 0 → 0 → 0 series satisfies the strict-decrease test vacuously and would otherwise fire on healthy PRs with no blockers" \
     "AND \`count[N] > 0\`" prompts/aggregator.md
-assert_grep "Path 2 trigger fire condition must AND-join count[N-2] > 0 — a 0 → 0 → 5 series (blockers newly appeared) satisfies the strict-decrease test and would fire the halt action, reframing the Probes block under the stall lens when blockers just appeared after a clean history" \
+assert_grep "Path 2 trigger fire condition must AND-join count[N-2] > 0 — a 0 → 0 → 5 series (blockers newly appeared) satisfies the strict-decrease test and would fire Path 2, reframing the Probes block under the stall lens when blockers just appeared after a clean history" \
     "AND \`count[N-2] > 0\`" prompts/aggregator.md
 
 echo "  asserting Path 2 keeps the Probes block and frames it through the stall lens..."
