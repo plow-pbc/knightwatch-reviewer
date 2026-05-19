@@ -34,6 +34,7 @@
 set -uo pipefail
 
 TMPDIR=$(mktemp -d -t prior-reviews-smoke-XXXXXX)
+. "$(dirname "${BASH_SOURCE[0]}")/assert.sh"
 trap 'rm -rf "$TMPDIR"' EXIT
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -71,20 +72,13 @@ PR=523
 # ---- scenario 1: no runs at all ----
 echo "  scenario 1: no runs → empty output..."
 result=$(stage_prior_reviews "$TMPDIR/state" "$REPO_SLUG" "$PR" "$TMPDIR/state/runs/missing")
-if [ -n "$result" ]; then
-    echo "FAIL: expected empty, got: $result"
-    exit 1
-fi
+assert_empty "$result" "scenario 1: expected empty output when no runs"
 
 # ---- scenario 2: only the current run → self-excluded ----
 echo "  scenario 2: only current run → empty (self-excluded)..."
 current=$(make_run "$REPO_SLUG" "$PR" "20260429T120000000Z" "aaaaaaa" "## current review (should be excluded)")
 result=$(stage_prior_reviews "$TMPDIR/state" "$REPO_SLUG" "$PR" "$current")
-if [ -n "$result" ]; then
-    echo "FAIL: current run was not excluded:"
-    echo "$result"
-    exit 1
-fi
+assert_empty "$result" "scenario 2: current run was not excluded"
 
 # ---- scenario 3: two prior runs + current → chronological, current excluded ----
 echo "  scenario 3: two prior runs + current → both prior, chronological, current excluded..."
@@ -92,16 +86,8 @@ make_run "$REPO_SLUG" "$PR" "20260429T100000000Z" "1111111" "## review one body"
 make_run "$REPO_SLUG" "$PR" "20260429T110000000Z" "2222222" "## review two body" >/dev/null
 result=$(stage_prior_reviews "$TMPDIR/state" "$REPO_SLUG" "$PR" "$current")
 
-if ! echo "$result" | grep -q "review one body"; then
-    echo "FAIL: scenario 3 — first prior review missing"
-    echo "$result"
-    exit 1
-fi
-if ! echo "$result" | grep -q "review two body"; then
-    echo "FAIL: scenario 3 — second prior review missing"
-    echo "$result"
-    exit 1
-fi
+assert_contains "$result" "review one body" "scenario 3 — first prior review missing"
+assert_contains "$result" "review two body" "scenario 3 — second prior review missing"
 if echo "$result" | grep -q "current review (should be excluded)"; then
     echo "FAIL: scenario 3 — current review leaked through"
     echo "$result"
@@ -145,11 +131,7 @@ fi
 echo "  scenario 4c: posted_at present, status=aborted (gh-ok+state_set-failed) → INCLUDED..."
 make_run "$REPO_SLUG" "$PR" "20260429T070000000Z" "5555555" "## review three body — author saw this even though state_set failed" "aborted" "2026-04-29T07:05:00Z" >/dev/null
 result=$(stage_prior_reviews "$TMPDIR/state" "$REPO_SLUG" "$PR" "$current")
-if ! echo "$result" | grep -q "review three body"; then
-    echo "FAIL: scenario 4c — posted-but-aborted review was not included; recurrence detector would undercount"
-    echo "$result"
-    exit 1
-fi
+assert_contains "$result" "review three body" "scenario 4c — posted-but-aborted review was not included; recurrence detector would undercount"
 
 # ---- scenario 4d: legacy run (status=completed, no posted_at) → INCLUDED ----
 # Runs created before this PR landed have status=completed but no
@@ -160,11 +142,7 @@ fi
 echo "  scenario 4d: legacy run (status=completed, no posted_at) → INCLUDED..."
 make_run "$REPO_SLUG" "$PR" "20260429T060000000Z" "6666666" "## review four body — legacy pre-#15 completed run" "completed" "" >/dev/null
 result=$(stage_prior_reviews "$TMPDIR/state" "$REPO_SLUG" "$PR" "$current")
-if ! echo "$result" | grep -q "review four body"; then
-    echo "FAIL: scenario 4d — legacy completed run (no posted_at) was excluded; rollout drops history exactly where the feature is needed"
-    echo "$result"
-    exit 1
-fi
+assert_contains "$result" "review four body" "scenario 4d — legacy completed run (no posted_at) was excluded; rollout drops history exactly where the feature is needed"
 
 # ---- scenario 5: different PR / repo slug → not included ----
 echo "  scenario 5: runs from other PR / repo slug → filtered out..."
@@ -201,11 +179,7 @@ fi
 # the LATEST visible is T110000000Z = "review two body". Verify that.
 echo "  scenario 6: latest_author_visible_review returns the most recent author-visible body..."
 result=$(latest_author_visible_review "$TMPDIR/state" "$REPO_SLUG" "$PR" "$current")
-if ! echo "$result" | grep -q "review two body"; then
-    echo "FAIL: scenario 6 — latest body should be 'review two body' (T110000000Z), got:"
-    echo "$result"
-    exit 1
-fi
+assert_contains "$result" "review two body" "scenario 6 — latest body should be 'review two body' (T110000000Z)"
 # Must not include earlier rounds' bodies (only the LATEST is returned —
 # unlike stage_prior_reviews which concatenates all).
 if echo "$result" | grep -q "review one body"; then
@@ -220,10 +194,7 @@ fi
 # and the momentum gate correctly skips.
 echo "  scenario 7: latest_author_visible_review with no prior runs → empty..."
 result=$(latest_author_visible_review "$TMPDIR/state" "$REPO_SLUG" "999999" "$current")
-if [ -n "$result" ]; then
-    echo "FAIL: scenario 7 — expected empty for PR with no prior runs, got: $result"
-    exit 1
-fi
+assert_empty "$result" "scenario 7 — expected empty for PR with no prior runs"
 
 # ---- scenario 8: latest_author_visible_review_sha — reviewed_sha precedence ----
 # Round-8 BCR fence: KNOWN_SHA now reads from runs/ via this helper instead
@@ -245,10 +216,7 @@ jq --arg s "abcdef0123456789abcdef0123456789abcdef01" \
    '. + {reviewed_sha: $s, sha: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}' \
    "$sha_run_b/meta.json" > "$sha_run_b/meta.json.tmp" && mv "$sha_run_b/meta.json.tmp" "$sha_run_b/meta.json"
 result=$(latest_author_visible_review_sha "$TMPDIR/state" "$REPO_SLUG" "$SHA_PR" "$shaq_current")
-if [ "$result" != "abcdef0123456789abcdef0123456789abcdef01" ]; then
-    echo "FAIL: scenario 8 — expected reviewed_sha (abcdef...01), got: $result"
-    exit 1
-fi
+assert_eq "$result" "abcdef0123456789abcdef0123456789abcdef01" "scenario 8 — expected reviewed_sha (abcdef...01)"
 
 # ---- scenario 8b: latest_author_visible_review_sha — falls back to .sha ----
 # Legacy run pre-dating the .reviewed_sha field. The fallback chain
@@ -263,18 +231,12 @@ VERDICT: APPROVE")
 jq '. + {sha: "fedcba9876543210fedcba9876543210fedcba98"}' \
    "$sha2_run/meta.json" > "$sha2_run/meta.json.tmp" && mv "$sha2_run/meta.json.tmp" "$sha2_run/meta.json"
 result=$(latest_author_visible_review_sha "$TMPDIR/state" "$REPO_SLUG" "$SHA_PR2" "$shaq2_current")
-if [ "$result" != "fedcba9876543210fedcba9876543210fedcba98" ]; then
-    echo "FAIL: scenario 8b — expected .sha fallback (fedcba...98), got: $result"
-    exit 1
-fi
+assert_eq "$result" "fedcba9876543210fedcba9876543210fedcba98" "scenario 8b — expected .sha fallback (fedcba...98)"
 
 # ---- scenario 9: latest_author_visible_review_approved — VERDICT: APPROVE → true ----
 echo "  scenario 9: latest_author_visible_review_approved — APPROVE → true..."
 result=$(latest_author_visible_review_approved "$TMPDIR/state" "$REPO_SLUG" "$SHA_PR" "$shaq_current")
-if [ "$result" != "true" ]; then
-    echo "FAIL: scenario 9 — expected 'true' for VERDICT: APPROVE, got: '$result'"
-    exit 1
-fi
+assert_eq "$result" "true" "scenario 9 — expected 'true' for VERDICT: APPROVE"
 
 # ---- scenario 9b: latest_author_visible_review_approved — VERDICT: APPROVE — pending: ... → true ----
 # Aggregator contract permits "VERDICT: APPROVE — pending: <items>". The
@@ -289,10 +251,7 @@ make_run "$REPO_SLUG" "$APPR_PR" "20260429T100000000Z" "4444444" \
 some text
 VERDICT: APPROVE — pending: refactor X" >/dev/null
 result=$(latest_author_visible_review_approved "$TMPDIR/state" "$REPO_SLUG" "$APPR_PR" "$appr_current")
-if [ "$result" != "true" ]; then
-    echo "FAIL: scenario 9b — expected 'true' for APPROVE with pending, got: '$result'"
-    exit 1
-fi
+assert_eq "$result" "true" "scenario 9b — expected 'true' for APPROVE with pending"
 
 # ---- scenario 9c: latest_author_visible_review_approved — VERDICT: COMMENT → false ----
 echo "  scenario 9c: latest_author_visible_review_approved — COMMENT → false..."
@@ -303,10 +262,7 @@ make_run "$REPO_SLUG" "$COMM_PR" "20260429T100000000Z" "5555556" \
 findings here
 VERDICT: COMMENT" >/dev/null
 result=$(latest_author_visible_review_approved "$TMPDIR/state" "$REPO_SLUG" "$COMM_PR" "$comm_current")
-if [ "$result" != "false" ]; then
-    echo "FAIL: scenario 9c — expected 'false' for VERDICT: COMMENT, got: '$result'"
-    exit 1
-fi
+assert_eq "$result" "false" "scenario 9c — expected 'false' for VERDICT: COMMENT"
 
 # ---- scenario 10: no prior author-visible runs → sha + approved both empty ----
 # Must mirror latest_author_visible_review's empty-on-first-review shape
@@ -316,14 +272,8 @@ fi
 echo "  scenario 10: latest_author_visible_review_sha + _approved with no prior runs → empty..."
 sha_result=$(latest_author_visible_review_sha "$TMPDIR/state" "$REPO_SLUG" "999998" "$current")
 appr_result=$(latest_author_visible_review_approved "$TMPDIR/state" "$REPO_SLUG" "999998" "$current")
-if [ -n "$sha_result" ]; then
-    echo "FAIL: scenario 10 — sha helper expected empty for PR with no prior runs, got: '$sha_result'"
-    exit 1
-fi
-if [ -n "$appr_result" ]; then
-    echo "FAIL: scenario 10 — approved helper expected empty for PR with no prior runs, got: '$appr_result'"
-    exit 1
-fi
+assert_empty "$sha_result" "scenario 10 — sha helper expected empty for PR with no prior runs"
+assert_empty "$appr_result" "scenario 10 — approved helper expected empty for PR with no prior runs"
 
 # ---- scenario 11: latest_author_visible_review_started_at — returns latest run's started_at ----
 # Round-10 BCR fence: review.sh's slash-command cutoff timestamp now reads
@@ -343,10 +293,7 @@ jq --arg s "2026-04-29T10:00:00Z" '. + {started_at: $s}' \
 jq --arg s "2026-04-29T11:00:00Z" '. + {started_at: $s}' \
    "$ts_run_b/meta.json" > "$ts_run_b/meta.json.tmp" && mv "$ts_run_b/meta.json.tmp" "$ts_run_b/meta.json"
 result=$(latest_author_visible_review_started_at "$TMPDIR/state" "$REPO_SLUG" "$TS_PR" "$ts_current")
-if [ "$result" != "2026-04-29T11:00:00Z" ]; then
-    echo "FAIL: scenario 11 — expected latest run's started_at (2026-04-29T11:00:00Z), got: '$result'"
-    exit 1
-fi
+assert_eq "$result" "2026-04-29T11:00:00Z" "scenario 11 — expected latest run's started_at"
 
 # ---- scenario 11b: latest_author_visible_review_started_at — empty when no prior ----
 # Mirrors scenario 10 for the new helper. First review on the PR returns
@@ -355,9 +302,6 @@ fi
 # cutoff read keys off KNOWN_SHA, so this is consistent).
 echo "  scenario 11b: latest_author_visible_review_started_at with no prior runs → empty..."
 result=$(latest_author_visible_review_started_at "$TMPDIR/state" "$REPO_SLUG" "999997" "$ts_current")
-if [ -n "$result" ]; then
-    echo "FAIL: scenario 11b — expected empty for PR with no prior runs, got: '$result'"
-    exit 1
-fi
+assert_empty "$result" "scenario 11b — expected empty for PR with no prior runs"
 
 echo "  PASS (18 scenarios: no-runs, self-excluded, chronological-prior, aborted-skipped, no-meta-skipped, posted-but-aborted-INCLUDED, legacy-completed-no-posted-at-INCLUDED, foreign-pr-filtered, latest-author-visible-review, latest-empty-on-first-review, sha-reviewed_sha-precedence, sha-falls-back-to-sha, approved-APPROVE-true, approved-APPROVE-pending-true, approved-COMMENT-false, no-prior-empty, started_at-latest-wins, started_at-empty-no-prior)"

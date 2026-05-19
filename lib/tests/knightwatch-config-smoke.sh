@@ -11,6 +11,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$(dirname "${BASH_SOURCE[0]}")/assert.sh"
 
 TMPDIR=$(mktemp -d -t knightwatch-config-smoke-XXXXXX)
 trap 'rm -rf "$TMPDIR"' EXIT
@@ -57,16 +58,9 @@ git -C "$WORK" checkout -q -B feature origin/feature
 echo "  scenario 1: existing file → content + exit 0..."
 exit_code=0
 read_knightwatch_file "$WORK" "origin/main" "siblings" > "$TMPDIR/out.txt" 2>/dev/null || exit_code=$?
-if [ "$exit_code" -ne 0 ]; then
-    echo "FAIL: expected exit 0, got $exit_code"
-    exit 1
-fi
+assert_eq "$exit_code" "0" "expected exit 0 for existing file"
 got=$(cat "$TMPDIR/out.txt")
-if ! printf '%s' "$got" | grep -q '^cncorp/plow-content$'; then
-    echo "FAIL: expected to find cncorp/plow-content"
-    echo "  got: $got"
-    exit 1
-fi
+assert_contains "$got" "cncorp/plow-content" "expected to find cncorp/plow-content"
 # Crucial: the SECRET sibling from PR head must NOT appear
 if printf '%s' "$got" | grep -q 'evil/private-repo'; then
     echo "FAIL: trust violation — read PR-head content, should be base-branch only"
@@ -80,24 +74,14 @@ fi
 echo "  scenario 2: missing file → empty + exit 1 (ABSENT)..."
 exit_code=0
 read_knightwatch_file "$WORK" "origin/main" "does-not-exist.sh" > "$TMPDIR/out.txt" 2>/dev/null || exit_code=$?
-if [ "$exit_code" -ne 1 ]; then
-    echo "FAIL: expected exit 1 (ABSENT) for missing file, got $exit_code"
-    exit 1
-fi
+assert_eq "$exit_code" "1" "expected exit 1 (ABSENT) for missing file"
 got=$(cat "$TMPDIR/out.txt")
-if [ -n "$got" ]; then
-    echo "FAIL: expected empty output for missing file, got: $got"
-    exit 1
-fi
+assert_empty "$got" "expected empty output for missing file"
 
 # --- scenario 3: read product-context.md → markdown content --------
 echo "  scenario 3: product-context.md → markdown content..."
 got=$(read_knightwatch_file "$WORK" "origin/main" "product-context.md")
-if ! printf '%s' "$got" | grep -q '^# Product context$'; then
-    echo "FAIL: expected markdown header"
-    echo "  got: $got"
-    exit 1
-fi
+assert_contains "$got" "# Product context" "expected markdown header"
 
 # --- scenario 3b: review-priority.md round-trips with same trust model.
 # Parallel to scenario 3 (product-context). Adds a review-priority.md
@@ -114,20 +98,9 @@ git -C "$WORK" checkout -q -B main origin/main
 MAIN_SHA=$(git -C "$WORK" rev-parse origin/main)
 exit_code=0
 got=$(read_knightwatch_file "$WORK" "$MAIN_SHA" "review-priority.md") || exit_code=$?
-if [ "$exit_code" -ne 0 ]; then
-    echo "FAIL: review-priority.md from main expected exit 0, got $exit_code"
-    exit 1
-fi
-if ! printf '%s' "$got" | grep -q '^# Review priority$'; then
-    echo "FAIL: expected review-priority markdown header"
-    echo "  got: $got"
-    exit 1
-fi
-if ! printf '%s' "$got" | grep -q 'review-priority test content'; then
-    echo "FAIL: review-priority.md content mismatch"
-    echo "  got: $got"
-    exit 1
-fi
+assert_eq "$exit_code" "0" "review-priority.md from main expected exit 0"
+assert_contains "$got" "# Review priority" "expected review-priority markdown header"
+assert_contains "$got" "review-priority test content" "review-priority.md content mismatch"
 
 # Feature-branch-only addition must NOT take effect when reading
 # against the base SHA (locks down the same invariant the bot enforces:
@@ -139,10 +112,7 @@ git -C "$SOURCE" commit -qm "feature: add review-priority-feat.md (PR-only)"
 git -C "$WORK" fetch -q origin feature
 exit_code=0
 read_knightwatch_file "$WORK" "$MAIN_SHA" "review-priority-feat.md" > "$TMPDIR/out.txt" 2>/dev/null || exit_code=$?
-if [ "$exit_code" -ne 1 ]; then
-    echo "FAIL: review-priority-feat.md (feature-only) expected rc 1 (ABSENT) against main SHA, got $exit_code"
-    exit 1
-fi
+assert_eq "$exit_code" "1" "review-priority-feat.md (feature-only) expected rc 1 (ABSENT) against main SHA"
 
 # --- scenario 4: PRESENT but empty → exit 0 + empty content ---------
 # Helper-mechanism scenario: a committed empty file at a tracked path
@@ -161,14 +131,8 @@ git -C "$WORK" fetch -q origin main
 git -C "$WORK" checkout -q -B main origin/main
 exit_code=0
 got=$(read_knightwatch_file "$WORK" "origin/main" "empty-file.sh") || exit_code=$?
-if [ "$exit_code" -ne 0 ]; then
-    echo "FAIL: expected exit 0 for present-but-empty file, got $exit_code"
-    exit 1
-fi
-if [ -n "$got" ]; then
-    echo "FAIL: expected empty stdout for present-but-empty file, got: $got"
-    exit 1
-fi
+assert_eq "$exit_code" "0" "expected exit 0 for present-but-empty file"
+assert_empty "$got" "expected empty stdout for present-but-empty file"
 
 # --- scenario 5: bad base ref → exit 2 (ERROR, NOT ABSENT) ---------
 # A non-existent default branch (e.g., the operator forgot to fetch
@@ -179,10 +143,7 @@ fi
 echo "  scenario 5: bad base ref → exit 2 (ERROR)..."
 exit_code=0
 read_knightwatch_file "$WORK" "nonexistent-branch" "siblings" > "$TMPDIR/out.txt" 2>/dev/null || exit_code=$?
-if [ "$exit_code" -ne 2 ]; then
-    echo "FAIL: expected exit 2 (ERROR) for bad base ref, got $exit_code"
-    exit 1
-fi
+assert_eq "$exit_code" "2" "expected exit 2 (ERROR) for bad base ref"
 
 # --- scenario 6: SHA-pin resists mid-run ref rewriting --------------
 # The actual attack the trust model has to defend against: a PR's
@@ -204,18 +165,10 @@ if printf '%s' "$got_pinned" | grep -q 'evil/private-repo'; then
     echo "FAIL: SHA-pin failed — read PR-head policy after ref rewrite"
     exit 1
 fi
-if ! printf '%s' "$got_pinned" | grep -q '^cncorp/plow-content$'; then
-    echo "FAIL: SHA-pin should have returned base-branch content"
-    echo "  got: $got_pinned"
-    exit 1
-fi
+assert_contains "$got_pinned" "cncorp/plow-content" "SHA-pin should have returned base-branch content"
 # Sanity-check the attack actually works against the unsafe ref form
 got_ref=$(read_knightwatch_file "$WORK" "origin/main" "siblings")
-if ! printf '%s' "$got_ref" | grep -q 'evil/private-repo'; then
-    echo "FAIL: ref-rewrite simulation didn't actually take effect — test is meaningless"
-    echo "  got: $got_ref"
-    exit 1
-fi
+assert_contains "$got_ref" "evil/private-repo" "ref-rewrite simulation didn't actually take effect — test is meaningless"
 
 # --- scenario 7: onboarding case — file exists ONLY on PR branch ---
 # A first-time `.knightwatch/*` PR has the file on the PR branch but
@@ -237,9 +190,6 @@ git -C "$WORK" checkout -q -B feature origin/feature
 # return ABSENT (rc 1), not ERROR (rc 2).
 exit_code=0
 read_knightwatch_file "$WORK" "origin/main" "pr-only-file.sh" > "$TMPDIR/out.txt" 2>/dev/null || exit_code=$?
-if [ "$exit_code" -ne 1 ]; then
-    echo "FAIL: expected rc 1 (ABSENT) for onboarding case, got $exit_code"
-    exit 1
-fi
+assert_eq "$exit_code" "1" "expected rc 1 (ABSENT) for onboarding case"
 
 echo "  PASS (8 scenarios: existing, missing-ABSENT, base-branch-only trust, review-priority round-trip + ABSENT, present-but-empty, bad-ref-ERROR, SHA-pin-bypass-resistance, onboarding-ABSENT)"
