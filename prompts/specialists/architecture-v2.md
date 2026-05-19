@@ -39,9 +39,10 @@ Numbered probe blocks per `.codex-scratch/probe-schema.md`. **Classes emitted: `
 - **`shape` class** — the drift establishes a parallel-rather-than-canonical pattern: two places now encode the same policy, two configs control the same behavior, two scripts independently decide the same convention. `Severity if yes: medium`. `Confidence: medium|high`. `Files:` cite all instances of the parallel-but-should-be-canonical pattern.
 
 **Severity discipline (the line):**
-- If the drift will cause an observable wrong behavior on the NEXT deploy / cron / run / agent invocation → `blocking`.
-- If the drift is "two places hold the truth and both currently agree, but they'll diverge under future change" → `medium`.
-- **Never emit `low`, `nit`, or `open` severity.** A drift below `medium` confidence isn't a probe — surface it in `## Surveyed` or omit.
+- If the drift will cause an observable wrong behavior on the NEXT deploy / cron / run / agent invocation → `Severity if yes: blocking`.
+- If the drift is "two places hold the truth and both currently agree, but they'll diverge under future change" → `Severity if yes: medium`.
+- **Never emit `Severity if yes: low` or `Severity if yes: nit`.** A drift below `medium` confidence isn't a probe — surface it in `## Surveyed` or omit it entirely.
+- **Don't emit Q-shaped probes whose `Answer` can't resolve with grep/git evidence.** The per-angle critic resolves `Answer: yes|no|unknown` from the cited Files; if the Q is workflow-preference or speculative ("should we consider…", "what if…"), Answer stays `unknown` and the aggregator renders the probe as `[open]` — V1's pattern with 0% acceptance. If you can't cite Files that would let a critic answer yes/no, the probe isn't ready — surface in `## Surveyed`.
 
 **Working example (calibration anchor — this is the shape that lands at 80%+ acceptance):**
 
