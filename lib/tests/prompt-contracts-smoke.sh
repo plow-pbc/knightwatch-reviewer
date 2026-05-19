@@ -132,8 +132,11 @@ done
 for specialist in shape simplification architecture consumers tests security data-integrity; do
     echo "  asserting simplification probe class in ${specialist}.md..."
     # After collapsing DRY + dead-code + complexity-cost → simplification,
-    # every specialist must register simplification as one of its emitted
-    # classes (it's the universal removal-shaped class).
+    # most specialists must register simplification as one of their emitted
+    # classes (the universal removal-shaped class). architecture-v2 is the
+    # exception by design — its narrow remit (cross-file contract drift)
+    # explicitly bans simplification (simplification specialist owns DRY +
+    # removal-shaped probes); see the architecture-v2 assertions below.
     assert_grep "${specialist}.md should list simplification as a probe class" \
         "simplification" "prompts/specialists/${specialist}.md"
 done
@@ -440,5 +443,29 @@ assert_grep "pr-reviewer-bakeoff.timer should run daily at 03:30 UTC" \
     "OnCalendar=*-*-* 03:30:00" systemd/pr-reviewer-bakeoff.timer
 assert_grep "pr-reviewer-bakeoff.timer should not be Persistent (matches repo timer shape)" \
     "Persistent=false" systemd/pr-reviewer-bakeoff.timer
+
+# architecture-v2 specialist (added 2026-05-18 to run alongside V1
+# architecture for an A/B comparison via the bakeoff scorecard). Five
+# load-bearing constraints from the V2 design — pinned so a future
+# "cleanup" can't silently loosen them:
+#   (1) aggregator.md keeps listing the file (otherwise the specialist's
+#       output is silently ignored downstream);
+#   (2) the drift remit is explicit (the prompt's value vs V1 is its
+#       narrow scope — diluting the remit re-opens the open-Q failure);
+#   (3) classes restricted to bug + shape (V1 emitted simplification
+#       too; that's simplification specialist's territory);
+#   (4) no open/low/nit severity (V1's 17 open probes had 0% acceptance);
+#   (5) every probe must cite TWO files (the design discipline).
+echo "  asserting architecture-v2 (A/B specialist) load-bearing constraints..."
+assert_grep "aggregator.md should reference architecture-v2 specialist" \
+    "specialists/architecture-v2.md" prompts/aggregator.md
+assert_grep "architecture-v2.md should declare cross-file contract drift remit" \
+    "Cross-file contract drift" prompts/specialists/architecture-v2.md
+assert_grep "architecture-v2.md should restrict emitted classes to bug and shape" \
+    "Classes emitted: \`bug\` and \`shape\` only" prompts/specialists/architecture-v2.md
+assert_grep "architecture-v2.md should ban open/low/nit severity" \
+    "Never emit \`low\`, \`nit\`, or \`open\` severity" prompts/specialists/architecture-v2.md
+assert_grep "architecture-v2.md should require citing two files for every probe" \
+    "If a probe doesn't cite TWO files" prompts/specialists/architecture-v2.md
 
 echo "  PASS"
