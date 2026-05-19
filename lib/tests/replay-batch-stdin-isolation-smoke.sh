@@ -73,10 +73,22 @@ bash "$LIB/replay-batch.sh" \
 }
 
 cells=$(ls -1 "$TMPDIR/out"/*/aggregator-output.md 2>/dev/null | wc -l)
-assert_eq "$cells" "6" "expected 6 cells (3 PRs × 2 prompt sets), got $cells — stdin-consumption regression"
+expected=6
+if [ "$cells" != "$expected" ]; then
+    echo "FAIL: expected $expected cells (3 PRs × 2 prompt sets), got $cells — stdin-consumption regression"
+    echo "--- batch log ---"
+    cat "$TMPDIR/batch.log"
+    echo "--- cells ---"
+    ls -1 "$TMPDIR/out"/ 2>&1
+    exit 1
+fi
 
 # Index should have one row per PR (header + 3 PR rows + separator).
 pr_rows=$(grep -cE '^\| .*owner/repo[ABC]#' "$TMPDIR/out/index.md" 2>/dev/null || echo 0)
-assert_eq "$pr_rows" "3" "index.md should list 3 PR rows, got $pr_rows"
+if [ "$pr_rows" != "3" ]; then
+    echo "FAIL: index.md should list 3 PR rows, got $pr_rows"
+    cat "$TMPDIR/out/index.md"
+    exit 1
+fi
 
 echo "PASS"

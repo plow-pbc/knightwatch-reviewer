@@ -78,7 +78,11 @@ result=$(fetch_issue_comments "owner/repo" "42")
 got_len=$(printf '%s' "$result" | jq 'length')
 got_first_id=$(printf '%s' "$result" | jq '.[0].id')
 got_last_id=$(printf '%s' "$result" | jq '.[-1].id')
-assert_eq "$got_len" "4" "scenario 1 — expected 4 comments merged, got $got_len"
+if [ "$got_len" != "4" ]; then
+    echo "FAIL: scenario 1 — expected 4 comments merged, got $got_len"
+    echo "result: $result"
+    exit 1
+fi
 assert_eq "$got_first_id" "1" "scenario 1 — pages out of order or split (first=$got_first_id last=$got_last_id)"
 assert_eq "$got_last_id" "4" "scenario 1 — pages out of order or split (first=$got_first_id last=$got_last_id)"
 # Critical regression-fence: the page-2 trigger must be in the
