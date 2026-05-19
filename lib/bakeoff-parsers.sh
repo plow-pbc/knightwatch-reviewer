@@ -2,6 +2,11 @@
 # Pure parsers for the specialist bake-off. Read from stdin, emit to stdout.
 # No file I/O, no network — composable in pipelines + hermetic-testable.
 
+# Specialist name grammar — one seam for all per-from parsers AND the roster
+# marker. Future widenings (e.g. dots, underscores) happen in one place.
+SPECIALIST_NAME_RE='[a-z][a-z0-9-]*'   # single name: data-integrity, arch-v2
+SPECIALIST_LIST_RE='[a-z][a-z0-9,-]*'  # comma-separated list: a,b,c
+
 # count_attributions: read review body(ies) on stdin, emit one specialist
 # name per probe's RENDERED attribution slot. Anchored to the documented
 # probe-line shape from prompts/aggregator.md step 6:
@@ -11,8 +16,8 @@
 # unnumbered surface are excluded by construction. Caller pipes through
 # `sort | uniq -c`. grep exits 1 on no match — normalize to 0.
 count_attributions() {
-    grep -oE '^[0-9]+\. \[[^]]+\] \[from: [a-z][a-z-]*\]' \
-        | sed -E 's/.*\[from: ([a-z-]+)\]/\1/' \
+    grep -oE "^[0-9]+\. \[[^]]+\] \[from: ${SPECIALIST_NAME_RE}\]" \
+        | sed -E "s/.*\[from: (${SPECIALIST_NAME_RE})\]/\1/" \
         || true
 }
 
@@ -22,8 +27,8 @@ count_attributions() {
 # If it has no tags, emit nothing — we don't attribute the love to anyone.
 # grep exits 1 when no match — normalize to 0 same reason as above.
 extract_memorize_attributions() {
-    grep -oE '\[from: [a-z][a-z-]*\]' \
-        | sed -E 's/\[from: ([a-z-]+)\]/\1/' \
+    grep -oE "\[from: ${SPECIALIST_NAME_RE}\]" \
+        | sed -E "s/\[from: (${SPECIALIST_NAME_RE})\]/\1/" \
         | sort -u \
         || true
 }
@@ -37,8 +42,8 @@ extract_memorize_attributions() {
 # silently emit nothing — they earn no Applied credit by construction.
 # Caller pipes through grep/sort/uniq for set ops or counting.
 probe_cited_paths() {
-    awk '
-    /^[0-9]+\. \[[^]]+\] \[from: [a-z][a-z-]*\]/ {
+    awk -v from_re="^[0-9]+\\. \\[[^]]+\\] \\[from: $SPECIALIST_NAME_RE\\]" '
+    $0 ~ from_re {
         # Extract the Files: segment. Terminator: " Edit:" (yes probes),
         # " If yes," (open probes that gain Files: in the future), or
         # end of line. Trim trailing punctuation.
@@ -70,14 +75,14 @@ probe_cited_paths() {
 # whitespace before the closing `-->` since markdown comment writers
 # commonly insert it. POSIX ERE and Oniguruma (jq's engine) both accept
 # this character-class shape.
-ROSTER_MARKER_REGEX='<!-- knightwatch-bakeoff: specialists=[a-z][a-z,-]*[[:space:]]*-->'
+ROSTER_MARKER_REGEX="<!-- knightwatch-bakeoff: specialists=${SPECIALIST_LIST_RE}[[:space:]]*-->"
 
 # Specialists invoked on this review, from the write-time bake-off marker.
 # Format on the wire: `<!-- knightwatch-bakeoff: specialists=a,b,c -->` (one
 # line, comma-separated). Emits one specialist per line.
 extract_roster_marker() {
     grep -oE "$ROSTER_MARKER_REGEX" \
-        | sed -E 's/.*specialists=([a-z,-]+).*/\1/' \
+        | sed -E "s/.*specialists=(${SPECIALIST_LIST_RE}).*/\1/" \
         | tr ',' '\n' \
         | grep -v '^$' || true
 }
@@ -88,8 +93,8 @@ extract_roster_marker() {
 # ignored — one comment is one bool credit per specialist.
 extract_props_attributions() {
     local prefix="${BOT_CMD_PREFIX:-srosro}"
-    grep -oE "^/${prefix}-props \[from: [a-z][a-z-]*\]" \
-        | sed -E 's/^.*\[from: ([a-z-]+)\]/\1/' \
+    grep -oE "^/${prefix}-props \[from: ${SPECIALIST_NAME_RE}\]" \
+        | sed -E "s/^.*\[from: (${SPECIALIST_NAME_RE})\]/\1/" \
         | sort -u || true
 }
 
@@ -99,8 +104,8 @@ extract_props_attributions() {
 # ignored — one comment is one bool credit per specialist.
 extract_critique_attributions() {
     local prefix="${BOT_CMD_PREFIX:-srosro}"
-    grep -oE "^/${prefix}-critique \[from: [a-z][a-z-]*\]" \
-        | sed -E 's/^.*\[from: ([a-z-]+)\]/\1/' \
+    grep -oE "^/${prefix}-critique \[from: ${SPECIALIST_NAME_RE}\]" \
+        | sed -E "s/^.*\[from: (${SPECIALIST_NAME_RE})\]/\1/" \
         | sort -u || true
 }
 

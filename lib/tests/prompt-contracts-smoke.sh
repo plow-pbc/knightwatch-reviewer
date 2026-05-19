@@ -101,10 +101,6 @@ assert_grep "aggregator.md should describe layered specialist files" \
 # the critic + aggregator read lists, and common-header must document
 # any per-specialist scratch input. Catches the "added a prompt file
 # but forgot to register it" omission class.
-echo "  asserting performance specialist registered in aggregator.md..."
-assert_grep "aggregator.md should reference performance specialist" \
-    "specialists/performance.md" prompts/aggregator.md
-
 echo "  asserting consumers specialist registered in aggregator.md..."
 assert_grep "aggregator.md should reference consumers specialist" \
     "specialists/consumers.md" prompts/aggregator.md
@@ -133,11 +129,14 @@ for prompt in prompts/aggregator.md prompts/probe-schema.md; do
     fi
 done
 
-for specialist in shape simplification architecture consumers tests performance security data-integrity; do
+for specialist in shape simplification architecture consumers tests security data-integrity; do
     echo "  asserting simplification probe class in ${specialist}.md..."
     # After collapsing DRY + dead-code + complexity-cost → simplification,
-    # every specialist must register simplification as one of its emitted
-    # classes (it's the universal removal-shaped class).
+    # most specialists must register simplification as one of their emitted
+    # classes (the universal removal-shaped class). architecture-v2 is the
+    # exception by design — its narrow remit (cross-file contract drift)
+    # explicitly bans simplification (simplification specialist owns DRY +
+    # removal-shaped probes); see the architecture-v2 assertions below.
     assert_grep "${specialist}.md should list simplification as a probe class" \
         "simplification" "prompts/specialists/${specialist}.md"
 done
@@ -444,5 +443,14 @@ assert_grep "pr-reviewer-bakeoff.timer should run daily at 03:30 UTC" \
     "OnCalendar=*-*-* 03:30:00" systemd/pr-reviewer-bakeoff.timer
 assert_grep "pr-reviewer-bakeoff.timer should not be Persistent (matches repo timer shape)" \
     "Persistent=false" systemd/pr-reviewer-bakeoff.timer
+
+# architecture-v2 registration — the architecture-v2 prompt file must
+# stay listed in the aggregator's input enumeration; otherwise the
+# specialist's output is silently ignored downstream. Token-presence
+# only (the prompt body's content discipline lives in the prompt itself,
+# not in a smoke fence, per Rule 8 — "don't calcify prompt prose").
+echo "  asserting architecture-v2 specialist registered in aggregator.md..."
+assert_grep "aggregator.md should reference architecture-v2 specialist" \
+    "specialists/architecture-v2.md" prompts/aggregator.md
 
 echo "  PASS"

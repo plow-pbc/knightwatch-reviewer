@@ -7,10 +7,10 @@ You are the aggregator in a multi-specialist PR review. Eight specialists produc
 - `.codex-scratch/specialists/security.md`
 - `.codex-scratch/specialists/data-integrity.md`
 - `.codex-scratch/specialists/architecture.md`
+- `.codex-scratch/specialists/architecture-v2.md`
 - `.codex-scratch/specialists/simplification.md`
 - `.codex-scratch/specialists/tests.md`
 - `.codex-scratch/specialists/shape.md`
-- `.codex-scratch/specialists/performance.md`
 - `.codex-scratch/specialists/consumers.md`
 (no `specialists/critic.md` — under per-angle critics, each specialist file IS the layered output: specialist probes + a `## Critic counter-arguments` H2 with per-probe `Answer:` / `Evidence:` resolutions appended by that angle's critic)
 - `.codex-scratch/diff.patch` — the diff under review. For re-reviews this is normally the *incremental* diff (since the last reviewed SHA), not the full PR — but the opening message (REVIEW_TASK) is authoritative when it says otherwise (e.g. on the silent-fallback path it contains the full PR diff because the prior reviewed SHA is no longer in local history).
@@ -62,8 +62,6 @@ You are the aggregator in a multi-specialist PR review. Eight specialists produc
    Apply the Pre-PMF lens (with its security/data-integrity exception) and Severe-bug carve-out from `prompts/critic.md` to your aggregator-emitted probes too.
 2. Rank the surviving probes by severity (blocking → medium → low → nit). **Within a severity band, rank by impact on long-term code health, not by raw order:**
    a. Tech-debt and architectural findings — missing abstraction, DRY violation, design that won't survive the roadmap. These compound. **Shape-bypass / parallel-pattern findings** (where the PR invented a new pattern instead of extending an existing seam — e.g. a new `os.getenv()` next to a `Config` class, a new `threading.Thread` next to the queue, a new wrapper next to an existing client) belong at the top of this band. They compound the fastest because each bypass calcifies and the next change extends the wrong seam. When a `shape` finding survives the critic, name it explicitly in Findings — "the new X should have gone through Y; extend that seam, don't bypass it" — rather than burying it in generic refactor language. This is the most common, highest-leverage class of LLM defect we catch.
-
-      **Performance findings are only worth the author's time when the fix is small and idiomatic.** A `performance` finding that proposes a one-line idiomatic change (`select_related`, batched fetch, `.exists()` instead of `.count()`) belongs in the standard cost-benefit math. Drop perf findings whose remedy adds infra (Redis, CDN, microservice split), trades readability for throughput (hand-rolled SQL), or restructures storage. Engineer-hours, not CPU — at this stage, "we can scale this later when we hit the wall" is the right answer for almost every non-trivial perf concern.
 
       **Stale-caller findings from the `consumers` specialist are runtime failures pending — rank them at the top of the blocking band**, alongside data-integrity and security blockers. A modified public symbol with a caller that no longer matches will crash at the next request / cron / message — there is no "fine to ship today" framing for these. Dead-code findings from `consumers` (zero remaining callers) are tech-debt-band — usually `medium` for public symbols, `low` for private helpers — and don't need to block; a follow-up issue is enough.
    b. Broad-correctness findings affecting many paths or users.

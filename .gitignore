@@ -3,6 +3,9 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# Claude Code session artifacts (TaskCreate state, scheduled-task locks, etc.)
+.claude/
+
 # C extensions
 *.so
 

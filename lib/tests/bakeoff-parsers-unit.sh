@@ -59,4 +59,35 @@ echo "  probe_severity: emits one severity per probe line for multi-line input..
 OUT=$(printf '1. [medium] [from: shape] foo.\n2. [low] [from: tests] bar.\n' | probe_severity | paste -sd, -)
 [ "$OUT" = "medium,low" ] || { echo "FAIL: multi-line: $OUT"; exit 1; }
 
+echo "  extract_roster_marker: accepts digit-suffixed specialist name (architecture-v2)..."
+OUT=$(printf '<!-- knightwatch-bakeoff: specialists=tests,architecture-v2,security -->\n' \
+    | extract_roster_marker | sort | paste -sd, -)
+[ "$OUT" = "architecture-v2,security,tests" ] || { echo "FAIL: digit name in roster: $OUT"; exit 1; }
+
+echo "  count_attributions: accepts [from: architecture-v2] in probe line..."
+OUT=$(printf '1. [medium] [from: architecture-v2] some finding. Files: foo.sh.\n' | count_attributions)
+[ "$OUT" = "architecture-v2" ] || { echo "FAIL: digit name in attribution: $OUT"; exit 1; }
+
+echo "  extract_memorize_attributions: accepts [from: architecture-v2] tag..."
+OUT=$(printf 'quoting prior [from: architecture-v2] tag from review\n' | extract_memorize_attributions)
+[ "$OUT" = "architecture-v2" ] || { echo "FAIL: digit name in memorize: $OUT"; exit 1; }
+
+echo "  extract_props_attributions: accepts /srosro-props [from: architecture-v2]..."
+OUT=$(printf '/srosro-props [from: architecture-v2] great catch\n' | extract_props_attributions)
+[ "$OUT" = "architecture-v2" ] || { echo "FAIL: digit name in props: $OUT"; exit 1; }
+
+echo "  extract_critique_attributions: accepts /srosro-critique [from: architecture-v2]..."
+OUT=$(printf '/srosro-critique [from: architecture-v2] overreach\n' | extract_critique_attributions)
+[ "$OUT" = "architecture-v2" ] || { echo "FAIL: digit name in critique: $OUT"; exit 1; }
+
+# probe_cited_paths is the Applied/Edited bakeoff scorecard parser — uniquely
+# uncovered by the other 5 digit-tolerance tests above. A revert at the awk
+# `from_re` site would silently break V2's scorecard credit while the other
+# tests stay green. Pin the digit-tolerance contract at this final site.
+echo "  probe_cited_paths: digit-bearing specialist name (architecture-v2)..."
+got=$(printf '1. [medium] [from: architecture-v2] [shape] Two-place policy drift between manifest pin and Dockerfile source. Files: manifests/plow-starter.yaml:8, Dockerfile:71.\n' \
+    | probe_cited_paths | sort)
+want=$'Dockerfile\nmanifests/plow-starter.yaml'
+[ "$got" = "$want" ] || { echo "FAIL: probe_cited_paths digit-bearing [from: architecture-v2]"; echo "  got: $got"; echo "  want: $want"; exit 1; }
+
 echo "PASS"
