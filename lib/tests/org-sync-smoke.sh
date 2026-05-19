@@ -8,6 +8,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+. "$(dirname "${BASH_SOURCE[0]}")/assert.sh"
 
 TMPDIR=$(mktemp -d -t org-sync-smoke-XXXXXX)
 trap 'rm -rf "$TMPDIR"' EXIT

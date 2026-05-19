@@ -22,6 +22,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$(dirname "${BASH_SOURCE[0]}")/assert.sh"
 
 TMPDIR=$(mktemp -d -t diff-build-smoke-XXXXXX)
 trap 'rm -rf "$TMPDIR"' EXIT

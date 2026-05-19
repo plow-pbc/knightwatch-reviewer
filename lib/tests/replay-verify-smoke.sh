@@ -7,6 +7,7 @@
 # replay?) is covered by manual operator runs.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+. "$(dirname "${BASH_SOURCE[0]}")/assert.sh"
 
 FIXTURE_DIR="lib/tests/fixtures/replay-verify"
 [ -f "$FIXTURE_DIR/sample-fixture.md" ] || { echo "FAIL: missing sample-fixture.md"; exit 1; }
