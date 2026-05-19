@@ -444,28 +444,13 @@ assert_grep "pr-reviewer-bakeoff.timer should run daily at 03:30 UTC" \
 assert_grep "pr-reviewer-bakeoff.timer should not be Persistent (matches repo timer shape)" \
     "Persistent=false" systemd/pr-reviewer-bakeoff.timer
 
-# architecture-v2 specialist (added 2026-05-18 to run alongside V1
-# architecture for an A/B comparison via the bakeoff scorecard). Five
-# load-bearing constraints from the V2 design — pinned so a future
-# "cleanup" can't silently loosen them:
-#   (1) aggregator.md keeps listing the file (otherwise the specialist's
-#       output is silently ignored downstream);
-#   (2) the drift remit is explicit (the prompt's value vs V1 is its
-#       narrow scope — diluting the remit re-opens the open-Q failure);
-#   (3) classes restricted to bug + shape (V1 emitted simplification
-#       too; that's simplification specialist's territory);
-#   (4) no open/low/nit severity (V1's 17 open probes had 0% acceptance);
-#   (5) every probe must cite TWO files (the design discipline).
-echo "  asserting architecture-v2 (A/B specialist) load-bearing constraints..."
+# architecture-v2 registration — the architecture-v2 prompt file must
+# stay listed in the aggregator's input enumeration; otherwise the
+# specialist's output is silently ignored downstream. Token-presence
+# only (the prompt body's content discipline lives in the prompt itself,
+# not in a smoke fence, per Rule 8 — "don't calcify prompt prose").
+echo "  asserting architecture-v2 specialist registered in aggregator.md..."
 assert_grep "aggregator.md should reference architecture-v2 specialist" \
     "specialists/architecture-v2.md" prompts/aggregator.md
-assert_grep "architecture-v2.md should declare cross-file contract drift remit" \
-    "Cross-file contract drift" prompts/specialists/architecture-v2.md
-assert_grep "architecture-v2.md should restrict emitted classes to bug and shape" \
-    "Classes emitted: \`bug\` and \`shape\` only" prompts/specialists/architecture-v2.md
-assert_grep "architecture-v2.md should ban open/low/nit severity" \
-    "Never emit \`low\`, \`nit\`, or \`open\` severity" prompts/specialists/architecture-v2.md
-assert_grep "architecture-v2.md should require citing two files for every probe" \
-    "If a probe doesn't cite TWO files" prompts/specialists/architecture-v2.md
 
 echo "  PASS"
