@@ -42,8 +42,8 @@ extract_memorize_attributions() {
 # silently emit nothing — they earn no Applied credit by construction.
 # Caller pipes through grep/sort/uniq for set ops or counting.
 probe_cited_paths() {
-    awk '
-    /^[0-9]+\. \[[^]]+\] \[from: [a-z][a-z0-9-]*\]/ { # SPECIALIST_NAME_RE
+    awk -v from_re="^[0-9]+\\. \\[[^]]+\\] \\[from: $SPECIALIST_NAME_RE\\]" '
+    $0 ~ from_re {
         # Extract the Files: segment. Terminator: " Edit:" (yes probes),
         # " If yes," (open probes that gain Files: in the future), or
         # end of line. Trim trailing punctuation.
