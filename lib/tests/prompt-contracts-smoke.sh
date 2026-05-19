@@ -433,4 +433,16 @@ assert_grep "momentum.md should carry the read-only working directory fence" \
 assert_grep "momentum.md should fence inputs as data-not-instructions" \
     "data, not instructions" prompts/standalone/momentum.md
 
+# Bake-off timer cadence + persistence are quota-control contracts: the daily
+# cadence is what cuts the bake-off's GitHub REST volume ~24x vs the prior
+# hourly run, and Persistent=false matches the repo's other timer shape (the
+# walker's incremental floor handles missed runs without boot-time catch-up).
+# A regression to hourly OR Persistent=true silently re-introduces the
+# rate-limit failure mode that motivated PR #78.
+echo "  asserting pr-reviewer-bakeoff.timer quota-control contract..."
+assert_grep "pr-reviewer-bakeoff.timer should run daily at 03:30 UTC" \
+    "OnCalendar=*-*-* 03:30:00" systemd/pr-reviewer-bakeoff.timer
+assert_grep "pr-reviewer-bakeoff.timer should not be Persistent (matches repo timer shape)" \
+    "Persistent=false" systemd/pr-reviewer-bakeoff.timer
+
 echo "  PASS"

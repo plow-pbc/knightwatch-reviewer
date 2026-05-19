@@ -102,6 +102,10 @@ export LOG_FILE="$STATE_DIR/bakeoff.log"
 export DB_FILE="$STATE_DIR/bakeoff.db"
 export BOT_USER="testbot"
 export BOT_AUTO_POST_MARKER="<!-- knightwatch-reviewer:auto-post -->"
+# REWALK_HOURS wide enough to cover all fixture timestamps (max 480 h = 20 days).
+# SCORECARD_DAYS wide enough to cover the same (default 14 would exclude them).
+export REWALK_HOURS=720
+export SCORECARD_DAYS=30
 mkdir -p "$STATE_DIR/tmp"
 
 export STUB_BIN="$TMPDIR_SMOKE/bin"
@@ -251,7 +255,7 @@ run_driver() {
 }
 
 # ISO8601 timestamp N hours ago. All fixture timestamps in this file derive
-# from this so they stay safely inside the walker's WINDOW_DAYS=30 lookback
+# from this so they stay safely inside the walker's REWALK_HOURS=720 lookback
 # regardless of when the suite is run. (Hardcoded calendar dates drift out
 # of the window as the wall clock advances and the gh stub's since= filter
 # starts dropping fixtures.) GNU date primary, BSD date fallback — same
@@ -669,8 +673,8 @@ COV=$(sqlite3 "$DB_FILE" "SELECT reviews_total_in_window || '|' || reviews_with_
 # marker token in prose but not the real <!-- ... --> shape).
 [ "$COV" = "3|1" ] || { echo "FAIL scenario 19: coverage '$COV' expected '3|1' (prose mention of marker must NOT count)"; sqlite3 "$DB_FILE" "SELECT * FROM walks;"; exit 1; }
 # Rendered caption must reflect the exact 1-of-3 → 33% derived from that DB row.
-grep -qF "Based on 1 of 3 substantive bot reviews in window (33% coverage" "$OUT_FILE" \
-    || { echo "FAIL scenario 19: caption missing 'Based on 1 of 3 ... (33% coverage'"; grep -F "Based on" "$OUT_FILE"; exit 1; }
+grep -qF "1 of 3 substantive bot reviews carried the roster marker (33%" "$OUT_FILE" \
+    || { echo "FAIL scenario 19: caption missing '1 of 3 ... (33%'"; grep -F "carried the roster marker" "$OUT_FILE"; exit 1; }
 
 unset MOCK_PULLS_COMMITS_FILE
 
@@ -700,16 +704,16 @@ export MOCK_PULLS_COMMITS_FILE="$TMPDIR_SMOKE/commits.tsv"
 run_driver
 
 # Header includes coverage caption.
-grep -qE 'Based on [0-9]+ of [0-9]+' "$OUT_FILE" \
-    || { echo "FAIL scenario 20: missing 'Based on N of M' caption"; cat "$OUT_FILE"; exit 1; }
+grep -qE '[0-9]+ of [0-9]+ substantive bot reviews carried the roster marker' "$OUT_FILE" \
+    || { echo "FAIL scenario 20: missing 'N of M ... carried the roster marker' caption"; cat "$OUT_FILE"; exit 1; }
 
 # Header row pins all 6 operator-facing column labels in their rendered order.
 grep -qF '| Cited | Edited | Blocking | Medium | Low+Nit | Open |' "$OUT_FILE" \
     || { echo "FAIL scenario 20: header missing one of: Cited|Edited|Blocking|Medium|Low+Nit|Open"; cat "$OUT_FILE"; exit 1; }
 
 # Per-repo coverage subtable is present with the test-org/bakeoff-probe row.
-grep -qE '\*\*Per-repo coverage\*\*' "$OUT_FILE" \
-    || { echo "FAIL scenario 20: missing **Per-repo coverage** header"; cat "$OUT_FILE"; exit 1; }
+grep -qF '**Per-repo coverage (last 720 h walk)**' "$OUT_FILE" \
+    || { echo "FAIL scenario 20: missing **Per-repo coverage (last 720 h walk)** header"; cat "$OUT_FILE"; exit 1; }
 grep -qE '\| `test-org/bakeoff-probe` \| 4 \| 4 \| 100%' "$OUT_FILE" \
     || { echo "FAIL scenario 20: per-repo row missing or wrong: expected 4/4/100% for test-org/bakeoff-probe"; cat "$OUT_FILE"; exit 1; }
 
@@ -889,13 +893,13 @@ ROW=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE special
 unset MOCK_PULLS_COMMITS_FILE MOCK_COMMIT_FILES_DIR
 
 # ---- scenario 28: out-of-window comment returned by since= filter is rejected by .created_at fence ----
-echo "    scenario 28: comment with created_at older than WINDOW_DAYS is rejected even when returned by since=..."
+echo "    scenario 28: comment with created_at older than REWALK_HOURS is rejected even when returned by since=..."
 rm -f "$DB_FILE"
 TS_OLD=$(date -u -d '60 days ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
         || date -u -v "-60d" +%Y-%m-%dT%H:%M:%SZ)
 TS_RECENT=$(hours_ago 50)
 
-# Two reviews — one with created_at 60 days ago (outside WINDOW_DAYS=30), one
+# Two reviews — one with created_at 60 days ago (outside REWALK_HOURS=720), one
 # with created_at 50h ago (in window). GitHub's since= filter is updated_at-
 # based; the stub returns BOTH since it doesn't filter by created_at. The
 # walker's jq predicate must reject the old one via the .created_at >=
@@ -921,6 +925,234 @@ NEW_PUB=$(sqlite3 "$DB_FILE" "SELECT published FROM specialist_runs WHERE commen
 COV=$(sqlite3 "$DB_FILE" "SELECT reviews_total_in_window || '|' || reviews_with_marker_in_window FROM walks WHERE repo='test-org/bakeoff-probe';")
 [ "$COV" = "1|1" ] || { echo "FAIL scenario 28: coverage '$COV' expected '1|1' (out-of-window review must NOT count)"; exit 1; }
 
+unset MOCK_PULLS_COMMITS_FILE
+
+# ---- scenario 29: walker/renderer window split — walker sees 2, scorecard renders 1 ----
+echo "    scenario 29: REWALK_HOURS=720 vs SCORECARD_DAYS=14 — walker counts both reviews, scorecard renders only the recent one..."
+rm -f "$DB_FILE"
+
+# Review A: 20 days (480h) ago — inside walker window (720h) but outside scorecard (14d = 336h).
+# Review B: 2 days (48h) ago — inside both windows.
+TS_OLD_29=$(hours_ago 480)
+TS_RECENT_29=$(hours_ago 48)
+
+{ build_bot_review 190 190 "$TS_OLD_29" tests \
+    '1. [blocking] [from: tests] [tests] old-review. Files: src/old.py. Edit: fix it.'
+  build_bot_review 191 191 "$TS_RECENT_29" tests \
+    '1. [blocking] [from: tests] [tests] recent-review. Files: src/new.py. Edit: fix it.'
+} | jq -s . > "$MOCK_COMMENTS_FILE"
+printf 'src/old.py\t1\t0\nsrc/new.py\t1\t0\n' > "$MOCK_PULLS_FILES_FILE"
+: > "$TMPDIR_SMOKE/commits-29.tsv"
+export MOCK_PULLS_COMMITS_FILE="$TMPDIR_SMOKE/commits-29.tsv"
+
+# Run with the production-default split: walker 30d, scorecard 14d.
+REWALK_HOURS=720 SCORECARD_DAYS=14 bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null 2>&1
+
+# Walker should have counted BOTH reviews (both inside 720h window).
+WALKER_COV=$(sqlite3 "$DB_FILE" "SELECT reviews_with_marker_in_window FROM walks WHERE repo='test-org/bakeoff-probe';")
+[ "$WALKER_COV" = "2" ] || { echo "FAIL scenario 29: walker coverage '$WALKER_COV' expected '2' (both reviews in 720h window)"; cat "$OUT_FILE"; exit 1; }
+
+# Renderer's SCORECARD_DAYS=14 horizon must exclude the 20-day-old review.
+# Per-specialist table row for 'tests' must show Reviews=1 (only 48h review in window).
+if ! grep -qE '^\| tests \| +1 \|' "$OUT_FILE"; then
+    echo "FAIL scenario 29: expected '| tests | 1 |' in per-specialist table (only recent review in 14d scorecard)"
+    cat "$OUT_FILE"
+    exit 1
+fi
+
+unset MOCK_PULLS_COMMITS_FILE
+
+# ---- scenario 30: bare defaults — REWALK_HOURS=24, SCORECARD_DAYS=14 unset ----
+# Existing scenarios pin both vars to wider values to keep legacy fixtures in window,
+# so the production-default contract is otherwise untested. This scenario runs the
+# driver with both vars explicitly removed from the environment (env -u) and asserts:
+#   1. Rendered header says "last 14 days"  (SCORECARD_DAYS default)
+#   2. Coverage heading says "last 24 h walk"  (REWALK_HOURS default)
+echo "    scenario 30: bare defaults (REWALK_HOURS=24, SCORECARD_DAYS=14) — header + coverage label..."
+rm -f "$DB_FILE"
+
+# One bot review 2h ago — safely inside the default 24h walker window.
+TS_30=$(hours_ago 2)
+build_bot_review 200 200 "$TS_30" tests \
+    '1. [blocking] [from: tests] [tests] default-window probe. Files: src/probe.py. Edit: fix it.' \
+    | jq -s . > "$MOCK_COMMENTS_FILE"
+printf 'src/probe.py\t1\t0\n' > "$MOCK_PULLS_FILES_FILE"
+: > "$TMPDIR_SMOKE/commits-30.tsv"
+export MOCK_PULLS_COMMITS_FILE="$TMPDIR_SMOKE/commits-30.tsv"
+
+# Run with BOTH knobs absent — uses the script defaults (24 / 14).
+env -u REWALK_HOURS -u SCORECARD_DAYS bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null 2>&1
+
+# Header must reflect the 14-day default scorecard horizon.
+grep -qF '# Specialist bake-off — last 14 days' "$OUT_FILE" \
+    || { echo "FAIL scenario 30: default header missing 'last 14 days'"; cat "$OUT_FILE"; exit 1; }
+
+# Coverage heading must reflect the 24h default walk window.
+# (total_reviews > 0 because the review above landed a specialist_runs row.)
+grep -qF '**Per-repo coverage (last 24 h walk)**' "$OUT_FILE" \
+    || { echo "FAIL scenario 30: coverage heading missing '(last 24 h walk)' under defaults"; cat "$OUT_FILE"; exit 1; }
+
+unset MOCK_PULLS_COMMITS_FILE
+
+# ---- scenario 31: fetch-start watermark regression guard ----
+# Locks in the contract that walks.last_walked_at is captured BEFORE the
+# gh api comments fetch — not after. Stubs date(1) on PATH with a counter
+# file: first bare invocation returns T_PRE, all subsequent ones return T_POST.
+# -d / -v forms pass through to the real binary so the renderer's window
+# math still works. If a future change moves walk_started_at=$(date -u ...) to
+# AFTER the fetch (or restores an internal date -u inside set_repo_coverage),
+# this scenario fails loudly: walks.last_walked_at would equal T_POST instead
+# of T_PRE.
+echo "    scenario 31: fetch-start watermark — walks.last_walked_at equals pre-fetch timestamp..."
+rm -f "$DB_FILE"
+
+DATE_STUB_PRE="2026-05-18T20:00:00Z"
+DATE_STUB_POST="2026-05-18T20:00:10Z"
+DATE_STUB_COUNTER="$TMPDIR_SMOKE/date-stub-counter"
+
+# Build a dedicated stub dir so we can remove it cleanly without touching
+# STUB_BIN (which holds the gh stub used by all other scenarios).
+DATE_STUB_DIR="$TMPDIR_SMOKE/date-stub"
+mkdir -p "$DATE_STUB_DIR"
+
+cat > "$DATE_STUB_DIR/date" <<'DATESTUB'
+#!/bin/bash
+# Pass through -d / -v invocations to the real date binary — these are
+# the renderer's window-math calls (e.g. date -u -d "14 days ago" ...).
+# Only intercept the bare `date -u +%FT%TZ` form used for walk timestamps.
+for arg in "$@"; do
+    case "$arg" in
+        -d|-v|--date=*) exec /bin/date "$@" ;;
+    esac
+done
+count=$(cat "$DATE_STUB_COUNTER" 2>/dev/null || echo 0)
+echo $((count + 1)) > "$DATE_STUB_COUNTER"
+if [ "$count" = "0" ]; then
+    echo "$DATE_STUB_PRE"
+else
+    echo "$DATE_STUB_POST"
+fi
+DATESTUB
+chmod +x "$DATE_STUB_DIR/date"
+
+# One bot review 2h ago — safely inside any walker window.
+TS_31=$(hours_ago 2)
+build_bot_review 210 210 "$TS_31" tests \
+    '1. [blocking] [from: tests] [tests] watermark probe. Files: src/watermark.py. Edit: fix it.' \
+    | jq -s . > "$MOCK_COMMENTS_FILE"
+printf 'src/watermark.py\t1\t0\n' > "$MOCK_PULLS_FILES_FILE"
+: > "$TMPDIR_SMOKE/commits-31.tsv"
+export MOCK_PULLS_COMMITS_FILE="$TMPDIR_SMOKE/commits-31.tsv"
+
+rm -f "$DATE_STUB_COUNTER"
+export DATE_STUB_PRE DATE_STUB_POST DATE_STUB_COUNTER
+PATH="$DATE_STUB_DIR:$PATH" bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null 2>&1
+
+GOT_31=$(sqlite3 "$DB_FILE" "SELECT last_walked_at FROM walks WHERE repo='test-org/bakeoff-probe';")
+[ "$GOT_31" = "$DATE_STUB_PRE" ] || {
+    echo "FAIL scenario 31: walks.last_walked_at = '$GOT_31', expected '$DATE_STUB_PRE'"
+    echo "  (regression — walk_started_at stamp captured AFTER fetch instead of BEFORE)"
+    exit 1
+}
+
+rm -rf "$DATE_STUB_DIR"
+unset MOCK_PULLS_COMMITS_FILE DATE_STUB_PRE DATE_STUB_POST DATE_STUB_COUNTER
+
+# ---- scenario 32: operator-seeded space-format watermark normalizes correctly ----
+# Regression for round-4 blocker: an operator who runs the documented deploy
+# step (sqlite3 ... datetime('now')) writes last_walked_at in SQLite's space-
+# separated format ("2026-05-18 23:00:00"). Without strftime normalization on
+# read, that value lex-sorts before an ISO rewalk_floor on the SAME calendar
+# day (ASCII space 0x20 < T 0x54), so the buggy comparison
+#   "2026-05-18 23:00:00" < "2026-05-18T20:00:00Z"  (REWALK_HOURS=3)
+# yields TRUE, and window_floor is set to the seeded space-format value instead
+# of rewalk_floor.
+#
+# Determinism: stubs `date -u -d "3 hours ago" ...` to return a FIXED same-day
+# ISO value (2026-05-18T20:00:00Z) via the PATH seam. The seeded watermark is
+# also a literal (2026-05-18 23:00:00 space-format). Pure literals — no
+# wall-clock dependency, so the test exercises the bug regardless of when it
+# runs (including the 00:00–02:59 UTC window where live datetime('now') and
+# live date-3h cross calendar days and the bug wouldn't fire).
+#
+# The critical observable: with the bug, window_floor = the seeded space-format
+# value → log reads "scanning ... since 2026-05-18 23:00:00 ..." → sed captures
+# "2026-05-18" (stops at space) ≠ rewalk stub value.
+# With the fix: normalized last_walked = 2026-05-18T23:00:00Z > rewalk stub
+# 2026-05-18T20:00:00Z → comparison FALSE → window_floor = rewalk_floor (ISO)
+# → log reads "scanning ... since 2026-05-18T20:00:00Z".
+echo "    scenario 32: operator-seeded space-format watermark normalizes correctly (strftime fix)..."
+rm -f "$DB_FILE" "$LOG_FILE"
+
+# Switch the tracked repo to normalize-probe so we have an isolated DB state.
+cat > "$STATE_DIR/repos.conf" <<'CONF32'
+REPOS=("test-org/normalize-probe")
+CONF32
+
+# A bot review created 1h ago — well within REWALK_HOURS=3.
+TS_32=$(hours_ago 1)
+build_bot_review 320 320 "$TS_32" tests \
+    '1. [blocking] [from: tests] [tests] normalize probe. Files: src/probe.py. Edit: fix it.' \
+    | jq -s . > "$MOCK_COMMENTS_FILE"
+printf 'src/probe.py\t1\t0\n' > "$MOCK_PULLS_FILES_FILE"
+: > "$TMPDIR_SMOKE/commits-32.tsv"
+export MOCK_PULLS_COMMITS_FILE="$TMPDIR_SMOKE/commits-32.tsv"
+
+# Seed the walks table with a LITERAL space-format watermark — mirrors the
+# operator deploy SQL: sqlite3 ... "UPDATE walks SET last_walked_at = datetime('now');"
+# datetime('now') returns "YYYY-MM-DD HH:MM:SS" (no T, no Z), not ISO 8601.
+# Using a fixed literal makes the test independent of wall-clock.
+. "$REPO_ROOT/lib/bakeoff-store.sh"
+store_init "$DB_FILE"
+sqlite3 "$DB_FILE" "INSERT INTO walks (repo, last_walked_at, reviews_total_in_window, reviews_with_marker_in_window) VALUES ('test-org/normalize-probe', '2026-05-18 23:00:00', 0, 0);"
+
+# Build a date stub: intercept ONLY the walker's rewalk_floor query
+# `date -u -d "3 hours ago" +...` and return a fixed same-day ISO value.
+# Everything else (bare date -u +%FT%TZ for walk_started_at, the renderer's
+# date -u -d "$SCORECARD_DAYS days ago", etc.) passes through to real /bin/date.
+DATE_STUB_32_DIR="$TMPDIR_SMOKE/date-stub-32"
+mkdir -p "$DATE_STUB_32_DIR"
+cat > "$DATE_STUB_32_DIR/date" <<'DATESTUB32'
+#!/bin/bash
+# Intercept: date -u -d "3 hours ago" +<fmt>  (walker's rewalk_floor call)
+# Return a fixed same-day ISO value so the space-vs-T comparison is exercised
+# regardless of what the real wall clock says.
+if [ "$1" = "-u" ] && [ "$2" = "-d" ] && [ "$3" = "3 hours ago" ]; then
+    echo "2026-05-18T20:00:00Z"
+    exit 0
+fi
+exec /bin/date "$@"
+DATESTUB32
+chmod +x "$DATE_STUB_32_DIR/date"
+
+# Run with REWALK_HOURS=3 (arg that produces the "3 hours ago" -d form the stub
+# intercepts) and date stub on PATH. With the strftime fix:
+#   normalized last_walked = 2026-05-18T23:00:00Z
+#   rewalk_floor (stub)    = 2026-05-18T20:00:00Z
+#   last_walked > rewalk_floor → comparison FALSE → window_floor = rewalk_floor
+# Without the fix:
+#   last_walked = "2026-05-18 23:00:00" (raw space-format)
+#   lex compare: "2026-05-18 " < "2026-05-18T" → TRUE → window_floor = seeded value
+PATH="$DATE_STUB_32_DIR:$PATH" REWALK_HOURS=3 bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null 2>&1
+
+# Assertion: log must show the rewalk_floor stub value as window_floor.
+# A regression to non-normalized read would log the seeded space-format value
+# ("2026-05-18 23:00:00"), causing sed to capture only "2026-05-18" (stops at
+# space) — definitively not the rewalk stub.
+FLOOR_LOGGED_32=$(grep "scanning test-org/normalize-probe since" "$LOG_FILE" \
+    | sed 's/.*since \([^ ]*\) .*/\1/' | tail -1)
+[ "$FLOOR_LOGGED_32" = "2026-05-18T20:00:00Z" ] || {
+    echo "FAIL scenario 32: window_floor in log was '$FLOOR_LOGGED_32', expected '2026-05-18T20:00:00Z' (strftime normalization regressed?)"
+    grep "scanning test-org/normalize-probe" "$LOG_FILE" || true
+    exit 1
+}
+
+# Restore the default tracked repo for any future scenarios.
+cat > "$STATE_DIR/repos.conf" <<'CONF'
+REPOS=("test-org/bakeoff-probe")
+CONF
+
+rm -rf "$DATE_STUB_32_DIR"
 unset MOCK_PULLS_COMMITS_FILE
 
 echo "PASS"

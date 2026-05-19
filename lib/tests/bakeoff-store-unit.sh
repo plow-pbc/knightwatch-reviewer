@@ -46,17 +46,17 @@ COV=$(_coverage "$DB" srosro/repo)
 [ "$COV" = "0|0" ] || { echo "FAIL: coverage default '$COV' expected '0|0'"; exit 1; }
 
 echo "  coverage: set_repo_coverage round-trips..."
-set_repo_coverage "$DB" srosro/repo 42 17
+set_repo_coverage "$DB" srosro/repo 42 17 "$(date -u +%FT%TZ)"
 COV=$(_coverage "$DB" srosro/repo)
 [ "$COV" = "42|17" ] || { echo "FAIL: coverage round-trip '$COV' expected '42|17'"; exit 1; }
 
 echo "  coverage: set is upsert (overwrites prior value)..."
-set_repo_coverage "$DB" srosro/repo 100 50
+set_repo_coverage "$DB" srosro/repo 100 50 "$(date -u +%FT%TZ)"
 COV=$(_coverage "$DB" srosro/repo)
 [ "$COV" = "100|50" ] || { echo "FAIL: coverage overwrite '$COV' expected '100|50'"; exit 1; }
 
 echo "  coverage: set_repo_coverage on a fresh repo creates the walks row..."
-set_repo_coverage "$DB" srosro/other-repo 5 3
+set_repo_coverage "$DB" srosro/other-repo 5 3 "$(date -u +%FT%TZ)"
 COV=$(_coverage "$DB" srosro/other-repo)
 [ "$COV" = "5|3" ] || { echo "FAIL: coverage fresh-repo '$COV' expected '5|3'"; exit 1; }
 
@@ -296,5 +296,13 @@ ROW=$(sqlite3 "$DB8" "SELECT comment_id, specialist FROM specialist_runs;")
 # Verify the new column defaults to '' for the migrated row.
 SEV=$(sqlite3 "$DB8" "SELECT max_severity FROM specialist_runs WHERE comment_id=100;")
 [ "$SEV" = "" ] || { echo "FAIL: migrated row should have empty max_severity, got '$SEV'"; exit 1; }
+
+echo "  coverage: set_repo_coverage stores caller-supplied timestamp (overwrites on re-call)..."
+T1=2026-05-18T20:00:00Z
+T2=2026-05-18T20:00:10Z
+set_repo_coverage "$DB" srosro/refresh-repo 1 1 "$T1"
+set_repo_coverage "$DB" srosro/refresh-repo 2 2 "$T2"
+SECOND=$(sqlite3 "$DB" "SELECT last_walked_at FROM walks WHERE repo='srosro/refresh-repo';")
+[ "$SECOND" = "$T2" ] || { echo "FAIL: last_walked_at not overwritten on re-call (got '$SECOND', expected '$T2')"; exit 1; }
 
 echo "PASS"

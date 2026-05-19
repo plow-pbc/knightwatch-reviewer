@@ -241,6 +241,8 @@ MOCK_TIMERS_ENABLED=1 run_install "$SHARED_OVERLAY/install.sh" || { echo "FAIL s
 [ "$(count_stub 'SYSTEMCTL daemon-reload')" = "0" ] || { echo "FAIL scenario 2: expected 0 daemon-reloads on rerun"; cat "$STUB_LOG"; exit 1; }
 # No enable --now (timers already enabled+active per stub)
 [ "$(count_stub 'SYSTEMCTL enable --now')" = "0" ] || { echo "FAIL scenario 2: expected 0 enable --now on rerun"; cat "$STUB_LOG"; exit 1; }
+# No restarts (CHANGED=0 when nothing differs — the [[ $CHANGED -gt 0 ]] gate holds)
+[ "$(count_stub 'SYSTEMCTL restart')" = "0" ] || { echo "FAIL scenario 2: expected 0 restarts on no-op rerun, got $(count_stub 'SYSTEMCTL restart')"; cat "$STUB_LOG"; exit 1; }
 
 # --- Scenario 3: new unit added → only that one installs+enables -----------
 echo "  scenario 3: drop a new unit into systemd/ — only that one is copied + enabled..."
@@ -327,5 +329,11 @@ n_cp="$(count_stub 'SUDO cp')"
 # Existing timers should NOT have been re-enabled (they were already
 # enabled+active per MOCK_TIMERS_ENABLED).
 [ "$(count_stub 'SYSTEMCTL enable --now pr-reviewer.timer')" = "0" ] || { echo "FAIL scenario 3: existing pr-reviewer.timer was re-enabled despite already being active"; cat "$STUB_LOG"; exit 1; }
+# All already-active production timers (PROD_TIMERS) must have been restarted
+# because CHANGED > 0 (3 new unit files were copied). The new fakenew.timer
+# took the enable --now path (not yet active per MOCK_NEWLY_ADDED_TIMERS), so
+# it does NOT contribute a restart — only the existing active timers do.
+EXPECTED_RESTARTS="${#PROD_TIMERS[@]}"
+[ "$(count_stub 'SYSTEMCTL restart')" = "$EXPECTED_RESTARTS" ] || { echo "FAIL scenario 3: expected $EXPECTED_RESTARTS restarts (all existing active timers), got $(count_stub 'SYSTEMCTL restart')"; cat "$STUB_LOG"; exit 1; }
 
 echo "  PASS (3 scenarios: first-run, idempotent-rerun, new-unit-incremental-enables-new-timer)"

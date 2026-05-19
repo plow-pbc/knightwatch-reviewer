@@ -1,19 +1,26 @@
 #!/bin/bash
-# Hourly: walk new GitHub state into ~/.pr-reviewer/bakeoff.db and
+# Daily: walk new GitHub state into ~/.pr-reviewer/bakeoff.db and
 # regenerate ~/.pr-reviewer/specialist-bakeoff.md.
 #
 # Architecture: walker (writes to SQLite store) → reporter (queries the
-# store, renders markdown). Walker fetches the full WINDOW_DAYS comment
-# window every cron so every in-window review gets edited_after re-
-# evaluated against the current commit graph — an older in-window
-# review whose post-review commit landed between cron runs must still
-# get its flag flipped/cleared, which an incremental-since-watermark
-# fetch would miss once newer reviews advance the watermark past it.
+# store, renders markdown). Per-repo, the walker fetches comments since
+# min(REWALK_HOURS_ago, last_walked_at) — covers new comments since the
+# last cron AND re-evaluates edited_after on reviews from the last
+# REWALK_HOURS. Tradeoff: an edit landing >REWALK_HOURS after a review
+# (on a slow-moving PR) won't flip edited_after — accepted for the
+# ~30x reduction in steady-state fetch volume vs the prior full-window
+# every-cron scan. Renderer reads SCORECARD_DAYS of accumulated DB
+# state, independent of walker behavior.
 set -euo pipefail
 [ -n "${BASH_VERSION:-}" ] || { echo "FATAL: bash required"; exit 1; }
 
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
-WINDOW_DAYS="${WINDOW_DAYS:-30}"
+# REWALK_HOURS bounds the walker's per-repo comment-fetch floor (with
+# last_walked_at as the further-back fallback for missed-cron backfill).
+# SCORECARD_DAYS bounds the renderer's scorecard horizon — read from the
+# persistent store, independent of walker state.
+REWALK_HOURS="${REWALK_HOURS:-24}"
+SCORECARD_DAYS="${SCORECARD_DAYS:-14}"
 DB_FILE="${DB_FILE:-$STATE_DIR/bakeoff.db}"
 OUT_FILE="${OUT_FILE:-$STATE_DIR/specialist-bakeoff.md}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/bakeoff.log}"
@@ -45,9 +52,31 @@ fetch_failures=0
 
 for repo in "${REPOS[@]}"; do
     repo_failures=0
-    window_floor=$(date -u -d "$WINDOW_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
-                  || date -u -v "-${WINDOW_DAYS}d" +%Y-%m-%dT%H:%M:%SZ)
-    log "scanning $repo since $window_floor (full window — every cron re-evaluates edited_after)..."
+    # Capture the walk's start time BEFORE any gh fetch — this becomes the
+    # next cron's window_floor, so the fetch round-trip can't create a blind
+    # window for comments posted during it. Re-stamping at end-of-walk would
+    # skip everything created between fetch-start and stamp time, forever.
+    walk_started_at=$(date -u +%FT%TZ)
+    rewalk_floor=$(date -u -d "$REWALK_HOURS hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+                  || date -u -v "-${REWALK_HOURS}H" +%Y-%m-%dT%H:%M:%SZ)
+    # strftime normalizes both ISO (the walker's own writes) and
+    # SQLite's space-separated datetime('now') format into a single
+    # ISO shape. Without normalization, a same-day operator-seeded
+    # space-format watermark would lex-sort before an ISO rewalk_floor
+    # (ASCII space < T), making the watermark falsely look "earlier"
+    # and skipping comments between the true REWALK_HOURS floor and
+    # the manual stamp.
+    last_walked=$(sqlite3 "$DB_FILE" "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', last_walked_at) FROM walks WHERE repo='$repo';")
+    # Walk floor: the EARLIER of (REWALK_HOURS_ago, last_walked_at). The
+    # rewalk floor refreshes edited_after on recent reviews; last_walked_at
+    # extends the scan further back when crons were missed. ISO8601 strings
+    # sort lexicographically the same as chronologically.
+    if [ -n "$last_walked" ] && [ "$last_walked" \< "$rewalk_floor" ]; then
+        window_floor="$last_walked"
+    else
+        window_floor="$rewalk_floor"
+    fi
+    log "scanning $repo since $window_floor (rewalk_floor=$rewalk_floor last_walked=${last_walked:-never})..."
 
     comments_json=$(gh api --paginate \
         "repos/$repo/issues/comments?since=$window_floor" \
@@ -287,14 +316,18 @@ for repo in "${REPOS[@]}"; do
     # NOT a permissive substring check, which would falsely count bodies
     # discussing the marker token in prose. Drives the snapshot's
     # "based on N of M" caption.
+    # Coverage uses rewalk_floor (not window_floor) so the caption's
+    # "(last $REWALK_HOURS h walk)" label stays accurate even when missed
+    # crons widen the scan back to last_walked_at — the metric becomes a
+    # clean rolling REWALK_HOURS rate, not a variable backfill width.
     if [ "$repo_failures" -eq 0 ]; then
         total_in_window=$(printf '%s' "$comments_json" \
-            | jq --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" --arg window_floor "$window_floor" \
+            | jq --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" --arg window_floor "$rewalk_floor" \
                  "[.[] | select($SUBSTANTIVE_REVIEW_JQ)] | length")
         with_marker_in_window=$(printf '%s' "$comments_json" \
-            | jq --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" --arg roster "$ROSTER_MARKER_REGEX" --arg window_floor "$window_floor" \
+            | jq --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" --arg roster "$ROSTER_MARKER_REGEX" --arg window_floor "$rewalk_floor" \
                  "[.[] | select($SUBSTANTIVE_REVIEW_JQ and (.body | test(\$roster)))] | length")
-        set_repo_coverage "$DB_FILE" "$repo" "$total_in_window" "$with_marker_in_window"
+        set_repo_coverage "$DB_FILE" "$repo" "$total_in_window" "$with_marker_in_window" "$walk_started_at"
     fi
 done
 
@@ -307,8 +340,8 @@ if [ "$fetch_failures" -gt 0 ]; then
 fi
 
 # ---- reporter: render markdown from store ----
-window_iso=$(date -u -d "$WINDOW_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
-            || date -u -v "-${WINDOW_DAYS}d" +%Y-%m-%dT%H:%M:%SZ)
+window_iso=$(date -u -d "$SCORECARD_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+            || date -u -v "-${SCORECARD_DAYS}d" +%Y-%m-%dT%H:%M:%SZ)
 total_reviews=$(sqlite3 "$DB_FILE" \
     "SELECT COUNT(DISTINCT comment_id) FROM specialist_runs WHERE ran_at >= '$window_iso';")
 
@@ -322,14 +355,14 @@ else
 fi
 
 {
-    echo "# Specialist bake-off — last $WINDOW_DAYS days"
+    echo "# Specialist bake-off — last $SCORECARD_DAYS days"
     echo
-    echo "_Generated $(date -u +%FT%TZ). Based on $coverage_with_marker of $coverage_total substantive bot reviews in window (${coverage_pct}% coverage; reviews without the roster marker are not measured). Source: \`$DB_FILE\`._"
+    echo "_Generated $(date -u +%FT%TZ). Scorecard horizon: last $SCORECARD_DAYS days from \`$DB_FILE\`. Per-repo coverage below reflects the last $REWALK_HOURS h walker pass: $coverage_with_marker of $coverage_total substantive bot reviews carried the roster marker (${coverage_pct}%; unmarked reviews are not scored)._"
     echo
     if [ "$total_reviews" = "0" ]; then
         echo "_Awaiting first reviews with the roster marker — table populates as new reviews land._"
     else
-        echo "**Per-repo coverage**"
+        echo "**Per-repo coverage (last $REWALK_HOURS h walk)**"
         echo
         echo "| Repo | With marker | Total | Coverage |"
         echo "|---|---:|---:|---:|"
