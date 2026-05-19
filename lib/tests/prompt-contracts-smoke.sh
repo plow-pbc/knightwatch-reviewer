@@ -292,8 +292,8 @@ assert_grep "simplification.md should anchor on the inferred-intent scratch arti
 # HEAD. Two competing "is the PR converging?" signals (loc-trend trichotomy,
 # BCR-fired-N-rounds counter) collapsed into ONE: when the carried-forward
 # [blocking] set has not strictly decreased over the last 3 rounds, Path 2
-# halts the probe loop. These token + negative fences catch accidental
-# re-introduction of any of the deleted patterns.
+# fires and reframes the Probes block through the stall lens. These token +
+# negative fences catch accidental re-introduction of any of the deleted patterns.
 
 echo "  asserting carry-forward rule cites Files: shape at HEAD in aggregator.md..."
 # Positive token fences — the rule pivots on the cited Files: field and
@@ -325,18 +325,19 @@ echo "  asserting Path 2 trigger uses HEAD-anchored strict-decrease + skips paus
 assert_grep "Path 2 trigger should use the strict-decrease test" \
     "count[N] < count[N-1]" prompts/aggregator.md
 assert_grep "Path 2 trigger should skip pause rounds when selecting the 3-round window" \
-    "Skip Path 2 pause rounds" prompts/aggregator.md
+    "Skip legacy Path 2 pause rounds" prompts/aggregator.md
 # Positive fences: without non-zero guards on BOTH endpoints, the
 # strict-decrease test admits two false-positive shapes that would
-# fire the Path 2 halt action and suppress the Probes block.
+# fire Path 2 and reframe the Probes block under the stall lens when the PR is actually healthy.
 #   - count[N] > 0 closes the 0 → 0 → 0 hole (vacuous strict-decrease
 #     on a healthy PR — observed regression: plow-pbc/seed-autoresearch
 #     PR #3, 8 re-reviews at 0 blockers, "Why this PR isn't converging?"
 #     callout shipped on round 3).
 #   - count[N-2] > 0 closes the 0 → 0 → 5 hole (blockers just appeared
-#     after a clean two-round history; the halt action would suppress
-#     the very probes the author needs to see — caught by knightwatch
-#     data-integrity specialist on PR #71).
+#     after a clean two-round history; Path 2 firing would reframe
+#     the very probes the author needs to act on under the stall lens,
+#     burying fresh blockers behind a "not converging" callout — caught
+#     by knightwatch data-integrity specialist on PR #71).
 # Each fence pins the guard AS AN AND-JOINED CONJUNCT in the trigger
 # fire condition. The "AND `count[N] > 0`" / "AND `count[N-2] > 0`"
 # prefixes only render that way inside the Path 2 trigger paragraph;
@@ -347,20 +348,39 @@ assert_grep "Path 2 trigger should skip pause rounds when selecting the 3-round 
 # specialist on PR #71.
 assert_grep "Path 2 trigger fire condition must AND-join count[N] > 0 — a 0 → 0 → 0 series satisfies the strict-decrease test vacuously and would otherwise fire on healthy PRs with no blockers" \
     "AND \`count[N] > 0\`" prompts/aggregator.md
-assert_grep "Path 2 trigger fire condition must AND-join count[N-2] > 0 — a 0 → 0 → 5 series (blockers newly appeared) satisfies the strict-decrease test and would fire the halt action, suppressing the Probes block that would surface the new blockers" \
+assert_grep "Path 2 trigger fire condition must AND-join count[N-2] > 0 — a 0 → 0 → 5 series (blockers newly appeared) satisfies the strict-decrease test and would fire Path 2, reframing the Probes block under the stall lens when blockers just appeared after a clean history" \
     "AND \`count[N-2] > 0\`" prompts/aggregator.md
 
-echo "  asserting Path 2 halt action skips the Probes block in aggregator.md..."
-assert_grep "Path 2 must skip the per-angle Probes block on halt" \
+echo "  asserting Path 2 keeps the Probes block and frames it through the stall lens..."
+# When Path 2 fires, the aggregator renders the FULL review (momentum callout
+# banner + Overview + Strengths + Probes + Security + Test coverage + For AI
+# authors), with the Overview classifying probes as structural-vs-leaf through
+# the stall lens. The earlier contract suppressed the Probes block entirely —
+# that suppression was reversed because authors got the structural callout but
+# lost the leaf info they still needed to actually push fixes.
+#
+# Positive fences pin the two load-bearing wording tokens in the new Path 2
+# fire block: (a) the keep-probes directive, and (b) the stall-lens framing
+# instruction in the Overview.
+assert_grep "Path 2 must render the full Probes block, not skip it" \
+    "Render the full Probes block" prompts/aggregator.md
+assert_grep "Path 2 Overview must classify probes through the stall lens" \
+    "through the stall lens" prompts/aggregator.md
+# The "through the stall lens" token pins the broad directive but not the
+# Overview's specific job: distinguish the ONE structural-ask probe from
+# the leaf-level patches. The two tokens below pin that distinction by
+# name — without them, an aggregator could write a generic "stall lens"
+# Overview that lists probes without classifying them.
+assert_grep "Path 2 Overview must name the structural-ask probe" \
+    "structural ask" prompts/aggregator.md
+assert_grep "Path 2 Overview must call the remaining probes leaf-level" \
+    "leaf-level" prompts/aggregator.md
+# Negative fence: the prior contract (PR #66 and earlier) said "Skip the
+# per-angle Probes block entirely this round." A regression to that wording
+# would re-introduce the failure mode this PR is fixing (callout-only review
+# leaves authors without the leaf info needed to converge).
+assert_no_grep "Path 2 must not regress to 'Skip the per-angle Probes block' wording — the new contract renders the full body under the stall lens" \
     "Skip the per-angle Probes block" prompts/aggregator.md
-# Negative fence: the old Path 2 action said "Keep the local probes in
-# the **Probes** block, ranked by severity, all subject to voice posture
-# (questions over prescriptions). Not dropped — but the structural
-# callout has eaten the visual real estate." That action shipped on PR
-# #584 round 13 and was the failure-mode replicator: momentum prose
-# rendered as decoration while [blocking] BCR rendered alongside.
-assert_no_grep "Path 2 must not regress to 'Keep the local probes' action — must drop the Probes block entirely so the structural callout is the only content" \
-    "Keep the local probes" prompts/aggregator.md
 
 echo "  asserting carry-forward source picks past Path 2 pause rounds..."
 # Step 38 must walk back to the most recent review WITH a Probes block
