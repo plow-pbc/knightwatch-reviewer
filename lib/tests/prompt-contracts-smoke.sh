@@ -145,8 +145,10 @@ done
 # URL. Fixed-string match catches any executable form (regex variants
 # missed lowercase assignments + interpolated `$(...)` quoting).
 echo "  asserting linked-issue staging does NOT call 'gh issue view'..."
-assert_no_grep "lib/review-one-pr.sh must not call 'gh issue view' — linked-issue privacy regressed" \
-    'gh issue view' lib/review-one-pr.sh
+if grep -nF 'gh issue view' lib/review-one-pr.sh; then
+    echo "FAIL: lib/review-one-pr.sh calls 'gh issue view' — linked-issue privacy regressed"
+    exit 1
+fi
 
 echo "  asserting re-review loop-breaker (Path 2) in aggregator.md..."
 assert_grep "aggregator.md should reference momentum specialist output" \
