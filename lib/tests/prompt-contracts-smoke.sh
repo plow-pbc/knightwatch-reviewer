@@ -326,7 +326,7 @@ echo "  asserting Path 2 trigger uses HEAD-anchored strict-decrease + skips paus
 assert_grep "Path 2 trigger should use the strict-decrease test" \
     "count[N] < count[N-1]" prompts/aggregator.md
 assert_grep "Path 2 trigger should skip pause rounds when selecting the 3-round window" \
-    "Skip Path 2 pause rounds" prompts/aggregator.md
+    "Skip legacy Path 2 pause rounds" prompts/aggregator.md
 # Positive fences: without non-zero guards on BOTH endpoints, the
 # strict-decrease test admits two false-positive shapes that would
 # fire the Path 2 halt action and reframe the Probes block under the stall lens when the PR is actually healthy.
