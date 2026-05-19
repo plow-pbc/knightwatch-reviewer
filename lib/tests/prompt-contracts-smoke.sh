@@ -109,6 +109,14 @@ echo "  asserting common-header documents dead-code.md scratch..."
 assert_grep "common-header.md should document dead-code.md" \
     "dead-code.md" prompts/common-header.md
 
+echo "  asserting common-header carries Scope-justification contract..."
+assert_grep "common-header.md should mandate Scope-justification probes when added scope exceeds intent" \
+    "Scope-justification" prompts/common-header.md
+
+echo "  asserting common-header pins Scope-justification Q polarity (prevents inverted-advice regression)..."
+assert_grep "common-header.md must pin cut-positive Q polarity — without it a need-positive Q + 'cut X' edit re-inverts the rendered advice" \
+    "cut-positive" prompts/common-header.md
+
 # Cross-file marker: any consumer parsing the rendered Probes section
 # by `[from: <specialist>]` depends on aggregator.md owning the token format.
 echo "  asserting [from: <specialist>] attribution token in aggregator.md..."
