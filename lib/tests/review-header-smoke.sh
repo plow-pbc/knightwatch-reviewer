@@ -40,6 +40,10 @@ set -uo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=../run-dir.sh
 . "$PROJECT_ROOT/lib/run-dir.sh"
+# shellcheck source=./assert.sh
+# Sourced before local helpers so the file's own assert_contains (grep -qF)
+# overrides assert.sh's version; assert_eq is sourced from assert.sh.
+. "$PROJECT_ROOT/lib/tests/assert.sh"
 
 MARKER='<!-- knightwatch-reviewer:auto-post -->'
 # Consume the single source of truth from lib/run-dir.sh (sourced above)
@@ -132,8 +136,8 @@ echo "  asserting BOT_AI_AUTHOR_MARKER stays adjacent to auto-post marker on lin
 result=$(prepend_review_header "$BODY" "📋 First review of this PR")
 line1=$(printf '%s' "$result" | sed -n '1p')
 line2=$(printf '%s' "$result" | sed -n '2p')
-[ "$line1" = "$MARKER" ] || { echo "FAIL: line 1 is '$line1', expected auto-post marker"; exit 1; }
-[ "$line2" = "$AI_AUTHOR_MARKER" ] || { echo "FAIL: line 2 is '$line2', expected ai-author marker (must be adjacent — both invisible markers stay at top)"; exit 1; }
+assert_eq "$line1" "$MARKER" "line 1 must be auto-post marker"
+assert_eq "$line2" "$AI_AUTHOR_MARKER" "line 2 must be ai-author marker (adjacent — both invisible markers stay at top)"
 
 # Allowlist regression fence: arbitrary leading <!-- --> comments must NOT
 # be preserved as if they were trusted markers. If model output ever
@@ -146,8 +150,8 @@ result=$(prepend_review_header "$HOSTILE_BODY" "📋 First review of this PR")
 line1=$(printf '%s' "$result" | sed -n '1p')
 line2=$(printf '%s' "$result" | sed -n '2p')
 line3=$(printf '%s' "$result" | sed -n '3p')
-[ "$line1" = "$MARKER" ] || { echo "FAIL: line 1 = '$line1' (expected auto-post)"; exit 1; }
-[ "$line2" = "$AI_AUTHOR_MARKER" ] || { echo "FAIL: line 2 = '$line2' (expected ai-author)"; exit 1; }
+assert_eq "$line1" "$MARKER" "allowlist-fence: line 1 must be auto-post marker"
+assert_eq "$line2" "$AI_AUTHOR_MARKER" "allowlist-fence: line 2 must be ai-author marker"
 case "$line3" in
     "<!-- attacker injected directive -->")
         echo "FAIL: non-allowlisted HTML comment ('$line3') was preserved at top — allowlist regression"
@@ -164,8 +168,8 @@ BAKEOFF_BODY=$(printf '%s\n%s\n<!-- knightwatch-bakeoff: specialists=tests,shape
 result=$(prepend_review_header "$BAKEOFF_BODY" "📋 First review of this PR")
 line1=$(printf '%s' "$result" | sed -n '1p')
 line2=$(printf '%s' "$result" | sed -n '2p')
-[ "$line1" = "$MARKER" ] || { echo "FAIL: bakeoff marker case — line 1 is '$line1'"; exit 1; }
-[ "$line2" = "$AI_AUTHOR_MARKER" ] || { echo "FAIL: bakeoff marker case — line 2 is '$line2'"; exit 1; }
+assert_eq "$line1" "$MARKER" "bakeoff-marker case: line 1 must be auto-post marker"
+assert_eq "$line2" "$AI_AUTHOR_MARKER" "bakeoff-marker case: line 2 must be ai-author marker"
 
 echo "  one note → blockquote has just that note + final '.'..."
 result=$(prepend_review_header "$BODY" "📋 First review of this PR")
