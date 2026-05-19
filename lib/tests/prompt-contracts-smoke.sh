@@ -186,10 +186,7 @@ mapfile -t SYSTEMD_CHAIN_SCRIPTS < <(list_execstart_shell_scripts . systemd/*.se
 SYSTEMD_CHAIN_SCRIPTS+=("lib/review-one-pr.sh")
 for script in "${SYSTEMD_CHAIN_SCRIPTS[@]}"; do
     first_line=$(head -1 "$script")
-    if [[ "$first_line" != "#!/bin/bash" ]]; then
-        echo "FAIL: $script has shebang '$first_line' — must be '#!/bin/bash' (env-bash on systemd-launched/exec'd scripts is a PATH-attack vector via writable ~/.local/bin)"
-        exit 1
-    fi
+    assert_eq "$first_line" "#!/bin/bash" "$script shebang must be '#!/bin/bash' (env-bash is a PATH-attack vector via writable ~/.local/bin)"
     # Defense-in-depth: a script-level `export PATH="$HOME/.local/bin:..."`
     # would re-introduce the writable-PATH attack at the script's own
     # command-resolution boundary (timeout, gh, git, awk, etc.).
