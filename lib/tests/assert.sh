@@ -50,3 +50,26 @@ assert_empty() {
     [ -z "$1" ] && return 0
     _assert_fail "${2:-}" "$1" "(empty)"
 }
+
+assert_neq() {
+    [ "$1" != "$2" ] && return 0
+    _assert_fail "${3:-}" "$1" "not: $2"
+}
+
+assert_not_empty() {
+    [ -n "$1" ] && return 0
+    _assert_fail "${2:-}" "(empty)" "(non-empty)"
+}
+
+assert_exists() {
+    [ -e "$1" ] && return 0
+    _assert_fail "${2:-}" "$1" "(path should exist)"
+}
+
+assert_not_exists() {
+    # Treat symlinks as existing too — a dangling symlink counts as "exists"
+    # for sibling-walk safety (the symlink itself is the artifact).
+    if [ -e "$1" ] || [ -L "$1" ]; then
+        _assert_fail "${2:-}" "$1" "(path should not exist)"
+    fi
+}
