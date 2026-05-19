@@ -30,6 +30,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 . "$SCRIPT_DIR/tests/worker-smoke-helpers.sh"
+# shellcheck source=./assert.sh
+. "$SCRIPT_DIR/tests/assert.sh"
 
 TMPDIR=$(mktemp -d -t review-one-pr-sha-flow-XXXXXX)
 trap 'rm -rf "$TMPDIR"' EXIT
@@ -196,22 +198,13 @@ if [ ! -f "$META" ]; then
 fi
 
 meta_sha=$(jq -r '.sha' "$META")
-if [ "$meta_sha" != "$NEW_PR_SHA" ]; then
-    echo "FAIL: meta.json.sha = $meta_sha (expected REVIEWED_SHA $NEW_PR_SHA — orchestrator-enumerated $OLD_PR_SHA leaked through)"
-    exit 1
-fi
+assert_eq "$meta_sha" "$NEW_PR_SHA" "meta.json.sha must equal REVIEWED_SHA (not orchestrator-enumerated $OLD_PR_SHA)"
 
 meta_base=$(jq -r '.base_ref' "$META")
-if [ "$meta_base" != "main" ]; then
-    echo "FAIL: meta.json.base_ref = $meta_base (expected 'main' from gh pr view --json baseRefName)"
-    exit 1
-fi
+assert_eq "$meta_base" "main" "meta.json.base_ref must equal baseRefName from gh pr view"
 
 meta_started_at=$(jq -r '.started_at' "$META")
-if [ "$meta_started_at" != "$EXPECTED_TICK_AT" ]; then
-    echo "FAIL: meta.json.started_at = $meta_started_at (expected $EXPECTED_TICK_AT from DISPATCHER_TICK_AT env var — worker fell back to script-entry time, reopening the slash-cutoff race the PR fixes)"
-    exit 1
-fi
+assert_eq "$meta_started_at" "$EXPECTED_TICK_AT" "meta.json.started_at must come from DISPATCHER_TICK_AT (not script-entry time)"
 
 # Title sanitizer fence: control bytes from the worker-arg title must be
 # replaced with spaces before meta.json.title is written. A regression
@@ -220,10 +213,7 @@ fi
 # injection vector at prompts/common-header.md.
 meta_title=$(jq -r '.title' "$META")
 expected_title="Bad Title X"
-if [ "$meta_title" != "$expected_title" ]; then
-    echo "FAIL: meta.json.title = [$meta_title] (expected [$expected_title] — control bytes should be normalized to space at the worker boundary)"
-    exit 1
-fi
+assert_eq "$meta_title" "$expected_title" "meta.json.title must have control bytes normalized to space at worker boundary"
 
 # Mismatch log line: must record both SHAs (catches regressions where
 # the diagnostic log silently disappears).
@@ -346,10 +336,7 @@ if [ ! -f "$META2" ]; then
 fi
 
 meta_base2=$(jq -r '.base_ref' "$META2")
-if [ "$meta_base2" != "release-1.0" ]; then
-    echo "FAIL: scenario 2 — meta.json.base_ref = $meta_base2 (expected 'release-1.0')"
-    exit 1
-fi
+assert_eq "$meta_base2" "release-1.0" "scenario 2: meta.json.base_ref must equal non-default baseRefName"
 
 # Decisive assertion: the worker's full-diff.patch artifact (written
 # pre-specialist, so the missing-codex abort doesn't suppress it) must
@@ -367,10 +354,7 @@ if grep -q "release base content" "$FULL_DIFF_PATCH"; then
     echo "FAIL: scenario 2 — full-diff.patch contains release-1.0 base content (worker used wrong base — main instead of release-1.0)"
     exit 1
 fi
-if ! grep -q "PR feature" "$FULL_DIFF_PATCH"; then
-    echo "FAIL: scenario 2 — full-diff.patch missing PR-feature content"
-    exit 1
-fi
+assert_contains "$(cat "$FULL_DIFF_PATCH")" "PR feature" "scenario 2: full-diff.patch must contain PR-feature content"
 
 # Log line should NOT contain a "missing after canonical fetch" abort
 # (the round-1 finding's failure mode for non-default-base PRs).
