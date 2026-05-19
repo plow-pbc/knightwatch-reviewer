@@ -4,6 +4,8 @@
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$REPO_ROOT/lib/bakeoff-parsers.sh"
+# shellcheck source=./assert.sh
+. "$REPO_ROOT/lib/tests/assert.sh"
 
 FIX_DIR="$REPO_ROOT/lib/tests/fixtures/specialist-bakeoff"
 
@@ -44,17 +46,11 @@ fi
 echo "  extract_memorize_attributions: quoted memorize names simplification..."
 got=$(extract_memorize_attributions < "$FIX_DIR/memorize-quoted.md")
 want="simplification"
-if [ "$got" != "$want" ]; then
-    echo "FAIL: memorize-quoted should attribute to simplification, got '$got'"
-    exit 1
-fi
+assert_eq "$got" "$want" "memorize-quoted should attribute to simplification"
 
 echo "  extract_memorize_attributions: unquoted memorize attributes to nobody..."
 got=$(extract_memorize_attributions < "$FIX_DIR/memorize-no-quote.md") || true
-if [ -n "$got" ]; then
-    echo "FAIL: memorize-no-quote should produce no attribution, got '$got'"
-    exit 1
-fi
+assert_empty "$got" "memorize-no-quote should produce no attribution"
 
 echo "  probe_cited_paths: Files-only extract; Edit clause excluded..."
 input=$(cat <<'PROBES'
@@ -373,10 +369,7 @@ if ! grep -q '^| aggregator ' "$OUT_FILE"; then
 fi
 # loved_positive is persisted whether the row renders or not.
 LOVED_AGG=$(sqlite3 "$DB_FILE" "SELECT loved_positive FROM specialist_runs WHERE specialist='aggregator' AND comment_id=1;")
-if [ "$LOVED_AGG" != "1" ]; then
-    echo "FAIL scenario 2: aggregator loved_positive not persisted (got '$LOVED_AGG')"
-    exit 1
-fi
+assert_eq "$LOVED_AGG" "1" "scenario 2: aggregator loved_positive not persisted"
 
 # ---- scenario 3: spoof — non-bot user posts marker → must NOT count ----
 echo "    scenario 3: spoof marker from non-bot user → not counted..."
@@ -459,7 +452,7 @@ print(json.dumps([{
 PYEOF
 run_driver
 ROW_COUNT=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM specialist_runs;")
-[ "$ROW_COUNT" = "0" ] || { echo "FAIL scenario 6: marker-less review created rows ($ROW_COUNT)"; exit 1; }
+assert_eq "$ROW_COUNT" "0" "scenario 6: marker-less review should not create rows"
 
 # ---- scenario 7: trusted /srosro-props after substantive review → loved_positive=1 ----
 echo "    scenario 7: trusted /srosro-props after substantive review → loved_positive=1..."
@@ -471,7 +464,7 @@ TS_FEEDBACK=$(hours_ago 479)
     | jq -s '.' > "$MOCK_COMMENTS_FILE"
 run_driver
 LOVED=$(sqlite3 "$DB_FILE" "SELECT loved_positive FROM specialist_runs WHERE specialist='tests';")
-[ "$LOVED" = "1" ] || { echo "FAIL scenario 7: srosro-props did not mark loved_positive (got '$LOVED')"; exit 1; }
+assert_eq "$LOVED" "1" "scenario 7: srosro-props should mark loved_positive=1"
 
 # ---- scenario 8: trusted /srosro-critique after substantive review → critiqued=1 ----
 echo "    scenario 8: trusted /srosro-critique after substantive review → critiqued=1..."
@@ -483,7 +476,7 @@ TS_FEEDBACK=$(hours_ago 479)
     | jq -s '.' > "$MOCK_COMMENTS_FILE"
 run_driver
 CRIT=$(sqlite3 "$DB_FILE" "SELECT critiqued FROM specialist_runs WHERE specialist='shape';")
-[ "$CRIT" = "1" ] || { echo "FAIL scenario 8: srosro-critique did not mark critiqued (got '$CRIT')"; exit 1; }
+assert_eq "$CRIT" "1" "scenario 8: srosro-critique should mark critiqued=1"
 
 # ---- scenario 9: re-running walker is idempotent (rows + flags unchanged) ----
 echo "    scenario 9: re-walk on same input is idempotent..."
@@ -491,7 +484,7 @@ echo "    scenario 9: re-walk on same input is idempotent..."
 BEFORE=$(sqlite3 "$DB_FILE" "SELECT COUNT(*), SUM(critiqued) FROM specialist_runs;")
 run_driver
 AFTER=$(sqlite3 "$DB_FILE" "SELECT COUNT(*), SUM(critiqued) FROM specialist_runs;")
-[ "$BEFORE" = "$AFTER" ] || { echo "FAIL scenario 9: re-walk changed state (before=$BEFORE after=$AFTER)"; exit 1; }
+assert_eq "$BEFORE" "$AFTER" "scenario 9: re-walk must be idempotent"
 
 # ---- scenario 11: pulls/files failure → non-zero exit, OUT_FILE preserved ----
 echo "    scenario 11: pulls/files failure → non-zero exit, OUT_FILE preserved..."
@@ -506,7 +499,7 @@ MOCK_GH_PULLS_FILES_FAIL=1 bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null 2>
     exit 1
 }
 unset MOCK_GH_PULLS_FILES_FAIL
-grep -q "SENTINEL" "$OUT_FILE" || { echo "FAIL scenario 11: OUT_FILE was overwritten despite failure"; exit 1; }
+assert_contains "$(cat "$OUT_FILE")" "SENTINEL" "scenario 11: OUT_FILE must not be overwritten on failure"
 
 # ---- scenario 12: max_severity tracks the worst severity per specialist ----
 echo "    scenario 12: max_severity = blocking when specialist emits [blocking] + [medium] probes..."
@@ -516,7 +509,7 @@ build_bot_review 1200 120 "$(hours_ago 480)" tests \
     | jq -s '.' > "$MOCK_COMMENTS_FILE"
 run_driver
 SEV=$(sqlite3 "$DB_FILE" "SELECT max_severity FROM specialist_runs WHERE specialist='tests';")
-[ "$SEV" = "blocking" ] || { echo "FAIL scenario 12: max_severity='$SEV' (expected 'blocking')"; exit 1; }
+assert_eq "$SEV" "blocking" "scenario 12: max_severity should be 'blocking' when specialist emits [blocking]"
 
 # ---- scenario 13: rewalk with PR diff no longer touching cited path → applied resets to 0 ----
 echo "    scenario 13: rewalk after PR diff stops touching cited path → applied resets..."
@@ -529,14 +522,14 @@ export MOCK_PULLS_FILES_FILE="$TMPDIR_SMOKE/pulls-files.txt"
 printf 'x.sh\t10\t2\n' > "$MOCK_PULLS_FILES_FILE"
 run_driver
 A1=$(sqlite3 "$DB_FILE" "SELECT applied, applied_added, applied_removed FROM specialist_runs WHERE specialist='shape';")
-[ "$A1" = "1|10|2" ] || { echo "FAIL scenario 13 first walk: '$A1'"; exit 1; }
+assert_eq "$A1" "1|10|2" "scenario 13 first walk: applied|+LOC|-LOC"
 
 # Second walk: PR no longer touches x.sh (force-push removed those changes).
 # Applied should reset to 0; LOC should reset to 0.
 printf 'unrelated.sh\t99\t0\n' > "$MOCK_PULLS_FILES_FILE"
 run_driver
 A2=$(sqlite3 "$DB_FILE" "SELECT applied, applied_added, applied_removed FROM specialist_runs WHERE specialist='shape';")
-[ "$A2" = "0|0|0" ] || { echo "FAIL scenario 13 rewalk: expected '0|0|0', got '$A2'"; exit 1; }
+assert_eq "$A2" "0|0|0" "scenario 13 rewalk: applied|+LOC|-LOC should reset when path no longer in diff"
 
 rm -f "$MOCK_PULLS_FILES_FILE"
 unset MOCK_PULLS_FILES_FILE
@@ -550,7 +543,7 @@ build_bot_review 1500 150 "$(hours_ago 480)" tests \
     | jq -s '.' > "$MOCK_COMMENTS_FILE"
 run_driver
 SEV=$(sqlite3 "$DB_FILE" "SELECT max_severity FROM specialist_runs WHERE specialist='tests';")
-[ "$SEV" = "nit" ] || { echo "FAIL scenario 15: max_severity='$SEV' (expected 'nit')"; exit 1; }
+assert_eq "$SEV" "nit" "scenario 15: max_severity should be 'nit' when specialist emits only [nit]"
 
 # ---- scenario 16: rewalk where pulls/files returns empty → applied resets ----
 echo "    scenario 16: empty pulls/files (force-push to empty diff) → applied resets to 0..."
@@ -563,7 +556,7 @@ export MOCK_PULLS_FILES_FILE="$TMPDIR_SMOKE/pulls-files.txt"
 printf 'x.sh\t10\t2\n' > "$MOCK_PULLS_FILES_FILE"
 run_driver
 A1=$(sqlite3 "$DB_FILE" "SELECT applied, applied_added, applied_removed FROM specialist_runs WHERE specialist='shape';")
-[ "$A1" = "1|10|2" ] || { echo "FAIL scenario 16 first walk: '$A1'"; exit 1; }
+assert_eq "$A1" "1|10|2" "scenario 16 first walk: applied|+LOC|-LOC"
 
 # Second walk: PR has zero files (force-push to empty diff). pulls/files
 # returns []. With the empty-but-successful fix, clear_applied_for_review
@@ -571,7 +564,7 @@ A1=$(sqlite3 "$DB_FILE" "SELECT applied, applied_added, applied_removed FROM spe
 : > "$MOCK_PULLS_FILES_FILE"   # empty file → stub returns []
 run_driver
 A2=$(sqlite3 "$DB_FILE" "SELECT applied, applied_added, applied_removed FROM specialist_runs WHERE specialist='shape';")
-[ "$A2" = "0|0|0" ] || { echo "FAIL scenario 16 rewalk with empty pulls/files: expected '0|0|0', got '$A2'"; exit 1; }
+assert_eq "$A2" "0|0|0" "scenario 16 rewalk: applied|+LOC|-LOC must reset on empty pulls/files"
 
 rm -f "$MOCK_PULLS_FILES_FILE"
 unset MOCK_PULLS_FILES_FILE
@@ -624,13 +617,13 @@ export MOCK_COMMIT_FILES_DIR="$TMPDIR_SMOKE/commit-files-rewalk"
 rm -f "$DB_FILE"
 run_driver
 ROW=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE specialist='tests' AND comment_id=70;")
-[ "$ROW" = "0" ] || { echo "FAIL scenario 18: pre-rewalk edited_after '$ROW' expected '0'"; exit 1; }
+assert_eq "$ROW" "0" "scenario 18: pre-rewalk edited_after should be 0 (commit has no files yet)"
 
 # Now the rewalk: post-review commit grew to touch src/a.py.
 echo "src/a.py" > "$TMPDIR_SMOKE/commit-files-rewalk/sha-after.tsv"
 run_driver
 ROW=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE specialist='tests' AND comment_id=70;")
-[ "$ROW" = "1" ] || { echo "FAIL scenario 18: post-rewalk edited_after '$ROW' expected '1'"; exit 1; }
+assert_eq "$ROW" "1" "scenario 18: post-rewalk edited_after should flip to 1 when commit now touches cited path"
 
 unset MOCK_PULLS_COMMITS_FILE MOCK_COMMIT_FILES_DIR
 
@@ -731,8 +724,7 @@ fi
 TESTS_ROW=$(grep -E '^\| tests ' "$OUT_FILE")
 [ -n "$TESTS_ROW" ] || { echo "FAIL scenario 20: tests row missing"; cat "$OUT_FILE"; exit 1; }
 SEV=$(echo "$TESTS_ROW" | awk -F' \\| ' '{print $6"|"$7"|"$8"|"$9}')
-[ "$SEV" = "1|1|1|1" ] \
-    || { echo "FAIL scenario 20: tests severity (Blocking|Medium|Low+Nit|Open)='$SEV' expected '1|1|1|1' (row: $TESTS_ROW)"; exit 1; }
+assert_eq "$SEV" "1|1|1|1" "scenario 20: tests severity columns (Blocking|Medium|Low+Nit|Open) must each be 1"
 
 unset MOCK_PULLS_COMMITS_FILE
 
@@ -749,7 +741,7 @@ setup_edited_after_one_commit 110 70 "$TS_REVIEW_21" src/a.py sha-after "$TS_COM
 echo SENTINEL > "$OUT_FILE"
 run_driver
 ROW=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE specialist='tests' AND comment_id=110;")
-[ "$ROW" = "1" ] || { echo "FAIL scenario 21 (setup): pre-fail edited_after '$ROW' expected '1'"; exit 1; }
+assert_eq "$ROW" "1" "scenario 21 setup: pre-fail edited_after should be 1 after successful first walk"
 grep -q "SENTINEL" "$OUT_FILE" && { echo "FAIL scenario 21 (setup): OUT_FILE not rewritten after success"; exit 1; }
 
 # Re-walk with simulated pulls/commits failure. edited_after must be preserved (data-integrity)
@@ -760,8 +752,8 @@ MOCK_GH_PULLS_COMMITS_FAIL=1 bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null 
     exit 1
 }
 ROW=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE specialist='tests' AND comment_id=110;")
-[ "$ROW" = "1" ] || { echo "FAIL scenario 21: edited_after erased by transient pulls/commits failure ('$ROW' expected '1')"; exit 1; }
-grep -q "SENTINEL" "$OUT_FILE" || { echo "FAIL scenario 21: OUT_FILE was overwritten despite pulls/commits failure"; exit 1; }
+assert_eq "$ROW" "1" "scenario 21: edited_after must survive transient pulls/commits failure"
+assert_contains "$(cat "$OUT_FILE")" "SENTINEL" "scenario 21: OUT_FILE must not be overwritten on pulls/commits failure"
 
 unset MOCK_PULLS_COMMITS_FILE MOCK_COMMIT_FILES_DIR
 
@@ -788,10 +780,10 @@ run_driver
 
 # R1 saw the commit AFTER it → edited_after=1.
 ROW1=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE specialist='tests' AND comment_id=120;")
-[ "$ROW1" = "1" ] || { echo "FAIL scenario 22: R1 edited_after '$ROW1' expected '1' (commit landed after R1)"; exit 1; }
+assert_eq "$ROW1" "1" "scenario 22: R1 edited_after should be 1 (commit landed after R1)"
 # R2 saw no commits after it → edited_after=0.
 ROW2=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE specialist='tests' AND comment_id=121;")
-[ "$ROW2" = "0" ] || { echo "FAIL scenario 22: R2 edited_after '$ROW2' expected '0' (no commits after R2)"; exit 1; }
+assert_eq "$ROW2" "0" "scenario 22: R2 edited_after should be 0 (no commits after R2)"
 
 unset MOCK_PULLS_COMMITS_FILE MOCK_COMMIT_FILES_DIR
 
@@ -816,7 +808,7 @@ export MOCK_COMMIT_FILES_DIR="$TMPDIR_SMOKE/commit-files-23"
 run_driver
 
 ROW=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE specialist='tests' AND comment_id=130;")
-[ "$ROW" = "1" ] || { echo "FAIL scenario 23: rebased commit not counted (got '$ROW' expected '1') — author/committer date filter regressed?"; exit 1; }
+assert_eq "$ROW" "1" "scenario 23: rebased commit should count via committer.date (author/committer date filter)"
 
 unset MOCK_PULLS_COMMITS_FILE MOCK_COMMIT_FILES_DIR
 
@@ -840,7 +832,7 @@ export MOCK_COMMIT_FILES_DIR="$TMPDIR_SMOKE/commit-files-25"
 
 run_driver
 ROW=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE specialist='tests' AND comment_id=150;")
-[ "$ROW" = "1" ] || { echo "FAIL scenario 25: rename not matched via previous_filename ('$ROW' expected '1')"; exit 1; }
+assert_eq "$ROW" "1" "scenario 25: rename of cited path should be matched via previous_filename"
 
 unset MOCK_PULLS_COMMITS_FILE MOCK_COMMIT_FILES_DIR
 
@@ -856,7 +848,7 @@ setup_edited_after_one_commit 160 120 "$TS_REVIEW_26" src/a.py sha-x "$TS_COMMIT
 echo SENTINEL > "$OUT_FILE"
 run_driver
 ROW=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE specialist='tests' AND comment_id=160;")
-[ "$ROW" = "1" ] || { echo "FAIL scenario 26 (setup): pre-fail edited_after '$ROW' expected '1'"; exit 1; }
+assert_eq "$ROW" "1" "scenario 26 setup: pre-fail edited_after should be 1"
 
 # Re-walk: pulls/commits succeeds, but commits/sha-x fails (per-commit failure).
 echo SENTINEL > "$OUT_FILE"
@@ -865,8 +857,8 @@ MOCK_GH_COMMIT_FAIL_SHA=sha-x bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null
     exit 1
 }
 ROW=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE specialist='tests' AND comment_id=160;")
-[ "$ROW" = "1" ] || { echo "FAIL scenario 26: edited_after erased by commits/<sha> failure ('$ROW' expected '1')"; exit 1; }
-grep -q "SENTINEL" "$OUT_FILE" || { echo "FAIL scenario 26: OUT_FILE overwritten despite commits/<sha> failure"; exit 1; }
+assert_eq "$ROW" "1" "scenario 26: edited_after must survive commits/<sha> failure"
+assert_contains "$(cat "$OUT_FILE")" "SENTINEL" "scenario 26: OUT_FILE must not be overwritten on commits/<sha> failure"
 
 unset MOCK_PULLS_COMMITS_FILE MOCK_COMMIT_FILES_DIR
 
@@ -880,7 +872,7 @@ setup_edited_after_one_commit 170 130 "$TS_REVIEW_27" src/a.py sha-y "$TS_COMMIT
 
 run_driver
 ROW=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE specialist='tests' AND comment_id=170;")
-[ "$ROW" = "1" ] || { echo "FAIL scenario 27 (setup): pre-rewalk edited_after '$ROW' expected '1'"; exit 1; }
+assert_eq "$ROW" "1" "scenario 27 setup: pre-rewalk edited_after should be 1"
 
 # Rewalk: same post-review commit, but it no longer touches src/a.py
 # (e.g. operator amended the commit to drop that file). Successful fetch,
@@ -888,7 +880,7 @@ ROW=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE special
 echo "src/other.py" > "$TMPDIR_SMOKE/commit-files-27/sha-y.tsv"
 run_driver
 ROW=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE specialist='tests' AND comment_id=170;")
-[ "$ROW" = "0" ] || { echo "FAIL scenario 27: stale edited_after not cleared on successful rewalk ('$ROW' expected '0')"; exit 1; }
+assert_eq "$ROW" "0" "scenario 27: stale edited_after must be cleared on successful rewalk when path no longer touched"
 
 unset MOCK_PULLS_COMMITS_FILE MOCK_COMMIT_FILES_DIR
 
@@ -917,13 +909,13 @@ run_driver
 
 # Old review must not have created a row.
 OLD_ROWS=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM specialist_runs WHERE comment_id=180;")
-[ "$OLD_ROWS" = "0" ] || { echo "FAIL scenario 28: out-of-window review created $OLD_ROWS rows (expected 0)"; exit 1; }
+assert_eq "$OLD_ROWS" "0" "scenario 28: out-of-window review must not create rows"
 # Recent review should have created its tests row.
 NEW_PUB=$(sqlite3 "$DB_FILE" "SELECT published FROM specialist_runs WHERE comment_id=181 AND specialist='tests';")
-[ "$NEW_PUB" = "1" ] || { echo "FAIL scenario 28: in-window review's tests row missing or unpublished ('$NEW_PUB')"; exit 1; }
+assert_eq "$NEW_PUB" "1" "scenario 28: in-window review's tests row must be present and published"
 # Coverage caption should count 1 of 1, NOT 2 of 2.
 COV=$(sqlite3 "$DB_FILE" "SELECT reviews_total_in_window || '|' || reviews_with_marker_in_window FROM walks WHERE repo='test-org/bakeoff-probe';")
-[ "$COV" = "1|1" ] || { echo "FAIL scenario 28: coverage '$COV' expected '1|1' (out-of-window review must NOT count)"; exit 1; }
+assert_eq "$COV" "1|1" "scenario 28: coverage must count 1|1 (out-of-window review must not count)"
 
 unset MOCK_PULLS_COMMITS_FILE
 
@@ -950,7 +942,7 @@ REWALK_HOURS=720 SCORECARD_DAYS=14 bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev
 
 # Walker should have counted BOTH reviews (both inside 720h window).
 WALKER_COV=$(sqlite3 "$DB_FILE" "SELECT reviews_with_marker_in_window FROM walks WHERE repo='test-org/bakeoff-probe';")
-[ "$WALKER_COV" = "2" ] || { echo "FAIL scenario 29: walker coverage '$WALKER_COV' expected '2' (both reviews in 720h window)"; cat "$OUT_FILE"; exit 1; }
+assert_eq "$WALKER_COV" "2" "scenario 29: walker should count both reviews in 720h window"
 
 # Renderer's SCORECARD_DAYS=14 horizon must exclude the 20-day-old review.
 # Per-specialist table row for 'tests' must show Reviews=1 (only 48h review in window).
