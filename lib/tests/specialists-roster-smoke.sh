@@ -27,6 +27,20 @@ case ",$ROSTER," in
     *) echo "FAIL: security not in roster: '$ROSTER'"; exit 1 ;;
 esac
 
+# Experiment-defining membership (PR #79: swap performance for architecture-v2).
+# Pins THIS PR's bakeoff A/B membership so a future cleanup can't silently
+# drop architecture-v2 or re-introduce performance without failing this smoke.
+echo "  specialists-roster: contains architecture-v2 (PR #79 A/B specialist)..."
+case ",$ROSTER," in
+    *,architecture-v2,*) ;;
+    *) echo "FAIL: architecture-v2 not in roster: '$ROSTER'"; exit 1 ;;
+esac
+echo "  specialists-roster: does NOT contain performance (dropped in PR #79)..."
+case ",$ROSTER," in
+    *,performance,*) echo "FAIL: performance back in roster: '$ROSTER'"; exit 1 ;;
+    *) ;;
+esac
+
 echo "  specialists-roster: shape is comma-separated (no spaces, no leading/trailing comma)..."
 [[ "$ROSTER" != *" "* ]] || { echo "FAIL: roster has spaces: '$ROSTER'"; exit 1; }
 [[ "$ROSTER" != ,* ]] || { echo "FAIL: leading comma: '$ROSTER'"; exit 1; }
