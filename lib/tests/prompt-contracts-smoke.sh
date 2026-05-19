@@ -101,10 +101,6 @@ assert_grep "aggregator.md should describe layered specialist files" \
 # the critic + aggregator read lists, and common-header must document
 # any per-specialist scratch input. Catches the "added a prompt file
 # but forgot to register it" omission class.
-echo "  asserting performance specialist registered in aggregator.md..."
-assert_grep "aggregator.md should reference performance specialist" \
-    "specialists/performance.md" prompts/aggregator.md
-
 echo "  asserting consumers specialist registered in aggregator.md..."
 assert_grep "aggregator.md should reference consumers specialist" \
     "specialists/consumers.md" prompts/aggregator.md
@@ -133,7 +129,7 @@ for prompt in prompts/aggregator.md prompts/probe-schema.md; do
     fi
 done
 
-for specialist in shape simplification architecture consumers tests performance security data-integrity; do
+for specialist in shape simplification architecture consumers tests security data-integrity; do
     echo "  asserting simplification probe class in ${specialist}.md..."
     # After collapsing DRY + dead-code + complexity-cost → simplification,
     # every specialist must register simplification as one of its emitted

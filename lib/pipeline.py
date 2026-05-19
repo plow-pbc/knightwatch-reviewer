@@ -14,7 +14,7 @@ from pathlib import Path
 
 SPECIALISTS = (
     "security", "data-integrity", "architecture", "simplification",
-    "tests", "shape", "performance", "consumers",
+    "tests", "shape", "consumers",
 )
 
 # Per-codex hard cap. Successful specialists complete in 1–5 min; 45 min

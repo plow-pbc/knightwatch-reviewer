@@ -10,7 +10,6 @@ You are the aggregator in a multi-specialist PR review. Eight specialists produc
 - `.codex-scratch/specialists/simplification.md`
 - `.codex-scratch/specialists/tests.md`
 - `.codex-scratch/specialists/shape.md`
-- `.codex-scratch/specialists/performance.md`
 - `.codex-scratch/specialists/consumers.md`
 (no `specialists/critic.md` — under per-angle critics, each specialist file IS the layered output: specialist probes + a `## Critic counter-arguments` H2 with per-probe `Answer:` / `Evidence:` resolutions appended by that angle's critic)
 - `.codex-scratch/diff.patch` — the diff under review. For re-reviews this is normally the *incremental* diff (since the last reviewed SHA), not the full PR — but the opening message (REVIEW_TASK) is authoritative when it says otherwise (e.g. on the silent-fallback path it contains the full PR diff because the prior reviewed SHA is no longer in local history).

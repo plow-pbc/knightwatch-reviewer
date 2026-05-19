@@ -782,12 +782,12 @@ class TestRunPipeline(unittest.TestCase):
     @patch("pipeline.subprocess.Popen")
     def test_wave_b_runs_specialists_concurrently(self, mock_popen):
         """Wave B's 8-specialist fan-out must run concurrently. Pick two
-        deterministic specialists (security, performance) and gate them
+        deterministic specialists (security, shape) and gate them
         on a shared Barrier(2). Serial Wave B regression → first stub
         blocks alone → BrokenBarrierError → run fails."""
         barrier = threading.Barrier(2, timeout=5)
         def hit_barrier(name, _out_path):
-            if name in ("security", "performance"):
+            if name in ("security", "shape"):
                 barrier.wait()
         mock_popen.side_effect = _make_codex_stub(before_write=hit_barrier)
         rc = self._run()
@@ -828,14 +828,14 @@ class TestRunPipeline(unittest.TestCase):
         mock_popen.side_effect = _make_codex_stub(plan={
             "intent": (0, "Inferred intent: stub.\n"),
             "dead-code-search": (0, "dc\n"),
-            "performance": "TIMEOUT",
+            "shape": "TIMEOUT",
         })
         rc = self._run()
         self.assertNotEqual(rc, 0)
         # _abort cleans up REPO_DIR; sentinel lives in RUN_DIR so bash
         # reads it after pipeline.py exits.
         sentinel = self.run_dir / "_wave_b_timeouts.txt"
-        self.assertEqual(sentinel.read_text().strip(), "performance")
+        self.assertEqual(sentinel.read_text().strip(), "shape")
         # No aggregator on the timeout path.
         self.assertFalse((self.run_dir / "agents" / "aggregator" / "output.md").exists())
 
@@ -847,14 +847,14 @@ class TestRunPipeline(unittest.TestCase):
             "intent": (0, "Inferred intent: stub.\n"),
             "dead-code-search": (0, "dc\n"),
             "security": "TIMEOUT",
-            "performance": "TIMEOUT",
+            "shape": "TIMEOUT",
         })
         rc = self._run()
         self.assertNotEqual(rc, 0)
         sentinel_names = set(
             (self.run_dir / "_wave_b_timeouts.txt").read_text().split()
         )
-        self.assertEqual(sentinel_names, {"security", "performance"})
+        self.assertEqual(sentinel_names, {"security", "shape"})
 
     @patch("pipeline.subprocess.Popen")
     def test_critic_timeout_aborts_without_data_loss(self, mock_popen):
