@@ -32,3 +32,21 @@ assert_eq() {
     [ "$1" = "$2" ] && return 0
     _assert_fail "${3:-}" "$1" "$2"
 }
+
+assert_match() {
+    # Bash =~ regex match. $2 is interpreted as ERE; do not quote inside [[ ]].
+    [[ "$1" =~ $2 ]] && return 0
+    _assert_fail "${3:-}" "$1" "match: $2"
+}
+
+assert_contains() {
+    case "$1" in
+        (*"$2"*) return 0 ;;
+    esac
+    _assert_fail "${3:-}" "$1" "contains: $2"
+}
+
+assert_empty() {
+    [ -z "$1" ] && return 0
+    _assert_fail "${2:-}" "$1" "(empty)"
+}
