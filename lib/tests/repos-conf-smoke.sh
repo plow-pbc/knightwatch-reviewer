@@ -27,6 +27,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+. "$(dirname "${BASH_SOURCE[0]}")/assert.sh"
 
 CONF_EXAMPLE="$PROJECT_ROOT/repos.conf.example"
 LOADER="$PROJECT_ROOT/lib/tracked-repos.sh"

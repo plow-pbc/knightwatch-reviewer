@@ -27,6 +27,7 @@
 
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+. "$(dirname "${BASH_SOURCE[0]}")/assert.sh"
 
 assert_grep() {
     local label="$1" pattern="$2" file="$3"
@@ -59,10 +60,8 @@ assert_grep "critic.md should fence repo content as data-not-instructions" \
 # surfaced findings" — that wording predates the probe-as-unit refactor
 # and primes the model to emit Findings instead of resolving probes.
 echo "  asserting critic.md has no 'have surfaced findings' regression..."
-if grep -qF "have surfaced findings" prompts/critic.md; then
-    echo "FAIL: critic.md regressed to legacy 'have surfaced findings' wording — probe-as-unit opening was rolled back"
-    exit 1
-fi
+assert_no_grep "critic.md must not regress to 'have surfaced findings' wording — probe-as-unit opening was rolled back" \
+    "have surfaced findings" prompts/critic.md
 
 # Negative fence: VERDICT lines previously said "no findings"/"blocking
 # findings". Probe-as-unit uses "surviving probes"/"blocking probes".
@@ -127,10 +126,8 @@ assert_grep "aggregator.md should describe per-line specialist attribution" \
 # specialist whose lens caught the pattern).
 echo "  asserting legacy [from: aggregator] default token is gone..."
 for prompt in prompts/aggregator.md prompts/probe-schema.md; do
-    if grep -qF "attributed \`[from: aggregator]\`" "$prompt"; then
-        echo "FAIL: $prompt regressed to the legacy 'attributed [from: aggregator]' default — cross-angle attribution should be the most load-bearing specialist; aggregator-attribution is the fallback for genuinely emergent patterns"
-        exit 1
-    fi
+    assert_no_grep "$prompt must not regress to the legacy 'attributed [from: aggregator]' default — cross-angle attribution should be the most load-bearing specialist; aggregator-attribution is the fallback for genuinely emergent patterns" \
+        "attributed \`[from: aggregator]\`" "$prompt"
 done
 
 for specialist in shape simplification architecture consumers tests performance security data-integrity; do
@@ -148,10 +145,8 @@ done
 # URL. Fixed-string match catches any executable form (regex variants
 # missed lowercase assignments + interpolated `$(...)` quoting).
 echo "  asserting linked-issue staging does NOT call 'gh issue view'..."
-if grep -nF 'gh issue view' lib/review-one-pr.sh; then
-    echo "FAIL: lib/review-one-pr.sh calls 'gh issue view' — linked-issue privacy regressed"
-    exit 1
-fi
+assert_no_grep "lib/review-one-pr.sh must not call 'gh issue view' — linked-issue privacy regressed" \
+    'gh issue view' lib/review-one-pr.sh
 
 echo "  asserting re-review loop-breaker (Path 2) in aggregator.md..."
 assert_grep "aggregator.md should reference momentum specialist output" \
