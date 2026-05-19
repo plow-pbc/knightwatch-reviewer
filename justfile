@@ -30,6 +30,10 @@ test:
     done < <(git ls-files '*.sh')
 
     echo ""
+    echo "=== assertion-helper self-tests ==="
+    bash lib/tests/assert-unit.sh
+
+    echo ""
     echo "=== python pipeline tests ==="
     python3 -m unittest discover -s lib/tests -p 'test_*.py' -v
 
