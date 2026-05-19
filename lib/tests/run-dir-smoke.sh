@@ -22,6 +22,7 @@ trap 'rm -rf "$TMPDIR" 2>/dev/null; chmod -R u+w "$TMPDIR" 2>/dev/null; rm -rf "
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=../run-dir.sh
 . "$PROJECT_ROOT/lib/run-dir.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/assert.sh"
 
 # Stub the log() seam allocate_run_dir uses. Production log() comes
 # from lib/state-io.sh; here we just append to a file the assertions
@@ -32,25 +33,19 @@ log() { echo "$*" >> "$LOG_CAPTURE"; }
 
 echo "  scenario 1: clean RUN_DIR → success + agents/inputs created..."
 RD="$TMPDIR/state/runs/clean-id"
-if ! allocate_run_dir "$RD"; then
-    echo "FAIL: clean allocation returned non-zero"
-    exit 1
-fi
+alloc_ok=$(allocate_run_dir "$RD" && echo "ok" || echo "")
+assert_eq "$alloc_ok" "ok" "clean allocation returned non-zero"
 for sub in agents inputs; do
-    if [ ! -d "$RD/$sub" ]; then
-        echo "FAIL: $RD/$sub not created"
-        exit 1
-    fi
+    sub_missing=$([ ! -d "$RD/$sub" ] && echo "missing" || echo "")
+    assert_empty "$sub_missing" "$RD/$sub not created"
 done
 
 echo "  scenario 2: pre-existing RUN_DIR → returns 1, logs collision..."
 : > "$LOG_CAPTURE"
 RD="$TMPDIR/state/runs/exists-id"
 mkdir -p "$RD"
-if allocate_run_dir "$RD"; then
-    echo "FAIL: collision allocation should have returned non-zero"
-    exit 1
-fi
+collision_ok=$(allocate_run_dir "$RD" && echo "zero" || echo "")
+assert_empty "$collision_ok" "collision allocation should have returned non-zero"
 if ! grep -q "RUN_DIR collision" "$LOG_CAPTURE"; then
     echo "FAIL: collision was not logged with the 'collision' marker"
     cat "$LOG_CAPTURE"

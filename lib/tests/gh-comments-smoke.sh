@@ -24,6 +24,7 @@
 set -uo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+. "$(dirname "${BASH_SOURCE[0]}")/assert.sh"
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
@@ -77,23 +78,14 @@ result=$(fetch_issue_comments "owner/repo" "42")
 got_len=$(printf '%s' "$result" | jq 'length')
 got_first_id=$(printf '%s' "$result" | jq '.[0].id')
 got_last_id=$(printf '%s' "$result" | jq '.[-1].id')
-if [ "$got_len" != "4" ]; then
-    echo "FAIL: scenario 1 — expected 4 comments merged, got $got_len"
-    echo "result: $result"
-    exit 1
-fi
-if [ "$got_first_id" != "1" ] || [ "$got_last_id" != "4" ]; then
-    echo "FAIL: scenario 1 — pages out of order or split (first=$got_first_id last=$got_last_id)"
-    exit 1
-fi
+assert_eq "$got_len" "4" "scenario 1 — expected 4 comments merged, got $got_len"
+assert_eq "$got_first_id" "1" "scenario 1 — pages out of order or split (first=$got_first_id last=$got_last_id)"
+assert_eq "$got_last_id" "4" "scenario 1 — pages out of order or split (first=$got_first_id last=$got_last_id)"
 # Critical regression-fence: the page-2 trigger must be in the
 # returned array. The original bug surfaced exactly because a
 # /srosro-update-review on page 2 was silently dropped.
 got_page2_trigger=$(printf '%s' "$result" | jq '[.[] | select(.body | contains("update-review"))] | length')
-if [ "$got_page2_trigger" != "1" ]; then
-    echo "FAIL: scenario 1 — page-2 /srosro-update-review trigger lost (this is the original bug)"
-    exit 1
-fi
+assert_eq "$got_page2_trigger" "1" "scenario 1 — page-2 /srosro-update-review trigger lost (this is the original bug)"
 
 # ---- Scenario 2: empty response ----
 # Real `gh api --paginate` on a PR with zero issue comments emits a
@@ -106,10 +98,7 @@ echo '[]' > "$EMPTY/page-1.json"
 export STUB_PAGES_DIR="$EMPTY"
 export STUB_EXIT=""
 result=$(fetch_issue_comments "owner/repo" "42")
-if [ "$result" != "[]" ]; then
-    echo "FAIL: scenario 2 — empty response should return '[]', got '$result'"
-    exit 1
-fi
+assert_eq "$result" "[]" "scenario 2 — empty response should return '[]'"
 
 # ---- Scenario 3: gh failure propagates ----
 # When `gh api` exits non-zero (auth lapse, network outage, rate limit),
@@ -122,9 +111,7 @@ export STUB_EXIT="1"
 unset STUB_PAGES_DIR
 (set -o pipefail; fetch_issue_comments "owner/repo" "42" >/dev/null 2>&1)
 exit_code=$?
-if [ "$exit_code" -eq 0 ]; then
-    echo "FAIL: scenario 3 — helper returned 0 on gh failure (callers with pipefail won't notice)"
-    exit 1
-fi
+not_zero=$([ "$exit_code" -eq 0 ] && echo "zero" || echo "")
+assert_empty "$not_zero" "scenario 3 — helper returned 0 on gh failure (callers with pipefail won't notice)"
 
 echo "  PASS (3 scenarios: multi-page-merge, empty-response, gh-failure-propagates)"
