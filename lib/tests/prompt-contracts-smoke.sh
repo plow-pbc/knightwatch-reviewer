@@ -351,17 +351,27 @@ assert_grep "Path 2 trigger fire condition must AND-join count[N] > 0 — a 0 �
 assert_grep "Path 2 trigger fire condition must AND-join count[N-2] > 0 — a 0 → 0 → 5 series (blockers newly appeared) satisfies the strict-decrease test and would fire the halt action, suppressing the Probes block that would surface the new blockers" \
     "AND \`count[N-2] > 0\`" prompts/aggregator.md
 
-echo "  asserting Path 2 halt action skips the Probes block in aggregator.md..."
-assert_grep "Path 2 must skip the per-angle Probes block on halt" \
+echo "  asserting Path 2 keeps the Probes block and frames it through the stall lens..."
+# When Path 2 fires, the aggregator renders the FULL review (momentum callout
+# banner + Overview + Strengths + Probes + Security + Test coverage + For AI
+# authors), with the Overview classifying probes as structural-vs-leaf through
+# the stall lens. The earlier contract suppressed the Probes block entirely —
+# that suppression was reversed because authors got the structural callout but
+# lost the leaf info they still needed to actually push fixes.
+#
+# Positive fences pin the two load-bearing wording tokens in the new Path 2
+# fire block: (a) the keep-probes directive, and (b) the stall-lens framing
+# instruction in the Overview.
+assert_grep "Path 2 must render the full Probes block, not skip it" \
+    "Render the full Probes block" prompts/aggregator.md
+assert_grep "Path 2 Overview must classify probes through the stall lens" \
+    "through the stall lens" prompts/aggregator.md
+# Negative fence: the prior contract (PR #66 and earlier) said "Skip the
+# per-angle Probes block entirely this round." A regression to that wording
+# would re-introduce the failure mode this PR is fixing (callout-only review
+# leaves authors without the leaf info needed to converge).
+assert_no_grep "Path 2 must not regress to 'Skip the per-angle Probes block' wording — the new contract renders the full body under the stall lens" \
     "Skip the per-angle Probes block" prompts/aggregator.md
-# Negative fence: the old Path 2 action said "Keep the local probes in
-# the **Probes** block, ranked by severity, all subject to voice posture
-# (questions over prescriptions). Not dropped — but the structural
-# callout has eaten the visual real estate." That action shipped on PR
-# #584 round 13 and was the failure-mode replicator: momentum prose
-# rendered as decoration while [blocking] BCR rendered alongside.
-assert_no_grep "Path 2 must not regress to 'Keep the local probes' action — must drop the Probes block entirely so the structural callout is the only content" \
-    "Keep the local probes" prompts/aggregator.md
 
 echo "  asserting carry-forward source picks past Path 2 pause rounds..."
 # Step 38 must walk back to the most recent review WITH a Probes block
