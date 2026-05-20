@@ -30,25 +30,27 @@ ProtectKernelModules=yes
 ProtectControlGroups=yes
 ProtectHome=read-only
 # ReadWritePaths: broader than the sibling review/refresh units because
-# org-sync.sh creates NEW checkout directories under
-# /home/odio/services/kwr-repos that aren't yet in @KID_RW_PATHS@
-# (rendered at install time, can't know about repos discovered after
-# the last install). Granting RW on /home/odio/services/kwr-repos is
-# the only shape that lets `gh repo clone <new>` succeed without a
-# preceding install.sh re-render. We do NOT need RW on the source-tree
-# dir — org-sync writes to $STATE_DIR/repos.conf.auto
-# (= /home/odio/.pr-reviewer/repos.conf.auto), not to a source-tree
-# symlink target. Blast radius is one script doing only `gh repo clone`
-# + a tmp-file write inside the bot's own state dir.
+# org-sync.sh creates NEW checkout directories under @KWR_CLONE_ROOT@
+# that aren't yet in @KID_RW_PATHS@ (rendered at install time, can't
+# know about repos discovered after the last install). Granting RW on
+# @KWR_CLONE_ROOT@ is the only shape that lets `gh repo clone <new>`
+# succeed without a preceding install.sh re-render. The @KWR_CLONE_ROOT@
+# placeholder is substituted at install time from
+# lib/tracked-repos.sh — single source of truth for the auto-clone
+# path. We do NOT need RW on the source-tree dir — org-sync writes to
+# $STATE_DIR/repos.conf.auto (= /home/odio/.pr-reviewer/repos.conf.auto),
+# not to a source-tree symlink target. Blast radius is one script
+# doing only `gh repo clone` + a tmp-file write inside the bot's own
+# state dir.
 # /home/odio/Hacking is deliberately NOT in ReadWritePaths — that's
 # the operator's dev workspace per CLAUDE.md, and org-sync auto-clones
-# live under /home/odio/services/kwr-repos now. The service has no
-# legitimate reason to mutate the dev workspace.
+# live under @KWR_CLONE_ROOT@ now. The service has no legitimate
+# reason to mutate the dev workspace.
 # gh repo list / clone are read-only against ~/.config — token refresh
 # happens through `gh auth login`, not hourly. ~/.cache holds gh's
 # command-history sink so keep that writable. Drop ~/.config to tighten
 # the sandbox; restore if operator hits a write-attempt in journalctl.
-ReadWritePaths=/home/odio/.pr-reviewer /home/odio/services/kwr-repos /home/odio/.cache
+ReadWritePaths=/home/odio/.pr-reviewer @KWR_CLONE_ROOT@ /home/odio/.cache
 
 [Install]
 WantedBy=multi-user.target

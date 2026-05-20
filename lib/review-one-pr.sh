@@ -747,7 +747,7 @@ KID_PROJECT_PATH="${KID_PATHS[$REPO]:-}"
 if [ -n "$KID_PROJECT_PATH" ] && [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -n "$KID_INPUT_DIFF" ]; then
     export KID_PROJECT="$KID_PROJECT_PATH"
     KID_STDERR=$(mktemp)
-    PRIOR_ART=$(printf '%s' "$KID_INPUT_DIFF" | python3 "$HOME/services/kwr-repos/knightwatch-kid/scripts/kid_dry_check.py" 2>"$KID_STDERR")
+    PRIOR_ART=$(printf '%s' "$KID_INPUT_DIFF" | python3 "$KWR_CLONE_ROOT/knightwatch-kid/scripts/kid_dry_check.py" 2>"$KID_STDERR")
     KID_EXIT=$?
     if [ $KID_EXIT -ne 0 ]; then
         KID_ERR_SUMMARY=$(tail -n 3 "$KID_STDERR" | tr '\n' ' ')

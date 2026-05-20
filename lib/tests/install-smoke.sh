@@ -164,10 +164,11 @@ for d in lib docs prompts; do
     [ -L "$INSTALL_DIR/$d" ] || { echo "FAIL scenario 1: $INSTALL_DIR/$d not a symlink"; exit 1; }
 done
 
-# Render the same @KID_RW_PATHS@ / @KID_INDEX_RW_PATHS@ values install.sh
-# derives from the overlay's repos.conf, so the cmp below compares against
-# what install.sh actually wrote (post-substitution). Sources in a subshell
-# so the smoke's own REPOS / KID_PATHS state isn't perturbed.
+# Render the same @KID_RW_PATHS@ / @KID_INDEX_RW_PATHS@ / @KWR_CLONE_ROOT@
+# values install.sh derives from the overlay's repos.conf, so the cmp
+# below compares against what install.sh actually wrote (post-
+# substitution). Sources in a subshell so the smoke's own REPOS /
+# KID_PATHS state isn't perturbed.
 EXPECTED_KID_RW_PATHS=$(
     REPOS=( ); declare -A KID_PATHS=( )
     # shellcheck disable=SC1091
@@ -184,20 +185,25 @@ EXPECTED_KID_INDEX_RW_PATHS=$(
     paths=$(printf '%s\n' "${KID_PATHS[@]}" | sort -u | sed 's|$|/.keepitdry|; s|^|-|' | tr '\n' ' ')
     printf '%s' "${paths% }"
 )
+# KWR_CLONE_ROOT defaults to $HOME/services/kwr-repos in
+# lib/tracked-repos.sh. The sandboxed HOME is $TMPDIR/home; install.sh
+# substitutes the resolved literal path into the unit template.
+EXPECTED_KWR_CLONE_ROOT="$HOME/services/kwr-repos"
 
 # Every unit file copied
 for unit in "${PROD_UNITS[@]}"; do
     name="$(basename "$unit")"
     [ -f "$SYSTEMD_DIR/$name" ] || { echo "FAIL scenario 1: $SYSTEMD_DIR/$name missing"; exit 1; }
-    if grep -qE '@KID_(RW|INDEX_RW)_PATHS@' "$unit"; then
+    if grep -qE '@(KID_(RW|INDEX_RW)_PATHS|KWR_CLONE_ROOT)@' "$unit"; then
         # Templated unit — compare against rendered version.
         rendered_expected="$TMPDIR/${name}.expected"
         sed -e "s|@KID_INDEX_RW_PATHS@|$EXPECTED_KID_INDEX_RW_PATHS|g" \
             -e "s|@KID_RW_PATHS@|$EXPECTED_KID_RW_PATHS|g" \
+            -e "s|@KWR_CLONE_ROOT@|$EXPECTED_KWR_CLONE_ROOT|g" \
             "$unit" > "$rendered_expected"
         cmp -s "$rendered_expected" "$SYSTEMD_DIR/$name" || { echo "FAIL scenario 1: $name rendered content differs from installed"; diff "$rendered_expected" "$SYSTEMD_DIR/$name"; exit 1; }
         # Verbose check: no placeholder leaks into the installed unit.
-        grep -qE '@KID_(RW|INDEX_RW)_PATHS@' "$SYSTEMD_DIR/$name" && { echo "FAIL scenario 1: installed $name still contains a @KID_*_PATHS@ placeholder (substitution broke)"; exit 1; }
+        grep -qE '@(KID_(RW|INDEX_RW)_PATHS|KWR_CLONE_ROOT)@' "$SYSTEMD_DIR/$name" && { echo "FAIL scenario 1: installed $name still contains a @...@ placeholder (substitution broke)"; exit 1; }
     else
         cmp -s "$unit" "$SYSTEMD_DIR/$name" || { echo "FAIL scenario 1: $name content differs from source"; exit 1; }
     fi

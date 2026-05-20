@@ -126,14 +126,6 @@ DIRS=(lib docs prompts)
 CONFIG_FILES=(repos.conf)
 
 mkdir -p "$INSTALL_DIR"
-
-# org-sync auto-clone root. pr-reviewer-org-sync.service has
-# ReadWritePaths=/home/odio/services/kwr-repos; systemd evaluates that
-# at namespace setup BEFORE running ExecStart, so the path must exist
-# at install time, not first-clone time. org-sync.sh also mkdir -p's
-# it (defense-in-depth for direct-shell invocations), but install is
-# the load-bearing point.
-mkdir -p "$HOME/services/kwr-repos"
 for script in "${SCRIPTS[@]}"; do
   src="$REPO_DIR/$script"
   [[ -f "$src" ]] || fail "missing repo script: $src"
@@ -175,17 +167,21 @@ shopt -u nullglob
 #
 # The narrower review render keeps Codex specialists (inner sandbox
 # disabled) from getting writes to entire repo source trees.
+#
+# Source the shared loader (lib/tracked-repos.sh) for both KID_PATHS
+# population AND the KWR_CLONE_ROOT constant. The loader sources
+# config.env → repos.conf → repos.conf.auto in order (manual entries
+# win, auto twins prune), then convention-defaults any unset
+# KID_PATHS entry from $KWR_CLONE_ROOT. Single seam — install.sh
+# templates units from the same KID_PATHS values the runtime
+# consumers see. ProtectHome=read-only systemd units require their
+# ReadWritePaths to exist at namespace setup (before ExecStart runs),
+# so the mkdir below has to run at install time, not first-clone time.
+STATE_DIR="$INSTALL_DIR"
 # shellcheck disable=SC1091
-. "$REPO_DIR/repos.conf"
-# Also source repos.conf.auto if it exists, so org-sync-tracked repos
-# get their .keepitdry write paths included in the sandbox render on
-# the next install. The auto file is purely runtime state (in
-# $INSTALL_DIR, not the source tree) — install.sh never bootstraps it
-# and never delivers it.
-if [ -f "$INSTALL_DIR/repos.conf.auto" ]; then
-    # shellcheck disable=SC1091
-    . "$INSTALL_DIR/repos.conf.auto"
-fi
+. "$REPO_DIR/lib/tracked-repos.sh"
+mkdir -p "$KWR_CLONE_ROOT"
+
 # Dedupe + sort for stable rendering across runs so cmp-based idempotency
 # doesn't trigger spurious copies when bash hashing reorders the assoc
 # array between runs.
@@ -199,10 +195,11 @@ for unit in "${units[@]}"; do
   name="$(basename "$unit")"
   dst="$SYSTEMD_DIR/$name"
   rendered="$unit"
-  if grep -qE '@KID_(RW|INDEX_RW)_PATHS@' "$unit"; then
+  if grep -qE '@(KID_(RW|INDEX_RW)_PATHS|KWR_CLONE_ROOT)@' "$unit"; then
     rendered="$(mktemp)"
     sed -e "s|@KID_INDEX_RW_PATHS@|$KID_INDEX_RW_PATHS|g" \
         -e "s|@KID_RW_PATHS@|$KID_RW_PATHS|g" \
+        -e "s|@KWR_CLONE_ROOT@|$KWR_CLONE_ROOT|g" \
         "$unit" > "$rendered"
   fi
   if [[ -f "$dst" ]] && cmp -s "$rendered" "$dst"; then

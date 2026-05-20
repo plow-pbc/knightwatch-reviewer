@@ -178,19 +178,26 @@ assert_grep "critic.md should carry the Hypothetical-future-regression decline r
 assert_grep "aggregator.md should inherit the decline rule for cross-angle probes" \
     "Hypothetical-future-regression decline" prompts/aggregator.md
 
-# Token fence: org-sync auto-clones MUST live under
-# $HOME/services/kwr-repos/, not $HOME/Hacking/. Hacking/ is the
-# operator's dev workspace per CLAUDE.md; co-mingling auto-clones
-# there caused a silent collision on PR #84's deploy when a tracked
-# repo's org changed. lib/review-one-pr.sh's hardcoded knightwatch-kid
-# path is part of the same contract — pinning here catches one-side-
-# only deletes that would let auto-clones drift back to the dev
-# workspace OR break the kid_dry_check.py invocation.
-echo "  asserting org-sync auto-clone base under services/..."
-assert_grep "org-sync.sh should clone auto-managed repos to services/kwr-repos" \
-    'dest="$HOME/services/kwr-repos/$name"' org-sync.sh
-assert_grep "review-one-pr.sh should invoke knightwatch-kid from services/kwr-repos" \
-    'services/kwr-repos/knightwatch-kid/scripts/kid_dry_check.py' lib/review-one-pr.sh
+# Token fence: org-sync auto-clones MUST live under $KWR_CLONE_ROOT
+# (defaults to $HOME/services/kwr-repos/), defined as the single
+# source of truth in lib/tracked-repos.sh. Hacking/ is the operator's
+# dev workspace per CLAUDE.md; co-mingling auto-clones there caused a
+# silent collision on PR #84's deploy when a tracked repo's org
+# changed. The fences below pin the structural contract — one
+# definition site, four derivation sites — so a one-side-only delete
+# trips the smoke instead of producing a stale-path render at install
+# time.
+echo "  asserting KWR_CLONE_ROOT single source of truth..."
+assert_grep "lib/tracked-repos.sh should define KWR_CLONE_ROOT" \
+    'KWR_CLONE_ROOT=' lib/tracked-repos.sh
+assert_grep "org-sync.sh should derive clone dest from KWR_CLONE_ROOT" \
+    'dest="$KWR_CLONE_ROOT/$name"' org-sync.sh
+assert_grep "install.sh should template @KWR_CLONE_ROOT@ into systemd units" \
+    '@KWR_CLONE_ROOT@' install.sh
+assert_grep "pr-reviewer-org-sync.service should template ReadWritePaths via @KWR_CLONE_ROOT@" \
+    '@KWR_CLONE_ROOT@' systemd/pr-reviewer-org-sync.service
+assert_grep 'review-one-pr.sh should invoke knightwatch-kid from $KWR_CLONE_ROOT' \
+    '$KWR_CLONE_ROOT/knightwatch-kid/scripts/kid_dry_check.py' lib/review-one-pr.sh
 
 # ====================================================================
 # Section 2: systemd-chain shebang security
