@@ -178,6 +178,14 @@ assert_grep "critic.md should carry the Hypothetical-future-regression decline r
 assert_grep "aggregator.md should inherit the decline rule for cross-angle probes" \
     "Hypothetical-future-regression decline" prompts/aggregator.md
 
+# Token fence: common-header.md "Don't propose:" list must include
+# CI/test fences for hypothetical future regressions — the upstream
+# emission-prevention companion to critic.md's downstream decline
+# rule. Anti-Bloat / YAGNI pairing keeps the canonical term visible.
+echo "  asserting CI-fence Don't-propose bullet in common-header.md..."
+assert_grep "common-header.md should forbid CI fences for hypothetical future regressions" \
+    "CI/test fences for hypothetical future regressions" prompts/common-header.md
+
 # Token fence: org-sync auto-clones MUST live under $KWR_CLONE_ROOT
 # (defaults to $HOME/services/kwr-repos/), defined as the single
 # source of truth in lib/tracked-repos.sh. Hacking/ is the operator's
