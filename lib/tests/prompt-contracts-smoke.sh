@@ -186,6 +186,14 @@ echo "  asserting CI-fence Don't-propose bullet in common-header.md..."
 assert_grep "common-header.md should forbid CI fences for hypothetical future regressions" \
     "CI/test fences for hypothetical future regressions" prompts/common-header.md
 
+# Token fence: common-header.md must carry the Iteration-Q-shape
+# trigger — the cut-positive escape hatch for fence concerns that ARE
+# iteration-dependent (vs the flat-decline case the Don't-propose
+# bullet above handles).
+echo "  asserting Iteration-dependent fence Q-shape trigger in common-header.md..."
+assert_grep "common-header.md should carry the Iteration-dependent fence Q-shape trigger" \
+    "Iteration-dependent fence Q-shape" prompts/common-header.md
+
 # Token fence: org-sync auto-clones MUST live under $KWR_CLONE_ROOT
 # (defaults to $HOME/services/kwr-repos/), defined as the single
 # source of truth in lib/tracked-repos.sh. Hacking/ is the operator's
