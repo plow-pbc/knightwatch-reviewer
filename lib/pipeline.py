@@ -68,18 +68,6 @@ def _relink(link: Path, target: Path) -> None:
     link.symlink_to(target)
 
 
-def _has_worker_budget_for_retry() -> bool:
-    """True if the outer `timeout $WORKER_TIMEOUT` wrap (set by review.sh)
-    has enough wall-clock left to absorb another full SPECIALIST_TIMEOUT_SEC
-    plus the cleanup margin for aggregator + sentinel-write. Falls back to
-    True when WORKER_DEADLINE_EPOCH is unset (tests run outside the harness)."""
-    raw = os.environ.get("WORKER_DEADLINE_EPOCH")
-    if not raw:
-        return True
-    remaining = float(raw) - time.time()
-    return remaining >= SPECIALIST_TIMEOUT_SEC + WORKER_RETRY_CLEANUP_MARGIN_SEC
-
-
 def _wait_with_watchdog(
     proc: subprocess.Popen, log_file: Path
 ) -> tuple[int, str | None, bool]:
@@ -126,15 +114,23 @@ def _wait_with_watchdog(
         elif stale_for >= STALENESS_THRESHOLD_SEC:
             reason = f"{WATCHDOG_KILL_STALE_PREFIX} {stale_for:.0f}s (no log activity) — killpg'd whole group"
             # Two gates: per-Codex (elapsed under this attempt's own cap,
-            # one staleness threshold of headroom) AND outer worker (the
-            # `timeout $WORKER_TIMEOUT` wrap covers just test + Wave A +
-            # all earlier specialists, so wall-clock remaining can be
-            # tighter than per-Codex elapsed would suggest). Both must
-            # pass; otherwise the worker would be killed mid-retry before
-            # Wave B's abort can write _wave_b_timeouts.txt.
+            # one staleness threshold of headroom) AND outer worker
+            # (review.sh's `timeout $WORKER_TIMEOUT` wrap covers just test
+            # + Wave A + all earlier specialists, so wall-clock remaining
+            # can be tighter than per-Codex elapsed would suggest). Both
+            # must pass; otherwise the worker would be killed mid-retry
+            # before Wave B's abort can write _wave_b_timeouts.txt.
+            # WORKER_DEADLINE_EPOCH unset (tests outside the harness)
+            # skips the worker gate.
+            deadline_raw = os.environ.get("WORKER_DEADLINE_EPOCH")
+            worker_ok = (
+                not deadline_raw
+                or float(deadline_raw) - time.time()
+                   >= SPECIALIST_TIMEOUT_SEC + WORKER_RETRY_CLEANUP_MARGIN_SEC
+            )
             retryable = (
                 elapsed <= SPECIALIST_TIMEOUT_SEC - STALENESS_THRESHOLD_SEC
-                and _has_worker_budget_for_retry()
+                and worker_ok
             )
         else:
             continue

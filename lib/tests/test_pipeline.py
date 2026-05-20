@@ -5,7 +5,6 @@ import stat
 import subprocess
 import sys
 import threading
-import time
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
@@ -296,11 +295,9 @@ class TestRunCodex(unittest.TestCase):
         mock_popen.side_effect = lambda argv, **kwargs: FakePopen(
             returncode=-signal.SIGKILL, raise_timeout=True
         )
-        # Tight outer worker budget: only one second past current wall-clock.
-        # SPECIALIST_TIMEOUT_SEC (5.0) + WORKER_RETRY_CLEANUP_MARGIN_SEC (300)
-        # would be 305s, far over the 1s deadline → retryable=False.
-        deadline = str(time.time() + 1)
-        with patch.dict(os.environ, {"WORKER_DEADLINE_EPOCH": deadline}), \
+        # "0" = a deadline in 1970, expired regardless of wall clock — no
+        # retry, no time-import boundary.
+        with patch.dict(os.environ, {"WORKER_DEADLINE_EPOCH": "0"}), \
              _fast_watchdog():
             rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(agent_dir))
         self.assertEqual(rc, 124)
