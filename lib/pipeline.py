@@ -19,12 +19,22 @@ SPECIALISTS = (
 
 # Per-codex hard cap. Successful specialists complete in 1–5 min; 45 min
 # means the codex subprocess is wedged, not slow. Originating incident:
-# cncorp/plow#594, 2026-05-12T20:04Z — one hung specialist blocked
-# `with ThreadPoolExecutor as ex:` indefinitely and the 90 min outer
-# bash timeout killed the worker before its cleanup trap completed.
-# Any specialist timeout fails the run loudly; authors re-trigger via
-# push or /srosro-update-review for a fresh review.
+# cncorp/plow#594, 2026-05-12T20:04Z.
 SPECIALIST_TIMEOUT_SEC = 45 * 60
+
+# Liveness watchdog for the codex 0.128–0.130+ parallel-tool-call deadlock
+# (openai/codex#21937, #14220): kill at 5 min staleness, retry once on
+# stale kills only. Hard-cap and budget-exhausted stale kills don't retry.
+# See _wait_with_watchdog for the budget-gating rationale.
+STALENESS_THRESHOLD_SEC = 5 * 60
+WATCHDOG_POLL_SEC = 60
+WORKER_RETRY_CLEANUP_MARGIN_SEC = 5 * 60
+
+# Operator-facing kill-reason prefixes. Tests assert against these so a
+# rename doesn't silently drift the log; retry eligibility flows through
+# the explicit `retryable` field, not string matching.
+WATCHDOG_KILL_STALE_PREFIX = "stale for"
+WATCHDOG_KILL_HARDCAP_PREFIX = "hit hard cap"
 _PROBE_BLOCK_RE = re.compile(r"^### Probe |^No probes\.$", re.MULTILINE)
 _PROBE_HEADER_RE = re.compile(r"^### Probe (\d+)\b", re.MULTILINE)
 _CRITIC_H2_RE = re.compile(r"^## Critic counter-arguments\s*$", re.MULTILINE)
@@ -58,10 +68,90 @@ def _relink(link: Path, target: Path) -> None:
     link.symlink_to(target)
 
 
+def _wait_with_watchdog(
+    proc: subprocess.Popen, log_file: Path
+) -> tuple[int, str | None, bool]:
+    """Wait on `proc`, polling `log_file.mtime` for liveness. Returns
+    `(exit_code, kill_reason, retryable)`. `kill_reason` is None on
+    natural exit and a human-readable string on watchdog kill (exit_code
+    is then 124). `retryable` is True only for stale-log kills that fit
+    under both the per-Codex and outer-worker budgets; hard-cap kills
+    are never retryable.
+
+    Kills the whole process group via `os.killpg` when codex hangs —
+    bare wait+kill leaves codex's tool-subprocess descendants orphaned
+    to PID 1 with reviewer credentials (sandbox disabled by
+    pr-reviewer.service)."""
+    start = time.monotonic()
+    last_progress = start
+    try:
+        last_mtime = log_file.stat().st_mtime
+    except FileNotFoundError:
+        last_mtime = 0.0
+    while True:
+        try:
+            return proc.wait(timeout=WATCHDOG_POLL_SEC), None, False
+        except subprocess.TimeoutExpired:
+            pass
+        now = time.monotonic()
+        try:
+            mtime = log_file.stat().st_mtime
+        except FileNotFoundError:
+            mtime = last_mtime
+        if mtime > last_mtime:
+            last_mtime = mtime
+            last_progress = now
+        stale_for = now - last_progress
+        elapsed = now - start
+        # Hard-cap precedence: if both staleness AND hard-cap cross on the
+        # same poll tick (a process active until ~minute 40 that goes quiet
+        # would hit both at minute 45), hard-cap wins. Retrying a process
+        # that consumed its full per-Codex budget could push past the
+        # outer worker `timeout` with no recovery.
+        if elapsed >= SPECIALIST_TIMEOUT_SEC:
+            reason = f"{WATCHDOG_KILL_HARDCAP_PREFIX} {SPECIALIST_TIMEOUT_SEC}s — killpg'd whole group"
+            retryable = False
+        elif stale_for >= STALENESS_THRESHOLD_SEC:
+            reason = f"{WATCHDOG_KILL_STALE_PREFIX} {stale_for:.0f}s (no log activity) — killpg'd whole group"
+            # Two gates: per-Codex (elapsed under this attempt's own cap,
+            # one staleness threshold of headroom) AND outer worker
+            # (review.sh's `timeout $WORKER_TIMEOUT` wrap covers just test
+            # + Wave A + all earlier specialists, so wall-clock remaining
+            # can be tighter than per-Codex elapsed would suggest). Both
+            # must pass; otherwise the worker would be killed mid-retry
+            # before Wave B's abort can write _wave_b_timeouts.txt.
+            # WORKER_DEADLINE_EPOCH unset (tests outside the harness)
+            # skips the worker gate.
+            deadline_raw = os.environ.get("WORKER_DEADLINE_EPOCH")
+            worker_ok = (
+                not deadline_raw
+                or float(deadline_raw) - time.time()
+                   >= SPECIALIST_TIMEOUT_SEC + WORKER_RETRY_CLEANUP_MARGIN_SEC
+            )
+            retryable = (
+                elapsed <= SPECIALIST_TIMEOUT_SEC - STALENESS_THRESHOLD_SEC
+                and worker_ok
+            )
+        else:
+            continue
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()
+        return 124, reason, retryable
+
+
 def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
     """Wrap one `codex exec` invocation. Writes prompt.txt/output.md/log.txt
     under agent_dir. Returns codex exit code, 3 for empty output, or 4 for
-    probe-contract violation (specialist roles only)."""
+    probe-contract violation (specialist roles only).
+
+    On a retryable watchdog kill (rc=124, `retryable=True` from
+    _wait_with_watchdog), retries codex exactly once: log.txt is archived
+    to log.attempt1.txt and any half-written output.md is unlinked first.
+    Non-retryable kills (hard-cap, late-stale, worker-budget-exhausted)
+    and two-in-a-row hangs return 124 so Wave B's abort path fires."""
     repo = Path(repo_dir)
     agent = Path(agent_dir)
     agent.mkdir(parents=True, exist_ok=True)
@@ -87,20 +177,24 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
     # reaps the descendants too — bare `subprocess.run(timeout=)` kills
     # only the direct child and leaves tool processes orphaned to PID 1
     # with reviewer credentials (sandbox disabled by `pr-reviewer.service`).
-    with log_file.open("a") as lf:
-        proc = subprocess.Popen(argv, stdout=lf, stderr=lf, start_new_session=True)
-    try:
-        exit_code = proc.wait(timeout=SPECIALIST_TIMEOUT_SEC)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        proc.wait()
-        exit_code = 124  # GNU timeout convention; Wave B treats this rc as
-                         # the fail-loud-timeout signal.
+    for attempt in (1, 2):
+        if attempt == 2:
+            # Archive attempt-1 log + drop any half-written output.md so the
+            # post-loop validation only sees attempt 2's artifact (codex's -o
+            # write should be atomic, but the contract is "this attempt's
+            # output.md belongs to this attempt" — don't lean on codex behaviour).
+            log_file.rename(agent / "log.attempt1.txt")
+            out_file.unlink(missing_ok=True)
+            with log_file.open("a") as lf:
+                lf.write(f"[{_ts()}] agent={name} attempt 2 (first hung; see log.attempt1.txt)\n")
         with log_file.open("a") as lf:
-            lf.write(f"[{_ts()}] agent={name} timed out after {SPECIALIST_TIMEOUT_SEC}s — killpg'd whole group\n")
+            proc = subprocess.Popen(argv, stdout=lf, stderr=lf, start_new_session=True)
+        exit_code, kill_reason, retryable = _wait_with_watchdog(proc, log_file)
+        if kill_reason is not None:
+            with log_file.open("a") as lf:
+                lf.write(f"[{_ts()}] agent={name} killed: {kill_reason}\n")
+        if not retryable:
+            break
 
     with log_file.open("a") as lf:
         lf.write(f"[{_ts()}] agent={name} exit={exit_code}\n")
