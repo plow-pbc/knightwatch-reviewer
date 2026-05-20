@@ -35,7 +35,28 @@ declare -a ORGS=()
 # would not be.
 if [ -f "${STATE_DIR}/config.env" ];      then . "${STATE_DIR}/config.env"; fi
 if [ -f "${STATE_DIR}/repos.conf" ];      then . "${STATE_DIR}/repos.conf"; fi
+
+# Snapshot operator-set KID_PATHS keys BEFORE sourcing the auto
+# manifest. A pre-refactor auto manifest may still contain
+# `KID_PATHS["..."]="${KID_PATHS["..."]:-$HOME/Hacking/<name>}"`
+# entries from org-sync runs before this loader convention-defaulted
+# the auto paths. Those legacy KID_PATHS values are NOT a manual
+# override — they're stale state. Drop them after sourcing the auto
+# file so the convention-default loop below refills them from
+# $KWR_CLONE_ROOT. After org-sync regenerates the manifest (no
+# KID_PATHS emission), this filter is a no-op but stays load-bearing
+# on the first install after upgrade and against operator misuse of
+# the "do not edit" auto file.
+declare -A _MANUAL_KID_KEYS=()
+for _k in "${!KID_PATHS[@]}"; do _MANUAL_KID_KEYS[$_k]=1; done
+
 if [ -f "${STATE_DIR}/repos.conf.auto" ]; then . "${STATE_DIR}/repos.conf.auto"; fi
+
+for _k in "${!KID_PATHS[@]}"; do
+    [ -n "${_MANUAL_KID_KEYS[$_k]:-}" ] && continue
+    unset "KID_PATHS[$_k]"
+done
+unset _MANUAL_KID_KEYS _k
 
 # Dedup REPOS preserving order. Bash indexed arrays have no
 # "append-only-if-missing" primitive, so the auto file's REPOS+=("...")

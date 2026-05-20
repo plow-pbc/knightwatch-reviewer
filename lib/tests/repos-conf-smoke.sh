@@ -128,17 +128,20 @@ rm -f "$SAND_STATE/repos.conf" "$SAND_STATE/config.env"
 out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; REPO=cncorp/nonexistent; echo \"v=[\${KID_PATHS[\$REPO]:-}]\"" 2>&1)
 [ "$out" = "v=[]" ] || { echo "FAIL B4: loader output: $out"; exit 1; }
 
-echo "  B5: repos.conf.auto consumer — loader merges + manual wins on collision..."
+echo "  B5: repos.conf.auto consumer — manual wins, stale auto KID_PATHS get convention-defaulted..."
 # Pin the split-file manifest contract:
 #   - Loader sources both files and exposes the merged view.
-#   - When the same REPO key appears in BOTH (e.g., operator promoted
-#     an auto-tracked repo to manual mid-tick before org-sync prunes
-#     the auto entry), the operator's manual KID_PATHS WINS.
-# The collision shape is real: org-sync writes the auto file once an
-# hour; an operator edit lands instantly. Source-order alone isn't
-# enough — repos.conf uses `KID_PATHS=(...)` (replace) while the auto
-# file uses the conditional `${KID_PATHS[k]:-default}` form so manual
-# entries survive even when sourced FIRST.
+#   - Operator's manual KID_PATHS WINS when the same REPO key appears
+#     in both files (e.g. operator promoted an auto-tracked repo to
+#     manual mid-tick before org-sync prunes the auto entry).
+#   - Stale KID_PATHS entries from a pre-refactor auto manifest (when
+#     org-sync used to emit `${KID_PATHS[k]:-default}` lines) are
+#     dropped: they aren't operator overrides, and the loader
+#     convention-defaults from $KWR_CLONE_ROOT instead.
+# The collision shape is real on both axes: org-sync writes the auto
+# file once an hour while operator edits land instantly; and an old
+# auto file from before the refactor can carry $HOME/Hacking-rooted
+# paths that must NOT leak into the rendered systemd ReadWritePaths.
 rm -f "$SAND_STATE/repos.conf" "$SAND_STATE/config.env" "$SAND_STATE/repos.conf.auto"
 cat > "$SAND_STATE/repos.conf" <<'CONF'
 REPOS=("manual/keep" "acme/promoted")
@@ -146,15 +149,23 @@ declare -A KID_PATHS=([manual/keep]=/var/manual [acme/promoted]=/var/operator/cu
 declare -A SOURCE_PATHS=([manual/keep]=/var/manual [acme/promoted]=/var/operator/custom)
 CONF
 cat > "$SAND_STATE/repos.conf.auto" <<'CONF'
-# Stale auto entry from a prior org-sync tick — operator just promoted
-# acme/promoted to manual in repos.conf above; next sync would prune.
+# Mixed-shape auto file representing the cutover state:
+#   - REPOS entries (the new format, always emitted).
+#   - Stale KID_PATHS entries (legacy emission from pre-refactor
+#     org-sync runs) that should be dropped by the loader's
+#     post-source filter and refilled by $KWR_CLONE_ROOT defaulting.
 REPOS+=("acme/promoted")
 REPOS+=("acme/other")
 KID_PATHS["acme/promoted"]="${KID_PATHS["acme/promoted"]:-/should/not/win}"
 KID_PATHS["acme/other"]="${KID_PATHS["acme/other"]:-/auto/other}"
 CONF
+# acme/promoted: manual override wins (unchanged contract).
+# acme/other:    auto-only, stale $/auto/other dropped, convention-
+#                defaulted to $KWR_CLONE_ROOT/other (the test's HOME
+#                is the sandbox, so the default is $HOME/services/kwr-repos/other).
 out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; echo \"promoted=\${KID_PATHS[acme/promoted]} other=\${KID_PATHS[acme/other]}\"")
-[ "$out" = "promoted=/var/operator/custom other=/auto/other" ] || { echo "FAIL B5: loader output: $out (expected manual KID_PATHS to win on collision)"; exit 1; }
+expected="promoted=/var/operator/custom other=$HOME/services/kwr-repos/other"
+[ "$out" = "$expected" ] || { echo "FAIL B5: loader output: $out (expected: $expected)"; exit 1; }
 # REPOS dedup: the auto file's REPOS+=("acme/promoted") is
 # unconditional, but the loader dedups so consumers iterating REPOS
 # see acme/promoted EXACTLY ONCE. Without this, review.sh /
@@ -293,9 +304,12 @@ CONF
 # Pre-stage an org-sync-written auto manifest in the install dir so
 # install.sh's KID render covers BOTH the operator's manual entries
 # and the auto-tracked ones. install.sh sources
-# $INSTALL_DIR/repos.conf.auto if present (it's runtime state, not a
-# source-tree symlink). Auto entries use the conditional form so a
-# colliding manual KID_PATHS would survive — none collide here.
+# $INSTALL_DIR/repos.conf.auto via lib/tracked-repos.sh; the loader
+# DROPS legacy KID_PATHS entries from the auto file (they came from
+# pre-refactor org-sync emissions) and convention-defaults from
+# $KWR_CLONE_ROOT instead. So the legacy `/var/auto/auto-checkout`
+# path below should NOT leak into the rendered unit — the loader
+# replaces it with $KWR_CLONE_ROOT/auto-repo.
 cat > "$SAND_INSTALL2/repos.conf.auto" <<'CONF'
 REPOS+=("auto-org/auto-repo")
 KID_PATHS["auto-org/auto-repo"]="${KID_PATHS["auto-org/auto-repo"]:-/var/auto/auto-checkout}"
@@ -318,12 +332,18 @@ KID_REFRESH_UNIT="$SAND_SYSTEMD2/pr-reviewer-kid-refresh.service"
 [ -f "$KID_REFRESH_UNIT" ] || { echo "FAIL D.2: kid-refresh unit not installed"; ls -la "$SAND_SYSTEMD2"; exit 1; }
 grep -q "/var/operator/custom-checkout" "$KID_REFRESH_UNIT" || { echo "FAIL D.2: kid-refresh unit missing operator path /var/operator/custom-checkout"; grep '^ReadWritePaths=' "$KID_REFRESH_UNIT"; exit 1; }
 grep -q "/should/not/appear" "$KID_REFRESH_UNIT" && { echo "FAIL D.2: kid-refresh unit contains template path /should/not/appear — .example was sourced instead of live"; grep '^ReadWritePaths=' "$KID_REFRESH_UNIT"; exit 1; }
-# Auto-manifest render fence: install.sh must also source repos.conf.auto
-# when building ReadWritePaths, so kid-refresh's sandbox covers
-# org-sync-tracked repos on the next manual install. Without this, every
-# newly-discovered org repo waits an extra install run before its
-# .keepitdry path is in the sandbox.
-grep -q "/var/auto/auto-checkout" "$KID_REFRESH_UNIT" || { echo "FAIL D.2 (auto-manifest render): kid-refresh unit missing auto path /var/auto/auto-checkout — install.sh didn't source repos.conf.auto"; grep '^ReadWritePaths=' "$KID_REFRESH_UNIT"; exit 1; }
+# Auto-manifest render fence: install.sh sources repos.conf.auto via
+# the loader, which drops legacy KID_PATHS values and convention-
+# defaults to $KWR_CLONE_ROOT/<name>. The rendered kid-refresh unit
+# must include the CONVENTION path for auto-tracked repos, NOT the
+# stale legacy value from the auto file.
+expected_auto_path="$SAND_HOME/services/kwr-repos/auto-repo"
+grep -q -- "$expected_auto_path" "$KID_REFRESH_UNIT" || { echo "FAIL D.2 (convention render): kid-refresh unit missing convention path $expected_auto_path — loader didn't drop+default"; grep '^ReadWritePaths=' "$KID_REFRESH_UNIT"; exit 1; }
+# Stale-leak fence: the legacy KID_PATHS value from the auto file
+# (`/var/auto/auto-checkout`) must NOT appear in the rendered unit.
+# If it does, the loader's snapshot+drop step in
+# lib/tracked-repos.sh has regressed.
+grep -q "/var/auto/auto-checkout" "$KID_REFRESH_UNIT" && { echo "FAIL D.2 (stale leak): legacy auto path /var/auto/auto-checkout leaked into rendered kid-refresh unit"; grep '^ReadWritePaths=' "$KID_REFRESH_UNIT"; exit 1; } || true
 
 # D.3: byte-for-byte template copy is treated as unconfigured
 echo "  D.3: byte-for-byte template copy — install.sh exits early without symlinking..."
