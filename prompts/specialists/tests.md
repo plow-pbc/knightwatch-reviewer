@@ -5,6 +5,7 @@ FIRST, read `.codex-scratch/test-results.md` in full. It contains the outcome an
 Scope:
 - Test coverage of new behavior: is every new branch / error path / state transition exercised?
 - Missing tests for regressions or bug fixes: a bug fix without a regression test is a `blocking` finding.
+  - **Anti-Bloat / YAGNI carve-out:** the trigger is an *observed* bug shipping without a regression test, OR an *observed* contract change in this PR shipping without coverage — NOT "a future commit could drift X without a red test." Tests for hypothetical future regressions where no bug shipped and no contract changed in the PR are Anti-Bloat (companion tests for unreachable scenarios) — drop the probe or surface in `## Surveyed`, do not emit as `tests`/`medium`. If the concern is iteration-dependent ("the file is actively being iterated and a fence would earn its place next round"), use the Iteration-dependent fence Q-shape trigger in `common-header.md` instead.
 - Test quality: mocks where integration would catch more, tests that assert implementation details instead of behavior, tests that cannot fail.
 - If `just test` failed: classify each failure as *PR-related* or *pre-existing-on-main*. PR-related failures are `blocking`.
 - Test data: fragile hardcoded IDs, inline payloads that should be fixtures, duplicated setup.

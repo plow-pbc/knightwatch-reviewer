@@ -194,6 +194,13 @@ echo "  asserting Iteration-dependent fence Q-shape trigger in common-header.md.
 assert_grep "common-header.md should carry the Iteration-dependent fence Q-shape trigger" \
     "Iteration-dependent fence Q-shape" prompts/common-header.md
 
+# Token fence: tests.md must carry the Anti-Bloat carve-out for hypothetical fences
+# distinguishing observed-bug-needs-regression-test (legitimate blocking)
+# from hypothetical-future-regression (Anti-Bloat / YAGNI, drop).
+echo "  asserting Anti-Bloat carve-out in specialists/tests.md..."
+assert_grep "specialists/tests.md should carry the Anti-Bloat carve-out for hypothetical fences" \
+    "no bug shipped and no contract changed" prompts/specialists/tests.md
+
 # Token fence: aggregator.md must carry the Silence-is-golden
 # anti-emission stance — counters the LLM default to surface more
 # work to look thorough. Token-level pin only per review-priority.md
