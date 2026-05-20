@@ -178,6 +178,44 @@ assert_grep "critic.md should carry the Hypothetical-future-regression decline r
 assert_grep "aggregator.md should inherit the decline rule for cross-angle probes" \
     "Hypothetical-future-regression decline" prompts/aggregator.md
 
+# Token fence: common-header.md "Don't propose:" list must include
+# CI/test fences for hypothetical future regressions — the upstream
+# emission-prevention companion to critic.md's downstream decline
+# rule. Anti-Bloat / YAGNI pairing keeps the canonical term visible.
+echo "  asserting CI-fence Don't-propose bullet in common-header.md..."
+assert_grep "common-header.md should forbid CI fences for hypothetical future regressions" \
+    "CI/test fences for hypothetical future regressions" prompts/common-header.md
+
+# Token fence: common-header.md must carry the Iteration-Q-shape
+# trigger — the cut-positive escape hatch for fence concerns that ARE
+# iteration-dependent (vs the flat-decline case the Don't-propose
+# bullet above handles).
+echo "  asserting Iteration-dependent fence Q-shape trigger in common-header.md..."
+assert_grep "common-header.md should carry the Iteration-dependent fence Q-shape trigger" \
+    "Iteration-dependent fence Q-shape" prompts/common-header.md
+
+# Token fence: tests.md must carry the Anti-Bloat carve-out for hypothetical fences
+# distinguishing observed-bug-needs-regression-test (legitimate blocking)
+# from hypothetical-future-regression (Anti-Bloat / YAGNI, drop).
+echo "  asserting Anti-Bloat carve-out in specialists/tests.md..."
+assert_grep "specialists/tests.md should carry the Anti-Bloat carve-out for hypothetical fences" \
+    "no bug shipped and no contract changed" prompts/specialists/tests.md
+
+# Token fence: architecture-v2.md must carry the fence-narrower-than-
+# prose carve-out — minimum-viable smoke coverage is NOT two-place
+# drift even though it's structurally two-place.
+echo "  asserting fence-narrower-than-prose carve-out in specialists/architecture-v2.md..."
+assert_grep "specialists/architecture-v2.md should carry the fence-narrower-than-prose carve-out" \
+    "minimum-viable coverage, not drift" prompts/specialists/architecture-v2.md
+
+# Token fence: aggregator.md must carry the Silence-is-golden
+# anti-emission stance — counters the LLM default to surface more
+# work to look thorough. Token-level pin only per review-priority.md
+# (do not pin rationale prose).
+echo "  asserting Silence-is-golden anti-emission stance in aggregator.md..."
+assert_grep "aggregator.md should carry the Silence-is-golden anti-emission stance" \
+    "Silence is golden" prompts/aggregator.md
+
 # Token fence: org-sync auto-clones MUST live under $KWR_CLONE_ROOT
 # (defaults to $HOME/services/kwr-repos/), defined as the single
 # source of truth in lib/tracked-repos.sh. Hacking/ is the operator's

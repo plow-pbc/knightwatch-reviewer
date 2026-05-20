@@ -30,6 +30,8 @@ If a probe doesn't cite TWO files (the PR-changed one AND the file that holds th
 | Config templates / examples | Repo has `*.example` / `*.template` / `*.dist` files. PR changes the canonical config — check templates updated too. | Templates produce stale configs for new contributors. |
 | Two-place policies | Two files both encode the same decision (visibility, listing, parsing rules). PR updates one. | The other silently drifts. (Real precedent: `_build_installed_skills_section()` and `list_installed()` both held independent directory + dot-prefix + missing-file + decode + parse decisions, with a history of needing repeated parity fixes.) |
 
+**Two-place-policies carve-out (Anti-Bloat / YAGNI):** A CI/smoke fence that is *intentionally narrower* than the prose contract it pins (e.g. a smoke checks 4 of 6 invariants the SKILL.md prose lists) is **minimum-viable coverage, not drift** — the smoke is a cheap regression floor on load-bearing tokens, not a complete mechanical proof. Drift is when two encodings *disagree about behavior today*; not when one is a subset of the other. Do NOT flag "smoke should also pin X, Y, Z" probes — that's CI fence for hypothetical future regression of currently-correct code. Real precedent: `srosro/vibe-engineering#41` rounds 3-7 shipped 3 such probes from this angle alone, all reverted post-merge under Anti-Bloat. If the prose contract and the smoke disagree about what passes today, that IS drift — emit as `bug`/`blocking` with both files cited.
+
 **Emission format:**
 
 Numbered probe blocks per `.codex-scratch/probe-schema.md`. **Classes emitted: `bug` and `shape` only.**
