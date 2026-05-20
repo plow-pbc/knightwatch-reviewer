@@ -12,12 +12,14 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TMPDIR=$(mktemp -d -t org-sync-smoke-XXXXXX)
 trap 'rm -rf "$TMPDIR"' EXIT
 
-# HOME first so $HOME/Hacking lands inside the sandbox. Clone path is
-# always $HOME/Hacking/<name> in production (no SOURCE_BASE knob), so
-# the smoke and prod share one path contract — no risk of cloning to
-# one place while asserting another.
+# HOME first so $HOME/services/kwr-repos lands inside the sandbox. Clone
+# path is always $HOME/services/kwr-repos/<name> in production (no
+# SOURCE_BASE knob), so the smoke and prod share one path contract — no
+# risk of cloning to one place while asserting another. The org-sync.sh
+# `mkdir -p` for the base dir is the script's own responsibility; the
+# .local/bin mkdir below is just the gh-stub install location.
 export HOME="$TMPDIR/home"
-mkdir -p "$HOME/.local/bin" "$HOME/Hacking"
+mkdir -p "$HOME/.local/bin"
 export PATH="$HOME/.local/bin:$PATH"
 
 export STATE_DIR="$TMPDIR/state"
@@ -112,7 +114,7 @@ CONF
 }
 auto_sha() { [ -f "$AUTO_CONF" ] && sha1sum "$AUTO_CONF" | awk '{print $1}' || echo "absent"; }
 make_checkout() {
-    local dest="$HOME/Hacking/$1"
+    local dest="$HOME/services/kwr-repos/$1"
     rm -rf "$dest"
     mkdir -p "$dest"
     git -C "$dest" init -q
@@ -164,8 +166,8 @@ write_baseline_conf '"acme"'
 MOCK_GH_LIST_acme=$'foo\nbar' run_sync || { echo "FAIL scenario 2: org-sync exited non-zero"; cat "$LOG"; exit 1; }
 n=$(count_gh "repo clone")
 [ "$n" -eq 2 ] || { echo "FAIL scenario 2: expected 2 clone calls, got $n"; cat "$STUB_GH_LOG"; exit 1; }
-[ -d "$HOME/Hacking/foo/.git" ] || { echo "FAIL scenario 2: $HOME/Hacking/foo not cloned"; exit 1; }
-[ -d "$HOME/Hacking/bar/.git" ] || { echo "FAIL scenario 2: $HOME/Hacking/bar not cloned"; exit 1; }
+[ -d "$HOME/services/kwr-repos/foo/.git" ] || { echo "FAIL scenario 2: $HOME/services/kwr-repos/foo not cloned"; exit 1; }
+[ -d "$HOME/services/kwr-repos/bar/.git" ] || { echo "FAIL scenario 2: $HOME/services/kwr-repos/bar not cloned"; exit 1; }
 # repos.conf MUST NOT be modified — that's the structural promise of
 # the split-file design. Bit-exact assert beats the prior marker-block
 # grep (which only proved the markers existed).
@@ -179,7 +181,7 @@ expected=$'acme/bar\nacme/foo\nmanual/keep'
 got=$(resolved_repos)
 [ "$got" = "$expected" ] || { echo "FAIL scenario 2: resolved REPOS mismatch — got"; echo "$got"; exit 1; }
 got=$(resolved_kid_path "acme/foo")
-[ "$got" = "$HOME/Hacking/foo" ] || { echo "FAIL scenario 2: KID_PATHS[acme/foo] = '$got'"; exit 1; }
+[ "$got" = "$HOME/services/kwr-repos/foo" ] || { echo "FAIL scenario 2: KID_PATHS[acme/foo] = '$got'"; exit 1; }
 # SOURCE_PATHS regression fence: cross-repo grep surface stays an
 # explicit operator opt-in. Auto-discovered repos MUST NOT appear in
 # SOURCE_PATHS — re-introducing them re-opens the private-sibling
@@ -283,7 +285,7 @@ MOCK_GH_LIST_acme=$'special\nother' run_sync || { echo "FAIL scenario 9: org-syn
 got=$(resolved_kid_path "acme/special")
 [ "$got" = "/var/operator/custom-special" ] || { echo "FAIL scenario 9: KID_PATHS[acme/special] = '$got'"; exit 1; }
 got=$(resolved_kid_path "acme/other")
-[ "$got" = "$HOME/Hacking/other" ] || { echo "FAIL scenario 9: KID_PATHS[acme/other] = '$got'"; exit 1; }
+[ "$got" = "$HOME/services/kwr-repos/other" ] || { echo "FAIL scenario 9: KID_PATHS[acme/other] = '$got'"; exit 1; }
 if grep -q 'acme/special' "$AUTO_CONF"; then
     echo "FAIL scenario 9: 'acme/special' appears in auto file — would shadow operator's custom path"
     cat "$AUTO_CONF"; exit 1
@@ -299,7 +301,7 @@ echo "  scenario 10: gh repo clone failure — fail loud + no partial left + rec
 write_baseline_conf '"acme"'
 rm -f "$AUTO_CONF"
 SHA=$(auto_sha)
-rm -rf "$HOME/Hacking/cant-clone"
+rm -rf "$HOME/services/kwr-repos/cant-clone"
 # The smoke `gh` stub creates $dest with .git + origin BEFORE honoring
 # MOCK_GH_CLONE_EXIT, faithfully simulating production gh's failure
 # behavior. Without org-sync's rm -rf $dest on failure, next tick's
@@ -311,12 +313,12 @@ fi
 assert_auto_unchanged "$SHA"
 grep -q 'gh repo clone acme/cant-clone failed' "$LOG" || { echo "FAIL scenario 10: expected clone-failure log line"; cat "$LOG"; exit 1; }
 # Partial-clone cleanup pin: $dest MUST be gone after failure.
-[ ! -e "$HOME/Hacking/cant-clone" ] || { echo "FAIL scenario 10: partial clone left behind at $HOME/Hacking/cant-clone"; ls -la "$HOME/Hacking/cant-clone"; exit 1; }
+[ ! -e "$HOME/services/kwr-repos/cant-clone" ] || { echo "FAIL scenario 10: partial clone left behind at $HOME/services/kwr-repos/cant-clone"; ls -la "$HOME/services/kwr-repos/cant-clone"; exit 1; }
 # Recovery tick: with MOCK_GH_CLONE_EXIT unset, clone succeeds; auto
 # file gains the new entry. The dest is fresh — no smuggled state
 # from the prior failed attempt.
 MOCK_GH_LIST_acme="cant-clone" run_sync || { echo "FAIL scenario 10 recovery: org-sync exited non-zero"; cat "$LOG"; exit 1; }
-[ -d "$HOME/Hacking/cant-clone/.git" ] || { echo "FAIL scenario 10 recovery: clone didn't happen on recovery tick"; exit 1; }
+[ -d "$HOME/services/kwr-repos/cant-clone/.git" ] || { echo "FAIL scenario 10 recovery: clone didn't happen on recovery tick"; exit 1; }
 grep -q '"acme/cant-clone"' "$AUTO_CONF" || { echo "FAIL scenario 10 recovery: auto file missing recovered repo"; cat "$AUTO_CONF"; exit 1; }
 
 # --- Scenario 11: lock contention — concurrent run defers ------------------

@@ -1,7 +1,15 @@
 #!/bin/bash
 # Discover GitHub repos in $ORGS, clone any missing ones into
-# $HOME/Hacking/<name>, and rewrite $STATE_DIR/repos.conf.auto with the
-# resulting set. Hourly via pr-reviewer-org-sync.timer.
+# $HOME/services/kwr-repos/<name>, and rewrite $STATE_DIR/repos.conf.auto
+# with the resulting set. Hourly via pr-reviewer-org-sync.timer.
+#
+# Auto-managed clones live under $HOME/services/, NOT $HOME/Hacking/.
+# $HOME/Hacking/ is the operator's dev workspace (parallel sibling
+# checkouts per CLAUDE.md) — co-mingling auto-clones there caused
+# silent collisions when a tracked repo transferred orgs and the
+# operator's dev clone's origin URL no longer matched the canonical
+# form for the new owner. Live production state stays under
+# $HOME/services/ alongside the deployed reviewer prod clone.
 #
 # Split-file manifest:
 #   repos.conf       — operator-owned. We only READ. (manual REPOS + ORGS)
@@ -92,10 +100,12 @@ if [ "${#AUTO[@]}" -gt 0 ]; then
     mapfile -t AUTO < <(printf '%s\n' "${AUTO[@]}" | sort)
 fi
 
+mkdir -p "$HOME/services/kwr-repos"
+
 NEW_CLONES=0
 for full in "${AUTO[@]}"; do
     name="${full#*/}"
-    dest="$HOME/Hacking/$name"
+    dest="$HOME/services/kwr-repos/$name"
     if [ -d "$dest/.git" ]; then
         if ! url=$(git -C "$dest" remote get-url origin 2>/dev/null); then
             log "FATAL: $dest has no origin remote configured"
@@ -140,7 +150,7 @@ trap 'rm -f "$TMP_NEW"' EXIT
     for full in "${AUTO[@]}"; do
         name="${full#*/}"
         echo "REPOS+=(\"$full\")"
-        echo "KID_PATHS[\"$full\"]=\"\${KID_PATHS[\"$full\"]:-\$HOME/Hacking/$name}\""
+        echo "KID_PATHS[\"$full\"]=\"\${KID_PATHS[\"$full\"]:-\$HOME/services/kwr-repos/$name}\""
     done
 } > "$TMP_NEW"
 
