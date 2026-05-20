@@ -194,6 +194,14 @@ echo "  asserting Iteration-dependent fence Q-shape trigger in common-header.md.
 assert_grep "common-header.md should carry the Iteration-dependent fence Q-shape trigger" \
     "Iteration-dependent fence Q-shape" prompts/common-header.md
 
+# Token fence: aggregator.md must carry the Silence-is-golden
+# anti-emission stance — counters the LLM default to surface more
+# work to look thorough. Token-level pin only per review-priority.md
+# (do not pin rationale prose).
+echo "  asserting Silence-is-golden anti-emission stance in aggregator.md..."
+assert_grep "aggregator.md should carry the Silence-is-golden anti-emission stance" \
+    "Silence is golden" prompts/aggregator.md
+
 # Token fence: org-sync auto-clones MUST live under $KWR_CLONE_ROOT
 # (defaults to $HOME/services/kwr-repos/), defined as the single
 # source of truth in lib/tracked-repos.sh. Hacking/ is the operator's
