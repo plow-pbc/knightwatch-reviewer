@@ -51,6 +51,7 @@ LOG_FILE="${LOG_FILE:-$STATE_DIR/approve.log}"
 # goes through.
 REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 . "$REVIEWER_LIB_DIR/tracked-repos.sh"
+. "$REVIEWER_LIB_DIR/pr-enumerate.sh"
 [ ${#REPOS[@]} -ge 1 ] || { echo "FATAL: no tracked repos — populate $STATE_DIR/repos.conf or set REPOS in config.env" >&2; exit 1; }
 BOT_USER="${BOT_USER:-srosro}"
 BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
@@ -76,90 +77,84 @@ PROCESSED=0
 SKIPPED_UNTRUSTED=0
 SKIPPED_FAILED=0
 
-for REPO in "${REPOS[@]}"; do
-    # Same fail-loud-then-skip pattern as the comments fetch below: an
-    # outage on `gh pr list` shouldn't look like "this repo had no PRs"
-    # in the operator's journal.
-    PR_LIST=$(gh pr list --repo "$REPO" --json number --state open --limit 200 2>/dev/null | jq -r '.[].number') || {
-        log "$REPO: pr list failed — skipping this repo for this tick"
+ALL_PRS=$(enumerate_open_prs) || { log "enumerate_open_prs failed — skipping this tick"; exit 0; }
+
+while IFS= read -r PR_JSON; do
+    REPO=$(echo "$PR_JSON" | jq -r '.repository.nameWithOwner')
+    PR_NUM=$(echo "$PR_JSON" | jq -r '.number')
+    # Pagination correctness lives in lib/gh-comments.sh (shared with
+    # review.sh + learn-from-replies.sh) so any future caller of this
+    # endpoint can't reinvent the bug. On fetch failure, log loud +
+    # skip this PR for this tick rather than silently treating
+    # "API broken" as "no comments".
+    COMMENTS=$(fetch_issue_comments "$REPO" "$PR_NUM") || {
+        log "$REPO#$PR_NUM: comments fetch failed — skipping this PR for this tick"
         continue
     }
 
-    for PR_NUM in $PR_LIST; do
-        # Pagination correctness lives in lib/gh-comments.sh (shared with
-        # review.sh + learn-from-replies.sh) so any future caller of this
-        # endpoint can't reinvent the bug. On fetch failure, log loud +
-        # skip this PR for this tick rather than silently treating
-        # "API broken" as "no comments".
-        COMMENTS=$(fetch_issue_comments "$REPO" "$PR_NUM") || {
-            log "$REPO#$PR_NUM: comments fetch failed — skipping this PR for this tick"
+    while IFS= read -r COMMENT; do
+        BODY=$(echo "$COMMENT" | jq -r '.body')
+        # Marker filter: skip the bot's own auto-posts (review footers
+        # and ack comments name /srosro-approve literally).
+        if printf '%s' "$BODY" | grep -qF "$BOT_AUTO_POST_MARKER"; then
             continue
-        }
-
-        while IFS= read -r COMMENT; do
-            BODY=$(echo "$COMMENT" | jq -r '.body')
-            # Marker filter: skip the bot's own auto-posts (review footers
-            # and ack comments name /srosro-approve literally).
-            if printf '%s' "$BODY" | grep -qF "$BOT_AUTO_POST_MARKER"; then
-                continue
-            fi
-            # Cheap body filter: skip anything that isn't an approve request.
-            if ! is_approve_request "$BODY"; then
-                continue
-            fi
-            ID=$(echo "$COMMENT" | jq -r '.id')
-            USER=$(echo "$COMMENT" | jq -r '.user.login')
-            APPROVE_KEY="${REPO}#${PR_NUM}#${ID}"
-            # Already-processed: skip silently.
-            if [ -n "$(seen_get "$APPROVES_SEEN_FILE" "$APPROVE_KEY")" ]; then
-                continue
-            fi
-            # Defensive bot filter (cheap pre-check before the trust API call).
-            case "$USER" in
-                *"[bot]"|"Copilot"|"copilot")
-                    log "$APPROVE_KEY: /${BOT_CMD_PREFIX}-approve from bot @$USER ignored"
-                    seen_set "$APPROVES_SEEN_FILE" "$APPROVE_KEY"
-                    continue
-                    ;;
-            esac
-            # Trust gate: only push-access collaborators can trigger an
-            # approval. Drive-by commenters are recorded as seen so we
-            # don't re-log on every tick.
-            if ! is_trusted_repo_author "$REPO" "$USER"; then
-                log "$APPROVE_KEY: /${BOT_CMD_PREFIX}-approve from @$USER ignored (no push access)"
+        fi
+        # Cheap body filter: skip anything that isn't an approve request.
+        if ! is_approve_request "$BODY"; then
+            continue
+        fi
+        ID=$(echo "$COMMENT" | jq -r '.id')
+        USER=$(echo "$COMMENT" | jq -r '.user.login')
+        APPROVE_KEY="${REPO}#${PR_NUM}#${ID}"
+        # Already-processed: skip silently.
+        if [ -n "$(seen_get "$APPROVES_SEEN_FILE" "$APPROVE_KEY")" ]; then
+            continue
+        fi
+        # Defensive bot filter (cheap pre-check before the trust API call).
+        case "$USER" in
+            *"[bot]"|"Copilot"|"copilot")
+                log "$APPROVE_KEY: /${BOT_CMD_PREFIX}-approve from bot @$USER ignored"
                 seen_set "$APPROVES_SEEN_FILE" "$APPROVE_KEY"
-                SKIPPED_UNTRUSTED=$((SKIPPED_UNTRUSTED + 1))
                 continue
-            fi
+                ;;
+        esac
+        # Trust gate: only push-access collaborators can trigger an
+        # approval. Drive-by commenters are recorded as seen so we
+        # don't re-log on every tick.
+        if ! is_trusted_repo_author "$REPO" "$USER"; then
+            log "$APPROVE_KEY: /${BOT_CMD_PREFIX}-approve from @$USER ignored (no push access)"
+            seen_set "$APPROVES_SEEN_FILE" "$APPROVE_KEY"
+            SKIPPED_UNTRUSTED=$((SKIPPED_UNTRUSTED + 1))
+            continue
+        fi
 
-            # Submit the approval. Body carries the marker so subsequent
-            # ticks (and review.sh's own filter) treat it as a bot post
-            # and don't reprocess it.
-            APPROVE_BODY="$BOT_AUTO_POST_MARKER
+        # Submit the approval. Body carries the marker so subsequent
+        # ticks (and review.sh's own filter) treat it as a bot post
+        # and don't reprocess it.
+        APPROVE_BODY="$BOT_AUTO_POST_MARKER
 Approved on @${USER}'s /${BOT_CMD_PREFIX}-approve request."
-            if gh pr review "$PR_NUM" --repo "$REPO" --approve --body "$APPROVE_BODY" >/dev/null 2>>"$LOG_FILE"; then
-                log "$APPROVE_KEY: approved on @${USER}'s request"
-                # Critical call site: if seen_set fails after a successful
-                # approval, the next tick will post a duplicate APPROVED
-                # review. The helper already logs a generic failure line;
-                # this extra warning makes the user-visible consequence
-                # explicit so an operator knows what to expect.
-                if ! seen_set "$APPROVES_SEEN_FILE" "$APPROVE_KEY"; then
-                    log "$APPROVE_KEY: WARNING — seen_set failed AFTER successful approval; next tick may post a duplicate APPROVED review"
-                fi
-                PROCESSED=$((PROCESSED + 1))
-            else
-                # Most common failures: PR author trying to self-approve,
-                # PR already merged/closed, or transient API errors. Mark
-                # seen so we don't retry forever — the human can re-post
-                # /srosro-approve if they want another shot.
-                log "$APPROVE_KEY: gh pr review --approve FAILED — see log; marking seen"
-                seen_set "$APPROVES_SEEN_FILE" "$APPROVE_KEY"
-                SKIPPED_FAILED=$((SKIPPED_FAILED + 1))
+        if gh pr review "$PR_NUM" --repo "$REPO" --approve --body "$APPROVE_BODY" >/dev/null 2>>"$LOG_FILE"; then
+            log "$APPROVE_KEY: approved on @${USER}'s request"
+            # Critical call site: if seen_set fails after a successful
+            # approval, the next tick will post a duplicate APPROVED
+            # review. The helper already logs a generic failure line;
+            # this extra warning makes the user-visible consequence
+            # explicit so an operator knows what to expect.
+            if ! seen_set "$APPROVES_SEEN_FILE" "$APPROVE_KEY"; then
+                log "$APPROVE_KEY: WARNING — seen_set failed AFTER successful approval; next tick may post a duplicate APPROVED review"
             fi
-        done < <(echo "$COMMENTS" | jq -c '.[]')
-    done
-done
+            PROCESSED=$((PROCESSED + 1))
+        else
+            # Most common failures: PR author trying to self-approve,
+            # PR already merged/closed, or transient API errors. Mark
+            # seen so we don't retry forever — the human can re-post
+            # /srosro-approve if they want another shot.
+            log "$APPROVE_KEY: gh pr review --approve FAILED — see log; marking seen"
+            seen_set "$APPROVES_SEEN_FILE" "$APPROVE_KEY"
+            SKIPPED_FAILED=$((SKIPPED_FAILED + 1))
+        fi
+    done < <(echo "$COMMENTS" | jq -c '.[]')
+done < <(echo "$ALL_PRS" | jq -c '.[]')
 
 if [ "$PROCESSED" -eq 0 ] && [ "$SKIPPED_UNTRUSTED" -eq 0 ] && [ "$SKIPPED_FAILED" -eq 0 ]; then
     log "no new /${BOT_CMD_PREFIX}-approve requests"
