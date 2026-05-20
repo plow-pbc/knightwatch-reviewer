@@ -5,6 +5,7 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
@@ -281,6 +282,30 @@ class TestRunCodex(unittest.TestCase):
         # Empty-output sentinel — not 0, which would mean the stale artifact passed validation.
         self.assertEqual(rc, 3)
         self.assertFalse((agent_dir / "output.md").exists())
+
+    @patch("pipeline.os.killpg")
+    @patch("pipeline.subprocess.Popen")
+    def test_stale_kill_does_not_retry_when_worker_budget_too_tight(self, mock_popen, mock_killpg):
+        """The retry gate has two budget checks: per-Codex (elapsed under
+        this attempt's cap) AND outer-worker (review.sh's WORKER_DEADLINE_EPOCH
+        env, which covers just test + Wave A + earlier specialists). If
+        per-Codex says fine but the outer worker is already nearly out of
+        wall-clock, no retry — otherwise the worker `timeout` would fire
+        mid-retry before Wave B writes the sentinel."""
+        agent_dir = self._agent_dir("intent")
+        mock_popen.side_effect = lambda argv, **kwargs: FakePopen(
+            returncode=-signal.SIGKILL, raise_timeout=True
+        )
+        # Tight outer worker budget: only one second past current wall-clock.
+        # SPECIALIST_TIMEOUT_SEC (5.0) + WORKER_RETRY_CLEANUP_MARGIN_SEC (300)
+        # would be 305s, far over the 1s deadline → retryable=False.
+        deadline = str(time.time() + 1)
+        with patch.dict(os.environ, {"WORKER_DEADLINE_EPOCH": deadline}), \
+             _fast_watchdog():
+            rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(agent_dir))
+        self.assertEqual(rc, 124)
+        self.assertEqual(mock_popen.call_count, 1)  # outer budget too tight → no retry
+        self.assertFalse((agent_dir / "log.attempt1.txt").exists())
 
     @patch("pipeline.os.killpg")
     @patch("pipeline.subprocess.Popen")

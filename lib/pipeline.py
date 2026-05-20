@@ -19,27 +19,20 @@ SPECIALISTS = (
 
 # Per-codex hard cap. Successful specialists complete in 1–5 min; 45 min
 # means the codex subprocess is wedged, not slow. Originating incident:
-# cncorp/plow#594, 2026-05-12T20:04Z — one hung specialist blocked
-# `with ThreadPoolExecutor as ex:` indefinitely and the 90 min outer
-# bash timeout killed the worker before its cleanup trap completed.
+# cncorp/plow#594, 2026-05-12T20:04Z.
 SPECIALIST_TIMEOUT_SEC = 45 * 60
 
-# Liveness watchdog. Codex 0.128–0.130+ has a parallel-tool-call dispatch
-# race (openai/codex#21937, #14220) where the subprocess parks all worker
-# threads in futex_do_wait and stops writing log.txt, but never exits.
-# The hard cap above was the only recovery — every hang burned 45 min.
-# The watchdog polls log.txt's mtime: if no write for 5 min, killpg early
-# with the same 124 exit code as the hard cap. run_codex then retries
-# once on stale-kills (the documented flaky case) — but NOT on hard-cap
-# kills, since those mean codex ran for the full 45 min and a second
-# attempt could push past review.sh's 90 min outer worker timeout with
-# no recovery. Two hangs in a row aborts loudly via Wave B.
+# Liveness watchdog for the codex 0.128–0.130+ parallel-tool-call deadlock
+# (openai/codex#21937, #14220): kill at 5 min staleness, retry once on
+# stale kills only. Hard-cap and budget-exhausted stale kills don't retry.
+# See _wait_with_watchdog for the budget-gating rationale.
 STALENESS_THRESHOLD_SEC = 5 * 60
 WATCHDOG_POLL_SEC = 60
-# Log-line prefixes used by _wait_with_watchdog. Tests assert against
-# these so a future rename doesn't silently drift the operator-facing
-# kill messages; retry eligibility is carried by the explicit
-# `retryable` field on the return tuple, not by string matching.
+WORKER_RETRY_CLEANUP_MARGIN_SEC = 5 * 60
+
+# Operator-facing kill-reason prefixes. Tests assert against these so a
+# rename doesn't silently drift the log; retry eligibility flows through
+# the explicit `retryable` field, not string matching.
 WATCHDOG_KILL_STALE_PREFIX = "stale for"
 WATCHDOG_KILL_HARDCAP_PREFIX = "hit hard cap"
 _PROBE_BLOCK_RE = re.compile(r"^### Probe |^No probes\.$", re.MULTILINE)
@@ -75,20 +68,27 @@ def _relink(link: Path, target: Path) -> None:
     link.symlink_to(target)
 
 
+def _has_worker_budget_for_retry() -> bool:
+    """True if the outer `timeout $WORKER_TIMEOUT` wrap (set by review.sh)
+    has enough wall-clock left to absorb another full SPECIALIST_TIMEOUT_SEC
+    plus the cleanup margin for aggregator + sentinel-write. Falls back to
+    True when WORKER_DEADLINE_EPOCH is unset (tests run outside the harness)."""
+    raw = os.environ.get("WORKER_DEADLINE_EPOCH")
+    if not raw:
+        return True
+    remaining = float(raw) - time.time()
+    return remaining >= SPECIALIST_TIMEOUT_SEC + WORKER_RETRY_CLEANUP_MARGIN_SEC
+
+
 def _wait_with_watchdog(
     proc: subprocess.Popen, log_file: Path
 ) -> tuple[int, str | None, bool]:
     """Wait on `proc`, polling `log_file.mtime` for liveness. Returns
     `(exit_code, kill_reason, retryable)`. `kill_reason` is None on
-    natural exit and a human-readable string on watchdog kill
-    (exit_code is then 124). `retryable` is True only for stale-log
-    kills; False for natural exit and hard-cap kills.
-
-    Hard-cap precedence: if both staleness AND hard-cap thresholds
-    cross on the same poll tick (a process active until ~minute 40
-    that then goes quiet would hit both at minute 45), hard-cap wins.
-    Retrying that case could push past review.sh's 90 min outer worker
-    timeout with no recovery.
+    natural exit and a human-readable string on watchdog kill (exit_code
+    is then 124). `retryable` is True only for stale-log kills that fit
+    under both the per-Codex and outer-worker budgets; hard-cap kills
+    are never retryable.
 
     Kills the whole process group via `os.killpg` when codex hangs —
     bare wait+kill leaves codex's tool-subprocess descendants orphaned
@@ -115,17 +115,27 @@ def _wait_with_watchdog(
             last_progress = now
         stale_for = now - last_progress
         elapsed = now - start
+        # Hard-cap precedence: if both staleness AND hard-cap cross on the
+        # same poll tick (a process active until ~minute 40 that goes quiet
+        # would hit both at minute 45), hard-cap wins. Retrying a process
+        # that consumed its full per-Codex budget could push past the
+        # outer worker `timeout` with no recovery.
         if elapsed >= SPECIALIST_TIMEOUT_SEC:
             reason = f"{WATCHDOG_KILL_HARDCAP_PREFIX} {SPECIALIST_TIMEOUT_SEC}s — killpg'd whole group"
             retryable = False
         elif stale_for >= STALENESS_THRESHOLD_SEC:
             reason = f"{WATCHDOG_KILL_STALE_PREFIX} {stale_for:.0f}s (no log activity) — killpg'd whole group"
-            # Late-stale kills are NOT retryable: if the first attempt burned
-            # almost all the per-specialist budget, a second 45-min attempt
-            # could push past review.sh's 90 min outer worker timeout with
-            # no margin left for Wave B's abort path to write the sentinel.
-            # One staleness-threshold's worth of headroom is enough slack.
-            retryable = elapsed <= SPECIALIST_TIMEOUT_SEC - STALENESS_THRESHOLD_SEC
+            # Two gates: per-Codex (elapsed under this attempt's own cap,
+            # one staleness threshold of headroom) AND outer worker (the
+            # `timeout $WORKER_TIMEOUT` wrap covers just test + Wave A +
+            # all earlier specialists, so wall-clock remaining can be
+            # tighter than per-Codex elapsed would suggest). Both must
+            # pass; otherwise the worker would be killed mid-retry before
+            # Wave B's abort can write _wave_b_timeouts.txt.
+            retryable = (
+                elapsed <= SPECIALIST_TIMEOUT_SEC - STALENESS_THRESHOLD_SEC
+                and _has_worker_budget_for_retry()
+            )
         else:
             continue
         try:
@@ -141,13 +151,11 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
     under agent_dir. Returns codex exit code, 3 for empty output, or 4 for
     probe-contract violation (specialist roles only).
 
-    On a stale-log watchdog kill (rc=124), retries the codex invocation
-    exactly once. The first attempt's log is archived to log.attempt1.txt
-    and any half-written output.md is unlinked before the retry starts.
-    Hard-cap kills do NOT retry — codex ran for the full timeout, and a
-    second attempt could push past review.sh's 90 min outer cap.
-    Two hangs in a row return 124 unchanged so Wave B's fail-loud abort
-    fires."""
+    On a retryable watchdog kill (rc=124, `retryable=True` from
+    _wait_with_watchdog), retries codex exactly once: log.txt is archived
+    to log.attempt1.txt and any half-written output.md is unlinked first.
+    Non-retryable kills (hard-cap, late-stale, worker-budget-exhausted)
+    and two-in-a-row hangs return 124 so Wave B's abort path fires."""
     repo = Path(repo_dir)
     agent = Path(agent_dir)
     agent.mkdir(parents=True, exist_ok=True)
@@ -189,10 +197,6 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
         if kill_reason is not None:
             with log_file.open("a") as lf:
                 lf.write(f"[{_ts()}] agent={name} killed: {kill_reason}\n")
-        # Only stale-log kills retry — see _wait_with_watchdog for the
-        # hard-cap precedence rule. Branching on the explicit retryable
-        # flag (not the human-readable reason prose) means renaming the
-        # log strings can't silently break the retry boundary.
         if not retryable:
             break
 
