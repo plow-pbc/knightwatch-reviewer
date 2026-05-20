@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -13,6 +14,18 @@ from unittest.mock import patch
 # Add lib/ to path so we can import pipeline
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pipeline  # noqa: E402
+
+
+@contextmanager
+def _fast_watchdog(stale=0.1, poll=0.05, timeout=5.0):
+    """Shrinks the watchdog constants for the duration of a `with` block.
+    Six TestRunCodex cases need the same three-knob patch (production
+    minutes → sub-second test budget); keeping the bundle in one place
+    means a future fourth knob lands once, not six times."""
+    with patch.object(pipeline, "STALENESS_THRESHOLD_SEC", stale), \
+         patch.object(pipeline, "WATCHDOG_POLL_SEC", poll), \
+         patch.object(pipeline, "SPECIALIST_TIMEOUT_SEC", timeout):
+        yield
 
 
 def _write_minimal_prompts(prompts_dir: Path) -> None:
@@ -162,9 +175,7 @@ class TestRunCodex(unittest.TestCase):
         fires."""
         agent_dir = self._agent_dir("intent")
         mock_popen.side_effect = _make_codex_stub(plan={"intent": "TIMEOUT"})
-        with patch.object(pipeline, "STALENESS_THRESHOLD_SEC", 0.1), \
-             patch.object(pipeline, "WATCHDOG_POLL_SEC", 0.05), \
-             patch.object(pipeline, "SPECIALIST_TIMEOUT_SEC", 5.0):
+        with _fast_watchdog():
             rc = pipeline.run_codex(
                 "intent", str(self.repo_dir), "PROMPT", str(agent_dir)
             )
@@ -201,9 +212,7 @@ class TestRunCodex(unittest.TestCase):
             return _ProgressingPopen(returncode=0)
         mock_popen.side_effect = make_progressing_popen
 
-        with patch.object(pipeline, "STALENESS_THRESHOLD_SEC", 1.0), \
-             patch.object(pipeline, "WATCHDOG_POLL_SEC", 0.05), \
-             patch.object(pipeline, "SPECIALIST_TIMEOUT_SEC", 10.0):
+        with _fast_watchdog(stale=1.0, timeout=10.0):
             rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(agent_dir))
 
         self.assertEqual(rc, 0)
@@ -232,9 +241,7 @@ class TestRunCodex(unittest.TestCase):
             return FakePopen(returncode=0)
         mock_popen.side_effect = make_popen
 
-        with patch.object(pipeline, "STALENESS_THRESHOLD_SEC", 0.1), \
-             patch.object(pipeline, "WATCHDOG_POLL_SEC", 0.05), \
-             patch.object(pipeline, "SPECIALIST_TIMEOUT_SEC", 5.0):
+        with _fast_watchdog():
             rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(agent_dir))
 
         self.assertEqual(rc, 0)
@@ -268,14 +275,36 @@ class TestRunCodex(unittest.TestCase):
             return FakePopen(returncode=0)
         mock_popen.side_effect = make_popen
 
-        with patch.object(pipeline, "STALENESS_THRESHOLD_SEC", 0.1), \
-             patch.object(pipeline, "WATCHDOG_POLL_SEC", 0.05), \
-             patch.object(pipeline, "SPECIALIST_TIMEOUT_SEC", 5.0):
+        with _fast_watchdog():
             rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(agent_dir))
 
         # Empty-output sentinel — not 0, which would mean the stale artifact passed validation.
         self.assertEqual(rc, 3)
         self.assertFalse((agent_dir / "output.md").exists())
+
+    @patch("pipeline.os.killpg")
+    @patch("pipeline.subprocess.Popen")
+    def test_late_stale_kill_does_not_retry(self, mock_popen, mock_killpg):
+        """A stale-log kill that fires late in the per-specialist budget
+        is NOT retryable: another full attempt at that point could push
+        past review.sh's 90 min outer worker timeout with no margin left
+        for Wave B's abort to write its sentinel. The retryable predicate
+        only fires when at least one staleness threshold's worth of
+        budget remains."""
+        agent_dir = self._agent_dir("intent")
+        # Hung-from-start: log mtime never advances, so stale fires at
+        # elapsed=STALENESS. With TIMEOUT-STALENESS as the cap, elapsed
+        # already exceeds it at the moment of the stale kill → no retry.
+        mock_popen.side_effect = lambda argv, **kwargs: FakePopen(
+            returncode=-signal.SIGKILL, raise_timeout=True
+        )
+        with _fast_watchdog(stale=0.1, timeout=0.15):
+            rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(agent_dir))
+        self.assertEqual(rc, 124)
+        self.assertEqual(mock_popen.call_count, 1)  # no retry — late-stale
+        self.assertIn(pipeline.WATCHDOG_KILL_STALE_PREFIX,
+                      (agent_dir / "log.txt").read_text())
+        self.assertFalse((agent_dir / "log.attempt1.txt").exists())
 
     @patch("pipeline.os.killpg")
     @patch("pipeline.subprocess.Popen")
@@ -291,9 +320,7 @@ class TestRunCodex(unittest.TestCase):
         mock_popen.side_effect = lambda argv, **kwargs: FakePopen(
             returncode=-signal.SIGKILL, raise_timeout=True
         )
-        with patch.object(pipeline, "STALENESS_THRESHOLD_SEC", 0.2), \
-             patch.object(pipeline, "WATCHDOG_POLL_SEC", 0.05), \
-             patch.object(pipeline, "SPECIALIST_TIMEOUT_SEC", 0.2):
+        with _fast_watchdog(stale=0.2, timeout=0.2):
             rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(agent_dir))
         self.assertEqual(rc, 124)
         self.assertEqual(mock_popen.call_count, 1)  # NO retry — hardcap takes precedence
@@ -326,9 +353,7 @@ class TestRunCodex(unittest.TestCase):
             return _LiveButHungPopen(returncode=-signal.SIGKILL, raise_timeout=False)
         mock_popen.side_effect = make_popen
 
-        with patch.object(pipeline, "STALENESS_THRESHOLD_SEC", 60.0), \
-             patch.object(pipeline, "WATCHDOG_POLL_SEC", 0.05), \
-             patch.object(pipeline, "SPECIALIST_TIMEOUT_SEC", 0.2):
+        with _fast_watchdog(stale=60.0, timeout=0.2):
             rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(agent_dir))
 
         self.assertEqual(rc, 124)

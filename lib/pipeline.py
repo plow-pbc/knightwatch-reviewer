@@ -120,7 +120,12 @@ def _wait_with_watchdog(
             retryable = False
         elif stale_for >= STALENESS_THRESHOLD_SEC:
             reason = f"{WATCHDOG_KILL_STALE_PREFIX} {stale_for:.0f}s (no log activity) — killpg'd whole group"
-            retryable = True
+            # Late-stale kills are NOT retryable: if the first attempt burned
+            # almost all the per-specialist budget, a second 45-min attempt
+            # could push past review.sh's 90 min outer worker timeout with
+            # no margin left for Wave B's abort path to write the sentinel.
+            # One staleness-threshold's worth of headroom is enough slack.
+            retryable = elapsed <= SPECIALIST_TIMEOUT_SEC - STALENESS_THRESHOLD_SEC
         else:
             continue
         try:
