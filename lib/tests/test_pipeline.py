@@ -41,9 +41,12 @@ def _write_minimal_prompts(prompts_dir: Path) -> None:
 class FakePopen:
     """Stand-in for subprocess.Popen. Mirrors only the surface run_codex
     actually uses: `.pid` (for os.killpg) and `.wait(timeout=)`. Set
-    `raise_timeout=True` to make the first wait() raise TimeoutExpired,
-    exercising run_codex's killpg branch; subsequent waits (the reaper
-    call after killpg) return `returncode` cleanly."""
+    `raise_timeout=True` to model a hung codex — every wait() with a
+    timeout raises TimeoutExpired until the watchdog killpg's the group,
+    after which the reaper call (`wait()` with no timeout) returns
+    `returncode` cleanly. A regression that drops the timeout kwarg
+    from `proc.wait()` in the poll loop flips rc=124 to rc=-SIGKILL
+    and skips killpg — the fences in TestRunCodex's hang tests catch it."""
     _pid_counter = 0
 
     def __init__(self, returncode, raise_timeout=False):
@@ -57,12 +60,7 @@ class FakePopen:
     def wait(self, timeout=None):
         self._wait_calls += 1
         self.last_wait_timeout = timeout
-        # Only simulate TimeoutExpired when production actually passes a
-        # timeout. A regression that drops the timeout kwarg from
-        # run_codex's proc.wait() then flips the test from rc=124 to
-        # rc=-SIGKILL (and skips the killpg call) — the existing fences
-        # in test_codex_timeout_returns_124_and_killpgs_subtree catch it.
-        if self._raise_timeout and self._wait_calls == 1 and timeout is not None:
+        if self._raise_timeout and timeout is not None:
             raise subprocess.TimeoutExpired(cmd="codex", timeout=timeout)
         return self._returncode
 
@@ -148,22 +146,102 @@ class TestRunCodex(unittest.TestCase):
         mock_popen.side_effect = _make_codex_stub(plan={"intent": (7, "")})
         rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(self._agent_dir("intent")))
         self.assertEqual(rc, 7)
+        # Only watchdog kills (rc=124) retry; a normal codex failure (e.g. exit 7)
+        # propagates immediately — those failures are not transient and a retry
+        # just wastes a gpt-5.5 budget.
+        self.assertEqual(mock_popen.call_count, 1)
 
     @patch("pipeline.os.killpg")
     @patch("pipeline.subprocess.Popen")
-    def test_codex_timeout_returns_124_and_killpgs_subtree(self, mock_popen, mock_killpg):
-        """One behavioural fence for the timeout path: run_codex returns 124,
-        and SIGKILL goes to the whole pgrp (not just the direct child).
-        Without killpg, codex's tool descendants reparent to PID 1 with
-        reviewer credentials and disabled sandboxing — the security probe
-        from the first review round."""
+    def test_watchdog_kills_both_attempts_when_codex_hangs(self, mock_popen, mock_killpg):
+        """Two hangs in a row → rc=124. Each attempt's killpg targets the
+        whole pgrp (not just the direct child). Without killpg, codex's
+        tool descendants reparent to PID 1 with reviewer credentials and
+        disabled sandboxing — the security probe from the first review
+        round. The 124 propagates so Wave B's existing fail-loud abort
+        fires."""
+        agent_dir = self._agent_dir("intent")
         mock_popen.side_effect = _make_codex_stub(plan={"intent": "TIMEOUT"})
-        rc = pipeline.run_codex(
-            "intent", str(self.repo_dir), "PROMPT", str(self._agent_dir("intent"))
-        )
+        with patch.object(pipeline, "STALENESS_THRESHOLD_SEC", 0.1), \
+             patch.object(pipeline, "WATCHDOG_POLL_SEC", 0.05), \
+             patch.object(pipeline, "SPECIALIST_TIMEOUT_SEC", 5.0):
+            rc = pipeline.run_codex(
+                "intent", str(self.repo_dir), "PROMPT", str(agent_dir)
+            )
         self.assertEqual(rc, 124)
-        mock_killpg.assert_called_once()
+        self.assertEqual(mock_popen.call_count, 2)
+        self.assertEqual(mock_killpg.call_count, 2)
         self.assertEqual(mock_killpg.call_args.args[1], signal.SIGKILL)
+        self.assertTrue((agent_dir / "log.attempt1.txt").exists())
+
+    @patch("pipeline.os.killpg")
+    @patch("pipeline.subprocess.Popen")
+    def test_watchdog_does_not_kill_when_log_keeps_growing(self, mock_popen, mock_killpg):
+        """A process whose log.txt mtime keeps advancing inside the
+        staleness window must NOT be killed. Staleness ≠ slowness;
+        codex specialists routinely take several minutes."""
+        agent_dir = self._agent_dir("intent")
+        popen_state = {"waits": 0}
+
+        def make_progressing_popen(argv, **kwargs):
+            out_path = Path(argv[argv.index("-o") + 1])
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text("Inferred intent: stub.\n")
+            log_path = out_path.parent / "log.txt"
+
+            class _ProgressingPopen(FakePopen):
+                def wait(self, timeout=None):
+                    self._wait_calls += 1
+                    popen_state["waits"] += 1
+                    if popen_state["waits"] < 4 and timeout is not None:
+                        # Progress before raising — keeps last_progress fresh.
+                        log_path.write_text(log_path.read_text() + f"progress {popen_state['waits']}\n")
+                        raise subprocess.TimeoutExpired(cmd="codex", timeout=timeout)
+                    return 0
+            return _ProgressingPopen(returncode=0)
+        mock_popen.side_effect = make_progressing_popen
+
+        with patch.object(pipeline, "STALENESS_THRESHOLD_SEC", 1.0), \
+             patch.object(pipeline, "WATCHDOG_POLL_SEC", 0.05), \
+             patch.object(pipeline, "SPECIALIST_TIMEOUT_SEC", 10.0):
+            rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(agent_dir))
+
+        self.assertEqual(rc, 0)
+        mock_killpg.assert_not_called()
+        self.assertEqual(mock_popen.call_count, 1)  # no retry needed
+
+    @patch("pipeline.os.killpg")
+    @patch("pipeline.subprocess.Popen")
+    def test_retry_after_124_returns_zero_when_second_attempt_succeeds(self, mock_popen, mock_killpg):
+        """Codex's parallel-tool-call hang is flaky — most retries succeed.
+        On a watchdog kill, run_codex retries once; if the second attempt
+        finishes normally, return its exit code (0). The first attempt's
+        log is archived to log.attempt1.txt so the failure is still
+        visible after the rescue."""
+        agent_dir = self._agent_dir("intent")
+        popen_state = {"calls": 0}
+
+        def make_popen(argv, **kwargs):
+            popen_state["calls"] += 1
+            out_path = Path(argv[argv.index("-o") + 1])
+            if popen_state["calls"] == 1:
+                # First attempt: hangs forever.
+                return FakePopen(returncode=-signal.SIGKILL, raise_timeout=True)
+            # Second attempt: writes output.md and exits cleanly.
+            out_path.write_text("Inferred intent: stub.\n")
+            return FakePopen(returncode=0)
+        mock_popen.side_effect = make_popen
+
+        with patch.object(pipeline, "STALENESS_THRESHOLD_SEC", 0.1), \
+             patch.object(pipeline, "WATCHDOG_POLL_SEC", 0.05), \
+             patch.object(pipeline, "SPECIALIST_TIMEOUT_SEC", 5.0):
+            rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(agent_dir))
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(popen_state["calls"], 2)
+        self.assertEqual(mock_killpg.call_count, 1)  # first attempt only
+        self.assertTrue((agent_dir / "log.attempt1.txt").exists())
+        self.assertIn("stale for", (agent_dir / "log.attempt1.txt").read_text())
 
     @patch("pipeline.subprocess.Popen")
     def test_codex_zero_exit_empty_output_returns_3(self, mock_popen):
@@ -666,6 +744,17 @@ class TestRunPipeline(unittest.TestCase):
         self.prompts = Path(self.tmp.name) / "prompts"
         self.prompts.mkdir()
         _write_minimal_prompts(self.prompts)
+
+        # Shrink watchdog constants so TIMEOUT-sentinel tests resolve in
+        # ~0.2s × N hangs instead of waiting the production 5 min staleness
+        # threshold × 2 attempts per hung specialist.
+        for p in (
+            patch.object(pipeline, "STALENESS_THRESHOLD_SEC", 0.1),
+            patch.object(pipeline, "WATCHDOG_POLL_SEC", 0.05),
+            patch.object(pipeline, "SPECIALIST_TIMEOUT_SEC", 5.0),
+        ):
+            p.start()
+            self.addCleanup(p.stop)
 
     def tearDown(self):
         self.tmp.cleanup()
