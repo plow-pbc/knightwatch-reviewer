@@ -84,32 +84,35 @@ esac
 STUB
 chmod +x "$STUB_BIN/systemctl"
 
-# `uv`: stubbed so `uv tool install vulture` doesn't actually mutate the
-# host's tool set during smoke. The stub logs the call so we can assert
-# install.sh invoked it; --version returns a valid-shaped string so the
-# preflight version-print succeeds.
+# `uv`: stubbed so `uv tool install vulture==2.16` doesn't actually
+# mutate the host's tool set during smoke. The stub also CREATES the
+# `vulture` binary on disk when the install branch fires — this is the
+# production self-heal we're proving: install.sh must materialize
+# vulture, not assume it was pre-staged. Earlier shape pre-created the
+# vulture stub before install.sh ran, so the smoke would pass even if
+# `uv tool install` was never called (the exact regression PR #88
+# round-1 flagged via tests-class probe).
 cat > "$STUB_BIN/uv" <<'STUB'
 #!/bin/bash
 echo "UV $*" >> "$STUB_LOG"
 case "$1" in
     --version) echo "uv 0.5.0" ;;
-    tool) shift; [ "$1" = "install" ] && exit 0 ;;
+    tool)
+        shift
+        if [ "$1" = "install" ]; then
+            cat > "$STUB_BIN/vulture" <<'VULTURE_STUB'
+#!/bin/bash
+[ "$1" = "--version" ] && echo "vulture 2.16"
+exit 0
+VULTURE_STUB
+            chmod +x "$STUB_BIN/vulture"
+            exit 0
+        fi
+        ;;
 esac
 exit 0
 STUB
 chmod +x "$STUB_BIN/uv"
-
-# `vulture`: stubbed so install.sh's post-install version-print
-# succeeds without requiring the real binary on the test host. Smoke
-# only exercises install.sh's flow — actual vulture execution is the
-# production deploy's concern (uv tool install creates the real binary
-# in ~/.local/bin/ on wakeup).
-cat > "$STUB_BIN/vulture" <<'STUB'
-#!/bin/bash
-[ "$1" = "--version" ] && echo "vulture 2.16"
-exit 0
-STUB
-chmod +x "$STUB_BIN/vulture"
 
 # Wrapper that runs install.sh with PATH set to find our stubs. The
 # script itself doesn't manipulate PATH (no privilege-escalation seam),
@@ -259,7 +262,7 @@ done
 # uv tool install vulture fired (Python tool dep provisioned via the
 # established uv-tool convention). Logged-call assertion mirrors the
 # SYSTEMCTL/SUDO pattern above — the stub doesn't actually install.
-[ "$(count_stub 'UV tool install vulture')" = "1" ] || { echo "FAIL scenario 1: expected exactly 1 'uv tool install vulture' call"; cat "$STUB_LOG"; exit 1; }
+[ "$(count_stub 'UV tool install vulture==2.16')" = "1" ] || { echo "FAIL scenario 1: expected exactly 1 'uv tool install vulture==2.16' call (pinned version)"; cat "$STUB_LOG"; exit 1; }
 
 # daemon-reload was called once (units actually changed)
 [ "$(count_stub 'SYSTEMCTL daemon-reload')" = "1" ] || { echo "FAIL scenario 1: expected exactly 1 daemon-reload"; cat "$STUB_LOG"; exit 1; }

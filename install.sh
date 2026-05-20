@@ -90,7 +90,7 @@ ok "uv: $UV_VERSION"
 # per review tick. `uv tool install` is idempotent (fast no-op when
 # already installed) so running on every deploy is cheap and correct.
 info "ensuring vulture via uv tool"
-uv tool install vulture >/dev/null
+uv tool install 'vulture==2.16' >/dev/null
 ok "vulture: $(vulture --version 2>&1 | awk '{print $2}')"
 
 # --- 0. Bootstrap repos.conf from .example on a fresh clone -----------------
