@@ -95,7 +95,7 @@ cleanup_replay() {
             local name
             name=$(basename "$agent_dir")
             mkdir -p "$OUT/agents-on-exit/$name"
-            for f in log.txt prompt.txt output.md; do
+            for f in log.txt log.attempt1.txt prompt.txt output.md; do
                 [ -f "$agent_dir/$f" ] && cp "$agent_dir/$f" "$OUT/agents-on-exit/$name/$f"
             done
         done

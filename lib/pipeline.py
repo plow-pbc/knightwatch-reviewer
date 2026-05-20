@@ -30,10 +30,16 @@ SPECIALIST_TIMEOUT_SEC = 45 * 60
 # The hard cap above was the only recovery — every hang burned 45 min.
 # The watchdog polls log.txt's mtime: if no write for 5 min, killpg early
 # with the same 124 exit code as the hard cap. run_codex then retries
-# once; flaky hangs (the documented common case) get rescued without a
-# manual re-trigger, while a second hang aborts loudly via Wave B.
+# once on stale-kills (the documented flaky case) — but NOT on hard-cap
+# kills, since those mean codex ran for the full 45 min and a second
+# attempt could push past review.sh's 90 min outer worker timeout with
+# no recovery. Two hangs in a row aborts loudly via Wave B.
 STALENESS_THRESHOLD_SEC = 5 * 60
 WATCHDOG_POLL_SEC = 60
+# Prefixes pin the contract between _wait_with_watchdog and run_codex:
+# stale-prefix kills are retriable, hard-cap-prefix kills are not.
+WATCHDOG_KILL_STALE_PREFIX = "stale for"
+WATCHDOG_KILL_HARDCAP_PREFIX = "hit hard cap"
 _PROBE_BLOCK_RE = re.compile(r"^### Probe |^No probes\.$", re.MULTILINE)
 _PROBE_HEADER_RE = re.compile(r"^### Probe (\d+)\b", re.MULTILINE)
 _CRITIC_H2_RE = re.compile(r"^## Critic counter-arguments\s*$", re.MULTILINE)
@@ -100,9 +106,9 @@ def _wait_with_watchdog(
         stale_for = now - last_progress
         elapsed = now - start
         if stale_for >= STALENESS_THRESHOLD_SEC:
-            reason = f"stale for {stale_for:.0f}s (no log activity) — killpg'd whole group"
+            reason = f"{WATCHDOG_KILL_STALE_PREFIX} {stale_for:.0f}s (no log activity) — killpg'd whole group"
         elif elapsed >= SPECIALIST_TIMEOUT_SEC:
-            reason = f"hit hard cap {SPECIALIST_TIMEOUT_SEC}s — killpg'd whole group"
+            reason = f"{WATCHDOG_KILL_HARDCAP_PREFIX} {SPECIALIST_TIMEOUT_SEC}s — killpg'd whole group"
         else:
             continue
         try:
@@ -118,10 +124,13 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
     under agent_dir. Returns codex exit code, 3 for empty output, or 4 for
     probe-contract violation (specialist roles only).
 
-    On a watchdog kill (rc=124), retries the codex invocation exactly
-    once. The first attempt's log is archived to log.attempt1.txt before
-    the retry starts. Two hangs in a row return 124 unchanged so Wave B's
-    fail-loud abort fires."""
+    On a stale-log watchdog kill (rc=124), retries the codex invocation
+    exactly once. The first attempt's log is archived to log.attempt1.txt
+    and any half-written output.md is unlinked before the retry starts.
+    Hard-cap kills do NOT retry — codex ran for the full timeout, and a
+    second attempt could push past review.sh's 90 min outer cap.
+    Two hangs in a row return 124 unchanged so Wave B's fail-loud abort
+    fires."""
     repo = Path(repo_dir)
     agent = Path(agent_dir)
     agent.mkdir(parents=True, exist_ok=True)
@@ -149,7 +158,12 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
     # with reviewer credentials (sandbox disabled by `pr-reviewer.service`).
     for attempt in (1, 2):
         if attempt == 2:
+            # Archive attempt-1 log + drop any half-written output.md so the
+            # post-loop validation only sees attempt 2's artifact (codex's -o
+            # write should be atomic, but the contract is "this attempt's
+            # output.md belongs to this attempt" — don't lean on codex behaviour).
             log_file.rename(agent / "log.attempt1.txt")
+            out_file.unlink(missing_ok=True)
             with log_file.open("a") as lf:
                 lf.write(f"[{_ts()}] agent={name} attempt 2 (first hung; see log.attempt1.txt)\n")
         with log_file.open("a") as lf:
@@ -158,7 +172,10 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
         if kill_reason is not None:
             with log_file.open("a") as lf:
                 lf.write(f"[{_ts()}] agent={name} killed: {kill_reason}\n")
-        if exit_code != 124:
+        # Retry only on stale-log kills — hard-cap kills mean codex ran the
+        # full SPECIALIST_TIMEOUT_SEC; a second attempt could push past
+        # review.sh's 90 min outer worker timeout with no recovery.
+        if kill_reason is None or not kill_reason.startswith(WATCHDOG_KILL_STALE_PREFIX):
             break
 
     with log_file.open("a") as lf:

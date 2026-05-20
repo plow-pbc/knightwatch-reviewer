@@ -214,10 +214,10 @@ class TestRunCodex(unittest.TestCase):
     @patch("pipeline.subprocess.Popen")
     def test_retry_after_124_returns_zero_when_second_attempt_succeeds(self, mock_popen, mock_killpg):
         """Codex's parallel-tool-call hang is flaky — most retries succeed.
-        On a watchdog kill, run_codex retries once; if the second attempt
-        finishes normally, return its exit code (0). The first attempt's
-        log is archived to log.attempt1.txt so the failure is still
-        visible after the rescue."""
+        On a stale-log watchdog kill, run_codex retries once; if the second
+        attempt finishes normally, return its exit code (0). The first
+        attempt's log is archived to log.attempt1.txt so the failure is
+        still visible after the rescue."""
         agent_dir = self._agent_dir("intent")
         popen_state = {"calls": 0}
 
@@ -241,7 +241,77 @@ class TestRunCodex(unittest.TestCase):
         self.assertEqual(popen_state["calls"], 2)
         self.assertEqual(mock_killpg.call_count, 1)  # first attempt only
         self.assertTrue((agent_dir / "log.attempt1.txt").exists())
-        self.assertIn("stale for", (agent_dir / "log.attempt1.txt").read_text())
+        self.assertIn(pipeline.WATCHDOG_KILL_STALE_PREFIX,
+                      (agent_dir / "log.attempt1.txt").read_text())
+
+    @patch("pipeline.os.killpg")
+    @patch("pipeline.subprocess.Popen")
+    def test_retry_drops_stale_output_md_from_first_attempt(self, mock_popen, mock_killpg):
+        """A watchdog-killed first attempt that managed to half-write
+        output.md must NOT have that artifact leak into the second
+        attempt's validation. Without the unlink-before-retry, a second
+        attempt that exits 0 without writing output.md would silently
+        validate the first attempt's stale content — the run_codex
+        contract is "this attempt's output.md belongs to this attempt"."""
+        agent_dir = self._agent_dir("intent")
+        popen_state = {"calls": 0}
+
+        def make_popen(argv, **kwargs):
+            popen_state["calls"] += 1
+            out_path = Path(argv[argv.index("-o") + 1])
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            if popen_state["calls"] == 1:
+                # First attempt: writes (partial) output, then hangs.
+                out_path.write_text("Inferred intent: from-attempt-1.\n")
+                return FakePopen(returncode=-signal.SIGKILL, raise_timeout=True)
+            # Second attempt: exits 0 but does NOT write output.md.
+            return FakePopen(returncode=0)
+        mock_popen.side_effect = make_popen
+
+        with patch.object(pipeline, "STALENESS_THRESHOLD_SEC", 0.1), \
+             patch.object(pipeline, "WATCHDOG_POLL_SEC", 0.05), \
+             patch.object(pipeline, "SPECIALIST_TIMEOUT_SEC", 5.0):
+            rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(agent_dir))
+
+        # Empty-output sentinel — not 0, which would mean the stale artifact passed validation.
+        self.assertEqual(rc, 3)
+        self.assertFalse((agent_dir / "output.md").exists())
+
+    @patch("pipeline.os.killpg")
+    @patch("pipeline.subprocess.Popen")
+    def test_hardcap_kill_does_not_retry(self, mock_popen, mock_killpg):
+        """A hard-cap kill means codex ran for the full SPECIALIST_TIMEOUT_SEC.
+        A second attempt could push past review.sh's 90 min outer worker
+        timeout with no recovery. Only stale-log kills retry."""
+        agent_dir = self._agent_dir("intent")
+
+        def make_popen(argv, **kwargs):
+            # Process that keeps log.txt mtime fresh (no staleness) but
+            # never exits — only the hard-cap fires.
+            out_path = Path(argv[argv.index("-o") + 1])
+            log_path = out_path.parent / "log.txt"
+
+            class _LiveButHungPopen(FakePopen):
+                def wait(self, timeout=None):
+                    self._wait_calls += 1
+                    if timeout is not None:
+                        log_path.write_text(log_path.read_text() + f"keepalive {self._wait_calls}\n")
+                        raise subprocess.TimeoutExpired(cmd="codex", timeout=timeout)
+                    return self._returncode
+            return _LiveButHungPopen(returncode=-signal.SIGKILL, raise_timeout=False)
+        mock_popen.side_effect = make_popen
+
+        with patch.object(pipeline, "STALENESS_THRESHOLD_SEC", 60.0), \
+             patch.object(pipeline, "WATCHDOG_POLL_SEC", 0.05), \
+             patch.object(pipeline, "SPECIALIST_TIMEOUT_SEC", 0.2):
+            rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(agent_dir))
+
+        self.assertEqual(rc, 124)
+        self.assertEqual(mock_popen.call_count, 1)  # NO retry on hard-cap
+        self.assertEqual(mock_killpg.call_count, 1)
+        self.assertFalse((agent_dir / "log.attempt1.txt").exists())
+        self.assertIn(pipeline.WATCHDOG_KILL_HARDCAP_PREFIX,
+                      (agent_dir / "log.txt").read_text())
 
     @patch("pipeline.subprocess.Popen")
     def test_codex_zero_exit_empty_output_returns_3(self, mock_popen):
