@@ -126,6 +126,14 @@ DIRS=(lib docs prompts)
 CONFIG_FILES=(repos.conf)
 
 mkdir -p "$INSTALL_DIR"
+
+# org-sync auto-clone root. pr-reviewer-org-sync.service has
+# ReadWritePaths=/home/odio/services/kwr-repos; systemd evaluates that
+# at namespace setup BEFORE running ExecStart, so the path must exist
+# at install time, not first-clone time. org-sync.sh also mkdir -p's
+# it (defense-in-depth for direct-shell invocations), but install is
+# the load-bearing point.
+mkdir -p "$HOME/services/kwr-repos"
 for script in "${SCRIPTS[@]}"; do
   src="$REPO_DIR/$script"
   [[ -f "$src" ]] || fail "missing repo script: $src"
