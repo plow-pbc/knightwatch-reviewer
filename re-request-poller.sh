@@ -21,6 +21,7 @@ SEEN_FILE="${SEEN_FILE:-$STATE_DIR/re-request-seen.json}"
 # goes through.
 REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 . "$REVIEWER_LIB_DIR/tracked-repos.sh"
+. "$REVIEWER_LIB_DIR/pr-enumerate.sh"
 [ ${#REPOS[@]} -ge 1 ] || { echo "FATAL: no tracked repos — populate $STATE_DIR/repos.conf or set REPOS in config.env" >&2; exit 1; }
 BOT_USER="${BOT_USER:-srosro}"
 BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
@@ -36,35 +37,35 @@ seen_set() {
     echo "$tmp" > "$SEEN_FILE"
 }
 
-for REPO in "${REPOS[@]}"; do
-    PR_LIST=$(gh pr list --repo "$REPO" --json number 2>/dev/null | jq -r '.[].number') || continue
+ALL_PRS=$(enumerate_open_prs) || { log "Failed to enumerate open PRs — skipping this tick"; exit 0; }
 
-    for PR_NUM in $PR_LIST; do
-        PR_KEY="${REPO}#${PR_NUM}"
+while IFS= read -r PR_JSON; do
+    REPO=$(echo "$PR_JSON" | jq -r '.repository.nameWithOwner')
+    PR_NUM=$(echo "$PR_JSON" | jq -r '.number')
+    PR_KEY="${REPO}#${PR_NUM}"
 
-        # Latest review_requested event targeting our bot user, if any.
-        # jq selects events where requested_reviewer.login == BOT_USER, takes the last.
-        LATEST=$(gh api "repos/$REPO/issues/$PR_NUM/timeline" --paginate 2>/dev/null \
-            | jq -r --arg u "$BOT_USER" \
-                '[.[] | select(.event == "review_requested" and .requested_reviewer.login == $u)] | last | .created_at // empty')
+    # Latest review_requested event targeting our bot user, if any.
+    # jq selects events where requested_reviewer.login == BOT_USER, takes the last.
+    LATEST=$(gh api "repos/$REPO/issues/$PR_NUM/timeline" --paginate 2>/dev/null \
+        | jq -r --arg u "$BOT_USER" \
+            '[.[] | select(.event == "review_requested" and .requested_reviewer.login == $u)] | last | .created_at // empty')
 
-        [ -z "$LATEST" ] && continue
+    [ -z "$LATEST" ] && continue
 
-        LAST_SEEN=$(seen_get "$PR_KEY")
+    LAST_SEEN=$(seen_get "$PR_KEY")
 
-        # ISO-8601 timestamps compare lexically.
-        if [ -n "$LAST_SEEN" ] && [ ! "$LATEST" \> "$LAST_SEEN" ]; then
-            continue
-        fi
+    # ISO-8601 timestamps compare lexically.
+    if [ -n "$LAST_SEEN" ] && [ ! "$LATEST" \> "$LAST_SEEN" ]; then
+        continue
+    fi
 
-        log "$PR_KEY: re-request review event at $LATEST — posting /${BOT_CMD_PREFIX}-review trigger"
-        # Bare command only — extra prose in the comment body would be
-        # treated as requester framing by trigger-comment.md prompts.
-        if gh pr comment "$PR_NUM" --repo "$REPO" \
-            --body "/${BOT_CMD_PREFIX}-review" >/dev/null 2>&1; then
-            seen_set "$PR_KEY" "$LATEST"
-        else
-            log "$PR_KEY: failed to post /${BOT_CMD_PREFIX}-review trigger comment"
-        fi
-    done
-done
+    log "$PR_KEY: re-request review event at $LATEST — posting /${BOT_CMD_PREFIX}-review trigger"
+    # Bare command only — extra prose in the comment body would be
+    # treated as requester framing by trigger-comment.md prompts.
+    if gh pr comment "$PR_NUM" --repo "$REPO" \
+        --body "/${BOT_CMD_PREFIX}-review" >/dev/null 2>&1; then
+        seen_set "$PR_KEY" "$LATEST"
+    else
+        log "$PR_KEY: failed to post /${BOT_CMD_PREFIX}-review trigger comment"
+    fi
+done < <(echo "$ALL_PRS" | jq -c '.[]')
