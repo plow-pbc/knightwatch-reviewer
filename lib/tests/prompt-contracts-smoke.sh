@@ -201,6 +201,13 @@ echo "  asserting Anti-Bloat carve-out in specialists/tests.md..."
 assert_grep "specialists/tests.md should carry the Anti-Bloat carve-out for hypothetical fences" \
     "no bug shipped and no contract changed" prompts/specialists/tests.md
 
+# Token fence: architecture-v2.md must carry the fence-narrower-than-
+# prose carve-out — minimum-viable smoke coverage is NOT two-place
+# drift even though it's structurally two-place.
+echo "  asserting fence-narrower-than-prose carve-out in specialists/architecture-v2.md..."
+assert_grep "specialists/architecture-v2.md should carry the fence-narrower-than-prose carve-out" \
+    "minimum-viable coverage, not drift" prompts/specialists/architecture-v2.md
+
 # Token fence: aggregator.md must carry the Silence-is-golden
 # anti-emission stance — counters the LLM default to surface more
 # work to look thorough. Token-level pin only per review-priority.md
