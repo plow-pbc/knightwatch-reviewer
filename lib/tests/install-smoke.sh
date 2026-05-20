@@ -84,14 +84,10 @@ esac
 STUB
 chmod +x "$STUB_BIN/systemctl"
 
-# `uv`: stubbed so `uv tool install vulture==2.16` doesn't actually
-# mutate the host's tool set during smoke. The stub also CREATES the
-# `vulture` binary on disk when the install branch fires — this is the
-# production self-heal we're proving: install.sh must materialize
-# vulture, not assume it was pre-staged. Earlier shape pre-created the
-# vulture stub before install.sh ran, so the smoke would pass even if
-# `uv tool install` was never called (the exact regression PR #88
-# round-1 flagged via tests-class probe).
+# `uv`: stubbed so `uv tool install vulture==2.16` doesn't mutate the
+# host's tool set during smoke. The stub CREATES the `vulture` binary
+# inside its `tool install` branch — the smoke proves install.sh
+# actually materializes vulture, not that it was pre-staged.
 cat > "$STUB_BIN/uv" <<'STUB'
 #!/bin/bash
 echo "UV $*" >> "$STUB_LOG"
