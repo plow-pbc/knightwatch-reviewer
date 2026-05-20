@@ -221,6 +221,9 @@ case "$1" in
 esac
 STUB
 chmod +x "$SAND_HOME/.local/bin/sudo" "$SAND_HOME/.local/bin/systemctl"
+# shellcheck source=lib/tests/uv-stub.sh
+. "$SCRIPT_DIR/tests/uv-stub.sh"
+write_uv_stub "$SAND_HOME/.local/bin"
 
 # Symlink-overlay of $PROJECT_ROOT, omitting any pre-existing repos.conf.
 # Keeps the smoke from touching the operator's working tree and lets

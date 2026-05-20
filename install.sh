@@ -73,6 +73,10 @@ if [ "${GH_MAJ:-0}" -lt 2 ] || { [ "${GH_MAJ:-0}" -eq 2 ] && [ "${GH_MIN:-0}" -l
 fi
 ok "gh: $GH_VERSION"
 
+# vulture: invoked by .knightwatch/dead-code.sh in tracked repos.
+command -v uv >/dev/null || fail "uv not on PATH — install via 'curl -LsSf https://astral.sh/uv/install.sh | sh'"
+uv tool install 'vulture==2.16' >/dev/null
+
 # --- 0. Bootstrap repos.conf from .example on a fresh clone -----------------
 # repos.conf is per-operator and gitignored; the tracked template lives at
 # repos.conf.example. On first run we copy the template into place and

@@ -84,6 +84,12 @@ esac
 STUB
 chmod +x "$STUB_BIN/systemctl"
 
+# `uv`: stub fail-louds on unexpected argv and synthesizes `vulture`
+# on `tool install`, so smoke can only pass when install.sh fires it.
+# shellcheck source=lib/tests/uv-stub.sh
+. "$SCRIPT_DIR/tests/uv-stub.sh"
+write_uv_stub "$STUB_BIN"
+
 # Wrapper that runs install.sh with PATH set to find our stubs. The
 # script itself doesn't manipulate PATH (no privilege-escalation seam),
 # so test interception is the test's responsibility.
