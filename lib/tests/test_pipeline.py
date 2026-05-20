@@ -279,6 +279,31 @@ class TestRunCodex(unittest.TestCase):
 
     @patch("pipeline.os.killpg")
     @patch("pipeline.subprocess.Popen")
+    def test_hardcap_wins_when_staleness_and_hardcap_cross_together(self, mock_popen, mock_killpg):
+        """A process active until ~minute 40 that then goes quiet would
+        cross BOTH thresholds on the same poll tick at minute 45. Stale-
+        first ordering would mis-classify it as retryable and start a
+        second near-45-minute attempt, blowing review.sh's 90 min outer.
+        Hard-cap must win on tie."""
+        agent_dir = self._agent_dir("intent")
+        # Process never exits, log mtime never advances. With staleness and
+        # timeout equal, both thresholds fire on the same poll tick.
+        mock_popen.side_effect = lambda argv, **kwargs: FakePopen(
+            returncode=-signal.SIGKILL, raise_timeout=True
+        )
+        with patch.object(pipeline, "STALENESS_THRESHOLD_SEC", 0.2), \
+             patch.object(pipeline, "WATCHDOG_POLL_SEC", 0.05), \
+             patch.object(pipeline, "SPECIALIST_TIMEOUT_SEC", 0.2):
+            rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(agent_dir))
+        self.assertEqual(rc, 124)
+        self.assertEqual(mock_popen.call_count, 1)  # NO retry — hardcap takes precedence
+        self.assertIn(pipeline.WATCHDOG_KILL_HARDCAP_PREFIX,
+                      (agent_dir / "log.txt").read_text())
+        self.assertNotIn(pipeline.WATCHDOG_KILL_STALE_PREFIX,
+                         (agent_dir / "log.txt").read_text())
+
+    @patch("pipeline.os.killpg")
+    @patch("pipeline.subprocess.Popen")
     def test_hardcap_kill_does_not_retry(self, mock_popen, mock_killpg):
         """A hard-cap kill means codex ran for the full SPECIALIST_TIMEOUT_SEC.
         A second attempt could push past review.sh's 90 min outer worker

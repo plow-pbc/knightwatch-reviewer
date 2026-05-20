@@ -36,8 +36,10 @@ SPECIALIST_TIMEOUT_SEC = 45 * 60
 # no recovery. Two hangs in a row aborts loudly via Wave B.
 STALENESS_THRESHOLD_SEC = 5 * 60
 WATCHDOG_POLL_SEC = 60
-# Prefixes pin the contract between _wait_with_watchdog and run_codex:
-# stale-prefix kills are retriable, hard-cap-prefix kills are not.
+# Log-line prefixes used by _wait_with_watchdog. Tests assert against
+# these so a future rename doesn't silently drift the operator-facing
+# kill messages; retry eligibility is carried by the explicit
+# `retryable` field on the return tuple, not by string matching.
 WATCHDOG_KILL_STALE_PREFIX = "stale for"
 WATCHDOG_KILL_HARDCAP_PREFIX = "hit hard cap"
 _PROBE_BLOCK_RE = re.compile(r"^### Probe |^No probes\.$", re.MULTILINE)
@@ -75,10 +77,18 @@ def _relink(link: Path, target: Path) -> None:
 
 def _wait_with_watchdog(
     proc: subprocess.Popen, log_file: Path
-) -> tuple[int, str | None]:
+) -> tuple[int, str | None, bool]:
     """Wait on `proc`, polling `log_file.mtime` for liveness. Returns
-    `(exit_code, kill_reason)`. `kill_reason` is None on natural exit and
-    a human-readable string on watchdog kill (exit_code is then 124).
+    `(exit_code, kill_reason, retryable)`. `kill_reason` is None on
+    natural exit and a human-readable string on watchdog kill
+    (exit_code is then 124). `retryable` is True only for stale-log
+    kills; False for natural exit and hard-cap kills.
+
+    Hard-cap precedence: if both staleness AND hard-cap thresholds
+    cross on the same poll tick (a process active until ~minute 40
+    that then goes quiet would hit both at minute 45), hard-cap wins.
+    Retrying that case could push past review.sh's 90 min outer worker
+    timeout with no recovery.
 
     Kills the whole process group via `os.killpg` when codex hangs —
     bare wait+kill leaves codex's tool-subprocess descendants orphaned
@@ -92,7 +102,7 @@ def _wait_with_watchdog(
         last_mtime = 0.0
     while True:
         try:
-            return proc.wait(timeout=WATCHDOG_POLL_SEC), None
+            return proc.wait(timeout=WATCHDOG_POLL_SEC), None, False
         except subprocess.TimeoutExpired:
             pass
         now = time.monotonic()
@@ -105,10 +115,12 @@ def _wait_with_watchdog(
             last_progress = now
         stale_for = now - last_progress
         elapsed = now - start
-        if stale_for >= STALENESS_THRESHOLD_SEC:
-            reason = f"{WATCHDOG_KILL_STALE_PREFIX} {stale_for:.0f}s (no log activity) — killpg'd whole group"
-        elif elapsed >= SPECIALIST_TIMEOUT_SEC:
+        if elapsed >= SPECIALIST_TIMEOUT_SEC:
             reason = f"{WATCHDOG_KILL_HARDCAP_PREFIX} {SPECIALIST_TIMEOUT_SEC}s — killpg'd whole group"
+            retryable = False
+        elif stale_for >= STALENESS_THRESHOLD_SEC:
+            reason = f"{WATCHDOG_KILL_STALE_PREFIX} {stale_for:.0f}s (no log activity) — killpg'd whole group"
+            retryable = True
         else:
             continue
         try:
@@ -116,7 +128,7 @@ def _wait_with_watchdog(
         except ProcessLookupError:
             pass
         proc.wait()
-        return 124, reason
+        return 124, reason, retryable
 
 
 def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
@@ -168,14 +180,15 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
                 lf.write(f"[{_ts()}] agent={name} attempt 2 (first hung; see log.attempt1.txt)\n")
         with log_file.open("a") as lf:
             proc = subprocess.Popen(argv, stdout=lf, stderr=lf, start_new_session=True)
-        exit_code, kill_reason = _wait_with_watchdog(proc, log_file)
+        exit_code, kill_reason, retryable = _wait_with_watchdog(proc, log_file)
         if kill_reason is not None:
             with log_file.open("a") as lf:
                 lf.write(f"[{_ts()}] agent={name} killed: {kill_reason}\n")
-        # Retry only on stale-log kills — hard-cap kills mean codex ran the
-        # full SPECIALIST_TIMEOUT_SEC; a second attempt could push past
-        # review.sh's 90 min outer worker timeout with no recovery.
-        if kill_reason is None or not kill_reason.startswith(WATCHDOG_KILL_STALE_PREFIX):
+        # Only stale-log kills retry — see _wait_with_watchdog for the
+        # hard-cap precedence rule. Branching on the explicit retryable
+        # flag (not the human-readable reason prose) means renaming the
+        # log strings can't silently break the retry boundary.
+        if not retryable:
             break
 
     with log_file.open("a") as lf:
