@@ -220,7 +220,33 @@ case "$1" in
     *) exit 0 ;;
 esac
 STUB
-chmod +x "$SAND_HOME/.local/bin/sudo" "$SAND_HOME/.local/bin/systemctl"
+# uv + vulture stubs: install.sh requires `command -v uv` and runs
+# `uv tool install vulture==2.16` then `vulture --version`. Without these
+# stubs, smoke either fails on hosts without uv OR side-effects host
+# tool state on hosts that have it. Mirror install-smoke's deferred
+# pattern: the uv stub creates the vulture stub at "install" time. The
+# bin path is expanded at write-time (unquoted heredoc on first line)
+# so the stub script doesn't need any env-var plumbing at runtime.
+cat > "$SAND_HOME/.local/bin/uv" <<STUB
+#!/bin/bash
+case "\$1" in
+    --version) echo "uv 0.5.0" ;;
+    tool)
+        shift
+        if [ "\$1" = "install" ]; then
+            cat > "$SAND_HOME/.local/bin/vulture" <<'VULTURE_STUB'
+#!/bin/bash
+[ "\$1" = "--version" ] && echo "vulture 2.16"
+exit 0
+VULTURE_STUB
+            chmod +x "$SAND_HOME/.local/bin/vulture"
+            exit 0
+        fi
+        ;;
+esac
+exit 0
+STUB
+chmod +x "$SAND_HOME/.local/bin/sudo" "$SAND_HOME/.local/bin/systemctl" "$SAND_HOME/.local/bin/uv"
 
 # Symlink-overlay of $PROJECT_ROOT, omitting any pre-existing repos.conf.
 # Keeps the smoke from touching the operator's working tree and lets
