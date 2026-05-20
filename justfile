@@ -130,6 +130,10 @@ test:
     bash lib/tests/re-request-poller-smoke.sh
 
     echo ""
+    echo "=== pr-enumerate smoke test ==="
+    bash lib/tests/pr-enumerate-smoke.sh
+
+    echo ""
     echo "=== plow-kid-refresh smoke test ==="
     bash lib/tests/plow-kid-refresh-smoke.sh
 
