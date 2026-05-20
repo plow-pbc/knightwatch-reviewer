@@ -1,7 +1,18 @@
 #!/bin/bash
 # Discover GitHub repos in $ORGS, clone any missing ones into
-# $HOME/Hacking/<name>, and rewrite $STATE_DIR/repos.conf.auto with the
-# resulting set. Hourly via pr-reviewer-org-sync.timer.
+# $KWR_CLONE_ROOT/<name>, and rewrite $STATE_DIR/repos.conf.auto with
+# the resulting REPOS set. Hourly via pr-reviewer-org-sync.timer.
+#
+# $KWR_CLONE_ROOT is the single source of truth for the auto-clone
+# path convention, defined in lib/tracked-repos.sh and inherited
+# here via the loader source below. Default is $HOME/services/kwr-repos.
+#
+# Auto-managed clones deliberately live under $HOME/services/ rather
+# than $HOME/Hacking/ — the latter is the operator's dev workspace
+# (parallel sibling checkouts per CLAUDE.md), and co-mingling
+# auto-clones there caused silent collisions when a tracked repo
+# transferred orgs and the operator's dev clone's origin URL no
+# longer matched the canonical form for the new owner.
 #
 # Split-file manifest:
 #   repos.conf       — operator-owned. We only READ. (manual REPOS + ORGS)
@@ -92,10 +103,12 @@ if [ "${#AUTO[@]}" -gt 0 ]; then
     mapfile -t AUTO < <(printf '%s\n' "${AUTO[@]}" | sort)
 fi
 
+mkdir -p "$KWR_CLONE_ROOT"
+
 NEW_CLONES=0
 for full in "${AUTO[@]}"; do
     name="${full#*/}"
-    dest="$HOME/Hacking/$name"
+    dest="$KWR_CLONE_ROOT/$name"
     if [ -d "$dest/.git" ]; then
         if ! url=$(git -C "$dest" remote get-url origin 2>/dev/null); then
             log "FATAL: $dest has no origin remote configured"
@@ -133,14 +146,15 @@ TMP_NEW=$(mktemp)
 trap 'rm -f "$TMP_NEW"' EXIT
 {
     echo "# Managed by org-sync.sh — regenerated each sync tick. Do NOT"
-    echo "# edit; manual entries belong in repos.conf. SOURCE_PATHS is"
-    echo "# intentionally not emitted (cross-repo grep stays opt-in)."
-    echo "# KID_PATHS uses the conditional \${var:-default} form so"
-    echo "# manual promotions win immediately without waiting for prune."
+    echo "# edit; manual entries belong in repos.conf."
+    echo "#"
+    echo "# Only REPOS+=(\"...\") is emitted here. KID_PATHS values are"
+    echo "# convention-defaulted by lib/tracked-repos.sh from"
+    echo "# \$KWR_CLONE_ROOT after sourcing this file, so the manifest"
+    echo "# never stores stale path strings. SOURCE_PATHS is intentionally"
+    echo "# not emitted either — cross-repo grep stays opt-in."
     for full in "${AUTO[@]}"; do
-        name="${full#*/}"
         echo "REPOS+=(\"$full\")"
-        echo "KID_PATHS[\"$full\"]=\"\${KID_PATHS[\"$full\"]:-\$HOME/Hacking/$name}\""
     done
 } > "$TMP_NEW"
 
