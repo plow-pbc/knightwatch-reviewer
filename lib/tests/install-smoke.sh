@@ -84,6 +84,33 @@ esac
 STUB
 chmod +x "$STUB_BIN/systemctl"
 
+# `uv`: stubbed so `uv tool install vulture` doesn't actually mutate the
+# host's tool set during smoke. The stub logs the call so we can assert
+# install.sh invoked it; --version returns a valid-shaped string so the
+# preflight version-print succeeds.
+cat > "$STUB_BIN/uv" <<'STUB'
+#!/bin/bash
+echo "UV $*" >> "$STUB_LOG"
+case "$1" in
+    --version) echo "uv 0.5.0" ;;
+    tool) shift; [ "$1" = "install" ] && exit 0 ;;
+esac
+exit 0
+STUB
+chmod +x "$STUB_BIN/uv"
+
+# `vulture`: stubbed so install.sh's post-install version-print
+# succeeds without requiring the real binary on the test host. Smoke
+# only exercises install.sh's flow — actual vulture execution is the
+# production deploy's concern (uv tool install creates the real binary
+# in ~/.local/bin/ on wakeup).
+cat > "$STUB_BIN/vulture" <<'STUB'
+#!/bin/bash
+[ "$1" = "--version" ] && echo "vulture 2.16"
+exit 0
+STUB
+chmod +x "$STUB_BIN/vulture"
+
 # Wrapper that runs install.sh with PATH set to find our stubs. The
 # script itself doesn't manipulate PATH (no privilege-escalation seam),
 # so test interception is the test's responsibility.
@@ -228,6 +255,11 @@ for required in "${!REQUIRED_PLACEHOLDER[@]}"; do
     grep -E "^ReadWritePaths=.*${placeholder}" "$PROJECT_ROOT/systemd/$required" >/dev/null \
         || { echo "FAIL scenario 1: $required's ReadWritePaths= line is missing $placeholder — kid queries will hit chromadb readonly errors"; exit 1; }
 done
+
+# uv tool install vulture fired (Python tool dep provisioned via the
+# established uv-tool convention). Logged-call assertion mirrors the
+# SYSTEMCTL/SUDO pattern above — the stub doesn't actually install.
+[ "$(count_stub 'UV tool install vulture')" = "1" ] || { echo "FAIL scenario 1: expected exactly 1 'uv tool install vulture' call"; cat "$STUB_LOG"; exit 1; }
 
 # daemon-reload was called once (units actually changed)
 [ "$(count_stub 'SYSTEMCTL daemon-reload')" = "1" ] || { echo "FAIL scenario 1: expected exactly 1 daemon-reload"; cat "$STUB_LOG"; exit 1; }

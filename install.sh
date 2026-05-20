@@ -73,6 +73,26 @@ if [ "${GH_MAJ:-0}" -lt 2 ] || { [ "${GH_MAJ:-0}" -eq 2 ] && [ "${GH_MIN:-0}" -l
 fi
 ok "gh: $GH_VERSION"
 
+# uv: provisions Python tools the bot's per-repo pre-pass scripts invoke
+# (currently just `vulture` — see below). The established convention on
+# this host is `uv tool install` (matches existing `keepitdry`/`plow-ops`
+# installs visible in `uv tool list`); binaries land in ~/.local/bin/
+# which is already on the systemd unit's PATH.
+if ! command -v uv >/dev/null 2>&1; then
+    fail "uv not on PATH — required to provision vulture (Python tool dep). Install via: 'curl -LsSf https://astral.sh/uv/install.sh | sh' and re-run install.sh."
+fi
+UV_VERSION=$(uv --version 2>&1 | awk '{print $2}')
+ok "uv: $UV_VERSION"
+
+# vulture: invoked by .knightwatch/dead-code.sh in tracked repos (plow,
+# watchmepivot, plow-content, plow-kid) for the dead-code pre-pass.
+# Missing it silently degrades reviews — exit 127 + "degrading" log line
+# per review tick. `uv tool install` is idempotent (fast no-op when
+# already installed) so running on every deploy is cheap and correct.
+info "ensuring vulture via uv tool"
+uv tool install vulture >/dev/null
+ok "vulture: $(vulture --version 2>&1 | awk '{print $2}')"
+
 # --- 0. Bootstrap repos.conf from .example on a fresh clone -----------------
 # repos.conf is per-operator and gitignored; the tracked template lives at
 # repos.conf.example. On first run we copy the template into place and
