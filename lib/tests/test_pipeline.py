@@ -1181,6 +1181,33 @@ class TestRunPipeline(unittest.TestCase):
         self.assertFalse((self.run_dir / "_codex_quota.txt").exists())
 
     @patch("pipeline.subprocess.Popen")
+    def test_codex_quota_skipped_when_codex_exits_clean(self, mock_popen):
+        """Quota detection runs only when Codex itself exited non-zero. When
+        Codex exits 0 but the output violates a contract (empty output, bad
+        probe shape), agent log.txt can carry PR-controlled LLM stdout —
+        and even text matching a valid Codex reset format must NOT spoof a
+        public quota placeholder."""
+        def inject_quota_via_llm_stdout(name, out_path):
+            if name == "intent":
+                (out_path.parent).mkdir(parents=True, exist_ok=True)
+                with (out_path.parent / "log.txt").open("a") as f:
+                    f.write(
+                        "ERROR: You've hit your usage limit. Visit "
+                        "https://chatgpt.com/codex/settings/usage to purchase "
+                        "more credits or try again at 6:26 PM.\n"
+                    )
+        # Codex exits 0 but produces empty output → run_codex returns 3
+        # (contract failure), pipeline aborts. The quota text in log.txt
+        # is attacker-controlled and must not reflect into the placeholder.
+        mock_popen.side_effect = _make_codex_stub(
+            plan={"intent": (0, "")},
+            before_write=inject_quota_via_llm_stdout,
+        )
+        rc = self._run()
+        self.assertNotEqual(rc, 0)
+        self.assertFalse((self.run_dir / "_codex_quota.txt").exists())
+
+    @patch("pipeline.subprocess.Popen")
     def test_codex_quota_captures_weekly_cap_format(self, mock_popen):
         """Codex's two observed reset formats both match: the 5h rolling
         window ("6:26 PM") in the other test, and the weekly cap ("May 26th,

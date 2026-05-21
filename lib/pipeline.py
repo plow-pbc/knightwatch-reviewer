@@ -212,6 +212,16 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
         lf.write(f"[{_ts()}] agent={name} exit={exit_code}\n")
 
     if exit_code != 0:
+        # Codex itself exited non-zero — most commonly the ChatGPT/Codex
+        # usage limit. Stash the parsed reset time so review-one-pr.sh can
+        # PATCH the placeholder with the real cause. Confined to the
+        # codex-rc-non-zero branch (not run on rc=0-but-bad-output contract
+        # failures below) so PR-controlled LLM stdout that happens to match
+        # the regex can't spoof a public quota placeholder.
+        m = _CODEX_QUOTA_RE.search(log_file.read_text(errors="replace"))
+        if m:
+            sentinel = agent.parent.parent / "_codex_quota.txt"
+            sentinel.write_text(m.group(1).strip() + "\n")
         return exit_code
 
     if not out_file.exists() or out_file.stat().st_size == 0:
@@ -428,22 +438,7 @@ def run_specialist(
     return 0
 
 
-def _check_codex_quota(run: Path) -> None:
-    """If any agent log carries the codex usage-limit error, write
-    `_codex_quota.txt` with the parsed reset time. review-one-pr.sh reads
-    this after pipeline.py exits and patches the placeholder with a
-    specific "codex quota hit, resets at X" body instead of the generic
-    abort message. Same single-PATCH lifecycle as the Wave B timeouts
-    sentinel."""
-    for log_path in (run / "agents").glob("*/log.txt"):
-        m = _CODEX_QUOTA_RE.search(log_path.read_text(errors="replace"))
-        if m:
-            (run / "_codex_quota.txt").write_text(m.group(1).strip() + "\n")
-            return
-
-
-def _abort(repo_dir: Path, run: Path, msg: str) -> int:
-    _check_codex_quota(run)
+def _abort(repo_dir: Path, msg: str) -> int:
     log(msg)
     if repo_dir.exists():
         shutil.rmtree(repo_dir, ignore_errors=True)
@@ -510,15 +505,15 @@ def run_pipeline(
         intent_rc = intent_fut.result()
         dc_rc = dc_fut.result()
     if intent_rc != 0:
-        return _abort(repo, run, f"{pr_id}: intent inference failed (exit={intent_rc}) — aborting")
+        return _abort(repo, f"{pr_id}: intent inference failed (exit={intent_rc}) — aborting")
     if dc_rc != 0:
-        return _abort(repo, run, f"{pr_id}: dead-code search failed (exit={dc_rc}) — aborting")
+        return _abort(repo, f"{pr_id}: dead-code search failed (exit={dc_rc}) — aborting")
 
     intent_dir = run / "agents" / "intent"
     try:
         intent_text = _validate_intent(intent_dir / "output.md")
     except ValueError as e:
-        return _abort(repo, run, f"{pr_id}: {e} — aborting")
+        return _abort(repo, f"{pr_id}: {e} — aborting")
     _relink(scratch / "inferred-intent.md", intent_dir / "output.md")
     _relink(scratch / "dead-code.md", run / "agents" / "dead-code-search" / "output.md")
     log(f"{pr_id}: Wave A complete: {intent_text}")
@@ -567,14 +562,14 @@ def run_pipeline(
     if timed_out:
         (run / "_wave_b_timeouts.txt").write_text("\n".join(timed_out) + "\n")
         return _abort(
-            repo, run,
+            repo,
             f"{pr_id}: {len(timed_out)} specialist(s) timed out "
             f"({', '.join(timed_out)}) — aborting",
         )
 
     if hard_failures:
         return _abort(
-            repo, run, f"{pr_id}: Wave B hard failures: {'; '.join(hard_failures)} — aborting"
+            repo, f"{pr_id}: Wave B hard failures: {'; '.join(hard_failures)} — aborting"
         )
 
     if has_prev:
@@ -590,7 +585,7 @@ def run_pipeline(
     agg_dir = run / "agents" / "aggregator"
     rc = run_codex("aggregator", str(repo), agg_prompt, str(agg_dir))
     if rc != 0:
-        return _abort(repo, run, f"{pr_id}: aggregator failed (exit={rc}) — aborting")
+        return _abort(repo, f"{pr_id}: aggregator failed (exit={rc}) — aborting")
     log(f"{pr_id}: aggregator complete")
     return 0
 
