@@ -1205,12 +1205,19 @@ AGG_OUT="$RUN_DIR/agents/aggregator/output.md"
 # the safety-net check below handles any race or unexpected exit.
 if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
     log "$PR_ID: pipeline failed (exit=$PIPELINE_EXIT, agg empty=$([ ! -s "$AGG_OUT" ] && echo true || echo false)) — aborting"
-    # Wave B specialist timeout: pipeline.py wrote a sentinel naming the
-    # hung specialists. Hand a specific abort body to cleanup_eyes so the
-    # EXIT trap PATCHes the placeholder with the names rather than the
-    # generic abort message — single PATCH lifecycle, same trap.
+    # pipeline.py may write one of two sentinels naming the specific cause.
+    # Hand the most informative abort body we have to cleanup_eyes so the
+    # EXIT trap PATCHes the placeholder accordingly — single PATCH lifecycle,
+    # same trap. Codex quota wins over Wave B timeouts: if the codex usage
+    # limit was hit during Wave A intent, no Wave B sentinel exists; if
+    # somehow both fired, quota is the more specific cause.
+    QUOTA_SENTINEL="$RUN_DIR/_codex_quota.txt"
     TIMEOUTS_SENTINEL="$RUN_DIR/_wave_b_timeouts.txt"
-    if [ -s "$TIMEOUTS_SENTINEL" ]; then
+    if [ -s "$QUOTA_SENTINEL" ]; then
+        RESET_AT=$(head -n 1 "$QUOTA_SENTINEL")
+        EYES_ABORT_BODY="⏸ knightwatch paused — codex quota hit, resets at ${RESET_AT}. Will retry on the next tick and should succeed after the quota window resets."
+        log "$PR_ID: handing codex-quota-error to cleanup_eyes (resets=${RESET_AT})"
+    elif [ -s "$TIMEOUTS_SENTINEL" ]; then
         TIMED_OUT=$(paste -sd, "$TIMEOUTS_SENTINEL")
         EYES_ABORT_BODY="❌ Review aborted — specialist(s) timed out (\`$TIMED_OUT\`). See knightwatch-reviewer logs; will retry on the next tick."
         log "$PR_ID: handing timeouts-error to cleanup_eyes (specialists=$TIMED_OUT)"

@@ -242,17 +242,19 @@ kid-last-failure
 
 # Replay-tool artifacts: keep aggregator/specialist/critic outputs,
 # drop agent prompt.txt + log*.txt (regenerable + huge) and agents-on-exit/
-# (debug-only, mirror of agents/). The log*.txt glob covers log.txt plus
-# the new log.attempt1.txt that run_codex emits on stale-log retries.
-# Pattern matches both the comparison/subtree and the default
-# replays/<repo>-<pr>-<sha>-<slug>/ output dir from lib/replay.sh —
-# without this breadth, private standards staged via write_scratch land
-# as commit-ready untracked files.
+# (debug-only, mirror of agents/). The log*.txt / err*.txt globs cover
+# log.txt + err.txt plus the attempt1 archives that run_codex emits on
+# stale-log retries. Pattern matches both the comparison/subtree and the
+# default replays/<repo>-<pr>-<sha>-<slug>/ output dir from
+# lib/replay.sh — without this breadth, private standards staged via
+# write_scratch land as commit-ready untracked files.
 replays/**/agents/*/prompt.txt
 replays/**/agents/*/log*.txt
+replays/**/agents/*/err*.txt
 replays/**/agents-on-exit/
 replays/**/run-dir/agents/*/prompt.txt
 replays/**/run-dir/agents/*/log*.txt
+replays/**/run-dir/agents/*/err*.txt
 
 # Untracked workspace artifacts (created during prompt-quality investigation,
 # kept on disk for reference but not committed).

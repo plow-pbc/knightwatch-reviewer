@@ -38,6 +38,18 @@ WATCHDOG_KILL_HARDCAP_PREFIX = "hit hard cap"
 _PROBE_BLOCK_RE = re.compile(r"^### Probe |^No probes\.$", re.MULTILINE)
 _PROBE_HEADER_RE = re.compile(r"^### Probe (\d+)\b", re.MULTILINE)
 _CRITIC_H2_RE = re.compile(r"^## Critic counter-arguments\s*$", re.MULTILINE)
+# Codex prints this when the user's ChatGPT/Codex usage limit is hit. The
+# capture group is pinned to Codex's two observed reset formats — short
+# rolling-window ("6:26 PM") or weekly cap ("May 26th, 2026 11:33 AM") —
+# rather than `[^.\n]+`, so PR-controlled text that leaks into an agent's
+# log.txt via prompt injection can't reflect into the public placeholder.
+# If Codex changes the format, the regex misses and we fall back to the
+# generic abort body — safe degradation.
+_CODEX_QUOTA_RE = re.compile(
+    r"hit your usage limit\..*?try again at "
+    r"((?:\w+ \d{1,2}(?:st|nd|rd|th), \d{4} )?\d{1,2}:\d{2} (?:AM|PM))\.",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _ts() -> str:
@@ -157,7 +169,14 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
     agent.mkdir(parents=True, exist_ok=True)
     prompt_file = agent / "prompt.txt"
     out_file = agent / "output.md"
+    # log.txt = codex stdout (mostly model reasoning summary, ie PR-influenced
+    # content). err.txt = codex stderr (the CLI's own error messages,
+    # including the usage-limit notice we parse for the quota sentinel).
+    # Splitting the streams keeps PR-controlled model output out of the
+    # quota scan — otherwise a non-quota rc=1 with attacker-shaped stdout
+    # could spoof a public quota placeholder.
     log_file = agent / "log.txt"
+    err_file = agent / "err.txt"
 
     prompt_file.write_text(prompt)
     with log_file.open("a") as lf:
@@ -179,16 +198,18 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
     # with reviewer credentials (sandbox disabled by `pr-reviewer.service`).
     for attempt in (1, 2):
         if attempt == 2:
-            # Archive attempt-1 log + drop any half-written output.md so the
+            # Archive attempt-1 artifacts + drop any half-written output.md so the
             # post-loop validation only sees attempt 2's artifact (codex's -o
             # write should be atomic, but the contract is "this attempt's
             # output.md belongs to this attempt" — don't lean on codex behaviour).
             log_file.rename(agent / "log.attempt1.txt")
+            if err_file.exists():
+                err_file.rename(agent / "err.attempt1.txt")
             out_file.unlink(missing_ok=True)
             with log_file.open("a") as lf:
                 lf.write(f"[{_ts()}] agent={name} attempt 2 (first hung; see log.attempt1.txt)\n")
-        with log_file.open("a") as lf:
-            proc = subprocess.Popen(argv, stdout=lf, stderr=lf, start_new_session=True)
+        with log_file.open("a") as lf, err_file.open("a") as ef:
+            proc = subprocess.Popen(argv, stdout=lf, stderr=ef, start_new_session=True)
         exit_code, kill_reason, retryable = _wait_with_watchdog(proc, log_file)
         if kill_reason is not None:
             with log_file.open("a") as lf:
@@ -200,6 +221,15 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
         lf.write(f"[{_ts()}] agent={name} exit={exit_code}\n")
 
     if exit_code != 0:
+        # Codex itself exited non-zero — most commonly the ChatGPT/Codex
+        # usage limit. Scan err.txt (codex CLI stderr only) for the reset
+        # time and stash it for review-one-pr.sh to PATCH into the
+        # placeholder. Stdout (model reasoning) is excluded so PR-
+        # controlled output can't spoof a public quota placeholder.
+        m = _CODEX_QUOTA_RE.search(err_file.read_text(errors="replace"))
+        if m:
+            sentinel = agent.parent.parent / "_codex_quota.txt"
+            sentinel.write_text(m.group(1).strip() + "\n")
         return exit_code
 
     if not out_file.exists() or out_file.stat().st_size == 0:
@@ -380,7 +410,7 @@ def run_specialist(
     spec_agent_dir = run / "agents" / specialist
     spec_rc = run_codex(specialist, str(repo), spec_prompt, str(spec_agent_dir))
     if spec_rc != 0:
-        log(f"{pr_id}: specialist {specialist} exited non-zero (see {spec_agent_dir}/log.txt)")
+        log(f"{pr_id}: specialist {specialist} exited non-zero (see {spec_agent_dir}/{{log,err}}.txt)")
         return spec_rc
     spec_out = (spec_agent_dir / "output.md").read_text()
 
@@ -398,7 +428,7 @@ def run_specialist(
     crit_agent_dir = run / "agents" / f"critic-{specialist}"
     crit_rc = run_codex(f"critic-{specialist}", str(repo), crit_prompt, str(crit_agent_dir))
     if crit_rc != 0:
-        log(f"{pr_id}: critic-{specialist} exited non-zero (see {crit_agent_dir}/log.txt)")
+        log(f"{pr_id}: critic-{specialist} exited non-zero (see {crit_agent_dir}/{{log,err}}.txt)")
         return crit_rc
     crit_out = (crit_agent_dir / "output.md").read_text()
 

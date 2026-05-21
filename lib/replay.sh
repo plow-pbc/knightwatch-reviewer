@@ -80,12 +80,12 @@ jq -n \
 # Replay invokes it as a subprocess below after staging scratch inputs.
 
 WORK="$(mktemp -d)"
-# On exit, preserve per-agent log.txt files for post-mortem before
-# wiping $WORK. `python3 lib/pipeline.py` exits non-zero on codex
-# failure (auth, usage limit, network), and replay.sh's control flow
-# can't capture stderr from the failing agent inline. The trap captures
-# log tails into $OUT/agents-on-exit/ regardless of how the script
-# exited.
+# On exit, preserve per-agent log.txt + err.txt files for post-mortem
+# before wiping $WORK. `python3 lib/pipeline.py` exits non-zero on codex
+# failure (auth, usage limit, network); err.txt carries Codex's CLI
+# stderr (where those errors land), log.txt carries the model-reasoning
+# stdout. The trap captures both into $OUT/agents-on-exit/ regardless
+# of how the script exited.
 cleanup_replay() {
     local rc=$?
     if [ -d "$WORK/run/agents" ]; then
@@ -95,7 +95,7 @@ cleanup_replay() {
             local name
             name=$(basename "$agent_dir")
             mkdir -p "$OUT/agents-on-exit/$name"
-            for f in log.txt log.attempt1.txt prompt.txt output.md; do
+            for f in log.txt log.attempt1.txt err.txt err.attempt1.txt prompt.txt output.md; do
                 [ -f "$agent_dir/$f" ] && cp "$agent_dir/$f" "$OUT/agents-on-exit/$name/$f"
             done
         done
@@ -171,8 +171,8 @@ LOG_FILE="$OUT/run.log"
 # (intent fail, specialist fail, dead-code fail, critic fail, aggregator
 # fail). Under replay.sh's `set -euo pipefail` a non-zero exit would
 # abort the script before we could capture PIPELINE_RC; drop set -e for
-# the call, then re-enable. Per-agent log.txt files are captured by the
-# EXIT trap regardless of how the script exits.
+# the call, then re-enable. Per-agent log.txt + err.txt files are
+# captured by the EXIT trap regardless of how the script exits.
 set +e
 PR_ID="$PR_ID" \
 PR_TITLE="$PR_TITLE" \
@@ -185,7 +185,7 @@ OPERATOR_NAME="${OPERATOR_NAME:-Sam}" \
 PIPELINE_RC=$?
 set -e
 if [ "$PIPELINE_RC" -ne 0 ]; then
-    echo "replay: pipeline failed (rc=$PIPELINE_RC); see $OUT/run.log + $OUT/agents-on-exit/<agent>/log.txt for codex stderr" >&2
+    echo "replay: pipeline failed (rc=$PIPELINE_RC); see $OUT/run.log + $OUT/agents-on-exit/<agent>/err.txt (codex CLI stderr — quota/auth/network errors land here) and log.txt (codex stdout — model reasoning)" >&2
     exit "$PIPELINE_RC"
 fi
 
