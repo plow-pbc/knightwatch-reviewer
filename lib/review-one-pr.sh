@@ -1215,7 +1215,7 @@ if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
     TIMEOUTS_SENTINEL="$RUN_DIR/_wave_b_timeouts.txt"
     if [ -s "$QUOTA_SENTINEL" ]; then
         RESET_AT=$(head -n 1 "$QUOTA_SENTINEL")
-        EYES_ABORT_BODY="⏸ knightwatch paused — codex quota hit, resets at ${RESET_AT}. Will retry automatically after the quota window resets."
+        EYES_ABORT_BODY="⏸ knightwatch paused — codex quota hit, resets at ${RESET_AT}. Will retry on the next tick and should succeed after the quota window resets."
         log "$PR_ID: handing codex-quota-error to cleanup_eyes (resets=${RESET_AT})"
     elif [ -s "$TIMEOUTS_SENTINEL" ]; then
         TIMED_OUT=$(paste -sd, "$TIMEOUTS_SENTINEL")

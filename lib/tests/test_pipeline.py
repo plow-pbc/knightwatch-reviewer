@@ -1157,6 +1157,52 @@ class TestRunPipeline(unittest.TestCase):
         self.assertNotEqual(rc, 0)
         self.assertFalse((self.run_dir / "_codex_quota.txt").exists())
 
+    @patch("pipeline.subprocess.Popen")
+    def test_codex_quota_rejects_injected_reset_text(self, mock_popen):
+        """PR-controlled text reaching an agent log (via prompt injection in
+        diff/title → LLM stdout) must NOT reflect into the public placeholder.
+        The capture regex is pinned to Codex's two observed reset formats;
+        anything else misses and we fall back to the generic abort body."""
+        def inject_attacker_text(name, out_path):
+            if name == "intent":
+                (out_path.parent).mkdir(parents=True, exist_ok=True)
+                with (out_path.parent / "log.txt").open("a") as f:
+                    f.write(
+                        "ERROR: You've hit your usage limit. Visit "
+                        "https://chatgpt.com/codex/settings/usage to purchase "
+                        "more credits or try again at <a href='evil'>now</a>.\n"
+                    )
+        mock_popen.side_effect = _make_codex_stub(
+            plan={"intent": (1, "")},
+            before_write=inject_attacker_text,
+        )
+        rc = self._run()
+        self.assertNotEqual(rc, 0)
+        self.assertFalse((self.run_dir / "_codex_quota.txt").exists())
+
+    @patch("pipeline.subprocess.Popen")
+    def test_codex_quota_captures_weekly_cap_format(self, mock_popen):
+        """Codex's two observed reset formats both match: the 5h rolling
+        window ("6:26 PM") in the other test, and the weekly cap ("May 26th,
+        2026 11:33 AM") here."""
+        def inject_weekly_cap(name, out_path):
+            if name == "intent":
+                (out_path.parent).mkdir(parents=True, exist_ok=True)
+                with (out_path.parent / "log.txt").open("a") as f:
+                    f.write(
+                        "ERROR: You've hit your usage limit. Visit "
+                        "https://chatgpt.com/codex/settings/usage to purchase "
+                        "more credits or try again at May 26th, 2026 11:33 AM.\n"
+                    )
+        mock_popen.side_effect = _make_codex_stub(
+            plan={"intent": (1, "")},
+            before_write=inject_weekly_cap,
+        )
+        rc = self._run()
+        self.assertNotEqual(rc, 0)
+        sentinel = self.run_dir / "_codex_quota.txt"
+        self.assertEqual(sentinel.read_text().strip(), "May 26th, 2026 11:33 AM")
+
 
 class TestPipelineCLI(unittest.TestCase):
     """End-to-end smoke against the real `python3 lib/pipeline.py REPO_DIR

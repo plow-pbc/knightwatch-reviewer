@@ -38,12 +38,16 @@ WATCHDOG_KILL_HARDCAP_PREFIX = "hit hard cap"
 _PROBE_BLOCK_RE = re.compile(r"^### Probe |^No probes\.$", re.MULTILINE)
 _PROBE_HEADER_RE = re.compile(r"^### Probe (\d+)\b", re.MULTILINE)
 _CRITIC_H2_RE = re.compile(r"^## Critic counter-arguments\s*$", re.MULTILINE)
-# Codex prints this when the user's ChatGPT/Codex usage limit is hit. Reset
-# phrasing varies ("6:26 PM" for the 5h rolling window, "May 26th, 2026
-# 11:33 AM" for the weekly cap) — capture whatever Codex says verbatim and
-# let review-one-pr.sh surface it in the placeholder.
+# Codex prints this when the user's ChatGPT/Codex usage limit is hit. The
+# capture group is pinned to Codex's two observed reset formats — short
+# rolling-window ("6:26 PM") or weekly cap ("May 26th, 2026 11:33 AM") —
+# rather than `[^.\n]+`, so PR-controlled text that leaks into an agent's
+# log.txt via prompt injection can't reflect into the public placeholder.
+# If Codex changes the format, the regex misses and we fall back to the
+# generic abort body — safe degradation.
 _CODEX_QUOTA_RE = re.compile(
-    r"hit your usage limit\..*?try again at ([^.\n]+)",
+    r"hit your usage limit\..*?try again at "
+    r"((?:\w+ \d{1,2}(?:st|nd|rd|th), \d{4} )?\d{1,2}:\d{2} (?:AM|PM))\.",
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -431,20 +435,10 @@ def _check_codex_quota(run: Path) -> None:
     specific "codex quota hit, resets at X" body instead of the generic
     abort message. Same single-PATCH lifecycle as the Wave B timeouts
     sentinel."""
-    sentinel = run / "_codex_quota.txt"
-    if sentinel.exists():
-        return
-    agents_dir = run / "agents"
-    if not agents_dir.is_dir():
-        return
-    for log_path in agents_dir.glob("*/log.txt"):
-        try:
-            text = log_path.read_text(errors="replace")
-        except OSError:
-            continue
-        m = _CODEX_QUOTA_RE.search(text)
+    for log_path in (run / "agents").glob("*/log.txt"):
+        m = _CODEX_QUOTA_RE.search(log_path.read_text(errors="replace"))
         if m:
-            sentinel.write_text(m.group(1).strip() + "\n")
+            (run / "_codex_quota.txt").write_text(m.group(1).strip() + "\n")
             return
 
 
