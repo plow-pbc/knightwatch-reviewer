@@ -169,7 +169,14 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
     agent.mkdir(parents=True, exist_ok=True)
     prompt_file = agent / "prompt.txt"
     out_file = agent / "output.md"
+    # log.txt = codex stdout (mostly model reasoning summary, ie PR-influenced
+    # content). err.txt = codex stderr (the CLI's own error messages,
+    # including the usage-limit notice we parse for the quota sentinel).
+    # Splitting the streams keeps PR-controlled model output out of the
+    # quota scan — otherwise a non-quota rc=1 with attacker-shaped stdout
+    # could spoof a public quota placeholder.
     log_file = agent / "log.txt"
+    err_file = agent / "err.txt"
 
     prompt_file.write_text(prompt)
     with log_file.open("a") as lf:
@@ -191,16 +198,18 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
     # with reviewer credentials (sandbox disabled by `pr-reviewer.service`).
     for attempt in (1, 2):
         if attempt == 2:
-            # Archive attempt-1 log + drop any half-written output.md so the
+            # Archive attempt-1 artifacts + drop any half-written output.md so the
             # post-loop validation only sees attempt 2's artifact (codex's -o
             # write should be atomic, but the contract is "this attempt's
             # output.md belongs to this attempt" — don't lean on codex behaviour).
             log_file.rename(agent / "log.attempt1.txt")
+            if err_file.exists():
+                err_file.rename(agent / "err.attempt1.txt")
             out_file.unlink(missing_ok=True)
             with log_file.open("a") as lf:
                 lf.write(f"[{_ts()}] agent={name} attempt 2 (first hung; see log.attempt1.txt)\n")
-        with log_file.open("a") as lf:
-            proc = subprocess.Popen(argv, stdout=lf, stderr=lf, start_new_session=True)
+        with log_file.open("a") as lf, err_file.open("a") as ef:
+            proc = subprocess.Popen(argv, stdout=lf, stderr=ef, start_new_session=True)
         exit_code, kill_reason, retryable = _wait_with_watchdog(proc, log_file)
         if kill_reason is not None:
             with log_file.open("a") as lf:
@@ -213,12 +222,11 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
 
     if exit_code != 0:
         # Codex itself exited non-zero — most commonly the ChatGPT/Codex
-        # usage limit. Stash the parsed reset time so review-one-pr.sh can
-        # PATCH the placeholder with the real cause. Confined to the
-        # codex-rc-non-zero branch (not run on rc=0-but-bad-output contract
-        # failures below) so PR-controlled LLM stdout that happens to match
-        # the regex can't spoof a public quota placeholder.
-        m = _CODEX_QUOTA_RE.search(log_file.read_text(errors="replace"))
+        # usage limit. Scan err.txt (codex CLI stderr only) for the reset
+        # time and stash it for review-one-pr.sh to PATCH into the
+        # placeholder. Stdout (model reasoning) is excluded so PR-
+        # controlled output can't spoof a public quota placeholder.
+        m = _CODEX_QUOTA_RE.search(err_file.read_text(errors="replace"))
         if m:
             sentinel = agent.parent.parent / "_codex_quota.txt"
             sentinel.write_text(m.group(1).strip() + "\n")

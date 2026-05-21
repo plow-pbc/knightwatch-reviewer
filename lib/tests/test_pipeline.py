@@ -78,6 +78,31 @@ class FakePopen:
         return self._returncode
 
 
+def _codex_quota_line(reset_text: str) -> str:
+    """Shape of Codex's usage-limit error message, exactly as the CLI prints
+    it to stderr when the ChatGPT/Codex quota is hit. Quota tests seed this
+    via _inject_intent_stream() to exercise the detection or rejection
+    path under each reset format."""
+    return (
+        "ERROR: You've hit your usage limit. Visit "
+        "https://chatgpt.com/codex/settings/usage to purchase more "
+        f"credits or try again at {reset_text}.\n"
+    )
+
+
+def _inject_intent_stream(stream: str, line: str):
+    """Returns a before_write callback that appends `line` to the intent
+    agent's <stream>.txt (`err` = codex CLI stderr / real error path, `log`
+    = codex stdout / PR-influenced model output). Used by quota tests to
+    distinguish "genuine codex error" from "attacker-controlled stdout"."""
+    def appender(name, out_path):
+        if name == "intent":
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            with (out_path.parent / f"{stream}.txt").open("a") as f:
+                f.write(line)
+    return appender
+
+
 def _make_codex_stub(plan=None, default=(0, "### Probe 1\nstub\n"),
                      before_write=None):
     """Module-level fake-codex side_effect for `subprocess.Popen`. Owns the
@@ -1122,34 +1147,40 @@ class TestRunPipeline(unittest.TestCase):
 
     @patch("pipeline.subprocess.Popen")
     def test_codex_quota_writes_sentinel_with_reset_time(self, mock_popen):
-        """When codex hits the usage limit (any agent), pipeline.py writes
-        `_codex_quota.txt` with the parsed reset time so review-one-pr.sh
-        patches the placeholder with the real cause instead of the generic
-        abort body. Originating incident: 2026-05-21 codex/ChatGPT 5h
-        rolling-window throttle — ~100 'review aborted' comments piled up
-        across 10 PRs before anyone noticed."""
-        def inject_quota_error(name, out_path):
-            if name == "intent":
-                (out_path.parent).mkdir(parents=True, exist_ok=True)
-                with (out_path.parent / "log.txt").open("a") as f:
-                    f.write(
-                        "ERROR: You've hit your usage limit. Visit "
-                        "https://chatgpt.com/codex/settings/usage to purchase "
-                        "more credits or try again at 6:26 PM.\n"
-                    )
+        """When Codex hits the usage limit, the CLI prints the reset time
+        to stderr (err.txt); pipeline.py captures it into _codex_quota.txt
+        so review-one-pr.sh patches the placeholder with the real cause.
+        Originating incident: 2026-05-21 ChatGPT/Codex 5h rolling-window
+        throttle — ~100 generic 'review aborted' comments piled up across
+        10 PRs before the cause was visible from the PR side."""
         mock_popen.side_effect = _make_codex_stub(
             plan={"intent": (1, "")},
-            before_write=inject_quota_error,
+            before_write=_inject_intent_stream("err", _codex_quota_line("6:26 PM")),
         )
         rc = self._run()
         self.assertNotEqual(rc, 0)
         sentinel = self.run_dir / "_codex_quota.txt"
-        self.assertTrue(sentinel.exists(), "_codex_quota.txt should be written")
         self.assertEqual(sentinel.read_text().strip(), "6:26 PM")
 
     @patch("pipeline.subprocess.Popen")
+    def test_codex_quota_captures_weekly_cap_format(self, mock_popen):
+        """Codex's two observed reset formats both match: the 5h rolling
+        window ("6:26 PM") above, and the weekly cap ("May 26th, 2026
+        11:33 AM") here."""
+        mock_popen.side_effect = _make_codex_stub(
+            plan={"intent": (1, "")},
+            before_write=_inject_intent_stream(
+                "err", _codex_quota_line("May 26th, 2026 11:33 AM")
+            ),
+        )
+        rc = self._run()
+        self.assertNotEqual(rc, 0)
+        sentinel = self.run_dir / "_codex_quota.txt"
+        self.assertEqual(sentinel.read_text().strip(), "May 26th, 2026 11:33 AM")
+
+    @patch("pipeline.subprocess.Popen")
     def test_codex_quota_no_sentinel_on_unrelated_failure(self, mock_popen):
-        """Generic intent failures (no usage-limit error in the log) don't
+        """Generic intent failures (no usage-limit error in err.txt) don't
         write the quota sentinel — bash falls back to the generic abort
         body, which is the correct cause."""
         mock_popen.side_effect = _make_codex_stub(plan={"intent": (5, "")})
@@ -1158,23 +1189,16 @@ class TestRunPipeline(unittest.TestCase):
         self.assertFalse((self.run_dir / "_codex_quota.txt").exists())
 
     @patch("pipeline.subprocess.Popen")
-    def test_codex_quota_rejects_injected_reset_text(self, mock_popen):
-        """PR-controlled text reaching an agent log (via prompt injection in
-        diff/title → LLM stdout) must NOT reflect into the public placeholder.
-        The capture regex is pinned to Codex's two observed reset formats;
-        anything else misses and we fall back to the generic abort body."""
-        def inject_attacker_text(name, out_path):
-            if name == "intent":
-                (out_path.parent).mkdir(parents=True, exist_ok=True)
-                with (out_path.parent / "log.txt").open("a") as f:
-                    f.write(
-                        "ERROR: You've hit your usage limit. Visit "
-                        "https://chatgpt.com/codex/settings/usage to purchase "
-                        "more credits or try again at <a href='evil'>now</a>.\n"
-                    )
+    def test_codex_quota_regex_rejects_offshape_reset_text(self, mock_popen):
+        """The capture regex is pinned to Codex's two observed reset
+        formats; anything else (e.g. HTML, free-form prose) misses and
+        falls back to the generic abort body — even if it shows up in
+        err.txt itself."""
         mock_popen.side_effect = _make_codex_stub(
             plan={"intent": (1, "")},
-            before_write=inject_attacker_text,
+            before_write=_inject_intent_stream(
+                "err", _codex_quota_line("<a href='evil'>now</a>")
+            ),
         )
         rc = self._run()
         self.assertNotEqual(rc, 0)
@@ -1182,53 +1206,34 @@ class TestRunPipeline(unittest.TestCase):
 
     @patch("pipeline.subprocess.Popen")
     def test_codex_quota_skipped_when_codex_exits_clean(self, mock_popen):
-        """Quota detection runs only when Codex itself exited non-zero. When
-        Codex exits 0 but the output violates a contract (empty output, bad
-        probe shape), agent log.txt can carry PR-controlled LLM stdout —
-        and even text matching a valid Codex reset format must NOT spoof a
-        public quota placeholder."""
-        def inject_quota_via_llm_stdout(name, out_path):
-            if name == "intent":
-                (out_path.parent).mkdir(parents=True, exist_ok=True)
-                with (out_path.parent / "log.txt").open("a") as f:
-                    f.write(
-                        "ERROR: You've hit your usage limit. Visit "
-                        "https://chatgpt.com/codex/settings/usage to purchase "
-                        "more credits or try again at 6:26 PM.\n"
-                    )
-        # Codex exits 0 but produces empty output → run_codex returns 3
-        # (contract failure), pipeline aborts. The quota text in log.txt
-        # is attacker-controlled and must not reflect into the placeholder.
+        """Quota detection runs only when Codex itself exited non-zero.
+        When Codex exits 0 (e.g. empty output → contract failure rc=3),
+        the err.txt quota text is suspect — code defers to the generic
+        abort body rather than reflecting it into the public placeholder."""
+        # Even with a valid-shaped reset in err.txt, Codex rc=0 means the
+        # detection branch never runs.
         mock_popen.side_effect = _make_codex_stub(
             plan={"intent": (0, "")},
-            before_write=inject_quota_via_llm_stdout,
+            before_write=_inject_intent_stream("err", _codex_quota_line("6:26 PM")),
         )
         rc = self._run()
         self.assertNotEqual(rc, 0)
         self.assertFalse((self.run_dir / "_codex_quota.txt").exists())
 
     @patch("pipeline.subprocess.Popen")
-    def test_codex_quota_captures_weekly_cap_format(self, mock_popen):
-        """Codex's two observed reset formats both match: the 5h rolling
-        window ("6:26 PM") in the other test, and the weekly cap ("May 26th,
-        2026 11:33 AM") here."""
-        def inject_weekly_cap(name, out_path):
-            if name == "intent":
-                (out_path.parent).mkdir(parents=True, exist_ok=True)
-                with (out_path.parent / "log.txt").open("a") as f:
-                    f.write(
-                        "ERROR: You've hit your usage limit. Visit "
-                        "https://chatgpt.com/codex/settings/usage to purchase "
-                        "more credits or try again at May 26th, 2026 11:33 AM.\n"
-                    )
+    def test_codex_quota_ignores_model_stdout_injection(self, mock_popen):
+        """Codex stdout (log.txt) carries PR-influenced model reasoning;
+        only Codex stderr (err.txt) carries the CLI's own error messages.
+        A non-quota rc=1 with attacker-shaped stdout matching a valid
+        reset format must NOT spoof a public quota placeholder — stream
+        isolation rejects it before the regex even runs."""
         mock_popen.side_effect = _make_codex_stub(
             plan={"intent": (1, "")},
-            before_write=inject_weekly_cap,
+            before_write=_inject_intent_stream("log", _codex_quota_line("6:26 PM")),
         )
         rc = self._run()
         self.assertNotEqual(rc, 0)
-        sentinel = self.run_dir / "_codex_quota.txt"
-        self.assertEqual(sentinel.read_text().strip(), "May 26th, 2026 11:33 AM")
+        self.assertFalse((self.run_dir / "_codex_quota.txt").exists())
 
 
 class TestPipelineCLI(unittest.TestCase):
