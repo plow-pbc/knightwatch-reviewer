@@ -410,7 +410,7 @@ def run_specialist(
     spec_agent_dir = run / "agents" / specialist
     spec_rc = run_codex(specialist, str(repo), spec_prompt, str(spec_agent_dir))
     if spec_rc != 0:
-        log(f"{pr_id}: specialist {specialist} exited non-zero (see {spec_agent_dir}/log.txt)")
+        log(f"{pr_id}: specialist {specialist} exited non-zero (see {spec_agent_dir}/{{log,err}}.txt)")
         return spec_rc
     spec_out = (spec_agent_dir / "output.md").read_text()
 
@@ -428,7 +428,7 @@ def run_specialist(
     crit_agent_dir = run / "agents" / f"critic-{specialist}"
     crit_rc = run_codex(f"critic-{specialist}", str(repo), crit_prompt, str(crit_agent_dir))
     if crit_rc != 0:
-        log(f"{pr_id}: critic-{specialist} exited non-zero (see {crit_agent_dir}/log.txt)")
+        log(f"{pr_id}: critic-{specialist} exited non-zero (see {crit_agent_dir}/{{log,err}}.txt)")
         return crit_rc
     crit_out = (crit_agent_dir / "output.md").read_text()
 
