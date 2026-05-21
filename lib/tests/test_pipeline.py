@@ -1120,6 +1120,43 @@ class TestRunPipeline(unittest.TestCase):
         self.assertNotEqual(rc, 0)
         self.assertFalse((self.run_dir / "_wave_b_timeouts.txt").exists())
 
+    @patch("pipeline.subprocess.Popen")
+    def test_codex_quota_writes_sentinel_with_reset_time(self, mock_popen):
+        """When codex hits the usage limit (any agent), pipeline.py writes
+        `_codex_quota.txt` with the parsed reset time so review-one-pr.sh
+        patches the placeholder with the real cause instead of the generic
+        abort body. Originating incident: 2026-05-21 codex/ChatGPT 5h
+        rolling-window throttle — ~100 'review aborted' comments piled up
+        across 10 PRs before anyone noticed."""
+        def inject_quota_error(name, out_path):
+            if name == "intent":
+                (out_path.parent).mkdir(parents=True, exist_ok=True)
+                with (out_path.parent / "log.txt").open("a") as f:
+                    f.write(
+                        "ERROR: You've hit your usage limit. Visit "
+                        "https://chatgpt.com/codex/settings/usage to purchase "
+                        "more credits or try again at 6:26 PM.\n"
+                    )
+        mock_popen.side_effect = _make_codex_stub(
+            plan={"intent": (1, "")},
+            before_write=inject_quota_error,
+        )
+        rc = self._run()
+        self.assertNotEqual(rc, 0)
+        sentinel = self.run_dir / "_codex_quota.txt"
+        self.assertTrue(sentinel.exists(), "_codex_quota.txt should be written")
+        self.assertEqual(sentinel.read_text().strip(), "6:26 PM")
+
+    @patch("pipeline.subprocess.Popen")
+    def test_codex_quota_no_sentinel_on_unrelated_failure(self, mock_popen):
+        """Generic intent failures (no usage-limit error in the log) don't
+        write the quota sentinel — bash falls back to the generic abort
+        body, which is the correct cause."""
+        mock_popen.side_effect = _make_codex_stub(plan={"intent": (5, "")})
+        rc = self._run()
+        self.assertNotEqual(rc, 0)
+        self.assertFalse((self.run_dir / "_codex_quota.txt").exists())
+
 
 class TestPipelineCLI(unittest.TestCase):
     """End-to-end smoke against the real `python3 lib/pipeline.py REPO_DIR

@@ -38,6 +38,14 @@ WATCHDOG_KILL_HARDCAP_PREFIX = "hit hard cap"
 _PROBE_BLOCK_RE = re.compile(r"^### Probe |^No probes\.$", re.MULTILINE)
 _PROBE_HEADER_RE = re.compile(r"^### Probe (\d+)\b", re.MULTILINE)
 _CRITIC_H2_RE = re.compile(r"^## Critic counter-arguments\s*$", re.MULTILINE)
+# Codex prints this when the user's ChatGPT/Codex usage limit is hit. Reset
+# phrasing varies ("6:26 PM" for the 5h rolling window, "May 26th, 2026
+# 11:33 AM" for the weekly cap) — capture whatever Codex says verbatim and
+# let review-one-pr.sh surface it in the placeholder.
+_CODEX_QUOTA_RE = re.compile(
+    r"hit your usage limit\..*?try again at ([^.\n]+)",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _ts() -> str:
@@ -416,7 +424,32 @@ def run_specialist(
     return 0
 
 
-def _abort(repo_dir: Path, msg: str) -> int:
+def _check_codex_quota(run: Path) -> None:
+    """If any agent log carries the codex usage-limit error, write
+    `_codex_quota.txt` with the parsed reset time. review-one-pr.sh reads
+    this after pipeline.py exits and patches the placeholder with a
+    specific "codex quota hit, resets at X" body instead of the generic
+    abort message. Same single-PATCH lifecycle as the Wave B timeouts
+    sentinel."""
+    sentinel = run / "_codex_quota.txt"
+    if sentinel.exists():
+        return
+    agents_dir = run / "agents"
+    if not agents_dir.is_dir():
+        return
+    for log_path in agents_dir.glob("*/log.txt"):
+        try:
+            text = log_path.read_text(errors="replace")
+        except OSError:
+            continue
+        m = _CODEX_QUOTA_RE.search(text)
+        if m:
+            sentinel.write_text(m.group(1).strip() + "\n")
+            return
+
+
+def _abort(repo_dir: Path, run: Path, msg: str) -> int:
+    _check_codex_quota(run)
     log(msg)
     if repo_dir.exists():
         shutil.rmtree(repo_dir, ignore_errors=True)
@@ -483,15 +516,15 @@ def run_pipeline(
         intent_rc = intent_fut.result()
         dc_rc = dc_fut.result()
     if intent_rc != 0:
-        return _abort(repo, f"{pr_id}: intent inference failed (exit={intent_rc}) — aborting")
+        return _abort(repo, run, f"{pr_id}: intent inference failed (exit={intent_rc}) — aborting")
     if dc_rc != 0:
-        return _abort(repo, f"{pr_id}: dead-code search failed (exit={dc_rc}) — aborting")
+        return _abort(repo, run, f"{pr_id}: dead-code search failed (exit={dc_rc}) — aborting")
 
     intent_dir = run / "agents" / "intent"
     try:
         intent_text = _validate_intent(intent_dir / "output.md")
     except ValueError as e:
-        return _abort(repo, f"{pr_id}: {e} — aborting")
+        return _abort(repo, run, f"{pr_id}: {e} — aborting")
     _relink(scratch / "inferred-intent.md", intent_dir / "output.md")
     _relink(scratch / "dead-code.md", run / "agents" / "dead-code-search" / "output.md")
     log(f"{pr_id}: Wave A complete: {intent_text}")
@@ -540,14 +573,14 @@ def run_pipeline(
     if timed_out:
         (run / "_wave_b_timeouts.txt").write_text("\n".join(timed_out) + "\n")
         return _abort(
-            repo,
+            repo, run,
             f"{pr_id}: {len(timed_out)} specialist(s) timed out "
             f"({', '.join(timed_out)}) — aborting",
         )
 
     if hard_failures:
         return _abort(
-            repo, f"{pr_id}: Wave B hard failures: {'; '.join(hard_failures)} — aborting"
+            repo, run, f"{pr_id}: Wave B hard failures: {'; '.join(hard_failures)} — aborting"
         )
 
     if has_prev:
@@ -563,7 +596,7 @@ def run_pipeline(
     agg_dir = run / "agents" / "aggregator"
     rc = run_codex("aggregator", str(repo), agg_prompt, str(agg_dir))
     if rc != 0:
-        return _abort(repo, f"{pr_id}: aggregator failed (exit={rc}) — aborting")
+        return _abort(repo, run, f"{pr_id}: aggregator failed (exit={rc}) — aborting")
     log(f"{pr_id}: aggregator complete")
     return 0
 
