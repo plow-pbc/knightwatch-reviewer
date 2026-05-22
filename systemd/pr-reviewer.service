@@ -35,7 +35,15 @@ SyslogIdentifier=pr-reviewer
 
 # Light sandbox — chosen to not break `just test` in tracked repos.
 NoNewPrivileges=yes
-PrivateTmp=yes
+# PrivateTmp deliberately omitted (load-bearing absence, not just "not set").
+# review.sh dispatches each PR worker with `&` and exits (KillMode=process,
+# Type=oneshot), so the unit deactivates within seconds while `just test`
+# keeps running for up to 30m. PrivateTmp=yes makes systemd unmount the
+# unit-private /tmp on deactivation — detached workers then see /tmp as
+# ENOENT, and any `just test` that hardcodes /tmp (mktemp templates,
+# Path("/tmp/...")) fails with false-positive `🧪 Tests failed` reviews.
+# TMPDIR is pinned to $STATE_DIR/tmp upstream so well-behaved code keeps
+# working, but that pin cannot help code that bypasses TMPDIR.
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
