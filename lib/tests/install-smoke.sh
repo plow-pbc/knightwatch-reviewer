@@ -235,6 +235,16 @@ for required in "${!REQUIRED_PLACEHOLDER[@]}"; do
         || { echo "FAIL scenario 1: $required's ReadWritePaths= line is missing $placeholder — kid queries will hit chromadb readonly errors"; exit 1; }
 done
 
+# Regression pin: pr-reviewer.service must NOT enable PrivateTmp. review.sh
+# dispatches workers with `&` and exits (KillMode=process), so the unit
+# deactivates within seconds while `just test` keeps running for up to 30m.
+# PrivateTmp=yes makes systemd unmount /tmp on deactivation — detached
+# workers then see /tmp as ENOENT and any `just test` hardcoding /tmp paths
+# false-fails. Same anchor as the kid pin: live directive only, comment
+# mentions don't count.
+grep -E '^PrivateTmp=yes' "$PROJECT_ROOT/systemd/pr-reviewer.service" >/dev/null \
+    && { echo "FAIL scenario 1: pr-reviewer.service has PrivateTmp=yes — detached workers will see /tmp as ENOENT after unit deactivates; see the unit file comment for the full failure mode"; exit 1; }
+
 # daemon-reload was called once (units actually changed)
 [ "$(count_stub 'SYSTEMCTL daemon-reload')" = "1" ] || { echo "FAIL scenario 1: expected exactly 1 daemon-reload"; cat "$STUB_LOG"; exit 1; }
 
