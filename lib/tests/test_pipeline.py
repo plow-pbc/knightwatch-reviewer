@@ -1355,6 +1355,48 @@ class TestPipelineCLI(unittest.TestCase):
         self.assertEqual(proc.returncode, 2)
         self.assertIn("usage:", proc.stderr)
 
+    def test_sigterm_logs_source_and_reraises(self):
+        """When pipeline.py gets SIGTERM, _trace_sigterm_source logs the
+        sender (parent pid, parent cmdline, TracerPid) before re-raising
+        so the next mystery kill is debuggable from the journal alone.
+        Regression target: cncorp/plow#680 18:43:28 where a SIGTERM
+        aborted Wave B with no log evidence pointing at the sender.
+
+        Approach: run a tiny harness that imports pipeline, installs
+        the handler the same way main() does, then sleeps. SIGTERM the
+        child, assert stdout has the trace line and exit code is 143
+        (128 + SIGTERM)."""
+        pipeline_dir = Path(pipeline.__file__).resolve().parent
+        harness = (
+            "import os, signal, sys, time\n"
+            f"sys.path.insert(0, {str(pipeline_dir)!r})\n"
+            "import pipeline\n"
+            "signal.signal(signal.SIGTERM, pipeline._trace_sigterm_source)\n"
+            "print('ready', flush=True)\n"
+            "time.sleep(30)\n"
+        )
+        proc = subprocess.Popen(
+            [sys.executable, "-c", harness],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        # Wait until the harness signals readiness (so SIGTERM lands
+        # after signal.signal() has actually run).
+        assert proc.stdout is not None
+        ready = proc.stdout.readline()
+        self.assertEqual(ready.strip(), "ready")
+
+        proc.send_signal(signal.SIGTERM)
+        stdout, _ = proc.communicate(timeout=10)
+
+        self.assertEqual(
+            proc.returncode, -signal.SIGTERM,
+            f"expected re-raised SIGTERM, got rc={proc.returncode}",
+        )
+        self.assertIn("pipeline.py received signal=15", stdout)
+        self.assertIn(f"ppid={os.getpid()}", stdout)
+        self.assertIn("tracer_pid=", stdout)
+        self.assertIn("parent_cmd=", stdout)
+
 
 class TestRealPromptsCompose(unittest.TestCase):
     """Compose-time fence against the production prompts/ tree.

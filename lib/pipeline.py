@@ -598,7 +598,40 @@ def run_pipeline(
     return 0
 
 
+def _trace_sigterm_source(signum: int, _frame: object) -> None:
+    """SIGTERM forensics. On 2026-05-22 a SIGTERM aborted pipeline.py
+    mid-Wave-B and no log evidence pointed at the sender (OOM/oomd
+    silent, no internal timeout matched). Capture parent pid+cmdline
+    and TracerPid before exiting so the next mystery kill is
+    debuggable. Re-exits 128+signum to preserve the previous bash-side
+    exit code (143 for SIGTERM)."""
+    try:
+        ppid = os.getppid()
+        try:
+            with open(f"/proc/{ppid}/cmdline", "rb") as f:
+                parent_cmd = f.read().replace(b"\0", b" ").decode("utf-8", "replace").strip()
+        except OSError:
+            parent_cmd = "<unavailable>"
+        tracer_pid = "0"
+        try:
+            with open("/proc/self/status") as f:
+                for line in f:
+                    if line.startswith("TracerPid:"):
+                        tracer_pid = line.split(":", 1)[1].strip()
+                        break
+        except OSError:
+            pass
+        log(
+            f"pipeline.py received signal={signum} ppid={ppid} "
+            f"tracer_pid={tracer_pid} parent_cmd={parent_cmd[:200]!r}"
+        )
+    finally:
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+
 def main() -> int:
+    signal.signal(signal.SIGTERM, _trace_sigterm_source)
     if len(sys.argv) != 3:
         sys.stderr.write(f"usage: {sys.argv[0]} REPO_DIR RUN_DIR\n")
         return 2

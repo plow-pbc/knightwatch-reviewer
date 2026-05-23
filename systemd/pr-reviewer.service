@@ -33,6 +33,17 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=pr-reviewer
 
+# Memory ceiling for the whole unit cgroup (orchestrator + every
+# detached worker, accumulated across ticks). Host is 128G; half is a
+# comfortable upper bound that gets systemd-oomd involved before the
+# unit starves the rest of the box. Observed pre-cap peak: 22.6G
+# during the cncorp/plow chat-postgres cascade, so 60G/64G leaves
+# >2x headroom for legitimate spikes while keeping runaway cascades
+# self-terminating. MemoryHigh throttles first; MemoryMax is the hard
+# stop where the kernel OOM-kills inside the cgroup.
+MemoryHigh=60G
+MemoryMax=64G
+
 # Light sandbox — chosen to not break `just test` in tracked repos.
 NoNewPrivileges=yes
 # PrivateTmp deliberately omitted (load-bearing absence, not just "not set").
