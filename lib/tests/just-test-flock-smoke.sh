@@ -22,7 +22,16 @@ TMPDIR=$(mktemp -d -t just-test-flock-XXXXXX)
 trap 'rm -rf "$TMPDIR"' EXIT
 
 export STATE_DIR="$TMPDIR/state"
-mkdir -p "$STATE_DIR"
+mkdir -p "$STATE_DIR" "$TMPDIR/bin"
+
+# macOS dev hosts: brew's flock formula excludes the binary. Install
+# the worker-smoke flock stub on PATH before sourcing locking.sh so
+# the helper's blocking `flock FD` resolves to the python3+fcntl shim
+# instead of failing with command-not-found.
+# shellcheck source=lib/tests/worker-smoke-helpers.sh
+. "$SCRIPT_DIR/tests/worker-smoke-helpers.sh"
+export PATH="$TMPDIR/bin:$PATH"
+write_worker_flock_stub_if_missing "$TMPDIR/bin"
 
 # shellcheck source=lib/locking.sh
 . "$SCRIPT_DIR/locking.sh"
@@ -30,9 +39,22 @@ mkdir -p "$STATE_DIR"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "  PASS: $*"; }
 
+# Block until <file> appears or timeout. State-timed ordering replaces
+# `sleep 0.2` scheduler-timed ordering — on a loaded host the 200ms
+# head start can be insufficient, racing B/B2 ahead of A/A2's acquire
+# and flipping the scenario's outcome.
+wait_for_file() {
+    local f="$1" deadline=$((SECONDS + 5))
+    while [ ! -f "$f" ]; do
+        [ "$SECONDS" -ge "$deadline" ] && fail "timed out waiting for $f"
+        sleep 0.01
+    done
+}
+
 # ---- scenario 1: same-repo serializes ----
-# Worker A holds the lock for 1.5s; worker B tries to acquire at the
-# same moment. B must observe >= ~1.5s wait before its acquire returns.
+# Worker A holds the lock for 1.5s; once the parent observes A's
+# acquired-marker it launches worker B, which must observe ~1.5s of
+# wait before its own acquire returns.
 echo "  scenario 1: same-repo concurrent acquire serializes..."
 
 worker_a_script=$(cat <<EOF
@@ -47,8 +69,6 @@ EOF
 
 worker_b_script=$(cat <<EOF
 . "$SCRIPT_DIR/locking.sh"
-# Give A a head start to ensure ordering.
-sleep 0.2
 START=\$(date +%s%N)
 acquire_just_test_lock "$STATE_DIR" "owner_repo"
 END=\$(date +%s%N)
@@ -59,14 +79,15 @@ EOF
 
 bash -c "$worker_a_script" &
 A_PID=$!
+wait_for_file "$TMPDIR/a.log"
 bash -c "$worker_b_script" &
 B_PID=$!
 wait "$A_PID" "$B_PID"
 
 B_WAIT_NS=$(awk '/b-wait-ns/{print $2}' "$TMPDIR/b.log")
-# B starts 0.2s after A; A holds for 1.5s; so B should wait ~1.3s.
-# Allow slop: assert >= 1.0s to confirm serialization without flaking
-# on slow CI.
+# A holds for 1.5s after the marker; B starts immediately after the
+# marker. Assert >= 1.0s to confirm serialization without flaking on
+# slow CI.
 if [ "$B_WAIT_NS" -lt 1000000000 ]; then
     fail "scenario 1: worker B's wait was ${B_WAIT_NS}ns (<1s) — same-repo lock did not serialize"
 fi
@@ -88,7 +109,6 @@ EOF
 
 worker_b2_script=$(cat <<EOF
 . "$SCRIPT_DIR/locking.sh"
-sleep 0.2
 START=\$(date +%s%N)
 acquire_just_test_lock "$STATE_DIR" "owner_repoB"
 END=\$(date +%s%N)
@@ -99,6 +119,7 @@ EOF
 
 bash -c "$worker_a2_script" &
 A2_PID=$!
+wait_for_file "$TMPDIR/a2.log"
 bash -c "$worker_b2_script" &
 B2_PID=$!
 wait "$A2_PID" "$B2_PID"

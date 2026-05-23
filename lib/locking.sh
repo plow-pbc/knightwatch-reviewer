@@ -48,7 +48,7 @@ acquire_just_test_lock() {
     mkdir -p "$JUST_TEST_LOCK_DIR"
     JUST_TEST_LOCK_FILE="$JUST_TEST_LOCK_DIR/just-test__$repo_slug"
     exec {JUST_TEST_LOCK_FD}> "$JUST_TEST_LOCK_FILE"
-    flock -x "$JUST_TEST_LOCK_FD"
+    flock "$JUST_TEST_LOCK_FD"
 }
 
 release_just_test_lock() {
