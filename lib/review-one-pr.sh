@@ -689,6 +689,20 @@ if [ -z "$JUST_FILE" ]; then
     TEST_SUMMARY="not run (no justfile in repo root)"
     : > "$TEST_LOG"
 else
+    # Per-repo serialization for `just test`. Concurrent PR worktrees of
+    # the same repo share host-global state — single docker compose
+    # project name (so all worktrees write to one container set), a
+    # fixed DB host port, a fixed TCP port — and racing them deadlocks
+    # pytest sessions on the shared backend. Observed: cncorp/plow's
+    # chat-postgres-1 collision caused 30-min `just test` hangs that
+    # cascaded into 22G memory peaks across the unit. Cross-repo
+    # workers are unaffected (different lock file).
+    JUST_TEST_LOCK_WAIT_START=$(date +%s)
+    acquire_just_test_lock "$STATE_DIR" "$REPO_SLUG"
+    JUST_TEST_LOCK_WAIT=$(( $(date +%s) - JUST_TEST_LOCK_WAIT_START ))
+    if [ "$JUST_TEST_LOCK_WAIT" -ge 5 ]; then
+        log "$PR_ID: per-repo just-test lock acquired after ${JUST_TEST_LOCK_WAIT}s queue"
+    fi
     log "$PR_ID: running \`just --justfile $JUST_FILE test\` (timeout ${TEST_TIMEOUT})..."
     # Scrub LOG_FILE from the test subprocess's env. Otherwise this repo's
     # own lib/tests/test_pipeline.py — which calls pipeline.run_pipeline()
@@ -699,6 +713,7 @@ else
     # post-mortem grepping clean.
     timeout "$TEST_TIMEOUT" env -u LOG_FILE just --justfile "$JUST_FILE" --working-directory "$REPO_DIR" test > "$TEST_LOG" 2>&1
     TEST_EXIT=$?
+    release_just_test_lock
     IFS=$'\t' read -r TESTS_RAN TEST_SUMMARY < <(classify_just_test_outcome "$TEST_EXIT" "$TEST_LOG" "$TEST_TIMEOUT")
 fi
 TEST_LOG_TAIL=$(tail -n 500 "$TEST_LOG")

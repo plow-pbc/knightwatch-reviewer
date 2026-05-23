@@ -106,6 +106,10 @@ test:
     bash lib/tests/strict-typing-checks-smoke.sh
 
     echo ""
+    echo "=== just-test flock smoke test ==="
+    bash lib/tests/just-test-flock-smoke.sh
+
+    echo ""
     echo "=== orchestrator skip smoke test ==="
     bash lib/tests/orchestrator-skip-smoke.sh
 

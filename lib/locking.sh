@@ -29,3 +29,30 @@ acquire_pr_lock() {
     exec {PR_LOCK_FD}> "$PR_LOCK_FILE"
     flock -n "$PR_LOCK_FD"
 }
+
+# acquire_just_test_lock STATE_DIR REPO_SLUG — blocks until the caller
+# holds an exclusive flock on $STATE_DIR/locks/just-test__<REPO_SLUG>.
+# Serializes `just test` across concurrent PR reviews of the same repo
+# so worktrees don't race shared host state (single docker compose
+# project name, single DB host port, single TCP port). Held only across
+# the test invocation — release_just_test_lock closes the FD; Wave A/B
+# and the aggregator run lock-free so cross-PR parallelism stays intact.
+#
+# Cross-repo reviews never block each other (different lock file).
+# Same-repo reviews serialize at this point — by design — and the
+# outer per-worker timeout still bounds the queue, so a wedged review
+# can't starve the queue indefinitely.
+acquire_just_test_lock() {
+    local state_dir="$1" repo_slug="$2"
+    JUST_TEST_LOCK_DIR="$state_dir/locks"
+    mkdir -p "$JUST_TEST_LOCK_DIR"
+    JUST_TEST_LOCK_FILE="$JUST_TEST_LOCK_DIR/just-test__$repo_slug"
+    exec {JUST_TEST_LOCK_FD}> "$JUST_TEST_LOCK_FILE"
+    flock -x "$JUST_TEST_LOCK_FD"
+}
+
+release_just_test_lock() {
+    [ -n "${JUST_TEST_LOCK_FD:-}" ] || return 0
+    exec {JUST_TEST_LOCK_FD}>&-
+    unset JUST_TEST_LOCK_FD JUST_TEST_LOCK_FILE JUST_TEST_LOCK_DIR
+}
