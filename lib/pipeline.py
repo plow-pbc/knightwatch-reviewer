@@ -80,34 +80,23 @@ def _relink(link: Path, target: Path) -> None:
     link.symlink_to(target)
 
 
-def _latest_mtime(*paths: Path) -> float:
-    """Newest mtime across `paths`; 0.0 if none exist yet. Missing files
-    are skipped, not treated as progress."""
-    mtimes = []
-    for p in paths:
-        try:
-            mtimes.append(p.stat().st_mtime)
-        except FileNotFoundError:
-            pass
-    return max(mtimes, default=0.0)
-
-
 def _wait_with_watchdog(
-    proc: subprocess.Popen, *progress_files: Path
+    proc: subprocess.Popen, log_file: Path, err_file: Path
 ) -> tuple[int, str | None, bool]:
-    """Wait on `proc`, polling the newest mtime across `progress_files` for
-    liveness. Returns `(exit_code, kill_reason, retryable)`. `kill_reason`
-    is None on natural exit and a human-readable string on watchdog kill
-    (exit_code is then 124). `retryable` is True only for stale kills that
-    fit under both the per-Codex and outer-worker budgets; hard-cap kills
-    are never retryable.
+    """Wait on `proc`, polling the newest mtime across codex's two output
+    streams (stdout `log.txt` + stderr `err.txt`) for liveness. Returns
+    `(exit_code, kill_reason, retryable)`. `kill_reason` is None on natural
+    exit and a human-readable string on watchdog kill (exit_code is then
+    124). `retryable` is True only for stale kills that fit under both the
+    per-Codex and outer-worker budgets; hard-cap kills are never retryable.
 
-    Pass BOTH codex streams (stdout `log.txt` + stderr `err.txt`): codex
-    (reasoning-summaries off) writes stdout only at the final answer, while
-    all live tool/reasoning activity streams to stderr. Watching stdout
-    alone false-kills any investigation agent whose work runs past the
-    staleness threshold (cncorp/plow#700/#638/#692/#695 abort wave); a
-    genuine deadlock goes silent on BOTH streams and is still caught.
+    Both streams matter: codex (reasoning-summaries off) writes stdout only
+    at the final answer, while all live tool/reasoning activity streams to
+    stderr. Watching stdout alone false-kills any investigation agent whose
+    work runs past the staleness threshold (cncorp/plow#700/#638/#692/#695
+    abort wave); a genuine deadlock goes silent on BOTH streams and is still
+    caught. run_codex opens both files before this call, so a missing-file
+    stat here is a real invariant violation — let it raise, don't mask it.
 
     Kills the whole process group via `os.killpg` when codex hangs —
     bare wait+kill leaves codex's tool-subprocess descendants orphaned
@@ -115,14 +104,14 @@ def _wait_with_watchdog(
     pr-reviewer.service)."""
     start = time.monotonic()
     last_progress = start
-    last_mtime = _latest_mtime(*progress_files)
+    last_mtime = max(log_file.stat().st_mtime, err_file.stat().st_mtime)
     while True:
         try:
             return proc.wait(timeout=WATCHDOG_POLL_SEC), None, False
         except subprocess.TimeoutExpired:
             pass
         now = time.monotonic()
-        mtime = _latest_mtime(*progress_files)
+        mtime = max(log_file.stat().st_mtime, err_file.stat().st_mtime)
         if mtime > last_mtime:
             last_mtime = mtime
             last_progress = now
