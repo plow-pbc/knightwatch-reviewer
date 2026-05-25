@@ -245,6 +245,17 @@ done
 grep -E '^PrivateTmp=yes' "$PROJECT_ROOT/systemd/pr-reviewer.service" >/dev/null \
     && { echo "FAIL scenario 1: pr-reviewer.service has PrivateTmp=yes — detached workers will see /tmp as ENOENT after unit deactivates; see the unit file comment for the full failure mode"; exit 1; }
 
+# Regression pin: pr-reviewer.service must point npm's cache under a
+# ReadWritePaths dir. codex is npm-managed; npm's default cache (~/.npm) is
+# read-only under ProtectHome=read-only, so without this redirect codex
+# stalls/errors on cache writes. The path must live under ~/.cache (or
+# another ReadWritePaths entry) — pinning the ~/.cache prefix catches a
+# silent drop of the env line AND a move back to an unwritable location.
+# Same anchor as the pins above: live directive only, comment mentions
+# don't count.
+grep -E '^Environment=npm_config_cache=/home/odio/\.cache/' "$PROJECT_ROOT/systemd/pr-reviewer.service" >/dev/null \
+    || { echo "FAIL scenario 1: pr-reviewer.service is missing Environment=npm_config_cache under ~/.cache — codex npm cache writes will fail under ProtectHome=read-only"; exit 1; }
+
 # daemon-reload was called once (units actually changed)
 [ "$(count_stub 'SYSTEMCTL daemon-reload')" = "1" ] || { echo "FAIL scenario 1: expected exactly 1 daemon-reload"; cat "$STUB_LOG"; exit 1; }
 

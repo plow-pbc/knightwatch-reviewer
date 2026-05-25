@@ -27,6 +27,11 @@ Environment=HOME=/home/odio
 # step. User-installed tools (pipx, etc.) remain reachable via the
 # trailing ~/.local/bin entry.
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/odio/.nvm/versions/node/v24.15.0/bin:/home/odio/.local/bin
+# codex is npm-managed (see PATH above) and writes its cache on invocation.
+# npm's default cache (~/.npm) sits under ProtectHome=read-only, so the write
+# fails and codex stalls/errors. ~/.cache IS in ReadWritePaths (below), so
+# point npm there. Keep this path inside a ReadWritePaths dir if you move it.
+Environment=npm_config_cache=/home/odio/.cache/npm
 ExecStart=/home/odio/.pr-reviewer/review.sh
 TimeoutStartSec=90min
 StandardOutput=journal
