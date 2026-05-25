@@ -5,6 +5,7 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
@@ -243,6 +244,49 @@ class TestRunCodex(unittest.TestCase):
         self.assertEqual(rc, 0)
         mock_killpg.assert_not_called()
         self.assertEqual(mock_popen.call_count, 1)  # no retry needed
+
+    @patch("pipeline.os.killpg")
+    @patch("pipeline.subprocess.Popen")
+    def test_watchdog_does_not_kill_when_only_err_keeps_growing(self, mock_popen, mock_killpg):
+        """Liveness must track BOTH codex streams, not stdout alone. Codex
+        (v0.133.0, reasoning-summaries off) streams all live tool/reasoning
+        activity to stderr (err.txt) and writes stdout (log.txt) only at the
+        final answer. An investigation agent (dead-code-search/architecture-v2)
+        whose work legitimately runs past the staleness threshold leaves
+        log.txt frozen the whole time while err.txt grows continuously —
+        watching log.txt alone kills a healthy, productive process (the
+        cncorp/plow#700/#638/#692/#695 abort wave). The watchdog must treat
+        err.txt activity as liveness."""
+        agent_dir = self._agent_dir("intent")
+
+        def make_err_progressing_popen(argv, **kwargs):
+            out_path = Path(argv[argv.index("-o") + 1])
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text("Inferred intent: stub.\n")
+            err_path = out_path.parent / "err.txt"
+            start = time.monotonic()
+
+            class _ErrProgressingPopen(FakePopen):
+                def wait(self, timeout=None):
+                    self._wait_calls += 1
+                    # Stream to stderr (err.txt) for well past the staleness
+                    # threshold, leaving stdout (log.txt) frozen — then finish.
+                    if timeout is not None and time.monotonic() - start < 0.30:
+                        with err_path.open("a") as f:
+                            f.write("tool activity\n")
+                        raise subprocess.TimeoutExpired(cmd="codex", timeout=timeout)
+                    return 0
+            return _ErrProgressingPopen(returncode=0)
+        mock_popen.side_effect = make_err_progressing_popen
+
+        # stale=0.1 (≪ 0.30s of err streaming) so log-only liveness would kill;
+        # timeout=10.0 leaves ample hard-cap headroom for the err-fed survivor.
+        with _fast_watchdog(stale=0.1, poll=0.02, timeout=10.0):
+            rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(agent_dir))
+
+        self.assertEqual(rc, 0)
+        mock_killpg.assert_not_called()
+        self.assertEqual(mock_popen.call_count, 1)  # never killed, never retried
 
     @patch("pipeline.os.killpg")
     @patch("pipeline.subprocess.Popen")

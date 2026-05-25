@@ -81,14 +81,22 @@ def _relink(link: Path, target: Path) -> None:
 
 
 def _wait_with_watchdog(
-    proc: subprocess.Popen, log_file: Path
+    proc: subprocess.Popen, log_file: Path, err_file: Path
 ) -> tuple[int, str | None, bool]:
-    """Wait on `proc`, polling `log_file.mtime` for liveness. Returns
-    `(exit_code, kill_reason, retryable)`. `kill_reason` is None on
-    natural exit and a human-readable string on watchdog kill (exit_code
-    is then 124). `retryable` is True only for stale-log kills that fit
-    under both the per-Codex and outer-worker budgets; hard-cap kills
-    are never retryable.
+    """Wait on `proc`, polling the newest mtime across codex's two output
+    streams (stdout `log.txt` + stderr `err.txt`) for liveness. Returns
+    `(exit_code, kill_reason, retryable)`. `kill_reason` is None on natural
+    exit and a human-readable string on watchdog kill (exit_code is then
+    124). `retryable` is True only for stale kills that fit under both the
+    per-Codex and outer-worker budgets; hard-cap kills are never retryable.
+
+    Both streams matter: codex (reasoning-summaries off) writes stdout only
+    at the final answer, while all live tool/reasoning activity streams to
+    stderr. Watching stdout alone false-kills any investigation agent whose
+    work runs past the staleness threshold (cncorp/plow#700/#638/#692/#695
+    abort wave); a genuine deadlock goes silent on BOTH streams and is still
+    caught. run_codex opens both files before this call, so a missing-file
+    stat here is a real invariant violation — let it raise, don't mask it.
 
     Kills the whole process group via `os.killpg` when codex hangs —
     bare wait+kill leaves codex's tool-subprocess descendants orphaned
@@ -96,20 +104,14 @@ def _wait_with_watchdog(
     pr-reviewer.service)."""
     start = time.monotonic()
     last_progress = start
-    try:
-        last_mtime = log_file.stat().st_mtime
-    except FileNotFoundError:
-        last_mtime = 0.0
+    last_mtime = max(log_file.stat().st_mtime, err_file.stat().st_mtime)
     while True:
         try:
             return proc.wait(timeout=WATCHDOG_POLL_SEC), None, False
         except subprocess.TimeoutExpired:
             pass
         now = time.monotonic()
-        try:
-            mtime = log_file.stat().st_mtime
-        except FileNotFoundError:
-            mtime = last_mtime
+        mtime = max(log_file.stat().st_mtime, err_file.stat().st_mtime)
         if mtime > last_mtime:
             last_mtime = mtime
             last_progress = now
@@ -124,7 +126,7 @@ def _wait_with_watchdog(
             reason = f"{WATCHDOG_KILL_HARDCAP_PREFIX} {SPECIALIST_TIMEOUT_SEC}s — killpg'd whole group"
             retryable = False
         elif stale_for >= STALENESS_THRESHOLD_SEC:
-            reason = f"{WATCHDOG_KILL_STALE_PREFIX} {stale_for:.0f}s (no log activity) — killpg'd whole group"
+            reason = f"{WATCHDOG_KILL_STALE_PREFIX} {stale_for:.0f}s (no output activity) — killpg'd whole group"
             # Two gates: per-Codex (elapsed under this attempt's own cap,
             # one staleness threshold of headroom) AND outer worker
             # (review.sh's `timeout $WORKER_TIMEOUT` wrap covers just test
@@ -210,7 +212,7 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
                 lf.write(f"[{_ts()}] agent={name} attempt 2 (first hung; see log.attempt1.txt)\n")
         with log_file.open("a") as lf, err_file.open("a") as ef:
             proc = subprocess.Popen(argv, stdout=lf, stderr=ef, start_new_session=True)
-        exit_code, kill_reason, retryable = _wait_with_watchdog(proc, log_file)
+        exit_code, kill_reason, retryable = _wait_with_watchdog(proc, log_file, err_file)
         if kill_reason is not None:
             with log_file.open("a") as lf:
                 lf.write(f"[{_ts()}] agent={name} killed: {kill_reason}\n")
