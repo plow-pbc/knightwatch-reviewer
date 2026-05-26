@@ -334,6 +334,22 @@ for unit in systemd/*.service; do
     fi
 done
 
+# The learn-service guidance auto-commit is a two-file path contract: the
+# script's commit target and the unit's ReadWritePaths grant must name the same
+# live repo. A stale path here took the learner down for days — the unit aborted
+# at namespace setup on the since-renamed vibe-engineering checkout, before the
+# script ran. Pin both to the live claude-config path and fence the dead repo so
+# the dead-path class can't return without a red test.
+echo "  asserting learn-service guidance path contract (script target == unit grant, no dead vibe-engineering)..."
+assert_grep 'learn-from-replies.sh must commit guidance to $HOME/services/claude-config' \
+    'CLAUDE_CONFIG_REPO="$HOME/services/claude-config"' learn-from-replies.sh
+assert_grep 'pr-reviewer-learn.service must grant write access to /home/odio/services/claude-config' \
+    '/home/odio/services/claude-config' systemd/pr-reviewer-learn.service
+assert_no_grep 'learn-from-replies.sh must not reference the renamed-away vibe-engineering repo' \
+    'Hacking/vibe-engineering' learn-from-replies.sh
+assert_no_grep 'pr-reviewer-learn.service must not reference the renamed-away vibe-engineering repo' \
+    'Hacking/vibe-engineering' systemd/pr-reviewer-learn.service
+
 # ====================================================================
 # Section 3: pipeline.py wiring (formerly orchestrate.sh + momentum-wire)
 # ====================================================================
