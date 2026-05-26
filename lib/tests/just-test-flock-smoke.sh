@@ -158,4 +158,36 @@ if [ "$RELEASE_WAIT_NS" -gt 500000000 ]; then
 fi
 pass "scenario 3: re-acquire took $(( RELEASE_WAIT_NS / 1000000 ))ms"
 
-echo "  PASS (3 scenarios: same-repo serializes, cross-repo parallel, release frees the lock)"
+# ---- scenario 4: timeout -k reaps a wedged (TERM-ignoring) `just test` ----
+# The motivating wedge: a `just test` that ignores SIGTERM (deadlocked pytest
+# on the shared chat-postgres container) would outlive its deadline. run_just_test
+# wraps it with `timeout -k`, so the inner deadline escalates SIGTERM → SIGKILL.
+# Asserts the wedged process is actually reaped AND the resulting 137 exit
+# classifies as TIMED OUT (not a misleading FAILED) for the author-visible header.
+echo "  scenario 4: timeout -k reaps a TERM-ignoring \`just test\` and classifies it TIMED OUT..."
+# shellcheck source=lib/run-dir.sh
+. "$SCRIPT_DIR/run-dir.sh"
+JUST_PID_FILE="$TMPDIR/just.pid"
+mkdir -p "$TMPDIR/repo"; : > "$TMPDIR/repo/justfile"
+cat > "$TMPDIR/bin/just" <<EOF
+#!/bin/bash
+trap '' TERM   # wedged test: ignores SIGTERM, only SIGKILL stops it
+echo \$\$ > "$JUST_PID_FILE"
+while :; do sleep 1; done
+EOF
+chmod +x "$TMPDIR/bin/just"
+
+S4_EXIT=0
+run_just_test "$TMPDIR/repo/justfile" "$TMPDIR/repo" "$TMPDIR/test-output.log" "1s" "1s" || S4_EXIT=$?
+S4_JUST_PID=$(cat "$JUST_PID_FILE" 2>/dev/null || echo "")
+[ -n "$S4_JUST_PID" ] || fail "scenario 4: fake just never recorded its PID — run_just_test didn't launch it"
+if kill -0 "$S4_JUST_PID" 2>/dev/null; then
+    kill -KILL "$S4_JUST_PID" 2>/dev/null || true
+    fail "scenario 4: TERM-ignoring just (PID $S4_JUST_PID) still alive after timeout -k — kill-after didn't escalate to SIGKILL"
+fi
+IFS=$'\t' read -r S4_RAN S4_SUMMARY < <(classify_just_test_outcome "$S4_EXIT" "$TMPDIR/test-output.log" "1s")
+{ [ "$S4_RAN" = "true" ] && [[ "$S4_SUMMARY" == "TIMED OUT"* ]]; } \
+    || fail "scenario 4: exit $S4_EXIT classified ($S4_RAN, $S4_SUMMARY), expected (true, TIMED OUT ...)"
+pass "scenario 4: wedged just reaped (exit $S4_EXIT) and classified TIMED OUT"
+
+echo "  PASS (4 scenarios: same-repo serializes, cross-repo parallel, release frees the lock, timeout -k reaps + classifies a wedged just)"

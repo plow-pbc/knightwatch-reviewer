@@ -352,6 +352,9 @@ assert_classify 0 "" "true" "PASSED" "tests ran and passed"
 echo "  classify: exit 124 → TIMED OUT..."
 assert_classify 124 "" "true" "TIMED OUT (>30m)" "timeout expired"
 
+echo "  classify: exit 137 → TIMED OUT (timeout -k SIGKILL after deadline)..."
+assert_classify 137 "" "true" "TIMED OUT (>30m)" "timeout -k escalated to SIGKILL on a TERM-ignoring test"
+
 echo "  classify: exit 127 + 'Recipe failed' → not run (cmd-not-found inside)..."
 assert_classify 127 "sh: 1: pytest: not found
 error: Recipe \`test\` failed on line 2 with exit code 127" \

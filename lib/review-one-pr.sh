@@ -669,8 +669,13 @@ fi
 # ancestor recipe with those secrets in scope is a real boundary
 # crossing. The enumerated list mirrors `just`'s full set of accepted
 # names so non-canonical-but-real justfiles aren't missed.
-TEST_LOG="$REPO_DIR/.test-output.log"
-TEST_TIMEOUT=30m
+# Test log lives in reviewer-controlled run state, NOT under $REPO_DIR (the
+# PR checkout). A PR author could commit `.test-output.log` as a symlink into
+# the unit's writable paths (ReadWritePaths=/home/odio/.pr-reviewer), and the
+# truncate/redirect writes below would follow it — a write-through out of the
+# sandbox. $RUN_DIR is allocated by the reviewer (line ~160), not the PR.
+TEST_LOG="$RUN_DIR/test-output.log"
+TEST_TIMEOUT="${TEST_TIMEOUT:-30m}"
 # `just test` runs in its OWN process group (the inner `timeout` below
 # creates one), so the dispatcher's outer `timeout -k` can't reach a
 # SIGTERM-ignoring pytest tree here — only this inner -k can. Without it a
@@ -719,14 +724,7 @@ else
         log "$PR_ID: per-repo just-test lock acquired after ${JUST_TEST_LOCK_WAIT}s queue"
     fi
     log "$PR_ID: running \`just --justfile $JUST_FILE test\` (timeout ${TEST_TIMEOUT})..."
-    # Scrub LOG_FILE from the test subprocess's env. Otherwise this repo's
-    # own lib/tests/test_pipeline.py — which calls pipeline.run_pipeline()
-    # via the unittest discover — picks up our LOG_FILE through inheritance
-    # and pipeline.log() tees test-fixture chatter ('r#1: launching ...')
-    # into the production orchestrator log alongside the real review trace.
-    # Cosmetic only (review correctness was unaffected) but makes
-    # post-mortem grepping clean.
-    timeout -k "$TEST_KILL_AFTER" "$TEST_TIMEOUT" env -u LOG_FILE just --justfile "$JUST_FILE" --working-directory "$REPO_DIR" test > "$TEST_LOG" 2>&1
+    run_just_test "$JUST_FILE" "$REPO_DIR" "$TEST_LOG" "$TEST_TIMEOUT" "$TEST_KILL_AFTER"
     TEST_EXIT=$?
     release_just_test_lock
     IFS=$'\t' read -r TESTS_RAN TEST_SUMMARY < <(classify_just_test_outcome "$TEST_EXIT" "$TEST_LOG" "$TEST_TIMEOUT")

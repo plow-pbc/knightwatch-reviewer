@@ -178,6 +178,25 @@ format_review_scope() {
     esac
 }
 
+# run_just_test JUST_FILE REPO_DIR TEST_LOG TEST_TIMEOUT TEST_KILL_AFTER
+#
+# Runs `just test` under a timeout that escalates to SIGKILL, so a wedged or
+# SIGTERM-ignoring test (the chat-postgres/pytest deadlock that motivated this)
+# dies at the deadline instead of accumulating. Output → TEST_LOG. Returns
+# `just`'s exit: 124 if it died on the timeout SIGTERM, 137 if `timeout -k` had
+# to escalate to SIGKILL — classify_just_test_outcome maps both to TIMED OUT.
+#
+# `env -u LOG_FILE` scrubs LOG_FILE from the test subprocess: this repo's own
+# lib/tests/test_pipeline.py calls pipeline.run_pipeline() under unittest
+# discover and would otherwise inherit LOG_FILE and tee fixture chatter into
+# the production orchestrator log. Cosmetic, but keeps post-mortem greps clean.
+run_just_test() {
+    local just_file="$1" repo_dir="$2" test_log="$3" test_timeout="$4" test_kill_after="$5"
+    timeout -k "$test_kill_after" "$test_timeout" \
+        env -u LOG_FILE just --justfile "$just_file" --working-directory "$repo_dir" test \
+        > "$test_log" 2>&1
+}
+
 # classify_just_test_outcome TEST_EXIT TEST_LOG TEST_TIMEOUT
 #
 # Pure function. Maps `just test`'s (exit, stderr) to (TESTS_RAN,
@@ -191,7 +210,8 @@ format_review_scope() {
 #
 # Outcomes:
 #   - exit 0                              → ran, PASSED
-#   - exit 124                            → ran, TIMED OUT
+#   - exit 124 / 137                      → ran, TIMED OUT (137 = `timeout -k`
+#                                            SIGKILL'd a TERM-ignoring test)
 #   - "Recipe failed" present + exit 127  → didn't run (recipe
 #                                            invoked, but a command
 #                                            inside — pytest, npm,
@@ -209,7 +229,11 @@ classify_just_test_outcome() {
     local test_exit="$1" test_log="$2" test_timeout="$3"
     case "$test_exit" in
         0)   printf 'true\tPASSED\n' ; return ;;
-        124) printf 'true\tTIMED OUT (>%s)\n' "$test_timeout" ; return ;;
+        # 124 = timeout sent SIGTERM and the test died; 137 = the test ignored
+        # SIGTERM and `timeout -k` escalated to SIGKILL (128+9). Both mean the
+        # test ran past TEST_TIMEOUT. (A bare OOM SIGKILL is also 137 — rare,
+        # and "timed out" vs "failed" both read as non-passing to the author.)
+        124|137) printf 'true\tTIMED OUT (>%s)\n' "$test_timeout" ; return ;;
     esac
     if [ -f "$test_log" ] && grep -q "^error: Recipe .* failed" "$test_log"; then
         if [ "$test_exit" -eq 127 ]; then

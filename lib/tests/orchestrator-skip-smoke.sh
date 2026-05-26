@@ -275,18 +275,14 @@ grep -q '^KillMode=process$' "$PROJECT_ROOT/systemd/pr-reviewer.service" || {
     exit 1
 }
 
-# --- Worker self-termination contract (static checks) ---------------------
-# Detached workers are bounded only by their `timeout` wraps, so each wrap
-# must escalate to SIGKILL (`timeout -k`) or a SIGTERM-ignoring tree outlives
-# its ceiling and accumulates in the unit cgroup — the cascade the deleted
+# --- Worker self-termination contract (static check) ----------------------
+# Detached workers are bounded only by their `timeout` wraps, which must
+# escalate to SIGKILL (`timeout -k`) or a SIGTERM-ignoring tree outlives its
+# ceiling and accumulates in the unit cgroup — the cascade the deleted
 # /unstick-kwr recipe used to clear by hand. Scenario 12b exercises the
-# dispatcher wrap end-to-end; the inner `just test` wrap runs in its OWN
-# process group (the outer -k can't reach it) and can't be cheaply wedged in
-# a smoke, so it's fenced statically here alongside the SIGTERM-cleanup trap.
-grep -Eq 'timeout -k "\$TEST_KILL_AFTER" "\$TEST_TIMEOUT"' "$PROJECT_ROOT/lib/review-one-pr.sh" || {
-    echo "FAIL setup: lib/review-one-pr.sh just-test wrap is missing 'timeout -k \$TEST_KILL_AFTER' — a wedged pytest tree (its own process group) would outlive TEST_TIMEOUT and survive the dispatcher's outer kill"
-    exit 1
-}
+# dispatcher wrap end-to-end; just-test-flock-smoke scenario 4 covers the
+# inner `just test` wrap's -k (run_just_test). The SIGTERM-cleanup trap
+# can't be cheaply wedged in a smoke, so it's fenced statically here.
 grep -q "trap 'exit 143' TERM" "$PROJECT_ROOT/lib/review-one-pr.sh" || {
     echo "FAIL setup: lib/review-one-pr.sh missing the SIGTERM trap — a timeout-killed worker won't run the EXIT cleanup and leaves the 👀 placeholder dangling"
     exit 1
