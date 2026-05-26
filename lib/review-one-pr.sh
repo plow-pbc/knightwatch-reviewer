@@ -262,6 +262,14 @@ $EYES_ABORT_BODY" \
         >/dev/null 2>&1 || true
 }
 trap 'finalize_run; cleanup_eyes' EXIT
+# SIGTERM (from the dispatcher's `timeout` ceiling) and SIGINT must run the
+# EXIT trap too — bare bash exits on an untrapped SIGTERM WITHOUT firing the
+# EXIT trap, which would leave the 👀 placeholder dangling on a timeout-kill.
+# Re-raising via `exit` triggers EXIT (143=128+SIGTERM, 130=128+SIGINT). The
+# dispatcher's `timeout -k` grace window gives this cleanup time to finish
+# before the hard SIGKILL lands.
+trap 'exit 143' TERM
+trap 'exit 130' INT
 
 # Canonical clone lives at $REPOS_DIR/<slug>/ and is the source of truth for
 # `fetch`. Multiple PR reviews on the same repo coexist by each working in
@@ -663,6 +671,13 @@ fi
 # names so non-canonical-but-real justfiles aren't missed.
 TEST_LOG="$REPO_DIR/.test-output.log"
 TEST_TIMEOUT=30m
+# `just test` runs in its OWN process group (the inner `timeout` below
+# creates one), so the dispatcher's outer `timeout -k` can't reach a
+# SIGTERM-ignoring pytest tree here — only this inner -k can. Without it a
+# wedged test (the chat-postgres deadlock that triggered the original
+# cascade) outlives TEST_TIMEOUT. The pytest subtree shares this group, so
+# the -k SIGKILL reaps it wholesale.
+TEST_KILL_AFTER="${TEST_KILL_AFTER:-30s}"
 
 if ! command -v just >/dev/null 2>&1; then
     log "$PR_ID: \`just\` not on PATH — aborting (host misconfig; check Environment=PATH / rerun install.sh)"
@@ -711,7 +726,7 @@ else
     # into the production orchestrator log alongside the real review trace.
     # Cosmetic only (review correctness was unaffected) but makes
     # post-mortem grepping clean.
-    timeout "$TEST_TIMEOUT" env -u LOG_FILE just --justfile "$JUST_FILE" --working-directory "$REPO_DIR" test > "$TEST_LOG" 2>&1
+    timeout -k "$TEST_KILL_AFTER" "$TEST_TIMEOUT" env -u LOG_FILE just --justfile "$JUST_FILE" --working-directory "$REPO_DIR" test > "$TEST_LOG" 2>&1
     TEST_EXIT=$?
     release_just_test_lock
     IFS=$'\t' read -r TESTS_RAN TEST_SUMMARY < <(classify_just_test_outcome "$TEST_EXIT" "$TEST_LOG" "$TEST_TIMEOUT")

@@ -190,15 +190,19 @@ fi
 if ! command -v timeout >/dev/null 2>&1; then
     cat > "$HOME/.local/bin/timeout" <<'STUB'
 #!/usr/bin/env bash
-dur_raw="$1"; shift
-case "$dur_raw" in
-    *s) dur="${dur_raw%s}" ;;
-    *m) dur=$(( ${dur_raw%m} * 60 )) ;;
-    *)  dur="$dur_raw" ;;
-esac
+# Supports the leading `-k <grace>` (kill-after) flag review.sh now passes:
+# SIGTERM at <dur>, then SIGKILL <grace> later. Matches GNU timeout's
+# escalation so the SIGTERM-ignoring-worker scenario reaps on macOS too.
+parse_dur() { case "$1" in *s) echo "${1%s}";; *m) echo $(( ${1%m} * 60 ));; *) echo "$1";; esac; }
+kill_after=""
+[ "$1" = "-k" ] && { kill_after="$(parse_dur "$2")"; shift 2; }
+dur="$(parse_dur "$1")"; shift
 "$@" &
 pid=$!
-( sleep "$dur"; kill "$pid" 2>/dev/null ) &
+(
+    sleep "$dur"; kill -TERM "$pid" 2>/dev/null
+    [ -n "$kill_after" ] && { sleep "$kill_after"; kill -KILL "$pid" 2>/dev/null; }
+) &
 sleeper=$!
 wait "$pid" 2>/dev/null
 rc=$?
@@ -268,6 +272,23 @@ seed_run "cncorp_plow" "1" "20260429T100000000Z" "abc123" "COMMENT" >/dev/null
 # scenario runs.
 grep -q '^KillMode=process$' "$PROJECT_ROOT/systemd/pr-reviewer.service" || {
     echo "FAIL setup: systemd/pr-reviewer.service is missing 'KillMode=process' — detached workers won't survive orchestrator exit in production"
+    exit 1
+}
+
+# --- Worker self-termination contract (static checks) ---------------------
+# Detached workers are bounded only by their `timeout` wraps, so each wrap
+# must escalate to SIGKILL (`timeout -k`) or a SIGTERM-ignoring tree outlives
+# its ceiling and accumulates in the unit cgroup — the cascade the deleted
+# /unstick-kwr recipe used to clear by hand. Scenario 12b exercises the
+# dispatcher wrap end-to-end; the inner `just test` wrap runs in its OWN
+# process group (the outer -k can't reach it) and can't be cheaply wedged in
+# a smoke, so it's fenced statically here alongside the SIGTERM-cleanup trap.
+grep -Eq 'timeout -k "\$TEST_KILL_AFTER" "\$TEST_TIMEOUT"' "$PROJECT_ROOT/lib/review-one-pr.sh" || {
+    echo "FAIL setup: lib/review-one-pr.sh just-test wrap is missing 'timeout -k \$TEST_KILL_AFTER' — a wedged pytest tree (its own process group) would outlive TEST_TIMEOUT and survive the dispatcher's outer kill"
+    exit 1
+}
+grep -q "trap 'exit 143' TERM" "$PROJECT_ROOT/lib/review-one-pr.sh" || {
+    echo "FAIL setup: lib/review-one-pr.sh missing the SIGTERM trap — a timeout-killed worker won't run the EXIT cleanup and leaves the 👀 placeholder dangling"
     exit 1
 }
 
@@ -695,6 +716,44 @@ fi
 # value, so an operator tail-ing the journal can see what cap is in
 # force this tick.
 grep -q "per-worker timeout 2s" "$LOG_FILE" || { echo "FAIL scenario 12: expected 'per-worker timeout 2s' in fan-out log line"; cat "$LOG_FILE"; exit 1; }
+
+# Scenario 12b: a SIGTERM-ignoring worker is force-killed via timeout's
+# --kill-after escalation. Scenario 12 proves the SIGTERM at the ceiling,
+# but a worker (or a child of it) that traps/ignores SIGTERM — the real
+# codex/pytest wedge — survives a bare SIGTERM and accumulates in the unit
+# cgroup. review.sh wraps each worker with `timeout -k "$WORKER_KILL_AFTER"`
+# so the ceiling escalates to SIGKILL after the grace window. Without -k
+# this worker outlives its timeout (the cascade the deleted /unstick recipe
+# used to clean up by hand).
+echo "  scenario 12b: WORKER_TIMEOUT — SIGTERM-ignoring worker is SIGKILLed via --kill-after..."
+WEDGED_PID_FILE="$TMPDIR/wedged-worker.pid"
+cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<TWORKER
+#!/bin/bash
+trap '' TERM   # ignore SIGTERM — only SIGKILL (via -k) can stop us
+echo \$\$ > "$WEDGED_PID_FILE"
+while :; do sleep 1; done   # outlives WORKER_TIMEOUT
+TWORKER
+chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
+
+printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+: > "$LOG_FILE"
+WORKER_TIMEOUT=1s WORKER_KILL_AFTER=1s bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 &
+ORCH12B_PID=$!
+wait "$ORCH12B_PID" 2>/dev/null || true
+
+# Wait up to 6s for the SIGKILL escalation (1s timeout + 1s kill-after + slack).
+for _ in $(seq 1 60); do
+    [ -f "$WEDGED_PID_FILE" ] || { sleep 0.1; continue; }
+    WEDGED_PID=$(cat "$WEDGED_PID_FILE")
+    kill -0 "$WEDGED_PID" 2>/dev/null || break   # dead = -k SIGKILL landed
+    sleep 0.1
+done
+WEDGED_PID=$(cat "$WEDGED_PID_FILE" 2>/dev/null || echo "")
+if [ -n "$WEDGED_PID" ] && kill -0 "$WEDGED_PID" 2>/dev/null; then
+    kill -KILL "$WEDGED_PID" 2>/dev/null || true
+    echo "FAIL scenario 12b (no --kill-after regression): SIGTERM-ignoring worker PID $WEDGED_PID still alive ~6s after WORKER_TIMEOUT=1s + kill-after should have SIGKILLed it"
+    exit 1
+fi
 
 # Scenario 13: page-2 trigger fence. The original bug this PR exists to
 # fix: review.sh's pre-DRY fetch was a single-page `gh api`, so any
