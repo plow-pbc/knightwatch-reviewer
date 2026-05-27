@@ -43,20 +43,26 @@ SAMPLE=$(cat <<'JSON'
 JSON
 )
 OUT=$(_decline_history_from_json "$SAMPLE")
-# Both decline replies should appear verbatim
+# All operator replies — both declines AND the counter-proposed — emit
+# verbatim under one neutral `## Operator replies` heading. The round-8
+# simplification dropped the decline-vs-counter regex split; the critic
+# now reads each reply as prose and judges its shape.
 echo "$OUT" | grep -qF "documented design intent" || { echo "FAIL: first decline body missing"; echo "$OUT"; exit 1; }
 echo "$OUT" | grep -qF "Documented in tests; not changing" || { echo "FAIL: second decline body missing"; echo "$OUT"; exit 1; }
-# Counter-proposed in its own section
-echo "$OUT" | grep -qF "Counter-proposed (operator applied LOC-negative version)" || { echo "FAIL: counter-proposed H2 missing"; echo "$OUT"; exit 1; }
+echo "$OUT" | grep -qF "Removed the redundant validation" || { echo "FAIL: counter-proposed body missing from Operator replies"; echo "$OUT"; exit 1; }
+echo "$OUT" | grep -qF "## Operator replies" || { echo "FAIL: neutral Operator replies H2 missing"; echo "$OUT"; exit 1; }
 # Non-operator excluded
 echo "$OUT" | grep -qF "some-bot" && { echo "FAIL: non-operator reply leaked into output"; exit 1; } || true
 # CRITICAL: no class buckets emitted (round-5 architectural reframe).
-# The old "## Class: X (declined N rounds)" header must not appear.
+# Old "## Class: X (declined N rounds)" header must not appear; nor should
+# the obsolete "## Decline replies" or "## Counter-proposed" H2s (round-8).
 if echo "$OUT" | grep -qE '^## Class: [a-z]'; then
     echo "FAIL: classifier output detected — should be removed in round-5 reframe"
     echo "$OUT"
     exit 1
 fi
+echo "$OUT" | grep -qF "## Decline replies" && { echo "FAIL: obsolete Decline replies H2 — round-8 collapsed into Operator replies"; exit 1; } || true
+echo "$OUT" | grep -qF "## Counter-proposed" && { echo "FAIL: obsolete Counter-proposed H2 — round-8 collapsed into Operator replies"; exit 1; } || true
 # Explicit class markers section present, declaring no markers (none in fixture).
 echo "$OUT" | grep -qF "Explicit class markers" || { echo "FAIL: explicit-markers section missing"; echo "$OUT"; exit 1; }
 echo "$OUT" | grep -qF "operator has not declared any explicit" || { echo "FAIL: empty-markers sentinel missing"; echo "$OUT"; exit 1; }
