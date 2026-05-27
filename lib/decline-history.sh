@@ -53,7 +53,7 @@ _decline_history_from_json() {
     declines=$(printf '%s' "$raw" | jq --arg op "$operator" --arg marker "$marker" -r '
         map(select(.user.login == $op))
         | map(select(.body | contains($marker) | not))
-        | map(select(.body | test("Declined —|Declined -|^Declined |\\[Bug-Class-Recurrence\\]")))
+        | map(select(.body | test("(?i)\\b(declin(?:e[ds]?|ing))\\b|\\[Bug-Class-Recurrence\\]")))
         | sort_by(.created_at)
         | .[]
         | "\(.created_at)\t\(.body | gsub("\n"; " ") | .[:600])"

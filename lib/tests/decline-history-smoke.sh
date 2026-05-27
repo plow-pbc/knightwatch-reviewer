@@ -128,4 +128,24 @@ echo "$OUT" | grep -qF "dispatch-routing" || { echo "FAIL: BCR body not preserve
 echo "$OUT" | grep -qE '\*\*`dispatch-routing`\*\*' && { echo "FAIL: BCR prose was auto-classified despite no explicit marker (round-5 reframe should leave class-counting to explicit markers only)"; exit 1; } || true
 echo "$OUT" | grep -qF "operator has not declared any explicit" || { echo "FAIL: explicit-markers empty sentinel missing"; echo "$OUT"; exit 1; }
 
+# --- fixture 6: idiomatic decline phrasings beyond the babysit-pr template ---
+# Real-world replies (e.g. PR #28 on srosro/claude-config) used phrasings the
+# original `Declined —` / `^Declined ` regex missed entirely, so the critic
+# saw "(no decline history)" and re-raised the same architectural Q for 5
+# rounds. The broadened regex catches `declining`, lowercase forms, and the
+# Probe-N-prefix shape used by babysit-pr's evolved reply style.
+echo "  fixture 6: idiomatic decline phrasings beyond Declined-em-dash..."
+IDIOMATIC=$(cat <<'JSON'
+[
+  {"user":{"login":"srosro"},"created_at":"2026-05-10T08:00:00Z","body":"Probe 3 — declining for the 3rd time. Same answer as last round."},
+  {"user":{"login":"srosro"},"created_at":"2026-05-10T09:00:00Z","body":"Going to decline this one — schema-drift goes-dark risk is bounded."},
+  {"user":{"login":"srosro"},"created_at":"2026-05-10T10:00:00Z","body":"Probe 2 declines — same rationale."}
+]
+JSON
+)
+OUT=$(_decline_history_from_json "$IDIOMATIC")
+echo "$OUT" | grep -qF "declining for the 3rd time" || { echo "FAIL: 'declining for the Nth time' phrasing missed by broadened regex"; echo "$OUT"; exit 1; }
+echo "$OUT" | grep -qF "Going to decline this one" || { echo "FAIL: lowercase 'decline' verb phrasing missed by broadened regex"; echo "$OUT"; exit 1; }
+echo "$OUT" | grep -qF "Probe 2 declines" || { echo "FAIL: 'declines' plural form missed by broadened regex"; echo "$OUT"; exit 1; }
+
 echo "  PASS"
