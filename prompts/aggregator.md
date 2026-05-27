@@ -26,7 +26,7 @@ You are the aggregator in a multi-specialist PR review. Eight specialists produc
 - `.codex-scratch/file-history.md` — recent commits for each touched file
 - `.codex-scratch/commits.md` — commit subjects on this branch, one per line.
 - `.codex-scratch/author-intent.md` — the PR's description + linked issues
-- `.codex-scratch/decline-history.md` — operator's prior decline replies on this PR. Two channels: (a) "Decline replies" — free-form prose; the critic defaults a re-emitted probe whose class matches a prior prose decline to `Answer: no` and upgrades to `Answer: unknown` only when this PR's diff cites new file/line/contract evidence that defeats the prior reasoning; (b) "Explicit class markers" — counts of `<!-- decline:class=X -->` markers; classes counted ≥3 are mechanically dropped by the critic. Read for context when interpreting why a finding is or isn't carrying forward.
+- `.codex-scratch/decline-history.md` — operator's prior decline replies on this PR. Two channels: (a) "Operator replies" — free-form prose; a re-emitted probe whose **specific finding** (cited path/contract/rationale, NOT just `Class`) matches a prior prose decline defaults to dropped, and upgrades to a rendered probe only when this PR's diff cites new file/line/contract evidence that defeats the prior reasoning; (b) "Explicit class markers" — counts of `<!-- decline:class=X -->` markers; classes counted ≥3 are mechanically dropped. Read for context when interpreting why a finding is or isn't carrying forward.
 
 **PR:** {{PR_ID}}
 **Title:** {{PR_TITLE}}

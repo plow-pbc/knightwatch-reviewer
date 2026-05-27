@@ -93,6 +93,26 @@ echo "  asserting decline-history input in aggregator.md..."
 assert_grep "aggregator.md should reference decline-history.md" \
     "decline-history.md" prompts/aggregator.md
 
+# Round-8 unified contract: critic.md, aggregator.md, and the shell
+# preamble must describe the decline-history rule consistently.
+# The prior drift had aggregator.md saying "class matches" while critic.md
+# said "specific finding" — flagged in 4 of 4 review rounds (R0/R1/R2/R3).
+# Token-level fences below trip on the stale wording so smoke catches
+# drift before it ships, in lieu of an SSOT refactor.
+echo "  asserting unified decline-history contract (round-8 specific-finding rule)..."
+for f in prompts/critic.md prompts/aggregator.md lib/decline-history.sh; do
+    if grep -qF "Decline replies / Counter-proposed" "$f"; then
+        echo "FAIL: $f still uses the round-7 'Decline replies / Counter-proposed' heading — should be unified under 'Operator replies'"
+        exit 1
+    fi
+done
+for f in prompts/critic.md prompts/aggregator.md; do
+    if ! grep -qE "specific finding|cited path/contract/rationale" "$f"; then
+        echo "FAIL: $f missing specific-finding decline-match contract (round-8 tightening)"
+        exit 1
+    fi
+done
+
 echo "  asserting layered-file note in aggregator.md..."
 assert_grep "aggregator.md should describe layered specialist files" \
     "layered file" prompts/aggregator.md
