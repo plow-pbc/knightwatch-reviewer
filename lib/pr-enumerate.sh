@@ -48,7 +48,7 @@ _enumerate_graphql_query='query($q: String!) {
   }
 }'
 
-_enumerate_owner_in_orgs() {
+owner_in_orgs() {
     local owner="$1" o
     for o in "${ORGS[@]}"; do
         [ "$o" = "$owner" ] && return 0
@@ -76,7 +76,7 @@ enumerate_open_prs() {
     # 2. Per-repo fallthrough for manual entries in non-ORGS namespaces.
     for repo in "${REPOS[@]}"; do
         owner="${repo%%/*}"
-        _enumerate_owner_in_orgs "$owner" && continue
+        owner_in_orgs "$owner" && continue
         if ! raw=$(gh pr list --repo "$repo" \
                 --json number,title,headRefName,headRefOid,author \
                 --state open --limit 200 2>/dev/null); then
@@ -101,8 +101,9 @@ enumerate_open_prs() {
         'add // [] | map(select(.repository.nameWithOwner as $r | $tracked | index($r)))'
 }
 
-_bot_activity_graphql_query='query($q: String!) {
-  search(query: $q, type: ISSUE, first: 100) {
+_bot_activity_graphql_query='query($q: String!, $after: String) {
+  search(query: $q, type: ISSUE, first: 100, after: $after) {
+    pageInfo { hasNextPage endCursor }
     nodes { ... on PullRequest { repository { nameWithOwner } } }
   }
 }'
@@ -110,33 +111,44 @@ _bot_activity_graphql_query='query($q: String!) {
 # repos_with_bot_activity_since SINCE_ISO BOT_USER
 #
 # Prints (newline-separated, deduped) the tracked ORG-owned repos that have a
-# PR the bot commented on and that was updated since SINCE_ISO — one gh api
-# graphql search per ORG owner, vs a per-repo issues/comments fetch for every
-# tracked repo. Post-filtered against ${REPOS[@]}. Non-ORG owners (e.g.
+# PR the bot commented on and that was updated since SINCE_ISO — a paginated
+# gh api graphql search per ORG owner, vs a per-repo issues/comments fetch for
+# every tracked repo. Post-filtered against ${REPOS[@]}. Non-ORG owners (e.g.
 # cncorp/*) are NOT searched; callers walk those unconditionally.
 #
 # Why: specialist-bakeoff.sh fans a paginated comments + collaborators fetch
 # across all ~45 tracked repos every run, exhausting the 5000/hr budget
-# (HTTP 403) so repos walked last fail. Most of those repos have no bot
-# reviews at all; this discovers the active subset in ~1 call per owner so the
-# walk skips the rest. Same batched-search shape + failure contract as
-# enumerate_open_prs above.
+# (HTTP 403) so repos walked last fail. Most of those repos have no bot reviews
+# at all; this discovers the active subset in a few calls per owner so the walk
+# skips the rest. Same batched-search shape as enumerate_open_prs above. Paged
+# (not just first:100) because an org can have >100 matching PRs under a widened
+# floor, and a low-activity repo's only match could fall past page 1 — the
+# caller would then zero-stamp the repo and permanently skip its reviews.
 #
 # On success: prints the active repo set (possibly empty), exits 0.
-# On any gh failure: exits non-zero, prints nothing — so callers can fall back
-# to walking every repo (no worse than the pre-batched behavior).
+# On any gh failure: exits non-zero, prints nothing. The caller chooses its
+# failure policy — specialist-bakeoff.sh fails loud (PARTIAL + exit) rather than
+# re-entering the per-repo fan-out this batched path exists to retire.
 repos_with_bot_activity_since() {
-    local since="$1" bot="$2" owner raw pieces=()
+    local since="$1" bot="$2" owner q raw after pieces=()
     declare -A _seen_owners=() _tracked=()
     for owner in "${ORGS[@]}"; do
         [ -n "${_seen_owners[$owner]:-}" ] && continue
         _seen_owners[$owner]=1
-        if ! raw=$(gh api graphql \
-                -F q="user:${owner} is:pr commenter:${bot} updated:>=${since}" \
-                -f query="$_bot_activity_graphql_query" 2>/dev/null); then
-            return 1
-        fi
-        pieces+=("$(printf '%s' "$raw" | jq -r '.data.search.nodes[]?.repository.nameWithOwner')") || return 1
+        q="user:${owner} is:pr commenter:${bot} updated:>=${since}"
+        after=""
+        while :; do
+            if [ -n "$after" ]; then
+                raw=$(gh api graphql -F q="$q" -F after="$after" -f query="$_bot_activity_graphql_query" 2>/dev/null) || return 1
+            else
+                raw=$(gh api graphql -F q="$q" -f query="$_bot_activity_graphql_query" 2>/dev/null) || return 1
+            fi
+            pieces+=("$(printf '%s' "$raw" | jq -r '.data.search.nodes[]?.repository.nameWithOwner')") || return 1
+            # endCursor only when there is a next page (else empty → stop). A
+            # malformed hasNextPage-without-cursor stops too, not loop forever.
+            after=$(printf '%s' "$raw" | jq -r '.data.search.pageInfo // {} | if .hasNextPage then (.endCursor // empty) else empty end') || return 1
+            [ -n "$after" ] || break
+        done
     done
     if [ ${#pieces[@]} -eq 0 ]; then return 0; fi
     local t r

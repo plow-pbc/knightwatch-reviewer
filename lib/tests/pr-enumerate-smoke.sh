@@ -31,15 +31,23 @@ export STUB_CALL_LOG
 cat > "$HOME/.local/bin/gh" <<'STUB'
 #!/bin/bash
 if [ "$1" = "api" ] && [ "$2" = "graphql" ]; then
-    q=""
+    q=""; after=""
     for ((i=1; i<=$#; i++)); do
         if [ "${!i}" = "-F" ]; then
             j=$((i+1))
-            case "${!j}" in q=*) q="${!j#q=}" ;; esac
+            case "${!j}" in
+                q=*)     q="${!j#q=}" ;;
+                after=*) after="${!j#after=}" ;;
+            esac
         fi
     done
-    echo "graphql q=$q" >> "$STUB_CALL_LOG"
+    echo "graphql q=$q after=$after" >> "$STUB_CALL_LOG"
     [ -n "${MOCK_GRAPHQL_FAIL:-}" ] && exit 1
+    # Pagination: a follow-up call (after set) serves MOCK_GRAPHQL_AFTER (page 2).
+    if [ -n "$after" ] && [ -n "${MOCK_GRAPHQL_AFTER:-}" ]; then
+        echo "$MOCK_GRAPHQL_AFTER"
+        exit 0
+    fi
     fixture_var="MOCK_GRAPHQL_${q//[^A-Za-z0-9]/_}"
     eval "fixture=\${$fixture_var:-}"
     if [ -n "$fixture" ]; then
@@ -175,5 +183,19 @@ export MOCK_GRAPHQL_FAIL=1
   assert_eq "6c no stdout on fail" "" "$out"
 )
 unset MOCK_GRAPHQL_FAIL
+
+# 6d: pages past first:100 — a repo whose only match is on page 2 is still found.
+: > "$STUB_CALL_LOG"
+S6D_SINCE="2026-05-02T00:00:00Z"
+s6dq="user:plow-pbc is:pr commenter:testbot updated:>=$S6D_SINCE"
+export "MOCK_GRAPHQL_${s6dq//[^A-Za-z0-9]/_}"='{"data":{"search":{"pageInfo":{"hasNextPage":true,"endCursor":"CUR1"},"nodes":[{"repository":{"nameWithOwner":"plow-pbc/page1repo"}}]}}}'
+export MOCK_GRAPHQL_AFTER='{"data":{"search":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"repository":{"nameWithOwner":"plow-pbc/page2repo"}}]}}}'
+( REPOS=("plow-pbc/page1repo" "plow-pbc/page2repo"); ORGS=("plow-pbc")
+  source "$PROJECT_ROOT/lib/pr-enumerate.sh"
+  out=$(repos_with_bot_activity_since "$S6D_SINCE" "testbot")
+  assert_eq "6d paginates both pages" $'plow-pbc/page1repo\nplow-pbc/page2repo' "$(echo "$out" | sort)"
+  assert_eq "6d made 2 graphql calls" 2 "$(grep -c '^graphql ' "$STUB_CALL_LOG")"
+)
+unset MOCK_GRAPHQL_AFTER
 
 echo "ALL PASS: pr-enumerate-smoke.sh"

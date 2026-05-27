@@ -86,7 +86,7 @@ for repo in "${REPOS[@]}"; do
     # above). Stamp the skipped repo's walks row 0/0 at the discovery pass time
     # so a stale row can't pin the next run's floor (min last_walked_at) or
     # render as live coverage. Non-ORG manual entries (cncorp/*) are always walked.
-    if _enumerate_owner_in_orgs "${repo%%/*}" && [ -z "${active_repos[$repo]:-}" ]; then
+    if owner_in_orgs "${repo%%/*}" && [ -z "${active_repos[$repo]:-}" ]; then
         set_repo_coverage "$DB_FILE" "$repo" 0 0 "$discovery_pass_start"
         continue
     fi
