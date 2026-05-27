@@ -56,10 +56,11 @@ fetch_failures=0
 # issues/comments + collaborators fetch for EVERY tracked repo. The per-repo
 # fan-out across ~45 repos exhausted the 5000/hr GitHub budget (HTTP 403), so
 # repos walked last failed and the whole run exited PARTIAL daily. Repos with no
-# bot activity have no substantive reviews to walk, so skipping them is safe;
-# manual non-ORG repos (cncorp/*) are always walked. On discovery failure we
-# fall back to walking every repo — no worse than the pre-batched behavior.
-# (sqlite reads below don't touch the API.)
+# bot activity have no substantive reviews to walk; they're skipped (and their
+# walks row stamped 0/0 below, so a stale row can't pin the next floor or show
+# stale coverage). Manual non-ORG repos (cncorp/*) are always walked. Discovery
+# failure FAILS LOUD — it does not fall back to the budget-draining walk-all
+# this change exists to retire. (sqlite reads don't touch the API.)
 discovery_floor=$(date -u -d "$REWALK_HOURS hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
               || date -u -v "-${REWALK_HOURS}H" +%Y-%m-%dT%H:%M:%SZ)
 # Reach back to the earliest watermark so a repo whose last_walked predates the
@@ -68,22 +69,25 @@ min_walked=$(sqlite3 "$DB_FILE" "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', min(last_
 if [ -n "$min_walked" ] && [ "$min_walked" \< "$discovery_floor" ]; then
     discovery_floor="$min_walked"
 fi
-declare -A active_repos=()
-discovery_ok=0
-# Stay silent here — no log() before the per-repo loop. log() embeds a bare
-# `date -u +%FT%TZ`, and the walk's first bare-date call is load-bearing: it's
-# the walk_started_at watermark captured before the fetch (regression-fenced by
-# specialist-bakeoff-smoke scenario 31). The discovery outcome is reported in
-# the post-loop summary instead.
-if active_list=$(repos_with_bot_activity_since "$discovery_floor" "$BOT_USER" 2>>"$LOG_FILE"); then
-    discovery_ok=1
-    while IFS= read -r _ar; do [ -n "$_ar" ] && active_repos["$_ar"]=1; done <<< "$active_list"
+# `date -u -d now` (NOT a bare `date -u +…`) so it passes through
+# specialist-bakeoff-smoke scenario 31's date stub — the walk's first bare-date
+# call is the load-bearing walk_started_at watermark and must stay first.
+discovery_pass_start=$(date -u -d now +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)
+if ! active_list=$(repos_with_bot_activity_since "$discovery_floor" "$BOT_USER" 2>>"$LOG_FILE"); then
+    log "PARTIAL RUN: batched bot-activity discovery failed (GitHub API budget?) — $OUT_FILE not updated"
+    echo "PARTIAL: bot-activity discovery failed; $OUT_FILE not updated" >&2
+    exit 1
 fi
+declare -A active_repos=()
+while IFS= read -r _ar; do [ -n "$_ar" ] && active_repos["$_ar"]=1; done <<< "$active_list"
 
 for repo in "${REPOS[@]}"; do
     # Skip ORG repos with no bot activity since the floor (batched discovery
-    # above). Non-ORG manual entries (cncorp/*) are always walked.
-    if [ "$discovery_ok" = 1 ] && _enumerate_owner_in_orgs "${repo%%/*}" && [ -z "${active_repos[$repo]:-}" ]; then
+    # above). Stamp the skipped repo's walks row 0/0 at the discovery pass time
+    # so a stale row can't pin the next run's floor (min last_walked_at) or
+    # render as live coverage. Non-ORG manual entries (cncorp/*) are always walked.
+    if _enumerate_owner_in_orgs "${repo%%/*}" && [ -z "${active_repos[$repo]:-}" ]; then
+        set_repo_coverage "$DB_FILE" "$repo" 0 0 "$discovery_pass_start"
         continue
     fi
     repo_failures=0
@@ -360,11 +364,7 @@ for repo in "${REPOS[@]}"; do
     fi
 done
 
-if [ "$discovery_ok" = 1 ]; then
-    log "walked $walked_reviews bot reviews; batched discovery: ${#active_repos[@]} ORG repo(s) active since $discovery_floor (+ non-ORG manual repos), of ${#REPOS[@]} tracked"
-else
-    log "walked $walked_reviews bot reviews across ${#REPOS[@]} repos (batched discovery failed — walked all)"
-fi
+log "walked $walked_reviews bot reviews; batched discovery: ${#active_repos[@]} ORG repo(s) active since $discovery_floor (+ non-ORG manual repos), of ${#REPOS[@]} tracked"
 
 if [ "$fetch_failures" -gt 0 ]; then
     log "PARTIAL RUN: $fetch_failures fetch failure(s) — store may be missing rows but NOT overwriting $OUT_FILE"

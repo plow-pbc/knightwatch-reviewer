@@ -103,9 +103,11 @@ echo "[]" > "$MOCK_COMMENTS_FILE"
 cat > "$STUB_BIN/gh" <<'STUB'
 #!/bin/bash
 if [ "$1" = "api" ] && [ "$2" = "graphql" ]; then
-    # Batched bot-activity discovery (repos_with_bot_activity_since). Serves
-    # MOCK_GRAPHQL_FILE when set (scenario 33); otherwise an empty result. Only
-    # reached when ORGS is non-empty — the other driver scenarios have no ORGS.
+    # Batched bot-activity discovery (repos_with_bot_activity_since).
+    # MOCK_GRAPHQL_FAIL → non-zero (scenario 34); MOCK_GRAPHQL_FILE → that
+    # fixture (33/35); else empty. Only reached when ORGS is non-empty — the
+    # other driver scenarios have no ORGS.
+    [ -n "${MOCK_GRAPHQL_FAIL:-}" ] && exit 1
     if [ -n "${MOCK_GRAPHQL_FILE:-}" ]; then cat "$MOCK_GRAPHQL_FILE"; else echo '{"data":{"search":{"nodes":[]}}}'; fi
     exit 0
 fi
@@ -1163,37 +1165,95 @@ CONF
 rm -rf "$DATE_STUB_32_DIR"
 unset MOCK_PULLS_COMMITS_FILE
 
-# ---- scenario 33: ORG repos with no bot activity are skipped (batched discovery) ----
-# The 5k/hr-budget fix: one graphql search per ORG owner discovers the active
-# subset instead of a per-repo comments+collaborators fetch across every tracked
-# repo. ORG repos absent from the search are skipped (no walks row); manual
-# non-ORG repos (cncorp/*) are always walked.
-echo "    scenario 33: inactive ORG repos skipped via batched discovery..."
+# ---- scenario 33: inactive ORG repo skipped + its stale walks row retired ----
+# Batched discovery (one graphql search per ORG owner) skips ORG repos with no
+# recent bot activity — but a skipped repo must still get its walks row stamped
+# 0/0 at the discovery pass time, else a stale row pins the next run's floor
+# (min last_walked_at) or renders as live coverage. Manual non-ORG repos
+# (cncorp/*) are always walked.
+echo "    scenario 33: inactive ORG repo skipped, stale walks row retired (0/0, current)..."
 rm -f "$DB_FILE"
 cat > "$STATE_DIR/repos.conf" <<'CONF33'
 REPOS=("plow-pbc/active-probe" "plow-pbc/inactive-probe" "cncorp/manual-probe")
 ORGS=("plow-pbc")
 CONF33
-# Discovery returns ONLY the active ORG repo.
+# Seed a STALE row for the soon-to-be-skipped inactive repo: ancient watermark +
+# non-zero coverage. After the run it must be retired (advanced + 0/0).
+. "$REPO_ROOT/lib/bakeoff-store.sh"; store_init "$DB_FILE"
+sqlite3 "$DB_FILE" "INSERT INTO walks (repo, last_walked_at, reviews_total_in_window, reviews_with_marker_in_window) VALUES ('plow-pbc/inactive-probe', '2020-01-01T00:00:00Z', 5, 5);"
 cat > "$TMPDIR_SMOKE/graphql-33.json" <<'GQL'
 {"data":{"search":{"nodes":[{"repository":{"nameWithOwner":"plow-pbc/active-probe"}}]}}}
 GQL
 export MOCK_GRAPHQL_FILE="$TMPDIR_SMOKE/graphql-33.json"
-# Comments stub is global, so any non-skipped repo completes a clean walk and
-# stamps a walks row; skipped repos get none.
+# Comments stub is global, so each non-skipped repo counts the served review.
 build_bot_review 330 330 "$(hours_ago 2)" tests \
     '1. [blocking] [from: tests] [tests] probe. Files: src/a.py. Edit: x.' \
     | jq -s . > "$MOCK_COMMENTS_FILE"
 printf 'src/a.py\t1\t0\n' > "$MOCK_PULLS_FILES_FILE"
 : > "$TMPDIR_SMOKE/commits-33.tsv"; export MOCK_PULLS_COMMITS_FILE="$TMPDIR_SMOKE/commits-33.tsv"
 bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null 2>&1
-WALKED_33=$(sqlite3 "$DB_FILE" "SELECT repo FROM walks ORDER BY repo;" | paste -sd, -)
-[ "$WALKED_33" = "cncorp/manual-probe,plow-pbc/active-probe" ] || {
-    echo "FAIL scenario 33: walked repos = '$WALKED_33', expected 'cncorp/manual-probe,plow-pbc/active-probe'"
-    echo "  (inactive ORG repo not skipped, or active/manual repo wrongly skipped)"
+# All three repos have a row: active + manual walked, inactive skipped-but-stamped.
+ROWS_33=$(sqlite3 "$DB_FILE" "SELECT repo FROM walks ORDER BY repo;" | paste -sd, -)
+[ "$ROWS_33" = "cncorp/manual-probe,plow-pbc/active-probe,plow-pbc/inactive-probe" ] || {
+    echo "FAIL scenario 33: walks repos = '$ROWS_33'"; exit 1; }
+# Inactive repo's stale row retired: watermark advanced off 2020, coverage 0/0.
+INACTIVE_33=$(sqlite3 "$DB_FILE" "SELECT last_walked_at || '|' || reviews_total_in_window || '/' || reviews_with_marker_in_window FROM walks WHERE repo='plow-pbc/inactive-probe';")
+case "$INACTIVE_33" in
+    2020-*) echo "FAIL scenario 33: inactive stale row not retired (still 2020): '$INACTIVE_33'"; exit 1 ;;
+    *"|0/0") : ;;
+    *) echo "FAIL scenario 33: inactive coverage not zeroed: '$INACTIVE_33'"; exit 1 ;;
+esac
+# Active repo actually walked (counts the served substantive review).
+ACTIVE_TOTAL_33=$(sqlite3 "$DB_FILE" "SELECT reviews_total_in_window FROM walks WHERE repo='plow-pbc/active-probe';")
+[ "${ACTIVE_TOTAL_33:-0}" -ge 1 ] || { echo "FAIL scenario 33: active repo not walked (total=$ACTIVE_TOTAL_33)"; exit 1; }
+unset MOCK_GRAPHQL_FILE MOCK_PULLS_COMMITS_FILE
+
+# ---- scenario 34: discovery failure fails loud (no walk-all fallback) ----
+# This change retires the per-repo walk-all mode, so a discovery (graphql)
+# failure must exit PARTIAL rather than silently re-enter the budget-draining
+# fan-out. OUT_FILE must NOT be overwritten.
+echo "    scenario 34: graphql discovery failure → exit 1, OUT_FILE preserved..."
+rm -f "$DB_FILE"
+cat > "$STATE_DIR/repos.conf" <<'CONF34'
+REPOS=("plow-pbc/active-probe")
+ORGS=("plow-pbc")
+CONF34
+echo "stale scorecard" > "$OUT_FILE"
+export MOCK_GRAPHQL_FAIL=1
+if bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null 2>&1; then
+    echo "FAIL scenario 34: expected non-zero exit on discovery failure"; exit 1
+fi
+[ "$(cat "$OUT_FILE")" = "stale scorecard" ] || {
+    echo "FAIL scenario 34: OUT_FILE overwritten despite discovery failure"; exit 1; }
+unset MOCK_GRAPHQL_FAIL
+
+# ---- scenario 35: missed-cron backfill — floor widens to earliest watermark ----
+# The discovery floor reaches back to min(walks.last_walked_at) so a repo whose
+# last walk predates the rewalk floor (missed crons) still has its full gap
+# searched — otherwise a review between last_walked and the rewalk floor would
+# be missed and the repo wrongly skipped.
+echo "    scenario 35: discovery floor widens back to earliest last_walked..."
+rm -f "$DB_FILE" "$LOG_FILE"
+cat > "$STATE_DIR/repos.conf" <<'CONF35'
+REPOS=("plow-pbc/active-probe")
+ORGS=("plow-pbc")
+CONF35
+. "$REPO_ROOT/lib/bakeoff-store.sh"; store_init "$DB_FILE"
+# Watermark far older than the REWALK_HOURS=720h floor.
+sqlite3 "$DB_FILE" "INSERT INTO walks (repo, last_walked_at, reviews_total_in_window, reviews_with_marker_in_window) VALUES ('plow-pbc/active-probe', '2019-06-15T00:00:00Z', 0, 0);"
+cat > "$TMPDIR_SMOKE/graphql-35.json" <<'GQL'
+{"data":{"search":{"nodes":[{"repository":{"nameWithOwner":"plow-pbc/active-probe"}}]}}}
+GQL
+export MOCK_GRAPHQL_FILE="$TMPDIR_SMOKE/graphql-35.json"
+echo "[]" > "$MOCK_COMMENTS_FILE"
+bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null 2>&1
+# The post-loop summary logs the floor actually used for discovery.
+grep -q "active since 2019-06-15T00:00:00Z" "$LOG_FILE" || {
+    echo "FAIL scenario 35: discovery floor did not widen to earliest last_walked (2019-06-15)"
+    grep "batched discovery" "$LOG_FILE" || true
     exit 1
 }
-unset MOCK_GRAPHQL_FILE MOCK_PULLS_COMMITS_FILE
+unset MOCK_GRAPHQL_FILE
 cat > "$STATE_DIR/repos.conf" <<'CONF'
 REPOS=("test-org/bakeoff-probe")
 CONF
