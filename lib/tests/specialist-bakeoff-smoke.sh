@@ -108,6 +108,14 @@ if [ "$1" = "api" ] && [ "$2" = "graphql" ]; then
     # fixture (33/35); else empty. Only reached when ORGS is non-empty — the
     # other driver scenarios have no ORGS.
     [ -n "${MOCK_GRAPHQL_FAIL:-}" ] && exit 1
+    # Transient-blip injector for discovery (parallels the commits/<sha> one):
+    # while the counter is >0, emit a TLS-handshake timeout and fail; once
+    # drained, serve normally — models a flaky discovery that recovers on retry.
+    if [ "$(cat "${MOCK_GRAPHQL_FLAKY_COUNTER:-/dev/null}" 2>/dev/null || echo 0)" -gt 0 ]; then
+        n=$(cat "$MOCK_GRAPHQL_FLAKY_COUNTER"); echo "$((n - 1))" > "$MOCK_GRAPHQL_FLAKY_COUNTER"
+        echo "Post \"https://api.github.com/graphql\": net/http: TLS handshake timeout" >&2
+        exit 1
+    fi
     if [ -n "${MOCK_GRAPHQL_FILE:-}" ]; then cat "$MOCK_GRAPHQL_FILE"; else echo '{"data":{"search":{"nodes":[]}}}'; fi
     exit 0
 fi
@@ -1307,5 +1315,34 @@ fi
 grep -q "SENTINEL" "$OUT_FILE" || { echo "FAIL scenario 37: OUT_FILE overwritten despite persistent fetch failure"; exit 1; }
 [ "$(cat "$FLAKY_COUNTER_37")" = "96" ] || { echo "FAIL scenario 37: retry budget unbounded/wrong — counter '$(cat "$FLAKY_COUNTER_37")' expected '96' (99 − 3 attempts)"; exit 1; }
 unset MOCK_PULLS_COMMITS_FILE MOCK_COMMIT_FILES_DIR
+
+# ---- scenario 38: transient TLS-timeout in graphql discovery is retried, not fatal ----
+# Discovery (repos_with_bot_activity_since) runs first and fail-loud-exits the
+# whole run before the per-repo fetches; without retry on its graphql calls the
+# "one TLS blip doesn't fail the run" goal isn't met. A flaky discovery that
+# fails twice then recovers must be absorbed → run exits 0, the active repo walked.
+echo "    scenario 38: transient TLS-timeout in graphql discovery retried → run succeeds, repo walked..."
+rm -f "$DB_FILE" "$LOG_FILE"
+cat > "$STATE_DIR/repos.conf" <<'CONF38'
+REPOS=("plow-pbc/active-probe")
+ORGS=("plow-pbc")
+CONF38
+cat > "$TMPDIR_SMOKE/graphql-38.json" <<'GQL'
+{"data":{"search":{"nodes":[{"repository":{"nameWithOwner":"plow-pbc/active-probe"}}]}}}
+GQL
+export MOCK_GRAPHQL_FILE="$TMPDIR_SMOKE/graphql-38.json"
+GRAPHQL_FLAKY_38="$TMPDIR_SMOKE/graphql-flaky-38"; echo 2 > "$GRAPHQL_FLAKY_38"
+echo "[]" > "$MOCK_COMMENTS_FILE"
+if ! MOCK_GRAPHQL_FLAKY_COUNTER="$GRAPHQL_FLAKY_38" GH_API_RETRY_MAX=3 GH_API_RETRY_DELAY=0 \
+     bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null 2>&1; then
+    echo "FAIL scenario 38: transient discovery TLS-timeout not retried — run exited non-zero"; exit 1
+fi
+ROWS_38=$(sqlite3 "$DB_FILE" "SELECT repo FROM walks WHERE repo='plow-pbc/active-probe';")
+[ "$ROWS_38" = "plow-pbc/active-probe" ] || { echo "FAIL scenario 38: active repo not walked after discovery retry ('$ROWS_38')"; exit 1; }
+[ "$(cat "$GRAPHQL_FLAKY_38")" = "0" ] || { echo "FAIL scenario 38: graphql flaky counter '$(cat "$GRAPHQL_FLAKY_38")' expected '0' (both transient attempts consumed before recovery)"; exit 1; }
+unset MOCK_GRAPHQL_FILE MOCK_GRAPHQL_FLAKY_COUNTER
+cat > "$STATE_DIR/repos.conf" <<'CONF'
+REPOS=("test-org/bakeoff-probe")
+CONF
 
 echo "PASS"

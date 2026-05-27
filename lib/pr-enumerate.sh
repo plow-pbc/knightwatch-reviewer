@@ -36,6 +36,13 @@
 # srosro repos into 1 call per owner (~3 pts each), keeping cncorp/* on
 # per-repo because those orgs are only partially tracked.
 
+# gh_api_retry — discovery (repos_with_bot_activity_since) runs first on the
+# bakeoff path and fail-loud-exits the whole run on a transient blip, so it
+# routes its graphql calls through the same retry seam as the per-repo fetches.
+# Sourced relative to this file so the dependency is self-contained regardless
+# of which caller pulls pr-enumerate.sh in (idempotent if also sourced directly).
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-retry.sh"
+
 _enumerate_graphql_query='query($q: String!) {
   search(query: $q, type: ISSUE, first: 100) {
     nodes {
@@ -139,9 +146,9 @@ repos_with_bot_activity_since() {
         after=""
         while :; do
             if [ -n "$after" ]; then
-                raw=$(gh api graphql -F q="$q" -F after="$after" -f query="$_bot_activity_graphql_query" 2>/dev/null) || return 1
+                raw=$(gh_api_retry graphql -F q="$q" -F after="$after" -f query="$_bot_activity_graphql_query" 2>/dev/null) || return 1
             else
-                raw=$(gh api graphql -F q="$q" -f query="$_bot_activity_graphql_query" 2>/dev/null) || return 1
+                raw=$(gh_api_retry graphql -F q="$q" -f query="$_bot_activity_graphql_query" 2>/dev/null) || return 1
             fi
             pieces+=("$(printf '%s' "$raw" | jq -r '.data.search.nodes[]?.repository.nameWithOwner')") || return 1
             # endCursor only when there is a next page (else empty → stop). A
