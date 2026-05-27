@@ -702,19 +702,20 @@ if [ -z "$JUST_FILE" ]; then
     TEST_SUMMARY="not run (no justfile in repo root)"
     : > "$TEST_LOG"
 else
-    # Per-repo serialization for `just test`. Concurrent PR worktrees of
-    # the same repo share host-global state — single docker compose
-    # project name (so all worktrees write to one container set), a
-    # fixed DB host port, a fixed TCP port — and racing them deadlocks
-    # pytest sessions on the shared backend. Observed: cncorp/plow's
-    # chat-postgres-1 collision caused 30-min `just test` hangs that
-    # cascaded into 22G memory peaks across the unit. Cross-repo
-    # workers are unaffected (different lock file).
+    # Global concurrency cap on `just test` (MAX_CONCURRENT_TESTS slots,
+    # default 3). Each `just test` brings up a docker compose stack, so we
+    # ration how many run at once to stay under the unit's MemoryHigh —
+    # this is a memory bound, NOT correctness. plow's test-scenarios
+    # namespaces its compose project name + host ports per checkout dir,
+    # so concurrent same-repo and cross-repo runs no longer collide on
+    # shared host state (the hardcoded chat-postgres-1 stack that forced
+    # the old per-repo mutex was removed from `just test` 2026-05-15; #638
+    # deletes it). See lib/locking.sh::acquire_just_test_lock.
     JUST_TEST_LOCK_WAIT_START=$(date +%s)
-    acquire_just_test_lock "$STATE_DIR" "$REPO_SLUG"
+    acquire_just_test_lock "$STATE_DIR"
     JUST_TEST_LOCK_WAIT=$(( $(date +%s) - JUST_TEST_LOCK_WAIT_START ))
     if [ "$JUST_TEST_LOCK_WAIT" -ge 5 ]; then
-        log "$PR_ID: per-repo just-test lock acquired after ${JUST_TEST_LOCK_WAIT}s queue"
+        log "$PR_ID: just-test slot acquired after ${JUST_TEST_LOCK_WAIT}s queue"
     fi
     # Cap the inner test window to the outer worker budget left (the dispatcher
     # stamps WORKER_DEADLINE_EPOCH; unset on a direct/smoke invocation → full
