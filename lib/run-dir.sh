@@ -197,6 +197,37 @@ run_just_test() {
         > "$test_log" 2>&1
 }
 
+# cap_test_timeout DEADLINE_EPOCH NOW KILL_AFTER_SECS CONFIGURED
+#
+# Caps the inner `just test` window to the outer worker budget still left, so
+# run_just_test's `timeout -k` reaps the test BEFORE the outer worker timeout
+# fires. After a long same-repo flock wait the budget can be short; if the outer
+# timeout landed first it would kill the worker (freeing the per-repo just-test
+# lock) while the test's own process group kept running on shared Docker/port
+# state — reopening the same-repo pileup the lock exists to prevent.
+#
+# CONFIGURED is the normal ceiling as a GNU `timeout` duration ('30m'). Prints
+# CONFIGURED verbatim when the full window fits (keeps the friendly form), the
+# remaining budget as '<n>s' when it must be capped, or nothing when no
+# kill-after window remains (caller skips the test). Pure — smoke-tested.
+cap_test_timeout() {
+    local deadline="$1" now="$2" kill_after="$3" configured="$4"
+    local budget=$(( deadline - now - kill_after ))
+    [ "$budget" -lt 1 ] && return 0
+    local configured_secs
+    case "$configured" in
+        *s) configured_secs="${configured%s}" ;;
+        *m) configured_secs=$(( ${configured%m} * 60 )) ;;
+        *h) configured_secs=$(( ${configured%h} * 3600 )) ;;
+        *)  configured_secs="$configured" ;;
+    esac
+    if [ "$budget" -ge "$configured_secs" ]; then
+        printf '%s\n' "$configured"
+    else
+        printf '%ss\n' "$budget"
+    fi
+}
+
 # classify_just_test_outcome TEST_EXIT TEST_LOG TEST_TIMEOUT
 #
 # Pure function. Maps `just test`'s (exit, stderr) to (TESTS_RAN,

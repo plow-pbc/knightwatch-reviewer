@@ -716,15 +716,34 @@ else
     if [ "$JUST_TEST_LOCK_WAIT" -ge 5 ]; then
         log "$PR_ID: per-repo just-test lock acquired after ${JUST_TEST_LOCK_WAIT}s queue"
     fi
-    log "$PR_ID: running \`just --justfile $JUST_FILE test\` (timeout ${TEST_TIMEOUT})..."
-    # 30s kill-after: `just test` runs in its own process group (run_just_test's
-    # inner `timeout` creates it), so the dispatcher's outer `timeout -k` can't
-    # reach a SIGTERM-ignoring pytest tree — only this inner -k can. The subtree
-    # shares the inner group, so the SIGKILL reaps it wholesale.
-    run_just_test "$JUST_FILE" "$REPO_DIR" "$TEST_LOG" "$TEST_TIMEOUT" 30s
-    TEST_EXIT=$?
-    release_just_test_lock
-    IFS=$'\t' read -r TESTS_RAN TEST_SUMMARY < <(classify_just_test_outcome "$TEST_EXIT" "$TEST_LOG" "$TEST_TIMEOUT")
+    # Cap the inner test window to the outer worker budget left (the dispatcher
+    # stamps WORKER_DEADLINE_EPOCH; unset on a direct/smoke invocation → full
+    # window). This keeps the inner `timeout -k` firing before the outer worker
+    # timeout, so a wedged test is reaped by the inner -k (which reaches its
+    # process group) rather than orphaned by the outer kill while this lock is
+    # released — see cap_test_timeout. 30s = the kill-after grace below.
+    if [ -n "${WORKER_DEADLINE_EPOCH:-}" ]; then
+        TEST_WINDOW=$(cap_test_timeout "$WORKER_DEADLINE_EPOCH" "$(date +%s)" 30 "$TEST_TIMEOUT")
+    else
+        TEST_WINDOW="$TEST_TIMEOUT"
+    fi
+    if [ -z "$TEST_WINDOW" ]; then
+        log "$PR_ID: worker budget exhausted by ${JUST_TEST_LOCK_WAIT}s just-test queue — skipping \`just test\`"
+        release_just_test_lock
+        TESTS_RAN=false
+        TEST_SUMMARY="not run (worker timeout budget exhausted by queue wait)"
+        : > "$TEST_LOG"
+    else
+        log "$PR_ID: running \`just --justfile $JUST_FILE test\` (timeout ${TEST_WINDOW})..."
+        # 30s kill-after: `just test` runs in its own process group (run_just_test's
+        # inner `timeout` creates it), so the dispatcher's outer `timeout -k` can't
+        # reach a SIGTERM-ignoring pytest tree — only this inner -k can. The subtree
+        # shares the inner group, so the SIGKILL reaps it wholesale.
+        run_just_test "$JUST_FILE" "$REPO_DIR" "$TEST_LOG" "$TEST_WINDOW" 30s
+        TEST_EXIT=$?
+        release_just_test_lock
+        IFS=$'\t' read -r TESTS_RAN TEST_SUMMARY < <(classify_just_test_outcome "$TEST_EXIT" "$TEST_LOG" "$TEST_WINDOW")
+    fi
 fi
 TEST_LOG_TAIL=$(tail -n 500 "$TEST_LOG")
 # The header only uses the 500-line tail; drop the full log now that it's been
