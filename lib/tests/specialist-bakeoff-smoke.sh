@@ -168,6 +168,16 @@ END{print "]"}' "$MOCK_PULLS_COMMITS_FILE")
         else
             printf '%s' "$commits_json"
         fi
+    elif [[ "$endpoint" == */commits/* ]] && [ -n "${MOCK_GH_COMMIT_FLAKY_SHA:-}" ] \
+         && [[ "${endpoint##*/commits/}" == "${MOCK_GH_COMMIT_FLAKY_SHA%%\?*}" ]] \
+         && [ "$(cat "${MOCK_GH_FLAKY_COUNTER:-/dev/null}" 2>/dev/null || echo 0)" -gt 0 ]; then
+        # Transient-blip injector: while the counter is >0, emit the exact Go
+        # net/http string `gh` surfaces on a dropped TLS handshake and fail.
+        # Once drained, this guard goes false → the success branch below runs,
+        # modelling a flaky connection that recovers on retry.
+        n=$(cat "$MOCK_GH_FLAKY_COUNTER"); echo "$((n - 1))" > "$MOCK_GH_FLAKY_COUNTER"
+        echo "Get \"https://api.github.com/$endpoint\": net/http: TLS handshake timeout" >&2
+        exit 1
     elif [[ "$endpoint" == */commits/* ]] && [ -n "${MOCK_GH_COMMIT_FAIL_SHA:-}" ] && [[ "${endpoint##*/commits/}" == "${MOCK_GH_COMMIT_FAIL_SHA%%\?*}" ]]; then
         echo "gh api: simulated commits/<sha> failure for $endpoint" >&2
         exit 1
@@ -239,6 +249,7 @@ cp "$REPO_ROOT/lib/tracked-repos.sh"    "$REVIEWER_LIB_DIR/tracked-repos.sh"
 cp "$REPO_ROOT/lib/bakeoff-parsers.sh"  "$REVIEWER_LIB_DIR/bakeoff-parsers.sh"
 cp "$REPO_ROOT/lib/bakeoff-store.sh"    "$REVIEWER_LIB_DIR/bakeoff-store.sh"
 cp "$REPO_ROOT/lib/pr-enumerate.sh"     "$REVIEWER_LIB_DIR/pr-enumerate.sh"
+cp "$REPO_ROOT/lib/gh-retry.sh"         "$REVIEWER_LIB_DIR/gh-retry.sh"
 
 # Single tracked repo.
 cat > "$STATE_DIR/repos.conf" <<'CONF'
@@ -1257,5 +1268,44 @@ unset MOCK_GRAPHQL_FILE
 cat > "$STATE_DIR/repos.conf" <<'CONF'
 REPOS=("test-org/bakeoff-probe")
 CONF
+
+# ---- scenario 36: transient TLS-timeout on commits/<sha> is retried, not fatal ----
+# The bakeoff makes hundreds of commit fetches per run; a single transient
+# net/http TLS-handshake timeout must NOT tip the whole run to PARTIAL. A flaky
+# connection that fails twice then recovers should be absorbed by gh_api_retry,
+# leaving the commit fetched (edited_after computed) and the run exiting 0.
+echo "    scenario 36: transient TLS-timeout on commits/<sha> retried → run succeeds, edited_after computed..."
+rm -f "$DB_FILE" "$LOG_FILE"
+TS_REVIEW_36=$(hours_ago 30); TS_COMMIT_36=$(hours_ago 20)
+setup_edited_after_one_commit 360 320 "$TS_REVIEW_36" src/a.py sha-flaky "$TS_COMMIT_36" commit-files-36
+FLAKY_COUNTER_36="$TMPDIR_SMOKE/flaky-36"; echo 2 > "$FLAKY_COUNTER_36"
+if ! MOCK_GH_COMMIT_FLAKY_SHA=sha-flaky MOCK_GH_FLAKY_COUNTER="$FLAKY_COUNTER_36" \
+     GH_API_RETRY_MAX=3 GH_API_RETRY_DELAY=0 \
+     bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null 2>&1; then
+    echo "FAIL scenario 36: transient TLS-timeout was not retried — run exited non-zero"; exit 1
+fi
+ROW=$(sqlite3 "$DB_FILE" "SELECT edited_after FROM specialist_runs WHERE specialist='tests' AND comment_id=360;")
+[ "$ROW" = "1" ] || { echo "FAIL scenario 36: edited_after '$ROW' expected '1' (retry should have recovered the commit fetch)"; exit 1; }
+[ "$(cat "$FLAKY_COUNTER_36")" = "0" ] || { echo "FAIL scenario 36: flaky counter '$(cat "$FLAKY_COUNTER_36")' expected '0' (both transient attempts consumed before recovery)"; exit 1; }
+unset MOCK_PULLS_COMMITS_FILE MOCK_COMMIT_FILES_DIR
+
+# ---- scenario 37: transient failure past the retry budget still fails loud ----
+# Retries are bounded (GH_API_RETRY_MAX): a connection that never recovers must
+# still be counted as a fetch failure → exit 1, OUT_FILE preserved. Guards both
+# against "no retry" (regression) and "retry forever" (hang).
+echo "    scenario 37: persistent transient failure → bounded retries, fail-loud preserved (exit 1)..."
+rm -f "$DB_FILE" "$LOG_FILE"
+TS_REVIEW_37=$(hours_ago 30); TS_COMMIT_37=$(hours_ago 20)
+setup_edited_after_one_commit 370 330 "$TS_REVIEW_37" src/a.py sha-down "$TS_COMMIT_37" commit-files-37
+FLAKY_COUNTER_37="$TMPDIR_SMOKE/flaky-37"; echo 99 > "$FLAKY_COUNTER_37"
+echo SENTINEL > "$OUT_FILE"
+if MOCK_GH_COMMIT_FLAKY_SHA=sha-down MOCK_GH_FLAKY_COUNTER="$FLAKY_COUNTER_37" \
+   GH_API_RETRY_MAX=3 GH_API_RETRY_DELAY=0 \
+   bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null 2>&1; then
+    echo "FAIL scenario 37: persistent transient failure should still fail loud (expected non-zero exit)"; exit 1
+fi
+grep -q "SENTINEL" "$OUT_FILE" || { echo "FAIL scenario 37: OUT_FILE overwritten despite persistent fetch failure"; exit 1; }
+[ "$(cat "$FLAKY_COUNTER_37")" = "96" ] || { echo "FAIL scenario 37: retry budget unbounded/wrong — counter '$(cat "$FLAKY_COUNTER_37")' expected '96' (99 − 3 attempts)"; exit 1; }
+unset MOCK_PULLS_COMMITS_FILE MOCK_COMMIT_FILES_DIR
 
 echo "PASS"
