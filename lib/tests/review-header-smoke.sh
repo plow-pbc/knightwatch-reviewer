@@ -352,6 +352,9 @@ assert_classify 0 "" "true" "PASSED" "tests ran and passed"
 echo "  classify: exit 124 → TIMED OUT..."
 assert_classify 124 "" "true" "TIMED OUT (>30m)" "timeout expired"
 
+echo "  classify: exit 137 → TIMED OUT (timeout -k SIGKILL after deadline)..."
+assert_classify 137 "" "true" "TIMED OUT (>30m)" "timeout -k escalated to SIGKILL on a TERM-ignoring test"
+
 echo "  classify: exit 127 + 'Recipe failed' → not run (cmd-not-found inside)..."
 assert_classify 127 "sh: 1: pytest: not found
 error: Recipe \`test\` failed on line 2 with exit code 127" \
@@ -397,6 +400,19 @@ if [ "$got_ran" != "false" ] || [ "$got_summary" != "not run (just pre-recipe fa
     echo "FAIL: classify with missing log file — expected (false, 'not run (just pre-recipe...)'), got ($got_ran, $got_summary)"
     exit 1
 fi
+
+# ===== cap_test_timeout (inner just-test window vs outer worker budget) =====
+# Reserve arg is the caller's 35s = 30s inner kill-after + 5s scheduling buffer.
+echo "  cap_test_timeout: full window fits → returns configured verbatim..."
+[ "$(cap_test_timeout 100000 1000 35 30m)" = "30m" ] || { echo "FAIL: cap_test_timeout full budget should return 30m"; exit 1; }
+
+echo "  cap_test_timeout: budget below configured → capped to remaining seconds..."
+# deadline 1635, now 1000, reserve 35 → budget 600 < 1800(=30m) → '600s'
+[ "$(cap_test_timeout 1635 1000 35 30m)" = "600s" ] || { echo "FAIL: cap_test_timeout should cap to 600s"; exit 1; }
+
+echo "  cap_test_timeout: budget below reserve → empty (caller skips the test)..."
+# deadline 1020, now 1000, reserve 35 → budget -15 → empty (no buffer window left)
+[ -z "$(cap_test_timeout 1020 1000 35 30m)" ] || { echo "FAIL: cap_test_timeout exhausted budget should return empty"; exit 1; }
 
 # ===== format_tests_note (symmetric pre-check disclosure) =====
 # Every pre-check emits exactly one fragment describing its outcome

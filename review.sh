@@ -92,18 +92,15 @@ fi
 # pre-detach ceiling at the worker level; the worker exits, the flock
 # releases, and the next tick can re-dispatch.
 WORKER_TIMEOUT="${WORKER_TIMEOUT:-90m}"
-log "Fan-out: max $MAX_CONCURRENT concurrent, per-worker timeout $WORKER_TIMEOUT"
-
-# Parse GNU `timeout` duration syntax ('90m', '30s', '1h', or bare seconds)
-# into a seconds integer. Used to derive WORKER_DEADLINE_EPOCH for pipeline.py.
-_worker_timeout_seconds() {
-    case "$1" in
-        *s) printf '%s\n' "${1%s}" ;;
-        *m) printf '%s\n' "$(( ${1%m} * 60 ))" ;;
-        *h) printf '%s\n' "$(( ${1%h} * 3600 ))" ;;
-        *)  printf '%s\n' "$1" ;;
-    esac
-}
+# Grace before SIGKILL: `timeout` sends SIGTERM at WORKER_TIMEOUT, then SIGKILL
+# WORKER_KILL_AFTER later. Without -k, a worker (or same-group child) that
+# ignores SIGTERM outlives its ceiling and accumulates in the unit cgroup —
+# the cascade the manual /unstick-kwr recipe used to clear by hand. 30s lets a
+# worker that DOES trap SIGTERM finish its cleanup_eyes/finalize_run before the
+# hard kill. (Codex setsid's into its own session and escapes timeout's
+# process-group signal entirely — that residual is accepted, not fixed here.)
+WORKER_KILL_AFTER="${WORKER_KILL_AFTER:-30s}"
+log "Fan-out: max $MAX_CONCURRENT concurrent, per-worker timeout $WORKER_TIMEOUT (kill-after $WORKER_KILL_AFTER)"
 
 # Single-pass: enumerate PRs and dispatch eligible ones inline. No
 # tab-delimited spec serialization, no field-shift attack surface —
@@ -310,12 +307,12 @@ while IFS= read -r PR_JSON; do
     # wrap. pipeline.py reads this to decide whether a stale-kill retry
     # fits under the worker cap — `just test` (up to 30 min), Wave A,
     # and earlier specialists all eat into the same budget.
-    worker_secs=$(_worker_timeout_seconds "$WORKER_TIMEOUT")
+    worker_secs=$(timeout_duration_seconds "$WORKER_TIMEOUT")
     TRIGGER_COMMENT_FILE="$TRIGGER_FILE" \
     DISPATCHER_TICK_AT="$TICK_FETCHED_AT_ISO" \
     REVIEWER_LIB_DIR="$REVIEWER_LIB_DIR" \
     WORKER_DEADLINE_EPOCH="$(( $(date +%s) + worker_secs ))" \
-        timeout "$WORKER_TIMEOUT" "$REVIEWER_LIB_DIR/review-one-pr.sh" \
+        timeout -k "$WORKER_KILL_AFTER" "$WORKER_TIMEOUT" "$REVIEWER_LIB_DIR/review-one-pr.sh" \
         "$REPO" "$PR_NUM" "$PR_SHA" "$PR_BRANCH" "$PR_TITLE" "$FORCE_WHOLE_PR" &
     active=$((active + 1))
     dispatched=$((dispatched + 1))

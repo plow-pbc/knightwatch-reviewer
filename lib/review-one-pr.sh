@@ -262,6 +262,14 @@ $EYES_ABORT_BODY" \
         >/dev/null 2>&1 || true
 }
 trap 'finalize_run; cleanup_eyes' EXIT
+# SIGTERM (from the dispatcher's `timeout` ceiling) and SIGINT must run the
+# EXIT trap too — bare bash exits on an untrapped SIGTERM WITHOUT firing the
+# EXIT trap, which would leave the 👀 placeholder dangling on a timeout-kill.
+# Re-raising via `exit` triggers EXIT (143=128+SIGTERM, 130=128+SIGINT). The
+# dispatcher's `timeout -k` grace window gives this cleanup time to finish
+# before the hard SIGKILL lands.
+trap 'exit 143' TERM
+trap 'exit 130' INT
 
 # Canonical clone lives at $REPOS_DIR/<slug>/ and is the source of truth for
 # `fetch`. Multiple PR reviews on the same repo coexist by each working in
@@ -661,7 +669,12 @@ fi
 # ancestor recipe with those secrets in scope is a real boundary
 # crossing. The enumerated list mirrors `just`'s full set of accepted
 # names so non-canonical-but-real justfiles aren't missed.
-TEST_LOG="$REPO_DIR/.test-output.log"
+# Test log lives in reviewer-controlled run state, NOT under $REPO_DIR (the
+# PR checkout). A PR author could commit `.test-output.log` as a symlink into
+# the unit's writable paths (ReadWritePaths=/home/odio/.pr-reviewer), and the
+# truncate/redirect writes below would follow it — a write-through out of the
+# sandbox. $RUN_DIR is allocated by the reviewer (line ~160), not the PR.
+TEST_LOG="$RUN_DIR/test-output.log"
 TEST_TIMEOUT=30m
 
 if ! command -v just >/dev/null 2>&1; then
@@ -703,20 +716,43 @@ else
     if [ "$JUST_TEST_LOCK_WAIT" -ge 5 ]; then
         log "$PR_ID: per-repo just-test lock acquired after ${JUST_TEST_LOCK_WAIT}s queue"
     fi
-    log "$PR_ID: running \`just --justfile $JUST_FILE test\` (timeout ${TEST_TIMEOUT})..."
-    # Scrub LOG_FILE from the test subprocess's env. Otherwise this repo's
-    # own lib/tests/test_pipeline.py — which calls pipeline.run_pipeline()
-    # via the unittest discover — picks up our LOG_FILE through inheritance
-    # and pipeline.log() tees test-fixture chatter ('r#1: launching ...')
-    # into the production orchestrator log alongside the real review trace.
-    # Cosmetic only (review correctness was unaffected) but makes
-    # post-mortem grepping clean.
-    timeout "$TEST_TIMEOUT" env -u LOG_FILE just --justfile "$JUST_FILE" --working-directory "$REPO_DIR" test > "$TEST_LOG" 2>&1
-    TEST_EXIT=$?
-    release_just_test_lock
-    IFS=$'\t' read -r TESTS_RAN TEST_SUMMARY < <(classify_just_test_outcome "$TEST_EXIT" "$TEST_LOG" "$TEST_TIMEOUT")
+    # Cap the inner test window to the outer worker budget left (the dispatcher
+    # stamps WORKER_DEADLINE_EPOCH; unset on a direct/smoke invocation → full
+    # window). This keeps the inner `timeout -k` firing before the outer worker
+    # timeout, so a wedged test is reaped by the inner -k (which reaches its
+    # process group) rather than orphaned by the outer kill while this lock is
+    # released — see cap_test_timeout. Reserve 35s = the 30s inner kill-after
+    # (below) + a 5s scheduling buffer, so the inner SIGKILL lands strictly
+    # before the outer SIGTERM instead of racing it on the same second.
+    if [ -n "${WORKER_DEADLINE_EPOCH:-}" ]; then
+        TEST_WINDOW=$(cap_test_timeout "$WORKER_DEADLINE_EPOCH" "$(date +%s)" 35 "$TEST_TIMEOUT")
+    else
+        TEST_WINDOW="$TEST_TIMEOUT"
+    fi
+    if [ -z "$TEST_WINDOW" ]; then
+        log "$PR_ID: worker budget exhausted by ${JUST_TEST_LOCK_WAIT}s just-test queue — skipping \`just test\`"
+        release_just_test_lock
+        TESTS_RAN=false
+        TEST_SUMMARY="not run (worker timeout budget exhausted by queue wait)"
+        : > "$TEST_LOG"
+    else
+        log "$PR_ID: running \`just --justfile $JUST_FILE test\` (timeout ${TEST_WINDOW})..."
+        # 30s kill-after: `just test` runs in its own process group (run_just_test's
+        # inner `timeout` creates it), so the dispatcher's outer `timeout -k` can't
+        # reach a SIGTERM-ignoring pytest tree — only this inner -k can. The subtree
+        # shares the inner group, so the SIGKILL reaps it wholesale.
+        run_just_test "$JUST_FILE" "$REPO_DIR" "$TEST_LOG" "$TEST_WINDOW" 30s
+        TEST_EXIT=$?
+        release_just_test_lock
+        IFS=$'\t' read -r TESTS_RAN TEST_SUMMARY < <(classify_just_test_outcome "$TEST_EXIT" "$TEST_LOG" "$TEST_WINDOW")
+    fi
 fi
 TEST_LOG_TAIL=$(tail -n 500 "$TEST_LOG")
+# The header only uses the 500-line tail; drop the full log now that it's been
+# read + classified. It lives in reviewer-owned $RUN_DIR (persists after the
+# workdir is wiped), and trusted-author `just test` output can carry creds/PII
+# beyond the tail — don't retain the unbounded artifact.
+rm -f "$TEST_LOG"
 
 # Env files were only needed for `just test`; delete eagerly so secrets
 # don't sit in the workdir during the long specialist phase. REPO_DIR is
