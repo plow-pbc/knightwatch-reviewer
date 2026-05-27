@@ -197,7 +197,20 @@ run_just_test() {
         > "$test_log" 2>&1
 }
 
-# cap_test_timeout DEADLINE_EPOCH NOW KILL_AFTER_SECS CONFIGURED
+# timeout_duration_seconds DURATION
+# Parse a GNU `timeout` duration ('90m', '30s', '1h', or bare seconds) to an
+# integer seconds. Single parser shared by review.sh's worker-deadline math and
+# cap_test_timeout below.
+timeout_duration_seconds() {
+    case "$1" in
+        *s) printf '%s\n' "${1%s}" ;;
+        *m) printf '%s\n' "$(( ${1%m} * 60 ))" ;;
+        *h) printf '%s\n' "$(( ${1%h} * 3600 ))" ;;
+        *)  printf '%s\n' "$1" ;;
+    esac
+}
+
+# cap_test_timeout DEADLINE_EPOCH NOW RESERVE_SECS CONFIGURED
 #
 # Caps the inner `just test` window to the outer worker budget still left, so
 # run_just_test's `timeout -k` reaps the test BEFORE the outer worker timeout
@@ -206,21 +219,19 @@ run_just_test() {
 # lock) while the test's own process group kept running on shared Docker/port
 # state — reopening the same-repo pileup the lock exists to prevent.
 #
+# RESERVE_SECS is the time to hold back before the deadline — the caller passes
+# the inner kill-after PLUS a scheduling buffer, so the inner SIGKILL lands
+# strictly before the outer SIGTERM rather than racing it on the same second.
 # CONFIGURED is the normal ceiling as a GNU `timeout` duration ('30m'). Prints
 # CONFIGURED verbatim when the full window fits (keeps the friendly form), the
-# remaining budget as '<n>s' when it must be capped, or nothing when no
-# kill-after window remains (caller skips the test). Pure — smoke-tested.
+# remaining budget as '<n>s' when it must be capped, or nothing when no window
+# remains (caller skips the test). Pure — smoke-tested.
 cap_test_timeout() {
-    local deadline="$1" now="$2" kill_after="$3" configured="$4"
-    local budget=$(( deadline - now - kill_after ))
+    local deadline="$1" now="$2" reserve="$3" configured="$4"
+    local budget=$(( deadline - now - reserve ))
     [ "$budget" -lt 1 ] && return 0
     local configured_secs
-    case "$configured" in
-        *s) configured_secs="${configured%s}" ;;
-        *m) configured_secs=$(( ${configured%m} * 60 )) ;;
-        *h) configured_secs=$(( ${configured%h} * 3600 )) ;;
-        *)  configured_secs="$configured" ;;
-    esac
+    configured_secs=$(timeout_duration_seconds "$configured")
     if [ "$budget" -ge "$configured_secs" ]; then
         printf '%s\n' "$configured"
     else

@@ -721,9 +721,11 @@ else
     # window). This keeps the inner `timeout -k` firing before the outer worker
     # timeout, so a wedged test is reaped by the inner -k (which reaches its
     # process group) rather than orphaned by the outer kill while this lock is
-    # released — see cap_test_timeout. 30s = the kill-after grace below.
+    # released — see cap_test_timeout. Reserve 35s = the 30s inner kill-after
+    # (below) + a 5s scheduling buffer, so the inner SIGKILL lands strictly
+    # before the outer SIGTERM instead of racing it on the same second.
     if [ -n "${WORKER_DEADLINE_EPOCH:-}" ]; then
-        TEST_WINDOW=$(cap_test_timeout "$WORKER_DEADLINE_EPOCH" "$(date +%s)" 30 "$TEST_TIMEOUT")
+        TEST_WINDOW=$(cap_test_timeout "$WORKER_DEADLINE_EPOCH" "$(date +%s)" 35 "$TEST_TIMEOUT")
     else
         TEST_WINDOW="$TEST_TIMEOUT"
     fi

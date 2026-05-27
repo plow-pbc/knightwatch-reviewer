@@ -102,17 +102,6 @@ WORKER_TIMEOUT="${WORKER_TIMEOUT:-90m}"
 WORKER_KILL_AFTER="${WORKER_KILL_AFTER:-30s}"
 log "Fan-out: max $MAX_CONCURRENT concurrent, per-worker timeout $WORKER_TIMEOUT (kill-after $WORKER_KILL_AFTER)"
 
-# Parse GNU `timeout` duration syntax ('90m', '30s', '1h', or bare seconds)
-# into a seconds integer. Used to derive WORKER_DEADLINE_EPOCH for pipeline.py.
-_worker_timeout_seconds() {
-    case "$1" in
-        *s) printf '%s\n' "${1%s}" ;;
-        *m) printf '%s\n' "$(( ${1%m} * 60 ))" ;;
-        *h) printf '%s\n' "$(( ${1%h} * 3600 ))" ;;
-        *)  printf '%s\n' "$1" ;;
-    esac
-}
-
 # Single-pass: enumerate PRs and dispatch eligible ones inline. No
 # tab-delimited spec serialization, no field-shift attack surface —
 # shell variable boundaries are explicit when the worker is invoked
@@ -318,7 +307,7 @@ while IFS= read -r PR_JSON; do
     # wrap. pipeline.py reads this to decide whether a stale-kill retry
     # fits under the worker cap — `just test` (up to 30 min), Wave A,
     # and earlier specialists all eat into the same budget.
-    worker_secs=$(_worker_timeout_seconds "$WORKER_TIMEOUT")
+    worker_secs=$(timeout_duration_seconds "$WORKER_TIMEOUT")
     TRIGGER_COMMENT_FILE="$TRIGGER_FILE" \
     DISPATCHER_TICK_AT="$TICK_FETCHED_AT_ISO" \
     REVIEWER_LIB_DIR="$REVIEWER_LIB_DIR" \
