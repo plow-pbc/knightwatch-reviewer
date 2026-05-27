@@ -102,6 +102,13 @@ echo "[]" > "$MOCK_COMMENTS_FILE"
 # trusted-human has push=true; untrusted-user has push=false.
 cat > "$STUB_BIN/gh" <<'STUB'
 #!/bin/bash
+if [ "$1" = "api" ] && [ "$2" = "graphql" ]; then
+    # Batched bot-activity discovery (repos_with_bot_activity_since). Serves
+    # MOCK_GRAPHQL_FILE when set (scenario 33); otherwise an empty result. Only
+    # reached when ORGS is non-empty — the other driver scenarios have no ORGS.
+    if [ -n "${MOCK_GRAPHQL_FILE:-}" ]; then cat "$MOCK_GRAPHQL_FILE"; else echo '{"data":{"search":{"nodes":[]}}}'; fi
+    exit 0
+fi
 if [ "$1" = "api" ]; then
     endpoint=""
     paginate=""
@@ -229,6 +236,7 @@ mkdir -p "$REVIEWER_LIB_DIR"
 cp "$REPO_ROOT/lib/tracked-repos.sh"    "$REVIEWER_LIB_DIR/tracked-repos.sh"
 cp "$REPO_ROOT/lib/bakeoff-parsers.sh"  "$REVIEWER_LIB_DIR/bakeoff-parsers.sh"
 cp "$REPO_ROOT/lib/bakeoff-store.sh"    "$REVIEWER_LIB_DIR/bakeoff-store.sh"
+cp "$REPO_ROOT/lib/pr-enumerate.sh"     "$REVIEWER_LIB_DIR/pr-enumerate.sh"
 
 # Single tracked repo.
 cat > "$STATE_DIR/repos.conf" <<'CONF'
@@ -1154,5 +1162,40 @@ CONF
 
 rm -rf "$DATE_STUB_32_DIR"
 unset MOCK_PULLS_COMMITS_FILE
+
+# ---- scenario 33: ORG repos with no bot activity are skipped (batched discovery) ----
+# The 5k/hr-budget fix: one graphql search per ORG owner discovers the active
+# subset instead of a per-repo comments+collaborators fetch across every tracked
+# repo. ORG repos absent from the search are skipped (no walks row); manual
+# non-ORG repos (cncorp/*) are always walked.
+echo "    scenario 33: inactive ORG repos skipped via batched discovery..."
+rm -f "$DB_FILE"
+cat > "$STATE_DIR/repos.conf" <<'CONF33'
+REPOS=("plow-pbc/active-probe" "plow-pbc/inactive-probe" "cncorp/manual-probe")
+ORGS=("plow-pbc")
+CONF33
+# Discovery returns ONLY the active ORG repo.
+cat > "$TMPDIR_SMOKE/graphql-33.json" <<'GQL'
+{"data":{"search":{"nodes":[{"repository":{"nameWithOwner":"plow-pbc/active-probe"}}]}}}
+GQL
+export MOCK_GRAPHQL_FILE="$TMPDIR_SMOKE/graphql-33.json"
+# Comments stub is global, so any non-skipped repo completes a clean walk and
+# stamps a walks row; skipped repos get none.
+build_bot_review 330 330 "$(hours_ago 2)" tests \
+    '1. [blocking] [from: tests] [tests] probe. Files: src/a.py. Edit: x.' \
+    | jq -s . > "$MOCK_COMMENTS_FILE"
+printf 'src/a.py\t1\t0\n' > "$MOCK_PULLS_FILES_FILE"
+: > "$TMPDIR_SMOKE/commits-33.tsv"; export MOCK_PULLS_COMMITS_FILE="$TMPDIR_SMOKE/commits-33.tsv"
+bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null 2>&1
+WALKED_33=$(sqlite3 "$DB_FILE" "SELECT repo FROM walks ORDER BY repo;" | paste -sd, -)
+[ "$WALKED_33" = "cncorp/manual-probe,plow-pbc/active-probe" ] || {
+    echo "FAIL scenario 33: walked repos = '$WALKED_33', expected 'cncorp/manual-probe,plow-pbc/active-probe'"
+    echo "  (inactive ORG repo not skipped, or active/manual repo wrongly skipped)"
+    exit 1
+}
+unset MOCK_GRAPHQL_FILE MOCK_PULLS_COMMITS_FILE
+cat > "$STATE_DIR/repos.conf" <<'CONF'
+REPOS=("test-org/bakeoff-probe")
+CONF
 
 echo "PASS"

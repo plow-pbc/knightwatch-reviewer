@@ -100,3 +100,54 @@ enumerate_open_prs() {
     printf '%s\n' "${pieces[@]}" | jq -s --argjson tracked "$tracked_json" \
         'add // [] | map(select(.repository.nameWithOwner as $r | $tracked | index($r)))'
 }
+
+_bot_activity_graphql_query='query($q: String!) {
+  search(query: $q, type: ISSUE, first: 100) {
+    nodes { ... on PullRequest { repository { nameWithOwner } } }
+  }
+}'
+
+# repos_with_bot_activity_since SINCE_ISO BOT_USER
+#
+# Prints (newline-separated, deduped) the tracked ORG-owned repos that have a
+# PR the bot commented on and that was updated since SINCE_ISO — one gh api
+# graphql search per ORG owner, vs a per-repo issues/comments fetch for every
+# tracked repo. Post-filtered against ${REPOS[@]}. Non-ORG owners (e.g.
+# cncorp/*) are NOT searched; callers walk those unconditionally.
+#
+# Why: specialist-bakeoff.sh fans a paginated comments + collaborators fetch
+# across all ~45 tracked repos every run, exhausting the 5000/hr budget
+# (HTTP 403) so repos walked last fail. Most of those repos have no bot
+# reviews at all; this discovers the active subset in ~1 call per owner so the
+# walk skips the rest. Same batched-search shape + failure contract as
+# enumerate_open_prs above.
+#
+# On success: prints the active repo set (possibly empty), exits 0.
+# On any gh failure: exits non-zero, prints nothing — so callers can fall back
+# to walking every repo (no worse than the pre-batched behavior).
+repos_with_bot_activity_since() {
+    local since="$1" bot="$2" owner raw pieces=()
+    declare -A _seen_owners=() _tracked=()
+    for owner in "${ORGS[@]}"; do
+        [ -n "${_seen_owners[$owner]:-}" ] && continue
+        _seen_owners[$owner]=1
+        if ! raw=$(gh api graphql \
+                -F q="user:${owner} is:pr commenter:${bot} updated:>=${since}" \
+                -f query="$_bot_activity_graphql_query" 2>/dev/null); then
+            return 1
+        fi
+        pieces+=("$(printf '%s' "$raw" | jq -r '.data.search.nodes[]?.repository.nameWithOwner')") || return 1
+    done
+    if [ ${#pieces[@]} -eq 0 ]; then return 0; fi
+    local t r
+    for t in "${REPOS[@]}"; do _tracked["$t"]=1; done
+    # Process-substitution (not a pipe) so the loop runs in this shell and the
+    # function's exit status is the explicit `return 0` below — NOT the loop's
+    # last-body status, which is 1 whenever the final repo is untracked (the
+    # `[ ] && printf` short-circuits false). A non-zero return here would trip
+    # the caller's `set -e` on `out=$(repos_with_bot_activity_since …)`.
+    while IFS= read -r r; do
+        [ -n "${_tracked[$r]:-}" ] && printf '%s\n' "$r"
+    done < <(printf '%s\n' "${pieces[@]}" | grep -v '^$' | sort -u)
+    return 0
+}

@@ -36,6 +36,7 @@ REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 
 . "$REVIEWER_LIB_DIR/bakeoff-parsers.sh"
 . "$REVIEWER_LIB_DIR/bakeoff-store.sh"
+. "$REVIEWER_LIB_DIR/pr-enumerate.sh"
 
 log() { echo "[$(date -u +%FT%TZ)] $*" >> "$LOG_FILE"; }
 
@@ -50,7 +51,41 @@ SUBSTANTIVE_REVIEW_JQ='.user.login == $bot_user
 walked_reviews=0
 fetch_failures=0
 
+# Batched discovery: which ORG-owned repos have bot activity since the floor?
+# One graphql search per ORG owner (lib/pr-enumerate.sh) instead of a paginated
+# issues/comments + collaborators fetch for EVERY tracked repo. The per-repo
+# fan-out across ~45 repos exhausted the 5000/hr GitHub budget (HTTP 403), so
+# repos walked last failed and the whole run exited PARTIAL daily. Repos with no
+# bot activity have no substantive reviews to walk, so skipping them is safe;
+# manual non-ORG repos (cncorp/*) are always walked. On discovery failure we
+# fall back to walking every repo — no worse than the pre-batched behavior.
+# (sqlite reads below don't touch the API.)
+discovery_floor=$(date -u -d "$REWALK_HOURS hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+              || date -u -v "-${REWALK_HOURS}H" +%Y-%m-%dT%H:%M:%SZ)
+# Reach back to the earliest watermark so a repo whose last_walked predates the
+# rewalk floor (missed crons) isn't wrongly classified inactive.
+min_walked=$(sqlite3 "$DB_FILE" "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', min(last_walked_at)) FROM walks;" 2>/dev/null || true)
+if [ -n "$min_walked" ] && [ "$min_walked" \< "$discovery_floor" ]; then
+    discovery_floor="$min_walked"
+fi
+declare -A active_repos=()
+discovery_ok=0
+# Stay silent here — no log() before the per-repo loop. log() embeds a bare
+# `date -u +%FT%TZ`, and the walk's first bare-date call is load-bearing: it's
+# the walk_started_at watermark captured before the fetch (regression-fenced by
+# specialist-bakeoff-smoke scenario 31). The discovery outcome is reported in
+# the post-loop summary instead.
+if active_list=$(repos_with_bot_activity_since "$discovery_floor" "$BOT_USER" 2>>"$LOG_FILE"); then
+    discovery_ok=1
+    while IFS= read -r _ar; do [ -n "$_ar" ] && active_repos["$_ar"]=1; done <<< "$active_list"
+fi
+
 for repo in "${REPOS[@]}"; do
+    # Skip ORG repos with no bot activity since the floor (batched discovery
+    # above). Non-ORG manual entries (cncorp/*) are always walked.
+    if [ "$discovery_ok" = 1 ] && _enumerate_owner_in_orgs "${repo%%/*}" && [ -z "${active_repos[$repo]:-}" ]; then
+        continue
+    fi
     repo_failures=0
     # Capture the walk's start time BEFORE any gh fetch — this becomes the
     # next cron's window_floor, so the fetch round-trip can't create a blind
@@ -325,7 +360,11 @@ for repo in "${REPOS[@]}"; do
     fi
 done
 
-log "walked $walked_reviews bot reviews across ${#REPOS[@]} repos"
+if [ "$discovery_ok" = 1 ]; then
+    log "walked $walked_reviews bot reviews; batched discovery: ${#active_repos[@]} ORG repo(s) active since $discovery_floor (+ non-ORG manual repos), of ${#REPOS[@]} tracked"
+else
+    log "walked $walked_reviews bot reviews across ${#REPOS[@]} repos (batched discovery failed — walked all)"
+fi
 
 if [ "$fetch_failures" -gt 0 ]; then
     log "PARTIAL RUN: $fetch_failures fetch failure(s) — store may be missing rows but NOT overwriting $OUT_FILE"

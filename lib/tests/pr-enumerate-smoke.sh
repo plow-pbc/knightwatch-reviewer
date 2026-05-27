@@ -139,4 +139,41 @@ export MOCK_PR_LIST_FAIL=1
   assert_eq "scenario 5b no stdout on fail" "" "$out"
 )
 
+# ---- scenario 6: repos_with_bot_activity_since (batched bake-off discovery) ----
+# 6a: single ORG, search returns active repos (with a dup) → deduped, tracked-only.
+: > "$STUB_CALL_LOG"
+S6_SINCE="2026-05-01T00:00:00Z"
+s6q="user:plow-pbc is:pr commenter:testbot updated:>=$S6_SINCE"
+export "MOCK_GRAPHQL_${s6q//[^A-Za-z0-9]/_}"='{"data":{"search":{"nodes":[
+    {"repository":{"nameWithOwner":"plow-pbc/seed"}},
+    {"repository":{"nameWithOwner":"plow-pbc/seed"}},
+    {"repository":{"nameWithOwner":"plow-pbc/seed-1password"}}
+]}}}'
+( REPOS=("plow-pbc/seed" "plow-pbc/seed-1password"); ORGS=("plow-pbc")
+  source "$PROJECT_ROOT/lib/pr-enumerate.sh"
+  out=$(repos_with_bot_activity_since "$S6_SINCE" "testbot")
+  assert_eq "6a active repos (deduped)" $'plow-pbc/seed\nplow-pbc/seed-1password' "$(echo "$out" | sort)"
+  assert_eq "6a graphql calls" 1 "$(grep -c '^graphql ' "$STUB_CALL_LOG")"
+)
+
+# 6b: search surfaces an untracked repo → post-filter drops it.
+: > "$STUB_CALL_LOG"
+( REPOS=("plow-pbc/seed"); ORGS=("plow-pbc")   # seed-1password not tracked → drop
+  source "$PROJECT_ROOT/lib/pr-enumerate.sh"
+  out=$(repos_with_bot_activity_since "$S6_SINCE" "testbot")
+  assert_eq "6b drops untracked" "plow-pbc/seed" "$out"
+)
+
+# 6c: graphql failure → non-zero, no stdout (caller falls back to walking all).
+: > "$STUB_CALL_LOG"
+export MOCK_GRAPHQL_FAIL=1
+( REPOS=("plow-pbc/seed"); ORGS=("plow-pbc")
+  source "$PROJECT_ROOT/lib/pr-enumerate.sh"
+  if out=$(repos_with_bot_activity_since "$S6_SINCE" "testbot" 2>/dev/null); then
+      echo "FAIL: 6c expected non-zero exit"; exit 1
+  fi
+  assert_eq "6c no stdout on fail" "" "$out"
+)
+unset MOCK_GRAPHQL_FAIL
+
 echo "ALL PASS: pr-enumerate-smoke.sh"
