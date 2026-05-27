@@ -30,25 +30,42 @@ acquire_pr_lock() {
     flock -n "$PR_LOCK_FD"
 }
 
-# acquire_just_test_lock STATE_DIR REPO_SLUG — blocks until the caller
-# holds an exclusive flock on $STATE_DIR/locks/just-test__<REPO_SLUG>.
-# Serializes `just test` across concurrent PR reviews of the same repo
-# so worktrees don't race shared host state (single docker compose
-# project name, single DB host port, single TCP port). Held only across
-# the test invocation — release_just_test_lock closes the FD; Wave A/B
-# and the aggregator run lock-free so cross-PR parallelism stays intact.
+# acquire_just_test_lock STATE_DIR [MAX_SLOTS] — blocks until the caller
+# holds one of MAX_SLOTS global `just test` concurrency slots, then
+# returns with that slot's flock held (FD in JUST_TEST_LOCK_FD, which
+# survives the function return and is released by release_just_test_lock
+# or process exit). MAX_SLOTS defaults to $MAX_CONCURRENT_TESTS, else 3.
 #
-# Cross-repo reviews never block each other (different lock file).
-# Same-repo reviews serialize at this point — by design — and the
-# outer per-worker timeout still bounds the queue, so a wedged review
-# can't starve the queue indefinitely.
+# This is a MEMORY bound, not a correctness lock. Each `just test` brings
+# up a docker compose stack; the unit's MemoryHigh caps the whole cgroup,
+# so we ration how many stacks run at once rather than let every in-flight
+# review fire one. Slots are GLOBAL — one pool across all repos — because
+# memory is a host-wide budget; a per-repo cap would let N repos each run
+# MAX_SLOTS stacks and overrun it. Wave A/B and the aggregator run
+# slot-free so cross-PR review parallelism stays intact.
+#
+# Why this replaced the old per-repo exclusive mutex: that mutex existed
+# only because cncorp/plow's chat stack used a hardcoded, non-namespaced
+# `chat-postgres-1` container that collided across concurrent same-repo
+# worktrees. plow removed the chat stage from `just test` (2026-05-15;
+# #638 deletes it outright), and the surviving test-scenarios stack
+# namespaces its compose project name + host ports per checkout dir — so
+# concurrent runs (same-repo and cross-repo) no longer race shared host
+# state. Correctness is handled at the source; here we only ration memory.
 acquire_just_test_lock() {
-    local state_dir="$1" repo_slug="$2"
+    local state_dir="$1" max_slots="${2:-${MAX_CONCURRENT_TESTS:-3}}"
     JUST_TEST_LOCK_DIR="$state_dir/locks"
     mkdir -p "$JUST_TEST_LOCK_DIR"
-    JUST_TEST_LOCK_FILE="$JUST_TEST_LOCK_DIR/just-test__$repo_slug"
-    exec {JUST_TEST_LOCK_FD}> "$JUST_TEST_LOCK_FILE"
-    flock "$JUST_TEST_LOCK_FD"
+    local slot
+    while :; do
+        for (( slot = 1; slot <= max_slots; slot++ )); do
+            JUST_TEST_LOCK_FILE="$JUST_TEST_LOCK_DIR/just-test-slot__$slot"
+            exec {JUST_TEST_LOCK_FD}> "$JUST_TEST_LOCK_FILE"
+            flock -n "$JUST_TEST_LOCK_FD" && return 0
+            exec {JUST_TEST_LOCK_FD}>&-
+        done
+        sleep 0.5
+    done
 }
 
 release_just_test_lock() {

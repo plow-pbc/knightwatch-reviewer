@@ -1,18 +1,22 @@
 #!/usr/bin/env bash
 # Smoke test for acquire_just_test_lock / release_just_test_lock
-# (lib/locking.sh). Asserts the per-repo serialization contract used
-# in lib/review-one-pr.sh's `just test` block:
+# (lib/locking.sh). Asserts the global-semaphore contract used in
+# lib/review-one-pr.sh's `just test` block:
 #
-#   1. Same-repo concurrent calls serialize (second blocks until first
-#      releases) — the load-bearing property.
-#   2. Different-repo calls run in parallel (different lock file).
-#   3. release_just_test_lock() actually releases (subsequent acquire
-#      from another process succeeds without waiting).
+#   1. Callers below the cap run in parallel (slot count > 1 → the
+#      second acquire does NOT wait).
+#   2. The cap is enforced (slots exhausted → the next acquire blocks
+#      until a slot frees) — the load-bearing memory bound.
+#   3. release_just_test_lock() actually frees a slot (a subsequent
+#      acquire from another process succeeds without waiting).
 #
-# Regression target: the cncorp/plow chat-postgres-1 cascade where
-# concurrent PR worktrees of the same repo deadlocked pytest on a
-# single shared docker container, hanging `just test` for the full
-# 30-min timeout and cascading into 22G memory peaks.
+# Regression target both ways: (a) the cncorp/plow chat-postgres-1
+# cascade — concurrent runs colliding on shared host state — must stay
+# bounded, now handled at the source by plow's per-checkout compose
+# namespacing rather than by serializing here; and (b) over-serializing
+# `just test` to one-at-a-time, which queued reviews 16–27 min behind
+# the test lock. The cap rations memory (each run spins a docker stack)
+# without forcing single-file execution.
 
 set -euo pipefail
 
@@ -53,26 +57,25 @@ wait_for_file() {
     done
 }
 
-# ---- scenario 1: same-repo serializes ----
-# Worker A holds the lock for 1.5s; once the parent observes A's
-# acquired-marker it launches worker B, which must observe ~1.5s of
-# wait before its own acquire returns.
-echo "  scenario 1: same-repo concurrent acquire serializes..."
+# ---- scenario 1: below the cap → parallel ----
+# With 2 slots, worker A holds slot 1 for 1.5s; once the parent observes
+# A's marker it launches worker B (also max_slots=2), which must take the
+# free slot 2 immediately rather than wait for A.
+echo "  scenario 1: acquire below the cap runs in parallel..."
 
 worker_a_script=$(cat <<EOF
 . "$SCRIPT_DIR/locking.sh"
-acquire_just_test_lock "$STATE_DIR" "owner_repo"
+acquire_just_test_lock "$STATE_DIR" 2
 echo "a-acquired \$(date +%s%N)" > "$TMPDIR/a.log"
 sleep 1.5
 release_just_test_lock
-echo "a-released \$(date +%s%N)" >> "$TMPDIR/a.log"
 EOF
 )
 
 worker_b_script=$(cat <<EOF
 . "$SCRIPT_DIR/locking.sh"
 START=\$(date +%s%N)
-acquire_just_test_lock "$STATE_DIR" "owner_repo"
+acquire_just_test_lock "$STATE_DIR" 2
 END=\$(date +%s%N)
 echo "b-wait-ns \$((END - START))" > "$TMPDIR/b.log"
 release_just_test_lock
@@ -87,24 +90,25 @@ B_PID=$!
 wait "$A_PID" "$B_PID"
 
 B_WAIT_NS=$(awk '/b-wait-ns/{print $2}' "$TMPDIR/b.log")
-# A holds for 1.5s after the marker; B starts immediately after the
-# marker. Assert >= 1.0s to confirm serialization without flaking on
-# slow CI.
-if [ "$B_WAIT_NS" -lt 1000000000 ]; then
-    fail "scenario 1: worker B's wait was ${B_WAIT_NS}ns (<1s) — same-repo lock did not serialize"
+# A still holds slot 1 (1.5s); B should take slot 2 without waiting.
+# Assert <500ms to confirm a second run isn't serialized below the cap.
+if [ "$B_WAIT_NS" -gt 500000000 ]; then
+    fail "scenario 1: worker B waited ${B_WAIT_NS}ns with a free slot — cap is over-serializing below MAX_SLOTS"
 fi
-pass "scenario 1: B waited $(( B_WAIT_NS / 1000000 ))ms for A"
+pass "scenario 1: B took the 2nd slot in $(( B_WAIT_NS / 1000000 ))ms while A held the 1st"
 
-# ---- scenario 2: different repos don't block each other ----
-echo "  scenario 2: different-repo concurrent acquire is parallel..."
+# ---- scenario 2: at the cap → blocks until a slot frees ----
+# With 1 slot, worker A holds it for 1.5s; worker B (max_slots=1) must
+# wait for A's release before its own acquire returns.
+echo "  scenario 2: acquire at the cap blocks until a slot frees..."
 
 rm -f "$TMPDIR/a2.log" "$TMPDIR/b2.log"
 
 worker_a2_script=$(cat <<EOF
 . "$SCRIPT_DIR/locking.sh"
-acquire_just_test_lock "$STATE_DIR" "owner_repoA"
+acquire_just_test_lock "$STATE_DIR" 1
 echo "a2-acquired \$(date +%s%N)" > "$TMPDIR/a2.log"
-sleep 1.0
+sleep 1.5
 release_just_test_lock
 EOF
 )
@@ -112,7 +116,7 @@ EOF
 worker_b2_script=$(cat <<EOF
 . "$SCRIPT_DIR/locking.sh"
 START=\$(date +%s%N)
-acquire_just_test_lock "$STATE_DIR" "owner_repoB"
+acquire_just_test_lock "$STATE_DIR" 1
 END=\$(date +%s%N)
 echo "b2-wait-ns \$((END - START))" > "$TMPDIR/b2.log"
 release_just_test_lock
@@ -127,27 +131,27 @@ B2_PID=$!
 wait "$A2_PID" "$B2_PID"
 
 B2_WAIT_NS=$(awk '/b2-wait-ns/{print $2}' "$TMPDIR/b2.log")
-# Different repos = different lock file → B2 should NOT wait for A2.
-# Assert <500ms wall clock for the flock acquire.
-if [ "$B2_WAIT_NS" -gt 500000000 ]; then
-    fail "scenario 2: worker B2 waited ${B2_WAIT_NS}ns for a different repo's lock — locks are not repo-scoped"
+# Single slot held by A2 → B2 must wait for the release. Assert >=1.0s
+# to confirm the cap blocks without flaking on slow CI.
+if [ "$B2_WAIT_NS" -lt 1000000000 ]; then
+    fail "scenario 2: worker B2's wait was ${B2_WAIT_NS}ns (<1s) — the cap did not block a 2nd run on a single slot"
 fi
-pass "scenario 2: B2 acquired its own repo's lock in $(( B2_WAIT_NS / 1000000 ))ms"
+pass "scenario 2: B2 waited $(( B2_WAIT_NS / 1000000 ))ms for the only slot"
 
-# ---- scenario 3: release_just_test_lock actually releases ----
-echo "  scenario 3: release_just_test_lock releases the FD..."
+# ---- scenario 3: release_just_test_lock frees the slot ----
+echo "  scenario 3: release_just_test_lock frees its slot..."
 
-acquire_just_test_lock "$STATE_DIR" "release_test_repo"
+acquire_just_test_lock "$STATE_DIR" 1
 [ -n "${JUST_TEST_LOCK_FD:-}" ] || fail "scenario 3: JUST_TEST_LOCK_FD not exported after acquire"
 release_just_test_lock
 [ -z "${JUST_TEST_LOCK_FD:-}" ] || fail "scenario 3: JUST_TEST_LOCK_FD still set after release"
 
-# Now a separate process should be able to acquire the same lock
-# without waiting — proves the FD was actually closed in our shell.
+# With only 1 slot, a separate process can acquire only if release
+# actually freed it — proves the FD was closed in our shell.
 RELEASE_WAIT_SCRIPT=$(cat <<EOF
 . "$SCRIPT_DIR/locking.sh"
 START=\$(date +%s%N)
-acquire_just_test_lock "$STATE_DIR" "release_test_repo"
+acquire_just_test_lock "$STATE_DIR" 1
 END=\$(date +%s%N)
 echo "release-wait-ns \$((END - START))" > "$TMPDIR/release.log"
 release_just_test_lock
@@ -156,7 +160,7 @@ EOF
 bash -c "$RELEASE_WAIT_SCRIPT"
 RELEASE_WAIT_NS=$(awk '/release-wait-ns/{print $2}' "$TMPDIR/release.log")
 if [ "$RELEASE_WAIT_NS" -gt 500000000 ]; then
-    fail "scenario 3: re-acquire waited ${RELEASE_WAIT_NS}ns — release_just_test_lock didn't close the FD"
+    fail "scenario 3: re-acquire waited ${RELEASE_WAIT_NS}ns — release_just_test_lock didn't free the slot"
 fi
 pass "scenario 3: re-acquire took $(( RELEASE_WAIT_NS / 1000000 ))ms"
 
@@ -204,4 +208,4 @@ IFS=$'\t' read -r S4_RAN S4_SUMMARY < <(classify_just_test_outcome "$S4_EXIT" "$
     || fail "scenario 4: exit $S4_EXIT classified ($S4_RAN, $S4_SUMMARY), expected (true, TIMED OUT ...)"
 pass "scenario 4: wedged just reaped (exit $S4_EXIT) and classified TIMED OUT"
 
-echo "  PASS (4 scenarios: same-repo serializes, cross-repo parallel, release frees the lock, timeout -k reaps + classifies a wedged just)"
+echo "  PASS (4 scenarios: parallel below the cap, blocks at the cap, release frees a slot, timeout -k reaps + classifies a wedged just)"
