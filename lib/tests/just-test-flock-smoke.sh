@@ -170,10 +170,16 @@ echo "  scenario 4: timeout -k reaps a TERM-ignoring \`just test\` and classifie
 # shellcheck source=lib/run-dir.sh
 . "$SCRIPT_DIR/run-dir.sh"
 JUST_PID_FILE="$TMPDIR/just.pid"
+JUST_CHILD_PID_FILE="$TMPDIR/just-child.pid"
 mkdir -p "$TMPDIR/repo"; : > "$TMPDIR/repo/justfile"
 cat > "$TMPDIR/bin/just" <<EOF
 #!/bin/bash
 trap '' TERM   # wedged test: ignores SIGTERM, only SIGKILL stops it
+# A same-process-group child that also ignores TERM (the pytest-subtree shape).
+# Proves the wrapper reaps the whole GROUP, not just the direct PID — without
+# group-kill this survives and the child assertion below fails.
+( trap '' TERM; while :; do sleep 1; done ) &
+echo \$! > "$JUST_CHILD_PID_FILE"
 echo \$\$ > "$JUST_PID_FILE"
 while :; do sleep 1; done
 EOF
@@ -186,6 +192,12 @@ S4_JUST_PID=$(cat "$JUST_PID_FILE" 2>/dev/null || echo "")
 if kill -0 "$S4_JUST_PID" 2>/dev/null; then
     kill -KILL "$S4_JUST_PID" 2>/dev/null || true
     fail "scenario 4: TERM-ignoring just (PID $S4_JUST_PID) still alive after timeout -k — kill-after didn't escalate to SIGKILL"
+fi
+S4_CHILD_PID=$(cat "$JUST_CHILD_PID_FILE" 2>/dev/null || echo "")
+[ -n "$S4_CHILD_PID" ] || fail "scenario 4: fake just never recorded its child PID"
+if kill -0 "$S4_CHILD_PID" 2>/dev/null; then
+    kill -KILL "$S4_CHILD_PID" 2>/dev/null || true
+    fail "scenario 4: same-group child (PID $S4_CHILD_PID) survived timeout -k — wrapper signalled only the direct PID, not the process group"
 fi
 IFS=$'\t' read -r S4_RAN S4_SUMMARY < <(classify_just_test_outcome "$S4_EXIT" "$TMPDIR/test-output.log" "1s")
 { [ "$S4_RAN" = "true" ] && [[ "$S4_SUMMARY" == "TIMED OUT"* ]]; } \

@@ -157,41 +157,16 @@ fi
 STUB
 chmod +x "$HOME/.local/bin/gh"
 
-# Stub `flock` and `timeout` ONLY when missing — review.sh's fan-out
-# (`timeout "$WORKER_TIMEOUT" worker.sh ... &`) and lib/locking.sh's
-# `flock -n FD` are real production deps on Linux.
-# Same `command -v` gate pattern lib/review-one-pr.sh:624 uses for
-# `just`. On Linux production: real /usr/bin/timeout + /usr/bin/flock
-# are used and `just test` keeps proving the production wiring works.
-# On macOS dev: stubs fill the gap (no `timeout(1)`; util-linux's
-# brew formula explicitly excludes `flock(1)`). The stubs match real
-# semantics — flock via python3 fcntl.flock(2) for OFD-tied locks
-# (lib/locking.sh:29-30 still survives parent-shell exit), timeout via
-# bash for real kill-on-timeout (scenario 12: WORKER_TIMEOUT=2s).
-if ! command -v flock >/dev/null 2>&1; then
-    cat > "$HOME/.local/bin/flock" <<'STUB'
-#!/usr/bin/env bash
-case "$1" in
-    -n) shift; fd="$1" ;;
-    *) echo "flock-stub: only -n FD is supported (got: $*)" >&2; exit 2 ;;
-esac
-exec python3 - "$fd" <<'PY'
-import fcntl, sys
-fd = int(sys.argv[1])
-try:
-    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-except BlockingIOError:
-    sys.exit(1)
-PY
-STUB
-    chmod +x "$HOME/.local/bin/flock"
-fi
-
-# timeout(1) stub for macOS dev hosts — shared with just-test-flock-smoke via
-# worker-smoke-helpers so both reap wedged processes identically (the stub
-# honours `-k`). Linux finds real GNU timeout first and skips it.
+# Stub `flock` and `timeout` ONLY when missing — review.sh's fan-out uses
+# `timeout -k ...` and lib/locking.sh uses `flock -n FD`, both real production
+# deps. On Linux the `command -v` gates inside the helpers find /usr/bin/* and
+# skip the stubs, so `just test` keeps proving the real wiring. On macOS dev the
+# shared worker-smoke-helpers stubs fill the gap with matching semantics: flock
+# via python3 fcntl.flock(2), timeout via bash with `-k` group-kill. Shared so
+# the shim contract can't drift between this smoke and just-test-flock-smoke.
 # shellcheck source=lib/tests/worker-smoke-helpers.sh
 . "$SCRIPT_DIR/tests/worker-smoke-helpers.sh"
+write_worker_flock_stub_if_missing "$HOME/.local/bin"
 write_worker_timeout_stub_if_missing "$HOME/.local/bin"
 
 # Sandbox lib dir: real state-io.sh + auth.sh, stub worker that logs the
@@ -654,56 +629,15 @@ fi
 grep -q "FATAL: $REVIEWER_LIB_DIR/review-one-pr.sh missing or not executable" "$LOG_FILE" || { chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"; echo "FAIL scenario 11: expected FATAL log line about missing worker"; cat "$LOG_FILE"; exit 1; }
 chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"   # restore for any later scenario
 
-# Scenario 12: per-worker WORKER_TIMEOUT bounds wedged-codex risk.
-# With detached workers, the service-level TimeoutStartSec=90min no
-# longer caps worker runtime — a hung Codex phase could hold the per-PR
-# flock indefinitely. WORKER_TIMEOUT (default 90m) wraps each worker
-# spawn with `timeout` so the ceiling is preserved at the worker level.
-# Smoke uses WORKER_TIMEOUT=2s + a worker that sleeps 10s, asserts the
-# orchestrator killed it (worker PID dead within ~3s of dispatch).
-echo "  scenario 12: WORKER_TIMEOUT — wedged worker is killed at the per-worker ceiling..."
-WORKER_TIMEOUT_PID_FILE="$TMPDIR/timeout-worker.pid"
-cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<TWORKER
-#!/bin/bash
-echo \$\$ > "$WORKER_TIMEOUT_PID_FILE"
-exec sleep 10   # > WORKER_TIMEOUT=2s; the orchestrator's timeout(1) wrapper must SIGTERM us before this completes
-TWORKER
-chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
-
-printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
-: > "$LOG_FILE"
-WORKER_TIMEOUT=2s bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 &
-ORCH12_PID=$!
-wait "$ORCH12_PID" 2>/dev/null || true   # orchestrator returns fast; the timeout(1) child is what we care about
-
-# Wait up to 5s for the worker to die under timeout(1).
-for _ in $(seq 1 50); do
-    [ -f "$WORKER_TIMEOUT_PID_FILE" ] || { sleep 0.1; continue; }
-    WORKER_TPID=$(cat "$WORKER_TIMEOUT_PID_FILE")
-    kill -0 "$WORKER_TPID" 2>/dev/null || break   # dead = timeout fired
-    sleep 0.1
-done
-WORKER_TPID=$(cat "$WORKER_TIMEOUT_PID_FILE" 2>/dev/null || echo "")
-if [ -n "$WORKER_TPID" ] && kill -0 "$WORKER_TPID" 2>/dev/null; then
-    kill "$WORKER_TPID" 2>/dev/null || true
-    echo "FAIL scenario 12 (no-worker-timeout regression): worker PID $WORKER_TPID still alive ~5s after WORKER_TIMEOUT=2s should have killed it"
-    exit 1
-fi
-
-# Confirm the orchestrator's "Fan-out:" line includes the timeout
-# value, so an operator tail-ing the journal can see what cap is in
-# force this tick.
-grep -q "per-worker timeout 2s" "$LOG_FILE" || { echo "FAIL scenario 12: expected 'per-worker timeout 2s' in fan-out log line"; cat "$LOG_FILE"; exit 1; }
-
-# Scenario 12b: a SIGTERM-ignoring worker is force-killed via timeout's
-# --kill-after escalation. Scenario 12 proves the SIGTERM at the ceiling,
-# but a worker (or a child of it) that traps/ignores SIGTERM — the real
-# codex/pytest wedge — survives a bare SIGTERM and accumulates in the unit
-# cgroup. review.sh wraps each worker with `timeout -k "$WORKER_KILL_AFTER"`
-# so the ceiling escalates to SIGKILL after the grace window. Without -k
-# this worker outlives its timeout (the cascade the deleted /unstick recipe
-# used to clean up by hand).
-echo "  scenario 12b: WORKER_TIMEOUT — SIGTERM-ignoring worker is SIGKILLed via --kill-after..."
+# Scenario 12: per-worker WORKER_TIMEOUT bounds wedged-worker risk. With
+# detached workers, the service-level TimeoutStartSec=90min no longer caps
+# worker runtime — a hung Codex/test phase could hold the per-PR flock
+# indefinitely. review.sh wraps each worker with `timeout -k "$WORKER_KILL_AFTER"`,
+# so the ceiling escalates SIGTERM → SIGKILL. This drives a worker that IGNORES
+# SIGTERM (the real wedge — a bare SIGTERM leaves it running, the cascade the
+# deleted /unstick recipe used to clear by hand) and asserts the kill-after
+# SIGKILL reaps it. Also fences the operator-facing "per-worker timeout" log.
+echo "  scenario 12: WORKER_TIMEOUT — SIGTERM-ignoring worker is SIGKILLed via --kill-after..."
 WEDGED_PID_FILE="$TMPDIR/wedged-worker.pid"
 cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<TWORKER
 #!/bin/bash
@@ -716,8 +650,8 @@ chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
 printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 : > "$LOG_FILE"
 WORKER_TIMEOUT=1s WORKER_KILL_AFTER=1s bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 &
-ORCH12B_PID=$!
-wait "$ORCH12B_PID" 2>/dev/null || true
+ORCH12_PID=$!
+wait "$ORCH12_PID" 2>/dev/null || true
 
 # Wait up to 6s for the SIGKILL escalation (1s timeout + 1s kill-after + slack).
 for _ in $(seq 1 60); do
@@ -729,9 +663,12 @@ done
 WEDGED_PID=$(cat "$WEDGED_PID_FILE" 2>/dev/null || echo "")
 if [ -n "$WEDGED_PID" ] && kill -0 "$WEDGED_PID" 2>/dev/null; then
     kill -KILL "$WEDGED_PID" 2>/dev/null || true
-    echo "FAIL scenario 12b (no --kill-after regression): SIGTERM-ignoring worker PID $WEDGED_PID still alive ~6s after WORKER_TIMEOUT=1s + kill-after should have SIGKILLed it"
+    echo "FAIL scenario 12 (no --kill-after regression): SIGTERM-ignoring worker PID $WEDGED_PID still alive ~6s after WORKER_TIMEOUT=1s + kill-after should have SIGKILLed it"
     exit 1
 fi
+
+# Operator-facing: the fan-out log line must surface the cap in force this tick.
+grep -q "per-worker timeout 1s" "$LOG_FILE" || { echo "FAIL scenario 12: expected 'per-worker timeout 1s' in fan-out log line"; cat "$LOG_FILE"; exit 1; }
 
 # Scenario 13: page-2 trigger fence. The original bug this PR exists to
 # fix: review.sh's pre-DRY fetch was a single-page `gh api`, so any

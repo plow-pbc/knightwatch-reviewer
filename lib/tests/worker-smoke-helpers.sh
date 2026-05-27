@@ -79,11 +79,16 @@ parse_dur() { case "$1" in *s) echo "${1%s}";; *m) echo $(( ${1%m} * 60 ));; *) 
 kill_after=""
 [ "$1" = "-k" ] && { kill_after="$(parse_dur "$2")"; shift 2; }
 dur="$(parse_dur "$1")"; shift
+# Job control (set -m) puts the command in its own process group (pgid=pid);
+# signal the GROUP (negative pid) so same-group children are reaped too —
+# matching GNU timeout's contract, not just the direct child PID.
+set -m
 "$@" &
 pid=$!
+set +m
 (
-    sleep "$dur"; kill -TERM "$pid" 2>/dev/null
-    [ -n "$kill_after" ] && { sleep "$kill_after"; kill -KILL "$pid" 2>/dev/null; }
+    sleep "$dur"; kill -TERM "-$pid" 2>/dev/null
+    [ -n "$kill_after" ] && { sleep "$kill_after"; kill -KILL "-$pid" 2>/dev/null; }
 ) &
 sleeper=$!
 wait "$pid" 2>/dev/null
