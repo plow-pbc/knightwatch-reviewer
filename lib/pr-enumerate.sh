@@ -36,13 +36,6 @@
 # srosro repos into 1 call per owner (~3 pts each), keeping cncorp/* on
 # per-repo because those orgs are only partially tracked.
 
-# gh_api_retry — discovery (repos_with_bot_activity_since) runs first on the
-# bakeoff path and fail-loud-exits the whole run on a transient blip, so it
-# routes its graphql calls through the same retry seam as the per-repo fetches.
-# Sourced relative to this file so the dependency is self-contained regardless
-# of which caller pulls pr-enumerate.sh in (idempotent if also sourced directly).
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-retry.sh"
-
 _enumerate_graphql_query='query($q: String!) {
   search(query: $q, type: ISSUE, first: 100) {
     nodes {
@@ -137,6 +130,9 @@ _bot_activity_graphql_query='query($q: String!, $after: String) {
 # failure policy — specialist-bakeoff.sh fails loud (PARTIAL + exit) rather than
 # re-entering the per-repo fan-out this batched path exists to retire.
 repos_with_bot_activity_since() {
+    # Source gh_api_retry here, not at file scope, so only this discovery path
+    # carries the dependency — enumerate_open_prs callers stay unburdened.
+    . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-retry.sh"
     local since="$1" bot="$2" owner q raw after pieces=()
     declare -A _seen_owners=() _tracked=()
     for owner in "${ORGS[@]}"; do
