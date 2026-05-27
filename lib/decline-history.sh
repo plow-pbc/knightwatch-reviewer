@@ -89,7 +89,7 @@ _decline_history_from_json() {
     echo
     echo "Operator ($operator) replies on prior reviews of this PR. Two channels — read both:"
     echo
-    echo "1. **Decline replies / Counter-proposed**: free-form operator prose, emitted verbatim as **context**. Use your judgement — if the prose suggests a finding's class recurs, cite it in your counter-argument and ask whether this commit changes the calculus. Do NOT mechanically drop based on prose inference."
+    echo "1. **Decline replies / Counter-proposed**: free-form operator prose, emitted verbatim as **context**. If a probe's class matches a prior prose decline, the critic defaults to \`Answer: no\` quoting the prior decline reason; it upgrades to \`Answer: unknown\` ONLY when this PR's diff cites specific new file/line/contract evidence that defeats the prior reasoning. See \`prompts/critic.md\` § Decline-history channel for the full rule."
     echo "2. **Explicit class markers**: counts of \`<!-- decline:class=X -->\` markers the operator deliberately added to a reply. THIS is the only channel that drives mechanical auto-drop (\"declined ≥3 rounds → drop\"). Without an explicit marker, no auto-drop fires — the operator has to opt in by tagging a reply."
     echo
 
