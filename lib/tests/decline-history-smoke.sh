@@ -4,15 +4,16 @@
 # Pure-transform helper _decline_history_from_json drives the test;
 # real gh calls are out of scope (the smoke runs without network).
 #
-# Round-5 reframe contracts (post-classifier-removal):
+# Round-8 reframe contracts (post-classifier-collapse):
 #   1. Empty JSON array → "(no decline history)" sentinel.
-#   2. Operator decline replies are emitted VERBATIM as context — no
-#      class extraction, no class-count buckets.
-#   3. Counter-proposed replies stay in their own H2 (operator applied
-#      LOC-negative version is useful signal).
-#   4. Bot auto-posts (signed as the operator) excluded by HTML marker.
-#   5. Non-operator replies ignored.
-#   6. Explicit `<!-- decline:class=X -->` markers are counted in the
+#   2. All operator-authored, non-bot replies emit VERBATIM under one
+#      neutral `## Operator replies` heading — no decline-vs-counter
+#      regex split, no class extraction, no class-count buckets. The
+#      critic reads them as prose and judges decline / counter / context
+#      per its own rules.
+#   3. Bot auto-posts (signed as the operator) excluded by HTML marker.
+#   4. Non-operator replies ignored.
+#   5. Explicit `<!-- decline:class=X -->` markers are counted in the
 #      "Explicit class markers" section. THIS is what the critic's
 #      ≥3-rounds-auto-drop rule consumes; implicit classes are left to
 #      the critic's prose-judgement.
@@ -133,25 +134,5 @@ echo "$OUT" | grep -qF "dispatch-routing" || { echo "FAIL: BCR body not preserve
 # But NOT counted as a class (no explicit marker)
 echo "$OUT" | grep -qE '\*\*`dispatch-routing`\*\*' && { echo "FAIL: BCR prose was auto-classified despite no explicit marker (round-5 reframe should leave class-counting to explicit markers only)"; exit 1; } || true
 echo "$OUT" | grep -qF "operator has not declared any explicit" || { echo "FAIL: explicit-markers empty sentinel missing"; echo "$OUT"; exit 1; }
-
-# --- fixture 6: idiomatic decline phrasings beyond the babysit-pr template ---
-# Real-world replies (e.g. PR #28 on srosro/claude-config) used phrasings the
-# original `Declined —` / `^Declined ` regex missed entirely, so the critic
-# saw "(no decline history)" and re-raised the same architectural Q for 5
-# rounds. The broadened regex catches `declining`, lowercase forms, and the
-# Probe-N-prefix shape used by babysit-pr's evolved reply style.
-echo "  fixture 6: idiomatic decline phrasings beyond Declined-em-dash..."
-IDIOMATIC=$(cat <<'JSON'
-[
-  {"user":{"login":"srosro"},"created_at":"2026-05-10T08:00:00Z","body":"Probe 3 — declining for the 3rd time. Same answer as last round."},
-  {"user":{"login":"srosro"},"created_at":"2026-05-10T09:00:00Z","body":"Going to decline this one — schema-drift goes-dark risk is bounded."},
-  {"user":{"login":"srosro"},"created_at":"2026-05-10T10:00:00Z","body":"Probe 2 declines — same rationale."}
-]
-JSON
-)
-OUT=$(_decline_history_from_json "$IDIOMATIC")
-echo "$OUT" | grep -qF "declining for the 3rd time" || { echo "FAIL: 'declining for the Nth time' phrasing missed by broadened regex"; echo "$OUT"; exit 1; }
-echo "$OUT" | grep -qF "Going to decline this one" || { echo "FAIL: lowercase 'decline' verb phrasing missed by broadened regex"; echo "$OUT"; exit 1; }
-echo "$OUT" | grep -qF "Probe 2 declines" || { echo "FAIL: 'declines' plural form missed by broadened regex"; echo "$OUT"; exit 1; }
 
 echo "  PASS"
