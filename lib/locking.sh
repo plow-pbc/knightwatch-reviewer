@@ -30,11 +30,11 @@ acquire_pr_lock() {
     flock -n "$PR_LOCK_FD"
 }
 
-# acquire_just_test_lock STATE_DIR [MAX_SLOTS] — blocks until the caller
-# holds one of MAX_SLOTS global `just test` concurrency slots, then
-# returns with that slot's flock held (FD in JUST_TEST_LOCK_FD, which
+# acquire_just_test_lock STATE_DIR — blocks until the caller holds one of
+# $MAX_CONCURRENT_TESTS (default 3) global `just test` concurrency slots,
+# then returns with that slot's flock held (FD in JUST_TEST_LOCK_FD, which
 # survives the function return and is released by release_just_test_lock
-# or process exit). MAX_SLOTS defaults to $MAX_CONCURRENT_TESTS, else 3.
+# or process exit).
 #
 # This is a MEMORY bound, not a correctness lock. Each `just test` brings
 # up a docker compose stack; the unit's MemoryHigh caps the whole cgroup,
@@ -53,7 +53,7 @@ acquire_pr_lock() {
 # concurrent runs (same-repo and cross-repo) no longer race shared host
 # state. Correctness is handled at the source; here we only ration memory.
 acquire_just_test_lock() {
-    local state_dir="$1" max_slots="${2:-${MAX_CONCURRENT_TESTS:-3}}"
+    local state_dir="$1" max_slots="${MAX_CONCURRENT_TESTS:-3}"
     JUST_TEST_LOCK_DIR="$state_dir/locks"
     mkdir -p "$JUST_TEST_LOCK_DIR"
     local slot

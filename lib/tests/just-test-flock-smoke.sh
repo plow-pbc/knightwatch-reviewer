@@ -59,13 +59,16 @@ wait_for_file() {
 
 # ---- scenario 1: below the cap → parallel ----
 # With 2 slots, worker A holds slot 1 for 1.5s; once the parent observes
-# A's marker it launches worker B (also max_slots=2), which must take the
-# free slot 2 immediately rather than wait for A.
+# A's marker it launches worker B, which must take the free slot 2
+# immediately rather than wait for A. MAX_CONCURRENT_TESTS is exported so
+# both workers exercise the exact production config path (no positional
+# slot arg — review.sh calls acquire_just_test_lock with $STATE_DIR only).
 echo "  scenario 1: acquire below the cap runs in parallel..."
+export MAX_CONCURRENT_TESTS=2
 
 worker_a_script=$(cat <<EOF
 . "$SCRIPT_DIR/locking.sh"
-acquire_just_test_lock "$STATE_DIR" 2
+acquire_just_test_lock "$STATE_DIR"
 echo "a-acquired \$(date +%s%N)" > "$TMPDIR/a.log"
 sleep 1.5
 release_just_test_lock
@@ -75,7 +78,7 @@ EOF
 worker_b_script=$(cat <<EOF
 . "$SCRIPT_DIR/locking.sh"
 START=\$(date +%s%N)
-acquire_just_test_lock "$STATE_DIR" 2
+acquire_just_test_lock "$STATE_DIR"
 END=\$(date +%s%N)
 echo "b-wait-ns \$((END - START))" > "$TMPDIR/b.log"
 release_just_test_lock
@@ -98,15 +101,16 @@ fi
 pass "scenario 1: B took the 2nd slot in $(( B_WAIT_NS / 1000000 ))ms while A held the 1st"
 
 # ---- scenario 2: at the cap → blocks until a slot frees ----
-# With 1 slot, worker A holds it for 1.5s; worker B (max_slots=1) must
-# wait for A's release before its own acquire returns.
+# With 1 slot, worker A holds it for 1.5s; worker B must wait for A's
+# release before its own acquire returns.
 echo "  scenario 2: acquire at the cap blocks until a slot frees..."
+export MAX_CONCURRENT_TESTS=1
 
 rm -f "$TMPDIR/a2.log" "$TMPDIR/b2.log"
 
 worker_a2_script=$(cat <<EOF
 . "$SCRIPT_DIR/locking.sh"
-acquire_just_test_lock "$STATE_DIR" 1
+acquire_just_test_lock "$STATE_DIR"
 echo "a2-acquired \$(date +%s%N)" > "$TMPDIR/a2.log"
 sleep 1.5
 release_just_test_lock
@@ -116,7 +120,7 @@ EOF
 worker_b2_script=$(cat <<EOF
 . "$SCRIPT_DIR/locking.sh"
 START=\$(date +%s%N)
-acquire_just_test_lock "$STATE_DIR" 1
+acquire_just_test_lock "$STATE_DIR"
 END=\$(date +%s%N)
 echo "b2-wait-ns \$((END - START))" > "$TMPDIR/b2.log"
 release_just_test_lock
@@ -139,9 +143,12 @@ fi
 pass "scenario 2: B2 waited $(( B2_WAIT_NS / 1000000 ))ms for the only slot"
 
 # ---- scenario 3: release_just_test_lock frees the slot ----
+# 1 slot (carried from scenario 2, set explicitly for clarity): a separate
+# process can re-acquire only if release actually freed the single slot.
 echo "  scenario 3: release_just_test_lock frees its slot..."
+export MAX_CONCURRENT_TESTS=1
 
-acquire_just_test_lock "$STATE_DIR" 1
+acquire_just_test_lock "$STATE_DIR"
 [ -n "${JUST_TEST_LOCK_FD:-}" ] || fail "scenario 3: JUST_TEST_LOCK_FD not exported after acquire"
 release_just_test_lock
 [ -z "${JUST_TEST_LOCK_FD:-}" ] || fail "scenario 3: JUST_TEST_LOCK_FD still set after release"
@@ -151,7 +158,7 @@ release_just_test_lock
 RELEASE_WAIT_SCRIPT=$(cat <<EOF
 . "$SCRIPT_DIR/locking.sh"
 START=\$(date +%s%N)
-acquire_just_test_lock "$STATE_DIR" 1
+acquire_just_test_lock "$STATE_DIR"
 END=\$(date +%s%N)
 echo "release-wait-ns \$((END - START))" > "$TMPDIR/release.log"
 release_just_test_lock
