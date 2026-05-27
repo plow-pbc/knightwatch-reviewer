@@ -49,19 +49,18 @@ _decline_history_from_json() {
     # operator's account). The HTML marker distinguishes bot output from
     # operator-authored replies.
     local marker="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
-    local declines counters explicit_classes
-    declines=$(printf '%s' "$raw" | jq --arg op "$operator" --arg marker "$marker" -r '
+    # Round-8 architectural simplification: drop the decline-vs-counter
+    # regex split. The round-5 reframe already moved to "structured/raw
+    # event contract; critic owns prose judgement" — the residual regex
+    # classifier was leaking churn (PR #97/#98: kept needing pattern
+    # additions to catch new decline phrasings). Emit ALL operator-
+    # authored, non-bot replies under a neutral `## Operator replies`
+    # heading; the critic reads them as prose and judges decline /
+    # counter / context per its own rules.
+    local replies explicit_classes
+    replies=$(printf '%s' "$raw" | jq --arg op "$operator" --arg marker "$marker" -r '
         map(select(.user.login == $op))
         | map(select(.body | contains($marker) | not))
-        | map(select(.body | test("Declined —|Declined -|^Declined |\\[Bug-Class-Recurrence\\]")))
-        | sort_by(.created_at)
-        | .[]
-        | "\(.created_at)\t\(.body | gsub("\n"; " ") | .[:600])"
-    ' 2>/dev/null)
-    counters=$(printf '%s' "$raw" | jq --arg op "$operator" --arg marker "$marker" -r '
-        map(select(.user.login == $op))
-        | map(select(.body | contains($marker) | not))
-        | map(select(.body | test("Counter-proposed")))
         | sort_by(.created_at)
         | .[]
         | "\(.created_at)\t\(.body | gsub("\n"; " ") | .[:600])"
@@ -80,7 +79,7 @@ _decline_history_from_json() {
         | .[0]
     ' 2>/dev/null)
 
-    if [ -z "$declines" ] && [ -z "$counters" ] && [ -z "$explicit_classes" ]; then
+    if [ -z "$replies" ] && [ -z "$explicit_classes" ]; then
         echo "(no decline history)"
         return 0
     fi
@@ -89,12 +88,12 @@ _decline_history_from_json() {
     echo
     echo "Operator ($operator) replies on prior reviews of this PR. Two channels — read both:"
     echo
-    echo "1. **Decline replies / Counter-proposed**: free-form operator prose, emitted verbatim as **context**. Use your judgement — if the prose suggests a finding's class recurs, cite it in your counter-argument and ask whether this commit changes the calculus. Do NOT mechanically drop based on prose inference."
+    echo "1. **Operator replies**: free-form prose emitted verbatim as **context**. The critic judges each reply: if a probe's *specific finding* (same cited path/contract/rationale, not just the coarse \`Class\`) matches a prior decline reply, default to \`Answer: no\` quoting the prior decline reason; upgrade to \`Answer: unknown\` ONLY when this PR's diff cites specific new file/line/contract evidence that defeats the prior reasoning. See \`prompts/critic.md\` § Decline-history channel for the full rule."
     echo "2. **Explicit class markers**: counts of \`<!-- decline:class=X -->\` markers the operator deliberately added to a reply. THIS is the only channel that drives mechanical auto-drop (\"declined ≥3 rounds → drop\"). Without an explicit marker, no auto-drop fires — the operator has to opt in by tagging a reply."
     echo
 
-    if [ -n "$declines" ]; then
-        echo "## Decline replies"
+    if [ -n "$replies" ]; then
+        echo "## Operator replies"
         echo
         local i=0
         while IFS=$'\t' read -r ts body; do
@@ -104,17 +103,7 @@ _decline_history_from_json() {
             echo
             echo "$body"
             echo
-        done <<< "$declines"
-    fi
-
-    if [ -n "$counters" ]; then
-        echo "## Counter-proposed (operator applied LOC-negative version)"
-        echo
-        while IFS=$'\t' read -r ts body; do
-            [ -z "$body" ] && continue
-            echo "- **$ts:** $body"
-        done <<< "$counters"
-        echo
+        done <<< "$replies"
     fi
 
     echo "## Explicit class markers"
