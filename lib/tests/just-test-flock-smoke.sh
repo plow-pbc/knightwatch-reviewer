@@ -32,6 +32,8 @@ mkdir -p "$STATE_DIR" "$TMPDIR/bin"
 . "$SCRIPT_DIR/tests/worker-smoke-helpers.sh"
 export PATH="$TMPDIR/bin:$PATH"
 write_worker_flock_stub_if_missing "$TMPDIR/bin"
+# scenario 4 runs run_just_test, which needs timeout(1); stub it on macOS.
+write_worker_timeout_stub_if_missing "$TMPDIR/bin"
 
 # shellcheck source=lib/locking.sh
 . "$SCRIPT_DIR/locking.sh"

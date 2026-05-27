@@ -675,14 +675,7 @@ fi
 # truncate/redirect writes below would follow it — a write-through out of the
 # sandbox. $RUN_DIR is allocated by the reviewer (line ~160), not the PR.
 TEST_LOG="$RUN_DIR/test-output.log"
-TEST_TIMEOUT="${TEST_TIMEOUT:-30m}"
-# `just test` runs in its OWN process group (the inner `timeout` below
-# creates one), so the dispatcher's outer `timeout -k` can't reach a
-# SIGTERM-ignoring pytest tree here — only this inner -k can. Without it a
-# wedged test (the chat-postgres deadlock that triggered the original
-# cascade) outlives TEST_TIMEOUT. The pytest subtree shares this group, so
-# the -k SIGKILL reaps it wholesale.
-TEST_KILL_AFTER="${TEST_KILL_AFTER:-30s}"
+TEST_TIMEOUT=30m
 
 if ! command -v just >/dev/null 2>&1; then
     log "$PR_ID: \`just\` not on PATH — aborting (host misconfig; check Environment=PATH / rerun install.sh)"
@@ -724,12 +717,21 @@ else
         log "$PR_ID: per-repo just-test lock acquired after ${JUST_TEST_LOCK_WAIT}s queue"
     fi
     log "$PR_ID: running \`just --justfile $JUST_FILE test\` (timeout ${TEST_TIMEOUT})..."
-    run_just_test "$JUST_FILE" "$REPO_DIR" "$TEST_LOG" "$TEST_TIMEOUT" "$TEST_KILL_AFTER"
+    # 30s kill-after: `just test` runs in its own process group (run_just_test's
+    # inner `timeout` creates it), so the dispatcher's outer `timeout -k` can't
+    # reach a SIGTERM-ignoring pytest tree — only this inner -k can. The subtree
+    # shares the inner group, so the SIGKILL reaps it wholesale.
+    run_just_test "$JUST_FILE" "$REPO_DIR" "$TEST_LOG" "$TEST_TIMEOUT" 30s
     TEST_EXIT=$?
     release_just_test_lock
     IFS=$'\t' read -r TESTS_RAN TEST_SUMMARY < <(classify_just_test_outcome "$TEST_EXIT" "$TEST_LOG" "$TEST_TIMEOUT")
 fi
 TEST_LOG_TAIL=$(tail -n 500 "$TEST_LOG")
+# The header only uses the 500-line tail; drop the full log now that it's been
+# read + classified. It lives in reviewer-owned $RUN_DIR (persists after the
+# workdir is wiped), and trusted-author `just test` output can carry creds/PII
+# beyond the tail — don't retain the unbounded artifact.
+rm -f "$TEST_LOG"
 
 # Env files were only needed for `just test`; delete eagerly so secrets
 # don't sit in the workdir during the long specialist phase. REPO_DIR is

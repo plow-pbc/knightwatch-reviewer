@@ -187,30 +187,12 @@ STUB
     chmod +x "$HOME/.local/bin/flock"
 fi
 
-if ! command -v timeout >/dev/null 2>&1; then
-    cat > "$HOME/.local/bin/timeout" <<'STUB'
-#!/usr/bin/env bash
-# Supports the leading `-k <grace>` (kill-after) flag review.sh now passes:
-# SIGTERM at <dur>, then SIGKILL <grace> later. Matches GNU timeout's
-# escalation so the SIGTERM-ignoring-worker scenario reaps on macOS too.
-parse_dur() { case "$1" in *s) echo "${1%s}";; *m) echo $(( ${1%m} * 60 ));; *) echo "$1";; esac; }
-kill_after=""
-[ "$1" = "-k" ] && { kill_after="$(parse_dur "$2")"; shift 2; }
-dur="$(parse_dur "$1")"; shift
-"$@" &
-pid=$!
-(
-    sleep "$dur"; kill -TERM "$pid" 2>/dev/null
-    [ -n "$kill_after" ] && { sleep "$kill_after"; kill -KILL "$pid" 2>/dev/null; }
-) &
-sleeper=$!
-wait "$pid" 2>/dev/null
-rc=$?
-kill "$sleeper" 2>/dev/null
-exit "$rc"
-STUB
-    chmod +x "$HOME/.local/bin/timeout"
-fi
+# timeout(1) stub for macOS dev hosts — shared with just-test-flock-smoke via
+# worker-smoke-helpers so both reap wedged processes identically (the stub
+# honours `-k`). Linux finds real GNU timeout first and skips it.
+# shellcheck source=lib/tests/worker-smoke-helpers.sh
+. "$SCRIPT_DIR/tests/worker-smoke-helpers.sh"
+write_worker_timeout_stub_if_missing "$HOME/.local/bin"
 
 # Sandbox lib dir: real state-io.sh + auth.sh, stub worker that logs the
 # dispatch (including the trigger-comment file path so trust-gate

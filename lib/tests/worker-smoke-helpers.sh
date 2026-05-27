@@ -13,6 +13,11 @@
 #       the same OFD-tied semantics on both platforms (lock survives the
 #       acquiring shell's exit, releases on FD close). Linux production
 #       finds real flock(1) first and skips the stub.
+#   write_worker_timeout_stub_if_missing <bindir>
+#       macOS lacks GNU timeout(1). Stub honours the leading `-k <grace>`
+#       kill-after the reviewer's worker/just-test wraps pass, escalating
+#       SIGTERM → SIGKILL like GNU timeout so the wedged-process scenarios
+#       reap on both platforms. Linux finds real timeout(1) first and skips.
 #
 # Pattern note: the SHA-flow smoke had its own copies of both functions
 # inline (commit predates this helper). Drift between two copies of
@@ -58,4 +63,33 @@ except BlockingIOError:
 PY
 STUB
     chmod +x "$bindir/flock"
+}
+
+write_worker_timeout_stub_if_missing() {
+    local bindir="$1"
+    if command -v timeout >/dev/null 2>&1; then
+        return 0
+    fi
+    cat > "$bindir/timeout" <<'STUB'
+#!/usr/bin/env bash
+# Honours the leading `-k <grace>` (kill-after) the reviewer passes:
+# SIGTERM at <dur>, then SIGKILL <grace> later — matches GNU timeout's
+# escalation so wedged-worker / wedged-just-test scenarios reap on macOS too.
+parse_dur() { case "$1" in *s) echo "${1%s}";; *m) echo $(( ${1%m} * 60 ));; *) echo "$1";; esac; }
+kill_after=""
+[ "$1" = "-k" ] && { kill_after="$(parse_dur "$2")"; shift 2; }
+dur="$(parse_dur "$1")"; shift
+"$@" &
+pid=$!
+(
+    sleep "$dur"; kill -TERM "$pid" 2>/dev/null
+    [ -n "$kill_after" ] && { sleep "$kill_after"; kill -KILL "$pid" 2>/dev/null; }
+) &
+sleeper=$!
+wait "$pid" 2>/dev/null
+rc=$?
+kill "$sleeper" 2>/dev/null
+exit "$rc"
+STUB
+    chmod +x "$bindir/timeout"
 }
