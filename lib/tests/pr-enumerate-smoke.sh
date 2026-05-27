@@ -172,7 +172,8 @@ export "MOCK_GRAPHQL_${s6q//[^A-Za-z0-9]/_}"='{"data":{"search":{"nodes":[
   assert_eq "6b drops untracked" "plow-pbc/seed" "$out"
 )
 
-# 6c: graphql failure → non-zero, no stdout (caller falls back to walking all).
+# 6c: graphql failure → non-zero, no stdout (caller picks its own failure
+#     policy; specialist-bakeoff.sh fails loud rather than walking all).
 : > "$STUB_CALL_LOG"
 export MOCK_GRAPHQL_FAIL=1
 ( REPOS=("plow-pbc/seed"); ORGS=("plow-pbc")

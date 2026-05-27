@@ -61,8 +61,11 @@ fetch_failures=0
 # stale coverage). Manual non-ORG repos (cncorp/*) are always walked. Discovery
 # failure FAILS LOUD — it does not fall back to the budget-draining walk-all
 # this change exists to retire. (sqlite reads don't touch the API.)
-discovery_floor=$(date -u -d "$REWALK_HOURS hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+# Run-wide rewalk floor (REWALK_HOURS ago), computed once — used both as each
+# repo's walk floor below and as the discovery floor's starting point.
+rewalk_floor=$(date -u -d "$REWALK_HOURS hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
               || date -u -v "-${REWALK_HOURS}H" +%Y-%m-%dT%H:%M:%SZ)
+discovery_floor="$rewalk_floor"
 # Reach back to the earliest watermark so a repo whose last_walked predates the
 # rewalk floor (missed crons) isn't wrongly classified inactive.
 min_walked=$(sqlite3 "$DB_FILE" "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', min(last_walked_at)) FROM walks;" 2>/dev/null || true)
@@ -96,8 +99,6 @@ for repo in "${REPOS[@]}"; do
     # window for comments posted during it. Re-stamping at end-of-walk would
     # skip everything created between fetch-start and stamp time, forever.
     walk_started_at=$(date -u +%FT%TZ)
-    rewalk_floor=$(date -u -d "$REWALK_HOURS hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
-                  || date -u -v "-${REWALK_HOURS}H" +%Y-%m-%dT%H:%M:%SZ)
     # strftime normalizes both ISO (the walker's own writes) and
     # SQLite's space-separated datetime('now') format into a single
     # ISO shape. Without normalization, a same-day operator-seeded
