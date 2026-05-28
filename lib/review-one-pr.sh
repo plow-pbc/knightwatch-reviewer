@@ -493,15 +493,6 @@ if [ "$REVIEWED_SHA" != "$PR_SHA" ]; then
     log "$PR_ID: orchestrator enumerated ${PR_SHA:0:7}, worker checked out ${REVIEWED_SHA:0:7} — using checked-out SHA for header + state + meta"
 fi
 
-# Redirect-safe staging — a PR checkout could commit .codex-scratch as a
-# symlink to a writable service path (e.g. ~/.pr-reviewer/runs/...) so that
-# write_scratch + the per-specialist symlinks would redirect critic /
-# momentum / dead-code outputs into our own state dir. Wipe + recreate
-# unconditionally before any write so the worker owns the directory.
-# Mirrors lib/sibling-symlinks.sh's .siblings/ wipe-then-recreate pattern.
-rm -rf "$REPO_DIR/.codex-scratch"
-mkdir -p "$REPO_DIR/.codex-scratch"
-
 # meta.json — minimal post-mortem header. Written here (after checkout)
 # rather than at run-dir allocation so `sha` records what was actually
 # reviewed (REVIEWED_SHA) instead of the orchestrator's enumeration SHA
@@ -1052,6 +1043,15 @@ if ! materialize_sibling_symlinks "$REPO_DIR" SOURCE_PATHS "${INCLUDED_SLUGS[@]}
 fi
 
 # ---- write scratch files ----
+# Redirect-safe staging — wipe + recreate .codex-scratch HERE, immediately before
+# the first write and AFTER all PR-controlled execution (`just test`, canonical
+# fetch). A PR checkout could commit .codex-scratch as a symlink to a writable
+# service path, OR a trusted-author `just test` could replace it with one mid-run;
+# either would make the root-owned write_scratch + per-specialist symlinks below
+# redirect critic/momentum/dead-code outputs (and prompt files) into that target.
+# Wiping after the untrusted code runs closes both. Mirrors lib/sibling-symlinks.sh.
+rm -rf "$REPO_DIR/.codex-scratch"
+mkdir -p "$REPO_DIR/.codex-scratch"
 write_scratch "$REPO_DIR" "diff.patch"         "$KID_INPUT_DIFF"
 write_scratch "$REPO_DIR" "previous-review.md" "$PREV_BODY"
 write_scratch "$REPO_DIR" "test-results.md"    "$TEST_RESULTS"

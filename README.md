@@ -75,7 +75,7 @@ cd knightwatch-reviewer
 
 Single-tenant by design: one Linux host with `gh` authenticated as the bot's signing user. The systemd units currently bake in `User=odio` and `/home/odio/.pr-reviewer/`; edit them for a different user or path.
 
-> **Legacy single-account path.** The `systemd/*.timer` deployment above runs the reviewer on **one** OpenAI/Codex account on the host. It remains supported as the fallback, but the **containerized multi-account deployment below is the primary path for the review loop** — it spreads reviews across N accounts (so one account's weekly cap can't stall all reviews) and confines each review (PR code + codex agents) to a container. It containerizes the *review loop only*; the auxiliary host timers (auto-discovery, auto-calibration) stay host-side — see the migration note below.
+> **Legacy single-account path.** The `systemd/*.timer` deployment above runs the reviewer on **one** OpenAI/Codex account on the host. It remains supported as the fallback, but the **containerized multi-account deployment below is the primary path for the review loop** — it spreads reviews across N accounts and confines each review (PR code + codex agents) to a container. (The *quota-aware* piece — a capped account backing off so it can't stall the queue — is a follow-up; see `.knightwatch/product-context.md`. Today a capped container can still claim+stamp a PR.) It containerizes the *review loop only*; the auxiliary host timers (auto-discovery, auto-calibration) stay host-side — see the migration note below.
 
 ### Containerized (multi-account) deployment
 
