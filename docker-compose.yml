@@ -1,0 +1,86 @@
+# N reviewer units on one host. Each reviewer shares its dind sidecar's
+# network namespace (network_mode: service:dind-K) so `just test`'s
+# published scenario ports land on a localhost the reviewer shares with
+# the daemon, and DOCKER_HOST can be tcp://127.0.0.1:2375.
+#
+# The `claims` volume is SHARED across ALL reviewers: it holds the per-PR
+# lock + runs/ review-state, so the existing non-blocking flock + KNOWN_SHA
+# gate dedup across containers. Everything else is per-container (repos/,
+# workdirs/, the just-test + canonical locks via LOCAL_STATE_DIR, ~/.codex).
+#
+# Adding account N: add a dind-N + reviewer-N pair, mount its auth.json.
+# Memory: reviewer (codex agents) + dind (just-test compose stack) per unit
+# is capped near the legacy single-unit budget so prod Plow keeps headroom
+# on the 128G host. Tune after observing real peaks.
+
+x-dind: &dind
+  image: docker:27-dind
+  privileged: true
+  environment:
+    DOCKER_TLS_CERTDIR: ""          # plaintext daemon on 2375 within the shared netns
+  command: ["--host=tcp://0.0.0.0:2375"]
+  mem_limit: 12g
+
+services:
+  dind-1:
+    <<: *dind
+    volumes:
+      - dind1-lib:/var/lib/docker   # persist build cache across reviews
+
+  reviewer-1:
+    image: knightwatch-reviewer:dev
+    restart: unless-stopped
+    network_mode: "service:dind-1"  # share dind's netns → localhost scenario ports work
+    depends_on: [dind-1]
+    mem_limit: 20g
+    environment:
+      STATE_DIR: /shared            # per-PR lock + runs/ (SHARED across containers)
+      REPOS_DIR: /local/repos       # per-container
+      WORKDIRS_DIR: /local/workdirs # per-container
+      LOCAL_STATE_DIR: /local/state # just-test + canonical locks (per-container)
+      DOCKER_HOST: tcp://127.0.0.1:2375
+      POLL_SECS: "30"
+      WORKER_ID: "1"
+    env_file:
+      - docker/secrets/shared.env   # GH_TOKEN, ANTHROPIC_API_KEY, BOT_USER, … (shared)
+    volumes:
+      - claims:/shared
+      - reviewer1-local:/local
+      - ./docker/secrets/codex-account-a:/root/.codex:ro      # OpenAI account A
+      - ./docker/secrets/env-test-live:/app/.env.test-live:ro
+      - ./docker/secrets/repos.conf:/shared/repos.conf:ro     # tracked-repo manifest
+
+  dind-2:
+    <<: *dind
+    volumes:
+      - dind2-lib:/var/lib/docker
+
+  reviewer-2:
+    image: knightwatch-reviewer:dev
+    restart: unless-stopped
+    network_mode: "service:dind-2"
+    depends_on: [dind-2]
+    mem_limit: 20g
+    environment:
+      STATE_DIR: /shared
+      REPOS_DIR: /local/repos
+      WORKDIRS_DIR: /local/workdirs
+      LOCAL_STATE_DIR: /local/state
+      DOCKER_HOST: tcp://127.0.0.1:2375
+      POLL_SECS: "30"
+      WORKER_ID: "2"
+    env_file:
+      - docker/secrets/shared.env
+    volumes:
+      - claims:/shared
+      - reviewer2-local:/local
+      - ./docker/secrets/codex-account-b:/root/.codex:ro      # OpenAI account B
+      - ./docker/secrets/env-test-live:/app/.env.test-live:ro
+      - ./docker/secrets/repos.conf:/shared/repos.conf:ro
+
+volumes:
+  claims:
+  reviewer1-local:
+  reviewer2-local:
+  dind1-lib:
+  dind2-lib:
