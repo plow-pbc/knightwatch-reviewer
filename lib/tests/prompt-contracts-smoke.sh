@@ -121,9 +121,17 @@ assert_grep "aggregator.md should describe layered specialist files" \
 # the critic + aggregator read lists, and common-header must document
 # any per-specialist scratch input. Catches the "added a prompt file
 # but forgot to register it" omission class.
-echo "  asserting consumers specialist registered in aggregator.md..."
-assert_grep "aggregator.md should reference consumers specialist" \
-    "specialists/consumers.md" prompts/aggregator.md
+#
+# Derive the roster contract from lib.pipeline.SPECIALISTS (the single
+# source of truth the runtime launches) rather than asserting per-name:
+# adding or renaming a specialist then can't pass tests while leaving the
+# aggregator's read list stale — the omission class that let this PR ship
+# a nine-specialist roster with stale "eight" prose.
+echo "  asserting every SPECIALISTS entry is registered in aggregator.md..."
+for _spec in $(python3 -c "import sys; sys.path.insert(0,'.'); from lib.pipeline import SPECIALISTS; print('\n'.join(SPECIALISTS))"); do
+    assert_grep "aggregator.md should register specialist '$_spec' (derived from lib.pipeline.SPECIALISTS)" \
+        "specialists/${_spec}.md" prompts/aggregator.md
+done
 
 echo "  asserting common-header documents dead-code.md scratch..."
 assert_grep "common-header.md should document dead-code.md" \
@@ -581,13 +589,7 @@ assert_grep "pr-reviewer-bakeoff.timer should run daily at 03:30 UTC" \
 assert_grep "pr-reviewer-bakeoff.timer should not be Persistent (matches repo timer shape)" \
     "Persistent=false" systemd/pr-reviewer-bakeoff.timer
 
-# contract-drift registration — the contract-drift prompt file must
-# stay listed in the aggregator's input enumeration; otherwise the
-# specialist's output is silently ignored downstream. Token-presence
-# only (the prompt body's content discipline lives in the prompt itself,
-# not in a smoke fence, per Rule 8 — "don't calcify prompt prose").
-echo "  asserting contract-drift specialist registered in aggregator.md..."
-assert_grep "aggregator.md should reference contract-drift specialist" \
-    "specialists/contract-drift.md" prompts/aggregator.md
+# (contract-drift's aggregator registration is now covered by the
+# SPECIALISTS-derived roster check above — no per-name assert needed.)
 
 echo "  PASS"
