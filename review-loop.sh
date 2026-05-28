@@ -45,7 +45,7 @@ echo "[review-loop] dind ready at ${DOCKER_HOST:-default}; polling every ${POLL_
 # Quota backoff: when codex caps this account, review-one-pr.sh writes the reset
 # epoch here; this loop stops claiming reviews until it passes, so a capped
 # account backs off and the other accounts carry the queue.
-QUOTA_FILE="${LOCAL_STATE_DIR:-/var/empty}/quota-paused-until"
+QUOTA_FILE="$LOCAL_STATE_DIR/quota-paused-until"
 
 while true; do
     if [ -f "$QUOTA_FILE" ]; then

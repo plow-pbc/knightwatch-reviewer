@@ -313,7 +313,7 @@ while IFS= read -r PR_JSON; do
     # only re-checks the pause between ticks, so without this a capped account
     # would quota-abort every remaining eligible PR before the loop pauses.
     if [ -n "${REVIEWER_CONTAINER_MODE:-}" ] \
-       && [ "$(date +%s)" -lt "$(head -n1 "${LOCAL_STATE_DIR:-/var/empty}/quota-paused-until" 2>/dev/null || echo 0)" ]; then
+       && [ "$(date +%s)" -lt "$(head -n1 "$LOCAL_STATE_DIR/quota-paused-until" 2>/dev/null || echo 0)" ]; then
         log "codex quota hit — stopping further claims this tick (paused until the reset window)"
         break
     fi

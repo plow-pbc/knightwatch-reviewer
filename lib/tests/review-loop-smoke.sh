@@ -16,7 +16,7 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 make_sandbox() {
     local d; d=$(mktemp -d)
     cp "$SRC" "$d/review-loop.sh"; chmod +x "$d/review-loop.sh"
-    mkdir -p "$d/bin" "$d/lib" "$d/prompts"
+    mkdir -p "$d/bin" "$d/lib" "$d/prompts" "$d/state"
     printf '#!/bin/bash\nexit 0\n' > "$d/bin/sleep"; chmod +x "$d/bin/sleep"  # noop: don't actually wait
     echo "$d"
 }
@@ -45,7 +45,7 @@ chmod +x "$d/review.sh"
 # Inherit bogus REVIEWER_LIB_DIR/PROMPTS_DIR to prove the entrypoint OWNS these
 # (the contract that broke in the bot's worker, which exports REVIEWER_LIB_DIR):
 # review-loop must override them to the in-image paths, not honor the caller.
-if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x \
+if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x LOCAL_STATE_DIR="$d/state" \
         REVIEWER_LIB_DIR=/bogus/inherited/lib PROMPTS_DIR=/bogus/inherited/prompts \
         ./review-loop.sh ) >/dev/null 2>&1; then
     fail "review-loop exited 0 on a fatal (non-zero) review.sh tick (should exit for restart)"
