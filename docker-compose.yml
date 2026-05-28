@@ -19,8 +19,12 @@ x-dind: &dind
   image: docker:27-dind
   privileged: true
   environment:
-    DOCKER_TLS_CERTDIR: ""          # plaintext daemon on 2375 within the shared netns
-  command: ["--host=tcp://0.0.0.0:2375"]
+    DOCKER_TLS_CERTDIR: ""          # plaintext daemon within the shared netns only
+  # Bind loopback ONLY. reviewer-K shares dind-K's netns (network_mode below), so
+  # 127.0.0.1 reaches its own daemon — but a sibling pair's netns can't, so a
+  # 0.0.0.0 bind (reachable across the compose network) would let one reviewer
+  # drive another account's daemon. Keep DOCKER_HOST=tcp://127.0.0.1:2375.
+  command: ["--host=tcp://127.0.0.1:2375"]
   mem_limit: 12g
 
 # Shared reviewer service contract (everything identical across accounts).

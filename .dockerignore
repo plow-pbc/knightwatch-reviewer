@@ -9,6 +9,7 @@ repos.conf.auto
 config.env
 .env
 .env.*
+.envrc
 .codex
 .claude
 **/.claude

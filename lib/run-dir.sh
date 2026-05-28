@@ -204,11 +204,19 @@ run_just_test() {
     # REVIEWER_TEST_USER unset and runs as the operator, unchanged.
     if [ -n "${REVIEWER_TEST_USER:-}" ]; then
         chown -R "$REVIEWER_TEST_USER" "$repo_dir"
+        local rc=0
         timeout -k "$test_kill_after" "$test_timeout" \
             runuser -u "$REVIEWER_TEST_USER" -- \
             env -i PATH="$PATH" HOME="/home/$REVIEWER_TEST_USER" DOCKER_HOST="${DOCKER_HOST:-}" \
                 just --justfile "$just_file" --working-directory "$repo_dir" test \
-            > "$test_log" 2>&1
+            > "$test_log" 2>&1 || rc=$?
+        # Restore ownership to root: the test ran as reviewer-test on a
+        # reviewer-test-owned tree, but every post-test step (git log/show, scratch
+        # staging) runs as root — without this they trip Git's dubious-ownership
+        # guard. Exit status is preserved so classify_just_test_outcome still sees
+        # the real test result.
+        chown -R root:root "$repo_dir"
+        return "$rc"
     else
         timeout -k "$test_kill_after" "$test_timeout" \
             env -u LOG_FILE just --justfile "$just_file" --working-directory "$repo_dir" test \
