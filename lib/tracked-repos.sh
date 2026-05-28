@@ -33,7 +33,12 @@ declare -a ORGS=()
 # below from $KWR_CLONE_ROOT, so the manifest never stores stale
 # path strings). `if/then/fi` is errexit-exempt; `[ -f X ] && . X`
 # would not be.
-if [ -f "${STATE_DIR}/config.env" ];      then . "${STATE_DIR}/config.env"; fi
+# CONFIG_ENV_FILE lets the container deployment keep config.env (which holds
+# `export GH_TOKEN=…`) on a root-only path instead of the shared volume, so the
+# unprivileged reviewer-test user that runs `just test` can't read the token
+# file. Defaults to $STATE_DIR/config.env (unchanged for the host/systemd path).
+CONFIG_ENV_FILE="${CONFIG_ENV_FILE:-${STATE_DIR}/config.env}"
+if [ -f "$CONFIG_ENV_FILE" ];             then . "$CONFIG_ENV_FILE"; fi
 if [ -f "${STATE_DIR}/repos.conf" ];      then . "${STATE_DIR}/repos.conf"; fi
 
 # Snapshot operator-set KID_PATHS keys BEFORE sourcing the auto

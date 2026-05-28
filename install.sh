@@ -91,6 +91,8 @@ uv tool install 'vulture==2.16' >/dev/null
 #      operator hasn't edited yet (e.g., re-ran install.sh on a fresh
 #      clone, or a tool raw-cp'd the template). Reject the same way; the
 #      operator hitting "already configured" silently is the bug.
+info "NOTE: this installs the legacy single-account systemd timer deployment. For multi-account distribution, prefer the containerized path — see README.md § Containerized (multi-account) deployment and docker-compose.yml."
+
 if [[ ! -f "$REPO_DIR/repos.conf" ]]; then
     [[ -f "$REPO_DIR/repos.conf.example" ]] || fail "neither repos.conf nor repos.conf.example present at $REPO_DIR"
     cp "$REPO_DIR/repos.conf.example" "$REPO_DIR/repos.conf"

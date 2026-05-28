@@ -70,6 +70,12 @@ REVIEW_START_ISO="${DISPATCHER_TICK_AT:-$(python3 -c "import datetime; print(dat
 # LOG_FILE defaulted yet (the per-run dir is set up below). Fall back to
 # $STATE_DIR/orchestrator.log so this skip line still lands somewhere durable.
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
+# LOCAL_STATE_DIR holds the per-container canonical clone/fetch lock — sharing it
+# would serialize per-container clones/fetches across reviewers. (The just-test
+# semaphore deliberately stays in the SHARED STATE_DIR so #100's global
+# MAX_CONCURRENT_TESTS cap holds across containers — see the acquire_just_test_lock
+# call below.) Defaults to STATE_DIR so single-host (non-container) behavior is unchanged.
+LOCAL_STATE_DIR="${LOCAL_STATE_DIR:-$STATE_DIR}"
 _LIB_DIR_EARLY="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 . "$_LIB_DIR_EARLY/locking.sh"
 PR_LOCK_SLUG="${REPO//\//_}__${PR_NUM}"
@@ -287,7 +293,7 @@ CANONICAL_DIR="$REPOS_DIR/$REPO_SLUG"
 PR_WORKDIR_SLUG="${REPO_SLUG}__${PR_NUM}"
 REPO_DIR="$WORKDIRS_DIR/${PR_WORKDIR_SLUG}"
 
-CANONICAL_LOCK_DIR="$STATE_DIR/canonical-locks"
+CANONICAL_LOCK_DIR="$LOCAL_STATE_DIR/canonical-locks"
 mkdir -p "$CANONICAL_LOCK_DIR"
 CANONICAL_LOCK_FILE="$CANONICAL_LOCK_DIR/$REPO_SLUG"
 exec {CANONICAL_LOCK_FD}> "$CANONICAL_LOCK_FILE"
@@ -487,15 +493,6 @@ if [ "$REVIEWED_SHA" != "$PR_SHA" ]; then
     log "$PR_ID: orchestrator enumerated ${PR_SHA:0:7}, worker checked out ${REVIEWED_SHA:0:7} — using checked-out SHA for header + state + meta"
 fi
 
-# Redirect-safe staging — a PR checkout could commit .codex-scratch as a
-# symlink to a writable service path (e.g. ~/.pr-reviewer/runs/...) so that
-# write_scratch + the per-specialist symlinks would redirect critic /
-# momentum / dead-code outputs into our own state dir. Wipe + recreate
-# unconditionally before any write so the worker owns the directory.
-# Mirrors lib/sibling-symlinks.sh's .siblings/ wipe-then-recreate pattern.
-rm -rf "$REPO_DIR/.codex-scratch"
-mkdir -p "$REPO_DIR/.codex-scratch"
-
 # meta.json — minimal post-mortem header. Written here (after checkout)
 # rather than at run-dir allocation so `sha` records what was actually
 # reviewed (REVIEWED_SHA) instead of the orchestrator's enumeration SHA
@@ -543,8 +540,11 @@ fi
 # still get a `just test` run, just without canonical's secrets — the
 # scenario-suite recipes that need live keys will trip their guards
 # (unchanged from pre-72a9cad behavior for those PRs).
+# Compute author trust once; reused by the .env mirror (below) and the
+# container just-test gate (untrusted authors don't get dind reach).
+if is_trusted_repo_author "$REPO" "$PR_AUTHOR"; then IS_TRUSTED_AUTHOR=true; else IS_TRUSTED_AUTHOR=false; fi
 COPIED_ENV_FILES=()
-if is_trusted_repo_author "$REPO" "$PR_AUTHOR"; then
+if [ "$IS_TRUSTED_AUTHOR" = true ]; then
     while IFS= read -r -d '' example_path; do
         rel="${example_path#"$REPO_DIR"/}"
         target_rel="${rel%.example}"
@@ -701,6 +701,16 @@ if [ -z "$JUST_FILE" ]; then
     TESTS_RAN=false
     TEST_SUMMARY="not run (no justfile in repo root)"
     : > "$TEST_LOG"
+elif [ -n "${REVIEWER_TEST_USER:-}" ] && [ "$IS_TRUSTED_AUTHOR" != true ]; then
+    # Container mode forwards DOCKER_HOST to a privileged dind daemon; running
+    # untrusted PR test code there would let it drive that daemon (a host-escape
+    # surface) even without push access. Skip the test run for untrusted authors
+    # in the container path. (The host/systemd path has no dind and still runs
+    # untrusted tests without canonical secrets, unchanged.)
+    log "$PR_ID: skipping \`just test\` — untrusted author ($PR_AUTHOR) in container mode (no dind exposure)"
+    TESTS_RAN=false
+    TEST_SUMMARY="not run (untrusted author; container dind not exposed to untrusted test code)"
+    : > "$TEST_LOG"
 else
     # Global concurrency cap on `just test` (MAX_CONCURRENT_TESTS slots,
     # default 3). Each `just test` brings up a docker compose stack, so we
@@ -712,6 +722,10 @@ else
     # the old per-repo mutex was removed from `just test` 2026-05-15; #638
     # deletes it). See lib/locking.sh::acquire_just_test_lock.
     JUST_TEST_LOCK_WAIT_START=$(date +%s)
+    # #100's global N-slot semaphore, with slots in the SHARED STATE_DIR so the
+    # MAX_CONCURRENT_TESTS cap on concurrent `just test` holds ACROSS reviewer
+    # containers — protecting the host's memory. (This subsumes the per-container
+    # just-test lock; LOCAL_STATE_DIR now scopes only the canonical clone lock.)
     acquire_just_test_lock "$STATE_DIR"
     JUST_TEST_LOCK_WAIT=$(( $(date +%s) - JUST_TEST_LOCK_WAIT_START ))
     if [ "$JUST_TEST_LOCK_WAIT" -ge 5 ]; then
@@ -1034,6 +1048,15 @@ if ! materialize_sibling_symlinks "$REPO_DIR" SOURCE_PATHS "${INCLUDED_SLUGS[@]}
 fi
 
 # ---- write scratch files ----
+# Redirect-safe staging — wipe + recreate .codex-scratch HERE, immediately before
+# the first write and AFTER all PR-controlled execution (`just test`, canonical
+# fetch). A PR checkout could commit .codex-scratch as a symlink to a writable
+# service path, OR a trusted-author `just test` could replace it with one mid-run;
+# either would make the root-owned write_scratch + per-specialist symlinks below
+# redirect critic/momentum/dead-code outputs (and prompt files) into that target.
+# Wiping after the untrusted code runs closes both. Mirrors lib/sibling-symlinks.sh.
+rm -rf "$REPO_DIR/.codex-scratch"
+mkdir -p "$REPO_DIR/.codex-scratch"
 write_scratch "$REPO_DIR" "diff.patch"         "$KID_INPUT_DIFF"
 write_scratch "$REPO_DIR" "previous-review.md" "$PREV_BODY"
 write_scratch "$REPO_DIR" "test-results.md"    "$TEST_RESULTS"

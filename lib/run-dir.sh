@@ -192,9 +192,57 @@ format_review_scope() {
 # the production orchestrator log. Cosmetic, but keeps post-mortem greps clean.
 run_just_test() {
     local just_file="$1" repo_dir="$2" test_log="$3" test_timeout="$4" test_kill_after="$5"
-    timeout -k "$test_kill_after" "$test_timeout" \
-        env -u LOG_FILE just --justfile "$just_file" --working-directory "$repo_dir" test \
-        > "$test_log" 2>&1
+    # Containerized deployment sets REVIEWER_TEST_USER to an unprivileged
+    # account. PR-controlled `just test` is the most dangerous code the reviewer
+    # runs, so drop to that user with an allowlisted env: it cannot read the
+    # root-owned /root/.codex login (mode 600) or the reviewer's tokens (kept
+    # out of the env passed in). Trusted-author live creds arrive as FILES in
+    # repo_dir (the .env mirror in review-one-pr.sh), which the test user reads
+    # from disk after the chown — never from the environment. The redirect to
+    # $test_log is opened by this (root) shell before the privilege drop, so the
+    # log stays root-owned and readable afterwards. The host/systemd path leaves
+    # REVIEWER_TEST_USER unset and runs as the operator, unchanged.
+    if [ -n "${REVIEWER_TEST_USER:-}" ]; then
+        chown -R "$REVIEWER_TEST_USER" "$repo_dir"
+        local rc=0
+        timeout -k "$test_kill_after" "$test_timeout" \
+            runuser -u "$REVIEWER_TEST_USER" -- \
+            env -i PATH="$PATH" HOME="/home/$REVIEWER_TEST_USER" DOCKER_HOST="${DOCKER_HOST:-}" \
+                just --justfile "$just_file" --working-directory "$repo_dir" test \
+            > "$test_log" 2>&1 || rc=$?
+        # The test ran as reviewer-test on a reviewer-test-owned tree; everything
+        # after (git log/show, the .codex-scratch wipe + write_scratch) runs as
+        # root. Reap any leftover reviewer-test procs (a test can `setsid` a
+        # detached writer that outlives `just test`; pkill -u is UID-based so it
+        # catches session-detached ones), restore ownership (else root git trips
+        # the dubious-ownership guard), and strip group/other write bits so
+        # nothing the test left behind (e.g. after a `chmod 777`) can race the
+        # root scratch-staging path. Exit status is preserved for the classifier.
+        # Bounded reap before root scratch staging: TERM, wait for exit, then
+        # KILL (uncatchable) any that ignored it — a TERM-only best-effort would
+        # leave a TERM-trapping writer alive to race the .codex-scratch wipe or
+        # read root-staged inputs. pkill -u is UID-based, so it reaps even
+        # setsid-detached procs.
+        pkill -TERM -u "$REVIEWER_TEST_USER" 2>/dev/null || true
+        for _ in $(seq 1 50); do pgrep -u "$REVIEWER_TEST_USER" >/dev/null 2>&1 || break; sleep 0.1; done
+        pkill -KILL -u "$REVIEWER_TEST_USER" 2>/dev/null || true
+        for _ in $(seq 1 20); do pgrep -u "$REVIEWER_TEST_USER" >/dev/null 2>&1 || break; sleep 0.1; done
+        if pgrep -u "$REVIEWER_TEST_USER" >/dev/null 2>&1; then
+            # A process surviving SIGKILL is a catastrophic integrity failure
+            # (uninterruptible I/O, or a kernel/namespace bug). Fail fast — do NOT
+            # proceed into root-owned scratch staging where a live writer could
+            # race us. The worker's EXIT trap handles the placeholder + cleanup.
+            log "$PR_ID: FATAL — reviewer-test process survived SIGKILL; aborting before root scratch staging"
+            exit 1
+        fi
+        chown -R root:root "$repo_dir"
+        chmod -R go-w "$repo_dir"
+        return "$rc"
+    else
+        timeout -k "$test_kill_after" "$test_timeout" \
+            env -u LOG_FILE just --justfile "$just_file" --working-directory "$repo_dir" test \
+            > "$test_log" 2>&1
+    fi
 }
 
 # timeout_duration_seconds DURATION
