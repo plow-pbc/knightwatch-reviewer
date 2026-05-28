@@ -1,0 +1,8 @@
+.git
+docs
+replays
+last-run-scratch
+docker/secrets
+**/.codex-scratch
+**/node_modules
+*.log
