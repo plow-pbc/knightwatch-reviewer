@@ -30,6 +30,14 @@ run_just_test /dev/null "$d/repo" "$d/log" 30s 5s
 grep -q "GH_TOKEN_VISIBLE=<unset>" "$d/log"            || fail "GH_TOKEN leaked into the test command env despite the env -i scrub"
 grep -q "DOCKER_HOST_VISIBLE=tcp://dind:2375" "$d/log" || fail "DOCKER_HOST not preserved for the dind daemon"
 
+# Mode-strip: the container branch strips group/other write from the checkout
+# after the test, so a leftover proc / a test that ran `chmod 777` can't write it
+# while the root scratch-staging path runs. (The detached-writer reap, pkill -u,
+# needs a real uid switch and is verified at bring-up.)
+chmod 0777 "$d/repo"
+run_just_test /dev/null "$d/repo" "$d/log1b" 30s 5s
+(( 8#$(stat -c %a "$d/repo") & 0022 )) && fail "repo_dir still group/other-writable after run_just_test (mode-strip missing)" || true
+
 # Host branch (no REVIEWER_TEST_USER): unchanged — runs as the operator, env not
 # scrubbed. Pins that the scrub is container-only, not a behavior change on host.
 unset REVIEWER_TEST_USER

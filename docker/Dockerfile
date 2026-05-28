@@ -11,7 +11,7 @@ ARG DOCKER_CLI_VERSION=27.3.1
 ARG CODEX_CLI_VERSION=0.134.0
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      git jq ca-certificates curl gnupg coreutils python3 python3-venv \
+      git jq ca-certificates curl gnupg coreutils procps python3 python3-venv \
  && curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.deb" -o /tmp/gh.deb \
  && apt-get install -y /tmp/gh.deb && rm /tmp/gh.deb \
  && curl -fsSL https://just.systems/install.sh | bash -s -- --tag "${JUST_VERSION}" --to /usr/local/bin \
