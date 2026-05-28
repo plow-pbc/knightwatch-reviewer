@@ -308,6 +308,16 @@ while IFS= read -r PR_JSON; do
         active=$((active - 1))
     done
 
+    # Container mode: if the worker that just drained hit a codex cap (wrote a
+    # future quota-paused-until), stop claiming more PRs THIS tick. review-loop.sh
+    # only re-checks the pause between ticks, so without this a capped account
+    # would quota-abort every remaining eligible PR before the loop pauses.
+    if [ -n "${REVIEWER_CONTAINER_MODE:-}" ] \
+       && [ "$(date +%s)" -lt "$(head -n1 "${LOCAL_STATE_DIR:-/var/empty}/quota-paused-until" 2>/dev/null || echo 0)" ]; then
+        log "codex quota hit — stopping further claims this tick (paused until the reset window)"
+        break
+    fi
+
     # Absolute wall-clock deadline of the outer `timeout $WORKER_TIMEOUT`
     # wrap. pipeline.py reads this to decide whether a stale-kill retry
     # fits under the worker cap — `just test` (up to 30 min), Wave A,

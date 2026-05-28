@@ -1293,23 +1293,21 @@ if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
         EYES_ABORT_BODY="⏸ knightwatch paused — codex quota hit, resets at ${RESET_AT}. Will retry on the next tick and should succeed after the quota window resets."
         log "$PR_ID: handing codex-quota-error to cleanup_eyes (resets=${RESET_AT})"
         # Pause THIS container until the quota window resets — review-loop.sh reads
-        # this epoch and stops claiming PRs until then, so a capped account doesn't
-        # keep claiming while healthy accounts work.
-        if [ -n "${LOCAL_STATE_DIR:-}" ]; then
-            QUOTA_UNTIL=""
-            # Weekly caps carry a date → parse absolute. Short rolling-window resets
-            # are a bare time in the ACCOUNT's tz, which container-local `date -d`
-            # can misread and resume EARLY — for those, pause a conservative 1h and
-            # re-check (re-pauses if still capped) rather than trust the parse.
-            if printf '%s' "$RESET_AT" | grep -qE '[0-9]{4}|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec'; then
-                QUOTA_UNTIL=$(date -d "$(printf '%s' "$RESET_AT" | sed -E 's/([0-9])(st|nd|rd|th)/\1/g')" +%s 2>/dev/null)
-            fi
-            if [ -z "$QUOTA_UNTIL" ] || [ "$QUOTA_UNTIL" -le "$(date +%s)" ]; then
-                QUOTA_UNTIL=$(( $(date +%s) + 3600 ))
-            fi
-            printf '%s\n' "$QUOTA_UNTIL" > "$LOCAL_STATE_DIR/quota-paused-until"
-            log "$PR_ID: quota-paused this worker until epoch ${QUOTA_UNTIL} (reset=${RESET_AT})"
+        # $LOCAL_STATE_DIR/quota-paused-until (always set; defaults to STATE_DIR) and
+        # stops claiming PRs until then, so a capped account doesn't keep claiming.
+        QUOTA_UNTIL=""
+        # Weekly caps carry a date → parse absolute. Short rolling-window resets are
+        # a bare time in the ACCOUNT's tz, which container-local `date -d` can
+        # misread and resume EARLY — for those, pause a conservative 1h and re-check
+        # (re-pauses if still capped) rather than trust the parse.
+        if printf '%s' "$RESET_AT" | grep -qE '[0-9]{4}|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec'; then
+            QUOTA_UNTIL=$(date -d "$(printf '%s' "$RESET_AT" | sed -E 's/([0-9])(st|nd|rd|th)/\1/g')" +%s 2>/dev/null)
         fi
+        if [ -z "$QUOTA_UNTIL" ] || [ "$QUOTA_UNTIL" -le "$(date +%s)" ]; then
+            QUOTA_UNTIL=$(( $(date +%s) + 3600 ))
+        fi
+        printf '%s\n' "$QUOTA_UNTIL" > "$LOCAL_STATE_DIR/quota-paused-until"
+        log "$PR_ID: quota-paused this worker until epoch ${QUOTA_UNTIL} (reset=${RESET_AT})"
     elif [ -s "$TIMEOUTS_SENTINEL" ]; then
         TIMED_OUT=$(paste -sd, "$TIMEOUTS_SENTINEL")
         EYES_ABORT_BODY="❌ Review aborted — specialist(s) timed out (\`$TIMED_OUT\`). See knightwatch-reviewer logs; will retry on the next tick."
