@@ -549,8 +549,11 @@ fi
 # still get a `just test` run, just without canonical's secrets — the
 # scenario-suite recipes that need live keys will trip their guards
 # (unchanged from pre-72a9cad behavior for those PRs).
+# Compute author trust once; reused by the .env mirror (below) and the
+# container just-test gate (untrusted authors don't get dind reach).
+if is_trusted_repo_author "$REPO" "$PR_AUTHOR"; then IS_TRUSTED_AUTHOR=true; else IS_TRUSTED_AUTHOR=false; fi
 COPIED_ENV_FILES=()
-if is_trusted_repo_author "$REPO" "$PR_AUTHOR"; then
+if [ "$IS_TRUSTED_AUTHOR" = true ]; then
     while IFS= read -r -d '' example_path; do
         rel="${example_path#"$REPO_DIR"/}"
         target_rel="${rel%.example}"
@@ -706,6 +709,16 @@ if [ -z "$JUST_FILE" ]; then
     log "$PR_ID: no justfile in $REPO_DIR — skipping \`just test\`"
     TESTS_RAN=false
     TEST_SUMMARY="not run (no justfile in repo root)"
+    : > "$TEST_LOG"
+elif [ -n "${REVIEWER_TEST_USER:-}" ] && [ "$IS_TRUSTED_AUTHOR" != true ]; then
+    # Container mode forwards DOCKER_HOST to a privileged dind daemon; running
+    # untrusted PR test code there would let it drive that daemon (a host-escape
+    # surface) even without push access. Skip the test run for untrusted authors
+    # in the container path. (The host/systemd path has no dind and still runs
+    # untrusted tests without canonical secrets, unchanged.)
+    log "$PR_ID: skipping \`just test\` — untrusted author ($PR_AUTHOR) in container mode (no dind exposure)"
+    TESTS_RAN=false
+    TEST_SUMMARY="not run (untrusted author; container dind not exposed to untrusted test code)"
     : > "$TEST_LOG"
 else
     # Per-repo serialization for `just test`. Concurrent PR worktrees of

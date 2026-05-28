@@ -93,7 +93,7 @@ docker compose up -d
 docker compose logs -f reviewer-1
 ```
 
-The auxiliary host timers (`pr-reviewer-learn`, `-org-sync`, `-approve`, `-re-request`, `-kid-refresh`) are independent of the review loop; leave them or migrate them separately — they don't double-review.
+The auxiliary host timers (`pr-reviewer-learn`, `-approve`, `-re-request`, `-kid-refresh`) are independent of the review loop and don't double-review; leave them or migrate them separately. **`pr-reviewer-org-sync` is the exception:** it writes auto-discovered repos to `~/.pr-reviewer/repos.conf.auto`, which the containers (reading `/shared/repos.conf`) never see — so in the container deployment, list the tracked repos explicitly in `docker/secrets/repos.conf` rather than relying on org-sync auto-discovery (or mount a shared `repos.conf.auto` into `/shared` and run org-sync against it). Reconciling that is the follow-up noted in `.knightwatch/product-context.md`.
 
 `docker compose config` validates the topology before bringing it up. Add an account by dropping in another `~/.codex` and adding a `dind-N` + `reviewer-N` pair (see `docker/secrets.example/README.md`). Each unit's `reviewer` + `dind` memory limits sum toward the host budget — keep headroom for anything else on the box.
 

@@ -10,6 +10,8 @@ config.env
 .env
 .env.*
 .codex
+.claude
+**/.claude
 **/auth.json
 **/.codex-scratch
 **/node_modules
