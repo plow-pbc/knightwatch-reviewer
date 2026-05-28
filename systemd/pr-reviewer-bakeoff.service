@@ -1,5 +1,5 @@
 [Unit]
-Description=Plow PR reviewer — specialist bake-off (daily at 03:30 UTC)
+Description=Plow PR reviewer — specialist bake-off (daily at 03:30 Pacific)
 After=network-online.target
 Wants=network-online.target
 
