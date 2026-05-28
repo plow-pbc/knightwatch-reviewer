@@ -218,7 +218,18 @@ run_just_test() {
         # the dubious-ownership guard), and strip group/other write bits so
         # nothing the test left behind (e.g. after a `chmod 777`) can race the
         # root scratch-staging path. Exit status is preserved for the classifier.
-        pkill -u "$REVIEWER_TEST_USER" 2>/dev/null || true
+        # Bounded reap before root scratch staging: TERM, wait for exit, then
+        # KILL (uncatchable) any that ignored it — a TERM-only best-effort would
+        # leave a TERM-trapping writer alive to race the .codex-scratch wipe or
+        # read root-staged inputs. pkill -u is UID-based, so it reaps even
+        # setsid-detached procs.
+        pkill -TERM -u "$REVIEWER_TEST_USER" 2>/dev/null || true
+        for _ in $(seq 1 50); do pgrep -u "$REVIEWER_TEST_USER" >/dev/null 2>&1 || break; sleep 0.1; done
+        pkill -KILL -u "$REVIEWER_TEST_USER" 2>/dev/null || true
+        for _ in $(seq 1 20); do pgrep -u "$REVIEWER_TEST_USER" >/dev/null 2>&1 || break; sleep 0.1; done
+        if pgrep -u "$REVIEWER_TEST_USER" >/dev/null 2>&1; then
+            log "$PR_ID: WARNING — a reviewer-test process survived SIGKILL (uninterruptible?) entering scratch staging"
+        fi
         chown -R root:root "$repo_dir"
         chmod -R go-w "$repo_dir"
         return "$rc"
