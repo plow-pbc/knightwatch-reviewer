@@ -710,12 +710,13 @@ if [ -z "$JUST_FILE" ]; then
     TESTS_RAN=false
     TEST_SUMMARY="not run (no justfile in repo root)"
     : > "$TEST_LOG"
-elif [ -n "${REVIEWER_TEST_USER:-}" ] && [ "$IS_TRUSTED_AUTHOR" != true ]; then
-    # Container mode forwards DOCKER_HOST to a privileged dind daemon; running
-    # untrusted PR test code there would let it drive that daemon (a host-escape
-    # surface) even without push access. Skip the test run for untrusted authors
-    # in the container path. (The host/systemd path has no dind and still runs
-    # untrusted tests without canonical secrets, unchanged.)
+elif { [ -n "${REVIEWER_TEST_USER:-}" ] || [ -n "${TEST_RUNNER_QUEUE:-}" ]; } && [ "$IS_TRUSTED_AUTHOR" != true ]; then
+    # Container mode reaches a privileged dind daemon (the test-runner runs the
+    # test there; the reviewer enqueues to it). Running untrusted PR test code on
+    # that daemon is a host-escape surface, so skip it for untrusted authors —
+    # whether this is the reviewer (TEST_RUNNER_QUEUE: don't enqueue) or the
+    # test-runner (REVIEWER_TEST_USER: don't run). The host/systemd path has no
+    # dind and still runs untrusted tests without canonical secrets, unchanged.
     log "$PR_ID: skipping \`just test\` — untrusted author ($PR_AUTHOR) in container mode (no dind exposure)"
     TESTS_RAN=false
     TEST_SUMMARY="not run (untrusted author; container dind not exposed to untrusted test code)"
@@ -1287,6 +1288,19 @@ if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
         RESET_AT=$(head -n 1 "$QUOTA_SENTINEL")
         EYES_ABORT_BODY="⏸ knightwatch paused — codex quota hit, resets at ${RESET_AT}. Will retry on the next tick and should succeed after the quota window resets."
         log "$PR_ID: handing codex-quota-error to cleanup_eyes (resets=${RESET_AT})"
+        # Pause THIS container until the quota window resets — review-loop.sh reads
+        # this epoch and stops claiming PRs until then, so a capped account doesn't
+        # keep poisoning the queue with paused placeholders while healthy accounts work.
+        if [ -n "${LOCAL_STATE_DIR:-}" ]; then
+            QUOTA_UNTIL=$(date -d "$(printf '%s' "$RESET_AT" | sed -E 's/([0-9])(st|nd|rd|th)/\1/g')" +%s 2>/dev/null)
+            # Unparseable or already-past (e.g. a bare "4:24 PM" that's earlier today) →
+            # fall back to a 1h pause; the loop re-checks and re-pauses if still capped.
+            if [ -z "$QUOTA_UNTIL" ] || [ "$QUOTA_UNTIL" -le "$(date +%s)" ]; then
+                QUOTA_UNTIL=$(( $(date +%s) + 3600 ))
+            fi
+            printf '%s\n' "$QUOTA_UNTIL" > "$LOCAL_STATE_DIR/quota-paused-until"
+            log "$PR_ID: quota-paused this worker until epoch ${QUOTA_UNTIL} (reset=${RESET_AT})"
+        fi
     elif [ -s "$TIMEOUTS_SENTINEL" ]; then
         TIMED_OUT=$(paste -sd, "$TIMEOUTS_SENTINEL")
         EYES_ABORT_BODY="❌ Review aborted — specialist(s) timed out (\`$TIMED_OUT\`). See knightwatch-reviewer logs; will retry on the next tick."

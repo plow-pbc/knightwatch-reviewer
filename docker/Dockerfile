@@ -37,7 +37,7 @@ RUN useradd --create-home --uid 10001 reviewer-test
 
 WORKDIR /app
 COPY . /app
-RUN chmod +x review.sh review-loop.sh lib/*.sh
+RUN chmod +x review.sh review-loop.sh test-runner-loop.sh lib/*.sh
 
 # State dirs (STATE_DIR / REPOS_DIR / WORKDIRS_DIR / LOCAL_STATE_DIR) and
 # DOCKER_HOST are provided at runtime by docker-compose.yml.

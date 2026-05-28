@@ -1,9 +1,9 @@
 #!/bin/bash
-# Container entrypoint: replace the systemd 2-min timer with an in-process
-# poll loop. Waits for the dind sidecar's daemon, then runs review.sh
-# (MAX_CONCURRENT=1 per container) every POLL_SECS. N containers = N
-# concurrent reviews across N accounts; the shared per-PR flock keeps two
-# containers off the same PR.
+# Codex reviewer entrypoint: replace the systemd 2-min timer with an in-process
+# poll loop running review.sh (MAX_CONCURRENT=1) every POLL_SECS. This container
+# has NO docker — `just test` is delegated to the shared test-runner. N reviewers
+# = N concurrent reviews across N accounts; the shared per-PR flock keeps two off
+# the same PR, and a quota cap pauses this account (below) so others carry on.
 set -uo pipefail
 
 cd "$(dirname "$0")"
@@ -28,25 +28,25 @@ export WAIT_FOR_WORKERS=1
 # Sentinel so review.sh can re-pin the one-review-per-account contract AFTER it
 # sources config.env (which could otherwise override MAX_CONCURRENT/WAIT_FOR_WORKERS).
 export REVIEWER_CONTAINER_MODE=1
-# Run PR-controlled `just test` as this unprivileged user (created in the image)
-# so a hostile test recipe can't read /root/.codex or the reviewer's tokens —
-# see run_just_test in lib/run-dir.sh.
-export REVIEWER_TEST_USER="${REVIEWER_TEST_USER:-reviewer-test}"
-
-# Block until the dind daemon answers, so the first `just test` doesn't
-# race the sidecar's startup. Fail loud if it never comes up.
-for i in $(seq 1 60); do
-    docker info >/dev/null 2>&1 && break
-    [ "$i" -eq 60 ] && { echo "FATAL: dind daemon (${DOCKER_HOST:-default}) never became ready" >&2; exit 1; }
-    sleep 2
-done
-echo "[review-loop] dind ready at ${DOCKER_HOST:-default}; polling every ${POLL_SECS}s (worker=${WORKER_ID:-?})"
+# `just test` is NOT run here — the reviewer has no docker. run_just_test
+# delegates to the shared test-runner via TEST_RUNNER_QUEUE (set in compose).
+QUOTA_FILE="$LOCAL_STATE_DIR/quota-paused-until"
+echo "[review-loop] polling every ${POLL_SECS}s (worker=${WORKER_ID:-?})"
 
 while true; do
-    # review.sh returns 0 on normal/no-PR/transient-enumerate-failure ticks
-    # and non-zero ONLY on fatal misconfig (missing worker script, no tracked
-    # repos). Surface that loudly via container exit + restart instead of
-    # spinning forever on a broken config.
+    # Quota backoff: when codex caps this account, review-one-pr.sh writes the
+    # reset epoch here; stop claiming reviews until it passes, so healthy accounts
+    # handle the queue instead of this one poisoning PRs with paused placeholders.
+    if [ -f "$QUOTA_FILE" ]; then
+        until_epoch=$(head -n1 "$QUOTA_FILE" 2>/dev/null || echo 0)
+        if [ "$(date +%s)" -lt "${until_epoch:-0}" ]; then
+            echo "[review-loop] codex quota-paused until $(date -d "@$until_epoch" 2>/dev/null || echo "$until_epoch") — skipping tick (worker=${WORKER_ID:-?})"
+            sleep "$POLL_SECS"; continue
+        fi
+        rm -f "$QUOTA_FILE"   # window passed; resume claiming
+    fi
+    # review.sh returns 0 on normal/no-PR/transient ticks, non-zero ONLY on fatal
+    # misconfig — surface that via container exit + restart instead of spinning.
     ./review.sh || { echo "[review-loop] FATAL: review.sh exited non-zero — config/auth error; exiting for container restart" >&2; exit 1; }
     sleep "$POLL_SECS"
 done

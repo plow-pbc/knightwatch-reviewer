@@ -192,6 +192,29 @@ format_review_scope() {
 # the production orchestrator log. Cosmetic, but keeps post-mortem greps clean.
 run_just_test() {
     local just_file="$1" repo_dir="$2" test_log="$3" test_timeout="$4" test_kill_after="$5"
+    # Reviewer (codex) containers have no docker, so they delegate `just test` to
+    # the shared test-runner: write the 5 args as plain lines, atomically rename
+    # the request in, and block on the result file. The runner runs the test with
+    # dind (as reviewer-test) on this same shared workdir and writes back the exit.
+    if [ -n "${TEST_RUNNER_QUEUE:-}" ]; then
+        mkdir -p "$TEST_RUNNER_QUEUE"
+        local id; id="$(basename "$repo_dir").$$.$RANDOM"
+        local req="$TEST_RUNNER_QUEUE/$id.req" result="$TEST_RUNNER_QUEUE/$id.result"
+        printf '%s\n' "$just_file" "$repo_dir" "$test_log" "$test_timeout" "$test_kill_after" > "$req.tmp"
+        mv "$req.tmp" "$req"
+        local max waited=0
+        max=$(( $(timeout_duration_seconds "$test_timeout") + 300 ))  # test window + queue/overhead slack
+        while [ ! -f "$result" ]; do
+            sleep 3; waited=$((waited + 3))
+            if [ "$waited" -ge "$max" ]; then
+                echo "test-runner produced no result within ${max}s" >> "$test_log"
+                rm -f "$req" "$TEST_RUNNER_QUEUE/$id.proc"
+                return 124
+            fi
+        done
+        local rc; rc=$(head -n1 "$result"); rm -f "$result"
+        return "${rc:-1}"
+    fi
     # Containerized deployment sets REVIEWER_TEST_USER to an unprivileged
     # account. PR-controlled `just test` is the most dangerous code the reviewer
     # runs, so drop to that user with an allowlisted env: it cannot read the

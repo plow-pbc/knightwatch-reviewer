@@ -79,7 +79,7 @@ Single-tenant by design: one Linux host with `gh` authenticated as the bot's sig
 
 ### Containerized (multi-account) deployment
 
-Runs N reviewer containers on one host, each pinned to its own OpenAI account and claiming PRs through a shared lock volume (the existing non-blocking per-PR flock + `KNOWN_SHA` gate dedup across containers). Each reviewer gets its own privileged `docker:dind` sidecar so the target repo's `just test` (docker-compose) runs nested, not on the host daemon.
+Runs N codex reviewer containers on one host, each pinned to its own OpenAI account and claiming PRs through a shared lock volume (the existing non-blocking per-PR flock + `KNOWN_SHA` gate dedup across containers). Codex doesn't need docker, so the reviewers run with **no daemon access at all**; a single shared **test-runner** container (the only one sharing the `docker:dind` netns) runs each `just test` on the shared workdir — reviewers delegate to it via the `/shared/test-queue`. When a codex account hits its cap, that reviewer pauses (writes a reset epoch to `quota-paused-until`) so healthy accounts carry the queue.
 
 ```sh
 cp -r docker/secrets.example docker/secrets   # then populate — see docker/secrets.example/README.md
@@ -104,7 +104,7 @@ The auxiliary host timers (`-approve`, `-re-request`, `-kid-refresh`) are indepe
 
 Fully reconciling these into one shared host/container seam is the tracked follow-up in `.knightwatch/product-context.md`.
 
-**Security note — before you deploy:** the dind sidecar runs `--privileged`, and the sandbox-bypassed codex agents share its network namespace (`DOCKER_HOST`), so a successful prompt-injection of a review agent could drive the daemon → host root. Untrusted `just test` is already skipped, but the codex path is an **accepted v1 residual to resolve at bring-up** — make the daemon unprivileged (rootless dind / sysbox) or run codex in a container that doesn't share dind, and verify against the live suite, before standing this up against real PRs.
+**Security note — before you deploy:** codex no longer reaches docker at all (reviewers have no `DOCKER_HOST`/dind netns; only the test-runner does, and it holds no account creds/tokens). The remaining surface is the dind daemon still being `--privileged`, reachable only via *trusted-author* `just test` inside the test-runner (untrusted is skipped). Making that daemon unprivileged (rootless dind / sysbox) is the optional further hardening — verify against the live suite at bring-up.
 
 `docker compose config` validates the topology before bringing it up. Add an account by dropping in another `~/.codex` and adding a `dind-N` + `reviewer-N` pair (see `docker/secrets.example/README.md`). Each unit's `reviewer` + `dind` memory limits sum toward the host budget — keep headroom for anything else on the box.
 
