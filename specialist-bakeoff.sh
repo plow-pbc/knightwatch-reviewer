@@ -37,6 +37,7 @@ REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 . "$REVIEWER_LIB_DIR/bakeoff-parsers.sh"
 . "$REVIEWER_LIB_DIR/bakeoff-store.sh"
 . "$REVIEWER_LIB_DIR/pr-enumerate.sh"
+. "$REVIEWER_LIB_DIR/gh-retry.sh"
 
 log() { echo "[$(date -u +%FT%TZ)] $*" >> "$LOG_FILE"; }
 
@@ -118,12 +119,12 @@ for repo in "${REPOS[@]}"; do
     fi
     log "scanning $repo since $window_floor (rewalk_floor=$rewalk_floor last_walked=${last_walked:-never})..."
 
-    comments_json=$(gh api --paginate \
+    comments_json=$(gh_api_retry --paginate \
         "repos/$repo/issues/comments?since=$window_floor" \
         2>>"$LOG_FILE" | jq -s 'add // []') \
         || { log "WARN: gh api comments failed for $repo, skipping"; fetch_failures=$((fetch_failures + 1)); repo_failures=$((repo_failures + 1)); continue; }
 
-    trusted_set=$(gh api --paginate "repos/$repo/collaborators?affiliation=direct" 2>>"$LOG_FILE" \
+    trusted_set=$(gh_api_retry --paginate "repos/$repo/collaborators?affiliation=direct" 2>>"$LOG_FILE" \
         | jq -rs '[.[][]] | map(select(.permissions.push == true) | .login) | .[]') \
         || { log "WARN: gh api collaborators failed for $repo, skipping"; fetch_failures=$((fetch_failures + 1)); repo_failures=$((repo_failures + 1)); continue; }
 
@@ -163,7 +164,7 @@ for repo in "${REPOS[@]}"; do
         # cited paths with PR touched paths and sum LOC across matched paths.
         cache_key="${repo}#${pr_num}"
         if [[ -z "${pr_paths_cache[$cache_key]+set}" ]]; then
-            if pr_files_tsv=$(gh api --paginate "repos/$repo/pulls/$pr_num/files" --jq '.[] | [.filename, .additions, .deletions] | @tsv' 2>>"$LOG_FILE"); then
+            if pr_files_tsv=$(gh_api_retry --paginate "repos/$repo/pulls/$pr_num/files" --jq '.[] | [.filename, .additions, .deletions] | @tsv' 2>>"$LOG_FILE"); then
                 pr_files_cache["$cache_key"]="$pr_files_tsv"
                 pr_paths_cache["$cache_key"]=$(printf '%s\n' "$pr_files_tsv" | cut -f1)
                 pr_files_ok_cache["$cache_key"]="1"
@@ -206,7 +207,7 @@ for repo in "${REPOS[@]}"; do
         if [[ -z "${pr_post_paths_cache[$post_review_key]+set}" ]]; then
             post_paths=""
             post_paths_ok=1
-            if commits_json=$(gh api --paginate "repos/$repo/pulls/$pr_num/commits" 2>>"$LOG_FILE"); then
+            if commits_json=$(gh_api_retry --paginate "repos/$repo/pulls/$pr_num/commits" 2>>"$LOG_FILE"); then
                 # committer.date (not author.date) is the "landed on branch" timestamp —
                 # rebased or prewritten commits keep their original author.date but get
                 # a fresh committer.date when they land, which is what "after the review"
@@ -215,7 +216,7 @@ for repo in "${REPOS[@]}"; do
                     | jq -rs --arg t "$created_at" 'add // [] | .[] | select(.commit.committer.date > $t) | .sha')
                 while IFS= read -r sha; do
                     [ -z "$sha" ] && continue
-                    if commit_json=$(gh api "repos/$repo/commits/$sha" 2>>"$LOG_FILE"); then
+                    if commit_json=$(gh_api_retry "repos/$repo/commits/$sha" 2>>"$LOG_FILE"); then
                         # Emit both filename AND previous_filename so a post-review
                         # rename (commit changes old.py → new.py) still matches a
                         # probe citing the pre-rename path.

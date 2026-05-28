@@ -130,6 +130,9 @@ _bot_activity_graphql_query='query($q: String!, $after: String) {
 # failure policy — specialist-bakeoff.sh fails loud (PARTIAL + exit) rather than
 # re-entering the per-repo fan-out this batched path exists to retire.
 repos_with_bot_activity_since() {
+    # Source gh_api_retry here, not at file scope, so only this discovery path
+    # carries the dependency — enumerate_open_prs callers stay unburdened.
+    . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-retry.sh"
     local since="$1" bot="$2" owner q raw after pieces=()
     declare -A _seen_owners=() _tracked=()
     for owner in "${ORGS[@]}"; do
@@ -139,9 +142,9 @@ repos_with_bot_activity_since() {
         after=""
         while :; do
             if [ -n "$after" ]; then
-                raw=$(gh api graphql -F q="$q" -F after="$after" -f query="$_bot_activity_graphql_query" 2>/dev/null) || return 1
+                raw=$(gh_api_retry graphql -F q="$q" -F after="$after" -f query="$_bot_activity_graphql_query" 2>/dev/null) || return 1
             else
-                raw=$(gh api graphql -F q="$q" -f query="$_bot_activity_graphql_query" 2>/dev/null) || return 1
+                raw=$(gh_api_retry graphql -F q="$q" -f query="$_bot_activity_graphql_query" 2>/dev/null) || return 1
             fi
             pieces+=("$(printf '%s' "$raw" | jq -r '.data.search.nodes[]?.repository.nameWithOwner')") || return 1
             # endCursor only when there is a next page (else empty → stop). A
