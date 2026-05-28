@@ -89,6 +89,11 @@ docker build -f docker/Dockerfile -t knightwatch-reviewer:dev .
 # leaving it enabled means host + containers both review — and double-post —
 # the same PRs (their per-PR locks live in different places and don't dedup).
 sudo systemctl disable --now pr-reviewer.timer
+# Disabling the timer stops new ticks, but workers already dispatched run
+# detached (KillMode=process) for up to 90m and still hold ~/.pr-reviewer
+# locks — so DRAIN them before bringing up containers, or an in-flight host
+# review can double-post against a new container review:
+while pgrep -f 'review-one-pr\.sh' >/dev/null; do echo "waiting for in-flight host reviewers to finish…"; sleep 30; done
 docker compose up -d
 docker compose logs -f reviewer-1
 ```

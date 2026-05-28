@@ -13,7 +13,7 @@ cp -r docker/secrets.example docker/secrets
 
 | Path | Shared / per-account | Contents |
 | --- | --- | --- |
-| `config.env` | shared | Ops knobs + child-process tokens, **shell-sourced** by `review.sh` at `/shared/config.env` (the existing config seam — no separate env_file). Use `export GH_TOKEN=…` so `gh` and the worker inherit it. `ANTHROPIC_API_KEY` does NOT belong here — it's a `just test` dependency delivered via the `.env` mirror below, not the reviewer env. |
+| `config.env` | shared | Ops knobs + child-process tokens, **shell-sourced** by `review.sh` (via `CONFIG_ENV_FILE`). Mounted at the **root-only** path `/root/.kwr/config.env` so the unprivileged `reviewer-test` user that runs `just test` can't read the token *file* (the `env -i` scrub only covers its environment). Use `export GH_TOKEN=…` so `gh` and the worker inherit it. `ANTHROPIC_API_KEY` does NOT belong here — it's a `just test` dependency delivered via the `.env` mirror below, not the reviewer env. |
 | `repos.conf` | shared | The tracked-repo manifest (`REPOS=(...)`, `KID_PATHS`). Mounted into the shared volume at `/shared/repos.conf`. Start from the repo-root `repos.conf.example`. |
 | `claude-standards/` | shared | The four review-standards files the worker stages into the prompt: `CODING_STANDARDS.md`, `REVIEW_PRACTICES.md`, `TESTING.md`, `COMMENT_REVIEW_MISTAKES.md`. Mounted read-only at `/root/.claude`. Copy just these four from your `~/.claude` — NOT the whole dir, so prompt-injectable review agents can't read global config/secrets. |
 | `codex-account-a/` | reviewer-1's OpenAI account | A full `~/.codex` directory for account A (must contain `auth.json`). Mounted read-only at reviewer-1's `/root/.codex`. |

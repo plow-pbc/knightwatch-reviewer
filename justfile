@@ -118,6 +118,10 @@ test:
     bash lib/tests/review-loop-smoke.sh
 
     echo ""
+    echo "=== run-just-test isolation smoke test ==="
+    bash lib/tests/run-just-test-isolation-smoke.sh
+
+    echo ""
     echo "=== orchestrator skip smoke test ==="
     bash lib/tests/orchestrator-skip-smoke.sh
 
