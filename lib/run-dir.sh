@@ -228,7 +228,12 @@ run_just_test() {
         pkill -KILL -u "$REVIEWER_TEST_USER" 2>/dev/null || true
         for _ in $(seq 1 20); do pgrep -u "$REVIEWER_TEST_USER" >/dev/null 2>&1 || break; sleep 0.1; done
         if pgrep -u "$REVIEWER_TEST_USER" >/dev/null 2>&1; then
-            log "$PR_ID: WARNING — a reviewer-test process survived SIGKILL (uninterruptible?) entering scratch staging"
+            # A process surviving SIGKILL is a catastrophic integrity failure
+            # (uninterruptible I/O, or a kernel/namespace bug). Fail fast — do NOT
+            # proceed into root-owned scratch staging where a live writer could
+            # race us. The worker's EXIT trap handles the placeholder + cleanup.
+            log "$PR_ID: FATAL — reviewer-test process survived SIGKILL; aborting before root scratch staging"
+            exit 1
         fi
         chown -R root:root "$repo_dir"
         chmod -R go-w "$repo_dir"
