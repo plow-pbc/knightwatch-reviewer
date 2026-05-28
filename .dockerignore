@@ -3,6 +3,14 @@ docs
 replays
 last-run-scratch
 docker/secrets
+# Operator-local config + any stray creds — keep out of image layers
+repos.conf
+repos.conf.auto
+config.env
+.env
+.env.*
+.codex
+**/auth.json
 **/.codex-scratch
 **/node_modules
 *.log

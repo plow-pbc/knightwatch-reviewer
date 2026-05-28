@@ -47,7 +47,6 @@ services:
       - claims:/shared
       - reviewer1-local:/local
       - ./docker/secrets/codex-account-a:/root/.codex:ro      # OpenAI account A
-      - ./docker/secrets/env-test-live:/app/.env.test-live:ro
       - ./docker/secrets/repos.conf:/shared/repos.conf:ro     # tracked-repo manifest
 
   dind-2:
@@ -75,7 +74,6 @@ services:
       - claims:/shared
       - reviewer2-local:/local
       - ./docker/secrets/codex-account-b:/root/.codex:ro      # OpenAI account B
-      - ./docker/secrets/env-test-live:/app/.env.test-live:ro
       - ./docker/secrets/repos.conf:/shared/repos.conf:ro
 
 volumes:
