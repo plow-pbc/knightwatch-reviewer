@@ -41,13 +41,13 @@ services:
       DOCKER_HOST: tcp://127.0.0.1:2375
       POLL_SECS: "30"
       WORKER_ID: "1"
-    env_file:
-      - docker/secrets/shared.env   # GH_TOKEN, ANTHROPIC_API_KEY, BOT_USER, … (shared)
     volumes:
       - claims:/shared
       - reviewer1-local:/local
-      - ./docker/secrets/codex-account-a:/root/.codex:ro      # OpenAI account A
-      - ./docker/secrets/repos.conf:/shared/repos.conf:ro     # tracked-repo manifest
+      - ./docker/secrets/codex-account-a:/root/.codex:ro       # OpenAI account A
+      - ./docker/secrets/repos.conf:/shared/repos.conf:ro      # tracked-repo manifest
+      - ./docker/secrets/config.env:/shared/config.env:ro      # ops knobs + `export GH_TOKEN=…` (the one config seam; review.sh sources it)
+      - ./docker/secrets/claude-standards:/root/.claude:ro     # review standards (worker reads as root; the test user is isolated from /root)
 
   dind-2:
     <<: *dind
@@ -68,13 +68,13 @@ services:
       DOCKER_HOST: tcp://127.0.0.1:2375
       POLL_SECS: "30"
       WORKER_ID: "2"
-    env_file:
-      - docker/secrets/shared.env
     volumes:
       - claims:/shared
       - reviewer2-local:/local
-      - ./docker/secrets/codex-account-b:/root/.codex:ro      # OpenAI account B
+      - ./docker/secrets/codex-account-b:/root/.codex:ro       # OpenAI account B
       - ./docker/secrets/repos.conf:/shared/repos.conf:ro
+      - ./docker/secrets/config.env:/shared/config.env:ro
+      - ./docker/secrets/claude-standards:/root/.claude:ro
 
 volumes:
   claims:

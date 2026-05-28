@@ -27,6 +27,12 @@ RUN curl -fsSL https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/b
 # codex CLI (npm global) — the gpt-5.5 reviewer agents
 RUN npm install -g @openai/codex
 
+# Unprivileged user that PR-controlled `just test` runs as (REVIEWER_TEST_USER).
+# It owns its own $HOME but cannot read root-owned /root/.codex or the reviewer
+# tokens — see run_just_test in lib/run-dir.sh. `just test` reaches the dind
+# daemon over DOCKER_HOST (tcp), so no docker-group / socket access is needed.
+RUN useradd --create-home --uid 10001 reviewer-test
+
 WORKDIR /app
 COPY . /app
 RUN chmod +x review.sh review-loop.sh lib/*.sh

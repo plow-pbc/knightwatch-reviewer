@@ -192,9 +192,28 @@ format_review_scope() {
 # the production orchestrator log. Cosmetic, but keeps post-mortem greps clean.
 run_just_test() {
     local just_file="$1" repo_dir="$2" test_log="$3" test_timeout="$4" test_kill_after="$5"
-    timeout -k "$test_kill_after" "$test_timeout" \
-        env -u LOG_FILE just --justfile "$just_file" --working-directory "$repo_dir" test \
-        > "$test_log" 2>&1
+    # Containerized deployment sets REVIEWER_TEST_USER to an unprivileged
+    # account. PR-controlled `just test` is the most dangerous code the reviewer
+    # runs, so drop to that user with an allowlisted env: it cannot read the
+    # root-owned /root/.codex login (mode 600) or the reviewer's tokens (kept
+    # out of the env passed in). Trusted-author live creds arrive as FILES in
+    # repo_dir (the .env mirror in review-one-pr.sh), which the test user reads
+    # from disk after the chown — never from the environment. The redirect to
+    # $test_log is opened by this (root) shell before the privilege drop, so the
+    # log stays root-owned and readable afterwards. The host/systemd path leaves
+    # REVIEWER_TEST_USER unset and runs as the operator, unchanged.
+    if [ -n "${REVIEWER_TEST_USER:-}" ]; then
+        chown -R "$REVIEWER_TEST_USER" "$repo_dir"
+        timeout -k "$test_kill_after" "$test_timeout" \
+            runuser -u "$REVIEWER_TEST_USER" -- \
+            env -i PATH="$PATH" HOME="/home/$REVIEWER_TEST_USER" DOCKER_HOST="${DOCKER_HOST:-}" \
+                just --justfile "$just_file" --working-directory "$repo_dir" test \
+            > "$test_log" 2>&1
+    else
+        timeout -k "$test_kill_after" "$test_timeout" \
+            env -u LOG_FILE just --justfile "$just_file" --working-directory "$repo_dir" test \
+            > "$test_log" 2>&1
+    fi
 }
 
 # timeout_duration_seconds DURATION
