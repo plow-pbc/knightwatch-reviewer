@@ -17,7 +17,7 @@
 - `~/.pr-reviewer/bakeoff.db` — SQLite store for the specialist bake-off (per-(review × specialist) rows, daily incremental walker since `min(REWALK_HOURS_ago, walks.last_walked_at)`, write-time roster marker on every posted review). The carve-out is justified by needing time-series queries for cull/promote decisions on specialists; flat JSON would have required re-implementing GROUP BY + window cutoffs in awk on every walk. This is the ONLY SQLite seam — new state needs should default to JSON files + flock unless they have the same time-series-query shape.
 
 **Known near-term migrations / roadmap items:**
-- Containerized multi-account review loop (in flight): distributes reviews across N OpenAI/Codex accounts so one account's weekly cap can't stall the queue, and confines PR code + codex agents to a container. The auxiliary host timers are not yet containerized; reconciling their `~/.pr-reviewer` state with the container `claims` volume is a follow-up.
+- Containerized multi-account review loop (in flight): distributes reviews across N OpenAI/Codex accounts so one account's weekly cap can't stall the queue, and confines PR code + codex agents to a container. The auxiliary host timers are not yet containerized, and two feed state the containers don't read in v1: `org-sync` writes `~/.pr-reviewer/repos.conf.auto` (auto-discovery) and `learn` writes `~/.claude/COMMENT_REVIEW_MISTAKES.md` (auto-calibration). v1 scopes the container path to the review loop only — operators list repos explicitly + refresh the standards copy; collapsing these into one shared host/container seam is a follow-up.
 
 **Review posture for PRs against this repo:**
 - Bash and shell-pattern findings are fair game (quoting bugs, lock-file races, jq pitfalls).

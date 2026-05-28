@@ -75,7 +75,7 @@ cd knightwatch-reviewer
 
 Single-tenant by design: one Linux host with `gh` authenticated as the bot's signing user. The systemd units currently bake in `User=odio` and `/home/odio/.pr-reviewer/`; edit them for a different user or path.
 
-> **Legacy single-account path.** The `systemd/*.timer` deployment above runs the reviewer on **one** OpenAI/Codex account on the host. It remains supported as the fallback, but the **containerized multi-account deployment below supersedes it** — it spreads reviews across N accounts (so one account's weekly cap can't stall all reviews) and confines each review (PR code + codex agents) to a container.
+> **Legacy single-account path.** The `systemd/*.timer` deployment above runs the reviewer on **one** OpenAI/Codex account on the host. It remains supported as the fallback, but the **containerized multi-account deployment below is the primary path for the review loop** — it spreads reviews across N accounts (so one account's weekly cap can't stall all reviews) and confines each review (PR code + codex agents) to a container. It containerizes the *review loop only*; the auxiliary host timers (auto-discovery, auto-calibration) stay host-side — see the migration note below.
 
 ### Containerized (multi-account) deployment
 
@@ -98,7 +98,11 @@ docker compose up -d
 docker compose logs -f reviewer-1
 ```
 
-The auxiliary host timers (`pr-reviewer-learn`, `-approve`, `-re-request`, `-kid-refresh`) are independent of the review loop and don't double-review; leave them or migrate them separately. **`pr-reviewer-org-sync` is the exception:** it writes auto-discovered repos to `~/.pr-reviewer/repos.conf.auto`, which the containers (reading `/shared/repos.conf`) never see — so in the container deployment, list the tracked repos explicitly in `docker/secrets/repos.conf` rather than relying on org-sync auto-discovery (or mount a shared `repos.conf.auto` into `/shared` and run org-sync against it). Reconciling that is the follow-up noted in `.knightwatch/product-context.md`.
+The auxiliary host timers (`-approve`, `-re-request`, `-kid-refresh`) are independent of the review loop and don't double-review; leave them or migrate separately. **Two write host state the containers don't read — auto-discovery and auto-calibration are host-only in v1:**
+- `pr-reviewer-org-sync` writes auto-discovered repos to `~/.pr-reviewer/repos.conf.auto`, which the containers (reading `/shared/repos.conf`) never see → list tracked repos explicitly in `docker/secrets/repos.conf` (or mount a shared `repos.conf.auto` into `/shared` and run org-sync against it).
+- `pr-reviewer-learn` updates `~/.claude/COMMENT_REVIEW_MISTAKES.md` (learned review calibrations), but the containers read the static `docker/secrets/claude-standards/` copy → re-copy that file (or mount the live one read-only) to pick up new calibrations.
+
+Fully reconciling these into one shared host/container seam is the tracked follow-up in `.knightwatch/product-context.md`.
 
 `docker compose config` validates the topology before bringing it up. Add an account by dropping in another `~/.codex` and adding a `dind-N` + `reviewer-N` pair (see `docker/secrets.example/README.md`). Each unit's `reviewer` + `dind` memory limits sum toward the host budget — keep headroom for anything else on the box.
 
