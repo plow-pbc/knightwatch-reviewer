@@ -104,6 +104,8 @@ if [[ -f "$REPO_DIR/repos.conf.example" ]] && cmp -s "$REPO_DIR/repos.conf" "$RE
     exit 0
 fi
 
+info "NOTE: this installs the legacy single-account systemd timer deployment. For multi-account distribution, prefer the containerized path — see README.md § Containerized (multi-account) deployment and docker-compose.yml."
+
 # --- 1. Symlinks into $INSTALL_DIR ------------------------------------------
 # Discover the script list from the systemd unit files' ExecStart=
 # directives — the units are the source of truth for what runs in
