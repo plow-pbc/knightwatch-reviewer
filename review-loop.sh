@@ -42,7 +42,19 @@ for i in $(seq 1 60); do
 done
 echo "[review-loop] dind ready at ${DOCKER_HOST:-default}; polling every ${POLL_SECS}s (worker=${WORKER_ID:-?})"
 
+# Quota backoff: when codex caps this account, review-one-pr.sh writes the reset
+# epoch here; this loop stops claiming reviews until it passes, so a capped
+# account backs off and the other accounts carry the queue.
+QUOTA_FILE="${LOCAL_STATE_DIR:-/var/empty}/quota-paused-until"
+
 while true; do
+    if [ -f "$QUOTA_FILE" ]; then
+        if [ "$(date +%s)" -lt "$(head -n1 "$QUOTA_FILE" 2>/dev/null || echo 0)" ]; then
+            echo "[review-loop] codex quota-paused (worker=${WORKER_ID:-?}) — skipping tick"
+            sleep "$POLL_SECS"; continue
+        fi
+        rm -f "$QUOTA_FILE"   # window passed; resume claiming
+    fi
     # review.sh returns 0 on normal/no-PR/transient-enumerate-failure ticks
     # and non-zero ONLY on fatal misconfig (missing worker script, no tracked
     # repos). Surface that loudly via container exit + restart instead of
