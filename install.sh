@@ -58,9 +58,11 @@ fi
 PY_VERSION=$(python3 --version 2>&1 | awk '{print $2}')
 ok "python3: $PY_VERSION"
 
-# gh CLI: review-one-pr.sh requests the `closingIssuesReferences` field
-# (added in gh 2.65); older gh exits on unknown JSON fields and aborts
-# the entire pr-view call.
+# gh CLI: review-one-pr.sh requests the `closingIssuesReferences` field on
+# `gh pr view --json`. 2.65 does NOT support it (rejects with "Unknown JSON
+# field" — the field lands in a later release); too-old gh returns empty and
+# aborts the entire pr-view call. 2.90.0 is verified to speak it (matches the
+# container Dockerfile pin).
 if ! command -v gh >/dev/null 2>&1; then
     fail "gh not on PATH — required by review-one-pr.sh / review.sh / etc. (apt install gh)"
 fi
@@ -68,8 +70,8 @@ GH_VERSION=$(gh --version 2>&1 | head -1 | awk '{print $3}')
 GH_MAJ="${GH_VERSION%%.*}"
 GH_REST="${GH_VERSION#*.}"
 GH_MIN="${GH_REST%%.*}"
-if [ "${GH_MAJ:-0}" -lt 2 ] || { [ "${GH_MAJ:-0}" -eq 2 ] && [ "${GH_MIN:-0}" -lt 65 ]; }; then
-    fail "gh CLI is $GH_VERSION; need >= 2.65 for closingIssuesReferences field used in lib/review-one-pr.sh:296. Update via: 'sudo apt install gh' (or download a newer .deb from https://github.com/cli/cli/releases) and re-run install.sh."
+if [ "${GH_MAJ:-0}" -lt 2 ] || { [ "${GH_MAJ:-0}" -eq 2 ] && [ "${GH_MIN:-0}" -lt 90 ]; }; then
+    fail "gh CLI is $GH_VERSION; need >= 2.90 for the closingIssuesReferences field used in lib/review-one-pr.sh (2.65 rejects it as an unknown JSON field). Update via: 'sudo apt install gh' (or download a newer .deb from https://github.com/cli/cli/releases) and re-run install.sh."
 fi
 ok "gh: $GH_VERSION"
 
