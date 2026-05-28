@@ -104,6 +104,8 @@ The auxiliary host timers (`-approve`, `-re-request`, `-kid-refresh`) are indepe
 
 Fully reconciling these into one shared host/container seam is the tracked follow-up in `.knightwatch/product-context.md`.
 
+**Security note — before you deploy:** the dind sidecar runs `--privileged`, and the sandbox-bypassed codex agents share its network namespace (`DOCKER_HOST`), so a successful prompt-injection of a review agent could drive the daemon → host root. Untrusted `just test` is already skipped, but the codex path is an **accepted v1 residual to resolve at bring-up** — make the daemon unprivileged (rootless dind / sysbox) or run codex in a container that doesn't share dind, and verify against the live suite, before standing this up against real PRs.
+
 `docker compose config` validates the topology before bringing it up. Add an account by dropping in another `~/.codex` and adding a `dind-N` + `reviewer-N` pair (see `docker/secrets.example/README.md`). Each unit's `reviewer` + `dind` memory limits sum toward the host budget — keep headroom for anything else on the box.
 
 ## Configure repos

@@ -34,6 +34,11 @@ REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 . "$REVIEWER_LIB_DIR/tracked-repos.sh"
 . "$REVIEWER_LIB_DIR/gh-comments.sh"
 [ ${#REPOS[@]} -ge 1 ] || { echo "FATAL: no tracked repos — populate $STATE_DIR/repos.conf or set REPOS in config.env" >&2; exit 1; }
+# Container entrypoint (review-loop.sh) pins one in-flight review per account.
+# Re-assert AFTER config.env is sourced (just above, via tracked-repos.sh) so a
+# stray legacy MAX_CONCURRENT/WAIT_FOR_WORKERS in config.env can't silently break
+# the container contract. The host/systemd path leaves the sentinel unset.
+if [ -n "${REVIEWER_CONTAINER_MODE:-}" ]; then MAX_CONCURRENT=1; WAIT_FOR_WORKERS=1; fi
 BOT_USER="${BOT_USER:-srosro}"
 BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
 # Hidden HTML-comment marker prepended to every auto-post by this repo

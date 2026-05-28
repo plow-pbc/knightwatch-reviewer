@@ -8,6 +8,7 @@ FROM node:24.15.0-bookworm
 ARG GH_VERSION=2.65.0
 ARG JUST_VERSION=1.36.0
 ARG DOCKER_CLI_VERSION=27.3.1
+ARG CODEX_CLI_VERSION=0.134.0
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git jq ca-certificates curl gnupg coreutils python3 python3-venv \
@@ -24,8 +25,9 @@ RUN curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${
 # uv (python tool runner used by plow `just test`)
 RUN curl -fsSL https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 
-# codex CLI (npm global) — the gpt-5.5 reviewer agents
-RUN npm install -g @openai/codex
+# codex CLI (npm global) — the gpt-5.5 reviewer agents. Pinned so a rebuild
+# can't change reviewer behavior outside the PR diff (matches GH/JUST/DOCKER pins).
+RUN npm install -g "@openai/codex@${CODEX_CLI_VERSION}"
 
 # Unprivileged user that PR-controlled `just test` runs as (REVIEWER_TEST_USER).
 # It owns its own $HOME but cannot read root-owned /root/.codex or the reviewer

@@ -18,6 +18,7 @@
 
 **Known near-term migrations / roadmap items:**
 - Containerized multi-account review loop (in flight): distributes reviews across N OpenAI/Codex accounts so one account's weekly cap can't stall the queue, and confines PR code + codex agents to a container. The auxiliary host timers are not yet containerized, and two feed state the containers don't read in v1: `org-sync` writes `~/.pr-reviewer/repos.conf.auto` (auto-discovery) and `learn` writes `~/.claude/COMMENT_REVIEW_MISTAKES.md` (auto-calibration). v1 scopes the container path to the review loop only — operators list repos explicitly + refresh the standards copy; collapsing these into one shared host/container seam is a follow-up.
+- **Accepted v1 residual — codex↔dind (resolve at bring-up):** the sandbox-bypassed codex agents share the dind sidecar's netns + `DOCKER_HOST`, so a successful prompt-injection of a review agent could drive the privileged daemon. Untrusted `just test` is already skipped; the deeper codex path is a *deliberately deferred* hardening (not an oversight) — the fix (unprivileged/rootless dind via sysbox, or a separate test-runner container that alone touches dind) needs the live deployment to verify and is decided at Task-7 bring-up. Nothing is exposed until the containers are actually deployed. Future reviews: this is a recorded deferral, not a new finding.
 
 **Review posture for PRs against this repo:**
 - Bash and shell-pattern findings are fair game (quoting bugs, lock-file races, jq pitfalls).

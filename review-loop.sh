@@ -25,6 +25,9 @@ export MAX_CONCURRENT=1
 # poll loop's next tick starts while the prior detached worker is still running
 # and one account ends up driving multiple concurrent reviews.
 export WAIT_FOR_WORKERS=1
+# Sentinel so review.sh can re-pin the one-review-per-account contract AFTER it
+# sources config.env (which could otherwise override MAX_CONCURRENT/WAIT_FOR_WORKERS).
+export REVIEWER_CONTAINER_MODE=1
 # Run PR-controlled `just test` as this unprivileged user (created in the image)
 # so a hostile test recipe can't read /root/.codex or the reviewer's tokens —
 # see run_just_test in lib/run-dir.sh.
