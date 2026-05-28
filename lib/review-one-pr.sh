@@ -102,6 +102,11 @@ WORKDIRS_DIR="${WORKDIRS_DIR:-$STATE_DIR/workdirs}"
 BOT_USER="${BOT_USER:-srosro}"
 BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
 BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
+# Tags the transient "👀 reviewing" placeholder (and its abort/paused edits)
+# so a later tick can recognize an unresolved placeholder from a prior tick
+# and reuse it instead of stacking a new one. Real reviews never carry it,
+# so the reuse check below only ever recycles a placeholder, never a review.
+BOT_PLACEHOLDER_MARKER="${BOT_PLACEHOLDER_MARKER:-<!-- knightwatch-reviewer:placeholder -->}"
 # BOT_AI_AUTHOR_MARKER is defined in lib/run-dir.sh (single source of truth);
 # this worker sources run-dir.sh below at $_LIB_DIR/run-dir.sh and consumes
 # the var when posting the review body.
@@ -258,6 +263,7 @@ cleanup_eyes() {
     gh api "repos/$REPO/issues/comments/$EYES_COMMENT_ID" --method PATCH \
         -f body="$BOT_AUTO_POST_MARKER
 $BOT_AI_AUTHOR_MARKER
+$BOT_PLACEHOLDER_MARKER
 $EYES_ABORT_BODY" \
         >/dev/null 2>&1 || true
 }
@@ -376,20 +382,43 @@ fi
 # EXIT trap edits the placeholder to "aborted" instead so it doesn't read
 # as "still reviewing" forever.
 #
+# Reuse a prior tick's unresolved placeholder instead of posting a new one.
+# During a transient outage (codex quota exhausted, specialist timeout) every
+# 2-min tick aborts at the same point and the EXIT trap leaves a paused/aborted
+# placeholder behind. Without reuse, each tick POSTs a brand-new placeholder —
+# one fresh comment per tracked PR every 2 minutes until the outage clears
+# (observed: 39 "codex quota" comments on a single PR). Recycling the existing
+# placeholder means the EXIT trap re-PATCHes the SAME comment (a silent edit,
+# no notification), so an outage leaves exactly one self-updating marker per
+# PR. A real review (or a new PR head) deletes the placeholder on the success
+# path, so the next tick genuinely posts fresh. The reuse query only ever
+# matches a placeholder — real reviews don't carry BOT_PLACEHOLDER_MARKER.
+#
 # The leading HTML comment is invisible in rendered Markdown but lets the
 # orchestrator's jq filter recognize this as one of our auto-posts so we
 # don't self-trigger on the next tick.
-EYES_COMMENT_ID=$(gh api "repos/$REPO/issues/$PR_NUM/comments" \
-    --method POST \
-    -f body="$BOT_AUTO_POST_MARKER
-$BOT_AI_AUTHOR_MARKER
-👀 reviewing — [sam's ai review bot](https://github.com/srosro/knightwatch-reviewer)" \
-    --jq '.id' 2>/dev/null) || EYES_COMMENT_ID=""
+EYES_COMMENT_ID=$(BOT_AUTO_POST_MARKER="$BOT_AUTO_POST_MARKER" \
+    BOT_PLACEHOLDER_MARKER="$BOT_PLACEHOLDER_MARKER" \
+    gh api "repos/$REPO/issues/$PR_NUM/comments" --paginate \
+    --jq '[.[] | select(.body | contains(env.BOT_AUTO_POST_MARKER))] | last as $c
+          | if ($c != null) and ($c.body | contains(env.BOT_PLACEHOLDER_MARKER))
+            then $c.id else empty end' 2>/dev/null | head -n 1) || EYES_COMMENT_ID=""
 
 if [ -n "$EYES_COMMENT_ID" ]; then
-    log "$PR_ID: posted reviewing placeholder (comment id=$EYES_COMMENT_ID)"
+    log "$PR_ID: reusing prior placeholder (comment id=$EYES_COMMENT_ID) — not stacking a new one"
 else
-    log "$PR_ID: failed to post reviewing placeholder (continuing)"
+    EYES_COMMENT_ID=$(gh api "repos/$REPO/issues/$PR_NUM/comments" \
+        --method POST \
+        -f body="$BOT_AUTO_POST_MARKER
+$BOT_AI_AUTHOR_MARKER
+$BOT_PLACEHOLDER_MARKER
+👀 reviewing — [sam's ai review bot](https://github.com/srosro/knightwatch-reviewer)" \
+        --jq '.id' 2>/dev/null) || EYES_COMMENT_ID=""
+    if [ -n "$EYES_COMMENT_ID" ]; then
+        log "$PR_ID: posted reviewing placeholder (comment id=$EYES_COMMENT_ID)"
+    else
+        log "$PR_ID: failed to post reviewing placeholder (continuing)"
+    fi
 fi
 
 # Align canonical's `refs/heads/$BASE_REF` with the just-fetched
