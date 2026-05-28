@@ -12,11 +12,12 @@ cd "$(dirname "$0")"
 # to the in-image lib so review.sh doesn't fall back to $HOME/.pr-reviewer/lib
 # (which doesn't exist in the container). STATE_DIR / REPOS_DIR / WORKDIRS_DIR
 # / LOCAL_STATE_DIR come from the compose environment.
-export REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$(pwd)/lib}"
-# PROMPTS_DIR also defaults to $HOME/.pr-reviewer/prompts in the worker; the
-# image ships prompts under the repo, so point it there or reviews abort at
-# `probe-schema.md missing`.
-export PROMPTS_DIR="${PROMPTS_DIR:-$(pwd)/prompts}"
+# The entrypoint OWNS these paths — assign directly (not `${VAR:-default}`) so
+# the container has one contract regardless of any inherited env. The worker
+# otherwise defaults both to $HOME/.pr-reviewer/{lib,prompts}, which doesn't
+# exist in the image (reviews abort at `probe-schema.md missing`).
+export REVIEWER_LIB_DIR="$(pwd)/lib"
+export PROMPTS_DIR="$(pwd)/prompts"
 POLL_SECS="${POLL_SECS:-30}"
 export MAX_CONCURRENT=1
 # Block each tick until its dispatched worker finishes (review.sh honors this),

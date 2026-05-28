@@ -41,11 +41,16 @@ cat > "$d/review.sh" <<'STUB'
 exit 1   # fatal tick: review-loop must exit (not loop) — also breaks the test loop
 STUB
 chmod +x "$d/review.sh"
-if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x ./review-loop.sh ) >/dev/null 2>&1; then
+# Inherit bogus REVIEWER_LIB_DIR/PROMPTS_DIR to prove the entrypoint OWNS these
+# (the contract that broke in the bot's worker, which exports REVIEWER_LIB_DIR):
+# review-loop must override them to the in-image paths, not honor the caller.
+if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x \
+        REVIEWER_LIB_DIR=/bogus/inherited/lib PROMPTS_DIR=/bogus/inherited/prompts \
+        ./review-loop.sh ) >/dev/null 2>&1; then
     fail "review-loop exited 0 on a fatal (non-zero) review.sh tick (should exit for restart)"
 fi
-grep -q "REVIEWER_LIB_DIR=$d/lib" "$d/env.seen"     || fail "REVIEWER_LIB_DIR not exported to worker as \$repo/lib"
-grep -q "PROMPTS_DIR=$d/prompts" "$d/env.seen"      || fail "PROMPTS_DIR not exported to worker as \$repo/prompts"
+grep -q "REVIEWER_LIB_DIR=$d/lib" "$d/env.seen"     || fail "REVIEWER_LIB_DIR not forced to \$repo/lib (caller env leaked through)"
+grep -q "PROMPTS_DIR=$d/prompts" "$d/env.seen"      || fail "PROMPTS_DIR not forced to \$repo/prompts (caller env leaked through)"
 grep -q "MAX_CONCURRENT=1" "$d/env.seen"            || fail "MAX_CONCURRENT not pinned to 1"
 grep -q "WAIT_FOR_WORKERS=1" "$d/env.seen"          || fail "WAIT_FOR_WORKERS not set (one-review-per-account cap)"
 rm -rf "$d"

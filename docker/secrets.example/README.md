@@ -49,9 +49,11 @@ Only `auth.json` is strictly required; copying the whole dir is simplest.
 ## Adding a third account (scale-out)
 
 1. `cp -r ~/.codex docker/secrets/codex-account-c` (account C's login).
-2. In `docker-compose.yml`, add a `dind-3` + `reviewer-3` pair (copy the
-   `dind-2`/`reviewer-2` blocks), set `WORKER_ID: "3"`, mount
-   `codex-account-c`, and add `reviewer3-local` + `dind3-lib` volumes.
+2. In `docker-compose.yml`, add a `dind-3` (`<<: *dind` + its `dind3-lib`
+   volume) and a `reviewer-3` that reuses the shared contract — `<<: *reviewer`
+   and `<<: *reviewer-env` — overriding only `network_mode: service:dind-3`,
+   `WORKER_ID: "3"`, the `reviewer3-local` volume, and the `codex-account-c`
+   mount. Add `reviewer3-local` + `dind3-lib` to the `volumes:` block.
 3. `docker compose up -d`.
 
 Mind the host memory budget: each unit's `reviewer` + `dind` mem_limits sum
