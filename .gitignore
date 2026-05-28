@@ -261,3 +261,6 @@ replays/**/run-dir/agents/*/err*.txt
 docs/comparison-2026-05-02.md
 docs/plans/
 prompts.new-design/
+
+# Reviewer container secrets — live per-account creds + tokens, never committed
+docker/secrets/
