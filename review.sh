@@ -328,4 +328,12 @@ if [ "$dispatched" -eq 0 ]; then
 else
     log "Fan-out: dispatched $dispatched worker(s) (detached, running in background)"
 fi
+# Containerized deployment (review-loop.sh) sets WAIT_FOR_WORKERS so this
+# tick blocks until its dispatched workers finish before returning to the
+# poll loop — that's what caps a single OpenAI account to one in-flight
+# review. The systemd path leaves it unset and keeps the detached fan-out
+# (workers survive via KillMode=process; the next timer tick is independent).
+if [ -n "${WAIT_FOR_WORKERS:-}" ]; then
+    wait
+fi
 exit 0

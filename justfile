@@ -114,6 +114,10 @@ test:
     bash lib/tests/container-state-split-smoke.sh
 
     echo ""
+    echo "=== review-loop smoke test ==="
+    bash lib/tests/review-loop-smoke.sh
+
+    echo ""
     echo "=== orchestrator skip smoke test ==="
     bash lib/tests/orchestrator-skip-smoke.sh
 

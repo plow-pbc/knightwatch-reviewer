@@ -84,9 +84,16 @@ Runs N reviewer containers on one host, each pinned to its own OpenAI account an
 ```sh
 cp -r docker/secrets.example docker/secrets   # then populate — see docker/secrets.example/README.md
 docker build -f docker/Dockerfile -t knightwatch-reviewer:dev .
+# Migration: stop the legacy host reviewer FIRST. It polls a different state
+# root (~/.pr-reviewer) than the containers (the shared `claims` volume), so
+# leaving it enabled means host + containers both review — and double-post —
+# the same PRs (their per-PR locks live in different places and don't dedup).
+sudo systemctl disable --now pr-reviewer.timer
 docker compose up -d
 docker compose logs -f reviewer-1
 ```
+
+The auxiliary host timers (`pr-reviewer-learn`, `-org-sync`, `-approve`, `-re-request`, `-kid-refresh`) are independent of the review loop; leave them or migrate them separately — they don't double-review.
 
 `docker compose config` validates the topology before bringing it up. Add an account by dropping in another `~/.codex` and adding a `dind-N` + `reviewer-N` pair (see `docker/secrets.example/README.md`). Each unit's `reviewer` + `dind` memory limits sum toward the host budget — keep headroom for anything else on the box.
 

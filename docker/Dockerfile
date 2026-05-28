@@ -3,7 +3,9 @@
 # repos are cloned at review time into the per-container REPOS_DIR.
 FROM node:24.15.0-bookworm
 
-ARG GH_VERSION=2.62.0
+# gh >= 2.65 required: review-one-pr.sh requests the closingIssuesReferences
+# JSON field (install.sh enforces the same floor); older gh aborts the review.
+ARG GH_VERSION=2.65.0
 ARG JUST_VERSION=1.36.0
 ARG DOCKER_CLI_VERSION=27.3.1
 
