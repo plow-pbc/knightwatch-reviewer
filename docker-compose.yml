@@ -24,7 +24,14 @@ x-dind: &dind
   # 127.0.0.1 reaches its own daemon — but a sibling pair's netns can't, so a
   # 0.0.0.0 bind (reachable across the compose network) would let one reviewer
   # drive another account's daemon. Keep DOCKER_HOST=tcp://127.0.0.1:2375.
-  command: ["--host=tcp://127.0.0.1:2375"]
+  #
+  # `dockerd` MUST be the first token. dockerd-entrypoint.sh injects its own
+  # default `--host=tcp://0.0.0.0:2375` whenever argv is empty or starts with `-`
+  # (its line ~100). A bare `--host=…` first token trips that, so the entrypoint
+  # ALSO appends 0.0.0.0:2375 — which both defeats the loopback-only intent and
+  # collides on the port, so dockerd dies with "bind: address already in use".
+  # Leading with `dockerd` skips the injection, binding ONLY the hosts below.
+  command: ["dockerd", "--host=unix:///var/run/docker.sock", "--host=tcp://127.0.0.1:2375"]
   mem_limit: 12g
 
 # Shared reviewer service contract (everything identical across accounts).
