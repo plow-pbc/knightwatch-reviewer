@@ -251,7 +251,7 @@ class TestRunCodex(unittest.TestCase):
         """Liveness must track BOTH codex streams, not stdout alone. Codex
         (v0.133.0, reasoning-summaries off) streams all live tool/reasoning
         activity to stderr (err.txt) and writes stdout (log.txt) only at the
-        final answer. An investigation agent (dead-code-search/architecture-v2)
+        final answer. An investigation agent (dead-code-search/contract-drift)
         whose work legitimately runs past the staleness threshold leaves
         log.txt frozen the whole time while err.txt grows continuously —
         watching log.txt alone kills a healthy, productive process (the

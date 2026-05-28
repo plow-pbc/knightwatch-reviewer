@@ -161,10 +161,10 @@ for specialist in shape simplification architecture consumers tests security dat
     echo "  asserting simplification probe class in ${specialist}.md..."
     # After collapsing DRY + dead-code + complexity-cost → simplification,
     # most specialists must register simplification as one of their emitted
-    # classes (the universal removal-shaped class). architecture-v2 is the
+    # classes (the universal removal-shaped class). contract-drift is the
     # exception by design — its narrow remit (cross-file contract drift)
     # explicitly bans simplification (simplification specialist owns DRY +
-    # removal-shaped probes); see the architecture-v2 assertions below.
+    # removal-shaped probes); see the contract-drift assertions below.
     assert_grep "${specialist}.md should list simplification as a probe class" \
         "simplification" "prompts/specialists/${specialist}.md"
 done
@@ -221,12 +221,12 @@ echo "  asserting Anti-Bloat carve-out in specialists/tests.md..."
 assert_grep "specialists/tests.md should carry the Anti-Bloat carve-out for hypothetical fences" \
     "no bug shipped and no contract changed" prompts/specialists/tests.md
 
-# Token fence: architecture-v2.md must carry the fence-narrower-than-
+# Token fence: contract-drift.md must carry the fence-narrower-than-
 # prose carve-out — minimum-viable smoke coverage is NOT two-place
 # drift even though it's structurally two-place.
-echo "  asserting fence-narrower-than-prose carve-out in specialists/architecture-v2.md..."
-assert_grep "specialists/architecture-v2.md should carry the fence-narrower-than-prose carve-out" \
-    "minimum-viable coverage, not drift" prompts/specialists/architecture-v2.md
+echo "  asserting fence-narrower-than-prose carve-out in specialists/contract-drift.md..."
+assert_grep "specialists/contract-drift.md should carry the fence-narrower-than-prose carve-out" \
+    "minimum-viable coverage, not drift" prompts/specialists/contract-drift.md
 
 # Token fence: aggregator.md must carry the Silence-is-golden
 # anti-emission stance — counters the LLM default to surface more
@@ -581,13 +581,13 @@ assert_grep "pr-reviewer-bakeoff.timer should run daily at 03:30 UTC" \
 assert_grep "pr-reviewer-bakeoff.timer should not be Persistent (matches repo timer shape)" \
     "Persistent=false" systemd/pr-reviewer-bakeoff.timer
 
-# architecture-v2 registration — the architecture-v2 prompt file must
+# contract-drift registration — the contract-drift prompt file must
 # stay listed in the aggregator's input enumeration; otherwise the
 # specialist's output is silently ignored downstream. Token-presence
 # only (the prompt body's content discipline lives in the prompt itself,
 # not in a smoke fence, per Rule 8 — "don't calcify prompt prose").
-echo "  asserting architecture-v2 specialist registered in aggregator.md..."
-assert_grep "aggregator.md should reference architecture-v2 specialist" \
-    "specialists/architecture-v2.md" prompts/aggregator.md
+echo "  asserting contract-drift specialist registered in aggregator.md..."
+assert_grep "aggregator.md should reference contract-drift specialist" \
+    "specialists/contract-drift.md" prompts/aggregator.md
 
 echo "  PASS"

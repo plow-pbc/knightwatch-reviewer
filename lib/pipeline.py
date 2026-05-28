@@ -13,8 +13,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 SPECIALISTS = (
-    "security", "data-integrity", "architecture", "architecture-v2",
-    "simplification", "tests", "shape", "consumers",
+    "security", "data-integrity", "architecture", "architecture-refined",
+    "contract-drift", "simplification", "tests", "shape", "consumers",
 )
 
 # Per-codex hard cap. Successful specialists complete in 1–5 min; 45 min

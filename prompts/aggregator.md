@@ -7,7 +7,8 @@ You are the aggregator in a multi-specialist PR review. Eight specialists produc
 - `.codex-scratch/specialists/security.md`
 - `.codex-scratch/specialists/data-integrity.md`
 - `.codex-scratch/specialists/architecture.md`
-- `.codex-scratch/specialists/architecture-v2.md`
+- `.codex-scratch/specialists/architecture-refined.md`
+- `.codex-scratch/specialists/contract-drift.md`
 - `.codex-scratch/specialists/simplification.md`
 - `.codex-scratch/specialists/tests.md`
 - `.codex-scratch/specialists/shape.md`
