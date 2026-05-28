@@ -70,6 +70,12 @@ REVIEW_START_ISO="${DISPATCHER_TICK_AT:-$(python3 -c "import datetime; print(dat
 # LOG_FILE defaulted yet (the per-run dir is set up below). Fall back to
 # $STATE_DIR/orchestrator.log so this skip line still lands somewhere durable.
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
+# LOCAL_STATE_DIR holds per-container state that MUST NOT be shared across
+# reviewer containers: the just-test lock and canonical clone/fetch lock.
+# Sharing those would serialize `just test`/fetch across containers and
+# defeat the whole point of running N reviewers in parallel. Defaults to
+# STATE_DIR so single-host (non-container) behavior is unchanged.
+LOCAL_STATE_DIR="${LOCAL_STATE_DIR:-$STATE_DIR}"
 _LIB_DIR_EARLY="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 . "$_LIB_DIR_EARLY/locking.sh"
 PR_LOCK_SLUG="${REPO//\//_}__${PR_NUM}"
@@ -287,7 +293,7 @@ CANONICAL_DIR="$REPOS_DIR/$REPO_SLUG"
 PR_WORKDIR_SLUG="${REPO_SLUG}__${PR_NUM}"
 REPO_DIR="$WORKDIRS_DIR/${PR_WORKDIR_SLUG}"
 
-CANONICAL_LOCK_DIR="$STATE_DIR/canonical-locks"
+CANONICAL_LOCK_DIR="$LOCAL_STATE_DIR/canonical-locks"
 mkdir -p "$CANONICAL_LOCK_DIR"
 CANONICAL_LOCK_FILE="$CANONICAL_LOCK_DIR/$REPO_SLUG"
 exec {CANONICAL_LOCK_FD}> "$CANONICAL_LOCK_FILE"
@@ -711,7 +717,7 @@ else
     # cascaded into 22G memory peaks across the unit. Cross-repo
     # workers are unaffected (different lock file).
     JUST_TEST_LOCK_WAIT_START=$(date +%s)
-    acquire_just_test_lock "$STATE_DIR" "$REPO_SLUG"
+    acquire_just_test_lock "$LOCAL_STATE_DIR" "$REPO_SLUG"
     JUST_TEST_LOCK_WAIT=$(( $(date +%s) - JUST_TEST_LOCK_WAIT_START ))
     if [ "$JUST_TEST_LOCK_WAIT" -ge 5 ]; then
         log "$PR_ID: per-repo just-test lock acquired after ${JUST_TEST_LOCK_WAIT}s queue"

@@ -110,6 +110,10 @@ test:
     bash lib/tests/just-test-flock-smoke.sh
 
     echo ""
+    echo "=== container-state-split smoke test ==="
+    bash lib/tests/container-state-split-smoke.sh
+
+    echo ""
     echo "=== orchestrator skip smoke test ==="
     bash lib/tests/orchestrator-skip-smoke.sh
 
