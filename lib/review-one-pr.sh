@@ -1102,21 +1102,10 @@ case $? in
     0|1) : ;;  # PRESENT or ABSENT: use as-is (org default substituted below if empty)
     *) log "$PR_ID: knightwatch-config error reading product-context.md — aborting"; rm -rf "$REPO_DIR"; exit 1 ;;
 esac
-if [ -z "$PRODUCT_CONTEXT" ]; then
-    PRODUCT_CONTEXT=$(cat <<'PRODUCT_CONTEXT_EOF'
-# Product context (org default — no per-repo file configured)
-
-No `.knightwatch/product-context.md` is committed for this repo, so assume the org default operating point:
-
-- **Stage:** pre-PMF, early. Shipping and iteration speed matter more than hardening for scale.
-- **Userbase:** fewer than 10 users, often a single operator. Abstractions, flags, parallel modes, and defensive edge-case handling sized for thousands of users are over-engineering at this stage, not robustness.
-- **Spec rigidity:** treat specs and inferred intent as sketches, not contracts. A handled edge case the intent never asked for is a cost, not a feature.
-- **Optimize for developer time:** elegant, DRY code that is easy to build on; every maintained code path taxes iteration speed.
-
-If this repo is genuinely at scale or has a different operating point, commit `.knightwatch/product-context.md` to the base branch to override this default.
-PRODUCT_CONTEXT_EOF
-)
-fi
+# default_product_context (lib/knightwatch-config.sh) is the single source of
+# the org-default text, shared with lib/replay.sh so the two staging paths
+# can't drift.
+[ -z "$PRODUCT_CONTEXT" ] && PRODUCT_CONTEXT=$(default_product_context)
 write_scratch "$REPO_DIR" "product-context.md" "$PRODUCT_CONTEXT"
 
 # review-priority.md — per-repo operating point + voice posture
