@@ -59,7 +59,6 @@ rm -rf "$d"
 # 4. Quota backoff: a FUTURE paused-until epoch → review-loop never calls review.sh; PAST → resumes.
 d=$(make_sandbox)
 printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"; chmod +x "$d/bin/docker"   # dind ready
-mkdir -p "$d/state"
 printf '#!/bin/bash\ntouch "%s/called"\nexit 1\n' "$d" > "$d/review.sh"; chmod +x "$d/review.sh"
 printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$d/state/quota-paused-until"
 ( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x LOCAL_STATE_DIR="$d/state" ./review-loop.sh ) >/dev/null 2>&1 || true
