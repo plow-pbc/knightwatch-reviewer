@@ -696,20 +696,16 @@ for n in justfile Justfile JUSTFILE .justfile .Justfile .JUSTFILE; do
     [ -f "$REPO_DIR/$n" ] && { JUST_FILE="$REPO_DIR/$n"; break; }
 done
 
-if [ -z "$JUST_FILE" ]; then
-    log "$PR_ID: no justfile in $REPO_DIR — skipping \`just test\`"
+# `just test` runs PR-controlled code. Skip it when there's no justfile, or when
+# the author is untrusted (no push access) — on EVERY path. Untrusted test code
+# would otherwise run with the reviewer's home-dir read access (~/.ssh, the gh
+# PAT) + network (host path), or drive the privileged dind daemon (container
+# path). just_test_skip_reason (lib/auth.sh) is the single source of truth.
+JUST_TEST_SKIP_REASON=$(just_test_skip_reason "$JUST_FILE" "$IS_TRUSTED_AUTHOR")
+if [ -n "$JUST_TEST_SKIP_REASON" ]; then
+    log "$PR_ID: skipping \`just test\` — $JUST_TEST_SKIP_REASON (author $PR_AUTHOR)"
     TESTS_RAN=false
-    TEST_SUMMARY="not run (no justfile in repo root)"
-    : > "$TEST_LOG"
-elif [ -n "${REVIEWER_TEST_USER:-}" ] && [ "$IS_TRUSTED_AUTHOR" != true ]; then
-    # Container mode forwards DOCKER_HOST to a privileged dind daemon; running
-    # untrusted PR test code there would let it drive that daemon (a host-escape
-    # surface) even without push access. Skip the test run for untrusted authors
-    # in the container path. (The host/systemd path has no dind and still runs
-    # untrusted tests without canonical secrets, unchanged.)
-    log "$PR_ID: skipping \`just test\` — untrusted author ($PR_AUTHOR) in container mode (no dind exposure)"
-    TESTS_RAN=false
-    TEST_SUMMARY="not run (untrusted author; container dind not exposed to untrusted test code)"
+    TEST_SUMMARY="not run ($JUST_TEST_SKIP_REASON)"
     : > "$TEST_LOG"
 else
     # Global concurrency cap on `just test` (MAX_CONCURRENT_TESTS slots,
