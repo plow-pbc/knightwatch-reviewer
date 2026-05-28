@@ -1090,15 +1090,33 @@ fi
 
 # Product context from .knightwatch/product-context.md (per-repo,
 # committed to the base branch). PRESENT-empty and ABSENT both mean
-# "no per-repo product context"; the worker substitutes an explicit
-# placeholder below so prompts don't see a blank input.
+# "no per-repo product context" — in which case we inject the org
+# default operating point below. Most repos here are pre-PMF with a
+# handful of users; absent a per-repo override, reviewers assume that
+# and optimize for iteration speed rather than silently reviewing for
+# scale (the recurring over-engineering failure). A repo genuinely at
+# scale overrides this by committing its own file.
 PRODUCT_CONTEXT=""
 PRODUCT_CONTEXT=$(read_knightwatch_file "$REPO_DIR" "$BASE_REF_SHA" "product-context.md")
 case $? in
-    0|1) : ;;  # PRESENT or ABSENT: use as-is (placeholder substituted below if empty)
+    0|1) : ;;  # PRESENT or ABSENT: use as-is (org default substituted below if empty)
     *) log "$PR_ID: knightwatch-config error reading product-context.md — aborting"; rm -rf "$REPO_DIR"; exit 1 ;;
 esac
-[ -z "$PRODUCT_CONTEXT" ] && PRODUCT_CONTEXT="(no product context configured for $REPO)"
+if [ -z "$PRODUCT_CONTEXT" ]; then
+    PRODUCT_CONTEXT=$(cat <<'PRODUCT_CONTEXT_EOF'
+# Product context (org default — no per-repo file configured)
+
+No `.knightwatch/product-context.md` is committed for this repo, so assume the org default operating point:
+
+- **Stage:** pre-PMF, early. Shipping and iteration speed matter more than hardening for scale.
+- **Userbase:** fewer than 10 users, often a single operator. Abstractions, flags, parallel modes, and defensive edge-case handling sized for thousands of users are over-engineering at this stage, not robustness.
+- **Spec rigidity:** treat specs and inferred intent as sketches, not contracts. A handled edge case the intent never asked for is a cost, not a feature.
+- **Optimize for developer time:** elegant, DRY code that is easy to build on; every maintained code path taxes iteration speed.
+
+If this repo is genuinely at scale or has a different operating point, commit `.knightwatch/product-context.md` to the base branch to override this default.
+PRODUCT_CONTEXT_EOF
+)
+fi
 write_scratch "$REPO_DIR" "product-context.md" "$PRODUCT_CONTEXT"
 
 # review-priority.md — per-repo operating point + voice posture

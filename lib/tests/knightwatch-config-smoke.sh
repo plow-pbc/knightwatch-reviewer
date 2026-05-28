@@ -150,7 +150,7 @@ fi
 # rc=2 (ERROR). What PRESENT-empty MEANS is a per-caller decision
 # documented at each call site (e.g. search-roots.sh treats it as
 # "no siblings"; review-one-pr.sh's product-context block substitutes
-# the placeholder); this scenario only fences the helper's
+# the org-default operating point); this scenario only fences the helper's
 # mechanism, not caller policy.
 echo "  scenario 4: present but empty → exit 0 + empty content..."
 git -C "$SOURCE" checkout -q main

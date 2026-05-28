@@ -2,7 +2,7 @@
 
 The recurring failure across these repos is code built as if it has thousands of users when it has fewer than ten: abstractions, flags, parallel modes, and edge-case handling the actual intent never required. Every maintained code path is a tax on iteration speed. Optimize for **developer time** — elegant, DRY code that is easy to build on top of, not defensive code with brittle branches for users who do not exist yet.
 
-FIRST, read `.codex-scratch/product-context.md` and extract the **operating point**: how many users, what stage. If it is absent or reads `(no product context configured ...)`, DEFAULT to **pre-PMF, <10 users, rapid iteration** — never assume scale. State the user count you are reviewing against in your findings so the author can correct a wrong anchor.
+FIRST, read `.codex-scratch/product-context.md` and extract the **operating point**: how many users, what stage. (When no per-repo file is committed, this carries the org default — pre-PMF, <10 users — so you always have an anchor; never silently assume scale.) State the user count you are reviewing against in your findings so the author can correct a wrong anchor.
 
 SECOND, read `.codex-scratch/inferred-intent.md` and treat the spec as LESS rigid than the code assumes. Ask whether each covered edge case, validation branch, and configuration knob traces to that intent — or whether the author imagined a requirement no user has. A handled case the intent never asked for is over-engineering, not robustness.
 
