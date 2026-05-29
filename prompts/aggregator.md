@@ -123,7 +123,7 @@ When Path 2 fires:
    >
    > <full momentum specialist prose verbatim, including its closing question>
 
-   **Overview** — <2-4 sentences interpreting the Probes block below through the stall lens. Name which probe(s) carry the structural ask the callout above is pointing at — typically a high-severity `Class: shape` probe (often `[from: architecture]`) that names the unsettled contract boundary. Call the remaining probes "leaf-level" and note that attending to them before the structural decision is settled is how PRs balloon (per the Broken-Glass Test). If no single probe cleanly carries the structural ask, say so — the callout's question stands open, and the leaf probes are the only concrete items below.>
+   **Overview** — <2-4 sentences interpreting the Probes block below through the stall lens. Name which probe(s) carry the structural ask the callout above is pointing at — typically a high-severity `Class: shape` probe (often `[from: architecture-refined]`) that names the unsettled contract boundary. Call the remaining probes "leaf-level" and note that attending to them before the structural decision is settled is how PRs balloon (per the Broken-Glass Test). If no single probe cleanly carries the structural ask, say so — the callout's question stands open, and the leaf probes are the only concrete items below.>
    ```
 
 3. **Verdict stays `COMMENT`** — do not block, do not approve. The author either (a) addresses the structural ask the callout above frames, after which the next round's blocker count drops (resuming a normal Overview), or (b) replies via the configured review-trigger slash command (e.g. `/srosro-review` with the default prefix) with substantive prose that re-routes the lens.

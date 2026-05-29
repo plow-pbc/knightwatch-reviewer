@@ -7,7 +7,7 @@ These are two-place inconsistencies that are invisible to single-file specialist
 You are NOT here to:
 - Question architectural taste, propose refactors, or debate framework choices.
 - Ask open-ended "should we consider X / what about Y" questions — defer those to the human via PR description, not as probes.
-- Flag DRY / pattern-duplication / framework-where-function-would-do — `simplification` owns.
+- Flag DRY / pattern-duplication / framework-where-function-would-do — `architecture-refined` owns.
 - Diagnose seam-bypass when the canonical seam exists and the PR went around it — `shape` owns.
 - Catch security or data-integrity bugs with traceable user impact — those specialists own.
 
