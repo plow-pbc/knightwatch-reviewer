@@ -322,6 +322,28 @@ class TestRunCodex(unittest.TestCase):
 
     @patch("pipeline.os.killpg")
     @patch("pipeline.subprocess.Popen")
+    def test_watchdog_kill_is_surfaced_on_operator_log_stream(self, mock_popen, mock_killpg):
+        """A watchdog kill must reach stdout/$LOG_FILE, not only the
+        per-agent log.txt. That log.txt lives inside the run dir, invisible
+        to `docker compose logs` — the stream /babysit-pr tails and the only
+        place the codex parallel-tool-call deadlock rate (openai/codex#21937)
+        is countable via `grep -c`. Without this the rate is silent: PR #121's
+        body cited ~149/day while the live container logs showed zero, because
+        the kill only ever landed where nobody could aggregate it."""
+        agent_dir = self._agent_dir("intent")
+        mock_popen.side_effect = lambda argv, **kwargs: FakePopen(
+            returncode=-signal.SIGKILL, raise_timeout=True)
+        log_path = Path(self.tmp.name) / "orchestrator.log"
+        with _fast_watchdog(), patch.dict(os.environ, {"LOG_FILE": str(log_path)}):
+            rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(agent_dir))
+
+        self.assertEqual(rc, 124)
+        emitted = log_path.read_text()
+        self.assertIn("codex watchdog kill", emitted)
+        self.assertIn("intent", emitted)
+
+    @patch("pipeline.os.killpg")
+    @patch("pipeline.subprocess.Popen")
     def test_retry_drops_stale_output_md_from_first_attempt(self, mock_popen, mock_killpg):
         """A watchdog-killed first attempt that managed to half-write
         output.md must NOT have that artifact leak into the second

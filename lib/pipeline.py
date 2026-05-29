@@ -216,6 +216,16 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
         if kill_reason is not None:
             with log_file.open("a") as lf:
                 lf.write(f"[{_ts()}] agent={name} killed: {kill_reason}\n")
+            # Also surface on stdout/$LOG_FILE. The per-agent log.txt lives
+            # inside the run dir — invisible to `docker compose logs`, the
+            # stream /babysit-pr tails, and the only place the codex
+            # parallel-tool-call deadlock rate (openai/codex#21937) is
+            # countable in aggregate. Without this the rate is silent: a
+            # `grep -c "codex watchdog kill"` over the reviewer logs is the
+            # whole point. "retrying" separates rescued hangs from the ones
+            # that actually cost a review angle.
+            log(f"{name}: codex watchdog kill — {kill_reason}"
+                + (" (retrying)" if retryable else ""))
         if not retryable:
             break
 
