@@ -408,11 +408,24 @@ if [ "$FORCE_WHOLE_PR" != "true" ]; then
         # this file: skip this tick, let the next one retry. (The usual "lean
         # looser" default is inverted here — the loose read re-creates the bug.)
         if BACKSTOP_COMMENTS=$(fetch_issue_comments "$REPO" "$PR_NUM"); then
-            if comments_have_reviewed_sha "$BACKSTOP_COMMENTS" "$FETCHED_HEAD_SHA"; then
+            # Trust-gated: only the bot's own posted review carrying this head's
+            # marker counts (latest_reviewed_sha_comment filters on BOT_USER) —
+            # a marker pasted by any other commenter must NOT suppress review.
+            BACKSTOP_MATCH=$(latest_reviewed_sha_comment "$BACKSTOP_COMMENTS" "$FETCHED_HEAD_SHA" "$BOT_USER")
+            if [ -n "$BACKSTOP_MATCH" ]; then
                 log "$PR_ID: cold cache — head $FETCHED_HEAD_SHA already reviewed per GitHub; seeding run record, skipping pipeline"
+                # Seed a COMPLETE author-visible run from the recovered review so
+                # the SHA gate dedups AND the body/approval projections (which read
+                # agents/aggregator/output.md) see a real prior review. started_at =
+                # the real review's created_at, not now, so a slash-command trigger
+                # posted after that review still clears review.sh's
+                # created_at>started_at cutoff and re-reviews next tick.
+                BACKSTOP_STARTED=$(printf '%s' "$BACKSTOP_MATCH" | jq -r '.created_at')
+                mkdir -p "$RUN_DIR/agents/aggregator"
+                printf '%s' "$BACKSTOP_MATCH" | jq -r '.body' > "$RUN_DIR/agents/aggregator/output.md"
                 if jq -n --arg repo "$REPO" --arg pr_num "$PR_NUM" --arg sha "$FETCHED_HEAD_SHA" \
-                        --arg started_at "$REVIEW_START_ISO" \
-                        '{repo: $repo, pr_num: ($pr_num|tonumber), sha: $sha, started_at: $started_at, backstop: true}' \
+                        --arg started_at "$BACKSTOP_STARTED" \
+                        '{repo: $repo, pr_num: ($pr_num|tonumber), sha: $sha, started_at: $started_at}' \
                         > "$RUN_DIR/meta.json"; then
                     RUN_STATUS="completed"   # EXIT-trap finalize_run stamps status=completed → author-visible
                 else

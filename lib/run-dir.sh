@@ -30,18 +30,30 @@ reviewed_sha_marker() {
     printf '<!-- knightwatch-reviewer:reviewed-sha=%s -->' "$sha"
 }
 
-# comments_have_reviewed_sha COMMENTS_JSON SHA
-#   exit 0 iff any comment body in COMMENTS_JSON (an array of {body} objects,
-#   the fetch_issue_comments shape) contains this reviewer's reviewed-sha
-#   marker for SHA. The marker is a literal substring (reviewed_sha_marker),
-#   so a plain `contains` is exact — no regex, no false match on a SHA prefix.
-#   Pure function; the gh fetch is the caller's job (worker backstop guard).
-comments_have_reviewed_sha() {
-    local comments_json="$1" sha="$2" marker
-    [ -z "$sha" ] && return 1
+# latest_reviewed_sha_comment COMMENTS_JSON SHA BOT_USER
+#   Prints (compact JSON) the latest BOT-AUTHORED comment in COMMENTS_JSON
+#   (the fetch_issue_comments shape — {user:{login}, body, created_at}) that
+#   carries this reviewer's reviewed-sha marker for SHA, or nothing if none.
+#
+#   Trust gate (load-bearing security fence): the marker is plain text any PR
+#   commenter could paste, so matching on body alone would let an untrusted
+#   comment suppress the review pipeline for a head (spoof). Require
+#   .user.login == BOT_USER — an identity an external author cannot forge; the
+#   reviewed-sha marker is only ever emitted on the bot's own posted reviews.
+#
+#   The matched comment carries what the cold-cache backstop needs: .created_at
+#   (the real review time → correct trigger-cutoff) and .body (the prior-review
+#   body to seed). The marker is a literal substring, so `contains` is exact —
+#   no regex, no SHA-prefix false match. Pure function; the gh fetch is the
+#   caller's job.
+latest_reviewed_sha_comment() {
+    local comments_json="$1" sha="$2" bot_user="$3" marker
+    { [ -z "$sha" ] || [ -z "$bot_user" ]; } && return 1
     marker=$(reviewed_sha_marker "$sha") || return 1
-    printf '%s' "$comments_json" \
-        | jq -e --arg m "$marker" 'any(.[]; (.body // "") | contains($m))' >/dev/null 2>&1
+    printf '%s' "$comments_json" | jq -c \
+        --arg bot "$bot_user" --arg m "$marker" \
+        '[.[] | select(.user.login == $bot and ((.body // "") | contains($m)))]
+         | sort_by(.created_at) | last // empty'
 }
 
 # allocate_run_dir RUN_DIR

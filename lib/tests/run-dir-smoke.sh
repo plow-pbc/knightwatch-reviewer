@@ -126,31 +126,50 @@ else
     chmod +w "$RO_PARENT"
 fi
 
-echo "  comments_have_reviewed_sha: matches a bot auto-post comment carrying the head's marker..."
-HEAD_SHA="deadbeefcafe1234"
+echo "  latest_reviewed_sha_comment: returns the bot's comment carrying the head's marker (with created_at + body)..."
+HEAD_SHA="deadbeefcafe1234"; BOT="srosro"
 COMMENTS=$(jq -n --arg m "$(reviewed_sha_marker "$HEAD_SHA")" '[
-  {body: "<!-- knightwatch-reviewer:auto-post -->\n\($m)\n\n📋 Re-review …\nVERDICT: COMMENT"},
-  {body: "/srosro-review"}
+  {user: {login: "srosro"}, created_at: "2026-05-29T10:00:00Z",
+   body: "<!-- knightwatch-reviewer:auto-post -->\n\($m)\n\n📋 Re-review …\nVERDICT: COMMENT"},
+  {user: {login: "srosro"}, created_at: "2026-05-29T11:00:00Z", body: "/srosro-review"}
 ]')
-comments_have_reviewed_sha "$COMMENTS" "$HEAD_SHA" || { echo "FAIL: should match present marker"; exit 1; }
+match=$(latest_reviewed_sha_comment "$COMMENTS" "$HEAD_SHA" "$BOT")
+[ -n "$match" ] || { echo "FAIL: should match the bot's marker comment"; exit 1; }
+[ "$(printf '%s' "$match" | jq -r '.created_at')" = "2026-05-29T10:00:00Z" ] \
+  || { echo "FAIL: should return the matched comment's created_at"; exit 1; }
+printf '%s' "$match" | jq -e '(.body|contains("Re-review"))' >/dev/null \
+  || { echo "FAIL: should return the matched comment's body"; exit 1; }
 
-echo "  comments_have_reviewed_sha: no match when the marker SHA differs (head moved)..."
-comments_have_reviewed_sha "$COMMENTS" "0000000000000000" && { echo "FAIL: should not match a different head"; exit 1; } || true
+echo "  latest_reviewed_sha_comment: SPOOF — a non-bot author's marker comment does NOT match (security gate)..."
+SPOOF=$(jq -n --arg m "$(reviewed_sha_marker "$HEAD_SHA")" '[
+  {user: {login: "mallory"}, created_at: "2026-05-29T10:00:00Z", body: "\($m)"}
+]')
+[ -z "$(latest_reviewed_sha_comment "$SPOOF" "$HEAD_SHA" "$BOT")" ] \
+  || { echo "FAIL: a non-bot commenter must not be able to suppress review via a pasted marker"; exit 1; }
 
-echo "  comments_have_reviewed_sha: no match when no bot comment carries a marker..."
-PLAIN=$(jq -n '[{body: "looks good to me"}, {body: "/srosro-review"}]')
-comments_have_reviewed_sha "$PLAIN" "$HEAD_SHA" && { echo "FAIL: should not match without a marker"; exit 1; } || true
+echo "  latest_reviewed_sha_comment: no match when the marker SHA differs (head moved)..."
+[ -z "$(latest_reviewed_sha_comment "$COMMENTS" "0000000000000000" "$BOT")" ] \
+  || { echo "FAIL: should not match a different head"; exit 1; }
 
-echo "  seed roundtrip: a completed run with sha=HEAD is author-visible and resolves as KNOWN_SHA..."
+echo "  latest_reviewed_sha_comment: no match when no comment carries a marker..."
+PLAIN=$(jq -n '[{user: {login: "srosro"}, created_at: "2026-05-29T10:00:00Z", body: "looks good"}]')
+[ -z "$(latest_reviewed_sha_comment "$PLAIN" "$HEAD_SHA" "$BOT")" ] \
+  || { echo "FAIL: should not match without a marker"; exit 1; }
+
+echo "  seed roundtrip: a completed run (meta + recovered output.md) is author-visible, resolves KNOWN_SHA, and exposes the prior body..."
 SEED_STATE=$(mktemp -d); SLUG="acme_widget"; PRN="42"; HEAD="cafef00dbabe"
 RID="${SLUG}__${PRN}__20260529T000000000Z__${HEAD:0:7}"
-RD="$SEED_STATE/runs/$RID"; mkdir -p "$RD"
+RD="$SEED_STATE/runs/$RID"; mkdir -p "$RD/agents/aggregator"
+# what the backstop writes: recovered review body + meta with sha=HEAD, started_at from the comment
+printf 'recovered prior review body\nVERDICT: COMMENT\n' > "$RD/agents/aggregator/output.md"
 jq -n --arg repo "acme/widget" --arg pr_num "$PRN" --arg sha "$HEAD" \
    '{repo: $repo, pr_num: ($pr_num|tonumber), sha: $sha, started_at: "2026-05-29T00:00:00Z"}' > "$RD/meta.json"
-# finalize as a completed, posted run (what the backstop does on skip):
 finalize_meta_json "$RD/meta.json" "2026-05-29T00:00:01Z" "completed" "true"
 is_run_author_visible "$RD" || { echo "FAIL: seeded run should be author-visible"; exit 1; }
 got=$(latest_author_visible_review_sha "$SEED_STATE" "$SLUG" "$PRN" "")
 [ "$got" = "$HEAD" ] || { echo "FAIL: seeded KNOWN_SHA — want [$HEAD] got [$got]"; exit 1; }
+body=$(latest_author_visible_review "$SEED_STATE" "$SLUG" "$PRN" "")
+printf '%s' "$body" | grep -q "recovered prior review body" \
+  || { echo "FAIL: seeded run should expose its recovered body to prior-review staging"; exit 1; }
 
-echo "  PASS (4 scenarios: clean allocation, collision detected, subdir-failure rollback, real failure not mislabeled + 3 comments_have_reviewed_sha + 1 seed roundtrip)"
+echo "  PASS (4 scenarios: clean allocation, collision detected, subdir-failure rollback, real failure not mislabeled + 4 latest_reviewed_sha_comment incl. spoof-gate + 1 seed roundtrip)"
