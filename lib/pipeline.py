@@ -13,8 +13,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 SPECIALISTS = (
-    "security", "data-integrity", "architecture", "architecture-refined",
-    "contract-drift", "simplification", "tests", "shape", "consumers",
+    "security", "data-integrity", "architecture-refined",
+    "contract-drift", "tests", "shape", "consumers",
 )
 
 # Per-codex hard cap. Successful specialists complete in 1–5 min; 45 min
@@ -506,7 +506,7 @@ def run_pipeline(
     )
 
     # Wave A: intent + dead-code-search in parallel. Both are inputs to the
-    # specialists (intent → architecture/simplification/momentum read it;
+    # specialists (intent → architecture-refined/momentum read it;
     # dead-code → consumers reads it), so they must complete before Wave B.
     log(f"{pr_id}: Wave A — intent + dead-code-search")
     with ThreadPoolExecutor(max_workers=2) as ex:

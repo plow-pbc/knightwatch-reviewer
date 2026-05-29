@@ -8,7 +8,7 @@ Every probe is a Markdown block with this exact field set:
 
 ```
 ### Probe N
-- **From:** <specialist name>          # e.g. shape, security, simplification, critic
+- **From:** <specialist name>          # e.g. shape, security, architecture-refined, critic
 - **Class:** <bug|bypass|shape|simplification|tests>
 - **Q:** <one sentence — the assumption being asserted as if settled, in question form>
 - **Files:** <path:line>, <path:line>, …
@@ -28,7 +28,7 @@ The `Class:` field takes exactly one of these tokens. Each class carries its own
 
 - **`bypass`** — instance-1 of a canonical pattern the PR sidestepped (`shape`). `Confidence: high`, `Severity if yes: blocking`. `If yes, edit:` "rewrite to call canonical at <path:line>". `If no, cost:` "establishes a parallel seam future routes must reckon with".
 
-- **`shape`** — second-instance pattern with no canonical yet, OR architectural seam / layering violation (`shape`, `architecture`). `Confidence: medium|high`, `Severity if yes: medium` (`blocking` for hard architectural lock-in). `If yes, edit:` "extract <name> at <path:line>" or name the structural change. `If no, cost:` "third instance will be cheaper to write than to refactor — pattern established by inertia".
+- **`shape`** — second-instance pattern with no canonical yet, OR architectural seam / layering violation (`shape`, `architecture-refined`). `Confidence: medium|high`, `Severity if yes: medium` (`blocking` for hard architectural lock-in). `If yes, edit:` "extract <name> at <path:line>" or name the structural change. `If no, cost:` "third instance will be cheaper to write than to refactor — pattern established by inertia".
 
 - **`simplification`** — removal-shaped finding: `If yes, edit:` is LOC-negative or branch-negative. Covers DRY collapses (kid-hit or intra-PR duplication into a helper), dead-code (stale caller / unreachable conditional / zero-callers symbol / private dead helper), and complexity-cost (defensive branches, helpers with one call site, framework-where-function-would-do, premature optimization, defense-in-depth not requested, over-tested edges, defensive caller-shape adapters, retry layers, idempotency machinery, caching layers, validation guards). `Confidence: medium|high` for clear duplication or stale-caller; `low|medium` for "earns its place?" judgment calls. `Severity if yes: blocking` for stale-caller / unreachable-bad-path / well-established-utility-was-already-there / net-additive refactor PR with no substrate-replacement target; `medium` for typical DRY collapses or architectural defensive layers; `low|nit` for code-style cases. `If yes, edit:` "delete <code> — N LOC, fewer seams" or "collapse N copies into <helper>". `If no, cost:` name what calcifies at the operating point if we keep the shape (defensive surface, third-copy threshold, dynamic-dispatch argument, etc.).
 

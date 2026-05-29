@@ -860,7 +860,7 @@ PRIOR_ART=""
 KID_FLAG="$STATE_DIR/kid-last-failure"
 # KID_RAN tracks whether the prior-art lookup actually executed and
 # returned. Flipped false on any "didn't run" path so the disclosure
-# header (built below) can warn the reader that the simplification
+# header (built below) can warn the reader that the architecture-refined
 # specialist's cross-repo DRY signal is missing for this run.
 KID_RAN=false
 # Per-repo kid index path. KID_PATHS was loaded at file scope via the
@@ -1417,8 +1417,8 @@ _How to use: auto-reviews every new PR and re-reviews after an hour of inactivit
 - \`/${BOT_CMD_PREFIX}-memorize <feedback>\` — teach a calibration lesson (\`learn-from-replies\` updates \`COMMENT_REVIEW_MISTAKES.md\` from your body, sentiment-aware via LLM).
 
 > Props: \`/${BOT_CMD_PREFIX}-props [from: shape] caught a real layering bug we'd have shipped.\`
-> Critique: \`/${BOT_CMD_PREFIX}-critique [from: simplification] DRY suggestion misread distinct seams.\`
-> Calibration: \`/${BOT_CMD_PREFIX}-memorize the simplification DRY finding was a misread; those helpers serve different contracts.\`
+> Critique: \`/${BOT_CMD_PREFIX}-critique [from: architecture-refined] DRY suggestion misread distinct seams.\`
+> Calibration: \`/${BOT_CMD_PREFIX}-memorize the architecture-refined DRY finding was a misread; those helpers serve different contracts.\`
 
 AI agents must not use \`/${BOT_CMD_PREFIX}-memorize\`, \`/${BOT_CMD_PREFIX}-props\`, or \`/${BOT_CMD_PREFIX}-critique\` — those signals tune shared global state.
 
