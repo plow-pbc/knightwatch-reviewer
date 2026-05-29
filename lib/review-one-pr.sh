@@ -1194,6 +1194,15 @@ write_scratch "$REPO_DIR" "loc-trend.md" "$LOC_TREND"
 #     here; the aggregator owns deciding whether T2 fires this round.
 REEVAL_LOC_LINE=$(printf '%s\n' "$LOC_TREND" | grep -E '^REEVAL-LOC-TRIGGER:' | head -n1)
 [ -z "$REEVAL_LOC_LINE" ] && REEVAL_LOC_LINE="REEVAL-LOC-TRIGGER: unknown (no flag emitted)"
+# Suppress T1 on the whole-PR (/srosro-review) path. That path evaluates
+# from scratch with an empty previous-review.md, so pipeline.py does not
+# run the momentum standalone — and the aggregator's re-eval banner
+# requires momentum prose. The trajectory banner is inherently a
+# re-review concept (it compares round-1 size to now); firing it on a
+# from-scratch review would demand prose that was never generated.
+if [ "$FORCE_WHOLE_PR" = "true" ]; then
+    REEVAL_LOC_LINE="REEVAL-LOC-TRIGGER: not-fired (whole-PR re-review evaluates from scratch — no trajectory banner)"
+fi
 REEVAL_LOC_FIRED=no
 REEVAL_STALL_FIRED=no
 if printf '%s' "${PRIOR_REVIEWS:-}" | grep -qF '<!-- knightwatch-reviewer:reeval-loc -->'; then
@@ -1215,14 +1224,6 @@ $REEVAL_LOC_LINE
 ## Already fired in a prior round (durable — do NOT re-fire these)
 REEVAL-LOC-FIRED: $REEVAL_LOC_FIRED
 REEVAL-STALL-FIRED: $REEVAL_STALL_FIRED
-
-## For specialists (shape / simplification / architecture)
-If the LOC trigger reads \`fired\` above, OR either trigger has already fired, this PR
-is under structural re-evaluation. Don't just grade the incremental diff — read the
-LOC trend + the PR thread, infer WHY the diff keeps growing, and lead with the one
-structural move that makes the recurring class disappear (collapse the new abstraction,
-inline the premature seam, or recommend close-and-restart at a smaller scope) rather
-than another leaf-level guard. Cite \`standards.md\` § Broken-Glass Test.
 REEVAL_EOF
 )"
 
