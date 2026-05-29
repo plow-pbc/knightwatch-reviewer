@@ -158,7 +158,12 @@ while IFS= read -r PR_JSON; do
     # written ONLY on the nothing-to-dispatch skip below (never on dispatch), so
     # a head we haven't actually reviewed (KNOWN_SHA != PR_SHA) — incl. a failed
     # or queued review — is always re-evaluated rather than cached past.
-    SEEN_UPDATED_FILE="${LOCAL_STATE_DIR:-$STATE_DIR}/seen-updated/${REPO_SLUG_FOR_GATE}__${PR_NUM}"
+    #
+    # Lives in the SHARED STATE_DIR (alongside runs/) — it's per-PR observation
+    # state, not per-container lock/quota state, so one container's evaluation
+    # spares the rest of the fleet a redundant fetch of the same updatedAt. (A
+    # torn concurrent read just falls through to a harmless extra fetch.)
+    SEEN_UPDATED_FILE="$STATE_DIR/seen-updated/${REPO_SLUG_FOR_GATE}__${PR_NUM}"
     LAST_SEEN_UPDATED_AT=""
     [ -f "$SEEN_UPDATED_FILE" ] && LAST_SEEN_UPDATED_AT=$(cat "$SEEN_UPDATED_FILE")
     if [ -n "$KNOWN_SHA" ] && [ "$PR_SHA" = "$KNOWN_SHA" ] \
