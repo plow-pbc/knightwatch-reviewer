@@ -27,6 +27,24 @@ is_trusted_repo_author() {
     esac
 }
 
+# just_test_skip_reason JUST_FILE IS_TRUSTED → echoes why `just test` must NOT
+# run (empty string = run it). Pure: takes precomputed inputs, no gh calls.
+#
+# `just test` executes PR-controlled recipes + test code. An untrusted author
+# (no push access) must never have their code run — it would execute with the
+# reviewer's home-dir read access (~/.ssh, the gh PAT) and network. This holds
+# on EVERY path, not just the container/dind one; the host/systemd path used to
+# run untrusted tests (without canonical secrets), which still exposed those
+# credentials to exfiltration. Trusted authors with a justfile run as before.
+just_test_skip_reason() {
+    local just_file="$1" is_trusted="$2"
+    if [ -z "$just_file" ]; then
+        echo "no justfile in repo root"
+    elif [ "$is_trusted" != true ]; then
+        echo "untrusted author (no push access) — PR code is not executed"
+    fi
+}
+
 # submit_approval REPO PR_NUM BOT_USER PR_AUTHOR APPROVE_BODY — wraps the
 # full auto-approve flow that lib/review-one-pr.sh used to inline:
 #   - If PR_AUTHOR == BOT_USER, skip the API call (GitHub rejects
