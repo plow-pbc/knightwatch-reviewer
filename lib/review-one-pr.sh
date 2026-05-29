@@ -536,12 +536,9 @@ fi
 #
 # Trust gate: only mirror when PR_AUTHOR has push access to the repo.
 # Otherwise an untrusted contributor's `just test` recipe could
-# exfiltrate live API keys before the eager-delete runs. Untrusted PRs
-# still get a `just test` run, just without canonical's secrets — the
-# scenario-suite recipes that need live keys will trip their guards
-# (unchanged from pre-72a9cad behavior for those PRs).
+# exfiltrate live API keys before the eager-delete runs.
 # Compute author trust once; reused by the .env mirror (below) and the
-# container just-test gate (untrusted authors don't get dind reach).
+# just-test skip gate (just_test_skip_reason, lib/auth.sh).
 if is_trusted_repo_author "$REPO" "$PR_AUTHOR"; then IS_TRUSTED_AUTHOR=true; else IS_TRUSTED_AUTHOR=false; fi
 COPIED_ENV_FILES=()
 if [ "$IS_TRUSTED_AUTHOR" = true ]; then
@@ -559,7 +556,7 @@ if [ "$IS_TRUSTED_AUTHOR" = true ]; then
     [ "${#COPIED_ENV_FILES[@]}" -gt 0 ] && \
         log "$PR_ID: mirrored ${#COPIED_ENV_FILES[@]} env file(s) from canonical (PR_AUTHOR=$PR_AUTHOR trusted)"
 else
-    log "$PR_ID: skipping .env mirror — PR_AUTHOR=$PR_AUTHOR has no push access (just test will run without canonical's secrets)"
+    log "$PR_ID: skipping .env mirror — PR_AUTHOR=$PR_AUTHOR has no push access"
 fi
 
 # ---- build diff + REVIEW_TASK (three paths) ----
