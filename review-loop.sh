@@ -1,7 +1,7 @@
 #!/bin/bash
 # Container entrypoint: replace the systemd 2-min timer with an in-process
 # poll loop. Waits for the dind sidecar's daemon, then runs review.sh
-# (serialized — one review per tick) every POLL_SECS. N containers = N
+# (MAX_CONCURRENT=1 per container) every POLL_SECS. N containers = N
 # concurrent reviews across N accounts; the shared per-PR flock keeps two
 # containers off the same PR.
 set -uo pipefail
@@ -18,11 +18,26 @@ cd "$(dirname "$0")"
 # exist in the image (reviews abort at `probe-schema.md missing`).
 export REVIEWER_LIB_DIR="$(pwd)/lib"
 export PROMPTS_DIR="$(pwd)/prompts"
+# Shared logger (timestamp + [w<WORKER_ID>] tag). LOG_FILE is unset here —
+# review.sh sets it later — so log() falls back to stdout-only, which is what
+# the container stream wants anyway.
+source "$REVIEWER_LIB_DIR/state-io.sh"
 POLL_SECS="${POLL_SECS:-30}"
-# review.sh reviews each eligible PR in the foreground, one per tick (the single
-# contract since the host reviewer was retired), so one container/account runs at
-# most ONE review at a time. REVIEWER_CONTAINER_MODE still gates the container-only
-# paths in review.sh (quota-pause break) and review-one-pr.sh (untrusted-author skip).
+# Time floor for refreshing the eligible-PR queue GLOBALLY: one container per
+# window runs the GraphQL enumerate (election-serialized) and writes queue.json;
+# all containers consume it every POLL_SECS and claim PRs via the per-PR flock.
+# review.sh refreshes on this floor alone (no work-state gate), so enumeration
+# runs ~once/ENUMERATE_SECS instead of once/POLL_SECS/container — that's what
+# cuts the GraphQL burn. New PRs are discovered within one window.
+export ENUMERATE_SECS="${ENUMERATE_SECS:-60}"
+export MAX_CONCURRENT=1
+# Block each tick until its dispatched worker finishes (review.sh honors this),
+# so one container/account runs at most ONE review at a time. Without it, the
+# poll loop's next tick starts while the prior detached worker is still running
+# and one account ends up driving multiple concurrent reviews.
+export WAIT_FOR_WORKERS=1
+# Sentinel so review.sh can re-pin the one-review-per-account contract AFTER it
+# sources config.env (which could otherwise override MAX_CONCURRENT/WAIT_FOR_WORKERS).
 export REVIEWER_CONTAINER_MODE=1
 # Run PR-controlled `just test` as this unprivileged user (created in the image)
 # so a hostile test recipe can't read /root/.codex or the reviewer's tokens —
@@ -33,10 +48,10 @@ export REVIEWER_TEST_USER="${REVIEWER_TEST_USER:-reviewer-test}"
 # race the sidecar's startup. Fail loud if it never comes up.
 for i in $(seq 1 60); do
     docker info >/dev/null 2>&1 && break
-    [ "$i" -eq 60 ] && { echo "FATAL: dind daemon (${DOCKER_HOST:-default}) never became ready" >&2; exit 1; }
+    [ "$i" -eq 60 ] && { log "[review-loop] FATAL: dind daemon (${DOCKER_HOST:-default}) never became ready"; exit 1; }
     sleep 2
 done
-echo "[review-loop] dind ready at ${DOCKER_HOST:-default}; polling every ${POLL_SECS}s (worker=${WORKER_ID:-?})"
+log "[review-loop] dind ready at ${DOCKER_HOST:-default}; polling every ${POLL_SECS}s"
 
 # Quota backoff: when codex caps this account, review-one-pr.sh writes the reset
 # epoch here; this loop stops claiming reviews until it passes, so a capped
@@ -46,7 +61,7 @@ QUOTA_FILE="$LOCAL_STATE_DIR/quota-paused-until"
 while true; do
     if [ -f "$QUOTA_FILE" ]; then
         if [ "$(date +%s)" -lt "$(head -n1 "$QUOTA_FILE" 2>/dev/null || echo 0)" ]; then
-            echo "[review-loop] codex quota-paused (worker=${WORKER_ID:-?}) — skipping tick"
+            log "[review-loop] codex quota-paused — skipping tick"
             sleep "$POLL_SECS"; continue
         fi
         rm -f "$QUOTA_FILE"   # window passed; resume claiming
@@ -55,6 +70,6 @@ while true; do
     # and non-zero ONLY on fatal misconfig (missing worker script, no tracked
     # repos). Surface that loudly via container exit + restart instead of
     # spinning forever on a broken config.
-    ./review.sh || { echo "[review-loop] FATAL: review.sh exited non-zero — config/auth error; exiting for container restart" >&2; exit 1; }
+    ./review.sh || { log "[review-loop] FATAL: review.sh exited non-zero — config/auth error; exiting for container restart"; exit 1; }
     sleep "$POLL_SECS"
 done

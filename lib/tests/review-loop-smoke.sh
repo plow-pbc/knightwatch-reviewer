@@ -2,7 +2,7 @@
 # Smoke for review-loop.sh — the container entrypoint that replaces the systemd
 # timer. Covers the contracts that silently abort/derail container reviews if
 # broken: (1) fail loud when the dind daemon never comes up (don't hang),
-# (2) export REVIEWER_LIB_DIR/PROMPTS_DIR/REVIEWER_CONTAINER_MODE to the
+# (2) export REVIEWER_LIB_DIR/PROMPTS_DIR/MAX_CONCURRENT/WAIT_FOR_WORKERS to the
 # worker, (3) a fatal (non-zero) review.sh tick exits for container restart
 # instead of looping forever, (4) a FUTURE quota-paused-until epoch makes the
 # loop skip ticks (never claim) and a PAST one resumes.
@@ -37,7 +37,8 @@ cat > "$d/review.sh" <<'STUB'
 #!/bin/bash
 { echo "REVIEWER_LIB_DIR=$REVIEWER_LIB_DIR"
   echo "PROMPTS_DIR=$PROMPTS_DIR"
-  echo "REVIEWER_CONTAINER_MODE=${REVIEWER_CONTAINER_MODE:-}"; } > env.seen
+  echo "MAX_CONCURRENT=$MAX_CONCURRENT"
+  echo "WAIT_FOR_WORKERS=$WAIT_FOR_WORKERS"; } > env.seen
 exit 1   # fatal tick: review-loop must exit (not loop) — also breaks the test loop
 STUB
 chmod +x "$d/review.sh"
@@ -51,7 +52,8 @@ if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x LOCAL_STA
 fi
 grep -q "REVIEWER_LIB_DIR=$d/lib" "$d/env.seen"     || fail "REVIEWER_LIB_DIR not forced to \$repo/lib (caller env leaked through)"
 grep -q "PROMPTS_DIR=$d/prompts" "$d/env.seen"      || fail "PROMPTS_DIR not forced to \$repo/prompts (caller env leaked through)"
-grep -q "REVIEWER_CONTAINER_MODE=1" "$d/env.seen"  || fail "REVIEWER_CONTAINER_MODE not exported (gates container-only paths in review.sh + review-one-pr.sh)"
+grep -q "MAX_CONCURRENT=1" "$d/env.seen"            || fail "MAX_CONCURRENT not pinned to 1"
+grep -q "WAIT_FOR_WORKERS=1" "$d/env.seen"          || fail "WAIT_FOR_WORKERS not set (one-review-per-account cap)"
 rm -rf "$d"
 
 # 4. Quota backoff: a FUTURE paused-until epoch → review-loop never calls review.sh; PAST → resumes.

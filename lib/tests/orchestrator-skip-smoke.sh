@@ -41,6 +41,7 @@ trap 'rm -rf "$TMPDIR"' EXIT
 export STATE_DIR="$TMPDIR/state"
 export STATE_FILE="$STATE_DIR/state.json"
 export LOG_FILE="$STATE_DIR/orchestrator.log"
+export COMMENT_FETCH_LOG="$STATE_DIR/comment-fetch.log"
 export REPOS_DIR="$STATE_DIR/repos"
 export WORKDIRS_DIR="$STATE_DIR/workdirs"
 mkdir -p "$STATE_DIR" "$REPOS_DIR" "$WORKDIRS_DIR"
@@ -96,7 +97,12 @@ if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
         fi
     done
     if [ "$repo" = "cncorp/plow" ]; then
-        echo '[{"number":1,"title":"Test PR","headRefName":"feat/test","headRefOid":"abc123"}]'
+        # updatedAt defaults to a fresh, unique value so it never matches a
+        # watermark a prior scenario's idle-skip wrote — existing scenarios
+        # are thus unaffected by the gate. The idle-skip scenarios override
+        # MOCK_PR_UPDATED_AT to a fixed value to exercise the gate.
+        upd="${MOCK_PR_UPDATED_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ).$RANDOM}"
+        echo "[{\"number\":1,\"title\":\"Test PR\",\"headRefName\":\"feat/test\",\"headRefOid\":\"abc123\",\"updatedAt\":\"$upd\"}]"
     else
         echo '[]'
     fi
@@ -112,6 +118,9 @@ elif [ "$1" = "api" ]; then
         esac
     done
     if [[ "$url" == */issues/*/comments* ]]; then
+        # Count comment-fetches so the idle-skip scenarios can assert the
+        # gate avoided the core gh call entirely.
+        [ -n "${COMMENT_FETCH_LOG:-}" ] && echo "FETCH $url" >> "$COMMENT_FETCH_LOG"
         # Pagination-aware mode: when MOCK_COMMENTS_PAGE1_FILE is set,
         # emit page 1 always and emit page 2 ONLY if --paginate is in
         # args AND MOCK_COMMENTS_PAGE2_FILE is set. Lets scenario 13
@@ -181,6 +190,7 @@ cp "$PROJECT_ROOT/lib/tracked-repos.sh" "$REVIEWER_LIB_DIR/tracked-repos.sh"
 cp "$PROJECT_ROOT/lib/gh-comments.sh"   "$REVIEWER_LIB_DIR/gh-comments.sh"
 cp "$PROJECT_ROOT/lib/run-dir.sh"       "$REVIEWER_LIB_DIR/run-dir.sh"
 cp "$PROJECT_ROOT/lib/pr-enumerate.sh"  "$REVIEWER_LIB_DIR/pr-enumerate.sh"
+cp "$PROJECT_ROOT/lib/queue.sh"         "$REVIEWER_LIB_DIR/queue.sh"
 cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<'WORKER'
 #!/bin/bash
 # Args from review.sh: REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR
@@ -233,16 +243,18 @@ grep -q "trap 'exit 143' TERM" "$PROJECT_ROOT/lib/review-one-pr.sh" || {
 }
 
 # --- TMPDIR fence (single-source-of-truth) --------------------------------
-# tracked-repos.sh pins TMPDIR=$STATE_DIR/tmp unconditionally, AFTER it
-# sources config.env. Every entrypoint (review.sh, lib/review-one-pr.sh, the
-# -from-replies / -poller / -refresh siblings) sources tracked-repos.sh and
-# inherits the pin for free, with no order-sensitive copy in each script. The
-# durable-tmp pin keeps mktemp output (trigger files, scratch) under the
-# persistent state dir rather than a transient /tmp — originally to survive
-# the retired host reviewer's PrivateTmp tear-down, and now so container
-# restarts + the oneshot aux units' sandboxes don't strand scratch files.
-# This grep fences a regression that drops the pin from the loader OR moves
-# it before config.env's source — either re-routes mktemp back to /tmp.
+# pr-reviewer.service combines PrivateTmp=yes (sandbox) with
+# KillMode=process (workers detach). When the orchestrator returns, the
+# unit-private /tmp gets torn down a few seconds later — any detached
+# worker doing `mktemp` in /tmp lands in a dead mount namespace and the
+# call fails with `No such file or directory`. The fix lives at a single
+# seam: tracked-repos.sh pins TMPDIR=$STATE_DIR/tmp unconditionally,
+# AFTER it sources config.env. Every entrypoint (review.sh,
+# lib/review-one-pr.sh, the -from-replies / -poller / -refresh siblings)
+# sources tracked-repos.sh and inherits the pin for free, with no
+# order-sensitive copy in each script. This grep fences a regression
+# that drops the pin from the loader OR moves it before config.env's
+# source — either reintroduces the unit-private /tmp failure mode.
 LOADER="$PROJECT_ROOT/lib/tracked-repos.sh"
 grep -qF 'export TMPDIR="$STATE_DIR/tmp"' "$LOADER" || {
     echo "FAIL setup: lib/tracked-repos.sh is missing the unconditional \$STATE_DIR/tmp TMPDIR pin — fallback chains or per-script copies let an inherited or config.env-set TMPDIR re-route mktemp into the unit-private /tmp"
@@ -266,17 +278,30 @@ export MOCK_TRUSTED_USERS="srosro someuser"
 
 run_orchestrator() {
     : > "$LOG_FILE"   # reset
-    bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
+    : > "$COMMENT_FETCH_LOG"
+    # ENUMERATE_SECS=0 forces a queue refresh every invocation (the floor is
+    # always elapsed), so each scenario re-enumerates and re-evaluates its own
+    # MOCK_COMMENTS from scratch rather than consuming a prior scenario's queue.
+    ENUMERATE_SECS=0 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
+}
+
+count_comment_fetches() {
+    local n
+    n=$(grep -c '^FETCH ' "$COMMENT_FETCH_LOG" 2>/dev/null || true)
+    echo "${n:-0}"
 }
 
 count_dispatches() {
-    # review.sh runs each worker in the foreground (one review per tick), so the
-    # WORKER_DISPATCHED lines are written before the orchestrator exits. Read the
-    # orchestrator's own promise (its "Reviewed N PR(s) this tick" line) and
-    # confirm N markers landed — capped so 0-review scenarios stay fast
-    # (orchestrator promised 0 → return 0 immediately, no wait).
+    # Workers fan out via `timeout ... worker.sh ... &` in review.sh
+    # and write WORKER_DISPATCHED lines asynchronously after the
+    # orchestrator has already exited. A synchronous grep beats the
+    # write on fast machines, producing flaky 0-counts on dispatch
+    # scenarios. Read the orchestrator's own promise (its
+    # synchronously-logged "Fan-out: dispatched N worker(s)" line) and
+    # poll until N writes show up — capped so 0-dispatch scenarios stay
+    # fast (orchestrator promised 0 → return 0 immediately, no wait).
     local promised actual
-    promised=$(grep -oE 'Reviewed [0-9]+ PR' "$LOG_FILE" 2>/dev/null \
+    promised=$(grep -oE 'dispatched [0-9]+ worker' "$LOG_FILE" 2>/dev/null \
                   | grep -oE '[0-9]+' | tail -1)
     promised="${promised:-0}"
     if [ "$promised" -eq 0 ]; then
@@ -460,6 +485,78 @@ if [ "$n" -ne 0 ]; then
     exit 1
 fi
 
+# Scenario 9: orchestrator returns quickly even when a worker is still
+# running. Pre-detach behavior had the orchestrator `wait` for every
+# forked worker before exiting, so a slow worker (15–20 min in
+# production) blocked the next 2-min timer firing and made
+# /srosro-update-review pickup unboundedly slow. With the post-fan-out
+# `wait` loop removed, the orchestrator must dispatch the worker and
+# return promptly, regardless of worker runtime.
+echo "  scenario 9: slow worker — orchestrator returns within 5s, worker keeps running..."
+# Replace the worker stub with one that sleeps "indefinitely" (long
+# enough that the orchestrator's `wait` would block the test if it
+# regressed). The stub writes its own PID so the test can kill the
+# exact process at cleanup time — `pkill -f "sleep 60"` is too broad
+# (would match unrelated `sleep 60` processes on a shared CI box).
+WORKER_MARKER="$TMPDIR/worker-started.flag"
+WORKER_PID_FILE="$TMPDIR/worker.pid"
+cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<WORKER
+#!/bin/bash
+echo "WORKER_DISPATCHED repo=\$1 pr=\$2 sha=\$3 force_whole=\$6 trigger_file=\${TRIGGER_COMMENT_FILE:-}" >> "$LOG_FILE"
+echo \$\$ > "$WORKER_PID_FILE"
+touch "$WORKER_MARKER"
+exec sleep 60   # exec preserves PID so reap_worker hits the actual sleeper, not the wrapper shell
+WORKER
+chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
+
+reap_worker() {
+    [ -f "$WORKER_PID_FILE" ] || return 0
+    local pid; pid=$(cat "$WORKER_PID_FILE")
+    [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+}
+
+printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+
+# Time the orchestrator. If it returns in <5s the wait was correctly
+# dropped; if it sits at 60s the regression is back.
+: > "$LOG_FILE"
+START=$(date +%s)
+ENUMERATE_SECS=0 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 &
+ORCH_PID=$!
+# Cap the test at 10s so a regression doesn't hang CI for a full minute.
+TIMEOUT=10
+ELAPSED=0
+while kill -0 "$ORCH_PID" 2>/dev/null; do
+    sleep 1
+    ELAPSED=$((ELAPSED + 1))
+    if [ "$ELAPSED" -ge "$TIMEOUT" ]; then
+        kill "$ORCH_PID" 2>/dev/null
+        echo "FAIL scenario 9 (wait-loop regression): orchestrator did not return within ${TIMEOUT}s — likely waiting on the slow worker"
+        echo "--- log ---"; cat "$LOG_FILE"
+        # Reap the still-running worker so the trap's rm -rf can run.
+        pkill -P "$ORCH_PID" 2>/dev/null || true
+        reap_worker
+        exit 1
+    fi
+done
+END=$(date +%s)
+ORCH_ELAPSED=$((END - START))
+
+[ "$ORCH_ELAPSED" -lt 5 ] || { reap_worker; echo "FAIL scenario 9: orchestrator took ${ORCH_ELAPSED}s, expected <5s"; cat "$LOG_FILE"; exit 1; }
+
+# Sanity: the worker actually got dispatched.
+[ -f "$WORKER_MARKER" ] || { reap_worker; echo "FAIL scenario 9: worker never started — orchestrator may have errored before fan-out"; cat "$LOG_FILE"; exit 1; }
+
+# Liveness: scenario 9 claims "worker keeps running." Verify the worker
+# PID is actually still alive AFTER the orchestrator exited. Catches a
+# regression where (e.g.) cgroup-kill on orchestrator exit would leave
+# WORKER_MARKER touched but the sleep dead.
+WORKER_PID=$(cat "$WORKER_PID_FILE")
+[ -n "$WORKER_PID" ] && kill -0 "$WORKER_PID" 2>/dev/null || { reap_worker; echo "FAIL scenario 9 (worker-died-with-orchestrator regression): worker PID '$WORKER_PID' is no longer alive after orchestrator exit"; exit 1; }
+
+# Reap the sleeping worker so the test exits cleanly.
+reap_worker
+
 # Scenario 10: per-PR flock provides mutual exclusion across separate
 # review-one-pr.sh invocations. Calls acquire_pr_lock() (the same
 # function lib/review-one-pr.sh sources from lib/locking.sh) so a
@@ -521,15 +618,17 @@ touch "$HOLDER_RELEASE"
 wait "$HOLDER_PID" 2>/dev/null
 ( . "$REVIEWER_LIB_DIR/locking.sh" && acquire_pr_lock "$LOCK_TEST_STATE_DIR" "test_repo__1" ) || { echo "FAIL scenario 10: post-release acquire failed; lock may be stuck"; exit 1; }
 
-# Scenario 11: review.sh fails LOUD if the worker script is missing or not
-# executable. The pre-dispatch executable check (before any PR enumeration)
-# catches an accidental `chmod -x` or a missing symlink up front, so a broken
-# install aborts loudly instead of logging "Reviewed N PR(s)" while nothing ran.
+# Scenario 11: review.sh fails LOUD if the worker script is missing
+# or not executable. With detached fan-out, `bash worker &` returns 0
+# regardless of whether the worker actually started, so an accidental
+# `chmod -x` or a missing symlink would silently produce "dispatched N
+# worker(s)" while no review ran. The pre-fan-out executable check
+# catches that class.
 echo "  scenario 11: missing/non-executable worker — orchestrator fails loud, no dispatch..."
 chmod -x "$REVIEWER_LIB_DIR/review-one-pr.sh"
 printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 : > "$LOG_FILE"
-if bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1; then
+if ENUMERATE_SECS=0 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1; then
     chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
     echo "FAIL scenario 11 (silent-dispatch-failure regression): review.sh exited 0 with a non-executable worker"
     cat "$LOG_FILE"; exit 1
@@ -537,13 +636,14 @@ fi
 grep -q "FATAL: $REVIEWER_LIB_DIR/review-one-pr.sh missing or not executable" "$LOG_FILE" || { chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"; echo "FAIL scenario 11: expected FATAL log line about missing worker"; cat "$LOG_FILE"; exit 1; }
 chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"   # restore for any later scenario
 
-# Scenario 12: per-worker WORKER_TIMEOUT bounds wedged-worker risk. review.sh
-# runs each worker under `timeout -k "$WORKER_KILL_AFTER"`, so a hung Codex/test
-# phase that would otherwise hold the per-PR flock indefinitely gets the ceiling
-# escalated SIGTERM → SIGKILL. This drives a worker that IGNORES SIGTERM (the
-# real wedge — a bare SIGTERM leaves it running, the cascade the deleted
-# /unstick recipe used to clear by hand) and asserts the kill-after SIGKILL
-# reaps it. Also fences the operator-facing "per-worker timeout" log line.
+# Scenario 12: per-worker WORKER_TIMEOUT bounds wedged-worker risk. With
+# detached workers, the service-level TimeoutStartSec=90min no longer caps
+# worker runtime — a hung Codex/test phase could hold the per-PR flock
+# indefinitely. review.sh wraps each worker with `timeout -k "$WORKER_KILL_AFTER"`,
+# so the ceiling escalates SIGTERM → SIGKILL. This drives a worker that IGNORES
+# SIGTERM (the real wedge — a bare SIGTERM leaves it running, the cascade the
+# deleted /unstick recipe used to clear by hand) and asserts the kill-after
+# SIGKILL reaps it. Also fences the operator-facing "per-worker timeout" log.
 echo "  scenario 12: WORKER_TIMEOUT — SIGTERM-ignoring worker is SIGKILLed via --kill-after..."
 WEDGED_PID_FILE="$TMPDIR/wedged-worker.pid"
 cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<TWORKER
@@ -556,7 +656,7 @@ chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
 
 printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 : > "$LOG_FILE"
-WORKER_TIMEOUT=1s WORKER_KILL_AFTER=1s bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 &
+WORKER_TIMEOUT=1s WORKER_KILL_AFTER=1s ENUMERATE_SECS=0 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 &
 ORCH12_PID=$!
 wait "$ORCH12_PID" 2>/dev/null || true
 
@@ -574,8 +674,8 @@ if [ -n "$WEDGED_PID" ] && kill -0 "$WEDGED_PID" 2>/dev/null; then
     exit 1
 fi
 
-# Operator-facing: the startup log line must surface the per-worker cap in force.
-grep -q "Per-worker timeout 1s" "$LOG_FILE" || { echo "FAIL scenario 12: expected 'Per-worker timeout 1s' in the startup log line"; cat "$LOG_FILE"; exit 1; }
+# Operator-facing: the fan-out log line must surface the cap in force this tick.
+grep -q "per-worker timeout 1s" "$LOG_FILE" || { echo "FAIL scenario 12: expected 'per-worker timeout 1s' in fan-out log line"; cat "$LOG_FILE"; exit 1; }
 
 # Scenario 13: page-2 trigger fence. The original bug this PR exists to
 # fix: review.sh's pre-DRY fetch was a single-page `gh api`, so any
@@ -640,7 +740,7 @@ rm -f "$STATE_DIR/tmp/pr-review-trigger".*
 echo 'export TMPDIR="/tmp/should-not-be-honored-via-config-env"' > "$STATE_DIR/config.env"
 printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 : > "$LOG_FILE"
-TMPDIR="/tmp/should-not-be-honored-via-inheritance" \
+TMPDIR="/tmp/should-not-be-honored-via-inheritance" ENUMERATE_SECS=0 \
     bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
 rm -f "$STATE_DIR/config.env"
 n=$(count_dispatches)
@@ -790,4 +890,56 @@ if ! grep -qE 'dispatcher_tick=20[0-9][0-9]-[01][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5
     exit 1
 fi
 
-echo "  PASS (18 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough)"
+# Scenario 20: idle-skip gate — an already-reviewed PR whose head we've
+# reviewed AND whose updatedAt is unchanged since we last evaluated it must
+# NOT trigger a comment-fetch. This is the fix for the per-tick comment-fetch
+# storm that tripped GitHub's secondary rate limit: a watermark equal to the
+# enumerated updatedAt + a matching head means nothing changed, so the gate
+# skips before the core gh call.
+echo "  scenario 20: reviewed head + unchanged updatedAt → comment-fetch skipped (idle-skip gate)..."
+unset MOCK_COMMENTS_PAGE1_FILE MOCK_COMMENTS_PAGE2_FILE
+export MOCK_COMMENTS_FILE="$TMPDIR/comments.json"
+clear_seeded_runs
+seed_run "cncorp_plow" "1" "20260429T100000000Z" "abc123" "COMMENT" >/dev/null
+# Seed the watermark in the SHARED STATE_DIR while pointing LOCAL_STATE_DIR at
+# a distinct empty dir — so a regression that reads the cache from the
+# per-container LOCAL_STATE_DIR would miss the watermark, fail to skip, and
+# trip the fetch assertion below. Fences the shared-seam contract.
+mkdir -p "$STATE_DIR/seen-updated"
+printf '%s' "2026-05-20T00:00:00Z" > "$STATE_DIR/seen-updated/cncorp_plow__1"
+export LOCAL_STATE_DIR="$TMPDIR/local-distinct-20"; mkdir -p "$LOCAL_STATE_DIR"
+echo "[]" > "$MOCK_COMMENTS_FILE"
+export MOCK_PR_UPDATED_AT="2026-05-20T00:00:00Z"   # equals the watermark
+run_orchestrator
+unset MOCK_PR_UPDATED_AT LOCAL_STATE_DIR
+fetches=$(count_comment_fetches)
+if [ "$fetches" -ne 0 ]; then
+    echo "FAIL scenario 20 (idle-skip gate): expected 0 comment-fetches when head reviewed + updatedAt unchanged, got $fetches"
+    echo "--- comment-fetch log ---"; cat "$COMMENT_FETCH_LOG"
+    exit 1
+fi
+n=$(count_dispatches)
+if [ "$n" -ne 0 ]; then
+    echo "FAIL scenario 20: expected 0 dispatches on idle-skip, got $n"; cat "$LOG_FILE"; exit 1
+fi
+
+# Scenario 21: gate must NOT over-skip — when updatedAt has moved (a new
+# comment or commit bumps it), the comment-fetch must still happen so a
+# /srosro-* trigger isn't silently lost. Stale watermark + newer enumerated
+# updatedAt → fetch.
+echo "  scenario 21: reviewed head + CHANGED updatedAt → comment-fetch happens (no over-skip)..."
+clear_seeded_runs
+seed_run "cncorp_plow" "1" "20260429T100000000Z" "abc123" "COMMENT" >/dev/null
+printf '%s' "2026-05-20T00:00:00Z" > "$STATE_DIR/seen-updated/cncorp_plow__1"   # stale
+echo "[]" > "$MOCK_COMMENTS_FILE"
+export MOCK_PR_UPDATED_AT="2026-05-21T00:00:00Z"   # newer than the watermark
+run_orchestrator
+unset MOCK_PR_UPDATED_AT
+fetches=$(count_comment_fetches)
+if [ "$fetches" -lt 1 ]; then
+    echo "FAIL scenario 21 (gate over-skip regression): expected >=1 comment-fetch when updatedAt changed, got $fetches — a moved updatedAt must defeat the idle-skip so triggers aren't lost"
+    echo "--- comment-fetch log ---"; cat "$COMMENT_FETCH_LOG"
+    exit 1
+fi
+
+echo "  PASS (21 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches)"

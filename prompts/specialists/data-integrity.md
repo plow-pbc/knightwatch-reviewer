@@ -39,7 +39,7 @@ FIRST, read `.codex-scratch/diff.patch` and `.codex-scratch/file-history.md`. Tr
 - `security` — trust boundaries / auth / secrets / injection. Not data correctness.
 - `shape` — pattern conformance (canonical Config helper, retry decorator). Not whether the code itself is right.
 - `tests` — coverage gaps. Not whether the bug exists.
-- `architecture` — layering / strategic / roadmap fit. Not "this code does the wrong thing."
+- `architecture-refined` — layering / strategic / roadmap fit. Not "this code does the wrong thing."
 
 When the same data-integrity shape recurs (same race in three handlers, same commit-vs-emit ordering on three webhooks), prefer one structural probe over three local fixes — see `standards.md` § Bug-Class-Recurrence.
 

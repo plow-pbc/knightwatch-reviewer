@@ -82,8 +82,8 @@ test:
     bash lib/tests/loc-trend-smoke.sh
 
     echo ""
-    echo "=== decline-history smoke ==="
-    bash lib/tests/decline-history-smoke.sh
+    echo "=== pr-comments smoke ==="
+    bash lib/tests/pr-comments-smoke.sh
 
     echo ""
     echo "=== run-dir smoke test ==="
@@ -148,6 +148,14 @@ test:
     echo ""
     echo "=== pr-enumerate smoke test ==="
     bash lib/tests/pr-enumerate-smoke.sh
+
+    echo ""
+    echo "=== queue smoke test ==="
+    bash lib/tests/queue-smoke.sh
+
+    echo ""
+    echo "=== queue-distribute smoke test ==="
+    bash lib/tests/queue-distribute-smoke.sh
 
     echo ""
     echo "=== plow-kid-refresh smoke test ==="
