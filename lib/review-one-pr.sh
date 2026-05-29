@@ -70,6 +70,12 @@ REVIEW_START_ISO="${DISPATCHER_TICK_AT:-$(python3 -c "import datetime; print(dat
 # LOG_FILE defaulted yet (the per-run dir is set up below). Fall back to
 # $STATE_DIR/orchestrator.log so this skip line still lands somewhere durable.
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
+# LOCAL_STATE_DIR holds the per-container canonical clone/fetch lock — sharing it
+# would serialize per-container clones/fetches across reviewers. (The just-test
+# semaphore deliberately stays in the SHARED STATE_DIR so #100's global
+# MAX_CONCURRENT_TESTS cap holds across containers — see the acquire_just_test_lock
+# call below.) Defaults to STATE_DIR so single-host (non-container) behavior is unchanged.
+LOCAL_STATE_DIR="${LOCAL_STATE_DIR:-$STATE_DIR}"
 _LIB_DIR_EARLY="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 . "$_LIB_DIR_EARLY/locking.sh"
 PR_LOCK_SLUG="${REPO//\//_}__${PR_NUM}"
@@ -231,6 +237,19 @@ if [ -z "$BASE_REF" ] || [ -z "$PR_AUTHOR" ]; then
     exit 1
 fi
 
+# Author trust — computed once, before any placeholder/clone/codex. Container-
+# mode review gate: codex agents run sandbox-bypassed and share the privileged
+# dind daemon's netns, so reviewing an UNTRUSTED-author PR risks prompt-injection
+# → daemon → host root. Skip untrusted authors entirely here (no placeholder, no
+# pipeline) so untrusted content never reaches codex. Trusted (push-access)
+# authors review normally; the host (non-container) path is unaffected. Lifts
+# when the daemon is unprivileged. Reused below for the .env-mirror/just-test gate.
+if is_trusted_repo_author "$REPO" "$PR_AUTHOR"; then IS_TRUSTED_AUTHOR=true; else IS_TRUSTED_AUTHOR=false; fi
+if [ -n "${REVIEWER_CONTAINER_MODE:-}" ] && [ "$IS_TRUSTED_AUTHOR" != true ]; then
+    log "$PR_ID: skipping review — untrusted author ($PR_AUTHOR, no push access) in container mode (codex↔privileged-dind; trusted authors only until rootless dind)"
+    exit 0
+fi
+
 # Install the EXIT trap BEFORE the canonical clone/fetch so finalize_run is
 # guaranteed to fire on any abort path. cleanup_eyes is a no-op until
 # EYES_COMMENT_ID gets set after the head-ref fetch succeeds (placeholder
@@ -287,7 +306,7 @@ CANONICAL_DIR="$REPOS_DIR/$REPO_SLUG"
 PR_WORKDIR_SLUG="${REPO_SLUG}__${PR_NUM}"
 REPO_DIR="$WORKDIRS_DIR/${PR_WORKDIR_SLUG}"
 
-CANONICAL_LOCK_DIR="$STATE_DIR/canonical-locks"
+CANONICAL_LOCK_DIR="$LOCAL_STATE_DIR/canonical-locks"
 mkdir -p "$CANONICAL_LOCK_DIR"
 CANONICAL_LOCK_FILE="$CANONICAL_LOCK_DIR/$REPO_SLUG"
 exec {CANONICAL_LOCK_FD}> "$CANONICAL_LOCK_FILE"
@@ -487,15 +506,6 @@ if [ "$REVIEWED_SHA" != "$PR_SHA" ]; then
     log "$PR_ID: orchestrator enumerated ${PR_SHA:0:7}, worker checked out ${REVIEWED_SHA:0:7} — using checked-out SHA for header + state + meta"
 fi
 
-# Redirect-safe staging — a PR checkout could commit .codex-scratch as a
-# symlink to a writable service path (e.g. ~/.pr-reviewer/runs/...) so that
-# write_scratch + the per-specialist symlinks would redirect critic /
-# momentum / dead-code outputs into our own state dir. Wipe + recreate
-# unconditionally before any write so the worker owns the directory.
-# Mirrors lib/sibling-symlinks.sh's .siblings/ wipe-then-recreate pattern.
-rm -rf "$REPO_DIR/.codex-scratch"
-mkdir -p "$REPO_DIR/.codex-scratch"
-
 # meta.json — minimal post-mortem header. Written here (after checkout)
 # rather than at run-dir allocation so `sha` records what was actually
 # reviewed (REVIEWED_SHA) instead of the orchestrator's enumeration SHA
@@ -543,8 +553,11 @@ fi
 # still get a `just test` run, just without canonical's secrets — the
 # scenario-suite recipes that need live keys will trip their guards
 # (unchanged from pre-72a9cad behavior for those PRs).
+# IS_TRUSTED_AUTHOR was computed once right after PR_AUTHOR resolved (above),
+# where it also gates the container-mode review skip. Reused here for the .env
+# mirror + just-test gate (untrusted authors don't get dind reach).
 COPIED_ENV_FILES=()
-if is_trusted_repo_author "$REPO" "$PR_AUTHOR"; then
+if [ "$IS_TRUSTED_AUTHOR" = true ]; then
     while IFS= read -r -d '' example_path; do
         rel="${example_path#"$REPO_DIR"/}"
         target_rel="${rel%.example}"
@@ -701,6 +714,16 @@ if [ -z "$JUST_FILE" ]; then
     TESTS_RAN=false
     TEST_SUMMARY="not run (no justfile in repo root)"
     : > "$TEST_LOG"
+elif [ -n "${REVIEWER_TEST_USER:-}" ] && [ "$IS_TRUSTED_AUTHOR" != true ]; then
+    # Container mode forwards DOCKER_HOST to a privileged dind daemon; running
+    # untrusted PR test code there would let it drive that daemon (a host-escape
+    # surface) even without push access. Skip the test run for untrusted authors
+    # in the container path. (The host/systemd path has no dind and still runs
+    # untrusted tests without canonical secrets, unchanged.)
+    log "$PR_ID: skipping \`just test\` — untrusted author ($PR_AUTHOR) in container mode (no dind exposure)"
+    TESTS_RAN=false
+    TEST_SUMMARY="not run (untrusted author; container dind not exposed to untrusted test code)"
+    : > "$TEST_LOG"
 else
     # Global concurrency cap on `just test` (MAX_CONCURRENT_TESTS slots,
     # default 3). Each `just test` brings up a docker compose stack, so we
@@ -712,6 +735,10 @@ else
     # the old per-repo mutex was removed from `just test` 2026-05-15; #638
     # deletes it). See lib/locking.sh::acquire_just_test_lock.
     JUST_TEST_LOCK_WAIT_START=$(date +%s)
+    # #100's global N-slot semaphore, with slots in the SHARED STATE_DIR so the
+    # MAX_CONCURRENT_TESTS cap on concurrent `just test` holds ACROSS reviewer
+    # containers — protecting the host's memory. (This subsumes the per-container
+    # just-test lock; LOCAL_STATE_DIR now scopes only the canonical clone lock.)
     acquire_just_test_lock "$STATE_DIR"
     JUST_TEST_LOCK_WAIT=$(( $(date +%s) - JUST_TEST_LOCK_WAIT_START ))
     if [ "$JUST_TEST_LOCK_WAIT" -ge 5 ]; then
@@ -1034,6 +1061,15 @@ if ! materialize_sibling_symlinks "$REPO_DIR" SOURCE_PATHS "${INCLUDED_SLUGS[@]}
 fi
 
 # ---- write scratch files ----
+# Redirect-safe staging — wipe + recreate .codex-scratch HERE, immediately before
+# the first write and AFTER all PR-controlled execution (`just test`, canonical
+# fetch). A PR checkout could commit .codex-scratch as a symlink to a writable
+# service path, OR a trusted-author `just test` could replace it with one mid-run;
+# either would make the root-owned write_scratch + per-specialist symlinks below
+# redirect critic/momentum/dead-code outputs (and prompt files) into that target.
+# Wiping after the untrusted code runs closes both. Mirrors lib/sibling-symlinks.sh.
+rm -rf "$REPO_DIR/.codex-scratch"
+mkdir -p "$REPO_DIR/.codex-scratch"
 write_scratch "$REPO_DIR" "diff.patch"         "$KID_INPUT_DIFF"
 write_scratch "$REPO_DIR" "previous-review.md" "$PREV_BODY"
 write_scratch "$REPO_DIR" "test-results.md"    "$TEST_RESULTS"
@@ -1276,6 +1312,22 @@ if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
         RESET_AT=$(head -n 1 "$QUOTA_SENTINEL")
         EYES_ABORT_BODY="⏸ knightwatch paused — codex quota hit, resets at ${RESET_AT}. Will retry on the next tick and should succeed after the quota window resets."
         log "$PR_ID: handing codex-quota-error to cleanup_eyes (resets=${RESET_AT})"
+        # Pause THIS container until the quota window resets — review-loop.sh reads
+        # $LOCAL_STATE_DIR/quota-paused-until (always set; defaults to STATE_DIR) and
+        # stops claiming PRs until then, so a capped account doesn't keep claiming.
+        QUOTA_UNTIL=""
+        # Weekly caps carry a date → parse absolute. Short rolling-window resets are
+        # a bare time in the ACCOUNT's tz, which container-local `date -d` can
+        # misread and resume EARLY — for those, pause a conservative 1h and re-check
+        # (re-pauses if still capped) rather than trust the parse.
+        if printf '%s' "$RESET_AT" | grep -qE '[0-9]{4}|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec'; then
+            QUOTA_UNTIL=$(date -d "$(printf '%s' "$RESET_AT" | sed -E 's/([0-9])(st|nd|rd|th)/\1/g')" +%s 2>/dev/null)
+        fi
+        if [ -z "$QUOTA_UNTIL" ] || [ "$QUOTA_UNTIL" -le "$(date +%s)" ]; then
+            QUOTA_UNTIL=$(( $(date +%s) + 3600 ))
+        fi
+        printf '%s\n' "$QUOTA_UNTIL" > "$LOCAL_STATE_DIR/quota-paused-until"
+        log "$PR_ID: quota-paused this worker until epoch ${QUOTA_UNTIL} (reset=${RESET_AT})"
     elif [ -s "$TIMEOUTS_SENTINEL" ]; then
         TIMED_OUT=$(paste -sd, "$TIMEOUTS_SENTINEL")
         EYES_ABORT_BODY="❌ Review aborted — specialist(s) timed out (\`$TIMED_OUT\`). See knightwatch-reviewer logs; will retry on the next tick."

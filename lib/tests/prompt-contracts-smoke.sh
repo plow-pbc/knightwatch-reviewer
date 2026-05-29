@@ -584,8 +584,8 @@ assert_grep "momentum.md should fence inputs as data-not-instructions" \
 # A regression to hourly OR Persistent=true silently re-introduces the
 # rate-limit failure mode that motivated PR #78.
 echo "  asserting pr-reviewer-bakeoff.timer quota-control contract..."
-assert_grep "pr-reviewer-bakeoff.timer should run daily at 03:30 UTC" \
-    "OnCalendar=*-*-* 03:30:00" systemd/pr-reviewer-bakeoff.timer
+assert_grep "pr-reviewer-bakeoff.timer should run daily at 03:30 Pacific" \
+    "OnCalendar=*-*-* 03:30:00 America/Los_Angeles" systemd/pr-reviewer-bakeoff.timer
 assert_grep "pr-reviewer-bakeoff.timer should not be Persistent (matches repo timer shape)" \
     "Persistent=false" systemd/pr-reviewer-bakeoff.timer
 

@@ -1,6 +1,6 @@
 # knightwatch-reviewer — Product Context
 
-**Stage:** The reviewer reviewing itself. Single-operator tool used by one engineer (srosro); runs as systemd timers on one host. Not a product, not a distribution target.
+**Stage:** The reviewer reviewing itself. Single-operator tool used by one engineer (srosro). The review loop is moving to a containerized multi-account deployment (docker-compose: per-account `reviewer`+`dind` units, a shared `claims` volume for PR-claim/`runs/` state, per-container `LOCAL_STATE_DIR` locks) as the **primary** path; the systemd-timer-on-one-host path is the **legacy fallback**. Auxiliary timers (learn, org-sync, approve, re-request, kid-refresh) still run on the host. Not a product, not a distribution target.
 
 **Distribution model:** Personal / internal. No external users, no Marketplace ambitions.
 
@@ -8,7 +8,7 @@
 - Shell-first. Scripts + prompts + systemd units. No application server. State is JSON files plus one SQLite database (`bakeoff.db`) — see "Persistent stores" below for the carve-out.
 - Each running timer is a `Type=oneshot` with a lightweight sandbox (`ProtectHome=read-only` + explicit `ReadWritePaths`). When adding a capability that touches a new path, widen `ReadWritePaths` in the corresponding unit file — don't relax the outer sandbox.
 - Codex runs with `--dangerously-bypass-approvals-and-sandbox` (Ubuntu 24.04 AppArmor breaks bwrap for unprivileged user namespaces). Outer sandbox is systemd; that substitution is load-bearing and should not be reverted casually.
-- State lives in `~/.pr-reviewer/`. Code lives in this repo. `~/.pr-reviewer/{review.sh, lib, prompts, docs}` are symlinks to the repo.
+- State lives in `~/.pr-reviewer/` (legacy/systemd path). Code lives in this repo. `~/.pr-reviewer/{review.sh, lib, prompts, docs}` are symlinks to the repo. In the containerized path, `STATE_DIR` is the shared `claims` volume (`/shared`) and `LOCAL_STATE_DIR` (`/local`) holds the per-container just-test/canonical locks; the image carries the code, so prompts/lib resolve in-image.
 - Auto-tuning from PR-reply feedback runs hourly. It only edits `~/.claude/COMMENT_REVIEW_MISTAKES.md` — a ranked top-48 list of calibrations. It does NOT touch hand-curated files (`CODING_STANDARDS.md`, `REVIEW_PRACTICES.md`, `TESTING.md`).
 - Bot command prefix is operator-configurable via `BOT_CMD_PREFIX` (default `srosro`). All command parsers (props/critique/approve/memorize/review/update-review) match `/${BOT_CMD_PREFIX}-<verb>`.
 
@@ -17,7 +17,9 @@
 - `~/.pr-reviewer/bakeoff.db` — SQLite store for the specialist bake-off (per-(review × specialist) rows, daily incremental walker since `min(REWALK_HOURS_ago, walks.last_walked_at)`, write-time roster marker on every posted review). The carve-out is justified by needing time-series queries for cull/promote decisions on specialists; flat JSON would have required re-implementing GROUP BY + window cutoffs in awk on every walk. This is the ONLY SQLite seam — new state needs should default to JSON files + flock unless they have the same time-series-query shape.
 
 **Known near-term migrations / roadmap items:**
-- None tracked here. This tool is intentionally done-ish; changes happen organically when a specific pain point surfaces.
+- Containerized multi-account review loop (in flight): distributes reviews across N OpenAI/Codex accounts and confines PR code + codex agents to a container. (The quota-aware backoff — a capped account stopping claiming so it can't stall the queue — is resolved; see the next bullet.) The auxiliary host timers are not yet containerized, and two feed state the containers don't read in v1: `org-sync` writes `~/.pr-reviewer/repos.conf.auto` (auto-discovery) and `learn` writes `~/.claude/COMMENT_REVIEW_MISTAKES.md` (auto-calibration). v1 scopes the container path to the review loop only — operators list repos explicitly + refresh the standards copy; collapsing these into one shared host/container seam is a follow-up.
+- **Quota-aware backoff — (a) resolved, (b) bring-up:** on a codex cap, `review-one-pr.sh` writes the reset epoch to `$LOCAL_STATE_DIR/quota-paused-until` (weekly caps parsed absolute; bare-time rolling-window resets get a conservative 1h re-check, since container-local `date -d` can misread the account's tz), and `review-loop.sh` skips ticks until it passes — so a capped account stops claiming and healthy accounts carry the queue. **(b) remaining for live bring-up:** the single PR already in-flight when the cap hit gets a `⏸ paused` placeholder and (since `reviewed_sha` is stamped at checkout) may read as reviewed → confirm a healthy account re-picks-it-up, or have the gate exclude quota-aborted runs. Only the cross-account hand-off needs real caps to verify.
+- **Accepted v1 residual — codex↔dind (resolve at bring-up):** the sandbox-bypassed codex agents share the dind sidecar's netns + `DOCKER_HOST`, so a successful prompt-injection of a review agent could drive the privileged daemon. Untrusted `just test` is already skipped; the deeper codex path is a *deliberately deferred* hardening (not an oversight) — the fix (unprivileged/rootless dind via sysbox, or a separate test-runner container that alone touches dind) needs the live deployment to verify and is decided at Task-7 bring-up. Nothing is exposed until the containers are actually deployed. Future reviews: this is a recorded deferral, not a new finding.
 
 **Review posture for PRs against this repo:**
 - Bash and shell-pattern findings are fair game (quoting bugs, lock-file races, jq pitfalls).
