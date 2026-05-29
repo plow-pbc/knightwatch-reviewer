@@ -61,9 +61,18 @@ def _log_file() -> Path | None:
     return Path(p) if p else None
 
 
+def _log_prefix() -> str:
+    """Timestamp + (in container mode) a [w<WORKER_ID>] account tag. Mirrors the
+    shell log() format in lib/state-io.sh so a single `docker compose logs`
+    grep covers both the shell and Python halves of a reviewer's output."""
+    ts = time.strftime('%Y-%m-%d %H:%M:%S')
+    wid = os.environ.get("WORKER_ID")
+    return f"[{ts}] [w{wid}]" if wid else f"[{ts}]"
+
+
 def log(msg: str) -> None:
-    """Tee a timestamped line to stdout and $LOG_FILE."""
-    line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n"
+    """Tee a timestamped, worker-tagged line to stdout and $LOG_FILE."""
+    line = f"{_log_prefix()} {msg}\n"
     sys.stdout.write(line)
     sys.stdout.flush()
     logf = _log_file()

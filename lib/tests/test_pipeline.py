@@ -143,6 +143,28 @@ def _make_codex_stub(plan=None, default=(0, "### Probe 1\nstub\n"),
     return side_effect
 
 
+class TestLog(unittest.TestCase):
+    """log() tags each line with the emitting account ([w<WORKER_ID>]) in
+    container mode so interleaved `docker compose logs` from multiple reviewers
+    is attributable; outside a container (no WORKER_ID) the tag is omitted."""
+
+    def test_worker_tag_present_only_when_worker_id_set(self):
+        cases = [({"WORKER_ID": "7"}, True), ({}, False)]
+        with TemporaryDirectory() as d:
+            for i, (extra_env, want_tag) in enumerate(cases):
+                with self.subTest(env=extra_env):
+                    log_path = Path(d) / f"case-{i}.log"
+                    # clear=True guarantees WORKER_ID is absent in the no-tag
+                    # case regardless of the ambient environment.
+                    with patch.dict(os.environ,
+                                    {"LOG_FILE": str(log_path), **extra_env},
+                                    clear=True):
+                        pipeline.log("hello")
+                    written = log_path.read_text()
+                    self.assertIn("hello", written)
+                    self.assertEqual("[w7]" in written, want_tag)
+
+
 class TestRunCodex(unittest.TestCase):
     """run_codex wraps `codex exec`; matches lib/run-specialist.sh contract."""
 
