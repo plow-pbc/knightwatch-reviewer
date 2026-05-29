@@ -237,6 +237,19 @@ if [ -z "$BASE_REF" ] || [ -z "$PR_AUTHOR" ]; then
     exit 1
 fi
 
+# Author trust — computed once, before any placeholder/clone/codex. Container-
+# mode review gate: codex agents run sandbox-bypassed and share the privileged
+# dind daemon's netns, so reviewing an UNTRUSTED-author PR risks prompt-injection
+# → daemon → host root. Skip untrusted authors entirely here (no placeholder, no
+# pipeline) so untrusted content never reaches codex. Trusted (push-access)
+# authors review normally; the host (non-container) path is unaffected. Lifts
+# when the daemon is unprivileged. Reused below for the .env-mirror/just-test gate.
+if is_trusted_repo_author "$REPO" "$PR_AUTHOR"; then IS_TRUSTED_AUTHOR=true; else IS_TRUSTED_AUTHOR=false; fi
+if [ -n "${REVIEWER_CONTAINER_MODE:-}" ] && [ "$IS_TRUSTED_AUTHOR" != true ]; then
+    log "$PR_ID: skipping review — untrusted author ($PR_AUTHOR, no push access) in container mode (codex↔privileged-dind; trusted authors only until rootless dind)"
+    exit 0
+fi
+
 # Install the EXIT trap BEFORE the canonical clone/fetch so finalize_run is
 # guaranteed to fire on any abort path. cleanup_eyes is a no-op until
 # EYES_COMMENT_ID gets set after the head-ref fetch succeeds (placeholder
@@ -540,9 +553,9 @@ fi
 # still get a `just test` run, just without canonical's secrets — the
 # scenario-suite recipes that need live keys will trip their guards
 # (unchanged from pre-72a9cad behavior for those PRs).
-# Compute author trust once; reused by the .env mirror (below) and the
-# container just-test gate (untrusted authors don't get dind reach).
-if is_trusted_repo_author "$REPO" "$PR_AUTHOR"; then IS_TRUSTED_AUTHOR=true; else IS_TRUSTED_AUTHOR=false; fi
+# IS_TRUSTED_AUTHOR was computed once right after PR_AUTHOR resolved (above),
+# where it also gates the container-mode review skip. Reused here for the .env
+# mirror + just-test gate (untrusted authors don't get dind reach).
 COPIED_ENV_FILES=()
 if [ "$IS_TRUSTED_AUTHOR" = true ]; then
     while IFS= read -r -d '' example_path; do

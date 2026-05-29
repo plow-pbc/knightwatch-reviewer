@@ -632,4 +632,50 @@ if grep -q "posted reviewing placeholder" "$GATE_LOG"; then
     exit 1
 fi
 
-echo "  PASS (4 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate on fetched head)"
+# ===== Scenario 5: container-mode gate skips untrusted-author PRs =====
+# codex review agents run sandbox-bypassed and share the privileged dind
+# daemon's netns, so reviewing an UNTRUSTED-author PR risks prompt-injection →
+# host root. In REVIEWER_CONTAINER_MODE the worker must skip an untrusted author
+# entirely — before any placeholder, clone, or codex. The decisive contrast:
+# scenarios 1-4 use the SAME gh stub (author test-user, `gh api …permission`
+# → empty → untrusted) but WITHOUT container mode, and the worker proceeds to
+# clone/meta.json. Flipping only REVIEWER_CONTAINER_MODE must flip to a skip.
+echo "  scenario: container-mode gate skips untrusted-author PR before placeholder/clone..."
+STATE5="$TMPDIR/state-5"
+mkdir -p "$STATE5/runs" "$STATE5/canonical-locks" "$STATE5/locks" "$STATE5/repos" "$STATE5/workdirs"
+echo "{}" > "$STATE5/state.json"
+write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"   # author=test-user; permission unset → untrusted
+(
+    export STATE_DIR="$STATE5" STATE_FILE="$STATE5/state.json" REPOS_DIR="$STATE5/repos" \
+           WORKDIRS_DIR="$STATE5/workdirs" CANONICAL_LOCKS_DIR="$STATE5/canonical-locks" \
+           PR_REVIEW_LOCK_DIR="$STATE5/locks" REVIEWER_CONTAINER_MODE=1
+    write_probe_repos_conf "$STATE5/repos.conf"
+    TRIGGER_COMMENT_FILE="" \
+        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
+        "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Untrusted PR" "false" \
+        >/dev/null 2>&1
+)
+GATE5_EC=$?
+RUN5=$(find "$STATE5/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' | head -1)
+if [ -z "$RUN5" ]; then
+    echo "FAIL: scenario 5 — worker allocated no run-dir"
+    exit 1
+fi
+LOG5="$RUN5/run.log"
+if [ "$GATE5_EC" -ne 0 ]; then
+    echo "FAIL: scenario 5 — worker exited $GATE5_EC (expected 0 from clean container-mode untrusted skip)"
+    [ -f "$LOG5" ] && { echo "--- run.log ---"; cat "$LOG5"; }
+    exit 1
+fi
+if ! grep -q "skipping review — untrusted author" "$LOG5"; then
+    echo "FAIL: scenario 5 — run.log missing the container-mode untrusted-author skip line"
+    [ -f "$LOG5" ] && { echo "--- run.log ---"; cat "$LOG5"; }
+    exit 1
+fi
+if grep -q "posted reviewing placeholder" "$LOG5"; then
+    echo "FAIL: scenario 5 — placeholder WAS posted (untrusted PR reached the pipeline in container mode)"
+    cat "$LOG5"
+    exit 1
+fi
+
+echo "  PASS (5 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip)"
