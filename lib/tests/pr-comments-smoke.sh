@@ -69,6 +69,14 @@ LONG_JSON=$(jq -n --arg b "$LONGBODY" '[{user:{login:"srosro"},created_at:"2026-
 OUT=$(_pr_comments_from_json "$LONG_JSON" "srosro")
 echo "$OUT" | grep -qF "TAILMARKER" || { echo "FAIL: body past 600 chars was truncated — verbatim-thread contract broken"; echo "$OUT" | head -c 200; exit 1; }
 
+# --- fixture 3b: multiline body preserved structurally (not flattened) ---
+echo "  fixture 3b: multiline reply kept verbatim (newlines preserved)..."
+ML_JSON=$(jq -n '[{user:{login:"srosro"},created_at:"2026-05-01T12:00:00Z",body:"First line of the answer.\n\n```\ncode_block_line\n```\n\nClosing line."}]')
+OUT=$(_pr_comments_from_json "$ML_JSON" "srosro")
+# The code-fence and closing line must appear on their own lines, not folded onto the heading row.
+echo "$OUT" | grep -qxF 'code_block_line' || { echo "FAIL: multiline body was flattened — code block line not on its own line"; echo "$OUT"; exit 1; }
+echo "$OUT" | grep -qxF 'Closing line.' || { echo "FAIL: multiline body was flattened — closing line not preserved"; echo "$OUT"; exit 1; }
+
 # --- fixture 4: operator explicit class markers counted ---
 echo "  fixture 4: operator <!-- decline:class=X --> markers counted..."
 WITH_MARKERS=$(cat <<'JSON'
