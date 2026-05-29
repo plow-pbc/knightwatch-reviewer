@@ -463,78 +463,6 @@ if [ "$n" -ne 0 ]; then
     exit 1
 fi
 
-# Scenario 9: orchestrator returns quickly even when a worker is still
-# running. Pre-detach behavior had the orchestrator `wait` for every
-# forked worker before exiting, so a slow worker (15–20 min in
-# production) blocked the next 2-min timer firing and made
-# /srosro-update-review pickup unboundedly slow. With the post-fan-out
-# `wait` loop removed, the orchestrator must dispatch the worker and
-# return promptly, regardless of worker runtime.
-echo "  scenario 9: slow worker — orchestrator returns within 5s, worker keeps running..."
-# Replace the worker stub with one that sleeps "indefinitely" (long
-# enough that the orchestrator's `wait` would block the test if it
-# regressed). The stub writes its own PID so the test can kill the
-# exact process at cleanup time — `pkill -f "sleep 60"` is too broad
-# (would match unrelated `sleep 60` processes on a shared CI box).
-WORKER_MARKER="$TMPDIR/worker-started.flag"
-WORKER_PID_FILE="$TMPDIR/worker.pid"
-cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<WORKER
-#!/bin/bash
-echo "WORKER_DISPATCHED repo=\$1 pr=\$2 sha=\$3 force_whole=\$6 trigger_file=\${TRIGGER_COMMENT_FILE:-}" >> "$LOG_FILE"
-echo \$\$ > "$WORKER_PID_FILE"
-touch "$WORKER_MARKER"
-exec sleep 60   # exec preserves PID so reap_worker hits the actual sleeper, not the wrapper shell
-WORKER
-chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
-
-reap_worker() {
-    [ -f "$WORKER_PID_FILE" ] || return 0
-    local pid; pid=$(cat "$WORKER_PID_FILE")
-    [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
-}
-
-printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
-
-# Time the orchestrator. If it returns in <5s the wait was correctly
-# dropped; if it sits at 60s the regression is back.
-: > "$LOG_FILE"
-START=$(date +%s)
-bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 &
-ORCH_PID=$!
-# Cap the test at 10s so a regression doesn't hang CI for a full minute.
-TIMEOUT=10
-ELAPSED=0
-while kill -0 "$ORCH_PID" 2>/dev/null; do
-    sleep 1
-    ELAPSED=$((ELAPSED + 1))
-    if [ "$ELAPSED" -ge "$TIMEOUT" ]; then
-        kill "$ORCH_PID" 2>/dev/null
-        echo "FAIL scenario 9 (wait-loop regression): orchestrator did not return within ${TIMEOUT}s — likely waiting on the slow worker"
-        echo "--- log ---"; cat "$LOG_FILE"
-        # Reap the still-running worker so the trap's rm -rf can run.
-        pkill -P "$ORCH_PID" 2>/dev/null || true
-        reap_worker
-        exit 1
-    fi
-done
-END=$(date +%s)
-ORCH_ELAPSED=$((END - START))
-
-[ "$ORCH_ELAPSED" -lt 5 ] || { reap_worker; echo "FAIL scenario 9: orchestrator took ${ORCH_ELAPSED}s, expected <5s"; cat "$LOG_FILE"; exit 1; }
-
-# Sanity: the worker actually got dispatched.
-[ -f "$WORKER_MARKER" ] || { reap_worker; echo "FAIL scenario 9: worker never started — orchestrator may have errored before fan-out"; cat "$LOG_FILE"; exit 1; }
-
-# Liveness: scenario 9 claims "worker keeps running." Verify the worker
-# PID is actually still alive AFTER the orchestrator exited. Catches a
-# regression where (e.g.) cgroup-kill on orchestrator exit would leave
-# WORKER_MARKER touched but the sleep dead.
-WORKER_PID=$(cat "$WORKER_PID_FILE")
-[ -n "$WORKER_PID" ] && kill -0 "$WORKER_PID" 2>/dev/null || { reap_worker; echo "FAIL scenario 9 (worker-died-with-orchestrator regression): worker PID '$WORKER_PID' is no longer alive after orchestrator exit"; exit 1; }
-
-# Reap the sleeping worker so the test exits cleanly.
-reap_worker
-
 # Scenario 10: per-PR flock provides mutual exclusion across separate
 # review-one-pr.sh invocations. Calls acquire_pr_lock() (the same
 # function lib/review-one-pr.sh sources from lib/locking.sh) so a
@@ -868,4 +796,4 @@ if ! grep -qE 'dispatcher_tick=20[0-9][0-9]-[01][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5
     exit 1
 fi
 
-echo "  PASS (19 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough)"
+echo "  PASS (18 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough)"

@@ -1,17 +1,14 @@
 #!/bin/bash
-# Orchestrator: enumerate eligible PRs across all tracked repos and fan out
-# per-PR reviews via lib/review-one-pr.sh. Up to MAX_CONCURRENT reviews run
-# concurrently per service tick. Per-PR locking is handled by the worker.
+# Orchestrator: enumerate eligible PRs across all tracked repos and run
+# per-PR reviews via lib/review-one-pr.sh, one at a time per tick (the
+# container review loop caps each account to one in-flight review).
+# Per-PR locking is handled by the worker.
 #
-# Shebang note: this entrypoint runs only on the production Linux host
-# under pr-reviewer.service. It deliberately uses /bin/bash (NOT
-# /usr/bin/env bash) because $HOME/.local is writable per
-# ReadWritePaths — a writable-interpreter resolution path. Hard-coding
-# /bin/bash blocks the writable-PATH attack regardless of $PATH order.
-# The systemd unit's Environment=PATH puts system dirs FIRST and trails
-# the writable user dirs, so user-installed tools (codex via nvm-managed
-# per-version bin, pipx packages in ~/.local/bin) remain reachable without prepending the
-# writable dirs in front of system tools. Do NOT re-add an
+# Shebang note: this orchestrator runs as the containerized review loop's
+# per-tick entrypoint (invoked by review-loop.sh). It deliberately uses
+# /bin/bash (NOT /usr/bin/env bash) because writable user dirs on $PATH
+# are a writable-interpreter resolution path; hard-coding /bin/bash blocks
+# the writable-PATH attack regardless of $PATH order. Do NOT re-add an
 # `export PATH=$HOME/.local/bin:...` here — that would let an attacker
 # place ~/.local/bin/timeout (or gh, git, awk, …) and have it shadow
 # the system tool when this script invokes the command by name.
@@ -21,7 +18,6 @@ LOG_FILE="${LOG_FILE:-$STATE_DIR/orchestrator.log}"
 REPOS_DIR="${REPOS_DIR:-$STATE_DIR/repos}"
 WORKDIRS_DIR="${WORKDIRS_DIR:-$STATE_DIR/workdirs}"
 STABLE_SECS="${STABLE_SECS:-3600}"
-MAX_CONCURRENT="${MAX_CONCURRENT:-4}"
 
 # Tracked-repo manifest (REPOS array + KID_PATHS assoc array). Single
 # source of truth at repos.conf — adding a repo only edits one file.
@@ -34,11 +30,13 @@ REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 . "$REVIEWER_LIB_DIR/tracked-repos.sh"
 . "$REVIEWER_LIB_DIR/gh-comments.sh"
 [ ${#REPOS[@]} -ge 1 ] || { echo "FATAL: no tracked repos — populate $STATE_DIR/repos.conf or set REPOS in config.env" >&2; exit 1; }
-# Container entrypoint (review-loop.sh) pins one in-flight review per account.
-# Re-assert AFTER config.env is sourced (just above, via tracked-repos.sh) so a
-# stray legacy MAX_CONCURRENT/WAIT_FOR_WORKERS in config.env can't silently break
-# the container contract. The host/systemd path leaves the sentinel unset.
-if [ -n "${REVIEWER_CONTAINER_MODE:-}" ]; then MAX_CONCURRENT=1; WAIT_FOR_WORKERS=1; fi
+# One in-flight review per orchestrator run — the single contract since the
+# legacy host reviewer was retired (review.sh now runs only as the container
+# review loop's per-tick entrypoint). Pinned AFTER config.env is sourced (just
+# above, via tracked-repos.sh) so a stray legacy MAX_CONCURRENT in config.env
+# can't silently widen it. The orchestrator waits for its worker before
+# returning (see end of file).
+MAX_CONCURRENT=1
 BOT_USER="${BOT_USER:-srosro}"
 BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
 # Hidden HTML-comment marker prepended to every auto-post by this repo
@@ -89,13 +87,11 @@ if [[ ! -x "$REVIEWER_LIB_DIR/review-one-pr.sh" ]]; then
 fi
 
 # ---------- enumerate + dispatch (single-pass) ----------
-# Per-worker timeout. With detached workers (KillMode=process), the
-# service-level TimeoutStartSec=90min no longer bounds worker runtime
-# (orchestrator returns before workers complete). A wedged Codex phase
-# could hold the per-PR flock indefinitely, blocking all future
-# /srosro-update-review for that PR. `timeout 90m` re-establishes the
-# pre-detach ceiling at the worker level; the worker exits, the flock
-# releases, and the next tick can re-dispatch.
+# Per-worker timeout. The orchestrator waits for its dispatched worker, so a
+# wedged Codex phase would otherwise block this tick (and hold the per-PR
+# flock) indefinitely, stalling all future /srosro-update-review for that PR.
+# `timeout 90m` caps the worker; it exits, the flock releases, and the next
+# tick can re-dispatch.
 WORKER_TIMEOUT="${WORKER_TIMEOUT:-90m}"
 # Grace before SIGKILL: `timeout` sends SIGTERM at WORKER_TIMEOUT, then SIGKILL
 # WORKER_KILL_AFTER later. Without -k, a worker (or same-group child) that
@@ -298,11 +294,9 @@ while IFS= read -r PR_JSON; do
         printf 'Comment by @%s:\n\n%s\n' "$TRIGGER_USER" "$TRIGGER_BODY" > "$TRIGGER_FILE"
     fi
 
-    # Throttle to MAX_CONCURRENT in-flight workers per tick. We don't
-    # track outcomes here — workers detach (KillMode=process on the
-    # unit) and the next tick runs regardless of this tick's per-worker
-    # results. Per-worker outcomes live in $STATE_DIR/runs/<id>/run.log
-    # and the systemd journal.
+    # Serialize to one in-flight worker (MAX_CONCURRENT=1): block here until
+    # the prior worker drains before dispatching the next. Per-worker outcomes
+    # live in $STATE_DIR/runs/<id>/run.log.
     while [ "$active" -ge "$MAX_CONCURRENT" ]; do
         wait -n || true
         active=$((active - 1))
@@ -333,22 +327,12 @@ while IFS= read -r PR_JSON; do
     dispatched=$((dispatched + 1))
 done < <(echo "$ALL_PRS" | jq -c '.[]')
 
-# Detached fan-out: workers run past this script's exit (KillMode=process
-# on the systemd unit; children reparent to PID 1). We don't wait —
-# enumerate + dispatch is the orchestrator's job, per-worker outcomes
-# land in $STATE_DIR/runs/<id>/run.log. Without detach, the next 2-min
-# timer tick would block on the slowest worker (15–20 min in prod).
 if [ "$dispatched" -eq 0 ]; then
     log "No PRs need review"
 else
-    log "Fan-out: dispatched $dispatched worker(s) (detached, running in background)"
+    log "Fan-out: dispatched $dispatched worker(s)"
 fi
-# Containerized deployment (review-loop.sh) sets WAIT_FOR_WORKERS so this
-# tick blocks until its dispatched workers finish before returning to the
-# poll loop — that's what caps a single OpenAI account to one in-flight
-# review. The systemd path leaves it unset and keeps the detached fan-out
-# (workers survive via KillMode=process; the next timer tick is independent).
-if [ -n "${WAIT_FOR_WORKERS:-}" ]; then
-    wait
-fi
+# Block until the dispatched worker finishes before returning to review-loop.sh's
+# poll loop — that's what caps a single OpenAI account to one in-flight review.
+wait
 exit 0

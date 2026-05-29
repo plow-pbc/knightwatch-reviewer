@@ -19,14 +19,10 @@ cd "$(dirname "$0")"
 export REVIEWER_LIB_DIR="$(pwd)/lib"
 export PROMPTS_DIR="$(pwd)/prompts"
 POLL_SECS="${POLL_SECS:-30}"
-export MAX_CONCURRENT=1
-# Block each tick until its dispatched worker finishes (review.sh honors this),
-# so one container/account runs at most ONE review at a time. Without it, the
-# poll loop's next tick starts while the prior detached worker is still running
-# and one account ends up driving multiple concurrent reviews.
-export WAIT_FOR_WORKERS=1
-# Sentinel so review.sh can re-pin the one-review-per-account contract AFTER it
-# sources config.env (which could otherwise override MAX_CONCURRENT/WAIT_FOR_WORKERS).
+# review.sh pins MAX_CONCURRENT=1 and waits for its worker on its own (the single
+# contract since the host reviewer was retired), so one container/account runs at
+# most ONE review at a time. REVIEWER_CONTAINER_MODE still gates the container-only
+# paths in review.sh (quota-pause break) and review-one-pr.sh (untrusted-author skip).
 export REVIEWER_CONTAINER_MODE=1
 # Run PR-controlled `just test` as this unprivileged user (created in the image)
 # so a hostile test recipe can't read /root/.codex or the reviewer's tokens —
