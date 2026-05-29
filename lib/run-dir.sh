@@ -393,6 +393,26 @@ format_kid_note() {
     esac
 }
 
+# format_specialist_timeouts NAMES_CSV
+#
+# One header fragment naming the angle(s) that timed out (codex parallel-
+# tool-call deadlock) and were excluded from this review. Symmetric with
+# format_tests_note / format_kid_note: the warning rides the same blockquote
+# registry so a partial review is disclosed in the header instead of being
+# aborted — aborting forced a full same-SHA re-review next tick, re-paying
+# the whole specialist fan-out for the angles that already succeeded.
+#
+# Pure function. Empty NAMES_CSV is an invariant violation (the caller only
+# invokes this when _wave_b_timeouts.txt is non-empty) — fail-fast.
+format_specialist_timeouts() {
+    local names="$1"
+    if [ -z "$names" ]; then
+        printf 'format_specialist_timeouts: empty names — internal invariant violated\n' >&2
+        return 1
+    fi
+    printf '⏱️ Partial review — specialist(s) timed out and were skipped: `%s`' "$names"
+}
+
 # prepend_review_header COMMENT_BODY NOTE [NOTE...]
 #
 # Renders the unified deterministic registry as one blockquote line right

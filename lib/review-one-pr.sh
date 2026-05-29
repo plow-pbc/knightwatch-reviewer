@@ -645,7 +645,11 @@ if [ -z "$FULL_PR_DIFF" ]; then
     rm -rf "$REPO_DIR"
     exit 1
 fi
-log "$PR_ID: full PR diff size = ${#FULL_PR_DIFF} bytes"
+# Changed-line count (added + deleted, excluding the +++/--- file headers):
+# pipeline.py scales codex reasoning effort down to medium for PRs under its
+# SMALL_PR_LOC threshold, where high reasoning isn't worth the quota.
+PR_DIFF_LOC=$(printf '%s\n' "$FULL_PR_DIFF" | grep -cE '^[+-]([^+-]|$)' || true)
+log "$PR_ID: full PR diff size = ${#FULL_PR_DIFF} bytes, ${PR_DIFF_LOC} changed lines"
 KID_INPUT_DIFF="$FULL_PR_DIFF"
 
 # All four "what did the author see last?" values (body, sha, approved,
@@ -1329,6 +1333,7 @@ PR_ID="$PR_ID" \
 PR_TITLE="$PR_TITLE" \
 PR_URL="$PR_URL" \
 PR_AUTHOR="$PR_AUTHOR" \
+PR_DIFF_LOC="$PR_DIFF_LOC" \
 PROMPTS_DIR="${PROMPTS_DIR:-$HOME/.pr-reviewer/prompts}" \
 LOG_FILE="$LOG_FILE" \
 OPERATOR_NAME="${OPERATOR_NAME:-Sam}" \
@@ -1342,14 +1347,12 @@ AGG_OUT="$RUN_DIR/agents/aggregator/output.md"
 # the safety-net check below handles any race or unexpected exit.
 if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
     log "$PR_ID: pipeline failed (exit=$PIPELINE_EXIT, agg empty=$([ ! -s "$AGG_OUT" ] && echo true || echo false)) — aborting"
-    # pipeline.py may write one of two sentinels naming the specific cause.
-    # Hand the most informative abort body we have to cleanup_eyes so the
-    # EXIT trap PATCHes the placeholder accordingly — single PATCH lifecycle,
-    # same trap. Codex quota wins over Wave B timeouts: if the codex usage
-    # limit was hit during Wave A intent, no Wave B sentinel exists; if
-    # somehow both fired, quota is the more specific cause.
+    # pipeline.py may write the quota sentinel naming the reset time. Hand the
+    # most informative abort body we have to cleanup_eyes so the EXIT trap
+    # PATCHes the placeholder accordingly — single PATCH lifecycle, same trap.
+    # (Specialist timeouts no longer reach this abort path: pipeline.py
+    # completes the review and the ⏱️ warning is rendered in REVIEW_NOTES.)
     QUOTA_SENTINEL="$RUN_DIR/_codex_quota.txt"
-    TIMEOUTS_SENTINEL="$RUN_DIR/_wave_b_timeouts.txt"
     if [ -s "$QUOTA_SENTINEL" ]; then
         RESET_AT=$(head -n 1 "$QUOTA_SENTINEL")
         EYES_ABORT_BODY="⏸ knightwatch paused — codex quota hit, resets at ${RESET_AT}. Will retry on the next tick and should succeed after the quota window resets."
@@ -1370,10 +1373,6 @@ if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
         fi
         printf '%s\n' "$QUOTA_UNTIL" > "$LOCAL_STATE_DIR/quota-paused-until"
         log "$PR_ID: quota-paused this worker until epoch ${QUOTA_UNTIL} (reset=${RESET_AT})"
-    elif [ -s "$TIMEOUTS_SENTINEL" ]; then
-        TIMED_OUT=$(paste -sd, "$TIMEOUTS_SENTINEL")
-        EYES_ABORT_BODY="❌ Review aborted — specialist(s) timed out (\`$TIMED_OUT\`). See knightwatch-reviewer logs; will retry on the next tick."
-        log "$PR_ID: handing timeouts-error to cleanup_eyes (specialists=$TIMED_OUT)"
     fi
     [ -d "$REPO_DIR" ] && rm -rf "$REPO_DIR"
     exit 1
@@ -1455,6 +1454,19 @@ fi
 REVIEW_NOTES+=("$SCOPE_NOTE")
 [ -n "$CURRENT_HEAD" ] && [ "$CURRENT_HEAD" != "$REVIEWED_SHA" ] && \
     REVIEW_NOTES+=("⚠️ Stale: head moved from \`${REVIEWED_SHA:0:7}\` to \`${CURRENT_HEAD:0:7}\` mid-run — see commands below to re-run")
+# Specialist timeouts no longer abort — pipeline.py completes the review with
+# the surviving angles and names the hung ones here. Disclose them as a header
+# warning rather than silently shipping reduced coverage.
+TIMEOUTS_SENTINEL="$RUN_DIR/_wave_b_timeouts.txt"
+if [ -s "$TIMEOUTS_SENTINEL" ]; then
+    TIMED_OUT=$(paste -sd, "$TIMEOUTS_SENTINEL")
+    if ! TIMEOUT_NOTE=$(format_specialist_timeouts "$TIMED_OUT"); then
+        log "$PR_ID: format_specialist_timeouts failed (names='$TIMED_OUT') — internal invariant violated, aborting"
+        rm -rf "$REPO_DIR"
+        exit 1
+    fi
+    REVIEW_NOTES+=("$TIMEOUT_NOTE")
+fi
 # Symmetric pre-check disclosure: every pre-check emits one fragment
 # describing its outcome (pass/fail/skip), not just on miss. Old asym-
 # metric pattern collapsed clean-PR headers to scope-only and left
