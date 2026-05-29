@@ -75,7 +75,8 @@ jq -n \
 . "$LIB_DIR/state-io.sh"
 . "$LIB_DIR/run-dir.sh"
 . "$LIB_DIR/scratch.sh"
-# Pipeline shape (Wave A: intent ∥ dead-code-search → Wave B: 8 specialists
+. "$LIB_DIR/knightwatch-config.sh"
+# Pipeline shape (Wave A: intent ∥ dead-code-search → Wave B: the SPECIALISTS
 # ∥ momentum-on-re-review → aggregator) is implemented in lib/pipeline.py.
 # Replay invokes it as a subprocess below after staging scratch inputs.
 
@@ -135,9 +136,21 @@ write_scratch "$REPO_DIR" "diff.patch" "$(cat "$OUT/diff.patch")"
 for f in review-priority.md pr-comments.md loc-trend.md \
          prior-art.md dead-code-static.md prior-reviews.md previous-review.md \
          file-history.md commits.md author-intent.md search-roots.md \
-         product-context.md test-results.md; do
+         test-results.md; do
     write_scratch "$REPO_DIR" "$f" "(replay: not staged — upstream pipeline stage skipped)"
 done
+
+# product-context.md mirrors production staging via the SAME shared seam
+# (resolve_product_context, lib/knightwatch-config.sh): per-repo file from the
+# base ref if committed, else the org default. Using the one resolver — not a
+# replay-local copy of the present/absent/error tri-state — is what keeps
+# replay from drifting from production (it did, twice). architecture-refined
+# and the other specialists rely on this input always carrying the operating
+# point. rc=2 (bad base ref / git error) aborts rather than silently scoring
+# as "absent context".
+PRODUCT_CONTEXT=$(resolve_product_context "$REPO_DIR" "origin/$BASE_REF") \
+    || { echo "replay: error reading product-context.md from origin/$BASE_REF — aborting" >&2; exit 1; }
+write_scratch "$REPO_DIR" "product-context.md" "$PRODUCT_CONTEXT"
 # TODO: prior-reviews.md is stubbed above, so multi-round Path 2 (strict-decrease
 # trigger in aggregator.md) cannot be exercised via replay. Re-staging from the
 # source run dir's inputs/ would enable it. The deterministic smoke
@@ -216,6 +229,10 @@ REVIEW_NOTES+=("🎬 Replay of \`$SHA\` (\`gh pr view --repo $REPO $PR\`)")
 if [ "$KNIGHTWATCH_PRESENT" = "0" ]; then
     REVIEW_NOTES+=("⚙️ No .knightwatch/ config (review using defaults)")
 fi
+# Same partial-review disclosure as the live worker (shared helper), so a
+# replayed run whose specialists timed out doesn't read as full coverage.
+TIMEOUT_NOTE=$(timeout_note_for_run "$RUN_DIR")
+[ -n "$TIMEOUT_NOTE" ] && REVIEW_NOTES+=("$TIMEOUT_NOTE")
 
 AGG_BODY=$(cat "$AGG_OUT_FILE")
 STITCHED=$(prepend_review_header "$AGG_BODY" "${REVIEW_NOTES[@]}")

@@ -16,6 +16,15 @@ mkdir -p "$d/bin" "$d/repo"
 printf '#!/bin/bash\nshift 3\nexec "$@"\n' > "$d/bin/timeout"   # drop `-k <dur> <dur>`
 printf '#!/bin/bash\nshift 3\nexec "$@"\n' > "$d/bin/runuser"   # drop `-u <user> --` (no real uid switch)
 printf '#!/bin/bash\nexit 0\n'             > "$d/bin/chown"
+# Stub the reviewer-test reap (pkill -u / pgrep -u) like the other privileged
+# ops above: the reap is a bring-up check, not asserted here. Unstubbed, when
+# this suite itself runs AS reviewer-test (the container review path), the real
+# `pkill -KILL -u reviewer-test` would kill the test runner — a harness
+# artifact, not a prod issue (the prod worker runs as root and reaps a distinct
+# reviewer-test). pgrep exits 1 (no survivors) so run_just_test's reap-confirm
+# loop proceeds cleanly.
+printf '#!/bin/bash\nexit 0\n'             > "$d/bin/pkill"
+printf '#!/bin/bash\nexit 1\n'             > "$d/bin/pgrep"
 cat > "$d/bin/just" <<'STUB'
 #!/bin/bash
 echo "GH_TOKEN_VISIBLE=${GH_TOKEN:-<unset>}"

@@ -40,7 +40,7 @@ Pick PRs whose R1 (first reviewed) SHA had findings the OLD bot caught well — 
 |---|---|---|
 | Test-coverage gap | `tests` specialist | A PR where the bot caught a missing-test or fail-loud-vs-skip finding |
 | Call-graph consistency / packaging | `shape`, `consumers`, `data-integrity` | A PR with a "two paths read different sources" or "stale caller" or path-resolution bug |
-| `simplification` removal logic | `simplification` (DRY / dead-code / complexity-cost merged) | A PR where the bot correctly recommended deletion or DRY collapse |
+| `simplification` removal logic | `architecture-refined` (DRY / dead-code / complexity-cost / over-engineering merged) | A PR where the bot correctly recommended deletion or DRY collapse |
 
 3 canaries minimum; more is fine if budget allows. Don't paste the canary list into this public PR.
 
@@ -74,7 +74,7 @@ echo "=== experiment ==="; cat "$OUT/experiment/index.md"
 
 Output goes under `~/.pr-reviewer/replays/` so private canary identifiers + replay artifacts never land as commit-ready files in the public worktree. `set -euo pipefail` aborts on any failure (e.g. `git switch main` in a dirty tree) so a bad checkout can't silently produce a false no-delta comparison.
 
-`lib/replay-batch.sh` runs cells sequentially. Wall time is roughly `canaries × 10 min × 2 sides` — for 3 canaries that's ~60 min total. Each cell burns ~17 codex calls (1 intent + 1 dead-code + 8 specialists + 7 critics + 1 momentum + 1 aggregator). Logged-in `codex` CLI required.
+`lib/replay-batch.sh` runs cells sequentially. Wall time is roughly `canaries × 10 min × 2 sides` — for 3 canaries that's ~60 min total. Each cell burns `2 + 2×|SPECIALISTS| + 2` codex calls (intent + dead-code, then one specialist + one critic per `lib/pipeline.py::SPECIALISTS` entry, plus momentum + aggregator) — ~18 today. Logged-in `codex` CLI required.
 
 ### Verify with fixtures (optional, recommended for repeated regressions)
 

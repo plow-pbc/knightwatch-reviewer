@@ -13,9 +13,37 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 SPECIALISTS = (
-    "security", "data-integrity", "architecture", "architecture-v2",
-    "simplification", "tests", "shape", "consumers",
+    "security", "data-integrity", "architecture-refined",
+    "contract-drift", "tests", "shape", "consumers",
 )
+
+# Reasoning effort scales with PR size. gpt-5.5 at high reasoning is the
+# dominant per-call quota cost; small PRs don't warrant it, so a diff under
+# SMALL_PR_LOC changed lines runs the whole review at medium. review-one-pr.sh
+# passes the changed-line count via PR_DIFF_LOC; absent → high (safe default).
+# The aggregator is the one exception — it runs at xhigh regardless of size
+# (the single synthesis step is where a premium budget pays off); see its
+# call site in run_pipeline.
+SMALL_PR_LOC = 500
+
+
+def _reasoning_effort(diff_loc: int) -> str:
+    return "medium" if diff_loc < SMALL_PR_LOC else "high"
+
+
+# Per-kind codex model routing. The critic pass runs once per specialist
+# (doubling the Wave-B fan-out) and mostly resolves yes/no against evidence
+# the specialist already cited, so it runs on the cheaper gpt-5.4-mini
+# (~30% of gpt-5.4 quota); every other agent uses the flagship gpt-5.5.
+DEFAULT_MODEL = "gpt-5.5"
+CRITIC_MODEL = "gpt-5.4-mini"
+
+
+def model_for(name: str) -> str:
+    """The codex model for an agent `name`: cheap gpt-5.4-mini for the critic
+    pass, flagship gpt-5.5 for specialists, standalones, and the aggregator."""
+    return CRITIC_MODEL if name.startswith("critic-") else DEFAULT_MODEL
+
 
 # Per-codex hard cap. Successful specialists complete in 1–5 min; 45 min
 # means the codex subprocess is wedged, not slow. Originating incident:
@@ -156,7 +184,8 @@ def _wait_with_watchdog(
         return 124, reason, retryable
 
 
-def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
+def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
+              effort: str = "high") -> int:
     """Wrap one `codex exec` invocation. Writes prompt.txt/output.md/log.txt
     under agent_dir. Returns codex exit code, 3 for empty output, or 4 for
     probe-contract violation (specialist roles only).
@@ -188,8 +217,8 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str) -> int:
         "codex", "exec",
         "-C", str(repo),
         "--dangerously-bypass-approvals-and-sandbox",
-        "-c", "model=gpt-5.5",
-        "-c", "model_reasoning_effort=high",
+        "-c", f"model={model_for(name)}",
+        "-c", f"model_reasoning_effort={effort}",
         "-o", str(out_file),
         prompt,
     ]
@@ -399,6 +428,7 @@ def run_specialist(
     pr_title: str,
     pr_url: str,
     pr_author: str,
+    effort: str = "high",
 ) -> int:
     """Run one specialist → critic chain. Writes the layered file (specialist
     + critic) on full success. Returns 0 or the failing stage's exit code."""
@@ -410,7 +440,7 @@ def run_specialist(
         pr_id=pr_id, pr_title=pr_title, pr_url=pr_url, pr_author=pr_author,
     )
     spec_agent_dir = run / "agents" / specialist
-    spec_rc = run_codex(specialist, str(repo), spec_prompt, str(spec_agent_dir))
+    spec_rc = run_codex(specialist, str(repo), spec_prompt, str(spec_agent_dir), effort=effort)
     if spec_rc != 0:
         log(f"{pr_id}: specialist {specialist} exited non-zero (see {spec_agent_dir}/{{log,err}}.txt)")
         return spec_rc
@@ -423,13 +453,35 @@ def run_specialist(
     scratch_path.parent.mkdir(parents=True, exist_ok=True)
     scratch_path.write_text(spec_out)
 
+    # A specialist that emitted zero probes (the 'No probes.' sentinel, the
+    # only other run_codex-valid output) has nothing for the critic to
+    # contest: _validate_critic_output already requires the critic answer with
+    # a bare 'No probes.' in that case, so the critic codex call is
+    # deterministic waste. Synthesize the identical layered output and skip it
+    # — the single biggest Wave-B quota saving on clean PRs.
+    if not _PROBE_HEADER_RE.findall(spec_out):
+        layered = spec_out + "\n\n---\n\nNo probes."
+        (spec_agent_dir / "layered.md").write_text(layered)
+        scratch_path.write_text(layered)
+        return 0
+
     crit_prompt = build_prompt(
         kind="critic", agent=f"critic-{specialist}", prompts_dir=prompts_dir,
         pr_id=pr_id, pr_title=pr_title, pr_url=pr_url, pr_author=pr_author,
     )
     crit_agent_dir = run / "agents" / f"critic-{specialist}"
-    crit_rc = run_codex(f"critic-{specialist}", str(repo), crit_prompt, str(crit_agent_dir))
+    crit_rc = run_codex(f"critic-{specialist}", str(repo), crit_prompt, str(crit_agent_dir), effort=effort)
     if crit_rc != 0:
+        # A timed-out critic (rc=124) no longer aborts the review — Wave B
+        # completes. The raw, un-critiqued specialist output staged in scratch
+        # would then be consumed by the aggregator as if it were a full angle,
+        # even though the header reports the angle as skipped. Drop it so the
+        # angle is genuinely absent; the raw output stays under
+        # agents/<name>/output.md for forensics. (Hard failures — rc 4/5 —
+        # abort the whole review, so their scratch is never consumed; it's
+        # left in place as forensic evidence, the pre-existing contract.)
+        if crit_rc == 124:
+            scratch_path.unlink(missing_ok=True)
         log(f"{pr_id}: critic-{specialist} exited non-zero (see {crit_agent_dir}/{{log,err}}.txt)")
         return crit_rc
     crit_out = (crit_agent_dir / "output.md").read_text()
@@ -473,6 +525,7 @@ def _validate_intent(intent_out: Path) -> str:
 def _run_standalone(
     name: str, repo_dir: str, run_dir: str, prompts_dir: str,
     pr_id: str, pr_title: str, pr_url: str, pr_author: str,
+    effort: str = "high",
 ) -> int:
     """Build + run one standalone codex stage at agents/<name>/. Returns rc."""
     prompt = build_prompt(
@@ -480,7 +533,7 @@ def _run_standalone(
         pr_id=pr_id, pr_title=pr_title, pr_url=pr_url, pr_author=pr_author,
     )
     agent_dir = Path(run_dir) / "agents" / name
-    return run_codex(name, repo_dir, prompt, str(agent_dir))
+    return run_codex(name, repo_dir, prompt, str(agent_dir), effort=effort)
 
 
 def run_pipeline(
@@ -500,13 +553,19 @@ def run_pipeline(
     scratch = repo / ".codex-scratch"
     scratch.mkdir(parents=True, exist_ok=True)
 
+    # One effort for the whole review, scaled to PR size (see _reasoning_effort).
+    # Absent/empty PR_DIFF_LOC → high (safe default, pre-existing behavior).
+    raw_loc = os.environ.get("PR_DIFF_LOC")
+    effort = _reasoning_effort(int(raw_loc)) if raw_loc else "high"
+
     common_kwargs = dict(
         repo_dir=repo_dir, run_dir=run_dir, prompts_dir=prompts_dir,
         pr_id=pr_id, pr_title=pr_title, pr_url=pr_url, pr_author=pr_author,
+        effort=effort,
     )
 
     # Wave A: intent + dead-code-search in parallel. Both are inputs to the
-    # specialists (intent → architecture/simplification/momentum read it;
+    # specialists (intent → architecture-refined/momentum read it;
     # dead-code → consumers reads it), so they must complete before Wave B.
     log(f"{pr_id}: Wave A — intent + dead-code-search")
     with ThreadPoolExecutor(max_workers=2) as ex:
@@ -528,7 +587,7 @@ def run_pipeline(
     _relink(scratch / "dead-code.md", run / "agents" / "dead-code-search" / "output.md")
     log(f"{pr_id}: Wave A complete: {intent_text}")
 
-    # Wave B: 8 specialists + (momentum if re-review) in parallel. Momentum
+    # Wave B: all SPECIALISTS + (momentum if re-review) in parallel. Momentum
     # reads inferred-intent.md (Wave A) but no specialist output, so it can
     # run alongside the specialists.
     prev_review = run / "inputs" / "previous-review.md"
@@ -563,26 +622,39 @@ def run_pipeline(
                 # log.txt; don't second-guess with the always-specialist path.
                 hard_failures.append(f"{name}: exited non-zero (rc={rc})")
 
-    # Any specialist timeout aborts loudly. The sentinel names the hung
-    # specialists so the bash worker patches the placeholder with the names
-    # rather than the generic abort body. Authors re-trigger via push or
-    # /srosro-update-review for a fresh review — partial-coverage posting
-    # was traded for simpler infra (no carve-outs, no stubs, no second
-    # write site).
-    if timed_out:
-        (run / "_wave_b_timeouts.txt").write_text("\n".join(timed_out) + "\n")
-        return _abort(
-            repo,
-            f"{pr_id}: {len(timed_out)} specialist(s) timed out "
-            f"({', '.join(timed_out)}) — aborting",
-        )
-
+    # Hard failures (rc != 0 and != 124 — contract violations, crashes) are
+    # genuine breakage, not transient: abort loudly so a real bug never ships
+    # a half-built review.
     if hard_failures:
         return _abort(
             repo, f"{pr_id}: Wave B hard failures: {'; '.join(hard_failures)} — aborting"
         )
 
-    if has_prev:
+    # Specialist timeouts (rc=124) do NOT abort. Aborting forced a full
+    # same-SHA re-review on the next tick — re-paying the whole ~18-call
+    # fan-out for the angles that already succeeded (pure quota waste, and
+    # the deadlock that caused the timeout often recurs, so it never
+    # converged). Instead we complete the review with the angles that
+    # finished and name the timed-out ones in _wave_b_timeouts.txt, which
+    # review-one-pr.sh renders as a ⏱️ warning in the header registry
+    # (alongside 🧪 / 🔍). The aggregator reads whatever scratch files exist.
+    if timed_out:
+        # Only specialist timeouts reduce review coverage and gate approval.
+        # momentum is a re-review-only meta-angle (convergence prose, not a
+        # correctness specialist) — its timeout just drops the banner. Keep it
+        # out of the specialist sentinel, which run-dir.sh renders as
+        # "specialist(s) skipped" and review-one-pr.sh treats as
+        # approval-ineligible coverage loss.
+        spec_timed_out = [n for n in timed_out if n in SPECIALISTS]
+        if spec_timed_out:
+            (run / "_wave_b_timeouts.txt").write_text("\n".join(spec_timed_out) + "\n")
+        log(
+            f"{pr_id}: {len(timed_out)} Wave B stage(s) timed out "
+            f"({', '.join(timed_out)}) — completing review without them"
+        )
+
+    # Momentum may itself have timed out; only link a real output.
+    if has_prev and (run / "agents" / "momentum" / "output.md").exists():
         _relink(scratch / "momentum.md", run / "agents" / "momentum" / "output.md")
     log(f"{pr_id}: Wave B complete")
 
@@ -593,7 +665,10 @@ def run_pipeline(
         pr_id=pr_id, pr_title=pr_title, pr_url=pr_url, pr_author=pr_author,
     )
     agg_dir = run / "agents" / "aggregator"
-    rc = run_codex("aggregator", str(repo), agg_prompt, str(agg_dir))
+    # The aggregator is the single synthesis step that merges/dedupes/ranks
+    # every angle into the posted review — the one place a premium reasoning
+    # budget pays off, so it runs at xhigh regardless of the size-scaled effort.
+    rc = run_codex("aggregator", str(repo), agg_prompt, str(agg_dir), effort="xhigh")
     if rc != 0:
         return _abort(repo, f"{pr_id}: aggregator failed (exit={rc}) — aborting")
     log(f"{pr_id}: aggregator complete")

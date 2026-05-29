@@ -27,7 +27,22 @@ acquire_pr_lock() {
     mkdir -p "$PR_LOCK_DIR"
     PR_LOCK_FILE="$PR_LOCK_DIR/$pr_lock_slug"
     exec {PR_LOCK_FD}> "$PR_LOCK_FILE"
-    flock -n "$PR_LOCK_FD"
+    # Close the FD on contention (mirror of acquire_just_test_lock) so callers
+    # that probe in a loop don't leak one FD per held lock: review.sh's
+    # consume_queue probes each queued PR and `continue`s past held ones. The
+    # original single call site (the worker) exited on failure so never noticed.
+    flock -n "$PR_LOCK_FD" || { exec {PR_LOCK_FD}>&-; unset PR_LOCK_FD; return 1; }
+}
+
+# release_pr_lock — drop the per-PR flock acquired by acquire_pr_lock so a
+# later acquirer can take it within the same process. Mirror of
+# release_just_test_lock. Used by review.sh's consumer to PROBE whether a PR
+# is in-flight on another container (acquire → release) before forking the
+# worker, which re-acquires the lock for the review's lifetime.
+release_pr_lock() {
+    [ -n "${PR_LOCK_FD:-}" ] || return 0
+    exec {PR_LOCK_FD}>&-
+    unset PR_LOCK_FD PR_LOCK_FILE PR_LOCK_DIR
 }
 
 # acquire_just_test_lock STATE_DIR — blocks until the caller holds one of
