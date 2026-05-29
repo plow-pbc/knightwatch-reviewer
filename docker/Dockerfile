@@ -13,8 +13,14 @@ ARG JUST_VERSION=1.36.0
 ARG DOCKER_CLI_VERSION=27.3.1
 ARG CODEX_CLI_VERSION=0.134.0
 
+# sqlite3 + shellcheck: a target repo whose `just test` runs directly in THIS
+# container (no docker-compose-in-dind — e.g. knightwatch-reviewer reviewing
+# itself) needs its own dev test deps. The reviewer's smoke suite shells out to
+# sqlite3 (the bakeoff.db store) and shellcheck (12 smokes); without them
+# `just test` aborts at exit 127 and reviews post "🧪 Tests not run".
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git jq ca-certificates curl gnupg coreutils procps python3 python3-venv \
+      sqlite3 shellcheck \
  && curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.deb" -o /tmp/gh.deb \
  && apt-get install -y /tmp/gh.deb && rm /tmp/gh.deb \
  && curl -fsSL https://just.systems/install.sh | bash -s -- --tag "${JUST_VERSION}" --to /usr/local/bin \
