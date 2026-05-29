@@ -621,9 +621,17 @@ def run_pipeline(
     # review-one-pr.sh renders as a ⏱️ warning in the header registry
     # (alongside 🧪 / 🔍). The aggregator reads whatever scratch files exist.
     if timed_out:
-        (run / "_wave_b_timeouts.txt").write_text("\n".join(timed_out) + "\n")
+        # Only specialist timeouts reduce review coverage and gate approval.
+        # momentum is a re-review-only meta-angle (convergence prose, not a
+        # correctness specialist) — its timeout just drops the banner. Keep it
+        # out of the specialist sentinel, which run-dir.sh renders as
+        # "specialist(s) skipped" and review-one-pr.sh treats as
+        # approval-ineligible coverage loss.
+        spec_timed_out = [n for n in timed_out if n in SPECIALISTS]
+        if spec_timed_out:
+            (run / "_wave_b_timeouts.txt").write_text("\n".join(spec_timed_out) + "\n")
         log(
-            f"{pr_id}: {len(timed_out)} specialist(s) timed out "
+            f"{pr_id}: {len(timed_out)} Wave B stage(s) timed out "
             f"({', '.join(timed_out)}) — completing review without them"
         )
 

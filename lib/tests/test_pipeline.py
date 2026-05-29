@@ -1242,6 +1242,25 @@ class TestRunPipeline(unittest.TestCase):
         self.assertTrue((self.run_dir / "agents" / "aggregator" / "output.md").exists())
 
     @patch("pipeline.subprocess.Popen")
+    def test_momentum_timeout_excluded_from_specialist_sentinel(self, mock_popen):
+        """momentum is a re-review meta-angle, not a coverage specialist: a
+        momentum-only timeout must NOT write the specialist sentinel (which
+        review-one-pr.sh treats as approval-ineligible coverage loss and
+        run-dir.sh renders as "specialist(s) skipped"). The review still
+        completes; the only effect is the dropped convergence banner."""
+        (self.run_dir / "inputs" / "previous-review.md").write_text("prior review body\n")
+        mock_popen.side_effect = _make_codex_stub(plan={
+            "intent": (0, "Inferred intent: stub.\n"),
+            "dead-code-search": (0, "dc\n"),
+            "momentum": "TIMEOUT",
+            "aggregator": (0, "# Review\nVERDICT: APPROVE\n"),
+        })
+        rc = self._run()
+        self.assertEqual(rc, 0)
+        self.assertFalse((self.run_dir / "_wave_b_timeouts.txt").exists())
+        self.assertTrue((self.run_dir / "agents" / "aggregator" / "output.md").exists())
+
+    @patch("pipeline.subprocess.Popen")
     def test_critic_timeout_completes_with_specialist_output_preserved(self, mock_popen):
         """When the SPECIALIST succeeded but only its CRITIC timed out, the
         review still completes — the angle is named in the timeouts sentinel

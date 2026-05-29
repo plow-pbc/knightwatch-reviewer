@@ -1538,13 +1538,12 @@ else
     log "Posted review on $PR_ID (no placeholder was posted)"
 fi
 
-if [[ "$VERDICT" == VERDICT:\ APPROVE* ]] && [ -s "$RUN_DIR/_wave_b_timeouts.txt" ]; then
-    # Reduced-coverage guard: a specialist (possibly security) timed out and
-    # was skipped, so the review is partial. Post it (the ⏱️ header already
-    # discloses the gap) but never auto-APPROVE on incomplete coverage —
-    # an approval here could greenlight a PR whose security angle never ran.
-    log "$PR_ID: APPROVE verdict but specialist(s) timed out — posting partial review WITHOUT approval"
-elif [[ "$VERDICT" == VERDICT:\ APPROVE* ]]; then
+if review_is_approval "$VERDICT" "$RUN_DIR"; then
+    # review_is_approval (lib/run-dir.sh) is the single owner of the approval
+    # rule — APPROVE verdict AND full coverage. A partial review (a specialist,
+    # possibly security, timed out) falls through to the no-approval else: it's
+    # posted (the ⏱️ header discloses the gap) but never auto-APPROVEd, and the
+    # carried-forward `approved` projection reads the same decision next round.
     if [[ "$VERDICT" == *"pending:"* ]]; then
         PENDING_NOTE=$(echo "$VERDICT" | sed 's/.*pending: *//')
         APPROVE_BODY="Approving — pending: $PENDING_NOTE"
@@ -1564,8 +1563,8 @@ fi
 # state_set call used to persist are already on disk in runs/ at this point:
 #   - body       → agents/aggregator/output.md (already written above)
 #   - reviewed_sha → meta.json.reviewed_sha (stamped post-checkout)
-#   - approved   → derived from output.md's `VERDICT: APPROVE` line by
-#                  latest_author_visible_review_approved
+#   - approved   → derived from output.md's verdict + coverage by
+#                  latest_author_visible_review_approved (via review_is_approval)
 #   - started_at → meta.json.started_at (stamped at run init)
 #   - posted_at  → finalize_run stamps it from the EXIT trap after gh pr
 #                  comment succeeded (GH_POSTED=true above)
