@@ -154,6 +154,10 @@ test:
     bash lib/tests/queue-smoke.sh
 
     echo ""
+    echo "=== queue-distribute smoke test ==="
+    bash lib/tests/queue-distribute-smoke.sh
+
+    echo ""
     echo "=== plow-kid-refresh smoke test ==="
     bash lib/tests/plow-kid-refresh-smoke.sh
 
