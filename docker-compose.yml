@@ -101,9 +101,53 @@ services:
       - ./docker/secrets/config.env:/root/.kwr/config.env:ro
       - ./docker/secrets/claude-standards:/root/.claude:ro
 
+  dind-3:
+    <<: *dind
+    volumes:
+      - dind3-lib:/var/lib/docker
+
+  reviewer-3:
+    <<: *reviewer
+    network_mode: "service:dind-3"
+    depends_on: [dind-3]
+    environment:
+      <<: *reviewer-env
+      WORKER_ID: "3"
+    volumes:
+      - claims:/shared
+      - reviewer3-local:/local
+      - ./docker/secrets/codex-account-c:/root/.codex          # OpenAI account C (writable — see account A note)
+      - ./docker/secrets/repos.conf:/shared/repos.conf:ro
+      - ./docker/secrets/config.env:/root/.kwr/config.env:ro
+      - ./docker/secrets/claude-standards:/root/.claude:ro
+
+  dind-4:
+    <<: *dind
+    volumes:
+      - dind4-lib:/var/lib/docker
+
+  reviewer-4:
+    <<: *reviewer
+    network_mode: "service:dind-4"
+    depends_on: [dind-4]
+    environment:
+      <<: *reviewer-env
+      WORKER_ID: "4"
+    volumes:
+      - claims:/shared
+      - reviewer4-local:/local
+      - ./docker/secrets/codex-account-d:/root/.codex          # OpenAI account D (writable — see account A note)
+      - ./docker/secrets/repos.conf:/shared/repos.conf:ro
+      - ./docker/secrets/config.env:/root/.kwr/config.env:ro
+      - ./docker/secrets/claude-standards:/root/.claude:ro
+
 volumes:
   claims:
   reviewer1-local:
   reviewer2-local:
+  reviewer3-local:
+  reviewer4-local:
   dind1-lib:
   dind2-lib:
+  dind3-lib:
+  dind4-lib:
