@@ -33,8 +33,7 @@ For each new construct, name its problem class and emit a probe per `.codex-scra
 For each construct, emit a probe per `.codex-scratch/probe-schema.md`. **Classes emitted: `bypass`, `shape`, `simplification`.** Severity rubric + edit/cost convention live in probe-schema.md § Class options. Domain examples for `simplification` in this angle: defensive branches, validation guards, helpers added with one call site, schema fields, env vars, parallel modes — anything that adds shape without earning it.
 
 Where this overlaps with other specialists:
-- `simplification` owns DRY (N near-identical blocks), kid-prior-art, verbose conditional/early-return cleanups, drive-by tidies, dead-code-on-touched-files.
-- `architecture` owns layering, lock-in, roadmap fit, cross-cutting *strategic* decisions.
+- `architecture-refined` owns DRY (N near-identical blocks), kid-prior-art, verbose conditional/early-return cleanups, drive-by tidies, dead-code-on-touched-files, plus layering, lock-in, roadmap fit, and cross-cutting *strategic* decisions.
 - You own: simplest-viable-shape-vs-spirit-of-ask, instance-1 bypass, "second instance — establish now," wrong-shape (regex on structured input, hand-rolled when canonical exists), and **existing-complexity probes**.
 
 Some duplicate probes between you and the other two are expected — that's by design; this failure mode is high-stakes. The critic dedupes via `DUPLICATE OF`.

@@ -7,7 +7,7 @@ These are two-place inconsistencies that are invisible to single-file specialist
 You are NOT here to:
 - Question architectural taste, propose refactors, or debate framework choices.
 - Ask open-ended "should we consider X / what about Y" questions — defer those to the human via PR description, not as probes.
-- Flag DRY / pattern-duplication / framework-where-function-would-do — `simplification` owns.
+- Flag DRY / pattern-duplication / framework-where-function-would-do — `architecture-refined` owns.
 - Diagnose seam-bypass when the canonical seam exists and the PR went around it — `shape` owns.
 - Catch security or data-integrity bugs with traceable user impact — those specialists own.
 
@@ -50,7 +50,7 @@ Numbered probe blocks per `.codex-scratch/probe-schema.md`. **Classes emitted: `
 
 ```
 ### Probe 1
-- **From:** architecture-v2
+- **From:** contract-drift
 - **Class:** bug
 - **Q:** Is the post-symlink runtime build pinned in the manifest?
 - **Files:** AGENTS.md:42, Dockerfile:71, manifests/plow-starter.yaml:8
@@ -68,7 +68,7 @@ Two cited files, the contract one of them carries (`python` is `python3`), the c
 
 ```
 ### Probe N
-- **From:** architecture-v2
+- **From:** contract-drift
 - **Q:** Should bumps commit before confirmation?
 - **Severity if yes:** open
 ```

@@ -94,4 +94,21 @@ MOCK_GH_REVIEW_FAILS=1 submit_approval "cncorp/plow" "100" "srosro" "delattre1" 
 [ "$(grep -c '^REVIEW' "$GH_REVIEW_LOG")" = "1" ] || { echo "FAIL scenario 6: expected exactly 1 gh pr review call (the failed attempt)"; cat "$GH_REVIEW_LOG"; exit 1; }
 grep -q "gh pr review --approve FAILED" "$LOG_FILE" || { echo "FAIL scenario 6: expected 'FAILED' log line"; cat "$LOG_FILE"; exit 1; }
 
-echo "  PASS (6 scenarios: trust-yes, trust-no, trust-empty, approval-self-skipped, approval-success, approval-failure-fail-loud)"
+# --- just_test_skip_reason ---
+# `just test` executes PR-controlled code; untrusted authors (no push access)
+# must never have their code run — on ANY path, not only container/dind mode.
+echo "  scenario 7: just_test_skip_reason runs (empty reason) for a trusted author with a justfile..."
+reason=$(just_test_skip_reason "/repo/justfile" true)
+[ -z "$reason" ] || { echo "FAIL scenario 7: trusted author with justfile should run (empty reason), got: $reason"; exit 1; }
+
+echo "  scenario 8: just_test_skip_reason skips untrusted authors regardless of mode..."
+reason=$(just_test_skip_reason "/repo/justfile" false)
+[ -n "$reason" ] || { echo "FAIL scenario 8: untrusted author should be skipped"; exit 1; }
+printf '%s' "$reason" | grep -qi "untrusted" || { echo "FAIL scenario 8: skip reason should name the untrusted author, got: $reason"; exit 1; }
+
+echo "  scenario 9: just_test_skip_reason skips when there is no justfile..."
+reason=$(just_test_skip_reason "" true)
+[ -n "$reason" ] || { echo "FAIL scenario 9: missing justfile should skip"; exit 1; }
+printf '%s' "$reason" | grep -qi "justfile" || { echo "FAIL scenario 9: skip reason should name the missing justfile, got: $reason"; exit 1; }
+
+echo "  PASS (9 scenarios: trust-yes, trust-no, trust-empty, approval-self-skipped, approval-success, approval-failure-fail-loud, just-test run/untrusted-skip/no-justfile)"

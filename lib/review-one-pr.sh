@@ -108,6 +108,11 @@ WORKDIRS_DIR="${WORKDIRS_DIR:-$STATE_DIR/workdirs}"
 BOT_USER="${BOT_USER:-srosro}"
 BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
 BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
+# Tags the transient "👀 reviewing" placeholder (and its abort/paused edits)
+# so a later tick can recognize an unresolved placeholder from a prior tick
+# and reuse it instead of stacking a new one. Real reviews never carry it,
+# so the reuse check below only ever recycles a placeholder, never a review.
+BOT_PLACEHOLDER_MARKER="${BOT_PLACEHOLDER_MARKER:-<!-- knightwatch-reviewer:placeholder -->}"
 # BOT_AI_AUTHOR_MARKER is defined in lib/run-dir.sh (single source of truth);
 # this worker sources run-dir.sh below at $_LIB_DIR/run-dir.sh and consumes
 # the var when posting the review body.
@@ -142,11 +147,17 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # multi-source is idempotent (function redefinition).
 . "$_LIB_DIR/loc-trend.sh"
 
+# --- gh-comments (fetch_issue_comments) — paginated issue-comment reader,
+# the shared seam every comment scanner uses. Consumed here by the
+# placeholder-reuse lookup below; sourced explicitly (not via a transitive
+# import) so the dependency is visible at the call site.
+. "$_LIB_DIR/gh-comments.sh"
+
 # --- pr-comments (fetch_pr_comments) — the PR's human comment thread;
 # consumed by every specialist (so a specialist sees replies to its own
 # prior probes), the critic, and the aggregator. The operator-only
 # explicit-marker channel still drives the critic's ≥3-round auto-drop.
-# Sources gh-comments.sh internally; multi-source is idempotent.
+# (Also sources gh-comments.sh; multi-source is idempotent.)
 . "$_LIB_DIR/pr-comments.sh"
 
 # --- per-run dir -------------------------------------------------------------
@@ -266,6 +277,16 @@ fi
 # gate now.
 EYES_COMMENT_ID=""
 EYES_RESOLVED=false
+# The placeholder's leading marker block — written verbatim on every POST and
+# PATCH below, and the exact prefix the reuse lookup matches with `startswith`.
+# Defined once so all three sites stay byte-identical: reuse depends on it, so
+# any drift between writer and matcher would silently break placeholder
+# recycling and bring back the per-tick spam. Trailing newline included so a
+# body is just "$PLACEHOLDER_HEADER<message>".
+PLACEHOLDER_HEADER="$BOT_AUTO_POST_MARKER
+$BOT_AI_AUTHOR_MARKER
+$BOT_PLACEHOLDER_MARKER
+"
 # Default placeholder body for any abort path; specific aborts (e.g. the
 # Wave B timeout branch in the pipeline block below) override this with
 # a more informative message before the EXIT trap fires. Single PATCH
@@ -276,9 +297,7 @@ cleanup_eyes() {
         return 0
     fi
     gh api "repos/$REPO/issues/comments/$EYES_COMMENT_ID" --method PATCH \
-        -f body="$BOT_AUTO_POST_MARKER
-$BOT_AI_AUTHOR_MARKER
-$EYES_ABORT_BODY" \
+        -f body="${PLACEHOLDER_HEADER}${EYES_ABORT_BODY}" \
         >/dev/null 2>&1 || true
 }
 trap 'finalize_run; cleanup_eyes' EXIT
@@ -396,20 +415,54 @@ fi
 # EXIT trap edits the placeholder to "aborted" instead so it doesn't read
 # as "still reviewing" forever.
 #
+# Reuse a prior tick's unresolved placeholder instead of posting a new one.
+# During a transient outage (codex quota exhausted, specialist timeout) every
+# 2-min tick aborts at the same point and the EXIT trap leaves a paused/aborted
+# placeholder behind. Without reuse, each tick POSTs a brand-new placeholder —
+# one fresh comment per tracked PR every 2 minutes until the outage clears
+# (observed: 39 "codex quota" comments on a single PR). Recycling the existing
+# placeholder means the EXIT trap re-PATCHes the SAME comment (a silent edit,
+# no notification), so an outage leaves exactly one self-updating marker per
+# PR. A real review (or a new PR head) deletes the placeholder on the success
+# path, so the next tick genuinely posts fresh.
+#
 # The leading HTML comment is invisible in rendered Markdown but lets the
 # orchestrator's jq filter recognize this as one of our auto-posts so we
 # don't self-trigger on the next tick.
-EYES_COMMENT_ID=$(gh api "repos/$REPO/issues/$PR_NUM/comments" \
-    --method POST \
-    -f body="$BOT_AUTO_POST_MARKER
-$BOT_AI_AUTHOR_MARKER
-👀 reviewing — [sam's ai review bot](https://github.com/srosro/knightwatch-reviewer)" \
-    --jq '.id' 2>/dev/null) || EYES_COMMENT_ID=""
-
-if [ -n "$EYES_COMMENT_ID" ]; then
-    log "$PR_ID: posted reviewing placeholder (comment id=$EYES_COMMENT_ID)"
+#
+# Lookup goes through the shared fetch_issue_comments seam (paginated, so a
+# placeholder on page 2 of a long thread is still found, and a non-placeholder
+# auto-post like a learn-from-replies ACK doesn't hide it). A prior comment is
+# accepted as a reusable placeholder ONLY when it is unmistakably ours: authored
+# by BOT_USER, and its body starts with the exact auto-post/ai-author/placeholder
+# marker header that POST/PATCH below write. A real review — or a third-party
+# comment that merely quotes the placeholder marker — therefore can't be adopted
+# as EYES_COMMENT_ID and later PATCHed/DELETEd under the bot token. If the fetch
+# itself fails we skip placeholder posting for this tick rather than POSTing
+# blind: a blind POST on a missed-lookup is exactly the per-tick spam this fixes.
+# PLACEHOLDER_HEADER (defined with cleanup_eyes above) is both the matched
+# prefix here and the leading block of the POST body below.
+EYES_COMMENT_ID=""
+if ALL_ISSUE_COMMENTS=$(fetch_issue_comments "$REPO" "$PR_NUM"); then
+    EYES_COMMENT_ID=$(printf '%s' "$ALL_ISSUE_COMMENTS" | jq -r \
+        --arg bot_user "$BOT_USER" --arg header "$PLACEHOLDER_HEADER" \
+        '[ .[] | select(.user.login == $bot_user)
+               | select(.body | startswith($header)) ] | last | .id // empty')
+    if [ -n "$EYES_COMMENT_ID" ]; then
+        log "$PR_ID: reusing prior placeholder (comment id=$EYES_COMMENT_ID) — not stacking a new one"
+    else
+        EYES_COMMENT_ID=$(gh api "repos/$REPO/issues/$PR_NUM/comments" \
+            --method POST \
+            -f body="${PLACEHOLDER_HEADER}👀 reviewing — [sam's ai review bot](https://github.com/srosro/knightwatch-reviewer)" \
+            --jq '.id' 2>/dev/null) || EYES_COMMENT_ID=""
+        if [ -n "$EYES_COMMENT_ID" ]; then
+            log "$PR_ID: posted reviewing placeholder (comment id=$EYES_COMMENT_ID)"
+        else
+            log "$PR_ID: failed to post reviewing placeholder (continuing)"
+        fi
+    fi
 else
-    log "$PR_ID: failed to post reviewing placeholder (continuing)"
+    log "$PR_ID: could not fetch comments to check for a prior placeholder — skipping placeholder this tick (continuing)"
 fi
 
 # Align canonical's `refs/heads/$BASE_REF` with the just-fetched
@@ -550,13 +603,10 @@ fi
 #
 # Trust gate: only mirror when PR_AUTHOR has push access to the repo.
 # Otherwise an untrusted contributor's `just test` recipe could
-# exfiltrate live API keys before the eager-delete runs. Untrusted PRs
-# still get a `just test` run, just without canonical's secrets — the
-# scenario-suite recipes that need live keys will trip their guards
-# (unchanged from pre-72a9cad behavior for those PRs).
+# exfiltrate live API keys before the eager-delete runs.
 # IS_TRUSTED_AUTHOR was computed once right after PR_AUTHOR resolved (above),
 # where it also gates the container-mode review skip. Reused here for the .env
-# mirror + just-test gate (untrusted authors don't get dind reach).
+# mirror + just-test skip gate (just_test_skip_reason, lib/auth.sh).
 COPIED_ENV_FILES=()
 if [ "$IS_TRUSTED_AUTHOR" = true ]; then
     while IFS= read -r -d '' example_path; do
@@ -573,7 +623,7 @@ if [ "$IS_TRUSTED_AUTHOR" = true ]; then
     [ "${#COPIED_ENV_FILES[@]}" -gt 0 ] && \
         log "$PR_ID: mirrored ${#COPIED_ENV_FILES[@]} env file(s) from canonical (PR_AUTHOR=$PR_AUTHOR trusted)"
 else
-    log "$PR_ID: skipping .env mirror — PR_AUTHOR=$PR_AUTHOR has no push access (just test will run without canonical's secrets)"
+    log "$PR_ID: skipping .env mirror — PR_AUTHOR=$PR_AUTHOR has no push access"
 fi
 
 # ---- build diff + REVIEW_TASK (three paths) ----
@@ -596,7 +646,15 @@ if [ -z "$FULL_PR_DIFF" ]; then
     rm -rf "$REPO_DIR"
     exit 1
 fi
-log "$PR_ID: full PR diff size = ${#FULL_PR_DIFF} bytes"
+# Changed-line count (added + deleted) via structured --numstat, the same
+# LOC shape lib/loc-trend.sh uses — exact, and immune to the +/- content-line
+# miscount a unified-diff regex parse would introduce. pipeline.py scales
+# codex reasoning effort down to medium for PRs under its SMALL_PR_LOC
+# threshold, where high reasoning isn't worth the quota. (Binary files report
+# `-`/`-`, which awk sums as 0 — correct, they have no line count.)
+PR_DIFF_LOC=$(git -C "$REPO_DIR" diff --numstat "$BASE_REF_SHA...$REVIEWED_SHA" 2>/dev/null \
+    | awk '{a += $1; d += $2} END {print a + d + 0}')
+log "$PR_ID: full PR diff size = ${#FULL_PR_DIFF} bytes, ${PR_DIFF_LOC} changed lines"
 KID_INPUT_DIFF="$FULL_PR_DIFF"
 
 # All four "what did the author see last?" values (body, sha, approved,
@@ -710,20 +768,16 @@ for n in justfile Justfile JUSTFILE .justfile .Justfile .JUSTFILE; do
     [ -f "$REPO_DIR/$n" ] && { JUST_FILE="$REPO_DIR/$n"; break; }
 done
 
-if [ -z "$JUST_FILE" ]; then
-    log "$PR_ID: no justfile in $REPO_DIR — skipping \`just test\`"
+# `just test` runs PR-controlled code. Skip it when there's no justfile, or when
+# the author is untrusted (no push access) — on EVERY path. Untrusted test code
+# would otherwise run with the reviewer's home-dir read access (~/.ssh, the gh
+# PAT) + network (host path), or drive the privileged dind daemon (container
+# path). just_test_skip_reason (lib/auth.sh) is the single source of truth.
+JUST_TEST_SKIP_REASON=$(just_test_skip_reason "$JUST_FILE" "$IS_TRUSTED_AUTHOR")
+if [ -n "$JUST_TEST_SKIP_REASON" ]; then
+    log "$PR_ID: skipping \`just test\` — $JUST_TEST_SKIP_REASON (author $PR_AUTHOR)"
     TESTS_RAN=false
-    TEST_SUMMARY="not run (no justfile in repo root)"
-    : > "$TEST_LOG"
-elif [ -n "${REVIEWER_TEST_USER:-}" ] && [ "$IS_TRUSTED_AUTHOR" != true ]; then
-    # Container mode forwards DOCKER_HOST to a privileged dind daemon; running
-    # untrusted PR test code there would let it drive that daemon (a host-escape
-    # surface) even without push access. Skip the test run for untrusted authors
-    # in the container path. (The host/systemd path has no dind and still runs
-    # untrusted tests without canonical secrets, unchanged.)
-    log "$PR_ID: skipping \`just test\` — untrusted author ($PR_AUTHOR) in container mode (no dind exposure)"
-    TESTS_RAN=false
-    TEST_SUMMARY="not run (untrusted author; container dind not exposed to untrusted test code)"
+    TEST_SUMMARY="not run ($JUST_TEST_SKIP_REASON)"
     : > "$TEST_LOG"
 else
     # Global concurrency cap on `just test` (MAX_CONCURRENT_TESTS slots,
@@ -815,7 +869,7 @@ PRIOR_ART=""
 KID_FLAG="$STATE_DIR/kid-last-failure"
 # KID_RAN tracks whether the prior-art lookup actually executed and
 # returned. Flipped false on any "didn't run" path so the disclosure
-# header (built below) can warn the reader that the simplification
+# header (built below) can warn the reader that the architecture-refined
 # specialist's cross-repo DRY signal is missing for this run.
 KID_RAN=false
 # Per-repo kid index path. KID_PATHS was loaded at file scope via the
@@ -1133,15 +1187,18 @@ fi
 
 # Product context from .knightwatch/product-context.md (per-repo,
 # committed to the base branch). PRESENT-empty and ABSENT both mean
-# "no per-repo product context"; the worker substitutes an explicit
-# placeholder below so prompts don't see a blank input.
-PRODUCT_CONTEXT=""
-PRODUCT_CONTEXT=$(read_knightwatch_file "$REPO_DIR" "$BASE_REF_SHA" "product-context.md")
-case $? in
-    0|1) : ;;  # PRESENT or ABSENT: use as-is (placeholder substituted below if empty)
-    *) log "$PR_ID: knightwatch-config error reading product-context.md — aborting"; rm -rf "$REPO_DIR"; exit 1 ;;
-esac
-[ -z "$PRODUCT_CONTEXT" ] && PRODUCT_CONTEXT="(no product context configured for $REPO)"
+# "no per-repo product context" — in which case we inject the org
+# default operating point below. Most repos here are pre-PMF with a
+# handful of users; absent a per-repo override, reviewers assume that
+# and optimize for iteration speed rather than silently reviewing for
+# scale (the recurring over-engineering failure). A repo genuinely at
+# scale overrides this by committing its own file.
+# resolve_product_context (lib/knightwatch-config.sh) is the shared
+# read+classify+default seam — same one lib/replay.sh uses, so the two
+# staging paths can't drift. rc=2 (git/ref error) → abort with our own
+# cleanup; PRESENT/ABSENT both yield usable content (org default substituted).
+PRODUCT_CONTEXT=$(resolve_product_context "$REPO_DIR" "$BASE_REF_SHA") \
+    || { log "$PR_ID: knightwatch-config error reading product-context.md — aborting"; rm -rf "$REPO_DIR"; exit 1; }
 write_scratch "$REPO_DIR" "product-context.md" "$PRODUCT_CONTEXT"
 
 # review-priority.md — per-repo operating point + voice posture
@@ -1333,6 +1390,7 @@ PR_ID="$PR_ID" \
 PR_TITLE="$PR_TITLE" \
 PR_URL="$PR_URL" \
 PR_AUTHOR="$PR_AUTHOR" \
+PR_DIFF_LOC="$PR_DIFF_LOC" \
 PROMPTS_DIR="${PROMPTS_DIR:-$HOME/.pr-reviewer/prompts}" \
 LOG_FILE="$LOG_FILE" \
 OPERATOR_NAME="${OPERATOR_NAME:-Sam}" \
@@ -1346,14 +1404,12 @@ AGG_OUT="$RUN_DIR/agents/aggregator/output.md"
 # the safety-net check below handles any race or unexpected exit.
 if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
     log "$PR_ID: pipeline failed (exit=$PIPELINE_EXIT, agg empty=$([ ! -s "$AGG_OUT" ] && echo true || echo false)) — aborting"
-    # pipeline.py may write one of two sentinels naming the specific cause.
-    # Hand the most informative abort body we have to cleanup_eyes so the
-    # EXIT trap PATCHes the placeholder accordingly — single PATCH lifecycle,
-    # same trap. Codex quota wins over Wave B timeouts: if the codex usage
-    # limit was hit during Wave A intent, no Wave B sentinel exists; if
-    # somehow both fired, quota is the more specific cause.
+    # pipeline.py may write the quota sentinel naming the reset time. Hand the
+    # most informative abort body we have to cleanup_eyes so the EXIT trap
+    # PATCHes the placeholder accordingly — single PATCH lifecycle, same trap.
+    # (Specialist timeouts no longer reach this abort path: pipeline.py
+    # completes the review and the ⏱️ warning is rendered in REVIEW_NOTES.)
     QUOTA_SENTINEL="$RUN_DIR/_codex_quota.txt"
-    TIMEOUTS_SENTINEL="$RUN_DIR/_wave_b_timeouts.txt"
     if [ -s "$QUOTA_SENTINEL" ]; then
         RESET_AT=$(head -n 1 "$QUOTA_SENTINEL")
         EYES_ABORT_BODY="⏸ knightwatch paused — codex quota hit, resets at ${RESET_AT}. Will retry on the next tick and should succeed after the quota window resets."
@@ -1374,10 +1430,6 @@ if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
         fi
         printf '%s\n' "$QUOTA_UNTIL" > "$LOCAL_STATE_DIR/quota-paused-until"
         log "$PR_ID: quota-paused this worker until epoch ${QUOTA_UNTIL} (reset=${RESET_AT})"
-    elif [ -s "$TIMEOUTS_SENTINEL" ]; then
-        TIMED_OUT=$(paste -sd, "$TIMEOUTS_SENTINEL")
-        EYES_ABORT_BODY="❌ Review aborted — specialist(s) timed out (\`$TIMED_OUT\`). See knightwatch-reviewer logs; will retry on the next tick."
-        log "$PR_ID: handing timeouts-error to cleanup_eyes (specialists=$TIMED_OUT)"
     fi
     [ -d "$REPO_DIR" ] && rm -rf "$REPO_DIR"
     exit 1
@@ -1412,7 +1464,7 @@ $COMMENT_BODY
 
 ---
 
-_How to use: auto-reviews every new PR and re-reviews after an hour of inactivity. Trigger an incremental re-review with \`/${BOT_CMD_PREFIX}-update-review\`, or a whole-PR re-review with \`/${BOT_CMD_PREFIX}-review\`._
+_How to use: auto-reviews every new PR and re-reviews after a period of inactivity. Trigger an incremental re-review with \`/${BOT_CMD_PREFIX}-update-review\`, or a whole-PR re-review with \`/${BOT_CMD_PREFIX}-review\`._
 
 **For humans only:** push-access collaborators can post:
 - \`/${BOT_CMD_PREFIX}-approve\` — APPROVE the PR.
@@ -1421,8 +1473,8 @@ _How to use: auto-reviews every new PR and re-reviews after an hour of inactivit
 - \`/${BOT_CMD_PREFIX}-memorize <feedback>\` — teach a calibration lesson (\`learn-from-replies\` updates \`COMMENT_REVIEW_MISTAKES.md\` from your body, sentiment-aware via LLM).
 
 > Props: \`/${BOT_CMD_PREFIX}-props [from: shape] caught a real layering bug we'd have shipped.\`
-> Critique: \`/${BOT_CMD_PREFIX}-critique [from: simplification] DRY suggestion misread distinct seams.\`
-> Calibration: \`/${BOT_CMD_PREFIX}-memorize the simplification DRY finding was a misread; those helpers serve different contracts.\`
+> Critique: \`/${BOT_CMD_PREFIX}-critique [from: architecture-refined] DRY suggestion misread distinct seams.\`
+> Calibration: \`/${BOT_CMD_PREFIX}-memorize the architecture-refined DRY finding was a misread; those helpers serve different contracts.\`
 
 AI agents must not use \`/${BOT_CMD_PREFIX}-memorize\`, \`/${BOT_CMD_PREFIX}-props\`, or \`/${BOT_CMD_PREFIX}-critique\` — those signals tune shared global state.
 
@@ -1459,6 +1511,12 @@ fi
 REVIEW_NOTES+=("$SCOPE_NOTE")
 [ -n "$CURRENT_HEAD" ] && [ "$CURRENT_HEAD" != "$REVIEWED_SHA" ] && \
     REVIEW_NOTES+=("⚠️ Stale: head moved from \`${REVIEWED_SHA:0:7}\` to \`${CURRENT_HEAD:0:7}\` mid-run — see commands below to re-run")
+# Specialist timeouts no longer abort — pipeline.py completes the review with
+# the surviving angles and names the hung ones in _wave_b_timeouts.txt.
+# Disclose them as a header warning rather than silently shipping reduced
+# coverage (shared adapter — replay.sh uses the same helper).
+TIMEOUT_NOTE=$(timeout_note_for_run "$RUN_DIR")
+[ -n "$TIMEOUT_NOTE" ] && REVIEW_NOTES+=("$TIMEOUT_NOTE")
 # Symmetric pre-check disclosure: every pre-check emits one fragment
 # describing its outcome (pass/fail/skip), not just on miss. Old asym-
 # metric pattern collapsed clean-PR headers to scope-only and left
@@ -1533,7 +1591,12 @@ else
     log "Posted review on $PR_ID (no placeholder was posted)"
 fi
 
-if [[ "$VERDICT" == VERDICT:\ APPROVE* ]]; then
+if review_is_approval "$VERDICT" "$RUN_DIR"; then
+    # review_is_approval (lib/run-dir.sh) is the single owner of the approval
+    # rule — APPROVE verdict AND full coverage. A partial review (a specialist,
+    # possibly security, timed out) falls through to the no-approval else: it's
+    # posted (the ⏱️ header discloses the gap) but never auto-APPROVEd, and the
+    # carried-forward `approved` projection reads the same decision next round.
     if [[ "$VERDICT" == *"pending:"* ]]; then
         PENDING_NOTE=$(echo "$VERDICT" | sed 's/.*pending: *//')
         APPROVE_BODY="Approving — pending: $PENDING_NOTE"
@@ -1553,8 +1616,8 @@ fi
 # state_set call used to persist are already on disk in runs/ at this point:
 #   - body       → agents/aggregator/output.md (already written above)
 #   - reviewed_sha → meta.json.reviewed_sha (stamped post-checkout)
-#   - approved   → derived from output.md's `VERDICT: APPROVE` line by
-#                  latest_author_visible_review_approved
+#   - approved   → derived from output.md's verdict + coverage by
+#                  latest_author_visible_review_approved (via review_is_approval)
 #   - started_at → meta.json.started_at (stamped at run init)
 #   - posted_at  → finalize_run stamps it from the EXIT trap after gh pr
 #                  comment succeeded (GH_POSTED=true above)

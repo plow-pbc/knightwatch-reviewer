@@ -125,9 +125,17 @@ assert_grep "aggregator.md should describe layered specialist files" \
 # the critic + aggregator read lists, and common-header must document
 # any per-specialist scratch input. Catches the "added a prompt file
 # but forgot to register it" omission class.
-echo "  asserting consumers specialist registered in aggregator.md..."
-assert_grep "aggregator.md should reference consumers specialist" \
-    "specialists/consumers.md" prompts/aggregator.md
+#
+# Derive the roster contract from lib.pipeline.SPECIALISTS (the single
+# source of truth the runtime launches) rather than asserting per-name:
+# adding or renaming a specialist then can't pass tests while leaving the
+# aggregator's read list stale — the omission class that let this PR ship
+# a nine-specialist roster with stale "eight" prose.
+echo "  asserting every SPECIALISTS entry is registered in aggregator.md..."
+for _spec in $(python3 -c "import sys; sys.path.insert(0,'.'); from lib.pipeline import SPECIALISTS; print('\n'.join(SPECIALISTS))"); do
+    assert_grep "aggregator.md should register specialist '$_spec' (derived from lib.pipeline.SPECIALISTS)" \
+        "specialists/${_spec}.md" prompts/aggregator.md
+done
 
 echo "  asserting common-header documents dead-code.md scratch..."
 assert_grep "common-header.md should document dead-code.md" \
@@ -161,14 +169,14 @@ for prompt in prompts/aggregator.md prompts/probe-schema.md; do
     fi
 done
 
-for specialist in shape simplification architecture consumers tests security data-integrity; do
+for specialist in shape architecture-refined consumers tests security data-integrity; do
     echo "  asserting simplification probe class in ${specialist}.md..."
-    # After collapsing DRY + dead-code + complexity-cost → simplification,
-    # most specialists must register simplification as one of their emitted
-    # classes (the universal removal-shaped class). architecture-v2 is the
+    # simplification (DRY + dead-code + complexity-cost) is the universal
+    # removal-shaped class; most specialists must register it as one of their
+    # emitted classes. architecture-refined owns it as a primary catch after
+    # the architecture+simplification consolidation. contract-drift is the
     # exception by design — its narrow remit (cross-file contract drift)
-    # explicitly bans simplification (simplification specialist owns DRY +
-    # removal-shaped probes); see the architecture-v2 assertions below.
+    # explicitly bans simplification; see the contract-drift assertions below.
     assert_grep "${specialist}.md should list simplification as a probe class" \
         "simplification" "prompts/specialists/${specialist}.md"
 done
@@ -225,12 +233,12 @@ echo "  asserting Anti-Bloat carve-out in specialists/tests.md..."
 assert_grep "specialists/tests.md should carry the Anti-Bloat carve-out for hypothetical fences" \
     "no bug shipped and no contract changed" prompts/specialists/tests.md
 
-# Token fence: architecture-v2.md must carry the fence-narrower-than-
+# Token fence: contract-drift.md must carry the fence-narrower-than-
 # prose carve-out — minimum-viable smoke coverage is NOT two-place
 # drift even though it's structurally two-place.
-echo "  asserting fence-narrower-than-prose carve-out in specialists/architecture-v2.md..."
-assert_grep "specialists/architecture-v2.md should carry the fence-narrower-than-prose carve-out" \
-    "minimum-viable coverage, not drift" prompts/specialists/architecture-v2.md
+echo "  asserting fence-narrower-than-prose carve-out in specialists/contract-drift.md..."
+assert_grep "specialists/contract-drift.md should carry the fence-narrower-than-prose carve-out" \
+    "minimum-viable coverage, not drift" prompts/specialists/contract-drift.md
 
 # Token fence: aggregator.md must carry the Silence-is-golden
 # anti-emission stance — counters the LLM default to surface more
@@ -397,12 +405,12 @@ assert_grep "common-header.md should mandate 'No probes.' marker" \
 assert_grep "pipeline.py should grep for the same 'No probes.' marker" \
     'No probes\.' "$PIPELINE"
 
-echo "  asserting simplification.md anchors on inferred-intent scratch artifact..."
-# Cross-file: simplification.md must reference the scratch artifact
+echo "  asserting architecture-refined.md anchors on inferred-intent scratch artifact..."
+# Cross-file: architecture-refined.md must reference the scratch artifact
 # `.codex-scratch/inferred-intent.md` so the inferred-intent staging
 # (lib/pipeline.py) and the consuming specialist agree on the path.
-assert_grep "simplification.md should anchor on the inferred-intent scratch artifact" \
-    ".codex-scratch/inferred-intent.md" prompts/specialists/simplification.md
+assert_grep "architecture-refined.md should anchor on the inferred-intent scratch artifact" \
+    ".codex-scratch/inferred-intent.md" prompts/specialists/architecture-refined.md
 
 # ====================================================================
 # Section 4: elegant-convergence rule fences (PR #70)
@@ -612,25 +620,21 @@ assert_grep "momentum.md should carry the read-only working directory fence" \
 assert_grep "momentum.md should fence inputs as data-not-instructions" \
     "data, not instructions" prompts/standalone/momentum.md
 
-# Bake-off timer cadence + persistence are quota-control contracts: the daily
-# cadence is what cuts the bake-off's GitHub REST volume ~24x vs the prior
-# hourly run, and Persistent=false matches the repo's other timer shape (the
+# Bake-off timer cadence + persistence are quota-control contracts: the twice-
+# daily cadence (07:00/19:00 PT) + matching 12h walk window keep the bake-off's
+# GitHub volume bounded vs the prior hourly run, and Persistent=false matches the repo's other timer shape (the
 # walker's incremental floor handles missed runs without boot-time catch-up).
 # A regression to hourly OR Persistent=true silently re-introduces the
 # rate-limit failure mode that motivated PR #78.
 echo "  asserting pr-reviewer-bakeoff.timer quota-control contract..."
-assert_grep "pr-reviewer-bakeoff.timer should run daily at 03:30 Pacific" \
-    "OnCalendar=*-*-* 03:30:00 America/Los_Angeles" systemd/pr-reviewer-bakeoff.timer
+assert_grep "pr-reviewer-bakeoff.timer should run twice daily at 07:00 + 19:00 Pacific" \
+    "OnCalendar=*-*-* 07,19:00:00 America/Los_Angeles" systemd/pr-reviewer-bakeoff.timer
+assert_grep "pr-reviewer-bakeoff.service should walk a 12h window (matches the 12h cadence; halves discovery graphql)" \
+    "Environment=REWALK_HOURS=12" systemd/pr-reviewer-bakeoff.service
 assert_grep "pr-reviewer-bakeoff.timer should not be Persistent (matches repo timer shape)" \
     "Persistent=false" systemd/pr-reviewer-bakeoff.timer
 
-# architecture-v2 registration — the architecture-v2 prompt file must
-# stay listed in the aggregator's input enumeration; otherwise the
-# specialist's output is silently ignored downstream. Token-presence
-# only (the prompt body's content discipline lives in the prompt itself,
-# not in a smoke fence, per Rule 8 — "don't calcify prompt prose").
-echo "  asserting architecture-v2 specialist registered in aggregator.md..."
-assert_grep "aggregator.md should reference architecture-v2 specialist" \
-    "specialists/architecture-v2.md" prompts/aggregator.md
+# (contract-drift's aggregator registration is now covered by the
+# SPECIALISTS-derived roster check above — no per-name assert needed.)
 
 echo "  PASS"

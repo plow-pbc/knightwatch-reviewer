@@ -679,3 +679,135 @@ if grep -q "posted reviewing placeholder" "$LOG5"; then
 fi
 
 echo "  PASS (5 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip)"
+
+# ===== Scenario 6: repeated transient aborts reuse one placeholder =====
+# Fences the anti-spam reuse path in lib/review-one-pr.sh. During a transient
+# outage (codex quota exhausted, specialist timeout) every 2-min orchestrator
+# tick runs the worker, which posts a "👀 reviewing" placeholder, aborts at
+# the pipeline (no codex here), and the EXIT trap edits the placeholder to a
+# paused/aborted body. Before the fix each tick POSTed a NEW placeholder —
+# one fresh comment per PR every 2 minutes (39 observed on a single PR). The
+# fix: a later tick recognizes the prior tick's unresolved placeholder (it
+# carries BOT_PLACEHOLDER_MARKER) and reuses it instead of stacking another.
+#
+# Behavior asserted (user-visible): after the worker runs TWICE on the same
+# PR head, the PR has exactly ONE bot placeholder comment — not two. A
+# stateful gh stub backs a real comment store (POST appends, --jq GET reads,
+# PATCH edits, DELETE removes) so the assertion is on the resulting comment
+# set, not on internal calls.
+echo "  scenario: repeated transient aborts reuse a single placeholder (no per-tick spam)..."
+
+COMMENT_STORE="$TMPDIR/comment-store.json"
+echo "[]" > "$COMMENT_STORE"
+
+# write_stateful_gh_stub <path> <store> <base_ref> <head_oid>
+write_stateful_gh_stub() {
+    local stub_path="$1" store="$2" base_ref="$3" head_oid="$4"
+    cat > "$stub_path" <<STUB
+#!/usr/bin/env bash
+# Stateful gh: 'pr view' returns canned PR metadata; 'api .../comments'
+# reads/writes \$STORE so the placeholder lifecycle (POST → PATCH → reuse)
+# is observable in the resulting comment set.
+STORE="$store"
+BOT_LOGIN="${BOT_USER:-test-user}"
+
+# --- gh pr view (canned, same shape as write_gh_stub) ---
+if [ "\$1" = "pr" ] && [ "\$2" = "view" ]; then
+    fields=""
+    for ((i=1; i<=\$#; i++)); do
+        if [ "\${!i}" = "--json" ]; then j=\$((i+1)); fields="\${!j}"; break; fi
+    done
+    case "\$fields" in
+        *baseRefName*) printf '{"baseRefName":"$base_ref","title":"Test PR","body":"","author":{"login":"test-user"},"closingIssuesReferences":{"nodes":[]}}\n' ;;
+        *headRefOid*)  printf '{"headRefOid":"$head_oid"}\n' ;;
+    esac
+    exit 0
+fi
+
+# --- gh api ---
+if [ "\$1" = "api" ]; then
+    endpoint=""; method="GET"; body=""; jqexpr=""
+    args=("\$@"); n=\${#args[@]}
+    for ((i=1; i<n; i++)); do
+        a="\${args[i]}"
+        case "\$a" in
+            --method|-X) method="\${args[i+1]}"; ((i++)) ;;
+            -f|-F|--raw-field|--field)
+                v="\${args[i+1]}"; ((i++))
+                [ "\${v#body=}" != "\$v" ] && body="\${v#body=}" ;;
+            --jq) jqexpr="\${args[i+1]}"; ((i++)) ;;
+            --paginate) : ;;
+            -*) : ;;
+            *) [ -z "\$endpoint" ] && endpoint="\$a" ;;
+        esac
+    done
+
+    result="null"
+    case "\$endpoint" in
+        */issues/*/comments)   # list or create
+            if [ "\$method" = "POST" ]; then
+                newid=\$(jq '([.[].id] | max // 0) + 1' "\$STORE")
+                result=\$(jq -n --argjson id "\$newid" --arg body "\$body" --arg login "\$BOT_LOGIN" \
+                    '{id:\$id, body:\$body, user:{login:\$login}}')
+                jq --argjson c "\$result" '. + [\$c]' "\$STORE" > "\$STORE.tmp" && mv "\$STORE.tmp" "\$STORE"
+            else
+                result=\$(cat "\$STORE")
+            fi ;;
+        */issues/comments/*)   # patch or delete a single comment
+            cid="\${endpoint##*/}"
+            if [ "\$method" = "DELETE" ]; then
+                jq --argjson id "\$cid" 'map(select(.id != \$id))' "\$STORE" > "\$STORE.tmp" && mv "\$STORE.tmp" "\$STORE"
+                result="{}"
+            else
+                jq --argjson id "\$cid" --arg body "\$body" 'map(if .id == \$id then .body = \$body else . end)' \
+                    "\$STORE" > "\$STORE.tmp" && mv "\$STORE.tmp" "\$STORE"
+                result=\$(jq -n --argjson id "\$cid" --arg body "\$body" --arg login "\$BOT_LOGIN" \
+                    '{id:\$id, body:\$body, user:{login:\$login}}')
+            fi ;;
+    esac
+
+    if [ -n "\$jqexpr" ]; then printf '%s\n' "\$result" | jq -r "\$jqexpr"; else printf '%s\n' "\$result"; fi
+    exit 0
+fi
+exit 0
+STUB
+    chmod +x "$stub_path"
+}
+
+write_stateful_gh_stub "$HOME/.local/bin/gh" "$COMMENT_STORE" "main" "$NEW_PR_SHA"
+
+STATE6="$TMPDIR/state-6"
+mkdir -p "$STATE6/runs" "$STATE6/canonical-locks" "$STATE6/locks" "$STATE6/repos" "$STATE6/workdirs"
+echo "{}" > "$STATE6/state.json"
+CANONICAL6="$STATE6/repos/test-org_probe-repo"
+mkdir -p "$(dirname "$CANONICAL6")"
+git clone -q "$GITHUB_BARE" "$CANONICAL6"
+
+run_tick_6() {
+    (
+        export STATE_DIR="$STATE6"
+        export STATE_FILE="$STATE6/state.json"
+        export REPOS_DIR="$STATE6/repos"
+        export WORKDIRS_DIR="$STATE6/workdirs"
+        export CANONICAL_LOCKS_DIR="$STATE6/canonical-locks"
+        export PR_REVIEW_LOCK_DIR="$STATE6/locks"
+        write_probe_repos_conf "$STATE6/repos.conf"
+        TRIGGER_COMMENT_FILE="" \
+            bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
+            "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" \
+            >/dev/null 2>&1 || true
+    )
+}
+
+run_tick_6   # tick 1: posts placeholder, aborts, EXIT trap edits to paused
+run_tick_6   # tick 2: must reuse the same placeholder, not post a second
+
+# Decisive assertion: exactly one bot placeholder comment survives two ticks.
+PLACEHOLDER_COUNT=$(jq '[.[] | select(.body | contains("knightwatch-reviewer:placeholder"))] | length' "$COMMENT_STORE")
+if [ "$PLACEHOLDER_COUNT" != "1" ]; then
+    echo "FAIL: scenario 6 — $PLACEHOLDER_COUNT placeholder comments after two ticks (expected 1 — per-tick spam regressed)"
+    jq -r '.[] | "  id=\(.id) body=\(.body | gsub("\n";" ") | .[0:80])"' "$COMMENT_STORE"
+    exit 1
+fi
+
+echo "  PASS (6 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + placeholder reuse anti-spam)"
