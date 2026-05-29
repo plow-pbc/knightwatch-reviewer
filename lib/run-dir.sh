@@ -469,7 +469,7 @@ prepend_review_header() {
     # Exact match — not prefix — because R8 caught that prefix matching
     # on the ai-author line lets an attacker craft a different content
     # suffix that gets preserved as if trusted. The auto-post string is
-    # also pinned in lib/decline-history.sh under the same env-var
+    # also pinned in lib/pr-comments.sh under the same env-var
     # default; both consume BOT_AI_AUTHOR_MARKER (defined at top of this
     # file) for the ai-author line so there's a single source of truth.
     local AUTO_POST_LINE="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
