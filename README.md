@@ -124,7 +124,7 @@ The next 2-minute timer tick picks it up. `SOURCE_PATHS` in the same file enable
 
 ## Use on a PR
 
-Reviews fire on PR open and again after one hour of idle. To force a fresh review on the new head, post a slash command:
+Reviews fire on PR open and again after a period of idle (the `STABLE_SECS` stability window). To force a fresh review on the new head, post a slash command:
 
 > **Command prefix:** all bot commands use the prefix from `BOT_CMD_PREFIX` (default: `srosro`). Set it in `~/.pr-reviewer/config.env` to fork-customize. Examples below use the default.
 

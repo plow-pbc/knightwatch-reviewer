@@ -393,6 +393,40 @@ format_kid_note() {
     esac
 }
 
+# format_specialist_timeouts NAMES_CSV
+#
+# One header fragment naming the angle(s) that timed out (codex parallel-
+# tool-call deadlock) and were excluded from this review. Symmetric with
+# format_tests_note / format_kid_note: the warning rides the same blockquote
+# registry so a partial review is disclosed in the header instead of being
+# aborted — aborting forced a full same-SHA re-review next tick, re-paying
+# the whole specialist fan-out for the angles that already succeeded.
+#
+# Pure function. Empty NAMES_CSV is an invariant violation (the caller only
+# invokes this when _wave_b_timeouts.txt is non-empty) — fail-fast.
+format_specialist_timeouts() {
+    local names="$1"
+    if [ -z "$names" ]; then
+        printf 'format_specialist_timeouts: empty names — internal invariant violated\n' >&2
+        return 1
+    fi
+    printf '⏱️ Partial review — specialist(s) timed out and were skipped: `%s`' "$names"
+}
+
+# timeout_note_for_run RUN_DIR
+#
+# Sentinel→note adapter: echoes the format_specialist_timeouts fragment when
+# this run recorded specialist timeouts (_wave_b_timeouts.txt non-empty),
+# else nothing. Shared by the live worker (review-one-pr.sh) and replay
+# (replay.sh) so a partial review discloses skipped angles identically on
+# both surfaces — without either consumer re-implementing the read+format.
+timeout_note_for_run() {
+    local sentinel="$1/_wave_b_timeouts.txt" timed_out
+    [ -s "$sentinel" ] || return 0
+    timed_out=$(paste -sd, "$sentinel")
+    format_specialist_timeouts "$timed_out"
+}
+
 # prepend_review_header COMMENT_BODY NOTE [NOTE...]
 #
 # Renders the unified deterministic registry as one blockquote line right
@@ -571,20 +605,20 @@ latest_author_visible_review_sha() {
 }
 
 # latest_author_visible_review_approved <state_dir> <repo_slug> <pr_num> <current_run_dir>
-#   stdout: "true" if the latest author-visible round's aggregator output
-#   ended in a `VERDICT: APPROVE` (or `VERDICT: APPROVE — pending: ...`)
-#   line, "false" if it ended in `VERDICT: COMMENT`, or empty if no prior
+#   stdout: "true" if the latest author-visible round actually approved
+#   (per review_is_approval — APPROVE verdict AND full coverage), "false"
+#   if it commented or was a partial-coverage review, or empty if no prior
 #   author-visible run exists.
 #
-# Semantic: "what did our last review SAY?" — sourced from output.md so it
-# anchors to the same round as body + sha (BCR fence). Consumers use it to
-# carry the prior verdict into the next round's prompt. NOT a signal of
-# the GitHub PR's current approval state — `submit_approval` (lib/auth.sh)
-# can decline self-authored PRs, so a markdown verdict of APPROVE may
-# coincide with no actual GitHub approval. That divergence is irrelevant
-# here because no consumer asks "is the PR approved on GitHub right now?"
-# (the only reader is REVIEW_TASK in lib/review-one-pr.sh, which reports
-# what the prior review said).
+# Semantic: "did our last review approve?" — routed through review_is_approval
+# so the carried-forward verdict matches the worker's submit decision exactly
+# (single source of truth). A partial-coverage round whose aggregator line
+# said APPROVE reads "false" here, the same way the worker withheld the GitHub
+# approval — the two can't drift. NOT a signal of the GitHub PR's current
+# approval state: `submit_approval` (lib/auth.sh) can still decline a
+# self-authored PR even on a true approval, but that divergence is irrelevant
+# (the only reader is REVIEW_TASK in lib/review-one-pr.sh, reporting what the
+# prior review concluded).
 #
 # Parsed from output.md rather than state.json so the body, sha, and
 # approved values all anchor to the same round — same BCR fence as the
@@ -592,13 +626,32 @@ latest_author_visible_review_sha() {
 # line is `VERDICT: APPROVE`, `VERDICT: APPROVE — pending: ...`, or
 # `VERDICT: COMMENT`. Match anchored at start-of-line on the last 10
 # lines so trailing prose can't false-positive.
+# review_is_approval VERDICT_LINE RUN_DIR
+#   exit 0 iff this run is an actual approval: the aggregator verdict is
+#   `VERDICT: APPROVE`/`APPROVE — pending: ...` AND coverage was full (no
+#   specialist timed out, i.e. _wave_b_timeouts.txt is absent/empty).
+#
+# Single owner of "did this review approve?" — both the worker's GitHub
+# submit gate (review-one-pr.sh) and the carried-forward `approved`
+# projection (latest_author_visible_review_approved below) route through it,
+# so partial coverage can never greenlight in one place while reading as
+# approved in the other. A partial review (a specialist, possibly security,
+# was skipped) is never an approval — disclosed by the ⏱️ header instead.
+review_is_approval() {
+    local verdict="$1" run_dir="$2"
+    [[ "$verdict" == VERDICT:\ APPROVE* ]] || return 1
+    [ -s "$run_dir/_wave_b_timeouts.txt" ] && return 1
+    return 0
+}
+
 latest_author_visible_review_approved() {
     local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"
-    local latest
+    local latest verdict
     latest=$(_latest_author_visible_run_dir "$state_dir" "$repo_slug" "$pr_num" "$current_run_dir")
     [ -z "$latest" ] && return 0
-    if tail -n 10 "$latest/agents/aggregator/output.md" 2>/dev/null \
-            | grep -qE '^VERDICT: APPROVE'; then
+    verdict=$(tail -n 10 "$latest/agents/aggregator/output.md" 2>/dev/null \
+        | grep -E '^VERDICT:' | tail -1)
+    if review_is_approval "$verdict" "$latest"; then
         printf 'true'
     else
         printf 'false'

@@ -308,6 +308,27 @@ if [ "$result" != "false" ]; then
     exit 1
 fi
 
+# ---- scenario 9d: latest_author_visible_review_approved — partial coverage (APPROVE + timeout sentinel) → false ----
+# Single-source-of-truth fence (PR #121): a review whose aggregator line said
+# APPROVE but had a specialist time out (a _wave_b_timeouts.txt sentinel in the
+# run dir) is NOT an approval. The worker withholds the GitHub approval AND the
+# carried-forward projection must read "false" — both route through
+# review_is_approval, so a partial round can't read approved here while the
+# worker declined to submit it.
+echo "  scenario 9d: latest_author_visible_review_approved — partial coverage (APPROVE + sentinel) → false..."
+PART_PR=703
+part_current=$(make_run "$REPO_SLUG" "$PART_PR" "20260429T120000000Z" "7777778" "## current run for partial-coverage test")
+part_prior=$(make_run "$REPO_SLUG" "$PART_PR" "20260429T100000000Z" "6666667" \
+    "## partial review body
+security angle skipped
+VERDICT: APPROVE")
+printf 'security\n' > "$part_prior/_wave_b_timeouts.txt"
+result=$(latest_author_visible_review_approved "$TMPDIR/state" "$REPO_SLUG" "$PART_PR" "$part_current")
+if [ "$result" != "false" ]; then
+    echo "FAIL: scenario 9d — expected 'false' for partial-coverage APPROVE, got: '$result'"
+    exit 1
+fi
+
 # ---- scenario 10: no prior author-visible runs → sha + approved both empty ----
 # Must mirror latest_author_visible_review's empty-on-first-review shape
 # so the worker's "no prior round" branch is consistent across all three
@@ -360,4 +381,4 @@ if [ -n "$result" ]; then
     exit 1
 fi
 
-echo "  PASS (18 scenarios: no-runs, self-excluded, chronological-prior, aborted-skipped, no-meta-skipped, posted-but-aborted-INCLUDED, legacy-completed-no-posted-at-INCLUDED, foreign-pr-filtered, latest-author-visible-review, latest-empty-on-first-review, sha-reviewed_sha-precedence, sha-falls-back-to-sha, approved-APPROVE-true, approved-APPROVE-pending-true, approved-COMMENT-false, no-prior-empty, started_at-latest-wins, started_at-empty-no-prior)"
+echo "  PASS (19 scenarios: no-runs, self-excluded, chronological-prior, aborted-skipped, no-meta-skipped, posted-but-aborted-INCLUDED, legacy-completed-no-posted-at-INCLUDED, foreign-pr-filtered, latest-author-visible-review, latest-empty-on-first-review, sha-reviewed_sha-precedence, sha-falls-back-to-sha, approved-APPROVE-true, approved-APPROVE-pending-true, approved-COMMENT-false, approved-partial-coverage-false, no-prior-empty, started_at-latest-wins, started_at-empty-no-prior)"

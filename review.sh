@@ -20,7 +20,12 @@ STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/orchestrator.log}"
 REPOS_DIR="${REPOS_DIR:-$STATE_DIR/repos}"
 WORKDIRS_DIR="${WORKDIRS_DIR:-$STATE_DIR/workdirs}"
-STABLE_SECS="${STABLE_SECS:-3600}"
+# Non-forced re-reviews wait for the PR to go quiet this long before
+# re-reviewing. 3h (was 1h) batches an author's rapid push bursts into one
+# re-review instead of re-paying the full specialist fan-out per push — the
+# dominant re-review quota churn. Authors wanting an immediate re-review use
+# /<bot>-review (FORCE_REVIEW bypasses this gate).
+STABLE_SECS="${STABLE_SECS:-10800}"
 MAX_CONCURRENT="${MAX_CONCURRENT:-4}"
 
 # Tracked-repo manifest (REPOS array + KID_PATHS assoc array). Single

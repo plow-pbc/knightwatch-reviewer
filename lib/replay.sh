@@ -229,6 +229,10 @@ REVIEW_NOTES+=("🎬 Replay of \`$SHA\` (\`gh pr view --repo $REPO $PR\`)")
 if [ "$KNIGHTWATCH_PRESENT" = "0" ]; then
     REVIEW_NOTES+=("⚙️ No .knightwatch/ config (review using defaults)")
 fi
+# Same partial-review disclosure as the live worker (shared helper), so a
+# replayed run whose specialists timed out doesn't read as full coverage.
+TIMEOUT_NOTE=$(timeout_note_for_run "$RUN_DIR")
+[ -n "$TIMEOUT_NOTE" ] && REVIEW_NOTES+=("$TIMEOUT_NOTE")
 
 AGG_BODY=$(cat "$AGG_OUT_FILE")
 STITCHED=$(prepend_review_header "$AGG_BODY" "${REVIEW_NOTES[@]}")
