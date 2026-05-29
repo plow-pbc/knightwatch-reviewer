@@ -28,9 +28,9 @@ acquire_pr_lock() {
     PR_LOCK_FILE="$PR_LOCK_DIR/$pr_lock_slug"
     exec {PR_LOCK_FD}> "$PR_LOCK_FILE"
     # Close the FD on contention (mirror of acquire_just_test_lock) so callers
-    # that probe in a loop — queue_drained() walks every queued PR — don't leak
-    # one FD per held lock. The original single call site exited on failure so
-    # never noticed; the queue consumer's probe loop would.
+    # that probe in a loop don't leak one FD per held lock: review.sh's
+    # consume_queue probes each queued PR and `continue`s past held ones. The
+    # original single call site (the worker) exited on failure so never noticed.
     flock -n "$PR_LOCK_FD" || { exec {PR_LOCK_FD}>&-; unset PR_LOCK_FD; return 1; }
 }
 

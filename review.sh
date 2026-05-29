@@ -379,21 +379,20 @@ consume_queue() {
     if [ -n "${WAIT_FOR_WORKERS:-}" ]; then wait; fi
 }
 
-# Refresh only when STALE (time floor) AND there is NOTHING left to claim —
-# the queue is empty (idle) or every PR is already claimed/in-flight. Gating on
-# "no claimable work" with AND (never OR) means the work-state can only SUPPRESS
-# a refresh, never add one: a fresh-but-all-in-flight queue does NOT re-enumerate
-# every poll tick (the OR form did, reopening the GraphQL burn). The floor caps
-# re-enumeration at once per ENUMERATE_SECS; while un-claimed work remains we
-# consume it first. Idle (empty) still refreshes on the floor to find new PRs.
+# Refresh the queue on a plain time floor: once per ENUMERATE_SECS, globally,
+# via the single-refresher election. No work-state gate — deciding "is there
+# eligible work left?" requires the eligibility scan that IS the refresh
+# (circular), and the only cheap proxy (per-PR lock free) conflates a
+# reviewed-but-still-queued PR (free lock, no work) with a not-yet-started one,
+# which either burns (OR-trigger) or starves discovery (AND-gate). The periodic
+# refresh is what discovers new PRs AND drops completed specs from the snapshot;
+# it's election-serialized (one enumerate/window), so the floor caps the cost.
 NOW_EPOCH=$(date +%s)
 if queue_needs_refresh "$STATE_DIR" "$ENUMERATE_SECS" "$NOW_EPOCH" \
-   && ! queue_has_claimable "$STATE_DIR" \
    && acquire_enumerator_lock "$STATE_DIR"; then
     # Re-check after winning: another container may have refreshed in the gap
-    # between our trigger check and acquiring the election lock.
-    if queue_needs_refresh "$STATE_DIR" "$ENUMERATE_SECS" "$(date +%s)" \
-       && ! queue_has_claimable "$STATE_DIR"; then
+    # between our staleness check and acquiring the election lock.
+    if queue_needs_refresh "$STATE_DIR" "$ENUMERATE_SECS" "$(date +%s)"; then
         refresh_queue
     fi
     release_enumerator_lock

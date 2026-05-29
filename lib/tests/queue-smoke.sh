@@ -6,8 +6,6 @@
 #   3. acquire/release_enumerator_lock: second concurrent acquire loses,
 #      succeeds after release.
 #   4. release_pr_lock frees a held per-PR lock for a later acquirer.
-#   5. queue_drained: empty→not drained; claimable→not drained;
-#      non-empty-all-flock-held→drained.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -51,25 +49,4 @@ release_pr_lock
 ( . "$PROJECT_ROOT/lib/locking.sh"; acquire_pr_lock "$STATE_DIR" "a_b__1" ) || { echo "FAIL: pr lock re-acquire after release"; exit 1; }
 echo "OK: release_pr_lock"
 
-# 5. queue_has_claimable: empty queue → no claimable (exit 1); non-empty + a
-#    free PR → claimable (exit 0); non-empty + all flock-held → no claimable
-#    (exit 1). The driver refreshes on STALE && ! queue_has_claimable, so
-#    "no claimable" (empty OR all-held) is what permits a floor-rate refresh;
-#    a free PR suppresses it (consume first).
-write_queue "$STATE_DIR" 1000 "[]"
-queue_has_claimable "$STATE_DIR" && { echo "FAIL: empty queue has no claimable PR"; exit 1; } || echo "OK: empty→no claimable"
-write_queue "$STATE_DIR" 1000 "$SPECS"   # one spec, repo a/b pr 1, flock free
-queue_has_claimable "$STATE_DIR" || { echo "FAIL: free PR must be claimable"; exit 1; }; echo "OK: free→claimable"
-# Hold a/b__1's flock from a background holder so the only spec is unclaimable.
-cat > "$WORKDIR/holder.sh" <<HOLD
-#!/usr/bin/env bash
-. "$PROJECT_ROOT/lib/locking.sh"
-acquire_pr_lock "$STATE_DIR" "a_b__1" || exit 1
-echo READY > "$WORKDIR/held.flag"; sleep 10
-HOLD
-chmod +x "$WORKDIR/holder.sh"
-bash "$WORKDIR/holder.sh" & HPID=$!
-for _ in $(seq 1 50); do [ -f "$WORKDIR/held.flag" ] && break; sleep 0.1; done
-if queue_has_claimable "$STATE_DIR"; then kill "$HPID" 2>/dev/null; echo "FAIL: all-flock-held must have no claimable PR"; exit 1; else echo "OK: all-held→no claimable"; fi
-kill "$HPID" 2>/dev/null || true
 echo "ALL PASS: queue-smoke.sh"
