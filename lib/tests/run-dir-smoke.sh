@@ -164,6 +164,21 @@ PLAIN=$(jq -n '[{user: {login: "srosro"}, created_at: "2026-05-29T10:00:00Z", bo
 [ -z "$(latest_reviewed_sha_comment "$PLAIN" "$HEAD_SHA" "$BOT")" ] \
   || { echo "FAIL: should not match without a marker"; exit 1; }
 
+echo "  latest_reviewed_sha_comment: matches through the REAL post path — prepend_review_header keeps the marker in the trusted block..."
+# Mirror review-one-pr.sh's COMMENT_BODY assembly (auto-post, ai-author,
+# reviewed-sha, bakeoff, then prose) and run it through prepend_review_header —
+# the production transform that relocates non-preserved markers below the
+# blockquote. The marker MUST still be matchable, or the backstop never fires
+# on a real posted review (the bug round-3 caught: fixture had it pre-placed).
+WORKER_BODY=$(printf '%s\n%s\n%s\n<!-- knightwatch-bakeoff: specialists=x -->\n> 📋 First review\nLooks good.' \
+  "<!-- knightwatch-reviewer:auto-post -->" "$BOT_AI_AUTHOR_MARKER" "$(reviewed_sha_marker "$HEAD_SHA")")
+POSTED_BODY=$(prepend_review_header "$WORKER_BODY" "✅ Tests passed")
+POSTED_COMMENTS=$(jq -n --arg login "srosro" --arg b "$POSTED_BODY" \
+  '[{user: {login: $login}, created_at: "2026-05-29T10:00:00Z", body: $b}]')
+[ -n "$(latest_reviewed_sha_comment "$POSTED_COMMENTS" "$HEAD_SHA" "$BOT")" ] \
+  || { echo "FAIL: marker must survive prepend_review_header in the trusted leading block"; \
+       printf 'posted body was:\n%s\n' "$POSTED_BODY"; exit 1; }
+
 echo "  seed roundtrip: a completed run (meta + recovered output.md) is author-visible, resolves KNOWN_SHA, and exposes the prior body..."
 SEED_STATE=$(mktemp -d); SLUG="acme_widget"; PRN="42"; HEAD="cafef00dbabe"
 RID="${SLUG}__${PRN}__20260529T000000000Z__${HEAD:0:7}"
@@ -180,4 +195,4 @@ body=$(latest_author_visible_review "$SEED_STATE" "$SLUG" "$PRN" "")
 printf '%s' "$body" | grep -q "recovered prior review body" \
   || { echo "FAIL: seeded run should expose its recovered body to prior-review staging"; exit 1; }
 
-echo "  PASS (4 scenarios: clean allocation, collision detected, subdir-failure rollback, real failure not mislabeled + 5 latest_reviewed_sha_comment incl. spoof-gate + quote-injection-fence + 1 seed roundtrip)"
+echo "  PASS (4 scenarios: clean allocation, collision detected, subdir-failure rollback, real failure not mislabeled + 6 latest_reviewed_sha_comment incl. spoof-gate + quote-injection-fence + real-post-path + 1 seed roundtrip)"

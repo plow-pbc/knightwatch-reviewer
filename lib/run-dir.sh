@@ -525,11 +525,19 @@ prepend_review_header() {
     # also pinned in lib/decline-history.sh under the same env-var
     # default; both consume BOT_AI_AUTHOR_MARKER (defined at top of this
     # file) for the ai-author line so there's a single source of truth.
+    # The reviewed-sha marker carries a variable SHA, so it can't be an exact
+    # string like auto-post/ai-author — but it MUST stay in the preserved
+    # leading block, because latest_reviewed_sha_comment only trusts the marker
+    # there (a marker below the blockquote reads as quoted prose and is
+    # ignored). A fully-anchored, hex-only line match is as tight as exact
+    # match — the `$` after ` -->` forbids the R8 crafted-suffix attack and the
+    # `[0-9a-f]+` body forbids arbitrary content — so preserving it is safe.
     local AUTO_POST_LINE="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
     local n_leading
     n_leading=$(printf '%s' "$comment_body" | awk -v auto="$AUTO_POST_LINE" -v ai="$BOT_AI_AUTHOR_MARKER" '
         $0 == auto { n++; next }
         $0 == ai   { n++; next }
+        /^<!-- knightwatch-reviewer:reviewed-sha=[0-9a-f]+ -->$/ { n++; next }
         { exit }
         END { print n+0 }')
     [ "$n_leading" -lt 1 ] && n_leading=1

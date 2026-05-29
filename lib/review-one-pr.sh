@@ -1455,10 +1455,14 @@ fi
 # Fail-fast — no fallback. If pipeline.py is broken, we want the review to
 # fail loudly here, not silently post with a stale roster.
 BAKEOFF_SPECIALISTS=$(python3 -c "import sys; sys.path.insert(0, '$_LIB_DIR/..'); from lib.pipeline import SPECIALISTS; print(','.join(list(SPECIALISTS) + ['aggregator']))")
+# reviewed-sha sits in the contiguous leading-marker run (right after
+# ai-author, before bakeoff) so prepend_review_header preserves it ABOVE the
+# blockquote — the only region latest_reviewed_sha_comment trusts. bakeoff
+# stays below the blockquote (it's read position-independently via contains).
 COMMENT_BODY="$BOT_AUTO_POST_MARKER
 $BOT_AI_AUTHOR_MARKER
-<!-- knightwatch-bakeoff: specialists=$BAKEOFF_SPECIALISTS -->
 $(reviewed_sha_marker "$REVIEWED_SHA")
+<!-- knightwatch-bakeoff: specialists=$BAKEOFF_SPECIALISTS -->
 $COMMENT_BODY
 
 ---
