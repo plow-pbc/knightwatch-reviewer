@@ -89,9 +89,18 @@ def _log_file() -> Path | None:
     return Path(p) if p else None
 
 
+def _log_prefix() -> str:
+    """Timestamp + (in container mode) a [w<WORKER_ID>] account tag. Mirrors the
+    shell log() format in lib/state-io.sh so a single `docker compose logs`
+    grep covers both the shell and Python halves of a reviewer's output."""
+    ts = time.strftime('%Y-%m-%d %H:%M:%S')
+    wid = os.environ.get("WORKER_ID")
+    return f"[{ts}] [w{wid}]" if wid else f"[{ts}]"
+
+
 def log(msg: str) -> None:
-    """Tee a timestamped line to stdout and $LOG_FILE."""
-    line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n"
+    """Tee a timestamped, worker-tagged line to stdout and $LOG_FILE."""
+    line = f"{_log_prefix()} {msg}\n"
     sys.stdout.write(line)
     sys.stdout.flush()
     logf = _log_file()
@@ -242,10 +251,26 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
         with log_file.open("a") as lf, err_file.open("a") as ef:
             proc = subprocess.Popen(argv, stdout=lf, stderr=ef, start_new_session=True)
         exit_code, kill_reason, retryable = _wait_with_watchdog(proc, log_file, err_file)
+        # We retry at most once (attempt 1 → attempt 2); a retryable kill on
+        # the final attempt still ends the loop, so gate both the surfaced
+        # "(retrying)" suffix and the break on will_retry, not raw retryable —
+        # otherwise the final review-costing kill is mislabeled "(retrying)"
+        # and the `grep -c` rate this surfacing exists for double-counts it.
+        will_retry = retryable and attempt == 1
         if kill_reason is not None:
             with log_file.open("a") as lf:
                 lf.write(f"[{_ts()}] agent={name} killed: {kill_reason}\n")
-        if not retryable:
+            # Also surface on stdout/$LOG_FILE. The per-agent log.txt lives
+            # inside the run dir — invisible to `docker compose logs`, the
+            # stream /babysit-pr tails, and the only place the codex
+            # parallel-tool-call deadlock rate (openai/codex#21937) is
+            # countable in aggregate. Without this the rate is silent: a
+            # `grep -c "codex watchdog kill"` over the reviewer logs is the
+            # whole point. "(retrying)" separates rescued hangs from the ones
+            # that actually cost a review angle.
+            log(f"{name}: codex watchdog kill — {kill_reason}"
+                + (" (retrying)" if will_retry else ""))
+        if not will_retry:
             break
 
     with log_file.open("a") as lf:

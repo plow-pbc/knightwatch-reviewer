@@ -152,6 +152,28 @@ def _effort_of(argv):
     return None
 
 
+class TestLog(unittest.TestCase):
+    """log() tags each line with the emitting account ([w<WORKER_ID>]) in
+    container mode so interleaved `docker compose logs` from multiple reviewers
+    is attributable; outside a container (no WORKER_ID) the tag is omitted."""
+
+    def test_worker_tag_present_only_when_worker_id_set(self):
+        cases = [({"WORKER_ID": "7"}, True), ({}, False)]
+        with TemporaryDirectory() as d:
+            for i, (extra_env, want_tag) in enumerate(cases):
+                with self.subTest(env=extra_env):
+                    log_path = Path(d) / f"case-{i}.log"
+                    # clear=True guarantees WORKER_ID is absent in the no-tag
+                    # case regardless of the ambient environment.
+                    with patch.dict(os.environ,
+                                    {"LOG_FILE": str(log_path), **extra_env},
+                                    clear=True):
+                        pipeline.log("hello")
+                    written = log_path.read_text()
+                    self.assertIn("hello", written)
+                    self.assertEqual("[w7]" in written, want_tag)
+
+
 class TestRunCodex(unittest.TestCase):
     """run_codex wraps `codex exec`; matches lib/run-specialist.sh contract."""
 
@@ -242,7 +264,8 @@ class TestRunCodex(unittest.TestCase):
         fires."""
         agent_dir = self._agent_dir("intent")
         mock_popen.side_effect = _make_codex_stub(plan={"intent": "TIMEOUT"})
-        with _fast_watchdog():
+        log_path = Path(self.tmp.name) / "orchestrator.log"
+        with _fast_watchdog(), patch.dict(os.environ, {"LOG_FILE": str(log_path)}):
             rc = pipeline.run_codex(
                 "intent", str(self.repo_dir), "PROMPT", str(agent_dir)
             )
@@ -251,6 +274,16 @@ class TestRunCodex(unittest.TestCase):
         self.assertEqual(mock_killpg.call_count, 2)
         self.assertEqual(mock_killpg.call_args.args[1], signal.SIGKILL)
         self.assertTrue((agent_dir / "log.attempt1.txt").exists())
+        # The "(retrying)" suffix must distinguish a rescued hang from a
+        # final one: attempt 1 retries (suffix present), but the second and
+        # final kill exhausts the loop with no third attempt — it must NOT
+        # be marked "(retrying)", or the aggregate `grep -c` undercounts the
+        # review-costing kills this surfacing exists to make measurable.
+        kill_lines = [l for l in log_path.read_text().splitlines()
+                      if "codex watchdog kill" in l]
+        self.assertEqual(len(kill_lines), 2)
+        self.assertIn("(retrying)", kill_lines[0])
+        self.assertNotIn("(retrying)", kill_lines[1])
 
     @patch("pipeline.os.killpg")
     @patch("pipeline.subprocess.Popen")

@@ -15,10 +15,22 @@
 # Callers must have already set:
 #   LOG_FILE=<orchestrator.log for review.sh, runs/<id>/run.log for the worker>
 
-# Shared structured logger. Prepends timestamp; tee's to LOG_FILE and stdout so
-# the systemd journal and a tail -f of LOG_FILE both reflect every event.
+# Shared structured logger. Prepends timestamp and, in container mode, a
+# [w<WORKER_ID>] tag so `docker compose logs` lines are attributable to the
+# account that emitted them (otherwise two reviewers' output interleaves with
+# no way to tell which one paused/killed/failed). Tee's to LOG_FILE and stdout
+# so a tail -f of LOG_FILE and the container/journal stream both see every
+# event. LOG_FILE may be unset (e.g. review-loop.sh before review.sh sets it) —
+# fall back to stdout-only rather than erroring. Format contract is mirrored in
+# pipeline.py's log() for the Python pipeline.
 log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"
+    local prefix="[$(date '+%Y-%m-%d %H:%M:%S')]"
+    [ -n "${WORKER_ID:-}" ] && prefix="$prefix [w${WORKER_ID}]"
+    if [ -n "${LOG_FILE:-}" ]; then
+        echo "$prefix $*" | tee -a "$LOG_FILE"
+    else
+        echo "$prefix $*"
+    fi
 }
 
 # Generic "seen comment IDs" key-value JSON file with flock + atomic-rename
