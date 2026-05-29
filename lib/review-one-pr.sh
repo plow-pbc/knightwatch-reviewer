@@ -108,6 +108,11 @@ WORKDIRS_DIR="${WORKDIRS_DIR:-$STATE_DIR/workdirs}"
 BOT_USER="${BOT_USER:-srosro}"
 BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
 BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
+# Tags the transient "👀 reviewing" placeholder (and its abort/paused edits)
+# so a later tick can recognize an unresolved placeholder from a prior tick
+# and reuse it instead of stacking a new one. Real reviews never carry it,
+# so the reuse check below only ever recycles a placeholder, never a review.
+BOT_PLACEHOLDER_MARKER="${BOT_PLACEHOLDER_MARKER:-<!-- knightwatch-reviewer:placeholder -->}"
 # BOT_AI_AUTHOR_MARKER is defined in lib/run-dir.sh (single source of truth);
 # this worker sources run-dir.sh below at $_LIB_DIR/run-dir.sh and consumes
 # the var when posting the review body.
@@ -142,10 +147,16 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # multi-source is idempotent (function redefinition).
 . "$_LIB_DIR/loc-trend.sh"
 
+# --- gh-comments (fetch_issue_comments) — paginated issue-comment reader,
+# the shared seam every comment scanner uses. Consumed here by the
+# placeholder-reuse lookup below; sourced explicitly (not via a transitive
+# import) so the dependency is visible at the call site.
+. "$_LIB_DIR/gh-comments.sh"
+
 # --- decline-history (fetch_decline_history) — operator's prior declines
 # on this PR; consumed by the critic to drop or footnote re-flagged
-# findings the operator has pushed back on ≥3 times. Sources gh-comments.sh
-# internally; multi-source is idempotent.
+# findings the operator has pushed back on ≥3 times. (Also sources
+# gh-comments.sh; multi-source is idempotent.)
 . "$_LIB_DIR/decline-history.sh"
 
 # --- per-run dir -------------------------------------------------------------
@@ -265,6 +276,16 @@ fi
 # gate now.
 EYES_COMMENT_ID=""
 EYES_RESOLVED=false
+# The placeholder's leading marker block — written verbatim on every POST and
+# PATCH below, and the exact prefix the reuse lookup matches with `startswith`.
+# Defined once so all three sites stay byte-identical: reuse depends on it, so
+# any drift between writer and matcher would silently break placeholder
+# recycling and bring back the per-tick spam. Trailing newline included so a
+# body is just "$PLACEHOLDER_HEADER<message>".
+PLACEHOLDER_HEADER="$BOT_AUTO_POST_MARKER
+$BOT_AI_AUTHOR_MARKER
+$BOT_PLACEHOLDER_MARKER
+"
 # Default placeholder body for any abort path; specific aborts (e.g. the
 # Wave B timeout branch in the pipeline block below) override this with
 # a more informative message before the EXIT trap fires. Single PATCH
@@ -275,9 +296,7 @@ cleanup_eyes() {
         return 0
     fi
     gh api "repos/$REPO/issues/comments/$EYES_COMMENT_ID" --method PATCH \
-        -f body="$BOT_AUTO_POST_MARKER
-$BOT_AI_AUTHOR_MARKER
-$EYES_ABORT_BODY" \
+        -f body="${PLACEHOLDER_HEADER}${EYES_ABORT_BODY}" \
         >/dev/null 2>&1 || true
 }
 trap 'finalize_run; cleanup_eyes' EXIT
@@ -395,20 +414,54 @@ fi
 # EXIT trap edits the placeholder to "aborted" instead so it doesn't read
 # as "still reviewing" forever.
 #
+# Reuse a prior tick's unresolved placeholder instead of posting a new one.
+# During a transient outage (codex quota exhausted, specialist timeout) every
+# 2-min tick aborts at the same point and the EXIT trap leaves a paused/aborted
+# placeholder behind. Without reuse, each tick POSTs a brand-new placeholder —
+# one fresh comment per tracked PR every 2 minutes until the outage clears
+# (observed: 39 "codex quota" comments on a single PR). Recycling the existing
+# placeholder means the EXIT trap re-PATCHes the SAME comment (a silent edit,
+# no notification), so an outage leaves exactly one self-updating marker per
+# PR. A real review (or a new PR head) deletes the placeholder on the success
+# path, so the next tick genuinely posts fresh.
+#
 # The leading HTML comment is invisible in rendered Markdown but lets the
 # orchestrator's jq filter recognize this as one of our auto-posts so we
 # don't self-trigger on the next tick.
-EYES_COMMENT_ID=$(gh api "repos/$REPO/issues/$PR_NUM/comments" \
-    --method POST \
-    -f body="$BOT_AUTO_POST_MARKER
-$BOT_AI_AUTHOR_MARKER
-👀 reviewing — [sam's ai review bot](https://github.com/srosro/knightwatch-reviewer)" \
-    --jq '.id' 2>/dev/null) || EYES_COMMENT_ID=""
-
-if [ -n "$EYES_COMMENT_ID" ]; then
-    log "$PR_ID: posted reviewing placeholder (comment id=$EYES_COMMENT_ID)"
+#
+# Lookup goes through the shared fetch_issue_comments seam (paginated, so a
+# placeholder on page 2 of a long thread is still found, and a non-placeholder
+# auto-post like a learn-from-replies ACK doesn't hide it). A prior comment is
+# accepted as a reusable placeholder ONLY when it is unmistakably ours: authored
+# by BOT_USER, and its body starts with the exact auto-post/ai-author/placeholder
+# marker header that POST/PATCH below write. A real review — or a third-party
+# comment that merely quotes the placeholder marker — therefore can't be adopted
+# as EYES_COMMENT_ID and later PATCHed/DELETEd under the bot token. If the fetch
+# itself fails we skip placeholder posting for this tick rather than POSTing
+# blind: a blind POST on a missed-lookup is exactly the per-tick spam this fixes.
+# PLACEHOLDER_HEADER (defined with cleanup_eyes above) is both the matched
+# prefix here and the leading block of the POST body below.
+EYES_COMMENT_ID=""
+if ALL_ISSUE_COMMENTS=$(fetch_issue_comments "$REPO" "$PR_NUM"); then
+    EYES_COMMENT_ID=$(printf '%s' "$ALL_ISSUE_COMMENTS" | jq -r \
+        --arg bot_user "$BOT_USER" --arg header "$PLACEHOLDER_HEADER" \
+        '[ .[] | select(.user.login == $bot_user)
+               | select(.body | startswith($header)) ] | last | .id // empty')
+    if [ -n "$EYES_COMMENT_ID" ]; then
+        log "$PR_ID: reusing prior placeholder (comment id=$EYES_COMMENT_ID) — not stacking a new one"
+    else
+        EYES_COMMENT_ID=$(gh api "repos/$REPO/issues/$PR_NUM/comments" \
+            --method POST \
+            -f body="${PLACEHOLDER_HEADER}👀 reviewing — [sam's ai review bot](https://github.com/srosro/knightwatch-reviewer)" \
+            --jq '.id' 2>/dev/null) || EYES_COMMENT_ID=""
+        if [ -n "$EYES_COMMENT_ID" ]; then
+            log "$PR_ID: posted reviewing placeholder (comment id=$EYES_COMMENT_ID)"
+        else
+            log "$PR_ID: failed to post reviewing placeholder (continuing)"
+        fi
+    fi
 else
-    log "$PR_ID: failed to post reviewing placeholder (continuing)"
+    log "$PR_ID: could not fetch comments to check for a prior placeholder — skipping placeholder this tick (continuing)"
 fi
 
 # Align canonical's `refs/heads/$BASE_REF` with the just-fetched
