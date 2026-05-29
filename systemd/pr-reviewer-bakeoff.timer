@@ -1,8 +1,8 @@
 [Unit]
-Description=Plow PR reviewer specialist bake-off (daily at 03:30 Pacific)
+Description=Plow PR reviewer specialist bake-off (twice daily, 07:00 + 19:00 Pacific)
 
 [Timer]
-OnCalendar=*-*-* 03:30:00 America/Los_Angeles
+OnCalendar=*-*-* 07,19:00:00 America/Los_Angeles
 Persistent=false
 AccuracySec=1min
 Unit=pr-reviewer-bakeoff.service

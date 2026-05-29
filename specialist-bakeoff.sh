@@ -1,5 +1,5 @@
 #!/bin/bash
-# Daily: walk new GitHub state into ~/.pr-reviewer/bakeoff.db and
+# Twice daily (07:00/19:00 PT via systemd): walk new GitHub state into ~/.pr-reviewer/bakeoff.db and
 # regenerate ~/.pr-reviewer/specialist-bakeoff.md.
 #
 # Architecture: walker (writes to SQLite store) → reporter (queries the
