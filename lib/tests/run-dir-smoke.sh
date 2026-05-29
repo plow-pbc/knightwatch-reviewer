@@ -141,4 +141,16 @@ echo "  comments_have_reviewed_sha: no match when no bot comment carries a marke
 PLAIN=$(jq -n '[{body: "looks good to me"}, {body: "/srosro-review"}]')
 comments_have_reviewed_sha "$PLAIN" "$HEAD_SHA" && { echo "FAIL: should not match without a marker"; exit 1; } || true
 
-echo "  PASS (4 scenarios: clean allocation, collision detected, subdir-failure rollback, real failure not mislabeled + 3 comments_have_reviewed_sha)"
+echo "  seed roundtrip: a completed run with sha=HEAD is author-visible and resolves as KNOWN_SHA..."
+SEED_STATE=$(mktemp -d); SLUG="acme_widget"; PRN="42"; HEAD="cafef00dbabe"
+RID="${SLUG}__${PRN}__20260529T000000000Z__${HEAD:0:7}"
+RD="$SEED_STATE/runs/$RID"; mkdir -p "$RD"
+jq -n --arg repo "acme/widget" --arg pr_num "$PRN" --arg sha "$HEAD" \
+   '{repo: $repo, pr_num: ($pr_num|tonumber), sha: $sha, started_at: "2026-05-29T00:00:00Z"}' > "$RD/meta.json"
+# finalize as a completed, posted run (what the backstop does on skip):
+finalize_meta_json "$RD/meta.json" "2026-05-29T00:00:01Z" "completed" "true"
+is_run_author_visible "$RD" || { echo "FAIL: seeded run should be author-visible"; exit 1; }
+got=$(latest_author_visible_review_sha "$SEED_STATE" "$SLUG" "$PRN" "")
+[ "$got" = "$HEAD" ] || { echo "FAIL: seeded KNOWN_SHA — want [$HEAD] got [$got]"; exit 1; }
+
+echo "  PASS (4 scenarios: clean allocation, collision detected, subdir-failure rollback, real failure not mislabeled + 3 comments_have_reviewed_sha + 1 seed roundtrip)"

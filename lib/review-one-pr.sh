@@ -393,6 +393,29 @@ if [ "$FORCE_WHOLE_PR" != "true" ]; then
         log "$PR_ID: fetched head $FETCHED_HEAD_SHA already reviewed by concurrent worker — skipping cleanly"
         exit 0
     fi
+    # Cold-cache backstop: local runs/ shows this head un-reviewed, but the
+    # local cache may simply be empty (fresh compose project / migration /
+    # volume prune / re-clone). The PR's own posted review is the durable
+    # record. If one already covers THIS exact head, re-reviewing would post
+    # a duplicate and burn codex quota — so skip the pipeline and SEED a
+    # local run record (sha=head, completed+posted) so the gate self-heals
+    # and the next tick dedups from the warm cache. A genuine new head (no
+    # posted review for it) finds no marker and falls through to a real review.
+    if [ -n "$FETCHED_HEAD_SHA" ]; then
+        BACKSTOP_COMMENTS=$(fetch_issue_comments "$REPO" "$PR_NUM" 2>/dev/null || true)
+        if [ -n "$BACKSTOP_COMMENTS" ] && comments_have_reviewed_sha "$BACKSTOP_COMMENTS" "$FETCHED_HEAD_SHA"; then
+            log "$PR_ID: cold cache — head $FETCHED_HEAD_SHA already reviewed per GitHub; seeding run record, skipping pipeline"
+            if jq -n --arg repo "$REPO" --arg pr_num "$PR_NUM" --arg sha "$FETCHED_HEAD_SHA" \
+                    --arg started_at "$REVIEW_START_ISO" \
+                    '{repo: $repo, pr_num: ($pr_num|tonumber), sha: $sha, started_at: $started_at, backstop: true}' \
+                    > "$RUN_DIR/meta.json"; then
+                RUN_STATUS="completed"   # EXIT trap's finalize_run stamps status + posted_at → author-visible
+            else
+                log "$PR_ID: backstop seed write failed — leaving runs/ cold (will retry next tick)"
+            fi
+            exit 0
+        fi
+    fi
 fi
 
 # Post the "reviewing" placeholder NOW that the canonical fetch confirmed
