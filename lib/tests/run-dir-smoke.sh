@@ -147,6 +147,14 @@ SPOOF=$(jq -n --arg m "$(reviewed_sha_marker "$HEAD_SHA")" '[
 [ -z "$(latest_reviewed_sha_comment "$SPOOF" "$HEAD_SHA" "$BOT")" ] \
   || { echo "FAIL: a non-bot commenter must not be able to suppress review via a pasted marker"; exit 1; }
 
+echo "  latest_reviewed_sha_comment: QUOTE-INJECTION — marker in a bot review's PROSE (not the header block) does NOT match..."
+QUOTED=$(jq -n --arg m "$(reviewed_sha_marker "$HEAD_SHA")" '[
+  {user: {login: "srosro"}, created_at: "2026-05-29T10:00:00Z",
+   body: "<!-- knightwatch-reviewer:auto-post -->\n<!-- knightwatch-reviewer:reviewed-sha=feedfacecafe -->\n\n> 📋 Re-review\nProbe 1: the PR diff quotes a marker:\n```\n\($m)\n```\n"}
+]')
+[ -z "$(latest_reviewed_sha_comment "$QUOTED" "$HEAD_SHA" "$BOT")" ] \
+  || { echo "FAIL: a marker quoted in review prose must not suppress review (header-region fence)"; exit 1; }
+
 echo "  latest_reviewed_sha_comment: no match when the marker SHA differs (head moved)..."
 [ -z "$(latest_reviewed_sha_comment "$COMMENTS" "0000000000000000" "$BOT")" ] \
   || { echo "FAIL: should not match a different head"; exit 1; }
@@ -172,4 +180,4 @@ body=$(latest_author_visible_review "$SEED_STATE" "$SLUG" "$PRN" "")
 printf '%s' "$body" | grep -q "recovered prior review body" \
   || { echo "FAIL: seeded run should expose its recovered body to prior-review staging"; exit 1; }
 
-echo "  PASS (4 scenarios: clean allocation, collision detected, subdir-failure rollback, real failure not mislabeled + 4 latest_reviewed_sha_comment incl. spoof-gate + 1 seed roundtrip)"
+echo "  PASS (4 scenarios: clean allocation, collision detected, subdir-failure rollback, real failure not mislabeled + 5 latest_reviewed_sha_comment incl. spoof-gate + quote-injection-fence + 1 seed roundtrip)"

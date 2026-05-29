@@ -50,10 +50,20 @@ latest_reviewed_sha_comment() {
     local comments_json="$1" sha="$2" bot_user="$3" marker
     { [ -z "$sha" ] || [ -z "$bot_user" ]; } && return 1
     marker=$(reviewed_sha_marker "$sha") || return 1
-    printf '%s' "$comments_json" | jq -c \
-        --arg bot "$bot_user" --arg m "$marker" \
-        '[.[] | select(.user.login == $bot and ((.body // "") | contains($m)))]
-         | sort_by(.created_at) | last // empty'
+    # Match the marker ONLY in the leading HTML-comment block the worker
+    # prepends (auto-post/ai-author/bakeoff/reviewed-sha — all `<!-- … -->`
+    # lines before the first prose line), never anywhere in the body. A bot
+    # review quotes PR-controlled text in its prose; without this fence a PR
+    # author could embed a marker for a future head, get it quoted, and
+    # suppress that head's review. The marker is a full standalone line the
+    # worker emits, so exact line-equality within the header block is precise.
+    printf '%s' "$comments_json" | jq -c --arg bot "$bot_user" --arg m "$marker" '
+        [ .[]
+          | select(.user.login == $bot)
+          | (.body // "" | split("\n")) as $lines
+          | ($lines | map(test("^[[:space:]]*<!--.*-->[[:space:]]*$")) | index(false)) as $i
+          | select( ($lines[0:($i // ($lines | length))]) | any(. == $m) )
+        ] | sort_by(.created_at) | last // empty'
 }
 
 # allocate_run_dir RUN_DIR

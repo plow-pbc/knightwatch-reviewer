@@ -810,4 +810,50 @@ if [ "$PLACEHOLDER_COUNT" != "1" ]; then
     exit 1
 fi
 
-echo "  PASS (6 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + placeholder reuse anti-spam)"
+# ---- scenario 7: cold-cache backstop — bot already reviewed this head ----
+# A reviewer with a COLD runs/ cache must NOT re-review a head the bot already
+# reviewed (the duplicate-review flood). With a bot-authored reviewed-sha
+# marker for the fetched head in the comment store, the worker must skip the
+# pipeline BEFORE posting a placeholder and seed a completed, author-visible
+# run so the gate self-heals on the next tick.
+echo "  scenario: cold-cache backstop — bot reviewed-sha marker present → skip pipeline + seed run, no placeholder..."
+STORE7="$TMPDIR/comment-store-7.json"
+# Prepopulate the store with the bot's posted review for NEW_PR_SHA — marker in
+# the leading header block (the only region latest_reviewed_sha_comment trusts).
+jq -n --arg login "$BOT_USER" --arg m "<!-- knightwatch-reviewer:reviewed-sha=$NEW_PR_SHA -->" \
+  '[{id:1, user:{login:$login},
+     body:("<!-- knightwatch-reviewer:auto-post -->\n" + $m + "\n\n> 📋 Re-review\nLooks good.\n")}]' \
+  > "$STORE7"
+write_stateful_gh_stub "$HOME/.local/bin/gh" "$STORE7" "main" "$NEW_PR_SHA"
+
+STATE7="$TMPDIR/state-7"
+mkdir -p "$STATE7/runs" "$STATE7/canonical-locks" "$STATE7/locks" "$STATE7/repos" "$STATE7/workdirs"
+echo "{}" > "$STATE7/state.json"
+git clone -q "$GITHUB_BARE" "$STATE7/repos/test-org_probe-repo"
+(
+    export STATE_DIR="$STATE7" STATE_FILE="$STATE7/state.json" REPOS_DIR="$STATE7/repos"
+    export WORKDIRS_DIR="$STATE7/workdirs" CANONICAL_LOCKS_DIR="$STATE7/canonical-locks" PR_REVIEW_LOCK_DIR="$STATE7/locks"
+    write_probe_repos_conf "$STATE7/repos.conf"
+    TRIGGER_COMMENT_FILE="" \
+        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
+        "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" \
+        >/dev/null 2>&1 || true
+)
+RUN7=$(find "$STATE7/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
+[ -n "$RUN7" ] || { echo "FAIL: scenario 7 — no run dir produced"; exit 1; }
+[ "$(jq -r '.sha' "$RUN7/meta.json")" = "$NEW_PR_SHA" ] \
+  || { echo "FAIL: scenario 7 — seed meta.sha != fetched head"; cat "$RUN7/meta.json"; exit 1; }
+[ "$(jq -r '.status' "$RUN7/meta.json")" = "completed" ] \
+  || { echo "FAIL: scenario 7 — seed not marked completed (not author-visible)"; cat "$RUN7/meta.json"; exit 1; }
+[ -s "$RUN7/agents/aggregator/output.md" ] \
+  || { echo "FAIL: scenario 7 — seed missing recovered output.md"; exit 1; }
+grep -q "cold cache .* seeding run record" "$RUN7/run.log" \
+  || { echo "FAIL: scenario 7 — run.log missing cold-cache skip line"; cat "$RUN7/run.log"; exit 1; }
+# Decisive: the worker skipped BEFORE posting a placeholder — no new comment
+# beyond the prepopulated review (the flood + the visible "reviewing" churn
+# are both averted).
+PH7=$(jq '[.[] | select(.body | contains("knightwatch-reviewer:placeholder"))] | length' "$STORE7")
+[ "$PH7" = "0" ] \
+  || { echo "FAIL: scenario 7 — backstop posted a placeholder ($PH7) instead of skipping before it"; exit 1; }
+
+echo "  PASS (7 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + placeholder reuse anti-spam + cold-cache backstop skip+seed)"

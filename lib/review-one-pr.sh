@@ -420,16 +420,22 @@ if [ "$FORCE_WHOLE_PR" != "true" ]; then
                 # the real review's created_at, not now, so a slash-command trigger
                 # posted after that review still clears review.sh's
                 # created_at>started_at cutoff and re-reviews next tick.
+                #
+                # All-or-nothing: only mark the run author-visible (RUN_STATUS
+                # =completed → EXIT-trap finalize_run stamps it) if BOTH the
+                # recovered body and meta.json land. A partial write leaves
+                # RUN_STATUS=aborted → not author-visible → next tick retries,
+                # never a completed run whose prior-body lookup is empty.
                 BACKSTOP_STARTED=$(printf '%s' "$BACKSTOP_MATCH" | jq -r '.created_at')
-                mkdir -p "$RUN_DIR/agents/aggregator"
-                printf '%s' "$BACKSTOP_MATCH" | jq -r '.body' > "$RUN_DIR/agents/aggregator/output.md"
-                if jq -n --arg repo "$REPO" --arg pr_num "$PR_NUM" --arg sha "$FETCHED_HEAD_SHA" \
+                if mkdir -p "$RUN_DIR/agents/aggregator" \
+                    && printf '%s' "$BACKSTOP_MATCH" | jq -r '.body' > "$RUN_DIR/agents/aggregator/output.md" \
+                    && jq -n --arg repo "$REPO" --arg pr_num "$PR_NUM" --arg sha "$FETCHED_HEAD_SHA" \
                         --arg started_at "$BACKSTOP_STARTED" \
                         '{repo: $repo, pr_num: ($pr_num|tonumber), sha: $sha, started_at: $started_at}' \
                         > "$RUN_DIR/meta.json"; then
-                    RUN_STATUS="completed"   # EXIT-trap finalize_run stamps status=completed → author-visible
+                    RUN_STATUS="completed"
                 else
-                    log "$PR_ID: backstop seed write failed — leaving runs/ cold (will retry next tick)"
+                    log "$PR_ID: backstop seed write failed — leaving run non-author-visible (will retry next tick)"
                 fi
                 exit 0
             fi
