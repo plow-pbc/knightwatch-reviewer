@@ -41,6 +41,7 @@ trap 'rm -rf "$TMPDIR"' EXIT
 export STATE_DIR="$TMPDIR/state"
 export STATE_FILE="$STATE_DIR/state.json"
 export LOG_FILE="$STATE_DIR/orchestrator.log"
+export COMMENT_FETCH_LOG="$STATE_DIR/comment-fetch.log"
 export REPOS_DIR="$STATE_DIR/repos"
 export WORKDIRS_DIR="$STATE_DIR/workdirs"
 mkdir -p "$STATE_DIR" "$REPOS_DIR" "$WORKDIRS_DIR"
@@ -96,7 +97,12 @@ if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
         fi
     done
     if [ "$repo" = "cncorp/plow" ]; then
-        echo '[{"number":1,"title":"Test PR","headRefName":"feat/test","headRefOid":"abc123"}]'
+        # updatedAt defaults to a fresh, unique value so it never matches a
+        # watermark a prior scenario's idle-skip wrote — existing scenarios
+        # are thus unaffected by the gate. The idle-skip scenarios override
+        # MOCK_PR_UPDATED_AT to a fixed value to exercise the gate.
+        upd="${MOCK_PR_UPDATED_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ).$RANDOM}"
+        echo "[{\"number\":1,\"title\":\"Test PR\",\"headRefName\":\"feat/test\",\"headRefOid\":\"abc123\",\"updatedAt\":\"$upd\"}]"
     else
         echo '[]'
     fi
@@ -112,6 +118,9 @@ elif [ "$1" = "api" ]; then
         esac
     done
     if [[ "$url" == */issues/*/comments* ]]; then
+        # Count comment-fetches so the idle-skip scenarios can assert the
+        # gate avoided the core gh call entirely.
+        [ -n "${COMMENT_FETCH_LOG:-}" ] && echo "FETCH $url" >> "$COMMENT_FETCH_LOG"
         # Pagination-aware mode: when MOCK_COMMENTS_PAGE1_FILE is set,
         # emit page 1 always and emit page 2 ONLY if --paginate is in
         # args AND MOCK_COMMENTS_PAGE2_FILE is set. Lets scenario 13
@@ -282,10 +291,17 @@ export MOCK_TRUSTED_USERS="srosro someuser"
 
 run_orchestrator() {
     : > "$LOG_FILE"   # reset
+    : > "$COMMENT_FETCH_LOG"
     # ENUMERATE_SECS=0 forces a queue refresh every invocation (the floor is
     # always elapsed), so each scenario re-enumerates and re-evaluates its own
     # MOCK_COMMENTS from scratch rather than consuming a prior scenario's queue.
     ENUMERATE_SECS=0 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
+}
+
+count_comment_fetches() {
+    local n
+    n=$(grep -c '^FETCH ' "$COMMENT_FETCH_LOG" 2>/dev/null || true)
+    echo "${n:-0}"
 }
 
 count_dispatches() {
@@ -887,4 +903,56 @@ if ! grep -qE 'dispatcher_tick=20[0-9][0-9]-[01][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5
     exit 1
 fi
 
-echo "  PASS (19 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough)"
+# Scenario 20: idle-skip gate — an already-reviewed PR whose head we've
+# reviewed AND whose updatedAt is unchanged since we last evaluated it must
+# NOT trigger a comment-fetch. This is the fix for the per-tick comment-fetch
+# storm that tripped GitHub's secondary rate limit: a watermark equal to the
+# enumerated updatedAt + a matching head means nothing changed, so the gate
+# skips before the core gh call.
+echo "  scenario 20: reviewed head + unchanged updatedAt → comment-fetch skipped (idle-skip gate)..."
+unset MOCK_COMMENTS_PAGE1_FILE MOCK_COMMENTS_PAGE2_FILE
+export MOCK_COMMENTS_FILE="$TMPDIR/comments.json"
+clear_seeded_runs
+seed_run "cncorp_plow" "1" "20260429T100000000Z" "abc123" "COMMENT" >/dev/null
+# Seed the watermark in the SHARED STATE_DIR while pointing LOCAL_STATE_DIR at
+# a distinct empty dir — so a regression that reads the cache from the
+# per-container LOCAL_STATE_DIR would miss the watermark, fail to skip, and
+# trip the fetch assertion below. Fences the shared-seam contract.
+mkdir -p "$STATE_DIR/seen-updated"
+printf '%s' "2026-05-20T00:00:00Z" > "$STATE_DIR/seen-updated/cncorp_plow__1"
+export LOCAL_STATE_DIR="$TMPDIR/local-distinct-20"; mkdir -p "$LOCAL_STATE_DIR"
+echo "[]" > "$MOCK_COMMENTS_FILE"
+export MOCK_PR_UPDATED_AT="2026-05-20T00:00:00Z"   # equals the watermark
+run_orchestrator
+unset MOCK_PR_UPDATED_AT LOCAL_STATE_DIR
+fetches=$(count_comment_fetches)
+if [ "$fetches" -ne 0 ]; then
+    echo "FAIL scenario 20 (idle-skip gate): expected 0 comment-fetches when head reviewed + updatedAt unchanged, got $fetches"
+    echo "--- comment-fetch log ---"; cat "$COMMENT_FETCH_LOG"
+    exit 1
+fi
+n=$(count_dispatches)
+if [ "$n" -ne 0 ]; then
+    echo "FAIL scenario 20: expected 0 dispatches on idle-skip, got $n"; cat "$LOG_FILE"; exit 1
+fi
+
+# Scenario 21: gate must NOT over-skip — when updatedAt has moved (a new
+# comment or commit bumps it), the comment-fetch must still happen so a
+# /srosro-* trigger isn't silently lost. Stale watermark + newer enumerated
+# updatedAt → fetch.
+echo "  scenario 21: reviewed head + CHANGED updatedAt → comment-fetch happens (no over-skip)..."
+clear_seeded_runs
+seed_run "cncorp_plow" "1" "20260429T100000000Z" "abc123" "COMMENT" >/dev/null
+printf '%s' "2026-05-20T00:00:00Z" > "$STATE_DIR/seen-updated/cncorp_plow__1"   # stale
+echo "[]" > "$MOCK_COMMENTS_FILE"
+export MOCK_PR_UPDATED_AT="2026-05-21T00:00:00Z"   # newer than the watermark
+run_orchestrator
+unset MOCK_PR_UPDATED_AT
+fetches=$(count_comment_fetches)
+if [ "$fetches" -lt 1 ]; then
+    echo "FAIL scenario 21 (gate over-skip regression): expected >=1 comment-fetch when updatedAt changed, got $fetches — a moved updatedAt must defeat the idle-skip so triggers aren't lost"
+    echo "--- comment-fetch log ---"; cat "$COMMENT_FETCH_LOG"
+    exit 1
+fi
+
+echo "  PASS (21 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches)"
