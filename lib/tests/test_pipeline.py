@@ -990,7 +990,7 @@ class TestRunPipeline(unittest.TestCase):
         })
         rc = self._run()
         self.assertEqual(rc, 0)
-        # All 8 specialists ran
+        # All specialists ran
         for specialist in pipeline.SPECIALISTS:
             self.assertTrue((self.run_dir / "agents" / specialist / "output.md").exists())
             self.assertTrue((self.run_dir / "agents" / f"critic-{specialist}" / "output.md").exists())
@@ -1081,7 +1081,7 @@ class TestRunPipeline(unittest.TestCase):
 
     @patch("pipeline.subprocess.Popen")
     def test_wave_b_runs_specialists_concurrently(self, mock_popen):
-        """Wave B's 8-specialist fan-out must run concurrently. Pick two
+        """Wave B's specialist fan-out must run concurrently. Pick two
         deterministic specialists (security, shape) and gate them
         on a shared Barrier(2). Serial Wave B regression → first stub
         blocks alone → BrokenBarrierError → run fails."""

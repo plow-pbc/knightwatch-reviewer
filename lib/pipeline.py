@@ -528,7 +528,7 @@ def run_pipeline(
     _relink(scratch / "dead-code.md", run / "agents" / "dead-code-search" / "output.md")
     log(f"{pr_id}: Wave A complete: {intent_text}")
 
-    # Wave B: 8 specialists + (momentum if re-review) in parallel. Momentum
+    # Wave B: all SPECIALISTS + (momentum if re-review) in parallel. Momentum
     # reads inferred-intent.md (Wave A) but no specialist output, so it can
     # run alongside the specialists.
     prev_review = run / "inputs" / "previous-review.md"
