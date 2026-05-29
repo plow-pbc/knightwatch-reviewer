@@ -7,6 +7,18 @@
 SPECIALIST_NAME_RE='[a-z][a-z0-9-]*'   # single name: data-integrity, arch-v2
 SPECIALIST_LIST_RE='[a-z][a-z0-9,-]*'  # comma-separated list: a,b,c
 
+# Specialist-name rename seam. Historical reviews inside the scorecard
+# window still carry the pre-rename name in their roster/probe/props/
+# critique markers; canonicalize at ingest so a rewalk maps them to the
+# current name instead of re-creating a phantom lane after the at-rest DB
+# migration (lib/bakeoff-store.sh) already folded that review. Operates on
+# a one-name-per-line stream; every name-emitting parser below routes
+# through it, so the rename lives in exactly one place. Add future renames
+# as additional `s/old/new/` rules here.
+canonicalize_specialist_names() {
+    sed -E 's/^architecture-v2$/contract-drift/'
+}
+
 # count_attributions: read review body(ies) on stdin, emit one specialist
 # name per probe's RENDERED attribution slot. Anchored to the documented
 # probe-line shape from prompts/aggregator.md step 6:
@@ -18,6 +30,7 @@ SPECIALIST_LIST_RE='[a-z][a-z0-9,-]*'  # comma-separated list: a,b,c
 count_attributions() {
     grep -oE "^[0-9]+\. \[[^]]+\] \[from: ${SPECIALIST_NAME_RE}\]" \
         | sed -E "s/.*\[from: (${SPECIALIST_NAME_RE})\]/\1/" \
+        | canonicalize_specialist_names \
         || true
 }
 
@@ -72,7 +85,8 @@ extract_roster_marker() {
     grep -oE "$ROSTER_MARKER_REGEX" \
         | sed -E "s/.*specialists=(${SPECIALIST_LIST_RE}).*/\1/" \
         | tr ',' '\n' \
-        | grep -v '^$' || true
+        | grep -v '^$' \
+        | canonicalize_specialist_names || true
 }
 
 # Extracts the directly-targeted specialist from the leading `[from: X]`
@@ -83,6 +97,7 @@ extract_props_attributions() {
     local prefix="${BOT_CMD_PREFIX:-srosro}"
     grep -oE "^/${prefix}-props \[from: ${SPECIALIST_NAME_RE}\]" \
         | sed -E "s/^.*\[from: (${SPECIALIST_NAME_RE})\]/\1/" \
+        | canonicalize_specialist_names \
         | sort -u || true
 }
 
@@ -94,6 +109,7 @@ extract_critique_attributions() {
     local prefix="${BOT_CMD_PREFIX:-srosro}"
     grep -oE "^/${prefix}-critique \[from: ${SPECIALIST_NAME_RE}\]" \
         | sed -E "s/^.*\[from: (${SPECIALIST_NAME_RE})\]/\1/" \
+        | canonicalize_specialist_names \
         | sort -u || true
 }
 

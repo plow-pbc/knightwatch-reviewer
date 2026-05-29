@@ -251,7 +251,7 @@ class TestRunCodex(unittest.TestCase):
         """Liveness must track BOTH codex streams, not stdout alone. Codex
         (v0.133.0, reasoning-summaries off) streams all live tool/reasoning
         activity to stderr (err.txt) and writes stdout (log.txt) only at the
-        final answer. An investigation agent (dead-code-search/architecture-v2)
+        final answer. An investigation agent (dead-code-search/contract-drift)
         whose work legitimately runs past the staleness threshold leaves
         log.txt frozen the whole time while err.txt grows continuously —
         watching log.txt alone kills a healthy, productive process (the
@@ -990,7 +990,7 @@ class TestRunPipeline(unittest.TestCase):
         })
         rc = self._run()
         self.assertEqual(rc, 0)
-        # All 8 specialists ran
+        # All specialists ran
         for specialist in pipeline.SPECIALISTS:
             self.assertTrue((self.run_dir / "agents" / specialist / "output.md").exists())
             self.assertTrue((self.run_dir / "agents" / f"critic-{specialist}" / "output.md").exists())
@@ -1081,7 +1081,7 @@ class TestRunPipeline(unittest.TestCase):
 
     @patch("pipeline.subprocess.Popen")
     def test_wave_b_runs_specialists_concurrently(self, mock_popen):
-        """Wave B's 8-specialist fan-out must run concurrently. Pick two
+        """Wave B's specialist fan-out must run concurrently. Pick two
         deterministic specialists (security, shape) and gate them
         on a shared Barrier(2). Serial Wave B regression → first stub
         blocks alone → BrokenBarrierError → run fails."""
