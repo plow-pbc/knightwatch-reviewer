@@ -398,21 +398,30 @@ if [ "$FORCE_WHOLE_PR" != "true" ]; then
     # volume prune / re-clone). The PR's own posted review is the durable
     # record. If one already covers THIS exact head, re-reviewing would post
     # a duplicate and burn codex quota — so skip the pipeline and SEED a
-    # local run record (sha=head, completed+posted) so the gate self-heals
+    # local run record (sha=head, status=completed) so the gate self-heals
     # and the next tick dedups from the warm cache. A genuine new head (no
     # posted review for it) finds no marker and falls through to a real review.
     if [ -n "$FETCHED_HEAD_SHA" ]; then
-        BACKSTOP_COMMENTS=$(fetch_issue_comments "$REPO" "$PR_NUM" 2>/dev/null || true)
-        if [ -n "$BACKSTOP_COMMENTS" ] && comments_have_reviewed_sha "$BACKSTOP_COMMENTS" "$FETCHED_HEAD_SHA"; then
-            log "$PR_ID: cold cache — head $FETCHED_HEAD_SHA already reviewed per GitHub; seeding run record, skipping pipeline"
-            if jq -n --arg repo "$REPO" --arg pr_num "$PR_NUM" --arg sha "$FETCHED_HEAD_SHA" \
-                    --arg started_at "$REVIEW_START_ISO" \
-                    '{repo: $repo, pr_num: ($pr_num|tonumber), sha: $sha, started_at: $started_at, backstop: true}' \
-                    > "$RUN_DIR/meta.json"; then
-                RUN_STATUS="completed"   # EXIT trap's finalize_run stamps status + posted_at → author-visible
-            else
-                log "$PR_ID: backstop seed write failed — leaving runs/ cold (will retry next tick)"
+        # Fail loud on a gh outage — an empty/failed fetch must NOT be read as
+        # "no marker → re-review": that re-opens the exact cold-start flood this
+        # backstop exists to prevent. Match review.sh + the placeholder path in
+        # this file: skip this tick, let the next one retry. (The usual "lean
+        # looser" default is inverted here — the loose read re-creates the bug.)
+        if BACKSTOP_COMMENTS=$(fetch_issue_comments "$REPO" "$PR_NUM"); then
+            if comments_have_reviewed_sha "$BACKSTOP_COMMENTS" "$FETCHED_HEAD_SHA"; then
+                log "$PR_ID: cold cache — head $FETCHED_HEAD_SHA already reviewed per GitHub; seeding run record, skipping pipeline"
+                if jq -n --arg repo "$REPO" --arg pr_num "$PR_NUM" --arg sha "$FETCHED_HEAD_SHA" \
+                        --arg started_at "$REVIEW_START_ISO" \
+                        '{repo: $repo, pr_num: ($pr_num|tonumber), sha: $sha, started_at: $started_at, backstop: true}' \
+                        > "$RUN_DIR/meta.json"; then
+                    RUN_STATUS="completed"   # EXIT-trap finalize_run stamps status=completed → author-visible
+                else
+                    log "$PR_ID: backstop seed write failed — leaving runs/ cold (will retry next tick)"
+                fi
+                exit 0
             fi
+        else
+            log "$PR_ID: backstop comments fetch failed — skipping this tick rather than risking a cold-cache re-review flood"
             exit 0
         fi
     fi
