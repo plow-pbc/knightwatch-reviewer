@@ -1,10 +1,10 @@
 #!/bin/bash
-# Orchestrator: enumerate eligible PRs across all tracked repos and fan out
-# per-PR reviews via lib/review-one-pr.sh. Up to MAX_CONCURRENT reviews run
-# concurrently per service tick. Per-PR locking is handled by the worker.
+# Orchestrator: enumerate eligible PRs across all tracked repos and review
+# each one synchronously via lib/review-one-pr.sh — one in-flight review per
+# tick (review-loop.sh sets the cadence). Per-PR locking is handled by the worker.
 #
-# Shebang note: this entrypoint runs only on the production Linux host
-# under pr-reviewer.service. It deliberately uses /bin/bash (NOT
+# Shebang note: this entrypoint runs in the reviewer container under
+# review-loop.sh. It deliberately uses /bin/bash (NOT
 # /usr/bin/env bash) because $HOME/.local is writable per
 # ReadWritePaths — a writable-interpreter resolution path. Hard-coding
 # /bin/bash blocks the writable-PATH attack regardless of $PATH order.
@@ -21,7 +21,6 @@ LOG_FILE="${LOG_FILE:-$STATE_DIR/orchestrator.log}"
 REPOS_DIR="${REPOS_DIR:-$STATE_DIR/repos}"
 WORKDIRS_DIR="${WORKDIRS_DIR:-$STATE_DIR/workdirs}"
 STABLE_SECS="${STABLE_SECS:-3600}"
-MAX_CONCURRENT="${MAX_CONCURRENT:-4}"
 
 # Tracked-repo manifest (REPOS array + KID_PATHS assoc array). Single
 # source of truth at repos.conf — adding a repo only edits one file.
@@ -34,11 +33,6 @@ REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 . "$REVIEWER_LIB_DIR/tracked-repos.sh"
 . "$REVIEWER_LIB_DIR/gh-comments.sh"
 [ ${#REPOS[@]} -ge 1 ] || { echo "FATAL: no tracked repos — populate $STATE_DIR/repos.conf or set REPOS in config.env" >&2; exit 1; }
-# Container entrypoint (review-loop.sh) pins one in-flight review per account.
-# Re-assert AFTER config.env is sourced (just above, via tracked-repos.sh) so a
-# stray legacy MAX_CONCURRENT/WAIT_FOR_WORKERS in config.env can't silently break
-# the container contract. The host/systemd path leaves the sentinel unset.
-if [ -n "${REVIEWER_CONTAINER_MODE:-}" ]; then MAX_CONCURRENT=1; WAIT_FOR_WORKERS=1; fi
 BOT_USER="${BOT_USER:-srosro}"
 BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
 # Hidden HTML-comment marker prepended to every auto-post by this repo
@@ -105,14 +99,13 @@ WORKER_TIMEOUT="${WORKER_TIMEOUT:-90m}"
 # hard kill. (Codex setsid's into its own session and escapes timeout's
 # process-group signal entirely — that residual is accepted, not fixed here.)
 WORKER_KILL_AFTER="${WORKER_KILL_AFTER:-30s}"
-log "Fan-out: max $MAX_CONCURRENT concurrent, per-worker timeout $WORKER_TIMEOUT (kill-after $WORKER_KILL_AFTER)"
+log "Reviewing one PR at a time, per-worker timeout $WORKER_TIMEOUT (kill-after $WORKER_KILL_AFTER)"
 
 # Single-pass: enumerate PRs and dispatch eligible ones inline. No
 # tab-delimited spec serialization, no field-shift attack surface —
 # shell variable boundaries are explicit when the worker is invoked
 # directly with positional args + env vars. Per-PR flock in
 # lib/review-one-pr.sh prevents duplicate-dispatch races.
-active=0
 dispatched=0
 ALL_PRS=$(enumerate_open_prs) || {
     log "Failed to enumerate open PRs (batched graphql or per-repo fallthrough — see prior errors)"
@@ -332,57 +325,37 @@ while IFS= read -r PR_JSON; do
         printf 'Comment by @%s:\n\n%s\n' "$TRIGGER_USER" "$TRIGGER_BODY" > "$TRIGGER_FILE"
     fi
 
-    # Throttle to MAX_CONCURRENT in-flight workers per tick. We don't
-    # track outcomes here — workers detach (KillMode=process on the
-    # unit) and the next tick runs regardless of this tick's per-worker
-    # results. Per-worker outcomes live in $STATE_DIR/runs/<id>/run.log
-    # and the systemd journal.
-    while [ "$active" -ge "$MAX_CONCURRENT" ]; do
-        wait -n || true
-        active=$((active - 1))
-    done
-
-    # Container mode: if the worker that just drained hit a codex cap (wrote a
-    # future quota-paused-until), stop claiming more PRs THIS tick. review-loop.sh
-    # only re-checks the pause between ticks, so without this a capped account
-    # would quota-abort every remaining eligible PR before the loop pauses.
-    if [ -n "${REVIEWER_CONTAINER_MODE:-}" ] \
-       && [ "$(date +%s)" -lt "$(head -n1 "$LOCAL_STATE_DIR/quota-paused-until" 2>/dev/null || echo 0)" ]; then
-        log "codex quota hit — stopping further claims this tick (paused until the reset window)"
-        break
-    fi
-
-    # Absolute wall-clock deadline of the outer `timeout $WORKER_TIMEOUT`
-    # wrap. pipeline.py reads this to decide whether a stale-kill retry
-    # fits under the worker cap — `just test` (up to 30 min), Wave A,
-    # and earlier specialists all eat into the same budget.
+    # Run the review synchronously — one in-flight review per tick
+    # (review-loop.sh sets the cadence; the container pins a single account to
+    # one review at a time). WORKER_DEADLINE_EPOCH is the absolute wall-clock
+    # deadline of the `timeout $WORKER_TIMEOUT` wrap; pipeline.py reads it to
+    # decide whether a stale-kill retry fits under the cap. `timeout -k` bounds
+    # the worker so a wedged one can't hold the per-PR flock past its ceiling,
+    # and `|| true` keeps a failed/timed-out review from aborting the tick.
+    # Per-worker outcomes live in $STATE_DIR/runs/<id>/run.log.
     worker_secs=$(timeout_duration_seconds "$WORKER_TIMEOUT")
     TRIGGER_COMMENT_FILE="$TRIGGER_FILE" \
     DISPATCHER_TICK_AT="$TICK_FETCHED_AT_ISO" \
     REVIEWER_LIB_DIR="$REVIEWER_LIB_DIR" \
     WORKER_DEADLINE_EPOCH="$(( $(date +%s) + worker_secs ))" \
         timeout -k "$WORKER_KILL_AFTER" "$WORKER_TIMEOUT" "$REVIEWER_LIB_DIR/review-one-pr.sh" \
-        "$REPO" "$PR_NUM" "$PR_SHA" "$PR_BRANCH" "$PR_TITLE" "$FORCE_WHOLE_PR" &
-    active=$((active + 1))
+        "$REPO" "$PR_NUM" "$PR_SHA" "$PR_BRANCH" "$PR_TITLE" "$FORCE_WHOLE_PR" || true
     dispatched=$((dispatched + 1))
+
+    # If that review hit a codex cap (wrote a future quota-paused-until), stop
+    # claiming more PRs this tick — review-loop.sh only re-checks the pause
+    # between ticks, so without this a capped account would quota-abort every
+    # remaining eligible PR before the loop pauses.
+    if [ -n "${REVIEWER_CONTAINER_MODE:-}" ] \
+       && [ "$(date +%s)" -lt "$(head -n1 "$LOCAL_STATE_DIR/quota-paused-until" 2>/dev/null || echo 0)" ]; then
+        log "codex quota hit — stopping further claims this tick (paused until the reset window)"
+        break
+    fi
 done < <(echo "$ALL_PRS" | jq -c '.[]')
 
-# Detached fan-out: workers run past this script's exit (KillMode=process
-# on the systemd unit; children reparent to PID 1). We don't wait —
-# enumerate + dispatch is the orchestrator's job, per-worker outcomes
-# land in $STATE_DIR/runs/<id>/run.log. Without detach, the next 2-min
-# timer tick would block on the slowest worker (15–20 min in prod).
 if [ "$dispatched" -eq 0 ]; then
     log "No PRs need review"
 else
-    log "Fan-out: dispatched $dispatched worker(s) (detached, running in background)"
-fi
-# Containerized deployment (review-loop.sh) sets WAIT_FOR_WORKERS so this
-# tick blocks until its dispatched workers finish before returning to the
-# poll loop — that's what caps a single OpenAI account to one in-flight
-# review. The systemd path leaves it unset and keeps the detached fan-out
-# (workers survive via KillMode=process; the next timer tick is independent).
-if [ -n "${WAIT_FOR_WORKERS:-}" ]; then
-    wait
+    log "Reviewed $dispatched PR(s) this tick"
 fi
 exit 0

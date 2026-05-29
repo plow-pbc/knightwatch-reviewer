@@ -301,29 +301,12 @@ count_comment_fetches() {
 }
 
 count_dispatches() {
-    # Workers fan out via `timeout ... worker.sh ... &` in review.sh
-    # and write WORKER_DISPATCHED lines asynchronously after the
-    # orchestrator has already exited. A synchronous grep beats the
-    # write on fast machines, producing flaky 0-counts on dispatch
-    # scenarios. Read the orchestrator's own promise (its
-    # synchronously-logged "Fan-out: dispatched N worker(s)" line) and
-    # poll until N writes show up — capped so 0-dispatch scenarios stay
-    # fast (orchestrator promised 0 → return 0 immediately, no wait).
-    local promised actual
-    promised=$(grep -oE 'dispatched [0-9]+ worker' "$LOG_FILE" 2>/dev/null \
-                  | grep -oE '[0-9]+' | tail -1)
-    promised="${promised:-0}"
-    if [ "$promised" -eq 0 ]; then
-        echo 0
-        return
-    fi
-    for _ in $(seq 1 50); do   # up to ~5s
-        actual=$(grep -c '^WORKER_DISPATCHED ' "$LOG_FILE" 2>/dev/null || true)
-        actual="${actual:-0}"
-        [ "$actual" -ge "$promised" ] && break
-        sleep 0.1
-    done
-    echo "$actual"
+    # review.sh runs each worker SYNCHRONOUSLY now, so the stub's
+    # WORKER_DISPATCHED line is written before review.sh exits — no async race
+    # to poll for (the old detached fan-out needed a promise-parse + wait loop).
+    local n
+    n=$(grep -c '^WORKER_DISPATCHED ' "$LOG_FILE" 2>/dev/null || true)
+    echo "${n:-0}"
 }
 
 # Scenario 1: same SHA, no comments → no dispatch
@@ -494,77 +477,35 @@ if [ "$n" -ne 0 ]; then
     exit 1
 fi
 
-# Scenario 9: orchestrator returns quickly even when a worker is still
-# running. Pre-detach behavior had the orchestrator `wait` for every
-# forked worker before exiting, so a slow worker (15–20 min in
-# production) blocked the next 2-min timer firing and made
-# /srosro-update-review pickup unboundedly slow. With the post-fan-out
-# `wait` loop removed, the orchestrator must dispatch the worker and
-# return promptly, regardless of worker runtime.
-echo "  scenario 9: slow worker — orchestrator returns within 5s, worker keeps running..."
-# Replace the worker stub with one that sleeps "indefinitely" (long
-# enough that the orchestrator's `wait` would block the test if it
-# regressed). The stub writes its own PID so the test can kill the
-# exact process at cleanup time — `pkill -f "sleep 60"` is too broad
-# (would match unrelated `sleep 60` processes on a shared CI box).
-WORKER_MARKER="$TMPDIR/worker-started.flag"
-WORKER_PID_FILE="$TMPDIR/worker.pid"
+# Scenario 9: the orchestrator runs each review SYNCHRONOUSLY — it returns only
+# AFTER the worker exits, never before. The old detached/no-wait fan-out was
+# retired with the host reviewer (review-loop.sh pins one in-flight review per
+# account); review.sh no longer backgrounds workers. A regression that re-added
+# `&` would let review.sh return while the worker still ran.
+echo "  scenario 9: orchestrator runs the worker synchronously (returns only after it exits)..."
+clear_seeded_runs
+seed_run "cncorp_plow" "1" "20260429T100000000Z" "abc123" "COMMENT" >/dev/null
+rm -f "$STATE_DIR/seen-updated/cncorp_plow__1"   # don't let the idle-skip gate short-circuit
+WORKER_DONE_FLAG="$TMPDIR/worker-done.flag"
+rm -f "$WORKER_DONE_FLAG"
 cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<WORKER
 #!/bin/bash
-echo "WORKER_DISPATCHED repo=\$1 pr=\$2 sha=\$3 force_whole=\$6 trigger_file=\${TRIGGER_COMMENT_FILE:-}" >> "$LOG_FILE"
-echo \$\$ > "$WORKER_PID_FILE"
-touch "$WORKER_MARKER"
-exec sleep 60   # exec preserves PID so reap_worker hits the actual sleeper, not the wrapper shell
+echo "WORKER_DISPATCHED repo=\$1 pr=\$2 sha=\$3 force_whole=\$6" >> "$LOG_FILE"
+sleep 2
+touch "$WORKER_DONE_FLAG"
 WORKER
 chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
 
-reap_worker() {
-    [ -f "$WORKER_PID_FILE" ] || return 0
-    local pid; pid=$(cat "$WORKER_PID_FILE")
-    [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
-}
-
 printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
-
-# Time the orchestrator. If it returns in <5s the wait was correctly
-# dropped; if it sits at 60s the regression is back.
 : > "$LOG_FILE"
 START=$(date +%s)
-bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 &
-ORCH_PID=$!
-# Cap the test at 10s so a regression doesn't hang CI for a full minute.
-TIMEOUT=10
-ELAPSED=0
-while kill -0 "$ORCH_PID" 2>/dev/null; do
-    sleep 1
-    ELAPSED=$((ELAPSED + 1))
-    if [ "$ELAPSED" -ge "$TIMEOUT" ]; then
-        kill "$ORCH_PID" 2>/dev/null
-        echo "FAIL scenario 9 (wait-loop regression): orchestrator did not return within ${TIMEOUT}s — likely waiting on the slow worker"
-        echo "--- log ---"; cat "$LOG_FILE"
-        # Reap the still-running worker so the trap's rm -rf can run.
-        pkill -P "$ORCH_PID" 2>/dev/null || true
-        reap_worker
-        exit 1
-    fi
-done
-END=$(date +%s)
-ORCH_ELAPSED=$((END - START))
+bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1
+ORCH_ELAPSED=$(( $(date +%s) - START ))
 
-[ "$ORCH_ELAPSED" -lt 5 ] || { reap_worker; echo "FAIL scenario 9: orchestrator took ${ORCH_ELAPSED}s, expected <5s"; cat "$LOG_FILE"; exit 1; }
-
-# Sanity: the worker actually got dispatched.
-[ -f "$WORKER_MARKER" ] || { reap_worker; echo "FAIL scenario 9: worker never started — orchestrator may have errored before fan-out"; cat "$LOG_FILE"; exit 1; }
-
-# Liveness: scenario 9 claims "worker keeps running." Verify the worker
-# PID is actually still alive AFTER the orchestrator exited. Catches a
-# regression where (e.g.) cgroup-kill on orchestrator exit would leave
-# WORKER_MARKER touched but the sleep dead.
-WORKER_PID=$(cat "$WORKER_PID_FILE")
-[ -n "$WORKER_PID" ] && kill -0 "$WORKER_PID" 2>/dev/null || { reap_worker; echo "FAIL scenario 9 (worker-died-with-orchestrator regression): worker PID '$WORKER_PID' is no longer alive after orchestrator exit"; exit 1; }
-
-# Reap the sleeping worker so the test exits cleanly.
-reap_worker
+# The worker sleeps 2s before touching the done-flag. If review.sh backgrounded
+# it (regression), review.sh would return in <1s with the flag absent.
+[ -f "$WORKER_DONE_FLAG" ] || { echo "FAIL scenario 9 (synchronous-worker regression): review.sh returned before the worker finished — the worker was backgrounded, not run inline"; cat "$LOG_FILE"; exit 1; }
+[ "$ORCH_ELAPSED" -ge 2 ] || { echo "FAIL scenario 9: review.sh returned in ${ORCH_ELAPSED}s (<2s) — it did not wait for the 2s worker"; cat "$LOG_FILE"; exit 1; }
 
 # Scenario 10: per-PR flock provides mutual exclusion across separate
 # review-one-pr.sh invocations. Calls acquire_pr_lock() (the same
@@ -627,12 +568,11 @@ touch "$HOLDER_RELEASE"
 wait "$HOLDER_PID" 2>/dev/null
 ( . "$REVIEWER_LIB_DIR/locking.sh" && acquire_pr_lock "$LOCK_TEST_STATE_DIR" "test_repo__1" ) || { echo "FAIL scenario 10: post-release acquire failed; lock may be stuck"; exit 1; }
 
-# Scenario 11: review.sh fails LOUD if the worker script is missing
-# or not executable. With detached fan-out, `bash worker &` returns 0
-# regardless of whether the worker actually started, so an accidental
-# `chmod -x` or a missing symlink would silently produce "dispatched N
-# worker(s)" while no review ran. The pre-fan-out executable check
-# catches that class.
+# Scenario 11: review.sh fails LOUD if the worker script is missing or not
+# executable. The synchronous worker call ends in `|| true` (so a failed or
+# timed-out review doesn't abort the rest of the tick), which would ALSO
+# swallow a non-executable worker's failure — silently logging "Reviewed N
+# PR(s)" while no review ran. The pre-dispatch executable check catches that.
 echo "  scenario 11: missing/non-executable worker — orchestrator fails loud, no dispatch..."
 chmod -x "$REVIEWER_LIB_DIR/review-one-pr.sh"
 printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
@@ -645,14 +585,14 @@ fi
 grep -q "FATAL: $REVIEWER_LIB_DIR/review-one-pr.sh missing or not executable" "$LOG_FILE" || { chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"; echo "FAIL scenario 11: expected FATAL log line about missing worker"; cat "$LOG_FILE"; exit 1; }
 chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"   # restore for any later scenario
 
-# Scenario 12: per-worker WORKER_TIMEOUT bounds wedged-worker risk. With
-# detached workers, the service-level TimeoutStartSec=90min no longer caps
-# worker runtime — a hung Codex/test phase could hold the per-PR flock
-# indefinitely. review.sh wraps each worker with `timeout -k "$WORKER_KILL_AFTER"`,
-# so the ceiling escalates SIGTERM → SIGKILL. This drives a worker that IGNORES
-# SIGTERM (the real wedge — a bare SIGTERM leaves it running, the cascade the
-# deleted /unstick recipe used to clear by hand) and asserts the kill-after
-# SIGKILL reaps it. Also fences the operator-facing "per-worker timeout" log.
+# Scenario 12: per-worker WORKER_TIMEOUT bounds wedged-worker risk. A hung
+# Codex/test phase would otherwise hold the per-PR flock — and block the
+# synchronous tick — indefinitely. review.sh wraps each worker with
+# `timeout -k "$WORKER_KILL_AFTER"`, so the ceiling escalates SIGTERM → SIGKILL.
+# This drives a worker that IGNORES SIGTERM (the real wedge — a bare SIGTERM
+# leaves it running, the cascade the deleted /unstick recipe used to clear by
+# hand) and asserts the kill-after SIGKILL reaps it. Also fences the
+# operator-facing "per-worker timeout" log.
 echo "  scenario 12: WORKER_TIMEOUT — SIGTERM-ignoring worker is SIGKILLed via --kill-after..."
 WEDGED_PID_FILE="$TMPDIR/wedged-worker.pid"
 cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<TWORKER
@@ -684,7 +624,7 @@ if [ -n "$WEDGED_PID" ] && kill -0 "$WEDGED_PID" 2>/dev/null; then
 fi
 
 # Operator-facing: the fan-out log line must surface the cap in force this tick.
-grep -q "per-worker timeout 1s" "$LOG_FILE" || { echo "FAIL scenario 12: expected 'per-worker timeout 1s' in fan-out log line"; cat "$LOG_FILE"; exit 1; }
+grep -q "per-worker timeout 1s" "$LOG_FILE" || { echo "FAIL scenario 12: expected 'per-worker timeout 1s' in the per-worker-timeout log line"; cat "$LOG_FILE"; exit 1; }
 
 # Scenario 13: page-2 trigger fence. The original bug this PR exists to
 # fix: review.sh's pre-DRY fetch was a single-page `gh api`, so any
@@ -951,4 +891,4 @@ if [ "$fetches" -lt 1 ]; then
     exit 1
 fi
 
-echo "  PASS (21 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches)"
+echo "  PASS (21 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, synchronous-worker-wait, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches)"
