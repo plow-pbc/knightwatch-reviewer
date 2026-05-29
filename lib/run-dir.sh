@@ -43,24 +43,31 @@ reviewed_sha_marker() {
 #
 #   The matched comment carries what the cold-cache backstop needs: .created_at
 #   (the real review time → correct trigger-cutoff) and .body (the prior-review
-#   body to seed). The marker is a literal substring, so `contains` is exact —
-#   no regex, no SHA-prefix false match. Pure function; the gh fetch is the
-#   caller's job.
+#   body to seed). Pure function; the gh fetch is the caller's job.
+#
+#   Producer/consumer contract (must not drift): the worker emits the marker as
+#   a standalone line inside the contiguous leading marker block of COMMENT_BODY
+#   (review-one-pr.sh), and prepend_review_header (below) preserves it there. If
+#   that emit order or preservation changes, this match silently fails open
+#   (re-review) — the real-post-path tests in run-dir-smoke / sha-flow-smoke
+#   scenario 7 build through prepend_review_header to catch exactly that drift.
 latest_reviewed_sha_comment() {
     local comments_json="$1" sha="$2" bot_user="$3" marker
     { [ -z "$sha" ] || [ -z "$bot_user" ]; } && return 1
     marker=$(reviewed_sha_marker "$sha") || return 1
     # Match the marker ONLY in the leading HTML-comment block the worker
-    # prepends (auto-post/ai-author/bakeoff/reviewed-sha — all `<!-- … -->`
-    # lines before the first prose line), never anywhere in the body. A bot
-    # review quotes PR-controlled text in its prose; without this fence a PR
-    # author could embed a marker for a future head, get it quoted, and
-    # suppress that head's review. The marker is a full standalone line the
-    # worker emits, so exact line-equality within the header block is precise.
+    # prepends (auto-post/ai-author/reviewed-sha — `<!-- … -->` lines before the
+    # first prose line), never anywhere in the body. A bot review quotes
+    # PR-controlled text in its prose; without this fence a PR author could
+    # embed a marker for a future head, get it quoted, and suppress that head's
+    # review. The marker is a full standalone line, so exact line-equality
+    # within the header block is precise — `rtrimstr("\r")` first so a CRLF body
+    # (GitHub web-UI edits normalize to \r\n) can't false-negative the equality
+    # (the `\r` matches the comment regex but breaks `== $m` → flood).
     printf '%s' "$comments_json" | jq -c --arg bot "$bot_user" --arg m "$marker" '
         [ .[]
           | select(.user.login == $bot)
-          | (.body // "" | split("\n")) as $lines
+          | (.body // "" | split("\n") | map(rtrimstr("\r"))) as $lines
           | ($lines | map(test("^[[:space:]]*<!--.*-->[[:space:]]*$")) | index(false)) as $i
           | select( ($lines[0:($i // ($lines | length))]) | any(. == $m) )
         ] | sort_by(.created_at) | last // empty'

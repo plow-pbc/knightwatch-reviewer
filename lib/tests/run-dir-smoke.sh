@@ -179,6 +179,14 @@ POSTED_COMMENTS=$(jq -n --arg login "srosro" --arg b "$POSTED_BODY" \
   || { echo "FAIL: marker must survive prepend_review_header in the trusted leading block"; \
        printf 'posted body was:\n%s\n' "$POSTED_BODY"; exit 1; }
 
+echo "  latest_reviewed_sha_comment: CRLF body still matches (GitHub web-UI \\r\\n must not false-negative → flood)..."
+CRLF=$(jq -n --arg m "$(reviewed_sha_marker "$HEAD_SHA")" '[
+  {user: {login: "srosro"}, created_at: "2026-05-29T10:00:00Z",
+   body: ("<!-- knightwatch-reviewer:auto-post -->\r\n" + $m + "\r\n\r\n> 📋 Re-review\r\nok\r\n")}
+]')
+[ -n "$(latest_reviewed_sha_comment "$CRLF" "$HEAD_SHA" "$BOT")" ] \
+  || { echo "FAIL: a CRLF-line-ending bot body must still match (exact-equality must tolerate trailing \\r)"; exit 1; }
+
 echo "  seed roundtrip: a completed run (meta + recovered output.md) is author-visible, resolves KNOWN_SHA, and exposes the prior body..."
 SEED_STATE=$(mktemp -d); SLUG="acme_widget"; PRN="42"; HEAD="cafef00dbabe"
 RID="${SLUG}__${PRN}__20260529T000000000Z__${HEAD:0:7}"
@@ -195,4 +203,4 @@ body=$(latest_author_visible_review "$SEED_STATE" "$SLUG" "$PRN" "")
 printf '%s' "$body" | grep -q "recovered prior review body" \
   || { echo "FAIL: seeded run should expose its recovered body to prior-review staging"; exit 1; }
 
-echo "  PASS (4 scenarios: clean allocation, collision detected, subdir-failure rollback, real failure not mislabeled + 6 latest_reviewed_sha_comment incl. spoof-gate + quote-injection-fence + real-post-path + 1 seed roundtrip)"
+echo "  PASS (4 scenarios: clean allocation, collision detected, subdir-failure rollback, real failure not mislabeled + 6 latest_reviewed_sha_comment incl. spoof-gate + quote-injection-fence + real-post-path + CRLF-tolerant + 1 seed roundtrip)"
