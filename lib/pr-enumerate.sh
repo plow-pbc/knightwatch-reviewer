@@ -9,7 +9,7 @@
 #   For each owner in ORGS:
 #       gh api graphql search(user:OWNER is:pr is:open) — one call per
 #       owner, returns repository/number/title/headRefName/headRefOid/
-#       author per PR.
+#       updatedAt/author per PR.
 #   For each entry in REPOS whose owner is NOT in ORGS:
 #       gh pr list --repo OWNER/NAME --json … — fallthrough for
 #       partially-tracked owners (today: cncorp/plow, cncorp/plow-content).
@@ -21,7 +21,7 @@
 # On success: prints one JSON array on stdout (possibly empty), exits 0.
 # Output shape per element:
 #   {"repository":{"nameWithOwner":"owner/name"},
-#    "number":N, "title":"…", "headRefName":"…", "headRefOid":"…",
+#    "number":N, "title":"…", "headRefName":"…", "headRefOid":"…", "updatedAt":"…",
 #    "author":{"login":"…"}}
 # On any underlying gh failure: exits non-zero, prints nothing — mirrors
 # fetch_issue_comments' contract so callers stay on the existing
@@ -40,7 +40,7 @@ _enumerate_graphql_query='query($q: String!) {
   search(query: $q, type: ISSUE, first: 100) {
     nodes {
       ... on PullRequest {
-        number title headRefName headRefOid
+        number title headRefName headRefOid updatedAt
         author { login }
         repository { nameWithOwner }
       }
@@ -78,7 +78,7 @@ enumerate_open_prs() {
         owner="${repo%%/*}"
         owner_in_orgs "$owner" && continue
         if ! raw=$(gh pr list --repo "$repo" \
-                --json number,title,headRefName,headRefOid,author \
+                --json number,title,headRefName,headRefOid,updatedAt,author \
                 --state open --limit 200 2>/dev/null); then
             return 1
         fi

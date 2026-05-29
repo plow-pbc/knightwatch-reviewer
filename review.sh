@@ -130,12 +130,14 @@ refresh_queue() {
     local FORCE_REVIEW FORCE_WHOLE_PR TRIGGER_USER TRIGGER_BODY
     local REVIEWED_AT_ISO COMMENTS_JSON WHOLE_TRIGGER INCREMENTAL_TRIGGER
     local TRIGGER_JSON LAST_COMMIT_DATE LAST_COMMIT_TS AGE_SECS spec
+    local PR_UPDATED_AT SEEN_UPDATED_FILE LAST_SEEN_UPDATED_AT
     while IFS= read -r PR_JSON; do
         REPO=$(echo "$PR_JSON" | jq -r '.repository.nameWithOwner')
         PR_NUM=$(echo "$PR_JSON" | jq -r '.number')
         PR_TITLE=$(echo "$PR_JSON" | jq -r '.title // ""')
         PR_BRANCH=$(echo "$PR_JSON" | jq -r '.headRefName')
         PR_SHA=$(echo "$PR_JSON" | jq -r '.headRefOid')
+        PR_UPDATED_AT=$(echo "$PR_JSON" | jq -r '.updatedAt // ""')
         PR_ID="${REPO}#${PR_NUM}"
         # Capture per-PR cutoff at the dispatcher BEFORE fetch + dispatch
         # so the worker can stamp meta.json.started_at from this value
@@ -155,6 +157,26 @@ refresh_queue() {
         # this SHA?" answer driving an infinite dispatch loop.
         REPO_SLUG_FOR_GATE="${REPO//\//_}"
         KNOWN_SHA=$(latest_author_visible_review_sha "$STATE_DIR" "$REPO_SLUG_FOR_GATE" "$PR_NUM" "")
+
+        # Idle-skip: avoid the per-PR comment-fetch (a core gh call, made below for
+        # every already-reviewed PR purely to detect /<prefix>-* triggers) when the
+        # PR's head is already reviewed AND its updatedAt hasn't moved since we last
+        # evaluated it. A PR's updatedAt bumps on ANY new comment or commit, so an
+        # unchanged updatedAt guarantees no new trigger and no new head — nothing
+        # this tick can act on. Without this gate every already-reviewed PR was
+        # comment-fetched every tick just to skip again, and the N-container fan-out
+        # tripped GitHub's per-user secondary (abuse) rate limit. The watermark is
+        # written ONLY on the nothing-to-dispatch skip below (never on dispatch), so
+        # a head we haven't actually reviewed (KNOWN_SHA != PR_SHA) — incl. a failed
+        # or queued review — is always re-evaluated rather than cached past.
+        SEEN_UPDATED_FILE="${LOCAL_STATE_DIR:-$STATE_DIR}/seen-updated/${REPO_SLUG_FOR_GATE}__${PR_NUM}"
+        LAST_SEEN_UPDATED_AT=""
+        [ -f "$SEEN_UPDATED_FILE" ] && LAST_SEEN_UPDATED_AT=$(cat "$SEEN_UPDATED_FILE")
+        if [ -n "$KNOWN_SHA" ] && [ "$PR_SHA" = "$KNOWN_SHA" ] \
+            && [ -n "$PR_UPDATED_AT" ] && [ "$PR_UPDATED_AT" = "$LAST_SEEN_UPDATED_AT" ]; then
+            continue
+        fi
+
         FORCE_REVIEW=false
         FORCE_WHOLE_PR=false
         TRIGGER_USER=""
@@ -263,6 +285,14 @@ refresh_queue() {
         # require a state schema change for a low-impact edge case at our
         # scale.
         if [ "$PR_SHA" = "$KNOWN_SHA" ] && [ "$FORCE_WHOLE_PR" = "false" ]; then
+            # Record the updatedAt we just evaluated so the next tick's idle-skip
+            # gate (above) can avoid re-fetching comments while nothing changes.
+            # Written only here, on the nothing-to-dispatch path — a dispatched
+            # (or never-reviewed) head is never watermarked, so it re-evaluates.
+            if [ -n "$PR_UPDATED_AT" ]; then
+                mkdir -p "$(dirname "$SEEN_UPDATED_FILE")"
+                printf '%s' "$PR_UPDATED_AT" > "$SEEN_UPDATED_FILE"
+            fi
             continue
         fi
 
