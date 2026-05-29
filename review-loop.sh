@@ -19,6 +19,13 @@ cd "$(dirname "$0")"
 export REVIEWER_LIB_DIR="$(pwd)/lib"
 export PROMPTS_DIR="$(pwd)/prompts"
 POLL_SECS="${POLL_SECS:-30}"
+# Time floor for refreshing the eligible-PR queue GLOBALLY: one container per
+# window runs the GraphQL enumerate (election-serialized) and writes queue.json;
+# all containers consume it every POLL_SECS and claim PRs via the per-PR flock.
+# review.sh refreshes on this floor alone (no work-state gate), so enumeration
+# runs ~once/ENUMERATE_SECS instead of once/POLL_SECS/container — that's what
+# cuts the GraphQL burn. New PRs are discovered within one window.
+export ENUMERATE_SECS="${ENUMERATE_SECS:-60}"
 export MAX_CONCURRENT=1
 # Block each tick until its dispatched worker finishes (review.sh honors this),
 # so one container/account runs at most ONE review at a time. Without it, the

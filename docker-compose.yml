@@ -3,10 +3,16 @@
 # published scenario ports land on a localhost the reviewer shares with
 # the daemon, and DOCKER_HOST can be tcp://127.0.0.1:2375.
 #
-# The `claims` volume is SHARED across ALL reviewers: it holds the per-PR
-# lock + runs/ review-state, so the existing non-blocking flock + KNOWN_SHA
-# gate dedup across containers. Everything else is per-container (repos/,
-# workdirs/, the just-test + canonical locks via LOCAL_STATE_DIR, ~/.codex).
+# The `claims` volume is SHARED across ALL reviewers (STATE_DIR=/shared): it
+# holds runs/ review-state, the per-PR locks, the just-test concurrency
+# semaphore (a host-wide memory cap, deliberately shared — see
+# review-one-pr.sh), the locks/__enumerator election flock, and the
+# enumerate-once work-list queue.json. The non-blocking per-PR flock + KNOWN_SHA
+# gate dedup reviews across containers; one container per ENUMERATE_SECS window
+# runs the GraphQL enumerate and writes queue.json, and every reviewer consumes
+# it and claims PRs via the per-PR flock. LOCAL_STATE_DIR is per-container and
+# holds ONLY the canonical clone/fetch lock + the codex quota-pause state;
+# repos/, workdirs/, ~/.codex are per-container too.
 #
 # Scale-out (add account N): add a dind-N + reviewer-N pair. Each reviewer is
 # the `<<: *reviewer` + `<<: *reviewer-env` contract plus only its per-account
@@ -45,7 +51,7 @@ x-reviewer-env: &reviewer-env
   STATE_DIR: /shared              # per-PR lock + runs/ (SHARED across containers)
   REPOS_DIR: /local/repos         # per-container
   WORKDIRS_DIR: /local/workdirs   # per-container
-  LOCAL_STATE_DIR: /local/state   # just-test + canonical locks (per-container)
+  LOCAL_STATE_DIR: /local/state   # canonical clone/fetch lock + quota-pause (per-container; just-test semaphore is in shared STATE_DIR)
   DOCKER_HOST: tcp://127.0.0.1:2375
   CONFIG_ENV_FILE: /root/.kwr/config.env  # root-only path → reviewer-test (just test) can't read the token file
 
