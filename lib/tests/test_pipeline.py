@@ -181,13 +181,23 @@ class TestRunCodex(unittest.TestCase):
         self.assertIn("agent=intent exit=0", (agent_dir / "log.txt").read_text())
 
     @patch("pipeline.subprocess.Popen")
-    def test_codex_argv_pins_model(self, mock_popen):
-        """The model=gpt-5.5 pin must reach codex (regression fence)."""
-        mock_popen.side_effect = _make_codex_stub(plan={"intent": (0, "### Probe 1\nstub\n")})
-        pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(self._agent_dir("intent")))
-        argv = mock_popen.call_args[0][0]
-        self.assertIn("model=gpt-5.5", argv)
-        self.assertIn("--dangerously-bypass-approvals-and-sandbox", argv)
+    def test_codex_argv_pins_model_per_kind(self, mock_popen):
+        """Per-kind model routing must reach codex (regression fence): the
+        critic pass runs on the cheap gpt-5.4-mini; specialists, standalones,
+        and the aggregator all run on the flagship gpt-5.5."""
+        cases = {
+            "intent": "model=gpt-5.5",
+            "security": "model=gpt-5.5",
+            "aggregator": "model=gpt-5.5",
+            "critic-security": "model=gpt-5.4-mini",
+        }
+        for name, model_pin in cases.items():
+            with self.subTest(name=name):
+                mock_popen.side_effect = _make_codex_stub(plan={name: (0, "### Probe 1\nstub\n")})
+                pipeline.run_codex(name, str(self.repo_dir), "PROMPT", str(self._agent_dir(name)))
+                argv = mock_popen.call_args[0][0]
+                self.assertIn(model_pin, argv)
+                self.assertIn("--dangerously-bypass-approvals-and-sandbox", argv)
 
     @patch("pipeline.subprocess.Popen")
     def test_codex_reasoning_effort_defaults_high(self, mock_popen):
@@ -1074,10 +1084,11 @@ class TestRunPipeline(unittest.TestCase):
 
     @patch("pipeline.subprocess.Popen")
     def test_reasoning_effort_scales_with_pr_diff_loc(self, mock_popen):
-        """The whole review's reasoning effort scales to PR size via the
-        PR_DIFF_LOC env var: small PRs (< threshold) run every codex call at
-        medium, larger PRs at high, and an absent signal defaults to high
-        (pre-existing behavior). One review's calls all share one effort."""
+        """Every codex call except the aggregator scales its reasoning effort
+        to PR size via the PR_DIFF_LOC env var: small PRs (< threshold) at
+        medium, larger PRs at high, absent signal defaults to high. The
+        aggregator is the one exception — it always runs at xhigh (the single
+        premium synthesis step), independent of PR size."""
         for loc_val, expected in [("100", "medium"), ("600", "high"), (None, "high")]:
             with self.subTest(loc=loc_val):
                 mock_popen.reset_mock()
@@ -1092,8 +1103,14 @@ class TestRunPipeline(unittest.TestCase):
                         os.environ.pop("PR_DIFF_LOC", None)
                     rc = self._run()
                 self.assertEqual(rc, 0)
-                efforts = {_effort_of(c.args[0]) for c in mock_popen.call_args_list}
-                self.assertEqual(efforts, {expected})
+                agg_efforts, scaled_efforts = set(), set()
+                for c in mock_popen.call_args_list:
+                    argv = c.args[0]
+                    out_path = argv[argv.index("-o") + 1]
+                    bucket = agg_efforts if "/aggregator/" in out_path else scaled_efforts
+                    bucket.add(_effort_of(argv))
+                self.assertEqual(scaled_efforts, {expected})
+                self.assertEqual(agg_efforts, {"xhigh"})
 
     @patch("pipeline.subprocess.Popen")
     def test_intent_failure_aborts(self, mock_popen):
