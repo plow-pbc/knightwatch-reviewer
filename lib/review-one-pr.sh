@@ -1407,6 +1407,7 @@ BAKEOFF_SPECIALISTS=$(python3 -c "import sys; sys.path.insert(0, '$_LIB_DIR/..')
 COMMENT_BODY="$BOT_AUTO_POST_MARKER
 $BOT_AI_AUTHOR_MARKER
 <!-- knightwatch-bakeoff: specialists=$BAKEOFF_SPECIALISTS -->
+$(reviewed_sha_marker "$REVIEWED_SHA")
 $COMMENT_BODY
 
 ---

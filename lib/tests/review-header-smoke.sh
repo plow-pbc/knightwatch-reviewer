@@ -540,4 +540,11 @@ assert_contains "$result" "✅ Tests passed" "clean-PR tests"
 assert_contains "$result" "✅ Prior-art (KID) checked" "clean-PR kid"
 assert_contains "$result" "✅ Strict typing enforced" "clean-PR strict-typing"
 
-echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 7 tests-note + 3 kid-note + clean-PR composition + bakeoff-marker pin)"
+echo "  reviewed_sha_marker: renders the machine-readable reviewed-sha HTML marker..."
+got=$(reviewed_sha_marker "abc123def456")
+want="<!-- knightwatch-reviewer:reviewed-sha=abc123def456 -->"
+[ "$got" = "$want" ] || { echo "FAIL: reviewed_sha_marker — want [$want] got [$got]"; exit 1; }
+echo "  reviewed_sha_marker: empty SHA is an invariant violation (fail-fast)..."
+reviewed_sha_marker "" 2>/dev/null && { echo "FAIL: empty SHA should return non-zero"; exit 1; } || true
+
+echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 7 tests-note + 3 kid-note + clean-PR composition + bakeoff-marker pin + 2 reviewed_sha_marker)"

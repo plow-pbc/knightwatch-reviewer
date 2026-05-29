@@ -13,6 +13,23 @@
 # downstream consumer needs a different posture.
 BOT_AI_AUTHOR_MARKER="${BOT_AI_AUTHOR_MARKER:-<!-- knightwatch-reviewer:ai-author note=load-bearing-probes operating-point=pre-pmf prefer=cut-loc-over-add -->}"
 
+# reviewed_sha_marker SHA
+#   Machine-readable marker stamped into every posted review so a reviewer
+#   with a COLD local runs/ cache (fresh compose project, migration, volume
+#   prune, re-clone) can recover "this head was already reviewed" from the
+#   PR itself — the durable record — instead of re-reviewing it. The local
+#   runs/ cache is a performance cache; this marker is the backstop.
+#   Empty SHA is an invariant violation (caller always has REVIEWED_SHA) —
+#   fail-fast rather than stamp a marker that matches every head.
+reviewed_sha_marker() {
+    local sha="$1"
+    if [ -z "$sha" ]; then
+        printf 'reviewed_sha_marker: empty SHA — internal invariant violated\n' >&2
+        return 1
+    fi
+    printf '<!-- knightwatch-reviewer:reviewed-sha=%s -->' "$sha"
+}
+
 # allocate_run_dir RUN_DIR
 #
 # Creates RUN_DIR (and agents/, inputs/) as a unit, or fails loud:
