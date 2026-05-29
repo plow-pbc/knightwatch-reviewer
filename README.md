@@ -76,7 +76,7 @@ cd knightwatch-reviewer
 
 Single-tenant by design: one Linux host with `gh` authenticated as the bot's signing user. The systemd units currently bake in `User=odio` and `/home/odio/.pr-reviewer/`; edit them for a different user or path.
 
-> **The review loop is containerized.** `install.sh` sets up only the **auxiliary host timers** — auto-discovery (`org-sync`), auto-calibration (`learn`), `approve`, `re-request`, `kid-refresh`, and the specialist `bake-off`. The reviewer itself runs in the **containerized multi-account deployment below** — it spreads reviews across N accounts and confines each review (PR code + codex agents) to a container. The legacy single-account host reviewer (`pr-reviewer.timer`/`.service`) has been retired in its favor; `install.sh` removes the stale units if a prior install left them. (The *quota-aware* piece — a capped account backing off so it can't stall the queue — is a follow-up; see `.knightwatch/product-context.md`. Today a capped container can still claim+stamp a PR.)
+> **The review loop is containerized.** `install.sh` sets up only the **auxiliary host timers** — auto-discovery (`org-sync`), auto-calibration (`learn`), `approve`, `re-request`, `kid-refresh`, and the specialist `bake-off`. The reviewer itself runs in the **containerized multi-account deployment below** — it spreads reviews across N accounts and confines each review (PR code + codex agents) to a container. The legacy single-account host reviewer (`pr-reviewer.timer`/`.service`) has been retired in its favor; `install.sh` removes the stale units if a prior install left them.
 
 ### Containerized (multi-account) deployment
 
@@ -110,7 +110,7 @@ REPOS=(
 )
 ```
 
-The next 2-minute timer tick picks it up. `SOURCE_PATHS` in the same file enables cross-repo grep/search-roots and `KID_PATHS` wires kid-prior-art lookup. Per-repo policy (product context, review priority, sibling allowlist, dead-code command, strict-typing command) lives in each tracked repo's `.knightwatch/` directory and is read from the base branch via `lib/knightwatch-config.sh`. See the inline comments in [`repos.conf.example`](repos.conf.example) for shapes and `lib/tracked-repos.sh` for the loader.
+The host auxiliary timers pick it up on their next tick. **The containerized review loop reads a separate manifest** — `docker/secrets/repos.conf` (mounted at `/shared/repos.conf`), polled every 30s — so edit *that* copy to change which repos the fleet reviews. `SOURCE_PATHS` in the same file enables cross-repo grep/search-roots and `KID_PATHS` wires kid-prior-art lookup. Per-repo policy (product context, review priority, sibling allowlist, dead-code command, strict-typing command) lives in each tracked repo's `.knightwatch/` directory and is read from the base branch via `lib/knightwatch-config.sh`. See the inline comments in [`repos.conf.example`](repos.conf.example) for shapes and `lib/tracked-repos.sh` for the loader.
 
 ## Use on a PR
 

@@ -13,8 +13,8 @@
 # To track a new repo: append a line to REPOS and a corresponding entry
 # in each of the two maps below (KID_PATHS, SOURCE_PATHS — smoke suite
 # enforces a key per repo). Then run ./install.sh on the deployed
-# checkout: adding a KID_PATHS entry widens both the kid-refresh and
-# pr-reviewer units' ReadWritePaths sandboxes, which only re-render on
+# checkout: adding a KID_PATHS entry widens the kid-refresh unit's
+# ReadWritePaths sandbox, which only re-renders on
 # install. A plain `git pull` on the deployed checkout is sufficient
 # only when no KID_PATHS key was added.
 #
