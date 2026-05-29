@@ -914,12 +914,17 @@ unset MOCK_COMMENTS_PAGE1_FILE MOCK_COMMENTS_PAGE2_FILE
 export MOCK_COMMENTS_FILE="$TMPDIR/comments.json"
 clear_seeded_runs
 seed_run "cncorp_plow" "1" "20260429T100000000Z" "abc123" "COMMENT" >/dev/null
+# Seed the watermark in the SHARED STATE_DIR while pointing LOCAL_STATE_DIR at
+# a distinct empty dir — so a regression that reads the cache from the
+# per-container LOCAL_STATE_DIR would miss the watermark, fail to skip, and
+# trip the fetch assertion below. Fences the shared-seam contract.
 mkdir -p "$STATE_DIR/seen-updated"
 printf '%s' "2026-05-20T00:00:00Z" > "$STATE_DIR/seen-updated/cncorp_plow__1"
+export LOCAL_STATE_DIR="$TMPDIR/local-distinct-20"; mkdir -p "$LOCAL_STATE_DIR"
 echo "[]" > "$MOCK_COMMENTS_FILE"
 export MOCK_PR_UPDATED_AT="2026-05-20T00:00:00Z"   # equals the watermark
 run_orchestrator
-unset MOCK_PR_UPDATED_AT
+unset MOCK_PR_UPDATED_AT LOCAL_STATE_DIR
 fetches=$(count_comment_fetches)
 if [ "$fetches" -ne 0 ]; then
     echo "FAIL scenario 20 (idle-skip gate): expected 0 comment-fetches when head reviewed + updatedAt unchanged, got $fetches"
