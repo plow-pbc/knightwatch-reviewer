@@ -181,6 +181,7 @@ cp "$PROJECT_ROOT/lib/tracked-repos.sh" "$REVIEWER_LIB_DIR/tracked-repos.sh"
 cp "$PROJECT_ROOT/lib/gh-comments.sh"   "$REVIEWER_LIB_DIR/gh-comments.sh"
 cp "$PROJECT_ROOT/lib/run-dir.sh"       "$REVIEWER_LIB_DIR/run-dir.sh"
 cp "$PROJECT_ROOT/lib/pr-enumerate.sh"  "$REVIEWER_LIB_DIR/pr-enumerate.sh"
+cp "$PROJECT_ROOT/lib/queue.sh"         "$REVIEWER_LIB_DIR/queue.sh"
 cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<'WORKER'
 #!/bin/bash
 # Args from review.sh: REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR
@@ -281,7 +282,7 @@ export MOCK_TRUSTED_USERS="srosro someuser"
 
 run_orchestrator() {
     : > "$LOG_FILE"   # reset
-    bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
+    ENUMERATE_SECS=0 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
 }
 
 count_dispatches() {
@@ -514,7 +515,7 @@ printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}
 # dropped; if it sits at 60s the regression is back.
 : > "$LOG_FILE"
 START=$(date +%s)
-bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 &
+ENUMERATE_SECS=0 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 &
 ORCH_PID=$!
 # Cap the test at 10s so a regression doesn't hang CI for a full minute.
 TIMEOUT=10
@@ -621,7 +622,7 @@ echo "  scenario 11: missing/non-executable worker — orchestrator fails loud, 
 chmod -x "$REVIEWER_LIB_DIR/review-one-pr.sh"
 printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 : > "$LOG_FILE"
-if bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1; then
+if ENUMERATE_SECS=0 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1; then
     chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
     echo "FAIL scenario 11 (silent-dispatch-failure regression): review.sh exited 0 with a non-executable worker"
     cat "$LOG_FILE"; exit 1
@@ -649,7 +650,7 @@ chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
 
 printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 : > "$LOG_FILE"
-WORKER_TIMEOUT=1s WORKER_KILL_AFTER=1s bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 &
+WORKER_TIMEOUT=1s WORKER_KILL_AFTER=1s ENUMERATE_SECS=0 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 &
 ORCH12_PID=$!
 wait "$ORCH12_PID" 2>/dev/null || true
 
@@ -733,7 +734,7 @@ rm -f "$STATE_DIR/tmp/pr-review-trigger".*
 echo 'export TMPDIR="/tmp/should-not-be-honored-via-config-env"' > "$STATE_DIR/config.env"
 printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 : > "$LOG_FILE"
-TMPDIR="/tmp/should-not-be-honored-via-inheritance" \
+TMPDIR="/tmp/should-not-be-honored-via-inheritance" ENUMERATE_SECS=0 \
     bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
 rm -f "$STATE_DIR/config.env"
 n=$(count_dispatches)
