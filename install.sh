@@ -93,7 +93,7 @@ uv tool install 'vulture==2.16' >/dev/null
 #      operator hasn't edited yet (e.g., re-ran install.sh on a fresh
 #      clone, or a tool raw-cp'd the template). Reject the same way; the
 #      operator hitting "already configured" silently is the bug.
-info "NOTE: this installs the legacy single-account systemd timer deployment. For multi-account distribution, prefer the containerized path — see README.md § Containerized (multi-account) deployment and docker-compose.yml."
+info "NOTE: this installs the auxiliary host timers (bake-off, org-sync, learn, approve, re-request, kid-refresh). The review loop itself runs in the containerized multi-account fleet — see README.md § Containerized (multi-account) deployment and docker-compose.yml."
 
 if [[ ! -f "$REPO_DIR/repos.conf" ]]; then
     [[ -f "$REPO_DIR/repos.conf.example" ]] || fail "neither repos.conf nor repos.conf.example present at $REPO_DIR"
@@ -157,24 +157,11 @@ units=( systemd/*.service systemd/*.timer )
 shopt -u nullglob
 [[ ${#units[@]} -ge 1 ]] || fail "no systemd unit files in $REPO_DIR/systemd/"
 
-# Two render shapes from the same KID_PATHS source of truth, one per
-# unit's actual access need. Both prefix paths with `-` so a missing
-# checkout (e.g. operator hasn't cloned a tracked repo yet) doesn't
-# fail systemd unit start — the review/refresh code already skips
-# missing paths gracefully (lib/review-one-pr.sh's kid block,
-# plow-kid-refresh.sh's checkout check).
-#
-#   @KID_RW_PATHS@        — full repo roots (e.g. /home/odio/Hacking/foo).
-#                           Used by pr-reviewer-kid-refresh.service, which
-#                           git-pulls and re-indexes the checkouts.
-#
-#   @KID_INDEX_RW_PATHS@  — `.keepitdry` subdirs only, used by
-#                           pr-reviewer.service, which only needs
-#                           chromadb's SQLite WAL/journal writes inside
-#                           the index dir.
-#
-# The narrower review render keeps Codex specialists (inner sandbox
-# disabled) from getting writes to entire repo source trees.
+# @KID_RW_PATHS@ renders from the KID_PATHS source of truth: full repo
+# roots (e.g. /home/odio/Hacking/foo), used by pr-reviewer-kid-refresh.service
+# to git-pull + re-index the checkouts. Paths are prefixed with `-` so a
+# missing checkout (operator hasn't cloned a tracked repo yet) doesn't fail
+# systemd unit start — plow-kid-refresh.sh's checkout check skips them.
 #
 # Source the shared loader (lib/tracked-repos.sh) for both KID_PATHS
 # population AND the KWR_CLONE_ROOT constant. The loader sources
@@ -195,18 +182,15 @@ mkdir -p "$KWR_CLONE_ROOT"
 # array between runs.
 KID_RW_PATHS=$(printf '%s\n' "${KID_PATHS[@]}" | sort -u | sed 's|^|-|' | tr '\n' ' ')
 KID_RW_PATHS="${KID_RW_PATHS% }"
-KID_INDEX_RW_PATHS=$(printf '%s\n' "${KID_PATHS[@]}" | sort -u | sed 's|$|/.keepitdry|; s|^|-|' | tr '\n' ' ')
-KID_INDEX_RW_PATHS="${KID_INDEX_RW_PATHS% }"
 
 CHANGED=0
 for unit in "${units[@]}"; do
   name="$(basename "$unit")"
   dst="$SYSTEMD_DIR/$name"
   rendered="$unit"
-  if grep -qE '@(KID_(RW|INDEX_RW)_PATHS|KWR_CLONE_ROOT)@' "$unit"; then
+  if grep -qE '@(KID_RW_PATHS|KWR_CLONE_ROOT)@' "$unit"; then
     rendered="$(mktemp)"
-    sed -e "s|@KID_INDEX_RW_PATHS@|$KID_INDEX_RW_PATHS|g" \
-        -e "s|@KID_RW_PATHS@|$KID_RW_PATHS|g" \
+    sed -e "s|@KID_RW_PATHS@|$KID_RW_PATHS|g" \
         -e "s|@KWR_CLONE_ROOT@|$KWR_CLONE_ROOT|g" \
         "$unit" > "$rendered"
   fi
@@ -220,6 +204,20 @@ for unit in "${units[@]}"; do
   CHANGED=$((CHANGED + 1))
 done
 ok "systemd units: ${#units[@]} present, $CHANGED updated"
+
+# --- 2b. Remove the retired legacy host reviewer unit -----------------------
+# The single-account host reviewer (pr-reviewer.timer/.service) was retired in
+# favor of the containerized fleet (docker-compose.yml). Its files are gone from
+# systemd/, but a prior install left copies in $SYSTEMD_DIR. Disable + remove
+# them so the orphaned units don't linger. Idempotent: a no-op once gone.
+for legacy in pr-reviewer.timer pr-reviewer.service; do
+  if [[ -f "$SYSTEMD_DIR/$legacy" ]]; then
+    info "removing retired legacy unit $legacy (sudo)"
+    sudo systemctl disable --now "$legacy" 2>/dev/null || true
+    sudo rm -f "$SYSTEMD_DIR/$legacy"
+    CHANGED=$((CHANGED + 1))
+  fi
+done
 
 # --- 3. daemon-reload if any unit changed -----------------------------------
 if [[ "$CHANGED" -gt 0 ]]; then

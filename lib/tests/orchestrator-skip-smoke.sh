@@ -219,19 +219,6 @@ clear_seeded_runs() {
 clear_seeded_runs
 seed_run "cncorp_plow" "1" "20260429T100000000Z" "abc123" "COMMENT" >/dev/null
 
-# --- Systemd contract static check (fails the suite at setup) -------------
-# Detached-worker correctness depends on KillMode=process in the service
-# unit — it's the directive that lets workers survive when the
-# orchestrator (oneshot ExecStart) exits. We can't execute systemd
-# inside a bash smoke, but we CAN assert the directive is in the unit
-# file. A regression that drops it would silently break detached-worker
-# survival in production; this catches it at the suite gate before any
-# scenario runs.
-grep -q '^KillMode=process$' "$PROJECT_ROOT/systemd/pr-reviewer.service" || {
-    echo "FAIL setup: systemd/pr-reviewer.service is missing 'KillMode=process' — detached workers won't survive orchestrator exit in production"
-    exit 1
-}
-
 # --- Worker self-termination contract (static check) ----------------------
 # Detached workers are bounded only by their `timeout` wraps, which must
 # escalate to SIGKILL (`timeout -k`) or a SIGTERM-ignoring tree outlives its
@@ -246,18 +233,16 @@ grep -q "trap 'exit 143' TERM" "$PROJECT_ROOT/lib/review-one-pr.sh" || {
 }
 
 # --- TMPDIR fence (single-source-of-truth) --------------------------------
-# pr-reviewer.service combines PrivateTmp=yes (sandbox) with
-# KillMode=process (workers detach). When the orchestrator returns, the
-# unit-private /tmp gets torn down a few seconds later — any detached
-# worker doing `mktemp` in /tmp lands in a dead mount namespace and the
-# call fails with `No such file or directory`. The fix lives at a single
-# seam: tracked-repos.sh pins TMPDIR=$STATE_DIR/tmp unconditionally,
-# AFTER it sources config.env. Every entrypoint (review.sh,
-# lib/review-one-pr.sh, the -from-replies / -poller / -refresh siblings)
-# sources tracked-repos.sh and inherits the pin for free, with no
-# order-sensitive copy in each script. This grep fences a regression
-# that drops the pin from the loader OR moves it before config.env's
-# source — either reintroduces the unit-private /tmp failure mode.
+# tracked-repos.sh pins TMPDIR=$STATE_DIR/tmp unconditionally, AFTER it
+# sources config.env. Every entrypoint (review.sh, lib/review-one-pr.sh, the
+# -from-replies / -poller / -refresh siblings) sources tracked-repos.sh and
+# inherits the pin for free, with no order-sensitive copy in each script. The
+# durable-tmp pin keeps mktemp output (trigger files, scratch) under the
+# persistent state dir rather than a transient /tmp — originally to survive
+# the retired host reviewer's PrivateTmp tear-down, and now so container
+# restarts + the oneshot aux units' sandboxes don't strand scratch files.
+# This grep fences a regression that drops the pin from the loader OR moves
+# it before config.env's source — either re-routes mktemp back to /tmp.
 LOADER="$PROJECT_ROOT/lib/tracked-repos.sh"
 grep -qF 'export TMPDIR="$STATE_DIR/tmp"' "$LOADER" || {
     echo "FAIL setup: lib/tracked-repos.sh is missing the unconditional \$STATE_DIR/tmp TMPDIR pin — fallback chains or per-script copies let an inherited or config.env-set TMPDIR re-route mktemp into the unit-private /tmp"

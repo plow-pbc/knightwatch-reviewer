@@ -9,12 +9,12 @@ User=odio
 Group=odio
 WorkingDirectory=/home/odio/.pr-reviewer
 Environment=HOME=/home/odio
-# PATH: system dirs FIRST (see pr-reviewer.service for rationale —
+# PATH: system dirs FIRST (see pr-reviewer-bakeoff.service for rationale —
 # defense-in-depth on top of the ~/.local-not-in-ReadWritePaths fix).
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/odio/.nvm/versions/node/v24.15.0/bin:/home/odio/.local/bin
 # learn-from-replies.sh runs `codex exec` (npm-managed); npm's default cache
 # (~/.npm) is read-only under ProtectHome=read-only, so point it at the
-# writable ~/.cache aperture below. See pr-reviewer.service for the full
+# writable ~/.cache aperture below. See pr-reviewer-bakeoff.service for the full
 # rationale.
 Environment=npm_config_cache=/home/odio/.cache/npm
 ExecStart=/home/odio/.pr-reviewer/learn-from-replies.sh
@@ -29,7 +29,7 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 ProtectHome=read-only
-# See pr-reviewer.service for the rationale on excluding /home/odio/.local
+# See pr-reviewer-bakeoff.service for the rationale on excluding /home/odio/.local
 # (writable-PATH attack vector against ~/.local/bin tool symlinks).
 ReadWritePaths=/home/odio/.pr-reviewer /home/odio/.codex /home/odio/.cache /home/odio/.config /home/odio/services/claude-config
 

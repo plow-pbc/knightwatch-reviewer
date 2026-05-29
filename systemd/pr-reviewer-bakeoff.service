@@ -9,8 +9,12 @@ User=odio
 Group=odio
 WorkingDirectory=/home/odio/.pr-reviewer
 Environment=HOME=/home/odio
-# PATH: system dirs FIRST (see pr-reviewer.service for rationale —
-# defense-in-depth on top of the ~/.local-not-in-ReadWritePaths fix).
+# PATH: system dirs FIRST so `timeout`, `bash`, `gh`, `git`, etc. resolve to
+# /usr/bin regardless of user-dir ordering. /home/odio/.local is NOT in
+# ReadWritePaths (see the ReadWritePaths rationale below), so ~/.local/bin tool
+# replacements are blocked at the sandbox level too. The nvm-versioned bin dir
+# provides codex; bumping nvm node versions means updating this path in lock-step.
+# Canonical PATH rationale — the sibling pr-reviewer-* units reference this one.
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/odio/.nvm/versions/node/v24.15.0/bin:/home/odio/.local/bin
 # Match the 12h timer cadence (07:00/19:00): each run walks a 12h window, not
 # the 24h default — halving the bot-activity-discovery graphql cost so two
@@ -29,8 +33,11 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 ProtectHome=read-only
-# See pr-reviewer.service for the rationale on excluding /home/odio/.local
-# (writable-PATH attack vector against ~/.local/bin tool symlinks).
+# /home/odio/.local is intentionally NOT writable: it holds ~/.local/bin/<tool>
+# symlinks + uv-managed tool binaries that are PATH-search targets. A writable
+# ~/.local would let a sandboxed step plant ~/.local/bin/codex (or kid) for the
+# next tick to exec — so it stays read-only. Canonical ~/.local-exclusion
+# rationale; sibling pr-reviewer-* units reference this one.
 # Bake-off only writes $STATE_DIR/specialist-bakeoff.md + gh cache/config.
 ReadWritePaths=/home/odio/.pr-reviewer /home/odio/.cache /home/odio/.config
 
