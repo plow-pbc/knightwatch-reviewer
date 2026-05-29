@@ -413,6 +413,20 @@ format_specialist_timeouts() {
     printf '⏱️ Partial review — specialist(s) timed out and were skipped: `%s`' "$names"
 }
 
+# timeout_note_for_run RUN_DIR
+#
+# Sentinel→note adapter: echoes the format_specialist_timeouts fragment when
+# this run recorded specialist timeouts (_wave_b_timeouts.txt non-empty),
+# else nothing. Shared by the live worker (review-one-pr.sh) and replay
+# (replay.sh) so a partial review discloses skipped angles identically on
+# both surfaces — without either consumer re-implementing the read+format.
+timeout_note_for_run() {
+    local sentinel="$1/_wave_b_timeouts.txt" timed_out
+    [ -s "$sentinel" ] || return 0
+    timed_out=$(paste -sd, "$sentinel")
+    format_specialist_timeouts "$timed_out"
+}
+
 # prepend_review_header COMMENT_BODY NOTE [NOTE...]
 #
 # Renders the unified deterministic registry as one blockquote line right

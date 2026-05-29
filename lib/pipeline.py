@@ -454,6 +454,16 @@ def run_specialist(
     crit_agent_dir = run / "agents" / f"critic-{specialist}"
     crit_rc = run_codex(f"critic-{specialist}", str(repo), crit_prompt, str(crit_agent_dir), effort=effort)
     if crit_rc != 0:
+        # A timed-out critic (rc=124) no longer aborts the review — Wave B
+        # completes. The raw, un-critiqued specialist output staged in scratch
+        # would then be consumed by the aggregator as if it were a full angle,
+        # even though the header reports the angle as skipped. Drop it so the
+        # angle is genuinely absent; the raw output stays under
+        # agents/<name>/output.md for forensics. (Hard failures — rc 4/5 —
+        # abort the whole review, so their scratch is never consumed; it's
+        # left in place as forensic evidence, the pre-existing contract.)
+        if crit_rc == 124:
+            scratch_path.unlink(missing_ok=True)
         log(f"{pr_id}: critic-{specialist} exited non-zero (see {crit_agent_dir}/{{log,err}}.txt)")
         return crit_rc
     crit_out = (crit_agent_dir / "output.md").read_text()

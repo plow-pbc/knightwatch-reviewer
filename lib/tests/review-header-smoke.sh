@@ -514,6 +514,17 @@ assert_contains "$got" "security,shape" "names every skipped angle"
 echo "  format_specialist_timeouts: empty → fail-fast (caller only invokes on non-empty sentinel)..."
 assert_fails_with "empty names" "empty names" -- format_specialist_timeouts ""
 
+# ===== timeout_note_for_run (sentinel→note adapter shared by worker + replay) =====
+_tnfr_dir=$(mktemp -d)
+echo "  timeout_note_for_run: no sentinel → empty (full-coverage run)..."
+[ -z "$(timeout_note_for_run "$_tnfr_dir")" ] || { echo "FAIL: expected empty note when no _wave_b_timeouts.txt"; exit 1; }
+echo "  timeout_note_for_run: sentinel present → ⏱️ note naming the angles..."
+printf 'security\nshape\n' > "$_tnfr_dir/_wave_b_timeouts.txt"
+got=$(timeout_note_for_run "$_tnfr_dir")
+assert_contains "$got" "⏱️" "adapter emits timeout note"
+assert_contains "$got" "security,shape" "adapter joins sentinel lines"
+rm -rf "$_tnfr_dir"
+
 # Realistic clean-PR composition: every pre-check passed. Fence the
 # end-to-end header — readers should see a four-fragment line, not a
 # scope-only line that hides whether anything ran.

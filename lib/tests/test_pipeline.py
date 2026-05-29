@@ -1255,10 +1255,15 @@ class TestRunPipeline(unittest.TestCase):
         })
         rc = self._run()
         self.assertEqual(rc, 0)
-        # Real specialist output is preserved on disk.
+        # Real specialist output is preserved on disk for forensics.
         shape_out = self.run_dir / "agents" / "shape" / "output.md"
         self.assertIn("real shape finding", shape_out.read_text())
         self.assertIn("shape", (self.run_dir / "_wave_b_timeouts.txt").read_text())
+        # But the raw, un-critiqued scratch is removed so the aggregator does
+        # NOT consume an angle the header reports as skipped.
+        self.assertFalse(
+            (self.repo_dir / ".codex-scratch" / "specialists" / "shape.md").exists()
+        )
 
     @patch("pipeline.subprocess.Popen")
     def test_hard_failure_aborts_without_timeouts_sentinel(self, mock_popen):

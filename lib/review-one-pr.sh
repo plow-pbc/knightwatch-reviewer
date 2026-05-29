@@ -645,10 +645,14 @@ if [ -z "$FULL_PR_DIFF" ]; then
     rm -rf "$REPO_DIR"
     exit 1
 fi
-# Changed-line count (added + deleted, excluding the +++/--- file headers):
-# pipeline.py scales codex reasoning effort down to medium for PRs under its
-# SMALL_PR_LOC threshold, where high reasoning isn't worth the quota.
-PR_DIFF_LOC=$(printf '%s\n' "$FULL_PR_DIFF" | grep -cE '^[+-]([^+-]|$)' || true)
+# Changed-line count (added + deleted) via structured --numstat, the same
+# LOC shape lib/loc-trend.sh uses — exact, and immune to the +/- content-line
+# miscount a unified-diff regex parse would introduce. pipeline.py scales
+# codex reasoning effort down to medium for PRs under its SMALL_PR_LOC
+# threshold, where high reasoning isn't worth the quota. (Binary files report
+# `-`/`-`, which awk sums as 0 — correct, they have no line count.)
+PR_DIFF_LOC=$(git -C "$REPO_DIR" diff --numstat "$BASE_REF_SHA...$REVIEWED_SHA" 2>/dev/null \
+    | awk '{a += $1; d += $2} END {print a + d + 0}')
 log "$PR_ID: full PR diff size = ${#FULL_PR_DIFF} bytes, ${PR_DIFF_LOC} changed lines"
 KID_INPUT_DIFF="$FULL_PR_DIFF"
 
@@ -1407,7 +1411,7 @@ $COMMENT_BODY
 
 ---
 
-_How to use: auto-reviews every new PR and re-reviews after an hour of inactivity. Trigger an incremental re-review with \`/${BOT_CMD_PREFIX}-update-review\`, or a whole-PR re-review with \`/${BOT_CMD_PREFIX}-review\`._
+_How to use: auto-reviews every new PR and re-reviews after a period of inactivity. Trigger an incremental re-review with \`/${BOT_CMD_PREFIX}-update-review\`, or a whole-PR re-review with \`/${BOT_CMD_PREFIX}-review\`._
 
 **For humans only:** push-access collaborators can post:
 - \`/${BOT_CMD_PREFIX}-approve\` — APPROVE the PR.
@@ -1455,18 +1459,11 @@ REVIEW_NOTES+=("$SCOPE_NOTE")
 [ -n "$CURRENT_HEAD" ] && [ "$CURRENT_HEAD" != "$REVIEWED_SHA" ] && \
     REVIEW_NOTES+=("⚠️ Stale: head moved from \`${REVIEWED_SHA:0:7}\` to \`${CURRENT_HEAD:0:7}\` mid-run — see commands below to re-run")
 # Specialist timeouts no longer abort — pipeline.py completes the review with
-# the surviving angles and names the hung ones here. Disclose them as a header
-# warning rather than silently shipping reduced coverage.
-TIMEOUTS_SENTINEL="$RUN_DIR/_wave_b_timeouts.txt"
-if [ -s "$TIMEOUTS_SENTINEL" ]; then
-    TIMED_OUT=$(paste -sd, "$TIMEOUTS_SENTINEL")
-    if ! TIMEOUT_NOTE=$(format_specialist_timeouts "$TIMED_OUT"); then
-        log "$PR_ID: format_specialist_timeouts failed (names='$TIMED_OUT') — internal invariant violated, aborting"
-        rm -rf "$REPO_DIR"
-        exit 1
-    fi
-    REVIEW_NOTES+=("$TIMEOUT_NOTE")
-fi
+# the surviving angles and names the hung ones in _wave_b_timeouts.txt.
+# Disclose them as a header warning rather than silently shipping reduced
+# coverage (shared adapter — replay.sh uses the same helper).
+TIMEOUT_NOTE=$(timeout_note_for_run "$RUN_DIR")
+[ -n "$TIMEOUT_NOTE" ] && REVIEW_NOTES+=("$TIMEOUT_NOTE")
 # Symmetric pre-check disclosure: every pre-check emits one fragment
 # describing its outcome (pass/fail/skip), not just on miss. Old asym-
 # metric pattern collapsed clean-PR headers to scope-only and left
@@ -1541,7 +1538,13 @@ else
     log "Posted review on $PR_ID (no placeholder was posted)"
 fi
 
-if [[ "$VERDICT" == VERDICT:\ APPROVE* ]]; then
+if [[ "$VERDICT" == VERDICT:\ APPROVE* ]] && [ -s "$RUN_DIR/_wave_b_timeouts.txt" ]; then
+    # Reduced-coverage guard: a specialist (possibly security) timed out and
+    # was skipped, so the review is partial. Post it (the ⏱️ header already
+    # discloses the gap) but never auto-APPROVE on incomplete coverage —
+    # an approval here could greenlight a PR whose security angle never ran.
+    log "$PR_ID: APPROVE verdict but specialist(s) timed out — posting partial review WITHOUT approval"
+elif [[ "$VERDICT" == VERDICT:\ APPROVE* ]]; then
     if [[ "$VERDICT" == *"pending:"* ]]; then
         PENDING_NOTE=$(echo "$VERDICT" | sed 's/.*pending: *//')
         APPROVE_BODY="Approving — pending: $PENDING_NOTE"
