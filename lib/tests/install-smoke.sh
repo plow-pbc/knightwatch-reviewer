@@ -355,8 +355,8 @@ EXPECTED_RESTARTS="${#PROD_TIMERS[@]}"
 # install.sh's removal branch (disable --now, then rm) is the cutover safety this
 # PR ships: a `pr-reviewer.timer`/`.service` left in $SYSTEMD_DIR by a prior
 # install must be torn down so an orphaned host worker can't linger and overlap
-# the container fleet. Pin the branch — and the disable-before-rm ordering — so a
-# refactor can't silently drop it.
+# the container fleet. Pin that both operations (disable --now + rm) run for each
+# legacy unit so a refactor can't silently drop the removal branch.
 echo "  scenario 4: retired pr-reviewer.timer/.service in SYSTEMD_DIR → disabled --now + removed, idempotent once gone..."
 OVERLAY_LEGACY="$TMPDIR/repo-overlay-legacy"
 make_install_overlay "$OVERLAY_LEGACY"

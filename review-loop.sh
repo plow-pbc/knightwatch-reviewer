@@ -19,7 +19,7 @@ cd "$(dirname "$0")"
 export REVIEWER_LIB_DIR="$(pwd)/lib"
 export PROMPTS_DIR="$(pwd)/prompts"
 POLL_SECS="${POLL_SECS:-30}"
-# review.sh pins MAX_CONCURRENT=1 and waits for its worker on its own (the single
+# review.sh reviews each eligible PR in the foreground, one per tick (the single
 # contract since the host reviewer was retired), so one container/account runs at
 # most ONE review at a time. REVIEWER_CONTAINER_MODE still gates the container-only
 # paths in review.sh (quota-pause break) and review-one-pr.sh (untrusted-author skip).

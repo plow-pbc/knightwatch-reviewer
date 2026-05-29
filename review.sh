@@ -23,9 +23,9 @@ STABLE_SECS="${STABLE_SECS:-3600}"
 # source of truth at repos.conf — adding a repo only edits one file.
 # config.env can still REPOS=(...) override on top. The shared loader
 # at lib/tracked-repos.sh is the ONE seam every consumer goes through;
-# it also pins $TMPDIR=$STATE_DIR/tmp post-config — keeps mktemp out of
-# the unit-private /tmp that the systemd unit tears down under detached
-# workers (see lib/tracked-repos.sh and PR #33 for the full why).
+# it also pins $TMPDIR=$STATE_DIR/tmp post-config — keeps mktemp under the
+# pinned $STATE_DIR/tmp rather than a transient /tmp (see lib/tracked-repos.sh
+# and PR #33 for the full why).
 REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 . "$REVIEWER_LIB_DIR/tracked-repos.sh"
 . "$REVIEWER_LIB_DIR/gh-comments.sh"
@@ -70,17 +70,17 @@ mkdir -p "$STATE_DIR" "$REPOS_DIR" "$WORKDIRS_DIR" "$STATE_DIR/locks"
 
 # Fail loud at the dispatcher level if the worker script is missing
 # or not executable. Catches the catastrophic class of dispatch failures
-# (broken install, accidental chmod -x, deleted symlink) before fan-out.
+# (broken install, accidental chmod -x, deleted symlink) before reviewing any PR.
 # Checked HERE — before per-PR enumeration — so a doomed-to-abort run
 # never materializes a trigger-comment tempfile under $STATE_DIR/tmp
 # that no worker would clean up.
 if [[ ! -x "$REVIEWER_LIB_DIR/review-one-pr.sh" ]]; then
-    log "FATAL: $REVIEWER_LIB_DIR/review-one-pr.sh missing or not executable — aborting fan-out"
+    log "FATAL: $REVIEWER_LIB_DIR/review-one-pr.sh missing or not executable — aborting"
     exit 1
 fi
 
 # ---------- enumerate + dispatch (single-pass) ----------
-# Per-worker timeout. The orchestrator waits for its dispatched worker, so a
+# Per-worker timeout. The orchestrator runs each worker to completion, so a
 # wedged Codex phase would otherwise block this tick (and hold the per-PR
 # flock) indefinitely, stalling all future /srosro-update-review for that PR.
 # `timeout 90m` caps the worker; it exits, the flock releases, and the next
