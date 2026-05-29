@@ -126,4 +126,19 @@ else
     chmod +w "$RO_PARENT"
 fi
 
-echo "  PASS (4 scenarios: clean allocation, collision detected, subdir-failure rollback, real failure not mislabeled)"
+echo "  comments_have_reviewed_sha: matches a bot auto-post comment carrying the head's marker..."
+HEAD_SHA="deadbeefcafe1234"
+COMMENTS=$(jq -n --arg m "$(reviewed_sha_marker "$HEAD_SHA")" '[
+  {body: "<!-- knightwatch-reviewer:auto-post -->\n\($m)\n\n📋 Re-review …\nVERDICT: COMMENT"},
+  {body: "/srosro-review"}
+]')
+comments_have_reviewed_sha "$COMMENTS" "$HEAD_SHA" || { echo "FAIL: should match present marker"; exit 1; }
+
+echo "  comments_have_reviewed_sha: no match when the marker SHA differs (head moved)..."
+comments_have_reviewed_sha "$COMMENTS" "0000000000000000" && { echo "FAIL: should not match a different head"; exit 1; } || true
+
+echo "  comments_have_reviewed_sha: no match when no bot comment carries a marker..."
+PLAIN=$(jq -n '[{body: "looks good to me"}, {body: "/srosro-review"}]')
+comments_have_reviewed_sha "$PLAIN" "$HEAD_SHA" && { echo "FAIL: should not match without a marker"; exit 1; } || true
+
+echo "  PASS (4 scenarios: clean allocation, collision detected, subdir-failure rollback, real failure not mislabeled + 3 comments_have_reviewed_sha)"

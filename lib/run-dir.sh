@@ -30,6 +30,20 @@ reviewed_sha_marker() {
     printf '<!-- knightwatch-reviewer:reviewed-sha=%s -->' "$sha"
 }
 
+# comments_have_reviewed_sha COMMENTS_JSON SHA
+#   exit 0 iff any comment body in COMMENTS_JSON (an array of {body} objects,
+#   the fetch_issue_comments shape) contains this reviewer's reviewed-sha
+#   marker for SHA. The marker is a literal substring (reviewed_sha_marker),
+#   so a plain `contains` is exact — no regex, no false match on a SHA prefix.
+#   Pure function; the gh fetch is the caller's job (worker backstop guard).
+comments_have_reviewed_sha() {
+    local comments_json="$1" sha="$2" marker
+    [ -z "$sha" ] && return 1
+    marker=$(reviewed_sha_marker "$sha") || return 1
+    printf '%s' "$comments_json" \
+        | jq -e --arg m "$marker" 'any(.[]; (.body // "") | contains($m))' >/dev/null 2>&1
+}
+
 # allocate_run_dir RUN_DIR
 #
 # Creates RUN_DIR (and agents/, inputs/) as a unit, or fails loud:
