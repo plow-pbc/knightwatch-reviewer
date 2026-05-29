@@ -128,11 +128,11 @@ mkdir -p "$REPO_DIR/.codex-scratch"
 # way prompt A/B replays produce production-comparable output.
 #
 # Replay can't reproduce inputs that depend on running upstream pipeline
-# stages (KID prior-art, decline-history from state, sibling-repo
+# stages (KID prior-art, pr-comments from state, sibling-repo
 # context). Stage those with explicit "(replay: not staged …)" markers
 # so downstream prompts can fail-soft and the operator sees the gap.
 write_scratch "$REPO_DIR" "diff.patch" "$(cat "$OUT/diff.patch")"
-for f in review-priority.md decline-history.md loc-trend.md \
+for f in review-priority.md pr-comments.md loc-trend.md \
          prior-art.md dead-code-static.md prior-reviews.md previous-review.md \
          file-history.md commits.md author-intent.md search-roots.md \
          product-context.md test-results.md; do

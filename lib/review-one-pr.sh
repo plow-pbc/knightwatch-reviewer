@@ -142,11 +142,12 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # multi-source is idempotent (function redefinition).
 . "$_LIB_DIR/loc-trend.sh"
 
-# --- decline-history (fetch_decline_history) — operator's prior declines
-# on this PR; consumed by the critic to drop or footnote re-flagged
-# findings the operator has pushed back on ≥3 times. Sources gh-comments.sh
-# internally; multi-source is idempotent.
-. "$_LIB_DIR/decline-history.sh"
+# --- pr-comments (fetch_pr_comments) — the PR's human comment thread;
+# consumed by every specialist (so a specialist sees replies to its own
+# prior probes), the critic, and the aggregator. The operator-only
+# explicit-marker channel still drives the critic's ≥3-round auto-drop.
+# Sources gh-comments.sh internally; multi-source is idempotent.
+. "$_LIB_DIR/pr-comments.sh"
 
 # --- per-run dir -------------------------------------------------------------
 # Every worker invocation gets its own runs/<RUN_ID>/ dir holding the run log,
@@ -1173,38 +1174,37 @@ write_scratch "$REPO_DIR" "review-priority.md" "$REVIEW_PRIORITY"
 LOC_TREND=$(compute_loc_trend "$REPO" "$PR_NUM" "$REPO_DIR" "$BASE_REF_SHA" "$STATE_DIR" "$RUN_DIR" "$REVIEWED_SHA")
 write_scratch "$REPO_DIR" "loc-trend.md" "$LOC_TREND"
 
-# decline-history.md — operator declines from prior review comments,
-# so the critic can drop or footnote findings the operator has already
-# pushed back on. Empty/absent on first reviews and on PRs with no
-# operator pushback. Fail-soft on gh-failure (helper emits a sentinel;
-# critic falls back to existing behavior).
+# pr-comments.md — the PR's human comment thread, so every specialist
+# sees replies to its own prior probes (and the critic still drives
+# auto-drop off the operator-only explicit-marker channel). Empty/absent
+# on first reviews and on PRs with no human comments. Fail-soft on
+# gh-failure (helper emits a sentinel; consumers fall back to existing
+# behavior).
 #
 # Skipped on:
 #   - FORCE_WHOLE_PR=true (i.e. /srosro-review) — the trigger text on that
 #     path commits to "Any prior review is intentionally NOT provided —
-#     evaluate this PR from scratch." Staging decline history anyway
-#     would silently break that contract.
-#   - First reviews (no PRIOR_REVIEWS) — operator declines on bot reviews
-#     can't exist before there has been a bot review. Pre-existing operator
-#     comments on the PR (review-author conversation, etc.) are not bot-
-#     finding declines. Staging them would let the critic suppress finding
-#     classes the bot has never raised — a class-of-finding ban with no
-#     class-of-finding actually flagged, which is wrong.
+#     evaluate this PR from scratch." Staging the thread (which carries the
+#     operator decline memory) anyway would silently break that contract.
+#   - First reviews (no PRIOR_REVIEWS) — there are no prior bot probes for
+#     a reply to address yet, and the operator-marker auto-drop channel
+#     can't have anything to suppress. Staging pre-review human chatter
+#     would let the critic suppress finding classes the bot has never
+#     raised — a class-of-finding ban with nothing actually flagged.
 # Mirrors the existing prior-reviews.md skip semantics above.
 if [ "$FORCE_WHOLE_PR" = "true" ]; then
-    log "$PR_ID: FORCE_WHOLE_PR=true — staging decline-history.md sentinel (whole-PR re-review evaluates from scratch)"
-    # Sentinel keeps the prompt-input contract intact for critic.md /
-    # aggregator.md, which list .codex-scratch/decline-history.md
-    # as a required input. Empty/absent file would tempt those agents to
-    # explore the filesystem; the sentinel makes the "from scratch"
-    # decision explicit.
-    write_scratch "$REPO_DIR" "decline-history.md" "(decline history intentionally not staged on /${BOT_CMD_PREFIX}-review path — this is a from-scratch whole-PR re-review)"
+    log "$PR_ID: FORCE_WHOLE_PR=true — staging pr-comments.md sentinel (whole-PR re-review evaluates from scratch)"
+    # Sentinel keeps the prompt-input contract intact for the specialists /
+    # critic / aggregator, which list .codex-scratch/pr-comments.md as a
+    # required input. Empty/absent file would tempt those agents to explore
+    # the filesystem; the sentinel makes the "from scratch" decision explicit.
+    write_scratch "$REPO_DIR" "pr-comments.md" "(PR comments intentionally not staged on /${BOT_CMD_PREFIX}-review path — this is a from-scratch whole-PR re-review)"
 elif [ -z "${PRIOR_REVIEWS:-}" ]; then
-    log "$PR_ID: first review (no prior bot reviews) — staging decline-history.md sentinel"
-    write_scratch "$REPO_DIR" "decline-history.md" "(decline history intentionally not staged — first review on this PR; no prior bot findings exist for the operator to have declined)"
+    log "$PR_ID: first review (no prior bot reviews) — staging pr-comments.md sentinel"
+    write_scratch "$REPO_DIR" "pr-comments.md" "(PR comments intentionally not staged — first review on this PR; no prior bot probes exist for a reply to address)"
 else
-    DECLINE_HISTORY=$(fetch_decline_history "$REPO" "$PR_NUM")
-    write_scratch "$REPO_DIR" "decline-history.md" "$DECLINE_HISTORY"
+    PR_COMMENTS=$(fetch_pr_comments "$REPO" "$PR_NUM")
+    write_scratch "$REPO_DIR" "pr-comments.md" "$PR_COMMENTS"
 fi
 
 FILE_HISTORY=""

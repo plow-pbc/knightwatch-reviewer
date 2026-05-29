@@ -85,22 +85,26 @@ if ! printf '%s' "$verdict_block" | grep -qF "\`medium\` or \`blocking\`"; then
     exit 1
 fi
 
-echo "  asserting decline-history input in critic.md..."
-assert_grep "critic.md should reference decline-history.md" \
-    "decline-history.md" prompts/critic.md
+echo "  asserting pr-comments input in critic.md..."
+assert_grep "critic.md should reference pr-comments.md" \
+    "pr-comments.md" prompts/critic.md
 
-echo "  asserting decline-history input in aggregator.md..."
-assert_grep "aggregator.md should reference decline-history.md" \
-    "decline-history.md" prompts/aggregator.md
+echo "  asserting pr-comments input in aggregator.md..."
+assert_grep "aggregator.md should reference pr-comments.md" \
+    "pr-comments.md" prompts/aggregator.md
+
+echo "  asserting pr-comments input in common-header.md (fed to every specialist)..."
+assert_grep "common-header.md should reference pr-comments.md so specialists see replies to their probes" \
+    "pr-comments.md" prompts/common-header.md
 
 # Round-8 unified contract: critic.md, aggregator.md, and the shell
-# preamble must describe the decline-history rule consistently.
+# preamble must describe the decline rule consistently.
 # The prior drift had aggregator.md saying "class matches" while critic.md
 # said "specific finding" — flagged in 4 of 4 review rounds (R0/R1/R2/R3).
 # Token-level fences below trip on the stale wording so smoke catches
 # drift before it ships, in lieu of an SSOT refactor.
-echo "  asserting unified decline-history contract (round-8 specific-finding rule)..."
-for f in prompts/critic.md prompts/aggregator.md lib/decline-history.sh; do
+echo "  asserting unified decline contract (round-8 specific-finding rule)..."
+for f in prompts/critic.md prompts/aggregator.md lib/pr-comments.sh; do
     if grep -qF "Decline replies / Counter-proposed" "$f"; then
         echo "FAIL: $f still uses the round-7 'Decline replies / Counter-proposed' heading — should be unified under 'Operator replies'"
         exit 1
