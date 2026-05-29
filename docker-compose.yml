@@ -5,8 +5,12 @@
 #
 # The `claims` volume is SHARED across ALL reviewers: it holds the per-PR
 # lock + runs/ review-state, so the existing non-blocking flock + KNOWN_SHA
-# gate dedup across containers. Everything else is per-container (repos/,
-# workdirs/, the just-test + canonical locks via LOCAL_STATE_DIR, ~/.codex).
+# gate dedup across containers. It also holds the enumerate-once work-list —
+# queue.json + the locks/__enumerator election flock: one container per
+# ENUMERATE_SECS window runs the GraphQL enumerate and writes queue.json;
+# every reviewer consumes it and claims PRs via the per-PR flock. Everything
+# else is per-container (repos/, workdirs/, the just-test + canonical locks
+# via LOCAL_STATE_DIR, ~/.codex).
 #
 # Scale-out (add account N): add a dind-N + reviewer-N pair. Each reviewer is
 # the `<<: *reviewer` + `<<: *reviewer-env` contract plus only its per-account
