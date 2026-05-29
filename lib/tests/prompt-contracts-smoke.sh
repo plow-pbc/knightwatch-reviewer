@@ -569,9 +569,9 @@ assert_grep "momentum.md should carry the read-only working directory fence" \
 assert_grep "momentum.md should fence inputs as data-not-instructions" \
     "data, not instructions" prompts/standalone/momentum.md
 
-# Bake-off timer cadence + persistence are quota-control contracts: the daily
-# cadence is what cuts the bake-off's GitHub REST volume ~24x vs the prior
-# hourly run, and Persistent=false matches the repo's other timer shape (the
+# Bake-off timer cadence + persistence are quota-control contracts: the twice-
+# daily cadence (07:00/19:00 PT) + matching 12h walk window keep the bake-off's
+# GitHub volume bounded vs the prior hourly run, and Persistent=false matches the repo's other timer shape (the
 # walker's incremental floor handles missed runs without boot-time catch-up).
 # A regression to hourly OR Persistent=true silently re-introduces the
 # rate-limit failure mode that motivated PR #78.
