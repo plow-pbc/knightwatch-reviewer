@@ -4,9 +4,10 @@
 # the daemon, and DOCKER_HOST can be tcp://127.0.0.1:2375.
 #
 # The `claims` volume is SHARED across ALL reviewers: it holds the per-PR
-# lock + runs/ review-state, so the existing non-blocking flock + KNOWN_SHA
-# gate dedup across containers. Everything else is per-container (repos/,
-# workdirs/, the just-test + canonical locks via LOCAL_STATE_DIR, ~/.codex).
+# lock + runs/ review-state + the just-test semaphore, so the non-blocking
+# flock + KNOWN_SHA gate dedup across containers and MAX_CONCURRENT_TESTS caps
+# across them. Everything else is per-container (repos/, workdirs/, the
+# canonical clone/fetch lock + quota-pause via LOCAL_STATE_DIR, ~/.codex).
 #
 # Scale-out (add account N): add a dind-N + reviewer-N pair. Each reviewer is
 # the `<<: *reviewer` + `<<: *reviewer-env` contract plus only its per-account
