@@ -201,7 +201,8 @@ class TestRunCodex(unittest.TestCase):
         fires."""
         agent_dir = self._agent_dir("intent")
         mock_popen.side_effect = _make_codex_stub(plan={"intent": "TIMEOUT"})
-        with _fast_watchdog():
+        log_path = Path(self.tmp.name) / "orchestrator.log"
+        with _fast_watchdog(), patch.dict(os.environ, {"LOG_FILE": str(log_path)}):
             rc = pipeline.run_codex(
                 "intent", str(self.repo_dir), "PROMPT", str(agent_dir)
             )
@@ -210,6 +211,16 @@ class TestRunCodex(unittest.TestCase):
         self.assertEqual(mock_killpg.call_count, 2)
         self.assertEqual(mock_killpg.call_args.args[1], signal.SIGKILL)
         self.assertTrue((agent_dir / "log.attempt1.txt").exists())
+        # The "(retrying)" suffix must distinguish a rescued hang from a
+        # final one: attempt 1 retries (suffix present), but the second and
+        # final kill exhausts the loop with no third attempt — it must NOT
+        # be marked "(retrying)", or the aggregate `grep -c` undercounts the
+        # review-costing kills this surfacing exists to make measurable.
+        kill_lines = [l for l in log_path.read_text().splitlines()
+                      if "codex watchdog kill" in l]
+        self.assertEqual(len(kill_lines), 2)
+        self.assertIn("(retrying)", kill_lines[0])
+        self.assertNotIn("(retrying)", kill_lines[1])
 
     @patch("pipeline.os.killpg")
     @patch("pipeline.subprocess.Popen")
@@ -323,13 +334,9 @@ class TestRunCodex(unittest.TestCase):
     @patch("pipeline.os.killpg")
     @patch("pipeline.subprocess.Popen")
     def test_watchdog_kill_is_surfaced_on_operator_log_stream(self, mock_popen, mock_killpg):
-        """A watchdog kill must reach stdout/$LOG_FILE, not only the
-        per-agent log.txt. That log.txt lives inside the run dir, invisible
-        to `docker compose logs` — the stream /babysit-pr tails and the only
-        place the codex parallel-tool-call deadlock rate (openai/codex#21937)
-        is countable via `grep -c`. Without this the rate is silent: PR #121's
-        body cited ~149/day while the live container logs showed zero, because
-        the kill only ever landed where nobody could aggregate it."""
+        """A watchdog kill must reach stdout/$LOG_FILE, not only the per-agent
+        log.txt. (Why this matters is documented beside the production log()
+        call in pipeline.run_codex.)"""
         agent_dir = self._agent_dir("intent")
         mock_popen.side_effect = lambda argv, **kwargs: FakePopen(
             returncode=-signal.SIGKILL, raise_timeout=True)
