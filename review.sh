@@ -30,13 +30,6 @@ REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 . "$REVIEWER_LIB_DIR/tracked-repos.sh"
 . "$REVIEWER_LIB_DIR/gh-comments.sh"
 [ ${#REPOS[@]} -ge 1 ] || { echo "FATAL: no tracked repos — populate $STATE_DIR/repos.conf or set REPOS in config.env" >&2; exit 1; }
-# One in-flight review per orchestrator run — the single contract since the
-# legacy host reviewer was retired (review.sh now runs only as the container
-# review loop's per-tick entrypoint). Pinned AFTER config.env is sourced (just
-# above, via tracked-repos.sh) so a stray legacy MAX_CONCURRENT in config.env
-# can't silently widen it. The orchestrator waits for its worker before
-# returning (see end of file).
-MAX_CONCURRENT=1
 BOT_USER="${BOT_USER:-srosro}"
 BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
 # Hidden HTML-comment marker prepended to every auto-post by this repo
@@ -101,14 +94,13 @@ WORKER_TIMEOUT="${WORKER_TIMEOUT:-90m}"
 # hard kill. (Codex setsid's into its own session and escapes timeout's
 # process-group signal entirely — that residual is accepted, not fixed here.)
 WORKER_KILL_AFTER="${WORKER_KILL_AFTER:-30s}"
-log "Fan-out: max $MAX_CONCURRENT concurrent, per-worker timeout $WORKER_TIMEOUT (kill-after $WORKER_KILL_AFTER)"
+log "Per-worker timeout $WORKER_TIMEOUT (kill-after $WORKER_KILL_AFTER)"
 
-# Single-pass: enumerate PRs and dispatch eligible ones inline. No
+# Single-pass: enumerate PRs and review eligible ones inline, one at a time. No
 # tab-delimited spec serialization, no field-shift attack surface —
 # shell variable boundaries are explicit when the worker is invoked
 # directly with positional args + env vars. Per-PR flock in
 # lib/review-one-pr.sh prevents duplicate-dispatch races.
-active=0
 dispatched=0
 ALL_PRS=$(enumerate_open_prs) || {
     log "Failed to enumerate open PRs (batched graphql or per-repo fallthrough — see prior errors)"
@@ -294,45 +286,37 @@ while IFS= read -r PR_JSON; do
         printf 'Comment by @%s:\n\n%s\n' "$TRIGGER_USER" "$TRIGGER_BODY" > "$TRIGGER_FILE"
     fi
 
-    # Serialize to one in-flight worker (MAX_CONCURRENT=1): block here until
-    # the prior worker drains before dispatching the next. Per-worker outcomes
-    # live in $STATE_DIR/runs/<id>/run.log.
-    while [ "$active" -ge "$MAX_CONCURRENT" ]; do
-        wait -n || true
-        active=$((active - 1))
-    done
-
-    # Container mode: if the worker that just drained hit a codex cap (wrote a
-    # future quota-paused-until), stop claiming more PRs THIS tick. review-loop.sh
-    # only re-checks the pause between ticks, so without this a capped account
-    # would quota-abort every remaining eligible PR before the loop pauses.
-    if [ -n "${REVIEWER_CONTAINER_MODE:-}" ] \
-       && [ "$(date +%s)" -lt "$(head -n1 "$LOCAL_STATE_DIR/quota-paused-until" 2>/dev/null || echo 0)" ]; then
-        log "codex quota hit — stopping further claims this tick (paused until the reset window)"
-        break
-    fi
-
-    # Absolute wall-clock deadline of the outer `timeout $WORKER_TIMEOUT`
-    # wrap. pipeline.py reads this to decide whether a stale-kill retry
-    # fits under the worker cap — `just test` (up to 30 min), Wave A,
-    # and earlier specialists all eat into the same budget.
+    # Run the worker to completion before the next PR — one in-flight review per
+    # tick (the container review loop caps each account to one). Per-worker
+    # outcomes live in $STATE_DIR/runs/<id>/run.log.
+    #
+    # WORKER_DEADLINE_EPOCH is the absolute wall-clock deadline of the outer
+    # `timeout $WORKER_TIMEOUT` wrap; pipeline.py reads it to decide whether a
+    # stale-kill retry fits under the worker cap — `just test` (up to 30 min),
+    # Wave A, and earlier specialists all eat into the same budget.
     worker_secs=$(timeout_duration_seconds "$WORKER_TIMEOUT")
     TRIGGER_COMMENT_FILE="$TRIGGER_FILE" \
     DISPATCHER_TICK_AT="$TICK_FETCHED_AT_ISO" \
     REVIEWER_LIB_DIR="$REVIEWER_LIB_DIR" \
     WORKER_DEADLINE_EPOCH="$(( $(date +%s) + worker_secs ))" \
         timeout -k "$WORKER_KILL_AFTER" "$WORKER_TIMEOUT" "$REVIEWER_LIB_DIR/review-one-pr.sh" \
-        "$REPO" "$PR_NUM" "$PR_SHA" "$PR_BRANCH" "$PR_TITLE" "$FORCE_WHOLE_PR" &
-    active=$((active + 1))
+        "$REPO" "$PR_NUM" "$PR_SHA" "$PR_BRANCH" "$PR_TITLE" "$FORCE_WHOLE_PR"
     dispatched=$((dispatched + 1))
+
+    # If the worker that just ran hit a codex cap (wrote a future
+    # quota-paused-until), stop claiming more PRs THIS tick. review-loop.sh only
+    # re-checks the pause between ticks, so without this a capped account would
+    # quota-abort every remaining eligible PR before the loop pauses.
+    if [ -n "${REVIEWER_CONTAINER_MODE:-}" ] \
+       && [ "$(date +%s)" -lt "$(head -n1 "$LOCAL_STATE_DIR/quota-paused-until" 2>/dev/null || echo 0)" ]; then
+        log "codex quota hit — stopping further claims this tick (paused until the reset window)"
+        break
+    fi
 done < <(echo "$ALL_PRS" | jq -c '.[]')
 
 if [ "$dispatched" -eq 0 ]; then
     log "No PRs need review"
 else
-    log "Fan-out: dispatched $dispatched worker(s)"
+    log "Reviewed $dispatched PR(s) this tick"
 fi
-# Block until the dispatched worker finishes before returning to review-loop.sh's
-# poll loop — that's what caps a single OpenAI account to one in-flight review.
-wait
 exit 0

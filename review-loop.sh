@@ -1,7 +1,7 @@
 #!/bin/bash
 # Container entrypoint: replace the systemd 2-min timer with an in-process
 # poll loop. Waits for the dind sidecar's daemon, then runs review.sh
-# (MAX_CONCURRENT=1 per container) every POLL_SECS. N containers = N
+# (serialized — one review per tick) every POLL_SECS. N containers = N
 # concurrent reviews across N accounts; the shared per-PR flock keeps two
 # containers off the same PR.
 set -uo pipefail

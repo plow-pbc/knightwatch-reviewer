@@ -270,16 +270,13 @@ run_orchestrator() {
 }
 
 count_dispatches() {
-    # Workers fan out via `timeout ... worker.sh ... &` in review.sh
-    # and write WORKER_DISPATCHED lines asynchronously after the
-    # orchestrator has already exited. A synchronous grep beats the
-    # write on fast machines, producing flaky 0-counts on dispatch
-    # scenarios. Read the orchestrator's own promise (its
-    # synchronously-logged "Fan-out: dispatched N worker(s)" line) and
-    # poll until N writes show up — capped so 0-dispatch scenarios stay
-    # fast (orchestrator promised 0 → return 0 immediately, no wait).
+    # review.sh runs each worker in the foreground (one review per tick), so the
+    # WORKER_DISPATCHED lines are written before the orchestrator exits. Read the
+    # orchestrator's own promise (its "Reviewed N PR(s) this tick" line) and
+    # confirm N markers landed — capped so 0-review scenarios stay fast
+    # (orchestrator promised 0 → return 0 immediately, no wait).
     local promised actual
-    promised=$(grep -oE 'dispatched [0-9]+ worker' "$LOG_FILE" 2>/dev/null \
+    promised=$(grep -oE 'Reviewed [0-9]+ PR' "$LOG_FILE" 2>/dev/null \
                   | grep -oE '[0-9]+' | tail -1)
     promised="${promised:-0}"
     if [ "$promised" -eq 0 ]; then
@@ -524,12 +521,10 @@ touch "$HOLDER_RELEASE"
 wait "$HOLDER_PID" 2>/dev/null
 ( . "$REVIEWER_LIB_DIR/locking.sh" && acquire_pr_lock "$LOCK_TEST_STATE_DIR" "test_repo__1" ) || { echo "FAIL scenario 10: post-release acquire failed; lock may be stuck"; exit 1; }
 
-# Scenario 11: review.sh fails LOUD if the worker script is missing
-# or not executable. With detached fan-out, `bash worker &` returns 0
-# regardless of whether the worker actually started, so an accidental
-# `chmod -x` or a missing symlink would silently produce "dispatched N
-# worker(s)" while no review ran. The pre-fan-out executable check
-# catches that class.
+# Scenario 11: review.sh fails LOUD if the worker script is missing or not
+# executable. The pre-dispatch executable check (before any PR enumeration)
+# catches an accidental `chmod -x` or a missing symlink up front, so a broken
+# install aborts loudly instead of logging "Reviewed N PR(s)" while nothing ran.
 echo "  scenario 11: missing/non-executable worker — orchestrator fails loud, no dispatch..."
 chmod -x "$REVIEWER_LIB_DIR/review-one-pr.sh"
 printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
@@ -542,14 +537,13 @@ fi
 grep -q "FATAL: $REVIEWER_LIB_DIR/review-one-pr.sh missing or not executable" "$LOG_FILE" || { chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"; echo "FAIL scenario 11: expected FATAL log line about missing worker"; cat "$LOG_FILE"; exit 1; }
 chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"   # restore for any later scenario
 
-# Scenario 12: per-worker WORKER_TIMEOUT bounds wedged-worker risk. With
-# detached workers, the service-level TimeoutStartSec=90min no longer caps
-# worker runtime — a hung Codex/test phase could hold the per-PR flock
-# indefinitely. review.sh wraps each worker with `timeout -k "$WORKER_KILL_AFTER"`,
-# so the ceiling escalates SIGTERM → SIGKILL. This drives a worker that IGNORES
-# SIGTERM (the real wedge — a bare SIGTERM leaves it running, the cascade the
-# deleted /unstick recipe used to clear by hand) and asserts the kill-after
-# SIGKILL reaps it. Also fences the operator-facing "per-worker timeout" log.
+# Scenario 12: per-worker WORKER_TIMEOUT bounds wedged-worker risk. review.sh
+# runs each worker under `timeout -k "$WORKER_KILL_AFTER"`, so a hung Codex/test
+# phase that would otherwise hold the per-PR flock indefinitely gets the ceiling
+# escalated SIGTERM → SIGKILL. This drives a worker that IGNORES SIGTERM (the
+# real wedge — a bare SIGTERM leaves it running, the cascade the deleted
+# /unstick recipe used to clear by hand) and asserts the kill-after SIGKILL
+# reaps it. Also fences the operator-facing "per-worker timeout" log line.
 echo "  scenario 12: WORKER_TIMEOUT — SIGTERM-ignoring worker is SIGKILLed via --kill-after..."
 WEDGED_PID_FILE="$TMPDIR/wedged-worker.pid"
 cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<TWORKER
@@ -580,8 +574,8 @@ if [ -n "$WEDGED_PID" ] && kill -0 "$WEDGED_PID" 2>/dev/null; then
     exit 1
 fi
 
-# Operator-facing: the fan-out log line must surface the cap in force this tick.
-grep -q "per-worker timeout 1s" "$LOG_FILE" || { echo "FAIL scenario 12: expected 'per-worker timeout 1s' in fan-out log line"; cat "$LOG_FILE"; exit 1; }
+# Operator-facing: the startup log line must surface the per-worker cap in force.
+grep -q "Per-worker timeout 1s" "$LOG_FILE" || { echo "FAIL scenario 12: expected 'Per-worker timeout 1s' in the startup log line"; cat "$LOG_FILE"; exit 1; }
 
 # Scenario 13: page-2 trigger fence. The original bug this PR exists to
 # fix: review.sh's pre-DRY fetch was a single-page `gh api`, so any
