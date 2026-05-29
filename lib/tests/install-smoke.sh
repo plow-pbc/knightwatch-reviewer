@@ -170,7 +170,7 @@ for d in lib docs prompts; do
     [ -L "$INSTALL_DIR/$d" ] || { echo "FAIL scenario 1: $INSTALL_DIR/$d not a symlink"; exit 1; }
 done
 
-# Render the same @KID_RW_PATHS@ / @KID_INDEX_RW_PATHS@ / @KWR_CLONE_ROOT@
+# Render the same @KID_RW_PATHS@ / @KWR_CLONE_ROOT@
 # values install.sh derives from the overlay's repos.conf, so the cmp
 # below compares against what install.sh actually wrote (post-
 # substitution). Sources in a subshell so the smoke's own REPOS /
@@ -184,13 +184,6 @@ EXPECTED_KID_RW_PATHS=$(
     paths=$(printf '%s\n' "${KID_PATHS[@]}" | sort -u | sed 's|^|-|' | tr '\n' ' ')
     printf '%s' "${paths% }"
 )
-EXPECTED_KID_INDEX_RW_PATHS=$(
-    REPOS=( ); declare -A KID_PATHS=( )
-    # shellcheck disable=SC1091
-    . "$SHARED_OVERLAY/repos.conf"
-    paths=$(printf '%s\n' "${KID_PATHS[@]}" | sort -u | sed 's|$|/.keepitdry|; s|^|-|' | tr '\n' ' ')
-    printf '%s' "${paths% }"
-)
 # KWR_CLONE_ROOT defaults to $HOME/services/kwr-repos in
 # lib/tracked-repos.sh. The sandboxed HOME is $TMPDIR/home; install.sh
 # substitutes the resolved literal path into the unit template.
@@ -200,33 +193,29 @@ EXPECTED_KWR_CLONE_ROOT="$HOME/services/kwr-repos"
 for unit in "${PROD_UNITS[@]}"; do
     name="$(basename "$unit")"
     [ -f "$SYSTEMD_DIR/$name" ] || { echo "FAIL scenario 1: $SYSTEMD_DIR/$name missing"; exit 1; }
-    if grep -qE '@(KID_(RW|INDEX_RW)_PATHS|KWR_CLONE_ROOT)@' "$unit"; then
+    if grep -qE '@(KID_RW_PATHS|KWR_CLONE_ROOT)@' "$unit"; then
         # Templated unit — compare against rendered version.
         rendered_expected="$TMPDIR/${name}.expected"
-        sed -e "s|@KID_INDEX_RW_PATHS@|$EXPECTED_KID_INDEX_RW_PATHS|g" \
-            -e "s|@KID_RW_PATHS@|$EXPECTED_KID_RW_PATHS|g" \
+        sed -e "s|@KID_RW_PATHS@|$EXPECTED_KID_RW_PATHS|g" \
             -e "s|@KWR_CLONE_ROOT@|$EXPECTED_KWR_CLONE_ROOT|g" \
             "$unit" > "$rendered_expected"
         cmp -s "$rendered_expected" "$SYSTEMD_DIR/$name" || { echo "FAIL scenario 1: $name rendered content differs from installed"; diff "$rendered_expected" "$SYSTEMD_DIR/$name"; exit 1; }
         # Verbose check: no placeholder leaks into the installed unit.
-        grep -qE '@(KID_(RW|INDEX_RW)_PATHS|KWR_CLONE_ROOT)@' "$SYSTEMD_DIR/$name" && { echo "FAIL scenario 1: installed $name still contains a @...@ placeholder (substitution broke)"; exit 1; }
+        grep -qE '@(KID_RW_PATHS|KWR_CLONE_ROOT)@' "$SYSTEMD_DIR/$name" && { echo "FAIL scenario 1: installed $name still contains a @...@ placeholder (substitution broke)"; exit 1; }
     else
         cmp -s "$unit" "$SYSTEMD_DIR/$name" || { echo "FAIL scenario 1: $name content differs from source"; exit 1; }
     fi
 done
 
-# Regression pin: pr-reviewer.service and pr-reviewer-kid-refresh.service
-# both run kid prior-art queries (or build the index), and chromadb's
-# SQLite backend writes WAL/journal files even on read-only queries. If
-# either unit drops the placeholder from its actual ReadWritePaths=
-# directive, kid lookups fail with "attempt to write a readonly
-# database" under ProtectHome=read-only and reviews silently degrade
-# to kid-less. The grep targets the live `ReadWritePaths=` line (no
-# leading `#`) so a placeholder-only-in-comment edit can't sneak past
-# the assertion while the actual directive ships broken — that was the
-# exact gap knightwatch flagged on PR #41 round 1.
+# Regression pin: pr-reviewer-kid-refresh.service builds the kid index, and
+# chromadb's SQLite backend writes WAL/journal files even on read-only
+# queries. If the unit drops the placeholder from its actual ReadWritePaths=
+# directive, kid lookups fail with "attempt to write a readonly database"
+# under ProtectHome=read-only and re-indexing silently degrades. The grep
+# targets the live `ReadWritePaths=` line (no leading `#`) so a
+# placeholder-only-in-comment edit can't sneak past the assertion while the
+# actual directive ships broken — the exact gap knightwatch flagged on PR #41.
 declare -A REQUIRED_PLACEHOLDER=(
-    [pr-reviewer.service]='@KID_INDEX_RW_PATHS@'
     [pr-reviewer-kid-refresh.service]='@KID_RW_PATHS@'
 )
 for required in "${!REQUIRED_PLACEHOLDER[@]}"; do
@@ -235,27 +224,16 @@ for required in "${!REQUIRED_PLACEHOLDER[@]}"; do
         || { echo "FAIL scenario 1: $required's ReadWritePaths= line is missing $placeholder — kid queries will hit chromadb readonly errors"; exit 1; }
 done
 
-# Regression pin: pr-reviewer.service must NOT enable PrivateTmp. review.sh
-# dispatches workers with `&` and exits (KillMode=process), so the unit
-# deactivates within seconds while `just test` keeps running for up to 30m.
-# PrivateTmp=yes makes systemd unmount /tmp on deactivation — detached
-# workers then see /tmp as ENOENT and any `just test` hardcoding /tmp paths
-# false-fails. Same anchor as the kid pin: live directive only, comment
-# mentions don't count.
-grep -E '^PrivateTmp=yes' "$PROJECT_ROOT/systemd/pr-reviewer.service" >/dev/null \
-    && { echo "FAIL scenario 1: pr-reviewer.service has PrivateTmp=yes — detached workers will see /tmp as ENOENT after unit deactivates; see the unit file comment for the full failure mode"; exit 1; }
-
 # Regression pin: every codex-running unit must point npm's cache under a
 # ReadWritePaths dir. codex is npm-managed; npm's default cache (~/.npm) is
 # read-only under ProtectHome=read-only, so without this redirect codex
 # stalls/errors on cache writes. The path must live under ~/.cache (or
 # another ReadWritePaths entry) — pinning the ~/.cache prefix catches a
 # silent drop of the env line AND a move back to an unwritable location.
-# The set is the units whose ExecStart reaches `codex exec`: the main
-# reviewer (review.sh → pipeline.py) and learn (learn-from-replies.sh).
-# bakeoff/approve/org-sync/kid-refresh/re-request don't run codex. Same
-# anchor as the pins above: live directive only, comment mentions don't count.
-for codex_unit in pr-reviewer.service pr-reviewer-learn.service; do
+# learn (learn-from-replies.sh) is the only host unit whose ExecStart reaches
+# `codex exec`; bakeoff/approve/org-sync/kid-refresh/re-request don't run codex
+# (the review loop is containerized). Same anchor: live directive only.
+for codex_unit in pr-reviewer-learn.service; do
     grep -E '^Environment=npm_config_cache=/home/odio/\.cache/' "$PROJECT_ROOT/systemd/$codex_unit" >/dev/null \
         || { echo "FAIL scenario 1: $codex_unit is missing Environment=npm_config_cache under ~/.cache — codex npm cache writes will fail under ProtectHome=read-only"; exit 1; }
 done
@@ -365,7 +343,7 @@ n_cp="$(count_stub 'SUDO cp')"
 [ "$(count_stub 'SYSTEMCTL enable --now pr-reviewer-fakenew.timer')" = "1" ] || { echo "FAIL scenario 3 (newly-added-timer-enable regression): expected exactly 1 'enable --now pr-reviewer-fakenew.timer' call"; cat "$STUB_LOG"; exit 1; }
 # Existing timers should NOT have been re-enabled (they were already
 # enabled+active per MOCK_TIMERS_ENABLED).
-[ "$(count_stub 'SYSTEMCTL enable --now pr-reviewer.timer')" = "0" ] || { echo "FAIL scenario 3: existing pr-reviewer.timer was re-enabled despite already being active"; cat "$STUB_LOG"; exit 1; }
+[ "$(count_stub 'SYSTEMCTL enable --now pr-reviewer-bakeoff.timer')" = "0" ] || { echo "FAIL scenario 3: existing pr-reviewer-bakeoff.timer was re-enabled despite already being active"; cat "$STUB_LOG"; exit 1; }
 # All already-active production timers (PROD_TIMERS) must have been restarted
 # because CHANGED > 0 (3 new unit files were copied). The new fakenew.timer
 # took the enable --now path (not yet active per MOCK_NEWLY_ADDED_TIMERS), so
@@ -373,4 +351,28 @@ n_cp="$(count_stub 'SUDO cp')"
 EXPECTED_RESTARTS="${#PROD_TIMERS[@]}"
 [ "$(count_stub 'SYSTEMCTL restart')" = "$EXPECTED_RESTARTS" ] || { echo "FAIL scenario 3: expected $EXPECTED_RESTARTS restarts (all existing active timers), got $(count_stub 'SYSTEMCTL restart')"; cat "$STUB_LOG"; exit 1; }
 
-echo "  PASS (3 scenarios: first-run, idempotent-rerun, new-unit-incremental-enables-new-timer)"
+# --- Scenario 4: retired legacy host-reviewer units are disabled + removed ----
+# install.sh's removal branch (disable --now, then rm) is the cutover safety this
+# PR ships: a `pr-reviewer.timer`/`.service` left in $SYSTEMD_DIR by a prior
+# install must be torn down so an orphaned host worker can't linger and overlap
+# the container fleet. Pin that both operations (disable --now + rm) run for each
+# legacy unit so a refactor can't silently drop the removal branch.
+echo "  scenario 4: retired pr-reviewer.timer/.service in SYSTEMD_DIR → disabled --now + removed, idempotent once gone..."
+OVERLAY_LEGACY="$TMPDIR/repo-overlay-legacy"
+make_install_overlay "$OVERLAY_LEGACY"
+for legacy in pr-reviewer.timer pr-reviewer.service; do
+    printf '[Unit]\nDescription=stale %s left by a prior install\n' "$legacy" > "$SYSTEMD_DIR/$legacy"
+done
+: > "$STUB_LOG"
+MOCK_TIMERS_ENABLED=1 run_install "$OVERLAY_LEGACY/install.sh" || { echo "FAIL scenario 4: install.sh exited non-zero"; cat "$STUB_LOG"; exit 1; }
+for legacy in pr-reviewer.timer pr-reviewer.service; do
+    [ "$(count_stub "SYSTEMCTL disable --now $legacy")" = "1" ] || { echo "FAIL scenario 4: expected exactly one 'disable --now $legacy'"; cat "$STUB_LOG"; exit 1; }
+    [ ! -f "$SYSTEMD_DIR/$legacy" ] || { echo "FAIL scenario 4: $legacy still in SYSTEMD_DIR after install (rm -f branch did not run)"; exit 1; }
+done
+# Idempotent: a second run with the units already gone disables nothing (branch
+# is guarded by the -f existence check).
+: > "$STUB_LOG"
+MOCK_TIMERS_ENABLED=1 run_install "$OVERLAY_LEGACY/install.sh" || { echo "FAIL scenario 4: install.sh exited non-zero on idempotent rerun"; cat "$STUB_LOG"; exit 1; }
+[ "$(count_stub 'SYSTEMCTL disable --now pr-reviewer')" = "0" ] || { echo "FAIL scenario 4: legacy disable fired again once units were gone (branch not guarded by -f)"; cat "$STUB_LOG"; exit 1; }
+
+echo "  PASS (4 scenarios: first-run, idempotent-rerun, new-unit-incremental-enables-new-timer, retired-legacy-unit-removal)"

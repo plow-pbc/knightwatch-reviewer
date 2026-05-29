@@ -9,7 +9,7 @@ User=odio
 Group=odio
 WorkingDirectory=/home/odio/.pr-reviewer
 Environment=HOME=/home/odio
-# PATH: system dirs FIRST (see pr-reviewer.service for rationale —
+# PATH: system dirs FIRST (see pr-reviewer-bakeoff.service for rationale —
 # defense-in-depth on top of the ~/.local-not-in-ReadWritePaths fix).
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/odio/.nvm/versions/node/v24.15.0/bin:/home/odio/.local/bin
 ExecStart=/home/odio/.pr-reviewer/org-sync.sh

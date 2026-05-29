@@ -74,7 +74,7 @@ cd knightwatch-reviewer
 
 Single-tenant by design: one Linux host with `gh` authenticated as the bot's signing user. The systemd units currently bake in `User=odio` and `/home/odio/.pr-reviewer/`; edit them for a different user or path.
 
-> **Legacy single-account path.** The `systemd/*.timer` deployment above runs the reviewer on **one** OpenAI/Codex account on the host. It remains supported as the fallback, but the **containerized multi-account deployment below is the primary path for the review loop** — it spreads reviews across N accounts and confines each review (PR code + codex agents) to a container. (The *quota-aware* piece — a capped account backing off so it can't stall the queue — is a follow-up; see `.knightwatch/product-context.md`. Today a capped container can still claim+stamp a PR.) It containerizes the *review loop only*; the auxiliary host timers (auto-discovery, auto-calibration) stay host-side — see the migration note below.
+> **The review loop is containerized.** `install.sh` sets up only the **auxiliary host timers** — auto-discovery (`org-sync`), auto-calibration (`learn`), `approve`, `re-request`, `kid-refresh`, and the specialist `bake-off`. The reviewer itself runs in the **containerized multi-account deployment below** — it spreads reviews across N accounts and confines each review (PR code + codex agents) to a container. The legacy single-account host reviewer (`pr-reviewer.timer`/`.service`) has been retired in its favor; `install.sh` removes the stale units if a prior install left them. No cutover drain is needed before `docker compose up -d`: the host reviewer was disabled ahead of this change, its detached workers are bounded to ~90m (`WORKER_TIMEOUT`), and nothing here re-creates a host reviewer — `review.sh` now runs only as the container loop's entrypoint — so no detached `review-one-pr.sh` from `~/.pr-reviewer` can still be posting by the time the containers start.
 
 ### Containerized (multi-account) deployment
 
@@ -83,21 +83,11 @@ Runs N reviewer containers on one host, each pinned to its own OpenAI account an
 ```sh
 cp -r docker/secrets.example docker/secrets   # then populate — see docker/secrets.example/README.md
 docker build -f docker/Dockerfile -t knightwatch-reviewer:dev .
-# Migration: stop the legacy host reviewer FIRST. It polls a different state
-# root (~/.pr-reviewer) than the containers (the shared `claims` volume), so
-# leaving it enabled means host + containers both review — and double-post —
-# the same PRs (their per-PR locks live in different places and don't dedup).
-sudo systemctl disable --now pr-reviewer.timer
-# Disabling the timer stops new ticks, but workers already dispatched run
-# detached (KillMode=process) for up to 90m and still hold ~/.pr-reviewer
-# locks — so DRAIN them before bringing up containers, or an in-flight host
-# review can double-post against a new container review:
-while pgrep -f 'review-one-pr\.sh' >/dev/null; do echo "waiting for in-flight host reviewers to finish…"; sleep 30; done
 docker compose up -d
 docker compose logs -f reviewer-1
 ```
 
-The auxiliary host timers (`-approve`, `-re-request`, `-kid-refresh`) are independent of the review loop and don't double-review; leave them or migrate separately. **Two write host state the containers don't read — auto-discovery and auto-calibration are host-only in v1:**
+The auxiliary host timers (`-approve`, `-re-request`, `-kid-refresh`, `-org-sync`, `-learn`, `-bakeoff`) run host-side, independent of the containerized review loop. **Two write host state the containers don't read — auto-discovery and auto-calibration are host-only in v1:**
 - `pr-reviewer-org-sync` writes auto-discovered repos to `~/.pr-reviewer/repos.conf.auto`, which the containers (reading `/shared/repos.conf`) never see → list tracked repos explicitly in `docker/secrets/repos.conf` (or mount a shared `repos.conf.auto` into `/shared` and run org-sync against it).
 - `pr-reviewer-learn` updates `~/.claude/COMMENT_REVIEW_MISTAKES.md` (learned review calibrations), but the containers read the static `docker/secrets/claude-standards/` copy → re-copy that file (or mount the live one read-only) to pick up new calibrations.
 
@@ -118,7 +108,7 @@ REPOS=(
 )
 ```
 
-The next 2-minute timer tick picks it up. `SOURCE_PATHS` in the same file enables cross-repo grep/search-roots and `KID_PATHS` wires kid-prior-art lookup. Per-repo policy (product context, review priority, sibling allowlist, dead-code command, strict-typing command) lives in each tracked repo's `.knightwatch/` directory and is read from the base branch via `lib/knightwatch-config.sh`. See the inline comments in [`repos.conf.example`](repos.conf.example) for shapes and `lib/tracked-repos.sh` for the loader.
+The host auxiliary timers pick it up on their next tick. **The containerized review loop reads a separate manifest** — `docker/secrets/repos.conf` (mounted at `/shared/repos.conf`), polled every 30s — so edit *that* copy to change which repos the fleet reviews. `SOURCE_PATHS` in the same file enables cross-repo grep/search-roots and `KID_PATHS` wires kid-prior-art lookup. Per-repo policy (product context, review priority, sibling allowlist, dead-code command, strict-typing command) lives in each tracked repo's `.knightwatch/` directory and is read from the base branch via `lib/knightwatch-config.sh`. See the inline comments in [`repos.conf.example`](repos.conf.example) for shapes and `lib/tracked-repos.sh` for the loader.
 
 ## Use on a PR
 
@@ -157,5 +147,5 @@ Use it to inform collapse-or-keep decisions on specialist agents.
 
 - `review.sh` / `lib/review-one-pr.sh` — per-PR review driver
 - `prompts/` — specialist + critic + aggregator prompts
-- `systemd/` — polling timer + service units
+- `systemd/` — auxiliary host timer + service units (discovery, calibration, approve, re-request, kid-refresh, bake-off)
 - `repos.conf.example` — tracked-repo manifest template (live `repos.conf` is per-operator, gitignored)

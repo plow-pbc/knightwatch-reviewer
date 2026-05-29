@@ -9,7 +9,7 @@ User=odio
 Group=odio
 WorkingDirectory=/home/odio/.pr-reviewer
 Environment=HOME=/home/odio
-# PATH: system dirs FIRST (see pr-reviewer.service for rationale).
+# PATH: system dirs FIRST (see pr-reviewer-bakeoff.service for rationale).
 # This unit's ReadWritePaths is narrower (~/.pr-reviewer only), but
 # keeping the same PATH order across all services makes the security
 # stance uniform and survives future ReadWritePaths widenings.

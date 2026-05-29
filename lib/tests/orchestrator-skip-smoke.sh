@@ -229,19 +229,6 @@ clear_seeded_runs() {
 clear_seeded_runs
 seed_run "cncorp_plow" "1" "20260429T100000000Z" "abc123" "COMMENT" >/dev/null
 
-# --- Systemd contract static check (fails the suite at setup) -------------
-# Detached-worker correctness depends on KillMode=process in the service
-# unit — it's the directive that lets workers survive when the
-# orchestrator (oneshot ExecStart) exits. We can't execute systemd
-# inside a bash smoke, but we CAN assert the directive is in the unit
-# file. A regression that drops it would silently break detached-worker
-# survival in production; this catches it at the suite gate before any
-# scenario runs.
-grep -q '^KillMode=process$' "$PROJECT_ROOT/systemd/pr-reviewer.service" || {
-    echo "FAIL setup: systemd/pr-reviewer.service is missing 'KillMode=process' — detached workers won't survive orchestrator exit in production"
-    exit 1
-}
-
 # --- Worker self-termination contract (static check) ----------------------
 # Detached workers are bounded only by their `timeout` wraps, which must
 # escalate to SIGKILL (`timeout -k`) or a SIGTERM-ignoring tree outlives its
