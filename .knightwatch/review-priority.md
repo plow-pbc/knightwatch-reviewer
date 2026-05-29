@@ -1,6 +1,6 @@
 # Review priority
 
-**Stage:** The reviewer reviewing itself. Single-operator tool used by one engineer (srosro). Review loop moving to a containerized multi-account deployment (primary); systemd-timers-on-one-host is the legacy fallback. Not a product, not a distribution target. Matches `.knightwatch/product-context.md`.
+**Stage:** The reviewer reviewing itself. Single-operator tool used by one engineer (srosro). The review loop runs as a containerized multi-account deployment — the **only** review path; the legacy single-account systemd-timer-on-one-host reviewer has been retired (units deleted). The remaining host timers (learn, org-sync, approve, re-request, kid-refresh) are auxiliary only. Not a product, not a distribution target. Matches `.knightwatch/product-context.md`.
 
 **Cultural emphasis:** SIMPLIFY at all costs — complexity kills PMF iteration. Subtractive remedies (delete, collapse, retire) are higher-leverage than additive ones at any severity. Cumulative additive LOC across review rounds is the structural-failure signal — see PR#47 contrast pair below. Prompt-engineering changes here cascade into every PR review across every tracked repo; favor precise, falsifiable rules over vague guidance. The universal Broken-Glass posture lives in `standards.md` § Broken-Glass Test — apply that here, including the worked PR#47→#50 substrate-replacement example.
 
