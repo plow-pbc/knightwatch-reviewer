@@ -24,7 +24,14 @@ x-dind: &dind
   # 127.0.0.1 reaches its own daemon — but a sibling pair's netns can't, so a
   # 0.0.0.0 bind (reachable across the compose network) would let one reviewer
   # drive another account's daemon. Keep DOCKER_HOST=tcp://127.0.0.1:2375.
-  command: ["--host=tcp://127.0.0.1:2375"]
+  #
+  # `dockerd` MUST be the first token. dockerd-entrypoint.sh injects its own
+  # default `--host=tcp://0.0.0.0:2375` whenever argv is empty or starts with `-`
+  # (its line ~100). A bare `--host=…` first token trips that, so the entrypoint
+  # ALSO appends 0.0.0.0:2375 — which both defeats the loopback-only intent and
+  # collides on the port, so dockerd dies with "bind: address already in use".
+  # Leading with `dockerd` skips the injection, binding ONLY the hosts below.
+  command: ["dockerd", "--host=unix:///var/run/docker.sock", "--host=tcp://127.0.0.1:2375"]
   mem_limit: 12g
 
 # Shared reviewer service contract (everything identical across accounts).
@@ -58,7 +65,12 @@ services:
     volumes:
       - claims:/shared
       - reviewer1-local:/local
-      - ./docker/secrets/codex-account-a:/root/.codex:ro       # OpenAI account A
+      # Writable (NOT :ro): codex loads/migrates config and refreshes its OAuth
+      # token inside its home — a read-only mount makes every codex call die with
+      # "Error loading configuration: Read-only file system". The creds stay
+      # protected by /root's 0700 perms (the unprivileged test user can't reach
+      # /root at all), so dropping :ro doesn't widen test-user access.
+      - ./docker/secrets/codex-account-a:/root/.codex          # OpenAI account A
       - ./docker/secrets/repos.conf:/shared/repos.conf:ro      # tracked-repo manifest
       - ./docker/secrets/config.env:/root/.kwr/config.env:ro      # ops knobs + `export GH_TOKEN=…` (the one config seam; review.sh sources it)
       - ./docker/secrets/claude-standards:/root/.claude:ro     # review standards (worker reads as root; the test user is isolated from /root)
@@ -78,7 +90,7 @@ services:
     volumes:
       - claims:/shared
       - reviewer2-local:/local
-      - ./docker/secrets/codex-account-b:/root/.codex:ro       # OpenAI account B
+      - ./docker/secrets/codex-account-b:/root/.codex          # OpenAI account B (writable — see account A note)
       - ./docker/secrets/repos.conf:/shared/repos.conf:ro
       - ./docker/secrets/config.env:/root/.kwr/config.env:ro
       - ./docker/secrets/claude-standards:/root/.claude:ro

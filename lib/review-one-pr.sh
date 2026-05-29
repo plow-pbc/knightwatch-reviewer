@@ -237,6 +237,19 @@ if [ -z "$BASE_REF" ] || [ -z "$PR_AUTHOR" ]; then
     exit 1
 fi
 
+# Author trust — computed once, before any placeholder/clone/codex. Container-
+# mode review gate: codex agents run sandbox-bypassed and share the privileged
+# dind daemon's netns, so reviewing an UNTRUSTED-author PR risks prompt-injection
+# → daemon → host root. Skip untrusted authors entirely here (no placeholder, no
+# pipeline) so untrusted content never reaches codex. Trusted (push-access)
+# authors review normally; the host (non-container) path is unaffected. Lifts
+# when the daemon is unprivileged. Reused below for the .env-mirror/just-test gate.
+if is_trusted_repo_author "$REPO" "$PR_AUTHOR"; then IS_TRUSTED_AUTHOR=true; else IS_TRUSTED_AUTHOR=false; fi
+if [ -n "${REVIEWER_CONTAINER_MODE:-}" ] && [ "$IS_TRUSTED_AUTHOR" != true ]; then
+    log "$PR_ID: skipping review — untrusted author ($PR_AUTHOR, no push access) in container mode (codex↔privileged-dind; trusted authors only until rootless dind)"
+    exit 0
+fi
+
 # Install the EXIT trap BEFORE the canonical clone/fetch so finalize_run is
 # guaranteed to fire on any abort path. cleanup_eyes is a no-op until
 # EYES_COMMENT_ID gets set after the head-ref fetch succeeds (placeholder
@@ -537,9 +550,9 @@ fi
 # Trust gate: only mirror when PR_AUTHOR has push access to the repo.
 # Otherwise an untrusted contributor's `just test` recipe could
 # exfiltrate live API keys before the eager-delete runs.
-# Compute author trust once; reused by the .env mirror (below) and the
-# just-test skip gate (just_test_skip_reason, lib/auth.sh).
-if is_trusted_repo_author "$REPO" "$PR_AUTHOR"; then IS_TRUSTED_AUTHOR=true; else IS_TRUSTED_AUTHOR=false; fi
+# IS_TRUSTED_AUTHOR was computed once right after PR_AUTHOR resolved (above),
+# where it also gates the container-mode review skip. Reused here for the .env
+# mirror + just-test skip gate (just_test_skip_reason, lib/auth.sh).
 COPIED_ENV_FILES=()
 if [ "$IS_TRUSTED_AUTHOR" = true ]; then
     while IFS= read -r -d '' example_path; do
@@ -1106,15 +1119,18 @@ fi
 
 # Product context from .knightwatch/product-context.md (per-repo,
 # committed to the base branch). PRESENT-empty and ABSENT both mean
-# "no per-repo product context"; the worker substitutes an explicit
-# placeholder below so prompts don't see a blank input.
-PRODUCT_CONTEXT=""
-PRODUCT_CONTEXT=$(read_knightwatch_file "$REPO_DIR" "$BASE_REF_SHA" "product-context.md")
-case $? in
-    0|1) : ;;  # PRESENT or ABSENT: use as-is (placeholder substituted below if empty)
-    *) log "$PR_ID: knightwatch-config error reading product-context.md — aborting"; rm -rf "$REPO_DIR"; exit 1 ;;
-esac
-[ -z "$PRODUCT_CONTEXT" ] && PRODUCT_CONTEXT="(no product context configured for $REPO)"
+# "no per-repo product context" — in which case we inject the org
+# default operating point below. Most repos here are pre-PMF with a
+# handful of users; absent a per-repo override, reviewers assume that
+# and optimize for iteration speed rather than silently reviewing for
+# scale (the recurring over-engineering failure). A repo genuinely at
+# scale overrides this by committing its own file.
+# resolve_product_context (lib/knightwatch-config.sh) is the shared
+# read+classify+default seam — same one lib/replay.sh uses, so the two
+# staging paths can't drift. rc=2 (git/ref error) → abort with our own
+# cleanup; PRESENT/ABSENT both yield usable content (org default substituted).
+PRODUCT_CONTEXT=$(resolve_product_context "$REPO_DIR" "$BASE_REF_SHA") \
+    || { log "$PR_ID: knightwatch-config error reading product-context.md — aborting"; rm -rf "$REPO_DIR"; exit 1; }
 write_scratch "$REPO_DIR" "product-context.md" "$PRODUCT_CONTEXT"
 
 # review-priority.md — per-repo operating point + voice posture

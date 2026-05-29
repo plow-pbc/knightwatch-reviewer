@@ -50,7 +50,7 @@ Numbered probe blocks per `.codex-scratch/probe-schema.md`. **Classes emitted: `
 
 ```
 ### Probe 1
-- **From:** architecture-v2
+- **From:** contract-drift
 - **Class:** bug
 - **Q:** Is the post-symlink runtime build pinned in the manifest?
 - **Files:** AGENTS.md:42, Dockerfile:71, manifests/plow-starter.yaml:8
@@ -68,7 +68,7 @@ Two cited files, the contract one of them carries (`python` is `python3`), the c
 
 ```
 ### Probe N
-- **From:** architecture-v2
+- **From:** contract-drift
 - **Q:** Should bumps commit before confirmation?
 - **Severity if yes:** open
 ```

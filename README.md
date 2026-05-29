@@ -28,7 +28,7 @@ Two more, from the public [`tkmx-client`](https://github.com/srosro/tkmx-client)
 A timer polls tracked repos for new or updated PRs. For each, it runs a two-wave pipeline:
 
 - **Wave A** (parallel): two **standalone** stages — `intent` (infers the end-user-facing outcome the PR is reaching for) and `dead-code-search` (pre-pass static + LLM evidence). Both seed scratch inputs the next wave reads.
-- **Wave B** (parallel): the eight **specialists** — `security`, `data-integrity`, `architecture`, `architecture-v2`, `consumers`, `shape`, `simplification`, `tests` — each looking at one angle of the diff against the rest of the repo. On re-reviews, the `momentum` standalone joins Wave B (it tracks LOC trajectory and prior-round drift). Each specialist emits structured **probes** (hypothesis + severity + class), and a per-angle `critic` then resolves each probe (`Answer: yes/no/unknown` + evidence).
+- **Wave B** (parallel): the nine **specialists** — `security`, `data-integrity`, `architecture`, `architecture-refined`, `contract-drift`, `consumers`, `shape`, `simplification`, `tests` — each looking at one angle of the diff against the rest of the repo. On re-reviews, the `momentum` standalone joins Wave B (it tracks LOC trajectory and prior-round drift). Each specialist emits structured **probes** (hypothesis + severity + class), and a per-angle `critic` then resolves each probe (`Answer: yes/no/unknown` + evidence).
 - **Aggregator** (sequential): renders a single ranked **Probes** section with `[from: <specialist>]` attribution, a verdict (`APPROVE` or one or more blocking probes), and an AI-author callout so Codex/Claude Code/Cursor can parse load-bearing open probes directly. A marker (`<!-- knightwatch-reviewer:auto-post -->`) tags every post so reply automation and human babysitting can filter cleanly.
 
 ```mermaid
@@ -44,15 +44,16 @@ flowchart TB
     WA --> scratch[(.codex-scratch/<br/>inferred-intent.md<br/>dead-code.md)]
     scratch --> WB
 
-    subgraph WB[Wave B — 8 specialists in parallel; each chains to a per-angle critic]
+    subgraph WB[Wave B — 9 specialists in parallel; each chains to a per-angle critic]
         direction LR
         sec[security] --> ksec[critic]
         di[data-integrity] --> kdi[critic]
         arch[architecture] --> karch[critic]
+        archref["architecture-refined"] --> karchref[critic]
         simp[simplification] --> ksimp[critic]
         tst[tests] --> ktst[critic]
         shp[shape] --> kshp[critic]
-        archv2["architecture-v2"] --> karchv2[critic]
+        cd["contract-drift"] --> kcd[critic]
         cons[consumers] --> kcons[critic]
         mom["momentum<br/>(re-review only)"]
     end
@@ -138,7 +139,7 @@ Reviews fire on PR open and again after one hour of idle. To force a fresh revie
 
 ### Specialist bake-off
 
-A small post-hoc measurement that helps decide which specialists are earning their place. `specialist-bakeoff.sh` runs daily at 03:30 Pacific via systemd, walks the tracked repos in `repos.conf` for bot reviews + feedback comments since the per-repo `min(REWALK_HOURS_ago, walks.last_walked_at)` floor — covers new comments since the last cron and refreshes `edited_after` on recent reviews — and persists one row per (review × specialist) into `~/.pr-reviewer/bakeoff.db`. A markdown snapshot is regenerated at `~/.pr-reviewer/specialist-bakeoff.md` with the following columns per specialist over a rolling 14-day window (configurable via `SCORECARD_DAYS`; the renderer reads accumulated DB state, decoupled from the walker's `REWALK_HOURS`):
+A small post-hoc measurement that helps decide which specialists are earning their place. `specialist-bakeoff.sh` runs twice daily at 07:00 and 19:00 Pacific via systemd, walks the tracked repos in `repos.conf` for bot reviews + feedback comments since the per-repo `min(REWALK_HOURS_ago, walks.last_walked_at)` floor — covers new comments since the last cron and refreshes `edited_after` on recent reviews — and persists one row per (review × specialist) into `~/.pr-reviewer/bakeoff.db`. A markdown snapshot is regenerated at `~/.pr-reviewer/specialist-bakeoff.md` with the following columns per specialist over a rolling 14-day window (configurable via `SCORECARD_DAYS`; the renderer reads accumulated DB state, decoupled from the walker's `REWALK_HOURS`):
 
 - **Reviews** — total reviews where this specialist was invoked (the denominator). Comes from the write-time `<!-- knightwatch-bakeoff: specialists=... -->` marker on every posted review.
 - **Shipped** — reviews where this specialist contributed at least one probe (per-review bool, not probe count).
