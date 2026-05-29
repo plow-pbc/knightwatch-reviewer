@@ -140,19 +140,16 @@ for f in review-priority.md decline-history.md loc-trend.md \
     write_scratch "$REPO_DIR" "$f" "(replay: not staged — upstream pipeline stage skipped)"
 done
 
-# product-context.md mirrors production staging (lib/review-one-pr.sh): the
-# per-repo file from the base ref if committed, else the shared org default
-# (default_product_context). architecture-refined and the other specialists
-# rely on this input always carrying the operating point, so a replay that
-# stubbed it would skew prompt A/B for exactly the lane this bake-off adds.
-# Mirror production's tri-state — rc 0|1 use/default, rc=2 (git/ref error)
-# abort — so a bad base ref can't be silently scored as "absent context".
-PRODUCT_CONTEXT=$(read_knightwatch_file "$REPO_DIR" "origin/$BASE_REF" "product-context.md") && rc=0 || rc=$?
-case $rc in
-    0|1) : ;;
-    *) echo "replay: error reading product-context.md from origin/$BASE_REF (rc=$rc) — aborting" >&2; exit 1 ;;
-esac
-[ -z "$PRODUCT_CONTEXT" ] && PRODUCT_CONTEXT=$(default_product_context)
+# product-context.md mirrors production staging via the SAME shared seam
+# (resolve_product_context, lib/knightwatch-config.sh): per-repo file from the
+# base ref if committed, else the org default. Using the one resolver — not a
+# replay-local copy of the present/absent/error tri-state — is what keeps
+# replay from drifting from production (it did, twice). architecture-refined
+# and the other specialists rely on this input always carrying the operating
+# point. rc=2 (bad base ref / git error) aborts rather than silently scoring
+# as "absent context".
+PRODUCT_CONTEXT=$(resolve_product_context "$REPO_DIR" "origin/$BASE_REF") \
+    || { echo "replay: error reading product-context.md from origin/$BASE_REF — aborting" >&2; exit 1; }
 write_scratch "$REPO_DIR" "product-context.md" "$PRODUCT_CONTEXT"
 # TODO: prior-reviews.md is stubbed above, so multi-round Path 2 (strict-decrease
 # trigger in aggregator.md) cannot be exercised via replay. Re-staging from the

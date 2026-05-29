@@ -242,4 +242,29 @@ if [ "$exit_code" -ne 1 ]; then
     exit 1
 fi
 
-echo "  PASS (8 scenarios: existing, missing-ABSENT, base-branch-only trust, review-priority round-trip + ABSENT, present-but-empty, bad-ref-ERROR, SHA-pin-bypass-resistance, onboarding-ABSENT)"
+# --- resolve_product_context: present / absent-default / bad-ref ----
+# The single read+classify+default seam shared by production
+# (lib/review-one-pr.sh) and replay (lib/replay.sh). These three cases are
+# the present/absent/error contract that drifted between those two call
+# sites twice (PR #106) when each open-coded its own tri-state. One red bar
+# here now covers both.
+echo "  resolve: present file → file content..."
+got=$(resolve_product_context "$WORK" "origin/main")
+printf '%s' "$got" | grep -q "The thing does the thing" \
+    || { echo "FAIL: resolve present → expected committed file content, got: $got"; exit 1; }
+
+echo "  resolve: absent file → org default..."
+NOPC="$TMPDIR/no-pc"
+git init -q -b main "$NOPC"
+git -C "$NOPC" config user.email t@t; git -C "$NOPC" config user.name t; git -C "$NOPC" config commit.gpgsign false
+echo x > "$NOPC/f"; git -C "$NOPC" add f; git -C "$NOPC" commit -qm seed
+got=$(resolve_product_context "$NOPC" "main")
+printf '%s' "$got" | grep -q "org default" \
+    || { echo "FAIL: resolve absent → expected org default text, got: $got"; exit 1; }
+
+echo "  resolve: bad ref → rc 2, no output (caller aborts, not silent default)..."
+out=$(resolve_product_context "$WORK" "origin/does-not-exist") && rc=0 || rc=$?
+[ "$rc" = 2 ] || { echo "FAIL: resolve bad-ref → expected rc 2, got rc=$rc"; exit 1; }
+[ -z "$out" ] || { echo "FAIL: resolve bad-ref → expected no output, got: $out"; exit 1; }
+
+echo "  PASS (8 read_knightwatch_file scenarios + 3 resolve_product_context: present, absent-default, bad-ref)"

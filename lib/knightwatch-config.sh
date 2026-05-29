@@ -77,3 +77,20 @@ No `.knightwatch/product-context.md` is committed for this repo, so assume the o
 If this repo is genuinely at scale or has a different operating point, commit `.knightwatch/product-context.md` to the base branch to override this default.
 PRODUCT_CONTEXT_EOF
 }
+
+# Resolve the product-context input for a review: the per-repo
+# .knightwatch/product-context.md at base_ref if committed and non-empty,
+# else the org default. This is the SINGLE read+classify+default seam — both
+# production (lib/review-one-pr.sh) and operator-bench replay (lib/replay.sh)
+# call it, so the present/absent/error contract can't drift between them (it
+# did, twice, when each open-coded its own tri-state). Echoes the resolved
+# content and returns 0 on PRESENT or ABSENT (default substituted); returns 2
+# WITHOUT output on a git/ref ERROR so each caller keeps its own abort cleanup
+# (production logs + rm -rf the checkout; replay just exits). Mirrors
+# read_knightwatch_file's rc contract (0 present, 1 absent, 2 error).
+resolve_product_context() {
+    local repo_dir="$1" base_ref="$2" content rc
+    content=$(read_knightwatch_file "$repo_dir" "$base_ref" "product-context.md") && rc=0 || rc=$?
+    [ "$rc" = 2 ] && return 2
+    [ -n "$content" ] && printf '%s' "$content" || default_product_context
+}

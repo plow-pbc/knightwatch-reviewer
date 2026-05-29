@@ -1132,16 +1132,12 @@ fi
 # and optimize for iteration speed rather than silently reviewing for
 # scale (the recurring over-engineering failure). A repo genuinely at
 # scale overrides this by committing its own file.
-PRODUCT_CONTEXT=""
-PRODUCT_CONTEXT=$(read_knightwatch_file "$REPO_DIR" "$BASE_REF_SHA" "product-context.md")
-case $? in
-    0|1) : ;;  # PRESENT or ABSENT: use as-is (org default substituted below if empty)
-    *) log "$PR_ID: knightwatch-config error reading product-context.md — aborting"; rm -rf "$REPO_DIR"; exit 1 ;;
-esac
-# default_product_context (lib/knightwatch-config.sh) is the single source of
-# the org-default text, shared with lib/replay.sh so the two staging paths
-# can't drift.
-[ -z "$PRODUCT_CONTEXT" ] && PRODUCT_CONTEXT=$(default_product_context)
+# resolve_product_context (lib/knightwatch-config.sh) is the shared
+# read+classify+default seam — same one lib/replay.sh uses, so the two
+# staging paths can't drift. rc=2 (git/ref error) → abort with our own
+# cleanup; PRESENT/ABSENT both yield usable content (org default substituted).
+PRODUCT_CONTEXT=$(resolve_product_context "$REPO_DIR" "$BASE_REF_SHA") \
+    || { log "$PR_ID: knightwatch-config error reading product-context.md — aborting"; rm -rf "$REPO_DIR"; exit 1; }
 write_scratch "$REPO_DIR" "product-context.md" "$PRODUCT_CONTEXT"
 
 # review-priority.md — per-repo operating point + voice posture
