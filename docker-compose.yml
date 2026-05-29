@@ -42,10 +42,10 @@ x-reviewer: &reviewer
 
 # Shared reviewer env; per-service blocks merge this and add WORKER_ID.
 x-reviewer-env: &reviewer-env
-  STATE_DIR: /shared              # per-PR lock + runs/ (SHARED across containers)
+  STATE_DIR: /shared              # per-PR lock + runs/ + just-test semaphore (SHARED across containers)
   REPOS_DIR: /local/repos         # per-container
   WORKDIRS_DIR: /local/workdirs   # per-container
-  LOCAL_STATE_DIR: /local/state   # just-test + canonical locks (per-container)
+  LOCAL_STATE_DIR: /local/state   # canonical clone/fetch lock + quota-pause (per-container)
   DOCKER_HOST: tcp://127.0.0.1:2375
   CONFIG_ENV_FILE: /root/.kwr/config.env  # root-only path → reviewer-test (just test) can't read the token file
 
