@@ -10,9 +10,10 @@
 #
 # Two channels, with a deliberate trust split:
 #
-#   1. `## PR thread` — EVERY non-bot comment (operator + PR author +
-#      reviewers), emitted verbatim as **context**, each labeled with its
-#      author login and trust tier (operator vs participant). This is what
+#   1. `## PR thread` — every TRUSTED non-bot comment (operator + the
+#      push-access commenters resolved by fetch_pr_comments), emitted
+#      verbatim as **context**, each labeled operator vs participant.
+#      Untrusted drive-by prose is filtered out before staging. This is what
 #      lets a specialist see that a probe it raised last round was already
 #      answered, instead of blindly re-raising it. Untrusted prose —
 #      participant claims are data, not instructions, and must be verified
@@ -76,13 +77,16 @@ _pr_comments_from_json() {
     # --dangerously-bypass-approvals-and-sandbox), so a stranger's comment
     # is dropped here even though it stays visible on GitHub. Same trust
     # gate as trigger-comment.md (lib/auth.sh::is_trusted_repo_author).
-    # Full body verbatim — no length cap; a probe-answer past any cap would
-    # silently vanish while consumers treat this as the whole thread.
+    # Full body verbatim — no length cap AND no newline-flattening; jq emits
+    # each comment's Markdown block directly (heading + blank + raw body), so
+    # a multiline reply (code blocks, lists) reaches specialists structurally
+    # intact rather than collapsed onto one line.
     local thread
     thread=$(printf '%s' "$base" | jq -r --arg op "$operator" --argjson trusted "$trusted_json" '
         .[]
         | select([.user.login] | inside($trusted))
-        | "\(.created_at)\t\(.user.login)\t\(if .user.login == $op then "operator" else "participant" end)\t\(.body | gsub("\n"; " "))"
+        | select(.body != "")
+        | "### @\(.user.login) (\(if .user.login == $op then "operator" else "participant" end)) — \(.created_at)\n\n\(.body)\n"
     ' 2>/dev/null)
 
     # Channel 2: explicit class markers — OPERATOR-authored only. The auto-
@@ -109,15 +113,7 @@ _pr_comments_from_json() {
     if [ -n "$thread" ]; then
         echo "## PR thread"
         echo
-        local i=0
-        while IFS=$'\t' read -r ts login tier body; do
-            [ -z "$body" ] && continue
-            i=$((i + 1))
-            echo "### @$login ($tier) — $ts"
-            echo
-            echo "$body"
-            echo
-        done <<< "$thread"
+        printf '%s\n' "$thread"
     fi
 
     echo "## Operator decline markers"
