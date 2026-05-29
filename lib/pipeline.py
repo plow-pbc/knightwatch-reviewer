@@ -21,11 +21,29 @@ SPECIALISTS = (
 # dominant per-call quota cost; small PRs don't warrant it, so a diff under
 # SMALL_PR_LOC changed lines runs the whole review at medium. review-one-pr.sh
 # passes the changed-line count via PR_DIFF_LOC; absent → high (safe default).
+# The aggregator is the one exception — it runs at xhigh regardless of size
+# (the single synthesis step is where a premium budget pays off); see its
+# call site in run_pipeline.
 SMALL_PR_LOC = 500
 
 
 def _reasoning_effort(diff_loc: int) -> str:
     return "medium" if diff_loc < SMALL_PR_LOC else "high"
+
+
+# Per-kind codex model routing. The critic pass runs once per specialist
+# (doubling the Wave-B fan-out) and mostly resolves yes/no against evidence
+# the specialist already cited, so it runs on the cheaper gpt-5.4-mini
+# (~30% of gpt-5.4 quota); every other agent uses the flagship gpt-5.5.
+DEFAULT_MODEL = "gpt-5.5"
+CRITIC_MODEL = "gpt-5.4-mini"
+
+
+def model_for(name: str) -> str:
+    """The codex model for an agent `name`: cheap gpt-5.4-mini for the critic
+    pass, flagship gpt-5.5 for specialists, standalones, and the aggregator."""
+    return CRITIC_MODEL if name.startswith("critic-") else DEFAULT_MODEL
+
 
 # Per-codex hard cap. Successful specialists complete in 1–5 min; 45 min
 # means the codex subprocess is wedged, not slow. Originating incident:
@@ -199,7 +217,7 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
         "codex", "exec",
         "-C", str(repo),
         "--dangerously-bypass-approvals-and-sandbox",
-        "-c", "model=gpt-5.5",
+        "-c", f"model={model_for(name)}",
         "-c", f"model_reasoning_effort={effort}",
         "-o", str(out_file),
         prompt,
@@ -647,7 +665,10 @@ def run_pipeline(
         pr_id=pr_id, pr_title=pr_title, pr_url=pr_url, pr_author=pr_author,
     )
     agg_dir = run / "agents" / "aggregator"
-    rc = run_codex("aggregator", str(repo), agg_prompt, str(agg_dir), effort=effort)
+    # The aggregator is the single synthesis step that merges/dedupes/ranks
+    # every angle into the posted review — the one place a premium reasoning
+    # budget pays off, so it runs at xhigh regardless of the size-scaled effort.
+    rc = run_codex("aggregator", str(repo), agg_prompt, str(agg_dir), effort="xhigh")
     if rc != 0:
         return _abort(repo, f"{pr_id}: aggregator failed (exit={rc}) — aborting")
     log(f"{pr_id}: aggregator complete")
