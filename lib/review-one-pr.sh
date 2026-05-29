@@ -1174,6 +1174,52 @@ write_scratch "$REPO_DIR" "review-priority.md" "$REVIEW_PRIORITY"
 LOC_TREND=$(compute_loc_trend "$REPO" "$PR_NUM" "$REPO_DIR" "$BASE_REF_SHA" "$STATE_DIR" "$RUN_DIR" "$REVIEWED_SHA")
 write_scratch "$REPO_DIR" "loc-trend.md" "$LOC_TREND"
 
+# reeval-status.md — the durable architecture-shape re-evaluation note.
+# Folds two deterministic triggers into one file every specialist + the
+# momentum standalone + the aggregator read:
+#   - T1 (LOC growth): computed in loc-trend.sh; read this round's flag
+#     line straight out of $LOC_TREND (single owner of the LOC math).
+#   - already-fired flags: whether the per-trigger banner marker is
+#     present in any prior posted review ($PRIOR_REVIEWS) — so each
+#     banner fires at most once per PR, and a fired trigger stays a
+#     durable note for every *later* round's specialists even after the
+#     banner itself is gone. T2 (blocker-stall) is computed by the
+#     aggregator post-resolution, so only its *prior* firing is knowable
+#     here; the aggregator owns deciding whether T2 fires this round.
+REEVAL_LOC_LINE=$(printf '%s\n' "$LOC_TREND" | grep -E '^REEVAL-LOC-TRIGGER:' | head -n1)
+[ -z "$REEVAL_LOC_LINE" ] && REEVAL_LOC_LINE="REEVAL-LOC-TRIGGER: unknown (no flag emitted)"
+REEVAL_LOC_FIRED=no
+REEVAL_STALL_FIRED=no
+if printf '%s' "${PRIOR_REVIEWS:-}" | grep -qF '<!-- knightwatch-reviewer:reeval-loc -->'; then
+    REEVAL_LOC_FIRED=yes
+fi
+if printf '%s' "${PRIOR_REVIEWS:-}" | grep -qF '<!-- knightwatch-reviewer:reeval-stall -->'; then
+    REEVAL_STALL_FIRED=yes
+fi
+write_scratch "$REPO_DIR" "reeval-status.md" "$(cat <<REEVAL_EOF
+# Re-eval trigger status
+
+This PR can be flagged for a one-time **architecture-shape re-evaluation** when its
+trajectory shows scope creep / wrong shape against the inferred intent. Two
+deterministic triggers; each fires its banner at most once per PR.
+
+## This round
+$REEVAL_LOC_LINE
+
+## Already fired in a prior round (durable — do NOT re-fire these)
+REEVAL-LOC-FIRED: $REEVAL_LOC_FIRED
+REEVAL-STALL-FIRED: $REEVAL_STALL_FIRED
+
+## For specialists (shape / simplification / architecture)
+If the LOC trigger reads \`fired\` above, OR either trigger has already fired, this PR
+is under structural re-evaluation. Don't just grade the incremental diff — read the
+LOC trend + the PR thread, infer WHY the diff keeps growing, and lead with the one
+structural move that makes the recurring class disappear (collapse the new abstraction,
+inline the premature seam, or recommend close-and-restart at a smaller scope) rather
+than another leaf-level guard. Cite \`standards.md\` § Broken-Glass Test.
+REEVAL_EOF
+)"
+
 # pr-comments.md — the PR's human comment thread, so every specialist
 # sees replies to its own prior probes (and the critic still drives
 # auto-drop off the operator-only explicit-marker channel). Empty/absent

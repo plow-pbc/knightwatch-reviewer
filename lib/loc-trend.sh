@@ -154,6 +154,34 @@ compute_loc_trend() {
         i=$((i + 1))
         idx=$((idx + 1))
     done
+
+    # --- T1: LOC-growth re-eval trigger (deterministic) ------------------
+    # Fires when the current round's additions have ballooned past
+    # round-1 * 1.33 + 100. A PR that has grown this far past its
+    # first-review size is showing scope creep / wrong shape / a buggy
+    # original that needed heavy patching — exactly the trajectory the
+    # re-eval banner exists to surface, and earlier than the 3-round
+    # blocker-stall trigger (T2) can. Integer math (1.33 ≈ *133/100); the
+    # +100 floor protects tiny PRs from noise. Both endpoints must be
+    # numeric — an `n/a` endpoint means rebased/evicted history (delta
+    # unknown), so we abstain rather than read it as a 0. Emitted as a
+    # trailing flag line the orchestrator greps verbatim (no float math
+    # in any LLM); review-one-pr.sh folds it into reeval-status.md.
+    local n_rounds=${#round_adds[@]}
+    local first_adds="${round_adds[0]}" cur_adds="${round_adds[$((n_rounds - 1))]}"
+    echo
+    if [ "$n_rounds" -lt 2 ]; then
+        echo "REEVAL-LOC-TRIGGER: not-fired (single round — no trajectory yet)"
+    elif [ "$first_adds" = "n/a" ] || [ "$cur_adds" = "n/a" ]; then
+        echo "REEVAL-LOC-TRIGGER: insufficient-data (round-1 or current Adds is n/a — delta unknown)"
+    else
+        local threshold=$(( first_adds * 133 / 100 + 100 ))
+        if [ "$cur_adds" -gt "$threshold" ]; then
+            echo "REEVAL-LOC-TRIGGER: fired (round1=$first_adds current=$cur_adds threshold=$threshold)"
+        else
+            echo "REEVAL-LOC-TRIGGER: not-fired (round1=$first_adds current=$cur_adds threshold=$threshold)"
+        fi
+    fi
 }
 
 # _loc_trend_display <repo_dir> <merge_base> <sha> <state> <dels>
