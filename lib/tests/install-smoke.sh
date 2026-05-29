@@ -351,4 +351,28 @@ n_cp="$(count_stub 'SUDO cp')"
 EXPECTED_RESTARTS="${#PROD_TIMERS[@]}"
 [ "$(count_stub 'SYSTEMCTL restart')" = "$EXPECTED_RESTARTS" ] || { echo "FAIL scenario 3: expected $EXPECTED_RESTARTS restarts (all existing active timers), got $(count_stub 'SYSTEMCTL restart')"; cat "$STUB_LOG"; exit 1; }
 
-echo "  PASS (3 scenarios: first-run, idempotent-rerun, new-unit-incremental-enables-new-timer)"
+# --- Scenario 4: retired legacy host-reviewer units are disabled + removed ----
+# install.sh's removal branch (disable --now, then rm) is the cutover safety this
+# PR ships: a `pr-reviewer.timer`/`.service` left in $SYSTEMD_DIR by a prior
+# install must be torn down so an orphaned host worker can't linger and overlap
+# the container fleet. Pin the branch — and the disable-before-rm ordering — so a
+# refactor can't silently drop it.
+echo "  scenario 4: retired pr-reviewer.timer/.service in SYSTEMD_DIR → disabled --now + removed, idempotent once gone..."
+OVERLAY_LEGACY="$TMPDIR/repo-overlay-legacy"
+make_install_overlay "$OVERLAY_LEGACY"
+for legacy in pr-reviewer.timer pr-reviewer.service; do
+    printf '[Unit]\nDescription=stale %s left by a prior install\n' "$legacy" > "$SYSTEMD_DIR/$legacy"
+done
+: > "$STUB_LOG"
+MOCK_TIMERS_ENABLED=1 run_install "$OVERLAY_LEGACY/install.sh" || { echo "FAIL scenario 4: install.sh exited non-zero"; cat "$STUB_LOG"; exit 1; }
+for legacy in pr-reviewer.timer pr-reviewer.service; do
+    [ "$(count_stub "SYSTEMCTL disable --now $legacy")" = "1" ] || { echo "FAIL scenario 4: expected exactly one 'disable --now $legacy'"; cat "$STUB_LOG"; exit 1; }
+    [ ! -f "$SYSTEMD_DIR/$legacy" ] || { echo "FAIL scenario 4: $legacy still in SYSTEMD_DIR after install (rm -f branch did not run)"; exit 1; }
+done
+# Idempotent: a second run with the units already gone disables nothing (branch
+# is guarded by the -f existence check).
+: > "$STUB_LOG"
+MOCK_TIMERS_ENABLED=1 run_install "$OVERLAY_LEGACY/install.sh" || { echo "FAIL scenario 4: install.sh exited non-zero on idempotent rerun"; cat "$STUB_LOG"; exit 1; }
+[ "$(count_stub 'SYSTEMCTL disable --now pr-reviewer')" = "0" ] || { echo "FAIL scenario 4: legacy disable fired again once units were gone (branch not guarded by -f)"; cat "$STUB_LOG"; exit 1; }
+
+echo "  PASS (4 scenarios: first-run, idempotent-rerun, new-unit-incremental-enables-new-timer, retired-legacy-unit-removal)"
