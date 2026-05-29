@@ -38,6 +38,7 @@ cat > "$TMPDIR/bin/gh" <<'STUB'
 # exits with that code instead. Doesn't validate args; the smoke
 # arranges the right inputs.
 if [ -n "${STUB_EXIT:-}" ]; then
+    [ -n "${STUB_STDERR:-}" ] && printf '%s\n' "$STUB_STDERR" >&2
     exit "$STUB_EXIT"
 fi
 if [ -n "${STUB_PAGES_DIR:-}" ] && [ -d "$STUB_PAGES_DIR" ]; then
@@ -127,4 +128,30 @@ if [ "$exit_code" -eq 0 ]; then
     exit 1
 fi
 
-echo "  PASS (3 scenarios: multi-page-merge, empty-response, gh-failure-propagates)"
+# ---- Scenario 4: gh failure surfaces the real error (no longer swallowed) ----
+# Before this fix, gh's stderr went to /dev/null, so a fetch failure logged only
+# an opaque "comments fetch failed" with no cause — undiagnosable (this is what
+# made a transient comment-fetch outage hard to root-cause). The helper must now
+# log gh's stderr (with repo#pr context) on failure, while keeping stdout empty.
+echo "  scenario 4: gh failure logs the real gh error to stderr..."
+export STUB_EXIT="1"
+export STUB_STDERR="gh: HTTP 403: You have exceeded a secondary rate limit"
+unset STUB_PAGES_DIR
+err4=$(fetch_issue_comments "owner/repo" "42" 2>&1 >/dev/null)
+if ! printf '%s' "$err4" | grep -q "secondary rate limit"; then
+    echo "FAIL: scenario 4 — gh error was swallowed (expected it logged to stderr); got: [$err4]"
+    exit 1
+fi
+if ! printf '%s' "$err4" | grep -q "owner/repo#42"; then
+    echo "FAIL: scenario 4 — error log missing the repo#pr context; got: [$err4]"
+    exit 1
+fi
+# stdout must still be empty on failure (callers capture stdout as the JSON).
+out4=$(fetch_issue_comments "owner/repo" "42" 2>/dev/null)
+if [ -n "$out4" ]; then
+    echo "FAIL: scenario 4 — stdout should be empty on failure, got: [$out4]"
+    exit 1
+fi
+unset STUB_STDERR
+
+echo "  PASS (4 scenarios: multi-page-merge, empty-response, gh-failure-propagates, gh-error-logged)"
