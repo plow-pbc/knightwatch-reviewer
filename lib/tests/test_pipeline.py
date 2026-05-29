@@ -143,6 +143,15 @@ def _make_codex_stub(plan=None, default=(0, "### Probe 1\nstub\n"),
     return side_effect
 
 
+def _effort_of(argv):
+    """Pull the reasoning-effort value out of a codex argv (the token after
+    `-c model_reasoning_effort=`). Returns None if absent."""
+    for tok in argv:
+        if isinstance(tok, str) and tok.startswith("model_reasoning_effort="):
+            return tok.split("=", 1)[1]
+    return None
+
+
 class TestLog(unittest.TestCase):
     """log() tags each line with the emitting account ([w<WORKER_ID>]) in
     container mode so interleaved `docker compose logs` from multiple reviewers
@@ -194,13 +203,45 @@ class TestRunCodex(unittest.TestCase):
         self.assertIn("agent=intent exit=0", (agent_dir / "log.txt").read_text())
 
     @patch("pipeline.subprocess.Popen")
-    def test_codex_argv_pins_model(self, mock_popen):
-        """The model=gpt-5.5 pin must reach codex (regression fence)."""
+    def test_codex_argv_pins_model_per_kind(self, mock_popen):
+        """Per-kind model routing must reach codex (regression fence): the
+        critic pass runs on the cheap gpt-5.4-mini; specialists, standalones,
+        and the aggregator all run on the flagship gpt-5.5."""
+        cases = {
+            "intent": "model=gpt-5.5",
+            "security": "model=gpt-5.5",
+            "aggregator": "model=gpt-5.5",
+            "critic-security": "model=gpt-5.4-mini",
+        }
+        for name, model_pin in cases.items():
+            with self.subTest(name=name):
+                mock_popen.side_effect = _make_codex_stub(plan={name: (0, "### Probe 1\nstub\n")})
+                pipeline.run_codex(name, str(self.repo_dir), "PROMPT", str(self._agent_dir(name)))
+                argv = mock_popen.call_args[0][0]
+                self.assertIn(model_pin, argv)
+                self.assertIn("--dangerously-bypass-approvals-and-sandbox", argv)
+
+    @patch("pipeline.subprocess.Popen")
+    def test_codex_reasoning_effort_defaults_high(self, mock_popen):
+        """Unspecified effort keeps the pre-existing gpt-5.5 high-reasoning
+        behavior — the safe default when no PR-size signal is threaded in."""
         mock_popen.side_effect = _make_codex_stub(plan={"intent": (0, "### Probe 1\nstub\n")})
         pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(self._agent_dir("intent")))
         argv = mock_popen.call_args[0][0]
-        self.assertIn("model=gpt-5.5", argv)
-        self.assertIn("--dangerously-bypass-approvals-and-sandbox", argv)
+        self.assertIn("model_reasoning_effort=high", argv)
+
+    @patch("pipeline.subprocess.Popen")
+    def test_codex_reasoning_effort_param_overrides(self, mock_popen):
+        """A caller-supplied effort flows through to the codex -c flag, so a
+        small PR can run the whole review at medium reasoning."""
+        mock_popen.side_effect = _make_codex_stub(plan={"intent": (0, "### Probe 1\nstub\n")})
+        pipeline.run_codex(
+            "intent", str(self.repo_dir), "PROMPT", str(self._agent_dir("intent")),
+            effort="medium",
+        )
+        argv = mock_popen.call_args[0][0]
+        self.assertIn("model_reasoning_effort=medium", argv)
+        self.assertNotIn("model_reasoning_effort=high", argv)
 
     @patch("pipeline.subprocess.Popen")
     def test_codex_nonzero_exit_propagates(self, mock_popen):
@@ -905,6 +946,35 @@ class TestRunSpecialist(unittest.TestCase):
         self.assertNotIn("## Critic counter-arguments", captured["scratch_at_critic"])
 
     @patch("pipeline.subprocess.Popen")
+    def test_zero_probe_specialist_skips_critic_codex_call(self, mock_popen):
+        """A specialist that emits the 'No probes.' sentinel has nothing for
+        the critic to contest — _validate_critic_output already forces the
+        critic to answer with a bare 'No probes.' in that case, so the critic
+        codex call is deterministic waste. run_specialist must synthesize the
+        layered output WITHOUT spending a codex call (the single biggest
+        Wave-B quota saving on clean PRs)."""
+        mock_popen.side_effect = _make_codex_stub({
+            "security": (0, "Surveyed the auth paths.\n\nNo probes.\n"),
+        })
+        rc = pipeline.run_specialist(
+            specialist="security",
+            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
+            prompts_dir=str(self.prompts),
+            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
+        )
+        self.assertEqual(rc, 0)
+        # Critic codex was NOT invoked — only the specialist ran.
+        self.assertEqual(mock_popen.call_count, 1)
+        self.assertFalse((self.run_dir / "agents" / "critic-security").exists())
+        # Layered output is synthesized and matches the deterministic
+        # 0-probe shape the critic would have produced.
+        layered = (self.run_dir / "agents" / "security" / "layered.md").read_text()
+        scratch = (self.repo_dir / ".codex-scratch" / "specialists" / "security.md").read_text()
+        self.assertEqual(layered, scratch)
+        self.assertIn("No probes.", layered)
+        self.assertNotIn("## Critic counter-arguments", layered)
+
+    @patch("pipeline.subprocess.Popen")
     def test_specialist_failure_skips_critic(self, mock_popen):
         mock_popen.side_effect = _make_codex_stub({
             "security": (7, ""),
@@ -1046,6 +1116,36 @@ class TestRunPipeline(unittest.TestCase):
         self.assertTrue((self.run_dir / "agents" / "momentum" / "output.md").exists())
 
     @patch("pipeline.subprocess.Popen")
+    def test_reasoning_effort_scales_with_pr_diff_loc(self, mock_popen):
+        """Every codex call except the aggregator scales its reasoning effort
+        to PR size via the PR_DIFF_LOC env var: small PRs (< threshold) at
+        medium, larger PRs at high, absent signal defaults to high. The
+        aggregator is the one exception — it always runs at xhigh (the single
+        premium synthesis step), independent of PR size."""
+        for loc_val, expected in [("100", "medium"), ("600", "high"), (None, "high")]:
+            with self.subTest(loc=loc_val):
+                mock_popen.reset_mock()
+                mock_popen.side_effect = _make_codex_stub({
+                    "intent": (0, "Inferred intent: stub.\n"),
+                    "dead-code-search": (0, "dc\n"),
+                    "aggregator": (0, "# Review\nVERDICT: APPROVE\n"),
+                })
+                env = {} if loc_val is None else {"PR_DIFF_LOC": loc_val}
+                with patch.dict(os.environ, env, clear=False):
+                    if loc_val is None:
+                        os.environ.pop("PR_DIFF_LOC", None)
+                    rc = self._run()
+                self.assertEqual(rc, 0)
+                agg_efforts, scaled_efforts = set(), set()
+                for c in mock_popen.call_args_list:
+                    argv = c.args[0]
+                    out_path = argv[argv.index("-o") + 1]
+                    bucket = agg_efforts if "/aggregator/" in out_path else scaled_efforts
+                    bucket.add(_effort_of(argv))
+                self.assertEqual(scaled_efforts, {expected})
+                self.assertEqual(agg_efforts, {"xhigh"})
+
+    @patch("pipeline.subprocess.Popen")
     def test_intent_failure_aborts(self, mock_popen):
         mock_popen.side_effect = _make_codex_stub({
             "intent": (7, ""),
@@ -1153,59 +1253,86 @@ class TestRunPipeline(unittest.TestCase):
                           f"{name} started before Wave A linked dead-code.md")
 
     @patch("pipeline.subprocess.Popen")
-    def test_specialist_timeout_aborts_with_named_sentinel(self, mock_popen):
-        """Any specialist timeout aborts the pipeline. The sentinel names
-        the hung specialist(s) so review-one-pr.sh patches the placeholder
-        with the names rather than the generic abort body. Authors
-        re-trigger via push or /srosro-update-review."""
+    def test_specialist_timeout_completes_review_with_sentinel(self, mock_popen):
+        """A specialist timeout no longer aborts the review: the surviving
+        angles complete and the aggregator runs. The hung specialist is named
+        in _wave_b_timeouts.txt, which review-one-pr.sh renders as a ⏱️ header
+        warning. Aborting re-paid the full fan-out on a same-SHA re-review next
+        tick — pure quota waste, and the deadlock usually recurred."""
         mock_popen.side_effect = _make_codex_stub(plan={
             "intent": (0, "Inferred intent: stub.\n"),
             "dead-code-search": (0, "dc\n"),
             "shape": "TIMEOUT",
+            "aggregator": (0, "# Review\nVERDICT: APPROVE\n"),
         })
         rc = self._run()
-        self.assertNotEqual(rc, 0)
-        # _abort cleans up REPO_DIR; sentinel lives in RUN_DIR so bash
-        # reads it after pipeline.py exits.
+        self.assertEqual(rc, 0)
         sentinel = self.run_dir / "_wave_b_timeouts.txt"
         self.assertEqual(sentinel.read_text().strip(), "shape")
-        # No aggregator on the timeout path.
-        self.assertFalse((self.run_dir / "agents" / "aggregator" / "output.md").exists())
+        # Aggregator ran despite the timeout — the review still ships.
+        self.assertTrue((self.run_dir / "agents" / "aggregator" / "output.md").exists())
 
     @patch("pipeline.subprocess.Popen")
     def test_multiple_specialist_timeouts_all_named_in_sentinel(self, mock_popen):
-        """All timed-out specialists land in the sentinel (no carve-outs,
-        no thresholds — any timeout aborts with names)."""
+        """All timed-out specialists land in the sentinel (the ⏱️ warning
+        names every skipped angle); the review still completes."""
         mock_popen.side_effect = _make_codex_stub(plan={
             "intent": (0, "Inferred intent: stub.\n"),
             "dead-code-search": (0, "dc\n"),
             "security": "TIMEOUT",
             "shape": "TIMEOUT",
+            "aggregator": (0, "# Review\nVERDICT: APPROVE\n"),
         })
         rc = self._run()
-        self.assertNotEqual(rc, 0)
+        self.assertEqual(rc, 0)
         sentinel_names = set(
             (self.run_dir / "_wave_b_timeouts.txt").read_text().split()
         )
         self.assertEqual(sentinel_names, {"security", "shape"})
+        self.assertTrue((self.run_dir / "agents" / "aggregator" / "output.md").exists())
 
     @patch("pipeline.subprocess.Popen")
-    def test_critic_timeout_aborts_without_data_loss(self, mock_popen):
-        """If the SPECIALIST succeeded (real output produced) and only the
-        CRITIC timed out, the run still aborts loudly — but the real
-        specialist output is preserved at run/agents/<name>/output.md for
-        forensic inspection. No stub-overwrite, no silent degradation."""
+    def test_momentum_timeout_excluded_from_specialist_sentinel(self, mock_popen):
+        """momentum is a re-review meta-angle, not a coverage specialist: a
+        momentum-only timeout must NOT write the specialist sentinel (which
+        review-one-pr.sh treats as approval-ineligible coverage loss and
+        run-dir.sh renders as "specialist(s) skipped"). The review still
+        completes; the only effect is the dropped convergence banner."""
+        (self.run_dir / "inputs" / "previous-review.md").write_text("prior review body\n")
+        mock_popen.side_effect = _make_codex_stub(plan={
+            "intent": (0, "Inferred intent: stub.\n"),
+            "dead-code-search": (0, "dc\n"),
+            "momentum": "TIMEOUT",
+            "aggregator": (0, "# Review\nVERDICT: APPROVE\n"),
+        })
+        rc = self._run()
+        self.assertEqual(rc, 0)
+        self.assertFalse((self.run_dir / "_wave_b_timeouts.txt").exists())
+        self.assertTrue((self.run_dir / "agents" / "aggregator" / "output.md").exists())
+
+    @patch("pipeline.subprocess.Popen")
+    def test_critic_timeout_completes_with_specialist_output_preserved(self, mock_popen):
+        """When the SPECIALIST succeeded but only its CRITIC timed out, the
+        review still completes — the angle is named in the timeouts sentinel
+        and its real specialist output is preserved on disk (no data loss)."""
         mock_popen.side_effect = _make_codex_stub(plan={
             "intent": (0, "Inferred intent: stub.\n"),
             "dead-code-search": (0, "dc\n"),
             "shape": (0, "### Probe 1\nreal shape finding\n"),
             "critic-shape": "TIMEOUT",
+            "aggregator": (0, "# Review\nVERDICT: APPROVE\n"),
         })
         rc = self._run()
-        self.assertNotEqual(rc, 0)
-        # Real specialist output is preserved on disk.
+        self.assertEqual(rc, 0)
+        # Real specialist output is preserved on disk for forensics.
         shape_out = self.run_dir / "agents" / "shape" / "output.md"
         self.assertIn("real shape finding", shape_out.read_text())
+        self.assertIn("shape", (self.run_dir / "_wave_b_timeouts.txt").read_text())
+        # But the raw, un-critiqued scratch is removed so the aggregator does
+        # NOT consume an angle the header reports as skipped.
+        self.assertFalse(
+            (self.repo_dir / ".codex-scratch" / "specialists" / "shape.md").exists()
+        )
 
     @patch("pipeline.subprocess.Popen")
     def test_hard_failure_aborts_without_timeouts_sentinel(self, mock_popen):

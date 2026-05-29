@@ -129,11 +129,11 @@ mkdir -p "$REPO_DIR/.codex-scratch"
 # way prompt A/B replays produce production-comparable output.
 #
 # Replay can't reproduce inputs that depend on running upstream pipeline
-# stages (KID prior-art, decline-history from state, sibling-repo
+# stages (KID prior-art, pr-comments from state, sibling-repo
 # context). Stage those with explicit "(replay: not staged …)" markers
 # so downstream prompts can fail-soft and the operator sees the gap.
 write_scratch "$REPO_DIR" "diff.patch" "$(cat "$OUT/diff.patch")"
-for f in review-priority.md decline-history.md loc-trend.md \
+for f in review-priority.md pr-comments.md loc-trend.md \
          prior-art.md dead-code-static.md prior-reviews.md previous-review.md \
          file-history.md commits.md author-intent.md search-roots.md \
          test-results.md; do
@@ -229,6 +229,10 @@ REVIEW_NOTES+=("🎬 Replay of \`$SHA\` (\`gh pr view --repo $REPO $PR\`)")
 if [ "$KNIGHTWATCH_PRESENT" = "0" ]; then
     REVIEW_NOTES+=("⚙️ No .knightwatch/ config (review using defaults)")
 fi
+# Same partial-review disclosure as the live worker (shared helper), so a
+# replayed run whose specialists timed out doesn't read as full coverage.
+TIMEOUT_NOTE=$(timeout_note_for_run "$RUN_DIR")
+[ -n "$TIMEOUT_NOTE" ] && REVIEW_NOTES+=("$TIMEOUT_NOTE")
 
 AGG_BODY=$(cat "$AGG_OUT_FILE")
 STITCHED=$(prepend_review_header "$AGG_BODY" "${REVIEW_NOTES[@]}")

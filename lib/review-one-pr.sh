@@ -153,11 +153,12 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # import) so the dependency is visible at the call site.
 . "$_LIB_DIR/gh-comments.sh"
 
-# --- decline-history (fetch_decline_history) — operator's prior declines
-# on this PR; consumed by the critic to drop or footnote re-flagged
-# findings the operator has pushed back on ≥3 times. (Also sources
-# gh-comments.sh; multi-source is idempotent.)
-. "$_LIB_DIR/decline-history.sh"
+# --- pr-comments (fetch_pr_comments) — the PR's human comment thread;
+# consumed by every specialist (so a specialist sees replies to its own
+# prior probes), the critic, and the aggregator. The operator-only
+# explicit-marker channel still drives the critic's ≥3-round auto-drop.
+# (Also sources gh-comments.sh; multi-source is idempotent.)
+. "$_LIB_DIR/pr-comments.sh"
 
 # --- per-run dir -------------------------------------------------------------
 # Every worker invocation gets its own runs/<RUN_ID>/ dir holding the run log,
@@ -645,7 +646,15 @@ if [ -z "$FULL_PR_DIFF" ]; then
     rm -rf "$REPO_DIR"
     exit 1
 fi
-log "$PR_ID: full PR diff size = ${#FULL_PR_DIFF} bytes"
+# Changed-line count (added + deleted) via structured --numstat, the same
+# LOC shape lib/loc-trend.sh uses — exact, and immune to the +/- content-line
+# miscount a unified-diff regex parse would introduce. pipeline.py scales
+# codex reasoning effort down to medium for PRs under its SMALL_PR_LOC
+# threshold, where high reasoning isn't worth the quota. (Binary files report
+# `-`/`-`, which awk sums as 0 — correct, they have no line count.)
+PR_DIFF_LOC=$(git -C "$REPO_DIR" diff --numstat "$BASE_REF_SHA...$REVIEWED_SHA" 2>/dev/null \
+    | awk '{a += $1; d += $2} END {print a + d + 0}')
+log "$PR_ID: full PR diff size = ${#FULL_PR_DIFF} bytes, ${PR_DIFF_LOC} changed lines"
 KID_INPUT_DIFF="$FULL_PR_DIFF"
 
 # All four "what did the author see last?" values (body, sha, approved,
@@ -860,7 +869,7 @@ PRIOR_ART=""
 KID_FLAG="$STATE_DIR/kid-last-failure"
 # KID_RAN tracks whether the prior-art lookup actually executed and
 # returned. Flipped false on any "didn't run" path so the disclosure
-# header (built below) can warn the reader that the simplification
+# header (built below) can warn the reader that the architecture-refined
 # specialist's cross-repo DRY signal is missing for this run.
 KID_RAN=false
 # Per-repo kid index path. KID_PATHS was loaded at file scope via the
@@ -1222,38 +1231,37 @@ write_scratch "$REPO_DIR" "review-priority.md" "$REVIEW_PRIORITY"
 LOC_TREND=$(compute_loc_trend "$REPO" "$PR_NUM" "$REPO_DIR" "$BASE_REF_SHA" "$STATE_DIR" "$RUN_DIR" "$REVIEWED_SHA")
 write_scratch "$REPO_DIR" "loc-trend.md" "$LOC_TREND"
 
-# decline-history.md — operator declines from prior review comments,
-# so the critic can drop or footnote findings the operator has already
-# pushed back on. Empty/absent on first reviews and on PRs with no
-# operator pushback. Fail-soft on gh-failure (helper emits a sentinel;
-# critic falls back to existing behavior).
+# pr-comments.md — the PR's human comment thread, so every specialist
+# sees replies to its own prior probes (and the critic still drives
+# auto-drop off the operator-only explicit-marker channel). Empty/absent
+# on first reviews and on PRs with no human comments. Fail-soft on
+# gh-failure (helper emits a sentinel; consumers fall back to existing
+# behavior).
 #
 # Skipped on:
 #   - FORCE_WHOLE_PR=true (i.e. /srosro-review) — the trigger text on that
 #     path commits to "Any prior review is intentionally NOT provided —
-#     evaluate this PR from scratch." Staging decline history anyway
-#     would silently break that contract.
-#   - First reviews (no PRIOR_REVIEWS) — operator declines on bot reviews
-#     can't exist before there has been a bot review. Pre-existing operator
-#     comments on the PR (review-author conversation, etc.) are not bot-
-#     finding declines. Staging them would let the critic suppress finding
-#     classes the bot has never raised — a class-of-finding ban with no
-#     class-of-finding actually flagged, which is wrong.
+#     evaluate this PR from scratch." Staging the thread (which carries the
+#     operator decline memory) anyway would silently break that contract.
+#   - First reviews (no PRIOR_REVIEWS) — there are no prior bot probes for
+#     a reply to address yet, and the operator-marker auto-drop channel
+#     can't have anything to suppress. Staging pre-review human chatter
+#     would let the critic suppress finding classes the bot has never
+#     raised — a class-of-finding ban with nothing actually flagged.
 # Mirrors the existing prior-reviews.md skip semantics above.
 if [ "$FORCE_WHOLE_PR" = "true" ]; then
-    log "$PR_ID: FORCE_WHOLE_PR=true — staging decline-history.md sentinel (whole-PR re-review evaluates from scratch)"
-    # Sentinel keeps the prompt-input contract intact for critic.md /
-    # aggregator.md, which list .codex-scratch/decline-history.md
-    # as a required input. Empty/absent file would tempt those agents to
-    # explore the filesystem; the sentinel makes the "from scratch"
-    # decision explicit.
-    write_scratch "$REPO_DIR" "decline-history.md" "(decline history intentionally not staged on /${BOT_CMD_PREFIX}-review path — this is a from-scratch whole-PR re-review)"
+    log "$PR_ID: FORCE_WHOLE_PR=true — staging pr-comments.md sentinel (whole-PR re-review evaluates from scratch)"
+    # Sentinel keeps the prompt-input contract intact for the specialists /
+    # critic / aggregator, which list .codex-scratch/pr-comments.md as a
+    # required input. Empty/absent file would tempt those agents to explore
+    # the filesystem; the sentinel makes the "from scratch" decision explicit.
+    write_scratch "$REPO_DIR" "pr-comments.md" "(PR comments intentionally not staged on /${BOT_CMD_PREFIX}-review path — this is a from-scratch whole-PR re-review)"
 elif [ -z "${PRIOR_REVIEWS:-}" ]; then
-    log "$PR_ID: first review (no prior bot reviews) — staging decline-history.md sentinel"
-    write_scratch "$REPO_DIR" "decline-history.md" "(decline history intentionally not staged — first review on this PR; no prior bot findings exist for the operator to have declined)"
+    log "$PR_ID: first review (no prior bot reviews) — staging pr-comments.md sentinel"
+    write_scratch "$REPO_DIR" "pr-comments.md" "(PR comments intentionally not staged — first review on this PR; no prior bot probes exist for a reply to address)"
 else
-    DECLINE_HISTORY=$(fetch_decline_history "$REPO" "$PR_NUM")
-    write_scratch "$REPO_DIR" "decline-history.md" "$DECLINE_HISTORY"
+    PR_COMMENTS=$(fetch_pr_comments "$REPO" "$PR_NUM")
+    write_scratch "$REPO_DIR" "pr-comments.md" "$PR_COMMENTS"
 fi
 
 FILE_HISTORY=""
@@ -1329,6 +1337,7 @@ PR_ID="$PR_ID" \
 PR_TITLE="$PR_TITLE" \
 PR_URL="$PR_URL" \
 PR_AUTHOR="$PR_AUTHOR" \
+PR_DIFF_LOC="$PR_DIFF_LOC" \
 PROMPTS_DIR="${PROMPTS_DIR:-$HOME/.pr-reviewer/prompts}" \
 LOG_FILE="$LOG_FILE" \
 OPERATOR_NAME="${OPERATOR_NAME:-Sam}" \
@@ -1342,14 +1351,12 @@ AGG_OUT="$RUN_DIR/agents/aggregator/output.md"
 # the safety-net check below handles any race or unexpected exit.
 if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
     log "$PR_ID: pipeline failed (exit=$PIPELINE_EXIT, agg empty=$([ ! -s "$AGG_OUT" ] && echo true || echo false)) — aborting"
-    # pipeline.py may write one of two sentinels naming the specific cause.
-    # Hand the most informative abort body we have to cleanup_eyes so the
-    # EXIT trap PATCHes the placeholder accordingly — single PATCH lifecycle,
-    # same trap. Codex quota wins over Wave B timeouts: if the codex usage
-    # limit was hit during Wave A intent, no Wave B sentinel exists; if
-    # somehow both fired, quota is the more specific cause.
+    # pipeline.py may write the quota sentinel naming the reset time. Hand the
+    # most informative abort body we have to cleanup_eyes so the EXIT trap
+    # PATCHes the placeholder accordingly — single PATCH lifecycle, same trap.
+    # (Specialist timeouts no longer reach this abort path: pipeline.py
+    # completes the review and the ⏱️ warning is rendered in REVIEW_NOTES.)
     QUOTA_SENTINEL="$RUN_DIR/_codex_quota.txt"
-    TIMEOUTS_SENTINEL="$RUN_DIR/_wave_b_timeouts.txt"
     if [ -s "$QUOTA_SENTINEL" ]; then
         RESET_AT=$(head -n 1 "$QUOTA_SENTINEL")
         EYES_ABORT_BODY="⏸ knightwatch paused — codex quota hit, resets at ${RESET_AT}. Will retry on the next tick and should succeed after the quota window resets."
@@ -1370,10 +1377,6 @@ if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
         fi
         printf '%s\n' "$QUOTA_UNTIL" > "$LOCAL_STATE_DIR/quota-paused-until"
         log "$PR_ID: quota-paused this worker until epoch ${QUOTA_UNTIL} (reset=${RESET_AT})"
-    elif [ -s "$TIMEOUTS_SENTINEL" ]; then
-        TIMED_OUT=$(paste -sd, "$TIMEOUTS_SENTINEL")
-        EYES_ABORT_BODY="❌ Review aborted — specialist(s) timed out (\`$TIMED_OUT\`). See knightwatch-reviewer logs; will retry on the next tick."
-        log "$PR_ID: handing timeouts-error to cleanup_eyes (specialists=$TIMED_OUT)"
     fi
     [ -d "$REPO_DIR" ] && rm -rf "$REPO_DIR"
     exit 1
@@ -1408,7 +1411,7 @@ $COMMENT_BODY
 
 ---
 
-_How to use: auto-reviews every new PR and re-reviews after an hour of inactivity. Trigger an incremental re-review with \`/${BOT_CMD_PREFIX}-update-review\`, or a whole-PR re-review with \`/${BOT_CMD_PREFIX}-review\`._
+_How to use: auto-reviews every new PR and re-reviews after a period of inactivity. Trigger an incremental re-review with \`/${BOT_CMD_PREFIX}-update-review\`, or a whole-PR re-review with \`/${BOT_CMD_PREFIX}-review\`._
 
 **For humans only:** push-access collaborators can post:
 - \`/${BOT_CMD_PREFIX}-approve\` — APPROVE the PR.
@@ -1417,8 +1420,8 @@ _How to use: auto-reviews every new PR and re-reviews after an hour of inactivit
 - \`/${BOT_CMD_PREFIX}-memorize <feedback>\` — teach a calibration lesson (\`learn-from-replies\` updates \`COMMENT_REVIEW_MISTAKES.md\` from your body, sentiment-aware via LLM).
 
 > Props: \`/${BOT_CMD_PREFIX}-props [from: shape] caught a real layering bug we'd have shipped.\`
-> Critique: \`/${BOT_CMD_PREFIX}-critique [from: simplification] DRY suggestion misread distinct seams.\`
-> Calibration: \`/${BOT_CMD_PREFIX}-memorize the simplification DRY finding was a misread; those helpers serve different contracts.\`
+> Critique: \`/${BOT_CMD_PREFIX}-critique [from: architecture-refined] DRY suggestion misread distinct seams.\`
+> Calibration: \`/${BOT_CMD_PREFIX}-memorize the architecture-refined DRY finding was a misread; those helpers serve different contracts.\`
 
 AI agents must not use \`/${BOT_CMD_PREFIX}-memorize\`, \`/${BOT_CMD_PREFIX}-props\`, or \`/${BOT_CMD_PREFIX}-critique\` — those signals tune shared global state.
 
@@ -1455,6 +1458,12 @@ fi
 REVIEW_NOTES+=("$SCOPE_NOTE")
 [ -n "$CURRENT_HEAD" ] && [ "$CURRENT_HEAD" != "$REVIEWED_SHA" ] && \
     REVIEW_NOTES+=("⚠️ Stale: head moved from \`${REVIEWED_SHA:0:7}\` to \`${CURRENT_HEAD:0:7}\` mid-run — see commands below to re-run")
+# Specialist timeouts no longer abort — pipeline.py completes the review with
+# the surviving angles and names the hung ones in _wave_b_timeouts.txt.
+# Disclose them as a header warning rather than silently shipping reduced
+# coverage (shared adapter — replay.sh uses the same helper).
+TIMEOUT_NOTE=$(timeout_note_for_run "$RUN_DIR")
+[ -n "$TIMEOUT_NOTE" ] && REVIEW_NOTES+=("$TIMEOUT_NOTE")
 # Symmetric pre-check disclosure: every pre-check emits one fragment
 # describing its outcome (pass/fail/skip), not just on miss. Old asym-
 # metric pattern collapsed clean-PR headers to scope-only and left
@@ -1529,7 +1538,12 @@ else
     log "Posted review on $PR_ID (no placeholder was posted)"
 fi
 
-if [[ "$VERDICT" == VERDICT:\ APPROVE* ]]; then
+if review_is_approval "$VERDICT" "$RUN_DIR"; then
+    # review_is_approval (lib/run-dir.sh) is the single owner of the approval
+    # rule — APPROVE verdict AND full coverage. A partial review (a specialist,
+    # possibly security, timed out) falls through to the no-approval else: it's
+    # posted (the ⏱️ header discloses the gap) but never auto-APPROVEd, and the
+    # carried-forward `approved` projection reads the same decision next round.
     if [[ "$VERDICT" == *"pending:"* ]]; then
         PENDING_NOTE=$(echo "$VERDICT" | sed 's/.*pending: *//')
         APPROVE_BODY="Approving — pending: $PENDING_NOTE"
@@ -1549,8 +1563,8 @@ fi
 # state_set call used to persist are already on disk in runs/ at this point:
 #   - body       → agents/aggregator/output.md (already written above)
 #   - reviewed_sha → meta.json.reviewed_sha (stamped post-checkout)
-#   - approved   → derived from output.md's `VERDICT: APPROVE` line by
-#                  latest_author_visible_review_approved
+#   - approved   → derived from output.md's verdict + coverage by
+#                  latest_author_visible_review_approved (via review_is_approval)
 #   - started_at → meta.json.started_at (stamped at run init)
 #   - posted_at  → finalize_run stamps it from the EXIT trap after gh pr
 #                  comment succeeded (GH_POSTED=true above)

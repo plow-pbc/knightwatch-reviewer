@@ -85,22 +85,26 @@ if ! printf '%s' "$verdict_block" | grep -qF "\`medium\` or \`blocking\`"; then
     exit 1
 fi
 
-echo "  asserting decline-history input in critic.md..."
-assert_grep "critic.md should reference decline-history.md" \
-    "decline-history.md" prompts/critic.md
+echo "  asserting pr-comments input in critic.md..."
+assert_grep "critic.md should reference pr-comments.md" \
+    "pr-comments.md" prompts/critic.md
 
-echo "  asserting decline-history input in aggregator.md..."
-assert_grep "aggregator.md should reference decline-history.md" \
-    "decline-history.md" prompts/aggregator.md
+echo "  asserting pr-comments input in aggregator.md..."
+assert_grep "aggregator.md should reference pr-comments.md" \
+    "pr-comments.md" prompts/aggregator.md
+
+echo "  asserting pr-comments input in common-header.md (fed to every specialist)..."
+assert_grep "common-header.md should reference pr-comments.md so specialists see replies to their probes" \
+    "pr-comments.md" prompts/common-header.md
 
 # Round-8 unified contract: critic.md, aggregator.md, and the shell
-# preamble must describe the decline-history rule consistently.
+# preamble must describe the decline rule consistently.
 # The prior drift had aggregator.md saying "class matches" while critic.md
 # said "specific finding" — flagged in 4 of 4 review rounds (R0/R1/R2/R3).
 # Token-level fences below trip on the stale wording so smoke catches
 # drift before it ships, in lieu of an SSOT refactor.
-echo "  asserting unified decline-history contract (round-8 specific-finding rule)..."
-for f in prompts/critic.md prompts/aggregator.md lib/decline-history.sh; do
+echo "  asserting unified decline contract (round-8 specific-finding rule)..."
+for f in prompts/critic.md prompts/aggregator.md lib/pr-comments.sh; do
     if grep -qF "Decline replies / Counter-proposed" "$f"; then
         echo "FAIL: $f still uses the round-7 'Decline replies / Counter-proposed' heading — should be unified under 'Operator replies'"
         exit 1
@@ -165,14 +169,14 @@ for prompt in prompts/aggregator.md prompts/probe-schema.md; do
     fi
 done
 
-for specialist in shape simplification architecture consumers tests security data-integrity; do
+for specialist in shape architecture-refined consumers tests security data-integrity; do
     echo "  asserting simplification probe class in ${specialist}.md..."
-    # After collapsing DRY + dead-code + complexity-cost → simplification,
-    # most specialists must register simplification as one of their emitted
-    # classes (the universal removal-shaped class). contract-drift is the
+    # simplification (DRY + dead-code + complexity-cost) is the universal
+    # removal-shaped class; most specialists must register it as one of their
+    # emitted classes. architecture-refined owns it as a primary catch after
+    # the architecture+simplification consolidation. contract-drift is the
     # exception by design — its narrow remit (cross-file contract drift)
-    # explicitly bans simplification (simplification specialist owns DRY +
-    # removal-shaped probes); see the contract-drift assertions below.
+    # explicitly bans simplification; see the contract-drift assertions below.
     assert_grep "${specialist}.md should list simplification as a probe class" \
         "simplification" "prompts/specialists/${specialist}.md"
 done
@@ -401,12 +405,12 @@ assert_grep "common-header.md should mandate 'No probes.' marker" \
 assert_grep "pipeline.py should grep for the same 'No probes.' marker" \
     'No probes\.' "$PIPELINE"
 
-echo "  asserting simplification.md anchors on inferred-intent scratch artifact..."
-# Cross-file: simplification.md must reference the scratch artifact
+echo "  asserting architecture-refined.md anchors on inferred-intent scratch artifact..."
+# Cross-file: architecture-refined.md must reference the scratch artifact
 # `.codex-scratch/inferred-intent.md` so the inferred-intent staging
 # (lib/pipeline.py) and the consuming specialist agree on the path.
-assert_grep "simplification.md should anchor on the inferred-intent scratch artifact" \
-    ".codex-scratch/inferred-intent.md" prompts/specialists/simplification.md
+assert_grep "architecture-refined.md should anchor on the inferred-intent scratch artifact" \
+    ".codex-scratch/inferred-intent.md" prompts/specialists/architecture-refined.md
 
 # ====================================================================
 # Section 4: elegant-convergence rule fences (PR #70)
