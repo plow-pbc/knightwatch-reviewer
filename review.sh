@@ -122,12 +122,9 @@ refresh_queue() {
         log "Failed to enumerate open PRs (batched graphql or per-repo fallthrough — see prior errors)"
         return 0
     }
-    if [ "$(echo "$ALL_PRS" | jq 'length')" -eq 0 ]; then
-        write_queue "$STATE_DIR" "$(date +%s)" "[]"
-        log "Refreshed queue: 0 eligible PR(s)"
-        return 0
-    fi
-
+    # No early empty-list return: an empty ALL_PRS yields zero specs below
+    # (jq '.[]' on [] emits nothing), and the single tail write handles the
+    # 0-eligible case — one writer, not two copies of the same empty write.
     local PR_JSON REPO PR_NUM PR_TITLE PR_BRANCH PR_SHA PR_ID
     local TICK_FETCHED_AT_ISO REPO_SLUG_FOR_GATE KNOWN_SHA
     local FORCE_REVIEW FORCE_WHOLE_PR TRIGGER_USER TRIGGER_BODY
@@ -320,6 +317,18 @@ refresh_queue() {
 
 # consume_queue — read eligible-PR specs from the shared queue, probe the
 # per-PR flock to skip in-flight PRs, and dispatch a worker per claimed PR.
+#
+# INVARIANT (why no KNOWN_SHA re-check here): specs carry the eligibility
+# decided at refresh time; consume trusts them and only probes the in-flight
+# lock. This is safe ONLY while the effective tick interval exceeds
+# ENUMERATE_SECS, so a completed review's spec is always dropped by the next
+# refresh before any container could re-consume it. Both deployments hold this:
+# the container loop sets WAIT_FOR_WORKERS (interval = review duration, minutes)
+# and the systemd timer fires every 2m — each ≫ ENUMERATE_SECS (60s). If that
+# floor is ever raised past the tick interval, a forced (/${BOT_CMD_PREFIX}-review)
+# spec whose review finishes sub-window could be consumed twice (the worker
+# re-reviews via `gh pr diff`); the worker self-lock dedups concurrent claims
+# but not a serial re-consume, so add a KNOWN_SHA re-check here before doing so.
 consume_queue() {
     local specs spec REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR
     local TRIGGER_USER TRIGGER_BODY TICK_FETCHED_AT_ISO TRIGGER_FILE pr_lock_slug

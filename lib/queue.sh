@@ -53,7 +53,11 @@ read_queue_specs() {
 acquire_enumerator_lock() {
     local d="$1/locks"; mkdir -p "$d"
     exec {ENUM_LOCK_FD}> "$d/__enumerator"
-    flock -n "$ENUM_LOCK_FD"
+    # Close the FD on contention (mirror of acquire_pr_lock) so the helper has
+    # one symmetric contract. review.sh acquires this at most once per process,
+    # so a leaked FD would be reclaimed at exit either way — but the symmetry
+    # keeps a future loop caller from reintroducing the per-iteration FD leak.
+    flock -n "$ENUM_LOCK_FD" || { exec {ENUM_LOCK_FD}>&-; unset ENUM_LOCK_FD; return 1; }
 }
 
 release_enumerator_lock() {
