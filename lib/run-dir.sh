@@ -21,6 +21,12 @@ BOT_AI_AUTHOR_MARKER="${BOT_AI_AUTHOR_MARKER:-<!-- knightwatch-reviewer:ai-autho
 #   runs/ cache is a performance cache; this marker is the backstop.
 #   Empty SHA is an invariant violation (caller always has REVIEWED_SHA) —
 #   fail-fast rather than stamp a marker that matches every head.
+# NOTE: the marker FORMAT below is duplicated in prepend_review_header's awk
+# preservation regex (`^<!-- knightwatch-reviewer:reviewed-sha=[0-9a-f]+ -->$`).
+# If you change the prefix/spacing here, update that regex too — otherwise the
+# marker stops being preserved in the leading block and the backstop silently
+# fails open (re-review flood). The real-post-path tests (run-dir-smoke /
+# sha-flow-smoke scenario 7) build through both and fail loudly on such drift.
 reviewed_sha_marker() {
     local sha="$1"
     if [ -z "$sha" ]; then
