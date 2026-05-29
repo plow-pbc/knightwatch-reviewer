@@ -391,34 +391,50 @@ fi
 # placeholder means the EXIT trap re-PATCHes the SAME comment (a silent edit,
 # no notification), so an outage leaves exactly one self-updating marker per
 # PR. A real review (or a new PR head) deletes the placeholder on the success
-# path, so the next tick genuinely posts fresh. The reuse query only ever
-# matches a placeholder — real reviews don't carry BOT_PLACEHOLDER_MARKER.
+# path, so the next tick genuinely posts fresh.
 #
 # The leading HTML comment is invisible in rendered Markdown but lets the
 # orchestrator's jq filter recognize this as one of our auto-posts so we
 # don't self-trigger on the next tick.
-EYES_COMMENT_ID=$(BOT_AUTO_POST_MARKER="$BOT_AUTO_POST_MARKER" \
-    BOT_PLACEHOLDER_MARKER="$BOT_PLACEHOLDER_MARKER" \
-    gh api "repos/$REPO/issues/$PR_NUM/comments" --paginate \
-    --jq '[.[] | select(.body | contains(env.BOT_AUTO_POST_MARKER))] | last as $c
-          | if ($c != null) and ($c.body | contains(env.BOT_PLACEHOLDER_MARKER))
-            then $c.id else empty end' 2>/dev/null | head -n 1) || EYES_COMMENT_ID=""
-
-if [ -n "$EYES_COMMENT_ID" ]; then
-    log "$PR_ID: reusing prior placeholder (comment id=$EYES_COMMENT_ID) — not stacking a new one"
-else
-    EYES_COMMENT_ID=$(gh api "repos/$REPO/issues/$PR_NUM/comments" \
-        --method POST \
-        -f body="$BOT_AUTO_POST_MARKER
+#
+# Lookup goes through the shared fetch_issue_comments seam (paginated, so a
+# placeholder on page 2 of a long thread is still found, and a non-placeholder
+# auto-post like a learn-from-replies ACK doesn't hide it). A prior comment is
+# accepted as a reusable placeholder ONLY when it is unmistakably ours: authored
+# by BOT_USER, and its body starts with the exact auto-post/ai-author/placeholder
+# marker header that POST/PATCH below write. A real review — or a third-party
+# comment that merely quotes the placeholder marker — therefore can't be adopted
+# as EYES_COMMENT_ID and later PATCHed/DELETEd under the bot token. If the fetch
+# itself fails we skip placeholder posting for this tick rather than POSTing
+# blind: a blind POST on a missed-lookup is exactly the per-tick spam this fixes.
+PLACEHOLDER_HEADER="$BOT_AUTO_POST_MARKER
+$BOT_AI_AUTHOR_MARKER
+$BOT_PLACEHOLDER_MARKER
+"
+EYES_COMMENT_ID=""
+if ALL_ISSUE_COMMENTS=$(fetch_issue_comments "$REPO" "$PR_NUM"); then
+    EYES_COMMENT_ID=$(printf '%s' "$ALL_ISSUE_COMMENTS" | jq -r \
+        --arg bot_user "$BOT_USER" --arg header "$PLACEHOLDER_HEADER" \
+        '[ .[] | select(.user.login == $bot_user)
+               | select(.body | startswith($header)) ] | last | .id // empty')
+    if [ -n "$EYES_COMMENT_ID" ]; then
+        log "$PR_ID: reusing prior placeholder (comment id=$EYES_COMMENT_ID) — not stacking a new one"
+    else
+        EYES_COMMENT_ID=$(gh api "repos/$REPO/issues/$PR_NUM/comments" \
+            --method POST \
+            -f body="$BOT_AUTO_POST_MARKER
 $BOT_AI_AUTHOR_MARKER
 $BOT_PLACEHOLDER_MARKER
 👀 reviewing — [sam's ai review bot](https://github.com/srosro/knightwatch-reviewer)" \
-        --jq '.id' 2>/dev/null) || EYES_COMMENT_ID=""
-    if [ -n "$EYES_COMMENT_ID" ]; then
-        log "$PR_ID: posted reviewing placeholder (comment id=$EYES_COMMENT_ID)"
-    else
-        log "$PR_ID: failed to post reviewing placeholder (continuing)"
+            --jq '.id' 2>/dev/null) || EYES_COMMENT_ID=""
+        if [ -n "$EYES_COMMENT_ID" ]; then
+            log "$PR_ID: posted reviewing placeholder (comment id=$EYES_COMMENT_ID)"
+        else
+            log "$PR_ID: failed to post reviewing placeholder (continuing)"
+        fi
     fi
+else
+    log "$PR_ID: could not fetch comments to check for a prior placeholder — skipping placeholder this tick (continuing)"
 fi
 
 # Align canonical's `refs/heads/$BASE_REF` with the just-fetched
