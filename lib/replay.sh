@@ -138,6 +138,23 @@ for f in review-priority.md pr-comments.md loc-trend.md \
          product-context.md test-results.md; do
     write_scratch "$REPO_DIR" "$f" "(replay: not staged — upstream pipeline stage skipped)"
 done
+# reeval-status.md is a load-bearing prompt input (common-header / aggregator /
+# momentum read it), so stage a well-shaped default rather than the generic
+# sentinel — otherwise a prompt/lib canary passes without the surface this
+# input gates. Default = quiescent: no trigger live, nothing fired yet.
+write_scratch "$REPO_DIR" "reeval-status.md" "$(cat <<'REEVAL_EOF'
+# Re-eval trigger status
+
+(replay: synthesized default — no live trajectory in a single-SHA replay.)
+
+## This round
+REEVAL-LOC-TRIGGER: not-fired (replay default)
+
+## Already fired in a prior round (durable — do NOT re-fire these)
+REEVAL-LOC-FIRED: no
+REEVAL-STALL-FIRED: no
+REEVAL_EOF
+)"
 # TODO: prior-reviews.md is stubbed above, so multi-round Path 2 (strict-decrease
 # trigger in aggregator.md) cannot be exercised via replay. Re-staging from the
 # source run dir's inputs/ would enable it. The deterministic smoke

@@ -122,8 +122,7 @@ When T1 and/or T2 is live this round:
 
    ```
    _<intent line>_
-   <!-- knightwatch-reviewer:reeval-loc -->
-   <!-- knightwatch-reviewer:reeval-stall -->
+   <HTML marker(s) for the live trigger(s) ONLY — see the conditional rule below; do NOT copy this placeholder or both literal markers verbatim>
 
    > **Re-evaluate the architecture shape?**
    >
@@ -136,7 +135,7 @@ When T1 and/or T2 is live this round:
 
    **Emit ONLY the HTML marker(s) for the trigger(s) firing THIS round** — `<!-- knightwatch-reviewer:reeval-loc -->` when T1 fired, `<!-- knightwatch-reviewer:reeval-stall -->` when T2 fired (one, the other, or both). They are invisible in rendered markdown; the orchestrator greps them out of this posted body next round to enforce fire-once. Omitting a marker for a trigger that did NOT fire this round is load-bearing — a stray marker would suppress that trigger forever.
 
-3. **Promote the structural probes.** When the banner fires, rank `Class: shape` / `Class: simplification` / `Class: architecture` probes that name the structural cause ABOVE leaf-level probes of equal severity — the banner and the top probes should point at the same structural thing.
+3. **Promote the structural probes.** When the banner fires, rank `Class: shape` / `Class: simplification` probes that name the structural cause (including any `[from: architecture]` probe, which arrives as `Class: shape`) ABOVE leaf-level probes of equal severity — the banner and the top probes should point at the same structural thing.
 
 4. **Verdict stays `COMMENT`** — do not block, do not approve. The author either (a) addresses the structural ask the callout frames, or (b) replies via the configured review-trigger slash command (e.g. `/srosro-review` with the default prefix) with substantive prose that re-routes the lens.
 

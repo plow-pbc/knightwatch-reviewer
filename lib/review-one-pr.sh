@@ -1114,15 +1114,21 @@ write_scratch "$REPO_DIR" "probe-schema.md" "$(cat "$PROBE_SCHEMA_PATH")"
 # didn't. loc-trend.md (LOC trajectory) is independent of prior review
 # content and stays staged — it's derived from runs/ metadata, not from
 # what previous reviewers said.
+# Read prior reviews UNCONDITIONALLY (cheap local read of runs/ dirs, no
+# scratch side-effect — the write below is the staging step). The
+# re-eval fire-once markers are grepped out of $PRIOR_REVIEWS, and they
+# must be detectable even on the /srosro-review (FORCE_WHOLE_PR) path —
+# otherwise a whole-PR re-review reads an empty prior set and re-fires a
+# banner already shown. So the *read* is unconditional; only the *write*
+# of prior-reviews.md stays gated (that path commits to evaluating the
+# PR from scratch, and staging prior reviews would break that contract).
+PRIOR_REVIEWS=$(stage_prior_reviews "$STATE_DIR" "$REPO_SLUG_FOR_RUN" "$PR_NUM" "$RUN_DIR")
 if [ "$FORCE_WHOLE_PR" = "true" ]; then
-    log "$PR_ID: FORCE_WHOLE_PR=true — skipping prior-reviews.md (whole-PR re-review evaluates from scratch)"
-else
-    PRIOR_REVIEWS=$(stage_prior_reviews "$STATE_DIR" "$REPO_SLUG_FOR_RUN" "$PR_NUM" "$RUN_DIR")
-    if [ -n "$PRIOR_REVIEWS" ]; then
-        PRIOR_COUNT=$(printf '%s' "$PRIOR_REVIEWS" | grep -c '^--- review at ')
-        log "$PR_ID: staging $PRIOR_COUNT prior review(s) for carry-forward"
-        write_scratch "$REPO_DIR" "prior-reviews.md" "$PRIOR_REVIEWS"
-    fi
+    log "$PR_ID: FORCE_WHOLE_PR=true — skipping prior-reviews.md (whole-PR re-review evaluates from scratch; prior reviews still consulted for re-eval fire-once markers)"
+elif [ -n "$PRIOR_REVIEWS" ]; then
+    PRIOR_COUNT=$(printf '%s' "$PRIOR_REVIEWS" | grep -c '^--- review at ')
+    log "$PR_ID: staging $PRIOR_COUNT prior review(s) for carry-forward"
+    write_scratch "$REPO_DIR" "prior-reviews.md" "$PRIOR_REVIEWS"
 fi
 
 # Product context from .knightwatch/product-context.md (per-repo,
