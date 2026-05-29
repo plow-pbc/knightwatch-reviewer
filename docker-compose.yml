@@ -65,7 +65,12 @@ services:
     volumes:
       - claims:/shared
       - reviewer1-local:/local
-      - ./docker/secrets/codex-account-a:/root/.codex:ro       # OpenAI account A
+      # Writable (NOT :ro): codex loads/migrates config and refreshes its OAuth
+      # token inside its home — a read-only mount makes every codex call die with
+      # "Error loading configuration: Read-only file system". The creds stay
+      # protected by /root's 0700 perms (the unprivileged test user can't reach
+      # /root at all), so dropping :ro doesn't widen test-user access.
+      - ./docker/secrets/codex-account-a:/root/.codex          # OpenAI account A
       - ./docker/secrets/repos.conf:/shared/repos.conf:ro      # tracked-repo manifest
       - ./docker/secrets/config.env:/root/.kwr/config.env:ro      # ops knobs + `export GH_TOKEN=…` (the one config seam; review.sh sources it)
       - ./docker/secrets/claude-standards:/root/.claude:ro     # review standards (worker reads as root; the test user is isolated from /root)
@@ -85,7 +90,7 @@ services:
     volumes:
       - claims:/shared
       - reviewer2-local:/local
-      - ./docker/secrets/codex-account-b:/root/.codex:ro       # OpenAI account B
+      - ./docker/secrets/codex-account-b:/root/.codex          # OpenAI account B (writable — see account A note)
       - ./docker/secrets/repos.conf:/shared/repos.conf:ro
       - ./docker/secrets/config.env:/root/.kwr/config.env:ro
       - ./docker/secrets/claude-standards:/root/.claude:ro
