@@ -632,9 +632,55 @@ if grep -q "posted reviewing placeholder" "$GATE_LOG"; then
     exit 1
 fi
 
-echo "  PASS (4 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate on fetched head)"
+# ===== Scenario 5: container-mode gate skips untrusted-author PRs =====
+# codex review agents run sandbox-bypassed and share the privileged dind
+# daemon's netns, so reviewing an UNTRUSTED-author PR risks prompt-injection →
+# host root. In REVIEWER_CONTAINER_MODE the worker must skip an untrusted author
+# entirely — before any placeholder, clone, or codex. The decisive contrast:
+# scenarios 1-4 use the SAME gh stub (author test-user, `gh api …permission`
+# → empty → untrusted) but WITHOUT container mode, and the worker proceeds to
+# clone/meta.json. Flipping only REVIEWER_CONTAINER_MODE must flip to a skip.
+echo "  scenario: container-mode gate skips untrusted-author PR before placeholder/clone..."
+STATE5="$TMPDIR/state-5"
+mkdir -p "$STATE5/runs" "$STATE5/canonical-locks" "$STATE5/locks" "$STATE5/repos" "$STATE5/workdirs"
+echo "{}" > "$STATE5/state.json"
+write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"   # author=test-user; permission unset → untrusted
+(
+    export STATE_DIR="$STATE5" STATE_FILE="$STATE5/state.json" REPOS_DIR="$STATE5/repos" \
+           WORKDIRS_DIR="$STATE5/workdirs" CANONICAL_LOCKS_DIR="$STATE5/canonical-locks" \
+           PR_REVIEW_LOCK_DIR="$STATE5/locks" REVIEWER_CONTAINER_MODE=1
+    write_probe_repos_conf "$STATE5/repos.conf"
+    TRIGGER_COMMENT_FILE="" \
+        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
+        "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Untrusted PR" "false" \
+        >/dev/null 2>&1
+)
+GATE5_EC=$?
+RUN5=$(find "$STATE5/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' | head -1)
+if [ -z "$RUN5" ]; then
+    echo "FAIL: scenario 5 — worker allocated no run-dir"
+    exit 1
+fi
+LOG5="$RUN5/run.log"
+if [ "$GATE5_EC" -ne 0 ]; then
+    echo "FAIL: scenario 5 — worker exited $GATE5_EC (expected 0 from clean container-mode untrusted skip)"
+    [ -f "$LOG5" ] && { echo "--- run.log ---"; cat "$LOG5"; }
+    exit 1
+fi
+if ! grep -q "skipping review — untrusted author" "$LOG5"; then
+    echo "FAIL: scenario 5 — run.log missing the container-mode untrusted-author skip line"
+    [ -f "$LOG5" ] && { echo "--- run.log ---"; cat "$LOG5"; }
+    exit 1
+fi
+if grep -q "posted reviewing placeholder" "$LOG5"; then
+    echo "FAIL: scenario 5 — placeholder WAS posted (untrusted PR reached the pipeline in container mode)"
+    cat "$LOG5"
+    exit 1
+fi
 
-# ===== Scenario 5: repeated transient aborts reuse one placeholder =====
+echo "  PASS (5 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip)"
+
+# ===== Scenario 6: repeated transient aborts reuse one placeholder =====
 # Fences the anti-spam reuse path in lib/review-one-pr.sh. During a transient
 # outage (codex quota exhausted, specialist timeout) every 2-min orchestrator
 # tick runs the worker, which posts a "👀 reviewing" placeholder, aborts at
@@ -730,22 +776,22 @@ STUB
 
 write_stateful_gh_stub "$HOME/.local/bin/gh" "$COMMENT_STORE" "main" "$NEW_PR_SHA"
 
-STATE5="$TMPDIR/state-5"
-mkdir -p "$STATE5/runs" "$STATE5/canonical-locks" "$STATE5/locks" "$STATE5/repos" "$STATE5/workdirs"
-echo "{}" > "$STATE5/state.json"
-CANONICAL5="$STATE5/repos/test-org_probe-repo"
-mkdir -p "$(dirname "$CANONICAL5")"
-git clone -q "$GITHUB_BARE" "$CANONICAL5"
+STATE6="$TMPDIR/state-6"
+mkdir -p "$STATE6/runs" "$STATE6/canonical-locks" "$STATE6/locks" "$STATE6/repos" "$STATE6/workdirs"
+echo "{}" > "$STATE6/state.json"
+CANONICAL6="$STATE6/repos/test-org_probe-repo"
+mkdir -p "$(dirname "$CANONICAL6")"
+git clone -q "$GITHUB_BARE" "$CANONICAL6"
 
-run_tick_5() {
+run_tick_6() {
     (
-        export STATE_DIR="$STATE5"
-        export STATE_FILE="$STATE5/state.json"
-        export REPOS_DIR="$STATE5/repos"
-        export WORKDIRS_DIR="$STATE5/workdirs"
-        export CANONICAL_LOCKS_DIR="$STATE5/canonical-locks"
-        export PR_REVIEW_LOCK_DIR="$STATE5/locks"
-        write_probe_repos_conf "$STATE5/repos.conf"
+        export STATE_DIR="$STATE6"
+        export STATE_FILE="$STATE6/state.json"
+        export REPOS_DIR="$STATE6/repos"
+        export WORKDIRS_DIR="$STATE6/workdirs"
+        export CANONICAL_LOCKS_DIR="$STATE6/canonical-locks"
+        export PR_REVIEW_LOCK_DIR="$STATE6/locks"
+        write_probe_repos_conf "$STATE6/repos.conf"
         TRIGGER_COMMENT_FILE="" \
             bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
             "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" \
@@ -753,15 +799,15 @@ run_tick_5() {
     )
 }
 
-run_tick_5   # tick 1: posts placeholder, aborts, EXIT trap edits to paused
-run_tick_5   # tick 2: must reuse the same placeholder, not post a second
+run_tick_6   # tick 1: posts placeholder, aborts, EXIT trap edits to paused
+run_tick_6   # tick 2: must reuse the same placeholder, not post a second
 
 # Decisive assertion: exactly one bot placeholder comment survives two ticks.
 PLACEHOLDER_COUNT=$(jq '[.[] | select(.body | contains("knightwatch-reviewer:placeholder"))] | length' "$COMMENT_STORE")
 if [ "$PLACEHOLDER_COUNT" != "1" ]; then
-    echo "FAIL: scenario 5 — $PLACEHOLDER_COUNT placeholder comments after two ticks (expected 1 — per-tick spam regressed)"
+    echo "FAIL: scenario 6 — $PLACEHOLDER_COUNT placeholder comments after two ticks (expected 1 — per-tick spam regressed)"
     jq -r '.[] | "  id=\(.id) body=\(.body | gsub("\n";" ") | .[0:80])"' "$COMMENT_STORE"
     exit 1
 fi
 
-echo "  PASS (5 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + placeholder reuse anti-spam)"
+echo "  PASS (6 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + placeholder reuse anti-spam)"

@@ -21,6 +21,14 @@ store_init "$DB"
 COUNT=$(sqlite3 "$DB" "SELECT COUNT(*) FROM specialist_runs;")
 [ "$COUNT" = "1" ] || { echo "FAIL: re-init wiped row (count=$COUNT)"; exit 1; }
 
+echo "  init: folds legacy architecture-v2 rows into contract-drift (rename migration)..."
+upsert_specialist_run "$DB" srosro/repo 300 architecture-v2 9 2026-05-10T00:00:00Z
+store_init "$DB"
+ROW=$(sqlite3 "$DB" "SELECT specialist FROM specialist_runs WHERE comment_id=300;")
+[ "$ROW" = "contract-drift" ] || { echo "FAIL: architecture-v2 not migrated to contract-drift: $ROW"; exit 1; }
+LEFT=$(sqlite3 "$DB" "SELECT COUNT(*) FROM specialist_runs WHERE specialist='architecture-v2';")
+[ "$LEFT" = "0" ] || { echo "FAIL: architecture-v2 rows remain after migration: $LEFT"; exit 1; }
+
 echo "  upsert_specialist_run: inserts new row with default flags 0..."
 upsert_specialist_run "$DB" srosro/repo 200 security 8 2026-05-02T00:00:00Z
 ROW=$(sqlite3 "$DB" "SELECT specialist, published, applied, loved_positive, critiqued FROM specialist_runs WHERE comment_id=200 AND specialist='security';")

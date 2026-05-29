@@ -78,6 +78,15 @@ SQL
     if ! sqlite3 "$db" "SELECT 1 FROM pragma_table_info('walks') WHERE name='reviews_with_marker_in_window';" | grep -q 1; then
         sqlite3 "$db" "ALTER TABLE walks ADD COLUMN reviews_with_marker_in_window INTEGER NOT NULL DEFAULT 0;"
     fi
+
+    # Migration: fold architecture-v2 rows into contract-drift (renamed
+    # 2026-05-28). The rename was by remit (pure prompt rename, no behavior
+    # change), so historical rows belong to the same lane — normalizing them
+    # at rest keeps the scorecard one continuous specialist instead of a
+    # phantom split, and preserves the lane's track record. Idempotent: a
+    # no-op once no architecture-v2 rows remain. No PK collision possible —
+    # a review's roster marker named exactly one of the two at write time.
+    sqlite3 "$db" "UPDATE specialist_runs SET specialist='contract-drift' WHERE specialist='architecture-v2';"
 }
 
 # Insert a (repo, comment_id, specialist) row if absent. Preserves any

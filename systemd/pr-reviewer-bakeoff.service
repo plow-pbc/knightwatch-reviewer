@@ -1,5 +1,5 @@
 [Unit]
-Description=Plow PR reviewer — specialist bake-off (daily at 03:30 Pacific)
+Description=Plow PR reviewer — specialist bake-off (twice daily, 07:00 + 19:00 Pacific)
 After=network-online.target
 Wants=network-online.target
 
@@ -12,6 +12,11 @@ Environment=HOME=/home/odio
 # PATH: system dirs FIRST (see pr-reviewer.service for rationale —
 # defense-in-depth on top of the ~/.local-not-in-ReadWritePaths fix).
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/odio/.nvm/versions/node/v24.15.0/bin:/home/odio/.local/bin
+# Match the 12h timer cadence (07:00/19:00): each run walks a 12h window, not
+# the 24h default — halving the bot-activity-discovery graphql cost so two
+# runs/day stay net-flat vs the old single 24h run, and don't spike the shared
+# graphql budget the reviewer containers also draw from.
+Environment=REWALK_HOURS=12
 ExecStart=/home/odio/.pr-reviewer/specialist-bakeoff.sh
 TimeoutStartSec=15min
 StandardOutput=journal

@@ -28,7 +28,7 @@ Two more, from the public [`tkmx-client`](https://github.com/srosro/tkmx-client)
 A timer polls tracked repos for new or updated PRs. For each, it runs a two-wave pipeline:
 
 - **Wave A** (parallel): two **standalone** stages — `intent` (infers the end-user-facing outcome the PR is reaching for) and `dead-code-search` (pre-pass static + LLM evidence). Both seed scratch inputs the next wave reads.
-- **Wave B** (parallel): the eight **specialists** — `security`, `data-integrity`, `architecture`, `architecture-v2`, `consumers`, `shape`, `simplification`, `tests` — each looking at one angle of the diff against the rest of the repo. On re-reviews, the `momentum` standalone joins Wave B (it tracks LOC trajectory and prior-round drift). Each specialist emits structured **probes** (hypothesis + severity + class), and a per-angle `critic` then resolves each probe (`Answer: yes/no/unknown` + evidence).
+- **Wave B** (parallel): the nine **specialists** — `security`, `data-integrity`, `architecture`, `architecture-refined`, `contract-drift`, `consumers`, `shape`, `simplification`, `tests` — each looking at one angle of the diff against the rest of the repo. On re-reviews, the `momentum` standalone joins Wave B (it tracks LOC trajectory and prior-round drift). Each specialist emits structured **probes** (hypothesis + severity + class), and a per-angle `critic` then resolves each probe (`Answer: yes/no/unknown` + evidence).
 - **Aggregator** (sequential): renders a single ranked **Probes** section with `[from: <specialist>]` attribution, a verdict (`APPROVE` or one or more blocking probes), and an AI-author callout so Codex/Claude Code/Cursor can parse load-bearing open probes directly. A marker (`<!-- knightwatch-reviewer:auto-post -->`) tags every post so reply automation and human babysitting can filter cleanly.
 
 ```mermaid
@@ -44,15 +44,16 @@ flowchart TB
     WA --> scratch[(.codex-scratch/<br/>inferred-intent.md<br/>dead-code.md)]
     scratch --> WB
 
-    subgraph WB[Wave B — 8 specialists in parallel; each chains to a per-angle critic]
+    subgraph WB[Wave B — 9 specialists in parallel; each chains to a per-angle critic]
         direction LR
         sec[security] --> ksec[critic]
         di[data-integrity] --> kdi[critic]
         arch[architecture] --> karch[critic]
+        archref["architecture-refined"] --> karchref[critic]
         simp[simplification] --> ksimp[critic]
         tst[tests] --> ktst[critic]
         shp[shape] --> kshp[critic]
-        archv2["architecture-v2"] --> karchv2[critic]
+        cd["contract-drift"] --> kcd[critic]
         cons[consumers] --> kcons[critic]
         mom["momentum<br/>(re-review only)"]
     end
@@ -74,6 +75,39 @@ cd knightwatch-reviewer
 `install.sh` symlinks scripts into `~/.pr-reviewer/`, copies the `systemd/*.{service,timer}` files into `/etc/systemd/system/`, daemon-reloads, and enables the timers. Idempotent — re-run after pulling changes.
 
 Single-tenant by design: one Linux host with `gh` authenticated as the bot's signing user. The systemd units currently bake in `User=odio` and `/home/odio/.pr-reviewer/`; edit them for a different user or path.
+
+> **Legacy single-account path.** The `systemd/*.timer` deployment above runs the reviewer on **one** OpenAI/Codex account on the host. It remains supported as the fallback, but the **containerized multi-account deployment below is the primary path for the review loop** — it spreads reviews across N accounts and confines each review (PR code + codex agents) to a container. (The *quota-aware* piece — a capped account backing off so it can't stall the queue — is a follow-up; see `.knightwatch/product-context.md`. Today a capped container can still claim+stamp a PR.) It containerizes the *review loop only*; the auxiliary host timers (auto-discovery, auto-calibration) stay host-side — see the migration note below.
+
+### Containerized (multi-account) deployment
+
+Runs N reviewer containers on one host, each pinned to its own OpenAI account and claiming PRs through a shared lock volume (the existing non-blocking per-PR flock + `KNOWN_SHA` gate dedup across containers). Each reviewer gets its own privileged `docker:dind` sidecar so the target repo's `just test` (docker-compose) runs nested, not on the host daemon.
+
+```sh
+cp -r docker/secrets.example docker/secrets   # then populate — see docker/secrets.example/README.md
+docker build -f docker/Dockerfile -t knightwatch-reviewer:dev .
+# Migration: stop the legacy host reviewer FIRST. It polls a different state
+# root (~/.pr-reviewer) than the containers (the shared `claims` volume), so
+# leaving it enabled means host + containers both review — and double-post —
+# the same PRs (their per-PR locks live in different places and don't dedup).
+sudo systemctl disable --now pr-reviewer.timer
+# Disabling the timer stops new ticks, but workers already dispatched run
+# detached (KillMode=process) for up to 90m and still hold ~/.pr-reviewer
+# locks — so DRAIN them before bringing up containers, or an in-flight host
+# review can double-post against a new container review:
+while pgrep -f 'review-one-pr\.sh' >/dev/null; do echo "waiting for in-flight host reviewers to finish…"; sleep 30; done
+docker compose up -d
+docker compose logs -f reviewer-1
+```
+
+The auxiliary host timers (`-approve`, `-re-request`, `-kid-refresh`) are independent of the review loop and don't double-review; leave them or migrate separately. **Two write host state the containers don't read — auto-discovery and auto-calibration are host-only in v1:**
+- `pr-reviewer-org-sync` writes auto-discovered repos to `~/.pr-reviewer/repos.conf.auto`, which the containers (reading `/shared/repos.conf`) never see → list tracked repos explicitly in `docker/secrets/repos.conf` (or mount a shared `repos.conf.auto` into `/shared` and run org-sync against it).
+- `pr-reviewer-learn` updates `~/.claude/COMMENT_REVIEW_MISTAKES.md` (learned review calibrations), but the containers read the static `docker/secrets/claude-standards/` copy → re-copy that file (or mount the live one read-only) to pick up new calibrations.
+
+Fully reconciling these into one shared host/container seam is the tracked follow-up in `.knightwatch/product-context.md`.
+
+**Security note — before you deploy:** the dind sidecar runs `--privileged`, and the sandbox-bypassed codex agents share its network namespace (`DOCKER_HOST`), so a successful prompt-injection of a review agent could drive the daemon → host root. Untrusted `just test` is already skipped, but the codex path is an **accepted v1 residual to resolve at bring-up** — make the daemon unprivileged (rootless dind / sysbox) or run codex in a container that doesn't share dind, and verify against the live suite, before standing this up against real PRs.
+
+`docker compose config` validates the topology before bringing it up. Add an account by dropping in another `~/.codex` and adding a `dind-N` + `reviewer-N` pair (see `docker/secrets.example/README.md`). Each unit's `reviewer` + `dind` memory limits sum toward the host budget — keep headroom for anything else on the box.
 
 ## Configure repos
 
@@ -105,7 +139,7 @@ Reviews fire on PR open and again after one hour of idle. To force a fresh revie
 
 ### Specialist bake-off
 
-A small post-hoc measurement that helps decide which specialists are earning their place. `specialist-bakeoff.sh` runs daily at 03:30 Pacific via systemd, walks the tracked repos in `repos.conf` for bot reviews + feedback comments since the per-repo `min(REWALK_HOURS_ago, walks.last_walked_at)` floor — covers new comments since the last cron and refreshes `edited_after` on recent reviews — and persists one row per (review × specialist) into `~/.pr-reviewer/bakeoff.db`. A markdown snapshot is regenerated at `~/.pr-reviewer/specialist-bakeoff.md` with the following columns per specialist over a rolling 14-day window (configurable via `SCORECARD_DAYS`; the renderer reads accumulated DB state, decoupled from the walker's `REWALK_HOURS`):
+A small post-hoc measurement that helps decide which specialists are earning their place. `specialist-bakeoff.sh` runs twice daily at 07:00 and 19:00 Pacific via systemd, walks the tracked repos in `repos.conf` for bot reviews + feedback comments since the per-repo `min(REWALK_HOURS_ago, walks.last_walked_at)` floor — covers new comments since the last cron and refreshes `edited_after` on recent reviews — and persists one row per (review × specialist) into `~/.pr-reviewer/bakeoff.db`. A markdown snapshot is regenerated at `~/.pr-reviewer/specialist-bakeoff.md` with the following columns per specialist over a rolling 14-day window (configurable via `SCORECARD_DAYS`; the renderer reads accumulated DB state, decoupled from the walker's `REWALK_HOURS`):
 
 - **Reviews** — total reviews where this specialist was invoked (the denominator). Comes from the write-time `<!-- knightwatch-bakeoff: specialists=... -->` marker on every posted review.
 - **Shipped** — reviews where this specialist contributed at least one probe (per-review bool, not probe count).

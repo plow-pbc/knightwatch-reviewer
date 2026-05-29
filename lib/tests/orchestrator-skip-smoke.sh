@@ -266,7 +266,7 @@ grep -qF 'export TMPDIR="$STATE_DIR/tmp"' "$LOADER" || {
 # Ordering check: the pin must follow the config.env source (otherwise
 # config.env's TMPDIR shadows the pin and detached workers regress).
 loader_pin_line=$(grep -nF 'export TMPDIR="$STATE_DIR/tmp"' "$LOADER" | head -1 | cut -d: -f1)
-loader_cfg_line=$(grep -nF '. "${STATE_DIR}/config.env"' "$LOADER" | head -1 | cut -d: -f1)
+loader_cfg_line=$(grep -nF '. "$CONFIG_ENV_FILE"' "$LOADER" | head -1 | cut -d: -f1)
 if [ -z "$loader_cfg_line" ] || [ -z "$loader_pin_line" ] || [ "$loader_pin_line" -le "$loader_cfg_line" ]; then
     echo "FAIL setup: lib/tracked-repos.sh — TMPDIR pin must come AFTER the config.env source (got pin@${loader_pin_line:-MISSING}, config.env@${loader_cfg_line:-MISSING})"
     exit 1
