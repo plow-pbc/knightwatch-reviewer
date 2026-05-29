@@ -141,10 +141,16 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # multi-source is idempotent (function redefinition).
 . "$_LIB_DIR/loc-trend.sh"
 
+# --- gh-comments (fetch_issue_comments) — paginated issue-comment reader,
+# the shared seam every comment scanner uses. Consumed here by the
+# placeholder-reuse lookup below; sourced explicitly (not via a transitive
+# import) so the dependency is visible at the call site.
+. "$_LIB_DIR/gh-comments.sh"
+
 # --- decline-history (fetch_decline_history) — operator's prior declines
 # on this PR; consumed by the critic to drop or footnote re-flagged
-# findings the operator has pushed back on ≥3 times. Sources gh-comments.sh
-# internally; multi-source is idempotent.
+# findings the operator has pushed back on ≥3 times. (Also sources
+# gh-comments.sh; multi-source is idempotent.)
 . "$_LIB_DIR/decline-history.sh"
 
 # --- per-run dir -------------------------------------------------------------
@@ -251,6 +257,16 @@ fi
 # gate now.
 EYES_COMMENT_ID=""
 EYES_RESOLVED=false
+# The placeholder's leading marker block — written verbatim on every POST and
+# PATCH below, and the exact prefix the reuse lookup matches with `startswith`.
+# Defined once so all three sites stay byte-identical: reuse depends on it, so
+# any drift between writer and matcher would silently break placeholder
+# recycling and bring back the per-tick spam. Trailing newline included so a
+# body is just "$PLACEHOLDER_HEADER<message>".
+PLACEHOLDER_HEADER="$BOT_AUTO_POST_MARKER
+$BOT_AI_AUTHOR_MARKER
+$BOT_PLACEHOLDER_MARKER
+"
 # Default placeholder body for any abort path; specific aborts (e.g. the
 # Wave B timeout branch in the pipeline block below) override this with
 # a more informative message before the EXIT trap fires. Single PATCH
@@ -261,10 +277,7 @@ cleanup_eyes() {
         return 0
     fi
     gh api "repos/$REPO/issues/comments/$EYES_COMMENT_ID" --method PATCH \
-        -f body="$BOT_AUTO_POST_MARKER
-$BOT_AI_AUTHOR_MARKER
-$BOT_PLACEHOLDER_MARKER
-$EYES_ABORT_BODY" \
+        -f body="${PLACEHOLDER_HEADER}${EYES_ABORT_BODY}" \
         >/dev/null 2>&1 || true
 }
 trap 'finalize_run; cleanup_eyes' EXIT
@@ -407,10 +420,8 @@ fi
 # as EYES_COMMENT_ID and later PATCHed/DELETEd under the bot token. If the fetch
 # itself fails we skip placeholder posting for this tick rather than POSTing
 # blind: a blind POST on a missed-lookup is exactly the per-tick spam this fixes.
-PLACEHOLDER_HEADER="$BOT_AUTO_POST_MARKER
-$BOT_AI_AUTHOR_MARKER
-$BOT_PLACEHOLDER_MARKER
-"
+# PLACEHOLDER_HEADER (defined with cleanup_eyes above) is both the matched
+# prefix here and the leading block of the POST body below.
 EYES_COMMENT_ID=""
 if ALL_ISSUE_COMMENTS=$(fetch_issue_comments "$REPO" "$PR_NUM"); then
     EYES_COMMENT_ID=$(printf '%s' "$ALL_ISSUE_COMMENTS" | jq -r \
@@ -422,10 +433,7 @@ if ALL_ISSUE_COMMENTS=$(fetch_issue_comments "$REPO" "$PR_NUM"); then
     else
         EYES_COMMENT_ID=$(gh api "repos/$REPO/issues/$PR_NUM/comments" \
             --method POST \
-            -f body="$BOT_AUTO_POST_MARKER
-$BOT_AI_AUTHOR_MARKER
-$BOT_PLACEHOLDER_MARKER
-👀 reviewing — [sam's ai review bot](https://github.com/srosro/knightwatch-reviewer)" \
+            -f body="${PLACEHOLDER_HEADER}👀 reviewing — [sam's ai review bot](https://github.com/srosro/knightwatch-reviewer)" \
             --jq '.id' 2>/dev/null) || EYES_COMMENT_ID=""
         if [ -n "$EYES_COMMENT_ID" ]; then
             log "$PR_ID: posted reviewing placeholder (comment id=$EYES_COMMENT_ID)"
