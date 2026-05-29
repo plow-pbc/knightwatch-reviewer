@@ -21,10 +21,11 @@ export PROMPTS_DIR="$(pwd)/prompts"
 POLL_SECS="${POLL_SECS:-30}"
 # Time floor for refreshing the eligible-PR queue GLOBALLY: one container per
 # window runs the GraphQL enumerate; all containers consume the result every
-# POLL_SECS. review.sh ALSO refreshes early when the current batch is drained
-# (all queued PRs claimed). So this is the upper bound on staleness, not a
-# fixed cadence. Decoupling from POLL_SECS is what cuts the GraphQL burn —
-# enumeration runs ~once/ENUMERATE_SECS, not once/POLL_SECS/container.
+# POLL_SECS. review.sh refreshes only when this floor has elapsed AND there's
+# nothing left to claim (queue empty, or every PR already in-flight) — the
+# "nothing to claim" term only SUPPRESSES a refresh (consume the batch first),
+# never adds one, so re-enumeration is capped at ~once/ENUMERATE_SECS rather
+# than once/POLL_SECS/container. That cap is what cuts the GraphQL burn.
 export ENUMERATE_SECS="${ENUMERATE_SECS:-60}"
 export MAX_CONCURRENT=1
 # Block each tick until its dispatched worker finishes (review.sh honors this),

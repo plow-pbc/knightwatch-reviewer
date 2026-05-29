@@ -62,20 +62,24 @@ release_enumerator_lock() {
     unset ENUM_LOCK_FD
 }
 
-# queue_drained STATE_DIR — exit 0 if the queue HAS specs but NONE are
-# currently claimable (every queued PR's per-PR flock is held = in-flight on
-# some container) → the visible batch is worked through, refetch for more.
-# Exit 1 if the queue is EMPTY (idle — governed by the time cadence alone, so
-# idle ticks don't herd every container into re-enumerating) OR at least one
-# PR is still claimable (work remains; no refetch needed yet). Probes via
-# acquire_pr_lock (from lib/locking.sh) and releases immediately — a free
-# probe means claimable. Depends on lib/locking.sh being sourced.
-queue_drained() {
-    local specs n slug; specs=$(read_queue_specs "$1")
-    n=$(jq 'length' <<<"$specs"); [ "$n" -gt 0 ] || return 1
+# queue_has_claimable STATE_DIR — exit 0 if at least one queued PR's per-PR
+# flock is currently acquirable (claimable work this container could pick up
+# right now), exit 1 if NONE are: the queue is empty (idle) OR every PR is
+# already claimed/in-flight on some container. Probes via acquire_pr_lock (from
+# lib/locking.sh) and releases immediately — a free probe means claimable.
+#
+# The driver refreshes only when STALE *and* NOT queue_has_claimable (an AND
+# gate, never an OR trigger): "no claimable work" can only SUPPRESS a refresh,
+# never add one. So a fresh-but-all-in-flight queue does NOT re-enumerate every
+# poll tick — that OR-style trigger reopened the GraphQL burn this seam exists
+# to remove. The time floor caps re-enumeration at once per ENUMERATE_SECS, and
+# while un-claimed work remains we consume it before re-enumerating. The empty
+# queue counts as "no claimable" so an idle system still refreshes on the floor.
+queue_has_claimable() {
+    local specs slug; specs=$(read_queue_specs "$1")
     while IFS= read -r slug; do
         [ -n "$slug" ] || continue
-        if acquire_pr_lock "$1" "$slug"; then release_pr_lock; return 1; fi
+        if acquire_pr_lock "$1" "$slug"; then release_pr_lock; return 0; fi
     done < <(jq -r '.[] | (.repo|gsub("/";"_")) + "__" + (.pr_num|tostring)' <<<"$specs")
-    return 0
+    return 1
 }

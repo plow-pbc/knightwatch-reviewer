@@ -379,16 +379,21 @@ consume_queue() {
     if [ -n "${WAIT_FOR_WORKERS:-}" ]; then wait; fi
 }
 
-# Refresh when the batch is STALE (time floor) OR DRAINED (non-empty queue
-# whose every PR is already claimed/in-flight -> fetch the next batch). The
-# empty-queue idle case is deliberately NOT "drained" (queue_drained returns
-# 1), so an idle system refreshes only on the time floor — no per-tick herd.
+# Refresh only when STALE (time floor) AND there is NOTHING left to claim —
+# the queue is empty (idle) or every PR is already claimed/in-flight. Gating on
+# "no claimable work" with AND (never OR) means the work-state can only SUPPRESS
+# a refresh, never add one: a fresh-but-all-in-flight queue does NOT re-enumerate
+# every poll tick (the OR form did, reopening the GraphQL burn). The floor caps
+# re-enumeration at once per ENUMERATE_SECS; while un-claimed work remains we
+# consume it first. Idle (empty) still refreshes on the floor to find new PRs.
 NOW_EPOCH=$(date +%s)
-if { queue_needs_refresh "$STATE_DIR" "$ENUMERATE_SECS" "$NOW_EPOCH" || queue_drained "$STATE_DIR"; } \
+if queue_needs_refresh "$STATE_DIR" "$ENUMERATE_SECS" "$NOW_EPOCH" \
+   && ! queue_has_claimable "$STATE_DIR" \
    && acquire_enumerator_lock "$STATE_DIR"; then
     # Re-check after winning: another container may have refreshed in the gap
     # between our trigger check and acquiring the election lock.
-    if queue_needs_refresh "$STATE_DIR" "$ENUMERATE_SECS" "$(date +%s)" || queue_drained "$STATE_DIR"; then
+    if queue_needs_refresh "$STATE_DIR" "$ENUMERATE_SECS" "$(date +%s)" \
+       && ! queue_has_claimable "$STATE_DIR"; then
         refresh_queue
     fi
     release_enumerator_lock

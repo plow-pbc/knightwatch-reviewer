@@ -6,10 +6,15 @@
 #      one performs the gh enumerate (the other loses the election flock).
 #   C. Claim spreading — when specs[0]'s per-PR flock is already held, the
 #      consumer skips it and dispatches specs[1] instead.
-#   D. Drained refetch — a fresh (within-window) queue whose every PR is
-#      flock-held triggers an early refetch (work-driven cadence).
-#   E. Idle no-spin — a fresh EMPTY queue does NOT refetch (empty != drained;
-#      the fence against idle herd re-enumeration).
+#   D. AND-gate (no per-tick burn) — a queue whose every PR is in-flight but is
+#      still FRESH does NOT refetch; the time floor gates it (the OR-trigger bug
+#      re-enumerated here every tick).
+#   F. Floor refetch — all-in-flight AND stale → refetch once (work-driven, but
+#      capped at the floor, not per-tick).
+#   G. Consume-first — a claimable PR present AND stale → NO refetch; refresh is
+#      suppressed while there's still un-claimed work (! queue_has_claimable).
+#   E. Idle floor-only — empty queue: fresh→no refetch, stale→refetch (empty
+#      counts as no-claimable so idle discovers new PRs on the floor, not before).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -87,6 +92,23 @@ wait_dispatched() {
     done
 }
 
+# hold_prs SLUG... — hold each PR's per-PR flock in THIS shell via a dedicated
+# FD (deterministic, no background process / no timing race — important since
+# the real reviewer containers may be loading this host). A review.sh subprocess
+# opens its own FD and its flock -n correctly sees the lock held. release_holds
+# closes the FDs. Pair every hold_prs with a release_holds.
+HOLD_FDS=()
+hold_prs() {
+  HOLD_FDS=(); local slug fd
+  for slug in "$@"; do
+    exec {fd}>"$STATE_DIR/locks/$slug"
+    flock -n "$fd" || { echo "FAIL: hold_prs could not lock $slug (already held)"; exit 1; }
+    HOLD_FDS+=("$fd")
+  done
+}
+release_holds() { local fd; for fd in "${HOLD_FDS[@]:-}"; do exec {fd}>&- 2>/dev/null || true; done; HOLD_FDS=(); }
+STALE_TS="$(( $(date +%s) - 120 ))"   # 120s ago → stale at ENUMERATE_SECS=60
+
 # --- A. freshness skip (default ENUMERATE_SECS=60) ---
 echo "  A: freshness — 2nd run inside window makes 0 gh enumerate calls..."
 rm -f "$STATE_DIR/queue.json"; : > "$GH_LOG"
@@ -112,51 +134,59 @@ echo "  OK B"
 # --- C. claim spreading — specs[0] flock held → consumer dispatches specs[1] ---
 echo "  C: claim spreading — held lock on PR1 → PR2 dispatched..."
 write_queue "$STATE_DIR" "$(date +%s)" "$TWO_SPECS"   # seed queue directly (independent of enumerate)
-cat > "$TMPDIR_BASE/holder.sh" <<HOLDER
-#!/usr/bin/env bash
-. "$REVIEWER_LIB_DIR/locking.sh"
-acquire_pr_lock "$STATE_DIR" "cncorp_plow__1" || exit 1
-echo READY > "$TMPDIR_BASE/held.flag"
-sleep 10
-HOLDER
-chmod +x "$TMPDIR_BASE/holder.sh"
-bash "$TMPDIR_BASE/holder.sh" & HOLDER_PID=$!
-for _ in $(seq 1 50); do [ -f "$TMPDIR_BASE/held.flag" ] && break; sleep 0.1; done
+hold_prs cncorp_plow__1            # PR1 in-flight; PR2 free
 : > "$LOG_FILE"
 ENUMERATE_SECS=999 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true   # fresh queue, consume only
 wait_dispatched
-kill "$HOLDER_PID" 2>/dev/null || true
+release_holds
 grep -q 'WORKER_DISPATCHED repo=cncorp/plow-content pr=2' "$LOG_FILE" || { echo "FAIL C: PR2 not dispatched"; cat "$LOG_FILE"; exit 1; }
 grep -q 'WORKER_DISPATCHED repo=cncorp/plow pr=1' "$LOG_FILE" && { echo "FAIL C: PR1 dispatched despite held lock"; cat "$LOG_FILE"; exit 1; }
 echo "  OK C"
 
-# --- D. drained → refetch EVEN within the time window ---
-echo "  D: drained batch (every PR flock-held) → refetch within window..."
+# --- D. all-in-flight but queue FRESH → NO refetch (the floor gates it; the
+#        OR-trigger bug would have re-enumerated here every tick) ---
+echo "  D: all-in-flight + fresh queue → no refetch (floor not elapsed)..."
 write_queue "$STATE_DIR" "$(date +%s)" "$TWO_SPECS"   # refreshed_at = now (fresh)
-HPIDS=()
-for slug in cncorp_plow__1 cncorp_plow-content__2; do
-  cat > "$TMPDIR_BASE/h-$slug.sh" <<H
-#!/usr/bin/env bash
-. "$REVIEWER_LIB_DIR/locking.sh"
-acquire_pr_lock "$STATE_DIR" "$slug" || exit 1
-echo R > "$TMPDIR_BASE/h-$slug.flag"; sleep 10
-H
-  chmod +x "$TMPDIR_BASE/h-$slug.sh"; bash "$TMPDIR_BASE/h-$slug.sh" & HPIDS+=($!)
-done
-for _ in $(seq 1 50); do [ -f "$TMPDIR_BASE/h-cncorp_plow__1.flag" ] && [ -f "$TMPDIR_BASE/h-cncorp_plow-content__2.flag" ] && break; sleep 0.1; done
-: > "$GH_LOG"
-ENUMERATE_SECS=120 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true   # time-fresh, but drained
-d_calls=$(gh_enumerate_calls)
-for p in "${HPIDS[@]}"; do kill "$p" 2>/dev/null || true; done
-[ "$d_calls" -ge 1 ] || { echo "FAIL D: drained batch did NOT refetch within window ($d_calls enumerate calls) — work-driven trigger missing"; cat "$GH_LOG"; exit 1; }
-echo "  OK D"
-
-# --- E. idle (EMPTY queue) within window → NO refetch (no idle-spin/herd) ---
-echo "  E: empty queue within window → no refetch (idle no-spin)..."
-write_queue "$STATE_DIR" "$(date +%s)" '[]'
+hold_prs cncorp_plow__1 cncorp_plow-content__2
 : > "$GH_LOG"
 ENUMERATE_SECS=120 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
-e_calls=$(gh_enumerate_calls)
-[ "$e_calls" -eq 0 ] || { echo "FAIL E: empty queue treated as drained → $e_calls enumerate calls (idle-spin/herd regression)"; cat "$GH_LOG"; exit 1; }
+d_calls=$(gh_enumerate_calls); release_holds
+[ "$d_calls" -eq 0 ] || { echo "FAIL D (OR-trigger burn regression): fresh all-in-flight queue re-enumerated $d_calls time(s); the AND gate must hold refresh to the time floor"; cat "$GH_LOG"; exit 1; }
+echo "  OK D"
+
+# --- F. all-in-flight AND queue STALE → refetch once (work-driven refetch at
+#        the floor — capped, not per-tick) ---
+echo "  F: all-in-flight + stale queue → refetch (floor elapsed)..."
+write_queue "$STATE_DIR" "$STALE_TS" "$TWO_SPECS"
+hold_prs cncorp_plow__1 cncorp_plow-content__2
+: > "$GH_LOG"
+ENUMERATE_SECS=60 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
+f_calls=$(gh_enumerate_calls); release_holds
+[ "$f_calls" -ge 1 ] || { echo "FAIL F: stale all-in-flight queue did NOT refetch ($f_calls enumerate calls) — floor refresh broken"; cat "$GH_LOG"; exit 1; }
+echo "  OK F"
+
+# --- G. claimable work present AND queue STALE → NO refetch (consume the batch
+#        first; ! queue_has_claimable suppresses the floor refresh) ---
+echo "  G: claimable PR present + stale queue → no refetch (consume first)..."
+write_queue "$STATE_DIR" "$STALE_TS" "$TWO_SPECS"
+hold_prs cncorp_plow__1            # PR1 held, PR2 still claimable
+: > "$GH_LOG"
+ENUMERATE_SECS=60 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
+g_calls=$(gh_enumerate_calls); release_holds
+[ "$g_calls" -eq 0 ] || { echo "FAIL G (gate inverted): stale queue with a claimable PR re-enumerated $g_calls time(s); refresh must be suppressed while claimable work remains"; cat "$GH_LOG"; exit 1; }
+echo "  OK G"
+
+# --- E. idle (EMPTY) + fresh → NO refetch; idle (EMPTY) + stale → refetch once.
+#        Empty must count as "no claimable" so an idle system still discovers
+#        new PRs on the floor, but not before it. ---
+echo "  E: empty queue — fresh→no refetch, stale→refetch (floor-only idle)..."
+write_queue "$STATE_DIR" "$(date +%s)" '[]'
+: > "$GH_LOG"; ENUMERATE_SECS=120 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
+e_fresh=$(gh_enumerate_calls)
+[ "$e_fresh" -eq 0 ] || { echo "FAIL E: fresh empty queue re-enumerated $e_fresh time(s)"; cat "$GH_LOG"; exit 1; }
+write_queue "$STATE_DIR" "$STALE_TS" '[]'
+: > "$GH_LOG"; ENUMERATE_SECS=60 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
+e_stale=$(gh_enumerate_calls)
+[ "$e_stale" -ge 1 ] || { echo "FAIL E: stale empty (idle) queue did NOT refetch ($e_stale) — empty must count as no-claimable so idle discovers new PRs on the floor"; cat "$GH_LOG"; exit 1; }
 echo "  OK E"
 echo "ALL PASS: queue-distribute-smoke.sh"

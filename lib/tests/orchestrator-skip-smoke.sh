@@ -282,6 +282,12 @@ export MOCK_TRUSTED_USERS="srosro someuser"
 
 run_orchestrator() {
     : > "$LOG_FILE"   # reset
+    # Clear the shared queue so each scenario re-enumerates from scratch. The
+    # driver refreshes only on stale AND no-claimable; a leftover claimable PR
+    # from the prior scenario's queue would otherwise suppress this run's
+    # refresh and make it consume a stale snapshot (ENUMERATE_SECS=0 alone is
+    # no longer sufficient under the AND gate).
+    rm -f "$STATE_DIR/queue.json"
     ENUMERATE_SECS=0 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
 }
 
@@ -515,6 +521,7 @@ printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}
 # dropped; if it sits at 60s the regression is back.
 : > "$LOG_FILE"
 START=$(date +%s)
+rm -f "$STATE_DIR/queue.json"
 ENUMERATE_SECS=0 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 &
 ORCH_PID=$!
 # Cap the test at 10s so a regression doesn't hang CI for a full minute.
@@ -622,6 +629,7 @@ echo "  scenario 11: missing/non-executable worker — orchestrator fails loud, 
 chmod -x "$REVIEWER_LIB_DIR/review-one-pr.sh"
 printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 : > "$LOG_FILE"
+rm -f "$STATE_DIR/queue.json"
 if ENUMERATE_SECS=0 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1; then
     chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
     echo "FAIL scenario 11 (silent-dispatch-failure regression): review.sh exited 0 with a non-executable worker"
@@ -650,6 +658,7 @@ chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
 
 printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 : > "$LOG_FILE"
+rm -f "$STATE_DIR/queue.json"
 WORKER_TIMEOUT=1s WORKER_KILL_AFTER=1s ENUMERATE_SECS=0 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 &
 ORCH12_PID=$!
 wait "$ORCH12_PID" 2>/dev/null || true
@@ -734,6 +743,7 @@ rm -f "$STATE_DIR/tmp/pr-review-trigger".*
 echo 'export TMPDIR="/tmp/should-not-be-honored-via-config-env"' > "$STATE_DIR/config.env"
 printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 : > "$LOG_FILE"
+rm -f "$STATE_DIR/queue.json"
 TMPDIR="/tmp/should-not-be-honored-via-inheritance" ENUMERATE_SECS=0 \
     bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
 rm -f "$STATE_DIR/config.env"
