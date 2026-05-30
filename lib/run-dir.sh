@@ -36,6 +36,17 @@ reviewed_sha_marker() {
     printf '<!-- knightwatch-reviewer:reviewed-sha=%s -->' "$sha"
 }
 
+# reviewed_sha_cache_path STATE_DIR REPO_SLUG PR_NUM
+#   Path of the cold-cache dedup signal — the head SHA the backstop recovered
+#   from GitHub when local runs/ was cold. A bare SHA file, deliberately NOT a
+#   run (see latest_author_visible_review_sha's fallback): it satisfies only the
+#   SHA dedup gate, never the body/approval/prior-review projections. Single
+#   source of truth for the path — writer (review-one-pr.sh backstop) + reader
+#   (latest_author_visible_review_sha) both go through here.
+reviewed_sha_cache_path() {
+    printf '%s/reviewed-sha/%s__%s' "$1" "$2" "$3"
+}
+
 # latest_reviewed_sha_comment COMMENTS_JSON SHA BOT_USER
 #   Prints (compact JSON) the latest BOT-AUTHORED comment in COMMENTS_JSON
 #   (the fetch_issue_comments shape — {user:{login}, body, created_at}) that
@@ -674,8 +685,21 @@ latest_author_visible_review_sha() {
     local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"
     local latest
     latest=$(_latest_author_visible_run_dir "$state_dir" "$repo_slug" "$pr_num" "$current_run_dir")
-    [ -z "$latest" ] && return 0
-    jq -r '.reviewed_sha // .sha // empty' "$latest/meta.json" 2>/dev/null
+    if [ -n "$latest" ]; then
+        jq -r '.reviewed_sha // .sha // empty' "$latest/meta.json" 2>/dev/null
+        return 0
+    fi
+    # Cold-cache fallback: no local run, but the backstop may have recorded that
+    # GitHub already shows this head reviewed (reviewed_sha_cache_path). This is a
+    # SHA-only dedup signal, deliberately NOT a run — so the body/approval/
+    # prior-review helpers (which only walk runs/) still see "no local prior
+    # review" and degrade to a fresh re-review with approval unknown, rather than
+    # reading a lossy reconstructed record. A real run always wins (checked
+    # first), so the cache is shadowed the moment a genuine review lands.
+    local cache
+    cache=$(reviewed_sha_cache_path "$state_dir" "$repo_slug" "$pr_num")
+    [ -f "$cache" ] && cat "$cache" 2>/dev/null
+    return 0
 }
 
 # latest_author_visible_review_approved <state_dir> <repo_slug> <pr_num> <current_run_dir>

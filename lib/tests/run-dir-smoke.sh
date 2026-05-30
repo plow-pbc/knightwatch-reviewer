@@ -187,20 +187,26 @@ CRLF=$(jq -n --arg m "$(reviewed_sha_marker "$HEAD_SHA")" '[
 [ -n "$(latest_reviewed_sha_comment "$CRLF" "$HEAD_SHA" "$BOT")" ] \
   || { echo "FAIL: a CRLF-line-ending bot body must still match (exact-equality must tolerate trailing \\r)"; exit 1; }
 
-echo "  seed roundtrip: a completed run (meta + recovered output.md) is author-visible, resolves KNOWN_SHA, and exposes the prior body..."
-SEED_STATE=$(mktemp -d); SLUG="acme_widget"; PRN="42"; HEAD="cafef00dbabe"
-RID="${SLUG}__${PRN}__20260529T000000000Z__${HEAD:0:7}"
-RD="$SEED_STATE/runs/$RID"; mkdir -p "$RD/agents/aggregator"
-# what the backstop writes: recovered review body + meta with sha=HEAD, started_at from the comment
-printf 'recovered prior review body\nVERDICT: COMMENT\n' > "$RD/agents/aggregator/output.md"
-jq -n --arg repo "acme/widget" --arg pr_num "$PRN" --arg sha "$HEAD" \
-   '{repo: $repo, pr_num: ($pr_num|tonumber), sha: $sha, started_at: "2026-05-29T00:00:00Z"}' > "$RD/meta.json"
-finalize_meta_json "$RD/meta.json" "2026-05-29T00:00:01Z" "completed" "true"
-is_run_author_visible "$RD" || { echo "FAIL: seeded run should be author-visible"; exit 1; }
-got=$(latest_author_visible_review_sha "$SEED_STATE" "$SLUG" "$PRN" "")
-[ "$got" = "$HEAD" ] || { echo "FAIL: seeded KNOWN_SHA — want [$HEAD] got [$got]"; exit 1; }
-body=$(latest_author_visible_review "$SEED_STATE" "$SLUG" "$PRN" "")
-printf '%s' "$body" | grep -q "recovered prior review body" \
-  || { echo "FAIL: seeded run should expose its recovered body to prior-review staging"; exit 1; }
+echo "  cold-cache fallback: reviewed-sha cache provides KNOWN_SHA but NOT a prior body/approval; a real run wins..."
+CSTATE=$(mktemp -d); CSLUG="acme_widget"; CPRN="42"; CHEAD="cafef00dbabe"
+mkdir -p "$CSTATE/runs"
+# Backstop wrote a SHA-only cache entry (no run). The SHA gate must fall back to it.
+CACHE=$(reviewed_sha_cache_path "$CSTATE" "$CSLUG" "$CPRN"); mkdir -p "$(dirname "$CACHE")"
+printf '%s' "$CHEAD" > "$CACHE"
+got=$(latest_author_visible_review_sha "$CSTATE" "$CSLUG" "$CPRN" "")
+[ "$got" = "$CHEAD" ] || { echo "FAIL: SHA gate must fall back to the reviewed-sha cache — want [$CHEAD] got [$got]"; exit 1; }
+# The cache is a dedup-only signal: body + approval must see NO local prior review.
+[ -z "$(latest_author_visible_review "$CSTATE" "$CSLUG" "$CPRN" "")" ] \
+  || { echo "FAIL: cache must not surface a prior-review body (it has none)"; exit 1; }
+[ -z "$(latest_author_visible_review_approved "$CSTATE" "$CSLUG" "$CPRN" "")" ] \
+  || { echo "FAIL: cache must not surface an approval verdict (must be empty/unknown, never a misreported false)"; exit 1; }
+# A real run always wins over the cache (cache shadowed once a genuine review lands).
+RRID="${CSLUG}__${CPRN}__20260529T000000000Z__9999999"; RRD="$CSTATE/runs/$RRID"; mkdir -p "$RRD/agents/aggregator"
+printf 'real review\nVERDICT: COMMENT\n' > "$RRD/agents/aggregator/output.md"
+jq -n --arg repo "acme/widget" --arg pr_num "$CPRN" --arg sha "9999999aaaaaaa" \
+   '{repo: $repo, pr_num: ($pr_num|tonumber), sha: $sha, started_at: "2026-05-29T00:00:00Z"}' > "$RRD/meta.json"
+finalize_meta_json "$RRD/meta.json" "2026-05-29T00:00:01Z" "completed" "true"
+[ "$(latest_author_visible_review_sha "$CSTATE" "$CSLUG" "$CPRN" "")" = "9999999aaaaaaa" ] \
+  || { echo "FAIL: a real run must win over the reviewed-sha cache"; exit 1; }
 
-echo "  PASS (4 scenarios: clean allocation, collision detected, subdir-failure rollback, real failure not mislabeled + 6 latest_reviewed_sha_comment incl. spoof-gate + quote-injection-fence + real-post-path + CRLF-tolerant + 1 seed roundtrip)"
+echo "  PASS (4 scenarios: clean allocation, collision detected, subdir-failure rollback, real failure not mislabeled + 6 latest_reviewed_sha_comment incl. spoof-gate + quote-injection-fence + real-post-path + CRLF-tolerant + 1 cold-cache fallback)"

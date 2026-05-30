@@ -810,21 +810,38 @@ if [ "$PLACEHOLDER_COUNT" != "1" ]; then
     exit 1
 fi
 
+. "$PROJECT_ROOT/lib/run-dir.sh"   # reviewed_sha_marker + prepend_review_header + reviewed_sha_cache_path
+
+# run_cold_worker STATE_DIR — fresh COLD state dir (empty runs/) + canonical
+# clone, then run the worker once against NEW_PR_SHA. Shared by the cold-cache
+# scenarios so each doesn't re-pay the state/clone/env boilerplate.
+run_cold_worker() {
+    local sd="$1"
+    mkdir -p "$sd/runs" "$sd/canonical-locks" "$sd/locks" "$sd/repos" "$sd/workdirs"
+    echo "{}" > "$sd/state.json"
+    git clone -q "$GITHUB_BARE" "$sd/repos/test-org_probe-repo"
+    (
+        export STATE_DIR="$sd" STATE_FILE="$sd/state.json" REPOS_DIR="$sd/repos"
+        export WORKDIRS_DIR="$sd/workdirs" CANONICAL_LOCKS_DIR="$sd/canonical-locks" PR_REVIEW_LOCK_DIR="$sd/locks"
+        write_probe_repos_conf "$sd/repos.conf"
+        TRIGGER_COMMENT_FILE="" \
+            bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
+            "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" \
+            >/dev/null 2>&1 || true
+    )
+}
+
 # ---- scenario 7: cold-cache backstop — bot already reviewed this head ----
 # A reviewer with a COLD runs/ cache must NOT re-review a head the bot already
-# reviewed (the duplicate-review flood). With a bot-authored reviewed-sha
-# marker for the fetched head in the comment store, the worker must skip the
-# pipeline BEFORE posting a placeholder and seed a completed, author-visible
-# run so the gate self-heals on the next tick.
-echo "  scenario: cold-cache backstop — bot reviewed-sha marker present → skip pipeline + seed run, no placeholder..."
+# reviewed (the duplicate-review flood). With a bot-authored reviewed-sha marker
+# for the fetched head, the worker records the dedup fact (a SHA-only cache, not
+# a run) and skips the pipeline BEFORE posting a placeholder.
+echo "  scenario: cold-cache backstop — bot reviewed-sha marker present → record reviewed-sha, skip, no placeholder/seed..."
 STORE7="$TMPDIR/comment-store-7.json"
-# Prepopulate the store with the bot's review for NEW_PR_SHA built through the
-# REAL post path — the worker's COMMENT_BODY marker order (auto-post, ai-author,
-# reviewed-sha, bakeoff, prose) run through prepend_review_header, which is what
-# relocates non-preserved markers below the blockquote. Hand-placing the marker
-# would mask exactly the round-3 bug where the marker landed below the
-# blockquote and the backstop never fired on real posts.
-. "$PROJECT_ROOT/lib/run-dir.sh"   # reviewed_sha_marker + prepend_review_header
+# Build the stored bot review through the REAL post path (COMMENT_BODY marker
+# order → prepend_review_header, which relocates non-preserved markers below the
+# blockquote). Hand-placing the marker would mask the round-3 bug where it
+# landed below the blockquote and the backstop never fired on real posts.
 S7_RAW=$(printf '%s\n%s\n%s\n<!-- knightwatch-bakeoff: specialists=x -->\n> 📋 First review\nLooks good.' \
   "<!-- knightwatch-reviewer:auto-post -->" "$BOT_AI_AUTHOR_MARKER" "$(reviewed_sha_marker "$NEW_PR_SHA")")
 S7_POSTED=$(prepend_review_header "$S7_RAW" "✅ Tests passed")
@@ -833,41 +850,26 @@ jq -n --arg login "$BOT_USER" --arg b "$S7_POSTED" \
 write_stateful_gh_stub "$HOME/.local/bin/gh" "$STORE7" "main" "$NEW_PR_SHA"
 
 STATE7="$TMPDIR/state-7"
-mkdir -p "$STATE7/runs" "$STATE7/canonical-locks" "$STATE7/locks" "$STATE7/repos" "$STATE7/workdirs"
-echo "{}" > "$STATE7/state.json"
-git clone -q "$GITHUB_BARE" "$STATE7/repos/test-org_probe-repo"
-(
-    export STATE_DIR="$STATE7" STATE_FILE="$STATE7/state.json" REPOS_DIR="$STATE7/repos"
-    export WORKDIRS_DIR="$STATE7/workdirs" CANONICAL_LOCKS_DIR="$STATE7/canonical-locks" PR_REVIEW_LOCK_DIR="$STATE7/locks"
-    write_probe_repos_conf "$STATE7/repos.conf"
-    TRIGGER_COMMENT_FILE="" \
-        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
-        "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" \
-        >/dev/null 2>&1 || true
-)
-RUN7=$(find "$STATE7/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
-[ -n "$RUN7" ] || { echo "FAIL: scenario 7 — no run dir produced"; exit 1; }
-[ "$(jq -r '.sha' "$RUN7/meta.json")" = "$NEW_PR_SHA" ] \
-  || { echo "FAIL: scenario 7 — seed meta.sha != fetched head"; cat "$RUN7/meta.json"; exit 1; }
-[ "$(jq -r '.status' "$RUN7/meta.json")" = "completed" ] \
-  || { echo "FAIL: scenario 7 — seed not marked completed (not author-visible)"; cat "$RUN7/meta.json"; exit 1; }
-[ -s "$RUN7/agents/aggregator/output.md" ] \
-  || { echo "FAIL: scenario 7 — seed missing recovered output.md"; exit 1; }
-grep -q "cold cache .* seeding run record" "$RUN7/run.log" \
-  || { echo "FAIL: scenario 7 — run.log missing cold-cache skip line"; cat "$RUN7/run.log"; exit 1; }
-# Decisive: the worker skipped BEFORE posting a placeholder — no new comment
-# beyond the prepopulated review (the flood + the visible "reviewing" churn
-# are both averted).
-PH7=$(jq '[.[] | select(.body | contains("knightwatch-reviewer:placeholder"))] | length' "$STORE7")
-[ "$PH7" = "0" ] \
-  || { echo "FAIL: scenario 7 — backstop posted a placeholder ($PH7) instead of skipping before it"; exit 1; }
+run_cold_worker "$STATE7"
+# Recorded the SHA-only dedup cache = fetched head...
+CACHE7=$(reviewed_sha_cache_path "$STATE7" "test-org_probe-repo" "1")
+[ "$(cat "$CACHE7" 2>/dev/null)" = "$NEW_PR_SHA" ] \
+  || { echo "FAIL: scenario 7 — backstop didn't record reviewed-sha cache = fetched head (got [$(cat "$CACHE7" 2>/dev/null)])"; exit 1; }
+# ...and did NOT seed a fake run (no reconstructed output.md anywhere).
+[ -z "$(find "$STATE7/runs" -name output.md 2>/dev/null | head -1)" ] \
+  || { echo "FAIL: scenario 7 — backstop seeded a run output.md (must be cache-only, not a fake run)"; exit 1; }
+S7_LOG=$(find "$STATE7/runs" -name run.log | head -1)
+[ -n "$S7_LOG" ] && grep -q "recorded reviewed-sha" "$S7_LOG" \
+  || { echo "FAIL: scenario 7 — run.log missing 'recorded reviewed-sha' skip line"; [ -n "$S7_LOG" ] && cat "$S7_LOG"; exit 1; }
+# Decisive: skipped BEFORE posting a placeholder (flood + "reviewing" churn both averted).
+[ "$(jq '[.[] | select(.body | contains("knightwatch-reviewer:placeholder"))] | length' "$STORE7")" = "0" ] \
+  || { echo "FAIL: scenario 7 — backstop posted a placeholder instead of skipping before it"; exit 1; }
 
 # ---- scenario 8: cold-cache backstop — comment fetch FAILS → skip tick, don't re-review ----
 # A gh outage during a cold start must NOT be read as "no marker → re-review"
 # (that re-opens the flood). The backstop fails loud: skip this tick (exit 0),
-# log the failure, post no placeholder, seed no completed run — next tick retries.
-echo "  scenario: cold-cache backstop — comment fetch failure → skip tick, no placeholder, no seed..."
-# gh stub: pr view works (worker reaches the backstop), but the comments GET exits non-zero.
+# log the failure, post no placeholder, record no cache — next tick retries.
+echo "  scenario: cold-cache backstop — comment fetch failure → skip tick, no placeholder, no cache..."
 cat > "$HOME/.local/bin/gh" <<STUB8
 #!/usr/bin/env bash
 if [ "\$1" = "pr" ] && [ "\$2" = "view" ]; then
@@ -889,25 +891,18 @@ STUB8
 chmod +x "$HOME/.local/bin/gh"
 
 STATE8="$TMPDIR/state-8"
-mkdir -p "$STATE8/runs" "$STATE8/canonical-locks" "$STATE8/locks" "$STATE8/repos" "$STATE8/workdirs"
-echo "{}" > "$STATE8/state.json"
-git clone -q "$GITHUB_BARE" "$STATE8/repos/test-org_probe-repo"
-(
-    export STATE_DIR="$STATE8" STATE_FILE="$STATE8/state.json" REPOS_DIR="$STATE8/repos"
-    export WORKDIRS_DIR="$STATE8/workdirs" CANONICAL_LOCKS_DIR="$STATE8/canonical-locks" PR_REVIEW_LOCK_DIR="$STATE8/locks"
-    write_probe_repos_conf "$STATE8/repos.conf"
-    TRIGGER_COMMENT_FILE="" \
-        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
-        "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" \
-        >/dev/null 2>&1 || true
-)
-RUN8=$(find "$STATE8/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
-# A run dir may be allocated, but it must NOT be a completed (author-visible) seed.
-if [ -n "$RUN8" ] && [ -f "$RUN8/meta.json" ] && [ "$(jq -r '.status // ""' "$RUN8/meta.json")" = "completed" ]; then
-    echo "FAIL: scenario 8 — backstop seeded a completed run on a comment-fetch failure"; cat "$RUN8/meta.json"; exit 1
-fi
+run_cold_worker "$STATE8"
+# No cache written on a fetch failure (fail-closed: don't dedup under uncertainty).
+CACHE8=$(reviewed_sha_cache_path "$STATE8" "test-org_probe-repo" "1")
+[ ! -f "$CACHE8" ] \
+  || { echo "FAIL: scenario 8 — backstop wrote a reviewed-sha cache on a comment-fetch failure"; exit 1; }
 S8_LOG=$(find "$STATE8/runs" -name run.log | head -1)
 [ -n "$S8_LOG" ] && grep -q "backstop comments fetch failed" "$S8_LOG" \
   || { echo "FAIL: scenario 8 — expected 'backstop comments fetch failed' skip log"; [ -n "$S8_LOG" ] && cat "$S8_LOG"; exit 1; }
+# No placeholder: the worker exits at the backstop (fetch-failed log above)
+# before the placeholder-post code path, and the stub would reject the POST
+# anyway — so no output.md/seed beyond the empty allocated run dir.
+[ -z "$(find "$STATE8/runs" -name output.md 2>/dev/null | head -1)" ] \
+  || { echo "FAIL: scenario 8 — a run output.md was produced on a fetch failure"; exit 1; }
 
-echo "  PASS (8 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + placeholder reuse anti-spam + cold-cache backstop skip+seed + cold-cache fetch-failure skip)"
+echo "  PASS (8 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + placeholder reuse anti-spam + cold-cache backstop record+skip + cold-cache fetch-failure skip)"
