@@ -397,10 +397,10 @@ if [ "$FORCE_WHOLE_PR" != "true" ]; then
     # local cache may simply be empty (fresh compose project / migration /
     # volume prune / re-clone). The PR's own posted review is the durable
     # record. If one already covers THIS exact head, re-reviewing would post
-    # a duplicate and burn codex quota — so skip the pipeline and SEED a
-    # local run record (sha=head, status=completed) so the gate self-heals
-    # and the next tick dedups from the warm cache. A genuine new head (no
-    # posted review for it) finds no marker and falls through to a real review.
+    # a duplicate and burn codex quota — so skip the pipeline and record a
+    # SHA-only reviewed-sha cache entry (the SHA gate falls back to it) so the
+    # next tick dedups. A genuine new head (no marker) falls through to a real
+    # review.
     if [ -n "$FETCHED_HEAD_SHA" ]; then
         # Fail loud on a gh outage — an empty/failed fetch must NOT be read as
         # "no marker → re-review": that re-opens the exact cold-start flood this
@@ -411,31 +411,24 @@ if [ "$FORCE_WHOLE_PR" != "true" ]; then
             # Trust-gated: only the bot's own posted review carrying this head's
             # marker counts (latest_reviewed_sha_comment filters on BOT_USER) —
             # a marker pasted by any other commenter must NOT suppress review.
-            BACKSTOP_MATCH=$(latest_reviewed_sha_comment "$BACKSTOP_COMMENTS" "$FETCHED_HEAD_SHA" "$BOT_USER")
-            if [ -n "$BACKSTOP_MATCH" ]; then
-                log "$PR_ID: cold cache — head $FETCHED_HEAD_SHA already reviewed per GitHub; seeding run record, skipping pipeline"
-                # Seed a COMPLETE author-visible run from the recovered review so
-                # the SHA gate dedups AND the body/approval projections (which read
-                # agents/aggregator/output.md) see a real prior review. started_at =
-                # the real review's created_at, not now, so a slash-command trigger
-                # posted after that review still clears review.sh's
-                # created_at>started_at cutoff and re-reviews next tick.
-                #
-                # All-or-nothing: only mark the run author-visible (RUN_STATUS
-                # =completed → EXIT-trap finalize_run stamps it) if BOTH the
-                # recovered body and meta.json land. A partial write leaves
-                # RUN_STATUS=aborted → not author-visible → next tick retries,
-                # never a completed run whose prior-body lookup is empty.
-                BACKSTOP_STARTED=$(printf '%s' "$BACKSTOP_MATCH" | jq -r '.created_at')
-                if mkdir -p "$RUN_DIR/agents/aggregator" \
-                    && printf '%s' "$BACKSTOP_MATCH" | jq -r '.body' > "$RUN_DIR/agents/aggregator/output.md" \
-                    && jq -n --arg repo "$REPO" --arg pr_num "$PR_NUM" --arg sha "$FETCHED_HEAD_SHA" \
-                        --arg started_at "$BACKSTOP_STARTED" \
-                        '{repo: $repo, pr_num: ($pr_num|tonumber), sha: $sha, started_at: $started_at}' \
-                        > "$RUN_DIR/meta.json"; then
-                    RUN_STATUS="completed"
+            if [ -n "$(latest_reviewed_sha_comment "$BACKSTOP_COMMENTS" "$FETCHED_HEAD_SHA" "$BOT_USER")" ]; then
+                # Record the dedup fact ONLY — a SHA-only cache entry, not a run.
+                # The backstop knows only "head X was reviewed"; it must NOT
+                # masquerade as a prior-review run, because the posted comment is
+                # lossy (VERDICT stripped at post) and can't be a canonical
+                # agents/aggregator/output.md. Keeping it out of runs/ means the
+                # body/approval/prior-review projections still see "no local
+                # prior review" → the next re-review is fresh with approval
+                # unknown, instead of reading a half-filled record (the
+                # approval-misreport bug review round 4 caught). The SHA gate
+                # (latest_author_visible_review_sha) falls back to this cache.
+                BACKSTOP_CACHE=$(reviewed_sha_cache_path "$STATE_DIR" "${REPO//\//_}" "$PR_NUM")
+                mkdir -p "$(dirname "$BACKSTOP_CACHE")"
+                if printf '%s' "$FETCHED_HEAD_SHA" > "$BACKSTOP_CACHE.tmp" \
+                    && mv -f "$BACKSTOP_CACHE.tmp" "$BACKSTOP_CACHE"; then
+                    log "$PR_ID: cold cache — head $FETCHED_HEAD_SHA already reviewed per GitHub; recorded reviewed-sha, skipping pipeline"
                 else
-                    log "$PR_ID: backstop seed write failed — leaving run non-author-visible (will retry next tick)"
+                    log "$PR_ID: backstop reviewed-sha cache write failed — will retry next tick"
                 fi
                 exit 0
             fi
