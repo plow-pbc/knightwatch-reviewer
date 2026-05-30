@@ -79,8 +79,11 @@ d=$(make_sandbox)
 printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"; chmod +x "$d/bin/docker"   # dind ready
 printf '#!/bin/bash\ntouch "%s/called"\nexit 1\n' "$d" > "$d/review.sh"; chmod +x "$d/review.sh"
 mkdir -p "$d/codex"; : > "$d/codex/auth.json"
-# Marker records the CURRENT auth.json mtime → operator has not re-logged yet.
-stat -c %Y "$d/codex/auth.json" > "$d/state/auth-offline"
+# Producer: the same mark_auth_offline (lib/state-io.sh) review-one-pr.sh calls
+# on a fatal-auth abort — exercises the real produce→consume handoff, not a
+# hand-written marker. It records the live auth.json mtime (not re-logged yet).
+( cd "$d" && LOCAL_STATE_DIR="$d/state" CODEX_HOME="$d/codex" bash -c '. lib/state-io.sh && mark_auth_offline' )
+[ -s "$d/state/auth-offline" ] || fail "mark_auth_offline did not write the auth-offline marker"
 ( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x LOCAL_STATE_DIR="$d/state" CODEX_HOME="$d/codex" ./review-loop.sh ) >/dev/null 2>&1 || true
 [ ! -e "$d/called" ] || fail "review-loop ran review.sh while auth-offline (should skip until re-login)"
 # Simulate operator re-login: bump auth.json mtime past the marker.

@@ -93,3 +93,12 @@ auth_offline_active() {
     [ "$(stat -c %Y "$(codex_auth_json)" 2>/dev/null || echo 0)" \
       -le "$(head -n1 "$(auth_offline_file)" 2>/dev/null || echo 0)" ]
 }
+
+# Producer side: on a fatal-auth abort review-one-pr.sh calls this to take the
+# worker offline — records the live auth.json mtime so auth_offline_active stays
+# true until an operator re-login bumps it. (A missing auth.json records 0, so
+# any real re-login clears it.)
+mark_auth_offline() {
+    stat -c %Y "$(codex_auth_json)" 2>/dev/null > "$(auth_offline_file)" \
+        || echo 0 > "$(auth_offline_file)"
+}

@@ -1441,7 +1441,7 @@ if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
         # Record the live auth.json mtime; review-loop.sh (auth_offline_active,
         # lib/state-io.sh) keeps this worker offline until a NEWER mtime — i.e.
         # an operator re-login — auto-clears it. A cheap stat, no reset timer.
-        stat -c %Y "$(codex_auth_json)" 2>/dev/null > "$(auth_offline_file)" || echo 0 > "$(auth_offline_file)"
+        mark_auth_offline
         log "$PR_ID: codex auth invalid — worker OFFLINE until re-login (auth-offline marker @ mtime=$(head -n1 "$(auth_offline_file)" 2>/dev/null))"
     fi
     [ -d "$REPO_DIR" ] && rm -rf "$REPO_DIR"
