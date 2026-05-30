@@ -142,7 +142,18 @@ services:
       - ./docker/secrets/claude-standards:/root/.claude:ro
 
 volumes:
+  # EXTERNAL on purpose: claims holds the shared review state (runs/ — the
+  # KNOWN_SHA dedup history). An external named volume is independent of the
+  # compose project/dir AND survives `docker compose down -v`, so runs/ stays
+  # durable across migration / down -v / prune / re-up from a new dir — without
+  # which a cold runs/ makes the reviewer re-review every open PR (duplicate
+  # comments + codex burn). One-time setup before first `up`:
+  # `docker volume create kwr_claims` (see README § Containerized deployment).
+  # The per-container reviewerN-local / dindN-lib volumes stay compose-managed:
+  # they hold rebuildable state (repo clone, build cache), not dedup history.
   claims:
+    external: true
+    name: kwr_claims
   reviewer1-local:
   reviewer2-local:
   reviewer3-local:

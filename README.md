@@ -83,6 +83,12 @@ Runs N reviewer containers on one host, each pinned to its own OpenAI account an
 ```sh
 cp -r docker/secrets.example docker/secrets   # then populate — see docker/secrets.example/README.md
 docker build -f docker/Dockerfile -t knightwatch-reviewer:dev .
+# One-time: create the EXTERNAL `claims` volume holding the shared review state
+# (runs/ — the KNOWN_SHA dedup history). External (fixed name) so it survives
+# project rename / `docker compose down -v` / prune / re-up from a new dir; a
+# compose-managed `<project>_claims` is lost on those and a cold runs/ makes the
+# reviewer re-review every open PR (duplicate comments + codex burn).
+docker volume create kwr_claims
 docker compose up -d
 docker compose logs -f reviewer-1
 ```
