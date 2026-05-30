@@ -1,5 +1,7 @@
 # Go-Deep Tech Leads — Design
 
+> **Superseded (2026-05-30):** the decline-history mechanism described below — `decline-history.md`, the `<!-- decline:class=X -->` operator-marker channel, and the critic's "declined ≥3 rounds → drop" rule — was **removed**. Decline handling is now aggregator-owned "argue once, then defer" arbitration keyed on cited-shape identity (`prompts/aggregator.md`); there is no marker channel or class-count auto-drop. The passages below are a point-in-time record of the original design, not a live contract.
+
 ## Problem
 
 The Broken-Glass Reviewer work merged in 2026-05-01 changed the *voice posture* of kw-reviewer's findings (questions over prescriptions, cost-naming for additive remedies) but didn't change the *upstream signal*: specialists still find every drift class they can, regardless of whether the proposed remedy is worth its complexity at the repo's actual scale. Subsequent live observation across `cncorp/plow#546` (9 rounds, declined) and `cncorp/plow#575` (BCR finding for a sub-second auth race at 10 users) shows three structural failure modes:

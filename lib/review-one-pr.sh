@@ -155,8 +155,8 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 
 # --- pr-comments (fetch_pr_comments) — the PR's human comment thread;
 # consumed by every specialist (so a specialist sees replies to its own
-# prior probes), the critic, and the aggregator. The operator-only
-# explicit-marker channel still drives the critic's ≥3-round auto-drop.
+# prior probes), the critic, and the aggregator. One trusted PR-thread
+# channel; decline arbitration over those replies is aggregator-owned.
 # (Also sources gh-comments.sh; multi-source is idempotent.)
 . "$_LIB_DIR/pr-comments.sh"
 
@@ -1285,9 +1285,9 @@ REEVAL_EOF
 )"
 
 # pr-comments.md — the PR's human comment thread, so every specialist
-# sees replies to its own prior probes (and the critic still drives
-# auto-drop off the operator-only explicit-marker channel). Empty/absent
-# on first reviews and on PRs with no human comments. Fail-soft on
+# sees replies to its own prior probes (and the aggregator can arbitrate
+# operator declines against the assembled probe set). Empty/absent on
+# first reviews and on PRs with no human comments. Fail-soft on
 # gh-failure (helper emits a sentinel; consumers fall back to existing
 # behavior).
 #
@@ -1297,10 +1297,9 @@ REEVAL_EOF
 #     evaluate this PR from scratch." Staging the thread (which carries the
 #     operator decline memory) anyway would silently break that contract.
 #   - First reviews (no PRIOR_REVIEWS) — there are no prior bot probes for
-#     a reply to address yet, and the operator-marker auto-drop channel
-#     can't have anything to suppress. Staging pre-review human chatter
-#     would let the critic suppress finding classes the bot has never
-#     raised — a class-of-finding ban with nothing actually flagged.
+#     a reply to address yet, and no operator declines for the aggregator
+#     to arbitrate. Staging pre-review human chatter would let a finding
+#     class be suppressed before the bot has ever raised it.
 # Mirrors the existing prior-reviews.md skip semantics above.
 if [ "$FORCE_WHOLE_PR" = "true" ]; then
     log "$PR_ID: FORCE_WHOLE_PR=true — staging pr-comments.md sentinel (whole-PR re-review evaluates from scratch)"
