@@ -142,7 +142,13 @@ services:
       - ./docker/secrets/claude-standards:/root/.claude:ro
 
 volumes:
+  # EXTERNAL fixed-name so the shared review state (runs/ — the KNOWN_SHA dedup
+  # history) survives project rename / down -v / prune. Setup + migration:
+  # README § Containerized deployment. (reviewerN-local / dindN-lib stay
+  # compose-managed — rebuildable state, not dedup history.)
   claims:
+    external: true
+    name: kwr_claims
   reviewer1-local:
   reviewer2-local:
   reviewer3-local:

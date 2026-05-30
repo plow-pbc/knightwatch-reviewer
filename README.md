@@ -83,6 +83,19 @@ Runs N reviewer containers on one host, each pinned to its own OpenAI account an
 ```sh
 cp -r docker/secrets.example docker/secrets   # then populate — see docker/secrets.example/README.md
 docker build -f docker/Dockerfile -t knightwatch-reviewer:dev .
+# Create the EXTERNAL `claims` volume that holds the shared review state (runs/ —
+# the KNOWN_SHA dedup history). It's external (fixed name) so it survives project
+# rename / `docker compose down -v` / prune / re-up from a new dir; a
+# compose-managed `<project>_claims` is lost on those and a cold runs/ makes the
+# reviewer re-review every open PR (duplicate comments + codex burn).
+docker volume create kwr_claims
+# UPGRADE ONLY (an existing deployment already has review history): seed the new
+# volume from the old compose-managed one BEFORE first `up`, or the empty runs/
+# triggers exactly that re-review flood. Fresh installs skip this. Replace
+# <OLD> with the prior project's volume (e.g. `knightwatch-reviewer_claims` —
+# `docker volume ls | grep claims`):
+#   docker run --rm -v <OLD>:/old -v kwr_claims:/new alpine \
+#     sh -c 'cp -a /old/. /new/'
 docker compose up -d
 docker compose logs -f reviewer-1
 ```
