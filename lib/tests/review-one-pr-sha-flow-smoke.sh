@@ -846,7 +846,7 @@ S7_RAW=$(printf '%s\n%s\n%s\n<!-- knightwatch-bakeoff: specialists=x -->\n> 📋
   "<!-- knightwatch-reviewer:auto-post -->" "$BOT_AI_AUTHOR_MARKER" "$(reviewed_sha_marker "$NEW_PR_SHA")")
 S7_POSTED=$(prepend_review_header "$S7_RAW" "✅ Tests passed")
 jq -n --arg login "$BOT_USER" --arg b "$S7_POSTED" \
-  '[{id:1, user:{login:$login}, body:$b}]' > "$STORE7"
+  '[{id:1, user:{login:$login}, created_at:"2026-05-29T08:00:00Z", body:$b}]' > "$STORE7"
 write_stateful_gh_stub "$HOME/.local/bin/gh" "$STORE7" "main" "$NEW_PR_SHA"
 
 STATE7="$TMPDIR/state-7"
