@@ -77,6 +77,17 @@ CURRENT_SHA="$SHA2"
 
 OUT="$TMPDIR/loc-trend.md"
 
+# Fixture helpers — one definition of the "fresh runs/ dir" and "completed
+# round-1 run" setup the trigger tests share, instead of re-copying the
+# rm/mkdir/meta.json block per test.
+RUN_R1="$STATE_DIR/runs/cncorp_plow__999__20260501T000000000Z__${SHA1:0:7}"
+reset_runs() { rm -rf "$STATE_DIR/runs"; mkdir -p "$STATE_DIR/runs"; }
+seed_round1() {  # a completed prior round at SHA1 (the "round 1" T1 measures growth from)
+    mkdir -p "$RUN_R1"
+    jq -n --arg sha "$SHA1" --arg ts "2026-05-01T00:00:00Z" \
+        '{status:"completed", sha:$sha, started_at:$ts}' > "$RUN_R1/meta.json"
+}
+
 # Source the loc-trend lib directly. lib/loc-trend.sh handles its own
 # run-dir.sh dependency (single owner of is_run_author_visible /
 # author_visible_rounds), so the smoke gets both compute_loc_trend and
@@ -265,6 +276,53 @@ PATH="$STUB_DIR:$PATH" compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA"
 # the round-4 Adds=n/a sentinel regression (would render numeric).
 grep -qE '\| \(sha not in local history\) \| n/a \|$' "$OUT" || {
     echo "FAIL: failed-numstat unavailable row should render as '| (sha not in local history) | n/a |'"
+    cat "$OUT"
+    exit 1
+}
+
+# Test 10: T1 LOC-growth trigger FIRES when current Adds balloons past
+# round1 * 1.33 + 100. round1 (SHA1) = 10 adds vs base; a ballooned
+# current commit adds 300 lines → threshold = 10*133/100+100 = 113;
+# 310 > 113 → fired.
+git -C "$REPO" checkout -q -b balloon-branch "$SHA1"
+seq 1 300 > "$REPO/balloon.txt"
+git -C "$REPO" add balloon.txt && git -C "$REPO" commit -qm "balloon"
+SHA_BALLOON=$(git -C "$REPO" rev-parse HEAD)
+git -C "$REPO" checkout -q main
+reset_runs; seed_round1
+compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" "$CURRENT_RUN" "$SHA_BALLOON" > "$OUT"
+grep -qE '^REEVAL-LOC-TRIGGER: fired ' "$OUT" || {
+    echo "FAIL: expected T1 LOC-growth trigger to fire (round1=10, ballooned current)"
+    cat "$OUT"
+    exit 1
+}
+
+# Test 11: T1 does NOT fire on a first review (single round — no trajectory).
+reset_runs
+compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" "$CURRENT_RUN" "$SHA2" > "$OUT"
+grep -qE '^REEVAL-LOC-TRIGGER: not-fired \(single round' "$OUT" || {
+    echo "FAIL: expected T1 not-fired (single round) on first review"
+    cat "$OUT"
+    exit 1
+}
+
+# Test 12: T1 does NOT fire below threshold. round1 (SHA1)=10 adds,
+# current (SHA2)=60 adds vs base; threshold=113; 60 < 113 → not-fired.
+reset_runs; seed_round1
+compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" "$CURRENT_RUN" "$SHA2" > "$OUT"
+grep -qE '^REEVAL-LOC-TRIGGER: not-fired \(round1=' "$OUT" || {
+    echo "FAIL: expected T1 not-fired (below threshold) for round1=10 current=60"
+    cat "$OUT"
+    exit 1
+}
+
+# Test 13: T1 abstains (insufficient-data) when an endpoint's Adds is n/a.
+# Reuse the numstat-fail stub so every round's Adds is n/a → both
+# endpoints n/a → insufficient-data, never a fabricated 0-based threshold.
+reset_runs; seed_round1
+PATH="$STUB_DIR:$PATH" compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" "$CURRENT_RUN" "$SHA1" > "$OUT"
+grep -qE '^REEVAL-LOC-TRIGGER: insufficient-data' "$OUT" || {
+    echo "FAIL: expected T1 insufficient-data when an endpoint Adds is n/a"
     cat "$OUT"
     exit 1
 }

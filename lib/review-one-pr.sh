@@ -1168,15 +1168,21 @@ write_scratch "$REPO_DIR" "probe-schema.md" "$(cat "$PROBE_SCHEMA_PATH")"
 # didn't. loc-trend.md (LOC trajectory) is independent of prior review
 # content and stays staged — it's derived from runs/ metadata, not from
 # what previous reviewers said.
+# Read prior reviews UNCONDITIONALLY (cheap local read of runs/ dirs, no
+# scratch side-effect — the write below is the staging step). The
+# re-eval fire-once markers are grepped out of $PRIOR_REVIEWS, and they
+# must be detectable even on the /srosro-review (FORCE_WHOLE_PR) path —
+# otherwise a whole-PR re-review reads an empty prior set and re-fires a
+# banner already shown. So the *read* is unconditional; only the *write*
+# of prior-reviews.md stays gated (that path commits to evaluating the
+# PR from scratch, and staging prior reviews would break that contract).
+PRIOR_REVIEWS=$(stage_prior_reviews "$STATE_DIR" "$REPO_SLUG_FOR_RUN" "$PR_NUM" "$RUN_DIR")
 if [ "$FORCE_WHOLE_PR" = "true" ]; then
-    log "$PR_ID: FORCE_WHOLE_PR=true — skipping prior-reviews.md (whole-PR re-review evaluates from scratch)"
-else
-    PRIOR_REVIEWS=$(stage_prior_reviews "$STATE_DIR" "$REPO_SLUG_FOR_RUN" "$PR_NUM" "$RUN_DIR")
-    if [ -n "$PRIOR_REVIEWS" ]; then
-        PRIOR_COUNT=$(printf '%s' "$PRIOR_REVIEWS" | grep -c '^--- review at ')
-        log "$PR_ID: staging $PRIOR_COUNT prior review(s) for carry-forward"
-        write_scratch "$REPO_DIR" "prior-reviews.md" "$PRIOR_REVIEWS"
-    fi
+    log "$PR_ID: FORCE_WHOLE_PR=true — skipping prior-reviews.md (whole-PR re-review evaluates from scratch; prior reviews still consulted for re-eval fire-once markers)"
+elif [ -n "$PRIOR_REVIEWS" ]; then
+    PRIOR_COUNT=$(printf '%s' "$PRIOR_REVIEWS" | grep -c '^--- review at ')
+    log "$PR_ID: staging $PRIOR_COUNT prior review(s) for carry-forward"
+    write_scratch "$REPO_DIR" "prior-reviews.md" "$PRIOR_REVIEWS"
 fi
 
 # Product context from .knightwatch/product-context.md (per-repo,
@@ -1230,6 +1236,53 @@ write_scratch "$REPO_DIR" "review-priority.md" "$REVIEW_PRIORITY"
 # and aggregator's loop-breaker mode (see § Broken-Glass Test).
 LOC_TREND=$(compute_loc_trend "$REPO" "$PR_NUM" "$REPO_DIR" "$BASE_REF_SHA" "$STATE_DIR" "$RUN_DIR" "$REVIEWED_SHA")
 write_scratch "$REPO_DIR" "loc-trend.md" "$LOC_TREND"
+
+# reeval-status.md — the durable architecture-shape re-evaluation note.
+# Folds two deterministic triggers into one file every specialist + the
+# momentum standalone + the aggregator read:
+#   - T1 (LOC growth): computed in loc-trend.sh; read this round's flag
+#     line straight out of $LOC_TREND (single owner of the LOC math).
+#   - already-fired flags: whether the per-trigger banner marker is
+#     present in any prior posted review ($PRIOR_REVIEWS) — so each
+#     banner fires at most once per PR, and a fired trigger stays a
+#     durable note for every *later* round's specialists even after the
+#     banner itself is gone. T2 (blocker-stall) is computed by the
+#     aggregator post-resolution, so only its *prior* firing is knowable
+#     here; the aggregator owns deciding whether T2 fires this round.
+REEVAL_LOC_LINE=$(printf '%s\n' "$LOC_TREND" | grep -E '^REEVAL-LOC-TRIGGER:' | head -n1)
+[ -z "$REEVAL_LOC_LINE" ] && REEVAL_LOC_LINE="REEVAL-LOC-TRIGGER: unknown (no flag emitted)"
+# Suppress T1 on the whole-PR (/srosro-review) path. That path evaluates
+# from scratch with an empty previous-review.md, so pipeline.py does not
+# run the momentum standalone — and the aggregator's re-eval banner
+# requires momentum prose. The trajectory banner is inherently a
+# re-review concept (it compares round-1 size to now); firing it on a
+# from-scratch review would demand prose that was never generated.
+if [ "$FORCE_WHOLE_PR" = "true" ]; then
+    REEVAL_LOC_LINE="REEVAL-LOC-TRIGGER: not-fired (whole-PR re-review evaluates from scratch — no trajectory banner)"
+fi
+REEVAL_LOC_FIRED=no
+REEVAL_STALL_FIRED=no
+if printf '%s' "${PRIOR_REVIEWS:-}" | grep -qF '<!-- knightwatch-reviewer:reeval-loc -->'; then
+    REEVAL_LOC_FIRED=yes
+fi
+if printf '%s' "${PRIOR_REVIEWS:-}" | grep -qF '<!-- knightwatch-reviewer:reeval-stall -->'; then
+    REEVAL_STALL_FIRED=yes
+fi
+write_scratch "$REPO_DIR" "reeval-status.md" "$(cat <<REEVAL_EOF
+# Re-eval trigger status
+
+This PR can be flagged for a one-time **architecture-shape re-evaluation** when its
+trajectory shows scope creep / wrong shape against the inferred intent. Two
+deterministic triggers; each fires its banner at most once per PR.
+
+## This round
+$REEVAL_LOC_LINE
+
+## Already fired in a prior round (durable — do NOT re-fire these)
+REEVAL-LOC-FIRED: $REEVAL_LOC_FIRED
+REEVAL-STALL-FIRED: $REEVAL_STALL_FIRED
+REEVAL_EOF
+)"
 
 # pr-comments.md — the PR's human comment thread, so every specialist
 # sees replies to its own prior probes (and the critic still drives

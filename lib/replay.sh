@@ -139,6 +139,23 @@ for f in review-priority.md pr-comments.md loc-trend.md \
          test-results.md; do
     write_scratch "$REPO_DIR" "$f" "(replay: not staged — upstream pipeline stage skipped)"
 done
+# reeval-status.md is a load-bearing prompt input (common-header / aggregator /
+# momentum read it), so stage a well-shaped default rather than the generic
+# sentinel — otherwise a prompt/lib canary passes without the surface this
+# input gates. Default = quiescent: no trigger live, nothing fired yet.
+write_scratch "$REPO_DIR" "reeval-status.md" "$(cat <<'REEVAL_EOF'
+# Re-eval trigger status
+
+(replay: synthesized default — no live trajectory in a single-SHA replay.)
+
+## This round
+REEVAL-LOC-TRIGGER: not-fired (replay default)
+
+## Already fired in a prior round (durable — do NOT re-fire these)
+REEVAL-LOC-FIRED: no
+REEVAL-STALL-FIRED: no
+REEVAL_EOF
+)"
 
 # product-context.md mirrors production staging via the SAME shared seam
 # (resolve_product_context, lib/knightwatch-config.sh): per-repo file from the

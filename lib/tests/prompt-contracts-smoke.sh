@@ -493,8 +493,8 @@ echo "  asserting Path 2 keeps the Probes block and frames it through the stall 
 # instruction in the Overview.
 assert_grep "Path 2 must render the full Probes block, not skip it" \
     "Render the full Probes block" prompts/aggregator.md
-assert_grep "Path 2 Overview must classify probes through the stall lens" \
-    "through the stall lens" prompts/aggregator.md
+assert_grep "Path 2 Overview must classify probes through the shape lens" \
+    "through the shape lens" prompts/aggregator.md
 # The "through the stall lens" token pins the broad directive but not the
 # Overview's specific job: distinguish the ONE structural-ask probe from
 # the leaf-level patches. The two tokens below pin that distinction by
@@ -518,6 +518,45 @@ echo "  asserting carry-forward source picks past Path 2 pause rounds..."
 # convergence.
 assert_grep "step 38 should walk back to the most recent review with a Probes block when previous-review.md is a Path 2 pause" \
     "most recent review that DID have a Probes block" prompts/aggregator.md
+
+# --- Re-eval banner: T1 (LOC) trigger + fire-once markers + durable note ---
+# The architecture-shape re-eval banner fires on two deterministic triggers
+# (T1 LOC-growth, T2 blocker-stall), each once per PR, and leaves a durable
+# note (reeval-status.md) every specialist reads. These fences pin the
+# cross-file wiring so a rename/drift can't silently sever it.
+echo "  asserting reeval-status.md wired into common-header + momentum + aggregator..."
+assert_grep "common-header.md should feed reeval-status.md to every specialist" \
+    "reeval-status.md" prompts/common-header.md
+assert_grep "momentum.md should read reeval-status.md for the live trigger reason" \
+    "reeval-status.md" prompts/standalone/momentum.md
+assert_grep "aggregator.md should read reeval-status.md to gate the re-eval banner" \
+    "reeval-status.md" prompts/aggregator.md
+
+echo "  asserting T1 LOC-growth trigger is referenced by both the producer and the consumer..."
+assert_grep "loc-trend.sh should emit the deterministic REEVAL-LOC-TRIGGER flag" \
+    "REEVAL-LOC-TRIGGER" lib/loc-trend.sh
+assert_grep "aggregator.md should read the REEVAL-LOC-TRIGGER flag for T1" \
+    "REEVAL-LOC-TRIGGER" prompts/aggregator.md
+assert_grep "review-one-pr.sh should fold the LOC trigger into reeval-status.md" \
+    "REEVAL-LOC-TRIGGER" lib/review-one-pr.sh
+
+# Fire-once markers MUST be byte-identical between the emitter (aggregator.md
+# stamps them into the posted body) and the detector (review-one-pr.sh greps
+# them out of prior posted reviews). A drift on either side silently breaks
+# fire-once: either the banner re-fires every round, or a stray marker
+# suppresses a trigger forever. Same single-source-of-truth philosophy as
+# the BOT_AUTO_POST_MARKER fence.
+echo "  asserting reeval fire-once markers are consistent across emitter + detector..."
+for marker in '<!-- knightwatch-reviewer:reeval-loc -->' '<!-- knightwatch-reviewer:reeval-stall -->'; do
+    if ! grep -qF "$marker" prompts/aggregator.md; then
+        echo "FAIL: aggregator.md must emit the fire-once marker '$marker' when its trigger fires"
+        exit 1
+    fi
+    if ! grep -qF "$marker" lib/review-one-pr.sh; then
+        echo "FAIL: review-one-pr.sh must grep prior reviews for '$marker' to enforce fire-once"
+        exit 1
+    fi
+done
 
 echo "  asserting K-decay is fully deleted from critic.md..."
 # Negative fence: K-decay measured author engagement (commits/comments
