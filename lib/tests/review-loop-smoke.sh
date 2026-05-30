@@ -71,4 +71,23 @@ printf '%s\n' "$(( $(date +%s) - 10 ))" > "$d/state/quota-paused-until"
 [ -e "$d/called" ] || fail "review-loop skipped the tick with a PAST quota epoch (should resume)"
 rm -rf "$d"
 
+# 5. Auth offline: a fatal auth error takes the worker offline until re-login.
+#    While the marker's recorded auth.json mtime still matches the live file,
+#    review-loop never claims; a re-login (newer auth.json mtime) clears the
+#    marker and resumes — no timer, no spin-aborting every tick.
+d=$(make_sandbox)
+printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"; chmod +x "$d/bin/docker"   # dind ready
+printf '#!/bin/bash\ntouch "%s/called"\nexit 1\n' "$d" > "$d/review.sh"; chmod +x "$d/review.sh"
+mkdir -p "$d/codex"; : > "$d/codex/auth.json"
+# Marker records the CURRENT auth.json mtime → operator has not re-logged yet.
+stat -c %Y "$d/codex/auth.json" > "$d/state/auth-offline"
+( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x LOCAL_STATE_DIR="$d/state" CODEX_HOME="$d/codex" ./review-loop.sh ) >/dev/null 2>&1 || true
+[ ! -e "$d/called" ] || fail "review-loop ran review.sh while auth-offline (should skip until re-login)"
+# Simulate operator re-login: bump auth.json mtime past the marker.
+touch -d "+1 hour" "$d/codex/auth.json"
+( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x LOCAL_STATE_DIR="$d/state" CODEX_HOME="$d/codex" ./review-loop.sh ) >/dev/null 2>&1 || true
+[ -e "$d/called" ] || fail "review-loop stayed offline after re-login (newer auth.json mtime should resume)"
+[ ! -e "$d/state/auth-offline" ] || fail "review-loop did not clear the auth-offline marker after re-login"
+rm -rf "$d"
+
 echo "PASS: review-loop-smoke"

@@ -78,6 +78,15 @@ _CODEX_QUOTA_RE = re.compile(
     r"((?:\w+ \d{1,2}(?:st|nd|rd|th), \d{4} )?\d{1,2}:\d{2} (?:AM|PM))\.",
     re.IGNORECASE | re.DOTALL,
 )
+# Codex prints one of these to stderr when the account's token is FATALLY
+# invalid (reused/rotated refresh token, or a revoked session) and it cannot
+# self-refresh — distinct from a usage cap, which has a reset time. Pinned to
+# codex's observed markers + the "sign in again" instruction it always appends;
+# a non-auth rc=1 with PR-controlled stdout can't reflect here (err.txt only).
+_CODEX_AUTH_FATAL_RE = re.compile(
+    r"refresh_token_reused|token_invalidated|sign(?:ing)? in again",
+    re.IGNORECASE,
+)
 
 
 def _ts() -> str:
@@ -282,10 +291,16 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
         # time and stash it for review-one-pr.sh to PATCH into the
         # placeholder. Stdout (model reasoning) is excluded so PR-
         # controlled output can't spoof a public quota placeholder.
-        m = _CODEX_QUOTA_RE.search(err_file.read_text(errors="replace"))
+        err_text = err_file.read_text(errors="replace")
+        m = _CODEX_QUOTA_RE.search(err_text)
         if m:
             sentinel = agent.parent.parent / "_codex_quota.txt"
             sentinel.write_text(m.group(1).strip() + "\n")
+        elif _CODEX_AUTH_FATAL_RE.search(err_text):
+            # Fatal auth (not a usage cap): the worker can't recover on its own,
+            # so review-one-pr.sh takes it OFFLINE until an operator re-login
+            # rather than spin-aborting + commenting on every PR.
+            (agent.parent.parent / "_codex_auth_fatal.txt").write_text("codex auth invalid\n")
         return exit_code
 
     if not out_file.exists() or out_file.stat().st_size == 0:

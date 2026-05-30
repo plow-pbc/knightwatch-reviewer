@@ -1431,6 +1431,19 @@ if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
         printf '%s\n' "$QUOTA_UNTIL" > "$(quota_pause_file)"
         log "$PR_ID: quota-paused this worker until epoch ${QUOTA_UNTIL} (reset=${RESET_AT})"
     fi
+    # pipeline.py writes this when codex's token is FATALLY invalid (reused/
+    # rotated refresh token or revoked session) — not a usage cap, so there's no
+    # reset time. Take the worker OFFLINE until re-login instead of spin-aborting
+    # + commenting on every PR (the shared-login 401 storm of 2026-05-30).
+    AUTH_FATAL_SENTINEL="$RUN_DIR/_codex_auth_fatal.txt"
+    if [ -s "$AUTH_FATAL_SENTINEL" ]; then
+        EYES_ABORT_BODY="⏸ knightwatch offline — codex auth for this account is invalid (token reused/revoked, not a usage cap). Awaiting operator re-login; reviews resume automatically once re-authenticated."
+        # Record the live auth.json mtime; review-loop.sh (auth_offline_active,
+        # lib/state-io.sh) keeps this worker offline until a NEWER mtime — i.e.
+        # an operator re-login — auto-clears it. A cheap stat, no reset timer.
+        stat -c %Y "$(codex_auth_json)" 2>/dev/null > "$(auth_offline_file)" || echo 0 > "$(auth_offline_file)"
+        log "$PR_ID: codex auth invalid — worker OFFLINE until re-login (auth-offline marker @ mtime=$(head -n1 "$(auth_offline_file)" 2>/dev/null))"
+    fi
     [ -d "$REPO_DIR" ] && rm -rf "$REPO_DIR"
     exit 1
 fi

@@ -91,6 +91,19 @@ def _codex_quota_line(reset_text: str) -> str:
     )
 
 
+def _codex_auth_fatal_line(marker: str = "refresh_token_reused") -> str:
+    """Shape of Codex's FATAL auth error on stderr — the token is invalidated
+    (a duplicate/rotated refresh token or a revoked session) and codex cannot
+    self-refresh; only an operator re-login fixes it. Distinct from a usage
+    cap: there is no reset time, so the worker goes OFFLINE until re-login
+    rather than pausing on a timer."""
+    return (
+        "ERROR: Your access token could not be refreshed because your "
+        f"refresh token was already used ({marker}). Please log out and "
+        "sign in again.\n"
+    )
+
+
 def _inject_intent_stream(stream: str, line: str):
     """Returns a before_write callback that appends `line` to the intent
     agent's <stream>.txt (`err` = codex CLI stderr / real error path, `log`
@@ -1391,6 +1404,65 @@ class TestRunPipeline(unittest.TestCase):
         rc = self._run()
         self.assertNotEqual(rc, 0)
         self.assertFalse((self.run_dir / "_codex_quota.txt").exists())
+
+    @patch("pipeline.subprocess.Popen")
+    def test_codex_auth_fatal_writes_sentinel(self, mock_popen):
+        """A fatal codex auth error (invalidated/reused refresh token) on
+        stderr writes _codex_auth_fatal.txt so review-one-pr.sh takes the
+        worker OFFLINE until re-login, instead of spin-aborting every PR.
+        Originating incident: 2026-05-30 — a reviewer sharing one ChatGPT
+        login rotated the refresh token out from under itself and 401'd on
+        every PR, posting 'review aborted' comments instead of going offline."""
+        mock_popen.side_effect = _make_codex_stub(
+            plan={"intent": (1, "")},
+            before_write=_inject_intent_stream("err", _codex_auth_fatal_line()),
+        )
+        rc = self._run()
+        self.assertNotEqual(rc, 0)
+        self.assertTrue((self.run_dir / "_codex_auth_fatal.txt").exists())
+        # An auth failure is NOT a usage cap — don't write the quota sentinel.
+        self.assertFalse((self.run_dir / "_codex_quota.txt").exists())
+
+    @patch("pipeline.subprocess.Popen")
+    def test_codex_auth_fatal_matches_token_invalidated_form(self, mock_popen):
+        """Both observed fatal-auth markers trip detection: refresh_token_reused
+        (above) and token_invalidated here — codex prints either depending on
+        whether the refresh token was reused or the session was revoked."""
+        mock_popen.side_effect = _make_codex_stub(
+            plan={"intent": (1, "")},
+            before_write=_inject_intent_stream(
+                "err",
+                "ERROR: Your authentication token has been invalidated "
+                "(token_invalidated). Please try signing in again.\n",
+            ),
+        )
+        rc = self._run()
+        self.assertNotEqual(rc, 0)
+        self.assertTrue((self.run_dir / "_codex_auth_fatal.txt").exists())
+
+    @patch("pipeline.subprocess.Popen")
+    def test_codex_auth_fatal_no_sentinel_on_unrelated_failure(self, mock_popen):
+        """A generic non-auth, non-quota failure writes neither sentinel —
+        bash falls back to the generic transient-abort body (retry next tick),
+        which is correct for a one-off failure."""
+        mock_popen.side_effect = _make_codex_stub(plan={"intent": (5, "")})
+        rc = self._run()
+        self.assertNotEqual(rc, 0)
+        self.assertFalse((self.run_dir / "_codex_auth_fatal.txt").exists())
+
+    @patch("pipeline.subprocess.Popen")
+    def test_codex_quota_not_misread_as_auth_fatal(self, mock_popen):
+        """A usage-cap error writes the quota sentinel, NOT the auth one — the
+        two failure modes stay distinct: quota = timed pause + auto-resume;
+        auth = offline until operator re-login."""
+        mock_popen.side_effect = _make_codex_stub(
+            plan={"intent": (1, "")},
+            before_write=_inject_intent_stream("err", _codex_quota_line("6:26 PM")),
+        )
+        rc = self._run()
+        self.assertNotEqual(rc, 0)
+        self.assertTrue((self.run_dir / "_codex_quota.txt").exists())
+        self.assertFalse((self.run_dir / "_codex_auth_fatal.txt").exists())
 
     @patch("pipeline.subprocess.Popen")
     def test_codex_quota_regex_rejects_offshape_reset_text(self, mock_popen):
