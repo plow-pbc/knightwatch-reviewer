@@ -19,7 +19,7 @@
 # Decline arbitration — weighing an operator's pushback against a prior
 # probe (drop it, re-raise it, or argue back) — is the aggregator's job
 # (prompts/aggregator.md step 38), NOT a mechanical channel here. The old
-# `<!-- decline:class=X -->` marker channel was deleted: humans never
+# author-authored HTML decline-marker channel was deleted: humans never
 # authored the markers, and Class-level suppression was too coarse.
 #
 # Empty / absent output is fail-soft (consumers see "(no PR comments)" and

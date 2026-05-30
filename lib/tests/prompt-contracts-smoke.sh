@@ -97,25 +97,42 @@ echo "  asserting pr-comments input in common-header.md (fed to every specialist
 assert_grep "common-header.md should reference pr-comments.md so specialists see replies to their probes" \
     "pr-comments.md" prompts/common-header.md
 
-# Round-8 unified contract: critic.md, aggregator.md, and the shell
-# preamble must describe the decline rule consistently.
-# The prior drift had aggregator.md saying "class matches" while critic.md
-# said "specific finding" — flagged in 4 of 4 review rounds (R0/R1/R2/R3).
-# Token-level fences below trip on the stale wording so smoke catches
-# drift before it ships, in lieu of an SSOT refactor.
-echo "  asserting unified decline contract (round-8 specific-finding rule)..."
-for f in prompts/critic.md prompts/aggregator.md lib/pr-comments.sh; do
-    if grep -qF "Decline replies / Counter-proposed" "$f"; then
-        echo "FAIL: $f still uses the round-7 'Decline replies / Counter-proposed' heading — should be unified under 'Operator replies'"
+# Decline arbitration lives in ONE place now (the aggregator). The
+# <!-- decline:class=X --> marker channel was deleted (never authored by
+# humans; coarse Class-level suppression). These fences pin: (a) no prompt
+# or the comment-staging lib references the dead marker channel; (b) the
+# critic no longer arbitrates declines; (c) the aggregator carries the
+# argue-once / quote-the-operator / re-litigate contract; (d) argue-once is
+# anchored on the cited-shape identity (NOT prose) — the load-bearing fence
+# that stops a revert to prose-matching, which is what re-opens the #784
+# oscillation.
+echo "  asserting decline-marker channel is fully deleted..."
+for f in prompts/critic.md prompts/aggregator.md prompts/common-header.md lib/pr-comments.sh; do
+    if grep -qF 'decline:class' "$f"; then
+        echo "FAIL: $f still references the deleted <!-- decline:class=X --> marker channel"
+        exit 1
+    fi
+    if grep -qF 'Operator decline markers' "$f"; then
+        echo "FAIL: $f still references the deleted '## Operator decline markers' section"
         exit 1
     fi
 done
-for f in prompts/critic.md prompts/aggregator.md; do
-    if ! grep -qE "specific finding|cited path/contract/rationale" "$f"; then
-        echo "FAIL: $f missing specific-finding decline-match contract (round-8 tightening)"
-        exit 1
-    fi
-done
+
+echo "  asserting critic.md no longer arbitrates declines..."
+if grep -qF 'Decline-history channel' prompts/critic.md; then
+    echo "FAIL: critic.md still carries a Decline-history channel — decline arbitration moved to the aggregator"
+    exit 1
+fi
+
+echo "  asserting aggregator carries the decline-arbitration contract..."
+assert_grep "aggregator.md should match declines by specific finding, not Class" \
+    "specific finding" prompts/aggregator.md
+assert_grep "aggregator.md should carry the argue-once-then-defer convergence rule" \
+    "Argue once, then defer" prompts/aggregator.md
+assert_grep "aggregator.md should carry the deferred-to-operator drop footnote" \
+    "deferred to operator after counter-argument" prompts/aggregator.md
+assert_grep "aggregator.md must anchor argue-once on the cited-shape identity (not prose) — a revert to prose-matching re-opens the #784 oscillation" \
+    "cited-shape identity" prompts/aggregator.md
 
 echo "  asserting layered-file note in aggregator.md..."
 assert_grep "aggregator.md should describe layered specialist files" \
