@@ -133,6 +133,13 @@ assert_grep "aggregator.md should carry the deferred-to-operator drop footnote" 
     "deferred to operator after counter-argument" prompts/aggregator.md
 assert_grep "aggregator.md must anchor argue-once on the cited-shape identity (not prose) — a revert to prose-matching re-opens the #784 oscillation" \
     "cited-shape identity" prompts/aggregator.md
+# That identity is cited Files: shape ALONE — the same key the persistence test
+# uses, NOT shape+Class (a conjunction is narrower and would re-open #784 on a
+# Class-drifting probe, e.g. the run(_:) add→delete flip). That shape-alone
+# invariant lives in the prompt + spec prose and is exercised by the replay
+# harness; we deliberately don't add a "+ Class" / "no Class term" wording-pin
+# here — it's brittle to benign rephrasing and would contradict this file's
+# "NOT a content-pinning test" contract above (lines 23-26).
 
 echo "  asserting layered-file note in aggregator.md..."
 assert_grep "aggregator.md should describe layered specialist files" \
