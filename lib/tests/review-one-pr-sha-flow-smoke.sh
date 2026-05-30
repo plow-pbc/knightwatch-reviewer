@@ -851,10 +851,12 @@ write_stateful_gh_stub "$HOME/.local/bin/gh" "$STORE7" "main" "$NEW_PR_SHA"
 
 STATE7="$TMPDIR/state-7"
 run_cold_worker "$STATE7"
-# Recorded the SHA-only dedup cache = fetched head...
+# Recorded the {sha, started_at} dedup cache: sha = fetched head, started_at = the review's created_at...
 CACHE7=$(reviewed_sha_cache_path "$STATE7" "test-org_probe-repo" "1")
-[ "$(cat "$CACHE7" 2>/dev/null)" = "$NEW_PR_SHA" ] \
-  || { echo "FAIL: scenario 7 — backstop didn't record reviewed-sha cache = fetched head (got [$(cat "$CACHE7" 2>/dev/null)])"; exit 1; }
+[ "$(jq -r '.sha // empty' "$CACHE7" 2>/dev/null)" = "$NEW_PR_SHA" ] \
+  || { echo "FAIL: scenario 7 — cache .sha != fetched head (got [$(jq -r '.sha // empty' "$CACHE7" 2>/dev/null)])"; exit 1; }
+[ -n "$(jq -r '.started_at // empty' "$CACHE7" 2>/dev/null)" ] \
+  || { echo "FAIL: scenario 7 — cache .started_at empty (slash-cutoff would re-fire a full review of this head)"; exit 1; }
 # ...and did NOT seed a fake run (no reconstructed output.md anywhere).
 [ -z "$(find "$STATE7/runs" -name output.md 2>/dev/null | head -1)" ] \
   || { echo "FAIL: scenario 7 — backstop seeded a run output.md (must be cache-only, not a fake run)"; exit 1; }

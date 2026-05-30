@@ -37,12 +37,13 @@ reviewed_sha_marker() {
 }
 
 # reviewed_sha_cache_path STATE_DIR REPO_SLUG PR_NUM
-#   Path of the cold-cache dedup signal — the head SHA the backstop recovered
-#   from GitHub when local runs/ was cold. A bare SHA file, deliberately NOT a
-#   run (see latest_author_visible_review_sha's fallback): it satisfies only the
-#   SHA dedup gate, never the body/approval/prior-review projections. Single
-#   source of truth for the path — writer (review-one-pr.sh backstop) + reader
-#   (latest_author_visible_review_sha) both go through here.
+#   Path of the cold-cache dedup signal — a small JSON `{sha, started_at}` the
+#   backstop recorded from GitHub when local runs/ was cold. Deliberately NOT a
+#   run (see the fallbacks in latest_author_visible_review_sha /
+#   _started_at): it satisfies only the two dispatcher gates (SHA dedup +
+#   slash-command cutoff), never the body/approval/prior-review projections.
+#   Single source of truth for the path — writer (review-one-pr.sh backstop) +
+#   both reader fallbacks go through here.
 reviewed_sha_cache_path() {
     printf '%s/reviewed-sha/%s__%s' "$1" "$2" "$3"
 }
@@ -690,15 +691,15 @@ latest_author_visible_review_sha() {
         return 0
     fi
     # Cold-cache fallback: no local run, but the backstop may have recorded that
-    # GitHub already shows this head reviewed (reviewed_sha_cache_path). This is a
-    # SHA-only dedup signal, deliberately NOT a run — so the body/approval/
-    # prior-review helpers (which only walk runs/) still see "no local prior
-    # review" and degrade to a fresh re-review with approval unknown, rather than
-    # reading a lossy reconstructed record. A real run always wins (checked
-    # first), so the cache is shadowed the moment a genuine review lands.
+    # GitHub already shows this head reviewed (reviewed_sha_cache_path → .sha).
+    # Deliberately NOT a run — so the body/approval/prior-review helpers (which
+    # only walk runs/) still see "no local prior review" and degrade to a fresh
+    # re-review with approval unknown, rather than reading a lossy reconstructed
+    # record. A real run always wins (checked first), so the cache is shadowed
+    # the moment a genuine review lands.
     local cache
     cache=$(reviewed_sha_cache_path "$state_dir" "$repo_slug" "$pr_num")
-    [ -f "$cache" ] && cat "$cache" 2>/dev/null
+    [ -f "$cache" ] && jq -r '.sha // empty' "$cache" 2>/dev/null
     return 0
 }
 
@@ -779,8 +780,21 @@ latest_author_visible_review_started_at() {
     local state_dir="$1" repo_slug="$2" pr_num="$3" current_run_dir="$4"
     local latest
     latest=$(_latest_author_visible_run_dir "$state_dir" "$repo_slug" "$pr_num" "$current_run_dir")
-    [ -z "$latest" ] && return 0
-    jq -r '.started_at // empty' "$latest/meta.json" 2>/dev/null
+    if [ -n "$latest" ]; then
+        jq -r '.started_at // empty' "$latest/meta.json" 2>/dev/null
+        return 0
+    fi
+    # Cold-cache fallback (sibling to latest_author_visible_review_sha's): when
+    # the backstop recorded a reviewed-sha cache but no run exists, the slash-
+    # command cutoff in review.sh must still get the review timestamp. Without
+    # it the cutoff reads "" and every historical /srosro-review compares
+    # `created_at > ""` → true → re-fires a full review of the already-reviewed
+    # head (the loop review round 5 caught). Pairs with the .sha fallback so the
+    # SHA gate and the cutoff gate stay consistent on the cache-only path.
+    local cache
+    cache=$(reviewed_sha_cache_path "$state_dir" "$repo_slug" "$pr_num")
+    [ -f "$cache" ] && jq -r '.started_at // empty' "$cache" 2>/dev/null
+    return 0
 }
 
 # author_visible_rounds <state_dir> <repo_slug> <pr_num> <current_run_dir>

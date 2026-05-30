@@ -187,14 +187,16 @@ CRLF=$(jq -n --arg m "$(reviewed_sha_marker "$HEAD_SHA")" '[
 [ -n "$(latest_reviewed_sha_comment "$CRLF" "$HEAD_SHA" "$BOT")" ] \
   || { echo "FAIL: a CRLF-line-ending bot body must still match (exact-equality must tolerate trailing \\r)"; exit 1; }
 
-echo "  cold-cache fallback: reviewed-sha cache provides KNOWN_SHA but NOT a prior body/approval; a real run wins..."
-CSTATE=$(mktemp -d); CSLUG="acme_widget"; CPRN="42"; CHEAD="cafef00dbabe"
+echo "  cold-cache fallback: {sha,started_at} cache feeds the SHA gate AND the slash-cutoff, but NOT body/approval; a real run wins..."
+CSTATE=$(mktemp -d); CSLUG="acme_widget"; CPRN="42"; CHEAD="cafef00dbabe"; CTS="2026-05-29T08:00:00Z"
 mkdir -p "$CSTATE/runs"
-# Backstop wrote a SHA-only cache entry (no run). The SHA gate must fall back to it.
+# Backstop wrote a {sha, started_at} cache entry (no run). Both dispatcher gates must fall back to it.
 CACHE=$(reviewed_sha_cache_path "$CSTATE" "$CSLUG" "$CPRN"); mkdir -p "$(dirname "$CACHE")"
-printf '%s' "$CHEAD" > "$CACHE"
+jq -n --arg sha "$CHEAD" --arg ts "$CTS" '{sha:$sha, started_at:$ts}' > "$CACHE"
 got=$(latest_author_visible_review_sha "$CSTATE" "$CSLUG" "$CPRN" "")
-[ "$got" = "$CHEAD" ] || { echo "FAIL: SHA gate must fall back to the reviewed-sha cache — want [$CHEAD] got [$got]"; exit 1; }
+[ "$got" = "$CHEAD" ] || { echo "FAIL: SHA gate must fall back to the reviewed-sha cache .sha — want [$CHEAD] got [$got]"; exit 1; }
+gotts=$(latest_author_visible_review_started_at "$CSTATE" "$CSLUG" "$CPRN" "")
+[ "$gotts" = "$CTS" ] || { echo "FAIL: slash-cutoff must fall back to the cache .started_at — want [$CTS] got [$gotts] (empty → re-review loop)"; exit 1; }
 # The cache is a dedup-only signal: body + approval must see NO local prior review.
 [ -z "$(latest_author_visible_review "$CSTATE" "$CSLUG" "$CPRN" "")" ] \
   || { echo "FAIL: cache must not surface a prior-review body (it has none)"; exit 1; }

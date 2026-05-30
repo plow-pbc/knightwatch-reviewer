@@ -411,20 +411,29 @@ if [ "$FORCE_WHOLE_PR" != "true" ]; then
             # Trust-gated: only the bot's own posted review carrying this head's
             # marker counts (latest_reviewed_sha_comment filters on BOT_USER) —
             # a marker pasted by any other commenter must NOT suppress review.
-            if [ -n "$(latest_reviewed_sha_comment "$BACKSTOP_COMMENTS" "$FETCHED_HEAD_SHA" "$BOT_USER")" ]; then
-                # Record the dedup fact ONLY — a SHA-only cache entry, not a run.
-                # The backstop knows only "head X was reviewed"; it must NOT
-                # masquerade as a prior-review run, because the posted comment is
-                # lossy (VERDICT stripped at post) and can't be a canonical
-                # agents/aggregator/output.md. Keeping it out of runs/ means the
-                # body/approval/prior-review projections still see "no local
-                # prior review" → the next re-review is fresh with approval
-                # unknown, instead of reading a half-filled record (the
-                # approval-misreport bug review round 4 caught). The SHA gate
-                # (latest_author_visible_review_sha) falls back to this cache.
+            BACKSTOP_MATCH=$(latest_reviewed_sha_comment "$BACKSTOP_COMMENTS" "$FETCHED_HEAD_SHA" "$BOT_USER")
+            if [ -n "$BACKSTOP_MATCH" ]; then
+                # Record the dedup fact ONLY — a {sha, started_at} cache entry,
+                # not a run. The backstop knows only "head X was reviewed at
+                # time T"; it must NOT masquerade as a prior-review run, because
+                # the posted comment is lossy (VERDICT stripped at post) and
+                # can't be a canonical agents/aggregator/output.md. Keeping it
+                # out of runs/ means the body/approval/prior-review projections
+                # still see "no local prior review" → the next re-review is fresh
+                # with approval unknown, instead of reading a half-filled record
+                # (the approval-misreport bug review round 4 caught).
+                #
+                # BOTH dispatcher gates fall back to this entry: the SHA gate
+                # (latest_author_visible_review_sha → .sha) AND the slash-command
+                # cutoff (latest_author_visible_review_started_at → .started_at).
+                # started_at is the matched review's created_at — without it the
+                # cutoff reads "" and an old /srosro-review re-fires a full review
+                # of the same head (the loop review round 5 caught).
                 BACKSTOP_CACHE=$(reviewed_sha_cache_path "$STATE_DIR" "${REPO//\//_}" "$PR_NUM")
+                BACKSTOP_STARTED=$(printf '%s' "$BACKSTOP_MATCH" | jq -r '.created_at // empty')
                 mkdir -p "$(dirname "$BACKSTOP_CACHE")"
-                if printf '%s' "$FETCHED_HEAD_SHA" > "$BACKSTOP_CACHE.tmp" \
+                if jq -n --arg sha "$FETCHED_HEAD_SHA" --arg started_at "$BACKSTOP_STARTED" \
+                        '{sha: $sha, started_at: $started_at}' > "$BACKSTOP_CACHE.tmp" \
                     && mv -f "$BACKSTOP_CACHE.tmp" "$BACKSTOP_CACHE"; then
                     log "$PR_ID: cold cache — head $FETCHED_HEAD_SHA already reviewed per GitHub; recorded reviewed-sha, skipping pipeline"
                 else
