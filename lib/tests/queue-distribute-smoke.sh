@@ -161,7 +161,11 @@ echo "  OK E"
 #        queued PR. Stub worker dispatches then goes offline; assert exactly one
 #        dispatch (PR2 never claimed) + the auth-offline stop log. ---
 echo "  F: fatal-auth — worker marks offline → no further claims this tick..."
-rm -f "$STATE_DIR/queue.json" "$STATE_DIR/auth-offline" "$STATE_DIR/quota-paused-until"
+# Use a DISTINCT LOCAL_STATE_DIR (as production compose does — auth-offline lives
+# in /local/state, not the shared STATE_DIR) so the smoke exercises the real
+# per-container path rather than state-io.sh's STATE_DIR fallback.
+F_LOCAL_STATE="$TMPDIR_BASE/local-state"; mkdir -p "$F_LOCAL_STATE"
+rm -f "$STATE_DIR/queue.json" "$F_LOCAL_STATE/auth-offline" "$F_LOCAL_STATE/quota-paused-until"
 cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<'WORKER'
 #!/bin/bash
 echo "WORKER_DISPATCHED repo=$1 pr=$2 sha=$3" >> "$LOG_FILE"
@@ -170,10 +174,11 @@ WORKER
 chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
 write_queue "$STATE_DIR" "$(date +%s)" "$TWO_SPECS"   # both PRs eligible, locks free
 : > "$LOG_FILE"
-REVIEWER_CONTAINER_MODE=1 ENUMERATE_SECS=999 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
+LOCAL_STATE_DIR="$F_LOCAL_STATE" REVIEWER_CONTAINER_MODE=1 ENUMERATE_SECS=999 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
 wait_dispatched
 f_dispatched=$(grep -c '^WORKER_DISPATCHED ' "$LOG_FILE" 2>/dev/null || true); f_dispatched="${f_dispatched:-0}"
 [ "$f_dispatched" -eq 1 ] || { echo "FAIL F: expected exactly 1 dispatch (claim-stop after offline), got $f_dispatched"; cat "$LOG_FILE"; exit 1; }
 grep -qE 'auth invalid.*stopping further claims this tick' "$LOG_FILE" || { echo "FAIL F: missing same-tick auth-offline claim-stop log"; cat "$LOG_FILE"; exit 1; }
+[ -s "$F_LOCAL_STATE/auth-offline" ] || { echo "FAIL F: auth-offline not written to the per-container LOCAL_STATE_DIR"; exit 1; }
 echo "  OK F"
 echo "ALL PASS: queue-distribute-smoke.sh"
