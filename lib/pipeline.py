@@ -78,13 +78,15 @@ _CODEX_QUOTA_RE = re.compile(
     r"((?:\w+ \d{1,2}(?:st|nd|rd|th), \d{4} )?\d{1,2}:\d{2} (?:AM|PM))\.",
     re.IGNORECASE | re.DOTALL,
 )
-# Codex prints one of these to stderr when the account's token is FATALLY
-# invalid (reused/rotated refresh token, or a revoked session) and it cannot
-# self-refresh — distinct from a usage cap, which has a reset time. Pinned to
-# codex's observed markers + the "sign in again" instruction it always appends;
-# a non-auth rc=1 with PR-controlled stdout can't reflect here (err.txt only).
+# Codex emits one of these first-party error CODES to stderr when the account's
+# token is FATALLY invalid (reused/rotated refresh token, or a revoked session)
+# and it cannot self-refresh — distinct from a usage cap, which has a reset time.
+# Pinned to the codes ONLY, never the natural-language "sign in again" tail: codex
+# streams tool/reasoning activity to err.txt too, so a PR's tool output could
+# carry that phrase and spoof the sentinel to DoS a reviewer offline. The codes
+# are structured first-party tokens a PR can't plausibly reflect.
 _CODEX_AUTH_FATAL_RE = re.compile(
-    r"refresh_token_reused|token_invalidated|sign(?:ing)? in again",
+    r"refresh_token_reused|token_invalidated",
     re.IGNORECASE,
 )
 

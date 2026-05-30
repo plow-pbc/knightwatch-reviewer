@@ -70,7 +70,8 @@ REVIEW_START_ISO="${DISPATCHER_TICK_AT:-$(python3 -c "import datetime; print(dat
 # LOG_FILE defaulted yet (the per-run dir is set up below). Fall back to
 # $STATE_DIR/orchestrator.log so this skip line still lands somewhere durable.
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
-# LOCAL_STATE_DIR holds the per-container canonical clone/fetch lock — sharing it
+# LOCAL_STATE_DIR holds the per-container canonical clone/fetch lock plus
+# per-account stop-state (quota-paused-until, auth-offline) — sharing it
 # would serialize per-container clones/fetches across reviewers. (The just-test
 # semaphore deliberately stays in the SHARED STATE_DIR so #100's global
 # MAX_CONCURRENT_TESTS cap holds across containers — see the acquire_just_test_lock
@@ -793,7 +794,8 @@ else
     # #100's global N-slot semaphore, with slots in the SHARED STATE_DIR so the
     # MAX_CONCURRENT_TESTS cap on concurrent `just test` holds ACROSS reviewer
     # containers — protecting the host's memory. (This subsumes the per-container
-    # just-test lock; LOCAL_STATE_DIR now scopes only the canonical clone lock.)
+    # just-test lock; LOCAL_STATE_DIR now scopes the canonical clone lock +
+    # per-account stop-state (quota-paused-until, auth-offline).)
     acquire_just_test_lock "$STATE_DIR"
     JUST_TEST_LOCK_WAIT=$(( $(date +%s) - JUST_TEST_LOCK_WAIT_START ))
     if [ "$JUST_TEST_LOCK_WAIT" -ge 5 ]; then

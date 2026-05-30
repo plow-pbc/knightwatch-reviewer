@@ -1441,6 +1441,23 @@ class TestRunPipeline(unittest.TestCase):
         self.assertTrue((self.run_dir / "_codex_auth_fatal.txt").exists())
 
     @patch("pipeline.subprocess.Popen")
+    def test_codex_auth_fatal_ignores_bare_signin_phrase(self, mock_popen):
+        """Codex streams tool/reasoning activity to stderr (err.txt), so the
+        fatal-auth scan must key on the first-party error CODES
+        (refresh_token_reused / token_invalidated), NOT the natural-language
+        "sign in again" instruction — otherwise a PR whose tool output contains
+        that phrase could spoof the sentinel and DoS a reviewer offline."""
+        mock_popen.side_effect = _make_codex_stub(
+            plan={"intent": (1, "")},
+            before_write=_inject_intent_stream(
+                "err", "tool output: please remember to sign in again later\n"
+            ),
+        )
+        rc = self._run()
+        self.assertNotEqual(rc, 0)
+        self.assertFalse((self.run_dir / "_codex_auth_fatal.txt").exists())
+
+    @patch("pipeline.subprocess.Popen")
     def test_codex_auth_fatal_no_sentinel_on_unrelated_failure(self, mock_popen):
         """A generic non-auth, non-quota failure writes neither sentinel —
         bash falls back to the generic transient-abort body (retry next tick),
