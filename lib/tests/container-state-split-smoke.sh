@@ -32,4 +32,17 @@ grep -q 'acquire_just_test_lock "\$STATE_DIR"' "$HERE/review-one-pr.sh" \
 grep -q 'CANONICAL_LOCK_DIR="\$LOCAL_STATE_DIR/canonical-locks"' "$HERE/review-one-pr.sh" \
   || fail "canonical lock not pointed at LOCAL_STATE_DIR (per-container)"
 
+# The shared `claims` volume (runs/ — the KNOWN_SHA dedup history) MUST be an
+# external fixed-name volume so it survives project rename / `down -v` / prune;
+# a compose-managed volume is lost on those and the reviewer re-reviews every
+# open PR (duplicate comments + codex burn). PR #130's durability contract.
+# Match the top-level `claims:` block (2-space indent under `volumes:`), not the
+# `- claims:/shared` mounts. Pure text assertion (no docker needed at test time).
+COMPOSE="$(cd "$HERE/.." && pwd)/docker-compose.yml"
+claims_block=$(awk '/^  claims:/{f=1;next} /^  [a-z]/{f=0} f' "$COMPOSE")
+printf '%s\n' "$claims_block" | grep -q 'external: true' \
+  || fail "claims volume is not external:true (durable review state regressed — PR #130)"
+printf '%s\n' "$claims_block" | grep -q 'name: kwr_claims' \
+  || fail "claims external name is not kwr_claims (durability contract regressed — PR #130)"
+
 echo "PASS: container-state-split-smoke"
