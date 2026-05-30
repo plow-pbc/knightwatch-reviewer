@@ -385,10 +385,18 @@ consume_queue() {
         # Throttle to MAX_CONCURRENT in-flight workers per tick.
         while [ "$active" -ge "$MAX_CONCURRENT" ]; do wait -n || true; active=$((active - 1)); done
 
-        # Container mode: a worker that just drained may have hit a codex cap.
-        if [ -n "${REVIEWER_CONTAINER_MODE:-}" ] && quota_active; then
-            log "codex quota hit — stopping further claims this tick (paused until the reset window)"
-            break
+        # Container mode: a worker that just drained may have hit a codex cap or
+        # a fatally invalid token — stop claiming for this tick either way, so a
+        # capped/offline account doesn't keep claiming + aborting later queued
+        # PRs before the loop's top-of-tick check arms the longer pause/offline.
+        if [ -n "${REVIEWER_CONTAINER_MODE:-}" ]; then
+            if quota_active; then
+                log "codex quota hit — stopping further claims this tick (paused until the reset window)"
+                break
+            elif auth_offline_active; then
+                log "codex auth invalid — stopping further claims this tick (worker offline until re-login)"
+                break
+            fi
         fi
 
         # PROBE the per-PR flock: skip PRs already in-flight on another

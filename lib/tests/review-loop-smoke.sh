@@ -71,4 +71,26 @@ printf '%s\n' "$(( $(date +%s) - 10 ))" > "$d/state/quota-paused-until"
 [ -e "$d/called" ] || fail "review-loop skipped the tick with a PAST quota epoch (should resume)"
 rm -rf "$d"
 
+# 5. Auth offline: a fatal auth error takes the worker offline until re-login.
+#    While the marker's recorded auth.json mtime still matches the live file,
+#    review-loop never claims; a re-login (newer auth.json mtime) clears the
+#    marker and resumes — no timer, no spin-aborting every tick.
+d=$(make_sandbox)
+printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"; chmod +x "$d/bin/docker"   # dind ready
+printf '#!/bin/bash\ntouch "%s/called"\nexit 1\n' "$d" > "$d/review.sh"; chmod +x "$d/review.sh"
+mkdir -p "$d/codex"; : > "$d/codex/auth.json"
+# Producer: the same mark_auth_offline (lib/state-io.sh) review-one-pr.sh calls
+# on a fatal-auth abort — exercises the real produce→consume handoff, not a
+# hand-written marker. It records the live auth.json mtime (not re-logged yet).
+( cd "$d" && LOCAL_STATE_DIR="$d/state" CODEX_HOME="$d/codex" bash -c '. lib/state-io.sh && mark_auth_offline' )
+[ -s "$d/state/auth-offline" ] || fail "mark_auth_offline did not write the auth-offline marker"
+( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x LOCAL_STATE_DIR="$d/state" CODEX_HOME="$d/codex" ./review-loop.sh ) >/dev/null 2>&1 || true
+[ ! -e "$d/called" ] || fail "review-loop ran review.sh while auth-offline (should skip until re-login)"
+# Simulate operator re-login: bump auth.json mtime past the marker.
+touch -d "+1 hour" "$d/codex/auth.json"
+( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x LOCAL_STATE_DIR="$d/state" CODEX_HOME="$d/codex" ./review-loop.sh ) >/dev/null 2>&1 || true
+[ -e "$d/called" ] || fail "review-loop stayed offline after re-login (newer auth.json mtime should resume)"
+[ ! -e "$d/state/auth-offline" ] || fail "review-loop did not clear the auth-offline marker after re-login"
+rm -rf "$d"
+
 echo "PASS: review-loop-smoke"

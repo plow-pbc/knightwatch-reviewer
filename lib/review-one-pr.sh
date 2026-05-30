@@ -70,7 +70,8 @@ REVIEW_START_ISO="${DISPATCHER_TICK_AT:-$(python3 -c "import datetime; print(dat
 # LOG_FILE defaulted yet (the per-run dir is set up below). Fall back to
 # $STATE_DIR/orchestrator.log so this skip line still lands somewhere durable.
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
-# LOCAL_STATE_DIR holds the per-container canonical clone/fetch lock — sharing it
+# LOCAL_STATE_DIR holds the per-container canonical clone/fetch lock plus
+# per-account stop-state (quota-paused-until, auth-offline) — sharing it
 # would serialize per-container clones/fetches across reviewers. (The just-test
 # semaphore deliberately stays in the SHARED STATE_DIR so #100's global
 # MAX_CONCURRENT_TESTS cap holds across containers — see the acquire_just_test_lock
@@ -793,7 +794,8 @@ else
     # #100's global N-slot semaphore, with slots in the SHARED STATE_DIR so the
     # MAX_CONCURRENT_TESTS cap on concurrent `just test` holds ACROSS reviewer
     # containers — protecting the host's memory. (This subsumes the per-container
-    # just-test lock; LOCAL_STATE_DIR now scopes only the canonical clone lock.)
+    # just-test lock; LOCAL_STATE_DIR now scopes the canonical clone lock +
+    # per-account stop-state (quota-paused-until, auth-offline).)
     acquire_just_test_lock "$STATE_DIR"
     JUST_TEST_LOCK_WAIT=$(( $(date +%s) - JUST_TEST_LOCK_WAIT_START ))
     if [ "$JUST_TEST_LOCK_WAIT" -ge 5 ]; then
@@ -1430,6 +1432,19 @@ if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
         fi
         printf '%s\n' "$QUOTA_UNTIL" > "$(quota_pause_file)"
         log "$PR_ID: quota-paused this worker until epoch ${QUOTA_UNTIL} (reset=${RESET_AT})"
+    fi
+    # pipeline.py writes this when codex's token is FATALLY invalid (reused/
+    # rotated refresh token or revoked session) — not a usage cap, so there's no
+    # reset time. Take the worker OFFLINE until re-login instead of spin-aborting
+    # + commenting on every PR (the shared-login 401 storm of 2026-05-30).
+    AUTH_FATAL_SENTINEL="$RUN_DIR/_codex_auth_fatal.txt"
+    if [ -s "$AUTH_FATAL_SENTINEL" ]; then
+        EYES_ABORT_BODY="⏸ knightwatch offline — codex auth for this account is invalid (token reused/revoked, not a usage cap). Awaiting operator re-login; reviews resume automatically once re-authenticated."
+        # Record the live auth.json mtime; review-loop.sh (auth_offline_active,
+        # lib/state-io.sh) keeps this worker offline until a NEWER mtime — i.e.
+        # an operator re-login — auto-clears it. A cheap stat, no reset timer.
+        mark_auth_offline
+        log "$PR_ID: codex auth invalid — worker OFFLINE until re-login (auth-offline marker @ mtime=$(head -n1 "$(auth_offline_file)" 2>/dev/null))"
     fi
     [ -d "$REPO_DIR" ] && rm -rf "$REPO_DIR"
     exit 1

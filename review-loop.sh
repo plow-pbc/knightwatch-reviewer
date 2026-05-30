@@ -58,6 +58,14 @@ log "[review-loop] dind ready at ${DOCKER_HOST:-default}; polling every ${POLL_S
 # reviews until it passes, so a capped account backs off and the other accounts
 # carry the queue.
 while true; do
+    # Fatal auth (invalidated token) → offline until operator re-login, NOT a
+    # timed pause. Checked before quota: a 401-on-refresh never yields a usage
+    # cap, so without this it would fall through and spin-abort every PR.
+    if auth_offline_active; then
+        log "[review-loop] codex auth invalid — worker OFFLINE until re-login (CODEX_HOME codex login); skipping tick"
+        sleep "$POLL_SECS"; continue
+    fi
+    rm -f "$(auth_offline_file)"  # absent or re-logged (newer auth.json); resume claiming
     if quota_active; then
         log "[review-loop] codex quota-paused — skipping tick"
         sleep "$POLL_SECS"; continue

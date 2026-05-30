@@ -11,7 +11,8 @@
 # gate dedup reviews across containers; one container per ENUMERATE_SECS window
 # runs the GraphQL enumerate and writes queue.json, and every reviewer consumes
 # it and claims PRs via the per-PR flock. LOCAL_STATE_DIR is per-container and
-# holds ONLY the canonical clone/fetch lock + the codex quota-pause state;
+# holds ONLY the canonical clone/fetch lock + codex quota-pause + fatal-auth
+# offline state;
 # repos/, workdirs/, ~/.codex are per-container too.
 #
 # Scale-out (add account N): add a dind-N + reviewer-N pair. Each reviewer is
@@ -51,7 +52,7 @@ x-reviewer-env: &reviewer-env
   STATE_DIR: /shared              # per-PR lock + runs/ (SHARED across containers)
   REPOS_DIR: /local/repos         # per-container
   WORKDIRS_DIR: /local/workdirs   # per-container
-  LOCAL_STATE_DIR: /local/state   # canonical clone/fetch lock + quota-pause (per-container; just-test semaphore is in shared STATE_DIR)
+  LOCAL_STATE_DIR: /local/state   # canonical clone/fetch lock + quota-pause + fatal-auth offline (per-container; just-test semaphore is in shared STATE_DIR)
   DOCKER_HOST: tcp://127.0.0.1:2375
   CONFIG_ENV_FILE: /root/.kwr/config.env  # root-only path → reviewer-test (just test) can't read the token file
 

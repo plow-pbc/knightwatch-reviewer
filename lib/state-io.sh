@@ -76,3 +76,29 @@ quota_pause_file() { printf '%s' "${LOCAL_STATE_DIR:-$STATE_DIR}/quota-paused-un
 # True while the pause window is still in the future. A missing/empty file reads
 # as epoch 0, i.e. not paused.
 quota_active() { [ "$(date +%s)" -lt "$(head -n1 "$(quota_pause_file)" 2>/dev/null || echo 0)" ]; }
+
+# Fatal-auth offline marker: when codex's token is invalidated (reused/rotated
+# refresh token, revoked session — NOT a usage cap), review-one-pr.sh records
+# the live auth.json mtime here and the worker goes OFFLINE. Unlike a quota
+# pause there's no reset time, so it stays offline until an operator re-login —
+# detected as a NEWER auth.json mtime — which auto-clears it. A cheap stat per
+# tick, so a broken account stops claiming/commenting instead of spin-aborting.
+auth_offline_file() { printf '%s' "${LOCAL_STATE_DIR:-$STATE_DIR}/auth-offline"; }
+codex_auth_json()   { printf '%s' "${CODEX_HOME:-$HOME/.codex}/auth.json"; }
+
+# True while the marker exists AND auth.json has NOT been refreshed since it was
+# recorded (operator hasn't re-logged). A newer mtime ⇒ re-login ⇒ not offline.
+auth_offline_active() {
+    [ -f "$(auth_offline_file)" ] || return 1
+    [ "$(stat -c %Y "$(codex_auth_json)" 2>/dev/null || echo 0)" \
+      -le "$(head -n1 "$(auth_offline_file)" 2>/dev/null || echo 0)" ]
+}
+
+# Producer side: on a fatal-auth abort review-one-pr.sh calls this to take the
+# worker offline — records the live auth.json mtime so auth_offline_active stays
+# true until an operator re-login bumps it. (A missing auth.json records 0, so
+# any real re-login clears it.)
+mark_auth_offline() {
+    stat -c %Y "$(codex_auth_json)" 2>/dev/null > "$(auth_offline_file)" \
+        || echo 0 > "$(auth_offline_file)"
+}
