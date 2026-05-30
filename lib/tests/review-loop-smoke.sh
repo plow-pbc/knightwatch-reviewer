@@ -17,6 +17,9 @@ make_sandbox() {
     local d; d=$(mktemp -d)
     cp "$SRC" "$d/review-loop.sh"; chmod +x "$d/review-loop.sh"
     mkdir -p "$d/bin" "$d/lib" "$d/prompts" "$d/state"
+    # review-loop.sh sources lib/state-io.sh (log + quota_active/quota_pause_file);
+    # give the sandbox the real lib so the quota-pause check exercises production code.
+    cp "$(dirname "$SRC")/lib/state-io.sh" "$d/lib/state-io.sh"
     printf '#!/bin/bash\nexit 0\n' > "$d/bin/sleep"; chmod +x "$d/bin/sleep"  # noop: don't actually wait
     echo "$d"
 }

@@ -386,8 +386,7 @@ consume_queue() {
         while [ "$active" -ge "$MAX_CONCURRENT" ]; do wait -n || true; active=$((active - 1)); done
 
         # Container mode: a worker that just drained may have hit a codex cap.
-        if [ -n "${REVIEWER_CONTAINER_MODE:-}" ] \
-           && [ "$(date +%s)" -lt "$(head -n1 "$LOCAL_STATE_DIR/quota-paused-until" 2>/dev/null || echo 0)" ]; then
+        if [ -n "${REVIEWER_CONTAINER_MODE:-}" ] && quota_active; then
             log "codex quota hit — stopping further claims this tick (paused until the reset window)"
             break
         fi

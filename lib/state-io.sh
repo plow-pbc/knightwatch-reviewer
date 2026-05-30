@@ -64,3 +64,15 @@ seen_set() {
         return 1
     fi
 }
+
+# Codex quota-pause protocol. When an account hits its codex usage limit the
+# worker (review-one-pr.sh) writes the reset epoch to this per-container file;
+# the orchestrator (review.sh) and its loop (review-loop.sh) read it to stop
+# claiming PRs until the window passes, so a capped account backs off while the
+# other containers carry the queue. LOCAL_STATE_DIR is per-container; it falls
+# back to STATE_DIR for non-container single-account runs.
+quota_pause_file() { printf '%s' "${LOCAL_STATE_DIR:-$STATE_DIR}/quota-paused-until"; }
+
+# True while the pause window is still in the future. A missing/empty file reads
+# as epoch 0, i.e. not paused.
+quota_active() { [ "$(date +%s)" -lt "$(head -n1 "$(quota_pause_file)" 2>/dev/null || echo 0)" ]; }
