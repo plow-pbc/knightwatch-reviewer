@@ -1361,8 +1361,8 @@ if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
         RESET_AT=$(head -n 1 "$QUOTA_SENTINEL")
         EYES_ABORT_BODY="⏸ knightwatch paused — codex quota hit, resets at ${RESET_AT}. Will retry on the next tick and should succeed after the quota window resets."
         log "$PR_ID: handing codex-quota-error to cleanup_eyes (resets=${RESET_AT})"
-        # Pause THIS container until the quota window resets — review-loop.sh reads
-        # $LOCAL_STATE_DIR/quota-paused-until (always set; defaults to STATE_DIR) and
+        # Pause THIS container until the quota window resets — review-loop.sh's
+        # quota_active() reads the same quota-pause file (lib/state-io.sh) and
         # stops claiming PRs until then, so a capped account doesn't keep claiming.
         QUOTA_UNTIL=""
         # Weekly caps carry a date → parse absolute. Short rolling-window resets are
@@ -1375,7 +1375,7 @@ if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
         if [ -z "$QUOTA_UNTIL" ] || [ "$QUOTA_UNTIL" -le "$(date +%s)" ]; then
             QUOTA_UNTIL=$(( $(date +%s) + 3600 ))
         fi
-        printf '%s\n' "$QUOTA_UNTIL" > "$LOCAL_STATE_DIR/quota-paused-until"
+        printf '%s\n' "$QUOTA_UNTIL" > "$(quota_pause_file)"
         log "$PR_ID: quota-paused this worker until epoch ${QUOTA_UNTIL} (reset=${RESET_AT})"
     fi
     [ -d "$REPO_DIR" ] && rm -rf "$REPO_DIR"
