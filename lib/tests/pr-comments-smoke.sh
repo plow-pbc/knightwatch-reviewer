@@ -100,6 +100,10 @@ JSON
 OUT=$(_pr_comments_from_json "$MARKER_BODY" "srosro")
 # The comment is staged verbatim (the marker rides along as ordinary text)...
 echo "$OUT" | grep -qF "Declined — design intent." || { echo "FAIL: operator body with a marker was dropped"; echo "$OUT"; exit 1; }
+# ...including the literal marker itself — it must NOT be stripped (the
+# "marker is ordinary prose now" branch: deleting the channel means the string
+# survives as plain text, it isn't special-cased out).
+echo "$OUT" | grep -qF "<!-- decline:class=session-scoping -->" || { echo "FAIL: the decline:class marker was stripped instead of staged as verbatim prose"; echo "$OUT"; exit 1; }
 # ...and NO operator-marker section is emitted (the channel was deleted).
 echo "$OUT" | grep -qF "Operator decline markers" && { echo "FAIL: deleted marker section re-emitted"; echo "$OUT"; exit 1; } || true
 
