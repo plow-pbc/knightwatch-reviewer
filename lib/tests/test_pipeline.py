@@ -702,6 +702,22 @@ class TestValidateCriticOutput(unittest.TestCase):
         )
         self.assertEqual(pipeline._strip_orphan_critic_probes(crit, {"1"}), crit)
 
+    def test_critic_duplicate_orphan_probe_is_tolerated(self):
+        """A *repeated* surplus id (two `### Probe 2` blocks the specialist
+        never raised) is still just orphan noise — the dupe gate is scoped to
+        spec_probe_ids so it doesn't abort, and the stripper removes both. A
+        duplicate of a *real* probe stays fatal (next test)."""
+        spec = "### Probe 1\n- **From:** security\n"
+        crit = (
+            "## Critic counter-arguments\n\n"
+            "### Probe 1\n- **Answer:** yes\n- **Evidence:** x\n\n"
+            "### Probe 2\n- **Answer:** no\n- **Evidence:** y\n\n"
+            "### Probe 2\n- **Answer:** no\n- **Evidence:** z\n"  # duplicate orphan
+        )
+        self.assertIsNone(pipeline._validate_critic_output(spec, crit))
+        cleaned = pipeline._strip_orphan_critic_probes(crit, {"1"})
+        self.assertNotIn("### Probe 2", cleaned)
+
     def test_specialist_with_duplicate_probe_ids_returns_error(self):
         """Specialist emitting two `### Probe 1` blocks would let set(...)
         collapse them so a critic resolving only one passes the equality
@@ -949,6 +965,34 @@ class TestRunSpecialist(unittest.TestCase):
         # Exactly one '## Critic counter-arguments' H2 — not doubled
         self.assertEqual(layered.count("## Critic counter-arguments"), 1)
         self.assertIn("- **Answer:** yes", layered)
+
+    @patch("pipeline.subprocess.Popen")
+    def test_critic_surplus_probe_stripped_not_aborted(self, mock_popen):
+        """Production-seam coverage for the carried-in stale probe: specialist
+        emits only Probe 1, critic resolves it AND re-emits an orphan Probe 2
+        (a stale id from prior-review context). run_specialist must succeed
+        (rc=0) with the orphan stripped from the layered file — not abort the
+        whole review. Regression guard for the cncorp/plow#796 abort loop."""
+        mock_popen.side_effect = _make_codex_stub({
+            "security": (0, "### Probe 1\nspecialist body\n"),
+            "critic-security": (0,
+                "## Critic counter-arguments\n\n"
+                "### Probe 1\n- **Answer:** yes\n- **Evidence:** keep-me\n\n"
+                "### Probe 2\n- **Answer:** no\n- **Evidence:** orphan-drop-me\n"),
+        })
+        rc = pipeline.run_specialist(
+            specialist="security",
+            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
+            prompts_dir=str(self.prompts),
+            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
+        )
+        self.assertEqual(rc, 0)
+        layered = (self.run_dir / "agents" / "security" / "layered.md").read_text()
+        scratch = (self.repo_dir / ".codex-scratch" / "specialists" / "security.md").read_text()
+        self.assertEqual(layered, scratch)
+        self.assertIn("keep-me", layered)            # valid Probe 1 resolution survives
+        self.assertNotIn("### Probe 2", layered)     # orphan stripped
+        self.assertNotIn("orphan-drop-me", layered)
 
     @patch("pipeline.subprocess.Popen")
     def test_scratch_staged_before_critic_runs(self, mock_popen):

@@ -433,7 +433,13 @@ def _validate_critic_output(spec_text: str, crit_text: str) -> str | None:
         )
 
     crit_probe_id_list = _PROBE_HEADER_RE.findall(crit_text)
-    crit_dupes = _duplicate_ids(crit_probe_id_list)
+    # A duplicate of a *real* specialist probe is genuinely ambiguous — two
+    # conflicting resolutions for one probe — so it stays fatal. A duplicate of
+    # a surplus/orphan id is just more carried-in noise that
+    # `_strip_orphan_critic_probes` removes wholesale (re.sub drops every
+    # matching block), so don't abort on it; scoping the dupe gate to
+    # spec_probe_ids keeps a repeated stale `### Probe 2` from nuking the review.
+    crit_dupes = _duplicate_ids([i for i in crit_probe_id_list if i in spec_probe_ids])
     if crit_dupes:
         return (
             f"critic emitted duplicate probe ID(s): {crit_dupes} — each "
