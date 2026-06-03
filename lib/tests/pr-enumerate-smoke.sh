@@ -83,7 +83,10 @@ assert_eq() {
 
 # ---- scenario 1: single ORG, two PRs returned ----
 : > "$STUB_CALL_LOG"
-export MOCK_GRAPHQL_user_plow_pbc_is_pr_is_open='{"data":{"search":{"nodes":[
+# Fixture key carries `archived:false` — enumerate_open_prs appends it to the
+# search query (mirrors org-sync's --no-archived). Exported, so scenarios 3/4/7
+# reuse it.
+export MOCK_GRAPHQL_user_plow_pbc_is_pr_is_open_archived_false='{"data":{"search":{"nodes":[
     {"number":1,"title":"a","headRefName":"feat/a","headRefOid":"aaa","author":{"login":"alice"},"repository":{"nameWithOwner":"plow-pbc/seed"}},
     {"number":2,"title":"b","headRefName":"feat/b","headRefOid":"bbb","author":{"login":"bob"},"repository":{"nameWithOwner":"plow-pbc/seed-1password"}}
 ]}}}'
@@ -115,13 +118,38 @@ export MOCK_PR_LIST_cncorp_plow='[{"number":642,"title":"x","headRefName":"feat/
   assert_eq "scenario 3 count" 3 "$(echo "$out" | jq 'length')"
 )
 
-# ---- scenario 4: ORG search returns untracked repo → post-filter drops it ----
+# ---- scenario 4: partial org (in ORGS, NOT in FULL_ORGS) → REPOS allowlist
+#      still applies, so an ORG-search repo absent from REPOS is dropped. ----
 : > "$STUB_CALL_LOG"
-( REPOS=("plow-pbc/seed"); ORGS=("plow-pbc")   # seed-1password NOT in REPOS → drop
+( REPOS=("plow-pbc/seed"); ORGS=("plow-pbc")   # FULL_ORGS unset → seed-1password dropped
   source "$PROJECT_ROOT/lib/pr-enumerate.sh"
   out=$(enumerate_open_prs)
   assert_eq "scenario 4 count after filter" 1 "$(echo "$out" | jq 'length')"
   assert_eq "scenario 4 surviving repo" "plow-pbc/seed" "$(echo "$out" | jq -r '.[0].repository.nameWithOwner')"
+)
+
+# ---- scenario 7: FULL_ORGS owner → every ORG-search repo kept WITHOUT a REPOS
+#      entry (the org-level coverage that fixes manifest drift). Same fixture as
+#      scenario 4 (seed + seed-1password), but seed-1password now survives. ----
+: > "$STUB_CALL_LOG"
+( REPOS=("plow-pbc/seed"); ORGS=("plow-pbc"); FULL_ORGS=("plow-pbc")
+  source "$PROJECT_ROOT/lib/pr-enumerate.sh"
+  out=$(enumerate_open_prs)
+  assert_eq "scenario 7 count (full-org keeps both)" 2 "$(echo "$out" | jq 'length')"
+  assert_eq "scenario 7 keeps repo absent from REPOS" "true" \
+    "$(echo "$out" | jq 'any(.repository.nameWithOwner == "plow-pbc/seed-1password")')"
+)
+
+# ---- scenario 8: FULL_ORGS does NOT widen a partial org. cncorp PR comes via
+#      per-repo fallthrough; a cncorp repo absent from REPOS is never searched
+#      and never appears, even with plow-pbc in FULL_ORGS. ----
+: > "$STUB_CALL_LOG"
+( REPOS=("cncorp/plow"); ORGS=(); FULL_ORGS=("plow-pbc")
+  source "$PROJECT_ROOT/lib/pr-enumerate.sh"
+  out=$(enumerate_open_prs)
+  assert_eq "scenario 8 count" 1 "$(echo "$out" | jq 'length')"
+  assert_eq "scenario 8 only the REPOS-listed cncorp repo" "cncorp/plow" \
+    "$(echo "$out" | jq -r '.[0].repository.nameWithOwner')"
 )
 
 # ---- scenario 5a: gh graphql failure → non-zero, no stdout ----
@@ -151,7 +179,7 @@ export MOCK_PR_LIST_FAIL=1
 # 6a: single ORG, search returns active repos (with a dup) → deduped, tracked-only.
 : > "$STUB_CALL_LOG"
 S6_SINCE="2026-05-01T00:00:00Z"
-s6q="user:plow-pbc is:pr commenter:testbot updated:>=$S6_SINCE"
+s6q="user:plow-pbc is:pr commenter:testbot updated:>=$S6_SINCE archived:false"
 export "MOCK_GRAPHQL_${s6q//[^A-Za-z0-9]/_}"='{"data":{"search":{"nodes":[
     {"repository":{"nameWithOwner":"plow-pbc/seed"}},
     {"repository":{"nameWithOwner":"plow-pbc/seed"}},
@@ -188,7 +216,7 @@ unset MOCK_GRAPHQL_FAIL
 # 6d: pages past first:100 — a repo whose only match is on page 2 is still found.
 : > "$STUB_CALL_LOG"
 S6D_SINCE="2026-05-02T00:00:00Z"
-s6dq="user:plow-pbc is:pr commenter:testbot updated:>=$S6D_SINCE"
+s6dq="user:plow-pbc is:pr commenter:testbot updated:>=$S6D_SINCE archived:false"
 export "MOCK_GRAPHQL_${s6dq//[^A-Za-z0-9]/_}"='{"data":{"search":{"pageInfo":{"hasNextPage":true,"endCursor":"CUR1"},"nodes":[{"repository":{"nameWithOwner":"plow-pbc/page1repo"}}]}}}'
 export MOCK_GRAPHQL_AFTER='{"data":{"search":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"repository":{"nameWithOwner":"plow-pbc/page2repo"}}]}}}'
 ( REPOS=("plow-pbc/page1repo" "plow-pbc/page2repo"); ORGS=("plow-pbc")
@@ -198,5 +226,26 @@ export MOCK_GRAPHQL_AFTER='{"data":{"search":{"pageInfo":{"hasNextPage":false,"e
   assert_eq "6d made 2 graphql calls" 2 "$(grep -c '^graphql ' "$STUB_CALL_LOG")"
 )
 unset MOCK_GRAPHQL_AFTER
+
+# 6e: FULL_ORGS owner → a bot-active repo absent from REPOS is still kept, so
+#     learn/bakeoff discovery follows the same org-level coverage as reviews.
+#     Same fixture as 6a (seed + seed-1password), REPOS lists only seed.
+: > "$STUB_CALL_LOG"
+( REPOS=("plow-pbc/seed"); ORGS=("plow-pbc"); FULL_ORGS=("plow-pbc")
+  source "$PROJECT_ROOT/lib/pr-enumerate.sh"
+  out=$(repos_with_bot_activity_since "$S6_SINCE" "testbot")
+  assert_eq "6e full-org keeps repo absent from REPOS" \
+    $'plow-pbc/seed\nplow-pbc/seed-1password' "$(echo "$out" | sort)"
+)
+
+# 6f: FULL_ORGS naming a DIFFERENT org does not widen the searched org —
+#     mirrors scenario 8 for the discovery path. seed-1password (owner
+#     plow-pbc, not in FULL_ORGS=cncorp, not in REPOS) stays dropped.
+: > "$STUB_CALL_LOG"
+( REPOS=("plow-pbc/seed"); ORGS=("plow-pbc"); FULL_ORGS=("cncorp")
+  source "$PROJECT_ROOT/lib/pr-enumerate.sh"
+  out=$(repos_with_bot_activity_since "$S6_SINCE" "testbot")
+  assert_eq "6f unrelated FULL_ORGS does not widen" "plow-pbc/seed" "$out"
+)
 
 echo "ALL PASS: pr-enumerate-smoke.sh"

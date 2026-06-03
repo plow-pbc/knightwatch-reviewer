@@ -128,6 +128,33 @@ rm -f "$SAND_STATE/repos.conf" "$SAND_STATE/config.env"
 out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; REPO=cncorp/nonexistent; echo \"v=[\${KID_PATHS[\$REPO]:-}]\"" 2>&1)
 [ "$out" = "v=[]" ] || { echo "FAIL B4: loader output: $out"; exit 1; }
 
+echo "  B4-fullorgs-ok: FULL_ORGS ⊆ ORGS loads cleanly..."
+cat > "$SAND_STATE/repos.conf" <<'CONF'
+REPOS=("acme/foo")
+declare -A KID_PATHS=([acme/foo]=/x/foo)
+ORGS=(acme widgets)
+FULL_ORGS=(acme)
+CONF
+out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; echo \"FULL_ORGS=\${FULL_ORGS[0]}\"" 2>&1)
+[ "$out" = "FULL_ORGS=acme" ] || { echo "FAIL B4-fullorgs-ok: loader output: $out"; exit 1; }
+
+echo "  B4-fullorgs-fail: FULL_ORGS owner absent from ORGS fails loud (non-zero + FATAL line)..."
+# A full-org owner that isn't searched (not in ORGS) would silently cover
+# nothing — the loader must abort, not under-cover quietly.
+cat > "$SAND_STATE/repos.conf" <<'CONF'
+REPOS=("acme/foo")
+declare -A KID_PATHS=([acme/foo]=/x/foo)
+ORGS=(acme)
+FULL_ORGS=(acme widgets)
+CONF
+if out=$(STATE_DIR="$SAND_STATE" bash -c ". '$LOADER'; echo SHOULD_NOT_REACH" 2>&1); then
+    echo "FAIL B4-fullorgs-fail: loader exited 0 (expected non-zero); output: $out"; exit 1
+fi
+printf '%s' "$out" | grep -q 'FATAL: FULL_ORGS owner(s) not in ORGS' || { echo "FAIL B4-fullorgs-fail: missing FATAL line; output: $out"; exit 1; }
+printf '%s' "$out" | grep -q 'widgets' || { echo "FAIL B4-fullorgs-fail: FATAL line omits the offending owner; output: $out"; exit 1; }
+printf '%s' "$out" | grep -q 'SHOULD_NOT_REACH' && { echo "FAIL B4-fullorgs-fail: loader continued past the abort; output: $out"; exit 1; }
+rm -f "$SAND_STATE/repos.conf"
+
 echo "  B5: repos.conf.auto consumer — manual wins, stale auto KID_PATHS get convention-defaulted..."
 # Pin the split-file manifest contract:
 #   - Loader sources both files and exposes the merged view.

@@ -64,8 +64,12 @@ enumerate_open_prs() {
     for owner in "${ORGS[@]}"; do
         [ -n "${_seen_owners[$owner]:-}" ] && continue
         _seen_owners[$owner]=1
+        # archived:false mirrors org-sync's `gh repo list --no-archived`: a
+        # FULL_ORGS owner's coverage must not pull in an archived repo's stale
+        # open PRs (archived = read-only; nothing to review). Harmless for the
+        # REPOS-allowlist path too — we never want to review an archived repo.
         if ! raw=$(gh api graphql \
-                -F q="user:${owner} is:pr is:open" \
+                -F q="user:${owner} is:pr is:open archived:false" \
                 -f query="$_enumerate_graphql_query" 2>/dev/null); then
             return 1
         fi
@@ -89,16 +93,27 @@ enumerate_open_prs() {
         pieces+=("$nodes")
     done
 
-    # 3. Concat all pieces, post-filter against ${REPOS[@]} so an ORG
-    #    search can't surface an untracked repo.
-    local tracked_json
+    # 3. Concat all pieces, then keep a PR when its repo is in the REPOS
+    #    allowlist OR its owner is a FULL_ORGS (review-the-whole-org) owner.
+    #    The FULL_ORGS arm is what lets a newly-created repo in a full-coverage
+    #    org be reviewed without a manifest edit; the REPOS arm keeps partial
+    #    orgs (e.g. cncorp) scoped to specific repos. Both arms also guard the
+    #    batched ORG search from surfacing a repo we don't actually track.
+    local tracked_json full_orgs_json='[]'
     tracked_json=$(printf '%s\n' "${REPOS[@]}" | jq -R . | jq -s .)
+    if declare -p FULL_ORGS >/dev/null 2>&1 && [ "${#FULL_ORGS[@]}" -gt 0 ]; then
+        full_orgs_json=$(printf '%s\n' "${FULL_ORGS[@]}" | jq -R . | jq -s .)
+    fi
     if [ ${#pieces[@]} -eq 0 ]; then
         echo "[]"
         return 0
     fi
-    printf '%s\n' "${pieces[@]}" | jq -s --argjson tracked "$tracked_json" \
-        'add // [] | map(select(.repository.nameWithOwner as $r | $tracked | index($r)))'
+    printf '%s\n' "${pieces[@]}" | jq -s \
+        --argjson tracked "$tracked_json" --argjson full_orgs "$full_orgs_json" \
+        'add // [] | map(select(
+            .repository.nameWithOwner as $r
+            | ($tracked | index($r)) or ($full_orgs | index($r | split("/")[0]))
+        ))'
 }
 
 _bot_activity_graphql_query='query($q: String!, $after: String) {
@@ -138,7 +153,7 @@ repos_with_bot_activity_since() {
     for owner in "${ORGS[@]}"; do
         [ -n "${_seen_owners[$owner]:-}" ] && continue
         _seen_owners[$owner]=1
-        q="user:${owner} is:pr commenter:${bot} updated:>=${since}"
+        q="user:${owner} is:pr commenter:${bot} updated:>=${since} archived:false"
         after=""
         while :; do
             if [ -n "$after" ]; then
@@ -154,15 +169,23 @@ repos_with_bot_activity_since() {
         done
     done
     if [ ${#pieces[@]} -eq 0 ]; then return 0; fi
-    local t r
+    local t r o
+    declare -A _full=()
     for t in "${REPOS[@]}"; do _tracked["$t"]=1; done
+    # Same coverage rule as enumerate_open_prs: a repo counts as tracked when
+    # it's in REPOS OR its owner is a FULL_ORGS owner — so learn/bakeoff
+    # discovery follows the same full-org coverage as the review path.
+    if declare -p FULL_ORGS >/dev/null 2>&1 && [ "${#FULL_ORGS[@]}" -gt 0 ]; then
+        for o in "${FULL_ORGS[@]}"; do _full["$o"]=1; done
+    fi
     # Process-substitution (not a pipe) so the loop runs in this shell and the
     # function's exit status is the explicit `return 0` below — NOT the loop's
     # last-body status, which is 1 whenever the final repo is untracked (the
     # `[ ] && printf` short-circuits false). A non-zero return here would trip
     # the caller's `set -e` on `out=$(repos_with_bot_activity_since …)`.
     while IFS= read -r r; do
-        [ -n "${_tracked[$r]:-}" ] && printf '%s\n' "$r"
+        o="${r%%/*}"
+        { [ -n "${_tracked[$r]:-}" ] || [ -n "${_full[$o]:-}" ]; } && printf '%s\n' "$r"
     done < <(printf '%s\n' "${pieces[@]}" | grep -v '^$' | sort -u)
     return 0
 }
