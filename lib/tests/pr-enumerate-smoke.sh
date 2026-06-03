@@ -146,6 +146,9 @@ export MOCK_PR_LIST_cncorp_plow='[{"number":642,"title":"x","headRefName":"feat/
   assert_eq "scenario 4b page-2 PR present" "true" \
     "$(echo "$out" | jq 'any(.repository.nameWithOwner == "plow-pbc/page2")')"
   assert_eq "scenario 4b made 2 graphql calls" 2 "$(grep -c '^graphql ' "$STUB_CALL_LOG")"
+  # The 2nd call must carry the EXACT endCursor from page 1 (E1), not just any
+  # non-empty after — proves the cursor is plumbed through, not faked.
+  assert_eq "scenario 4b 2nd call uses page-1 endCursor" 1 "$(grep -c 'after=E1' "$STUB_CALL_LOG")"
 )
 
 # ---- scenario 5a: gh graphql failure → non-zero, no stdout ----

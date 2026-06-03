@@ -236,6 +236,20 @@ for c in "${CONSUMERS[@]}"; do
     grep -q 'tracked-repos\.sh' "$f" || { echo "FAIL C: $c does not source lib/tracked-repos.sh"; exit 1; }
 done
 
+# Startup-guard call-site fencing: the PR-enumeration entrypoints accept an
+# ORGS-only config (require_tracked_targets — ORGS = whole-org review), while
+# the per-repo calibration timers require REPOS (require_repos — REPOS-only,
+# clean opt-out on empty). The split is load-bearing; a refactor that swapped
+# a calibration timer onto require_tracked_targets would make it run with no
+# REPOS to walk, so pin which guard each side calls.
+echo "  C-guard: review entrypoints use require_tracked_targets; calibration uses require_repos..."
+for c in review.sh approve-from-replies.sh re-request-poller.sh; do
+    grep -q 'require_tracked_targets' "$PROJECT_ROOT/$c" || { echo "FAIL C-guard: $c must call require_tracked_targets (ORGS-or-REPOS)"; exit 1; }
+done
+for c in learn-from-replies.sh specialist-bakeoff.sh; do
+    grep -q 'require_repos' "$PROJECT_ROOT/$c" || { echo "FAIL C-guard: $c must call require_repos (REPOS-only calibration)"; exit 1; }
+done
+
 # ----- Contract D: install.sh bootstrap + symlink delivery ----------------
 # install.sh has two install paths:
 #   D.1) repos.conf missing — bootstrap from .example, exit before
