@@ -35,6 +35,13 @@ RUN curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${
 # uv (python tool runner used by plow `just test`)
 RUN curl -fsSL https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 
+# vulture: invoked by a reviewed repo's .knightwatch/dead-code.sh (the dead-code
+# static pre-pass). install.sh installs it on the host; the container was
+# missing it, so the pre-pass exit-127'd (`xargs: vulture: No such file`) and the
+# dead-code angle ran degraded on every PR. Same 2.16 pin as install.sh; bin into
+# /usr/local/bin so it's on the review-loop PATH.
+RUN UV_TOOL_BIN_DIR=/usr/local/bin uv tool install 'vulture==2.16'
+
 # codex CLI (npm global) — the gpt-5.5 reviewer agents. Pinned so a rebuild
 # can't change reviewer behavior outside the PR diff (matches GH/JUST/DOCKER pins).
 RUN npm install -g "@openai/codex@${CODEX_CLI_VERSION}"
