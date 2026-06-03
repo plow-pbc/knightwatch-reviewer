@@ -680,19 +680,25 @@ class TestValidateCriticOutput(unittest.TestCase):
         self.assertIsNone(pipeline._validate_critic_output(spec, crit))
 
     def test_strip_orphan_critic_probes(self):
-        """Surplus critic blocks (ids not in the specialist's probe set) are
-        removed; the H2 header and every in-set resolution are preserved."""
+        """A *mid-list* orphan is removed while the in-set probe AFTER it
+        survives intact — exercising the regex's `(?=^### Probe |\\Z)` boundary
+        (a regression that over-consumed into the following block, e.g. losing
+        the lazy quantifier or the lookahead, would pass an orphan-last suite).
+        The H2 header and every in-set resolution are preserved."""
         crit = (
             "## Critic counter-arguments\n\n"
             "### Probe 1\n- **Answer:** yes\n- **Evidence:** x\n\n"
-            "### Probe 2\n- **Answer:** no\n- **Evidence:** y\n"
+            "### Probe 2\n- **Answer:** no\n- **Evidence:** y\n\n"  # orphan, mid-list
+            "### Probe 3\n- **Answer:** yes\n- **Evidence:** z\n"
         )
-        cleaned = pipeline._strip_orphan_critic_probes(crit, {"1"})
+        cleaned = pipeline._strip_orphan_critic_probes(crit, {"1", "3"})
         self.assertIn("## Critic counter-arguments", cleaned)
         self.assertIn("### Probe 1", cleaned)
         self.assertIn("**Evidence:** x", cleaned)
-        self.assertNotIn("### Probe 2", cleaned)
+        self.assertNotIn("### Probe 2", cleaned)   # mid-list orphan gone
         self.assertNotIn("**Evidence:** y", cleaned)
+        self.assertIn("### Probe 3", cleaned)       # block after the orphan intact
+        self.assertIn("**Evidence:** z", cleaned)
 
     def test_strip_orphan_critic_probes_noop_when_all_in_set(self):
         """No surplus → text is returned unchanged (no spurious rewriting)."""
