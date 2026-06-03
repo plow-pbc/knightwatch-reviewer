@@ -664,20 +664,43 @@ class TestValidateCriticOutput(unittest.TestCase):
         self.assertIsNotNone(err)
         self.assertIn("Evidence", err)
 
-    def test_critic_with_extra_probe_block_returns_error(self):
-        """Critic must NOT emit probe ids the specialist didn't —
-        cross-angle/generated probes are the aggregator's job. Bijection
-        contract: spec_probe_ids must equal crit_probe_ids exactly."""
+    def test_critic_with_extra_probe_block_is_tolerated(self):
+        """A surplus `### Probe N` the specialist didn't raise is NOT a
+        failure — it's a stale id carried in from prior-review / pr-comments
+        context (shared `Probe N` namespace), and the specialist's own probes
+        are all resolved. Validation passes; the surplus is stripped before
+        layering (see test_strip_orphan_critic_probes). Previously this aborted
+        the whole review via rc=4 — a cosmetic over-emission nuking 7 angles."""
         spec = "### Probe 1\n- **From:** security\n"
         crit = (
             "## Critic counter-arguments\n\n"
             "### Probe 1\n- **Answer:** yes\n- **Evidence:** x\n\n"
             "### Probe 2\n- **Answer:** no\n- **Evidence:** y\n"
         )
-        err = pipeline._validate_critic_output(spec, crit)
-        self.assertIsNotNone(err)
-        self.assertIn("not in specialist", err)
-        self.assertIn("'2'", err)
+        self.assertIsNone(pipeline._validate_critic_output(spec, crit))
+
+    def test_strip_orphan_critic_probes(self):
+        """Surplus critic blocks (ids not in the specialist's probe set) are
+        removed; the H2 header and every in-set resolution are preserved."""
+        crit = (
+            "## Critic counter-arguments\n\n"
+            "### Probe 1\n- **Answer:** yes\n- **Evidence:** x\n\n"
+            "### Probe 2\n- **Answer:** no\n- **Evidence:** y\n"
+        )
+        cleaned = pipeline._strip_orphan_critic_probes(crit, {"1"})
+        self.assertIn("## Critic counter-arguments", cleaned)
+        self.assertIn("### Probe 1", cleaned)
+        self.assertIn("**Evidence:** x", cleaned)
+        self.assertNotIn("### Probe 2", cleaned)
+        self.assertNotIn("**Evidence:** y", cleaned)
+
+    def test_strip_orphan_critic_probes_noop_when_all_in_set(self):
+        """No surplus → text is returned unchanged (no spurious rewriting)."""
+        crit = (
+            "## Critic counter-arguments\n\n"
+            "### Probe 1\n- **Answer:** yes\n- **Evidence:** x\n"
+        )
+        self.assertEqual(pipeline._strip_orphan_critic_probes(crit, {"1"}), crit)
 
     def test_specialist_with_duplicate_probe_ids_returns_error(self):
         """Specialist emitting two `### Probe 1` blocks would let set(...)

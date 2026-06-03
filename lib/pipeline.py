@@ -401,11 +401,14 @@ def _duplicate_ids(ids: list[str]) -> list[str]:
 
 
 def _validate_critic_output(spec_text: str, crit_text: str) -> str | None:
-    """Validate critic output against the specialist's probes. Bijection
-    contract: critic addresses every specialist probe by ID with Answer +
-    Evidence, never emits a probe id the specialist didn't, OR emits the
-    bare 'No probes.' sentinel when the specialist had zero probes.
-    Returns None on success, an error message on failure."""
+    """Validate critic output against the specialist's probes: the critic
+    must address every specialist probe by ID with Answer + Evidence, OR emit
+    the bare 'No probes.' sentinel when the specialist had zero probes.
+    Surplus probe ids the specialist didn't raise are NOT a violation — they're
+    stale ids the model carries in from prior-review / pr-comments context
+    (the `### Probe N` token namespace is shared across the staged files) and
+    are stripped before layering by `_strip_orphan_critic_probes`, not aborted
+    on. Returns None on success, an error message on failure."""
     spec_probe_id_list = _PROBE_HEADER_RE.findall(spec_text)
     spec_dupes = _duplicate_ids(spec_probe_id_list)
     if spec_dupes:
@@ -441,9 +444,6 @@ def _validate_critic_output(spec_text: str, crit_text: str) -> str | None:
     missing = spec_probe_ids - crit_probe_ids
     if missing:
         return f"critic missing resolution for probe(s): {sorted(missing, key=int)}"
-    extra = crit_probe_ids - spec_probe_ids
-    if extra:
-        return f"critic emitted probe(s) not in specialist: {sorted(extra, key=int)}"
 
     for probe_id in sorted(spec_probe_ids, key=int):
         section_match = re.search(
@@ -459,6 +459,21 @@ def _validate_critic_output(spec_text: str, crit_text: str) -> str | None:
             return f"critic probe {probe_id} missing **Evidence:** field"
 
     return None
+
+
+def _strip_orphan_critic_probes(crit_text: str, spec_probe_ids: set[str]) -> str:
+    """Remove `### Probe N` blocks whose id isn't in the specialist's probe
+    set, leaving the H2 header and every in-set resolution intact. Surplus
+    blocks are stale ids the critic carried in from prior-review / pr-comments
+    context; dropping them keeps the layered file a clean bijection with the
+    specialist's probes. A no-op (returns the text unchanged) when there's no
+    surplus."""
+    return re.sub(
+        r"^### Probe (\d+)\b.*?(?=^### Probe |\Z)",
+        lambda m: m.group(0) if m.group(1) in spec_probe_ids else "",
+        crit_text,
+        flags=re.MULTILINE | re.DOTALL,
+    )
 
 
 def run_specialist(
@@ -535,6 +550,19 @@ def run_specialist(
             f"(see {crit_agent_dir}/output.md)"
         )
         return 4
+
+    # A critic may emit a stale `### Probe N` carried in from prior-review /
+    # pr-comments context (the `Probe N` token namespace is shared across the
+    # staged files). The specialist's own probes are all resolved, so this is
+    # surplus, not breakage — strip it rather than aborting the whole review.
+    # (Mirrors the rc=124 soft-degrade below: a non-fatal critic defect drops
+    # surplus; it doesn't nuke all 7 angles. Logged so the drop isn't silent.)
+    spec_probe_ids = set(_PROBE_HEADER_RE.findall(spec_out))
+    extra = set(_PROBE_HEADER_RE.findall(crit_out)) - spec_probe_ids
+    if extra:
+        log(f"{pr_id}: critic-{specialist} emitted surplus probe(s) "
+            f"{sorted(extra, key=int)} not in specialist — stripping")
+        crit_out = _strip_orphan_critic_probes(crit_out, spec_probe_ids)
 
     layered = spec_out + "\n\n---\n\n" + crit_out
     (spec_agent_dir / "layered.md").write_text(layered)
