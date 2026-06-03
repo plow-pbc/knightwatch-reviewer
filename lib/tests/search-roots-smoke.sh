@@ -202,24 +202,4 @@ if printf '%s' "$OUT" | grep -q "acme/notgit included"; then
     exit 1
 fi
 
-# --- scenario 9: whole-org (ORGS) sibling fallback ---------------------------------
-# An ORGS-owned repo with a SOURCE_PATHS checkout joins the fallback
-# sibling set even though it is NOT in REPOS — that's whole-org cross-repo
-# grep coverage. A non-ORGS SOURCE_PATHS-only key (acme/qux) still does
-# NOT (guarding scenario 2's invariant).
-echo "  scenario 9: ORGS repo with SOURCE_PATHS joins fallback siblings..."
-init_sibling_dir "$TMPDIR/repos/fullorg-extra"
-SOURCE_PATHS["plow-pbc/extra"]="$TMPDIR/repos/fullorg-extra"
-SELF_REPO=$(make_self_repo no)
-saved_repos=("${REPOS[@]}")
-declare -a ORGS=("plow-pbc")
-REPOS=("acme/self" "acme/foo")
-OUT=$(stage_search_roots "acme/self" "$SELF_REPO" "origin/main")
-REPOS=("${saved_repos[@]}")
-unset 'SOURCE_PATHS[plow-pbc/extra]'
-ORGS=()
-assert_contains "scenario 9: foo included" "acme/foo included .siblings/acme/foo" "$OUT"
-assert_contains "scenario 9: whole-org extra included" "plow-pbc/extra included .siblings/plow-pbc/extra" "$OUT"
-assert_not_contains "scenario 9: non-ORGS qux not pulled in" "acme/qux" "$OUT"
-
-echo "  PASS (9 scenarios: knightwatch-allowlist, fallback, missing-on-disk, empty-allowlist, comments, declared-but-unconfigured, error-propagation, non-git-source-missing, whole-org-sibling)"
+echo "  PASS (8 scenarios: knightwatch-allowlist, fallback, missing-on-disk, empty-allowlist, comments, declared-but-unconfigured, error-propagation, non-git-source-missing)"

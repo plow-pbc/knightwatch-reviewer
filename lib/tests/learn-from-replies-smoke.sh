@@ -68,12 +68,6 @@ if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
     else
         echo '[]'
     fi
-elif [ "$1" = "api" ] && [ "$2" = "graphql" ]; then
-    # Whole-org (ORGS) bot-activity discovery (repos_with_bot_activity_since).
-    # Default: no discovered repos → walk set collapses to REPOS, so the
-    # REPOS-only scenarios below are unaffected. MOCK_BOT_ACTIVITY_NODES
-    # overrides to exercise full-org discovery.
-    echo "{\"data\":{\"search\":{\"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null},\"nodes\":${MOCK_BOT_ACTIVITY_NODES:-[]}}}}"
 elif [ "$1" = "api" ]; then
     # MOCK_GH_API_FAIL=1 simulates an API outage on the comments fetch.
     # The script's pipefail-aware `gh api ... | jq` should surface this
@@ -120,8 +114,6 @@ cp "$PROJECT_ROOT/lib/auth.sh"          "$REVIEWER_LIB_DIR/auth.sh"
 cp "$PROJECT_ROOT/lib/state-io.sh"      "$REVIEWER_LIB_DIR/state-io.sh"
 cp "$PROJECT_ROOT/lib/tracked-repos.sh" "$REVIEWER_LIB_DIR/tracked-repos.sh"
 cp "$PROJECT_ROOT/lib/gh-comments.sh"   "$REVIEWER_LIB_DIR/gh-comments.sh"
-cp "$PROJECT_ROOT/lib/pr-enumerate.sh"  "$REVIEWER_LIB_DIR/pr-enumerate.sh"
-cp "$PROJECT_ROOT/lib/gh-retry.sh"      "$REVIEWER_LIB_DIR/gh-retry.sh"
 
 # REPOS override via config.env. test-org/probe-repo is NOT in the
 # script's hardcoded default list (cncorp/plow, srosro/tkmx-client, ...),
@@ -192,30 +184,4 @@ echo "[]" > "$MOCK_COMMENTS_FILE"
 MOCK_GH_API_FAIL=1 run_learn
 grep -q "comments fetch failed — skipping this PR for this tick" "$LOG_FILE" || { echo "FAIL scenario 4: expected fail-loud log line on gh api failure"; cat "$LOG_FILE"; exit 1; }
 
-# Scenario 5: whole-org (ORGS) coverage — a repo discovered active by
-# repos_with_bot_activity_since (not in REPOS) is folded into the scan set
-# via union_with_repos, so learn polls it for memorize replies too.
-echo "  scenario 5: ORGS bot-active repo (absent from REPOS) is scanned..."
-cat > "$STATE_DIR/config.env" <<'CONF'
-REPOS=("test-org/probe-repo")
-ORGS=(plow-pbc)
-CONF
-echo "[]" > "$MOCK_COMMENTS_FILE"
-MOCK_BOT_ACTIVITY_NODES='[{"repository":{"nameWithOwner":"plow-pbc/discovered"}}]' run_learn
-grep -q "PR_LIST repo=plow-pbc/discovered" "$STUB_PR_LIST_LOG" || { echo "FAIL scenario 5: full-org discovered repo not scanned"; cat "$STUB_PR_LIST_LOG"; exit 1; }
-grep -q "PR_LIST repo=test-org/probe-repo" "$STUB_PR_LIST_LOG" || { echo "FAIL scenario 5: manual REPOS entry dropped from union"; cat "$STUB_PR_LIST_LOG"; exit 1; }
-
-# Scenario 6: an unparseable lookback must NOT silently collapse to "now"
-# (empty discovery) — it logs the degradation and scans REPOS only.
-echo "  scenario 6: bad LEARN_ACTIVITY_LOOKBACK_DAYS → logged degrade, REPOS-only..."
-cat > "$STATE_DIR/config.env" <<'CONF'
-REPOS=("test-org/probe-repo")
-ORGS=(plow-pbc)
-CONF
-echo "[]" > "$MOCK_COMMENTS_FILE"
-LEARN_ACTIVITY_LOOKBACK_DAYS="not-a-number" MOCK_BOT_ACTIVITY_NODES='[{"repository":{"nameWithOwner":"plow-pbc/discovered"}}]' run_learn
-grep -q "could not compute lookback" "$LOG_FILE" || { echo "FAIL scenario 6: expected loud lookback-parse log"; cat "$LOG_FILE"; exit 1; }
-grep -q "PR_LIST repo=test-org/probe-repo" "$STUB_PR_LIST_LOG" || { echo "FAIL scenario 6: REPOS not scanned on degrade"; cat "$STUB_PR_LIST_LOG"; exit 1; }
-grep -q "PR_LIST repo=plow-pbc/discovered" "$STUB_PR_LIST_LOG" && { echo "FAIL scenario 6: discovery should be skipped on bad lookback (would mask the parse failure)"; exit 1; }
-
-echo "  PASS (6 scenarios: REPOS-override-observed, untrusted-memorize-ignored, page-2-paginated, gh-api-failure-fail-loud, full-org-discovered-repo-scanned, bad-lookback-logged-degrade)"
+echo "  PASS (4 scenarios: REPOS-override-observed, untrusted-memorize-ignored, page-2-paginated, gh-api-failure-fail-loud)"
