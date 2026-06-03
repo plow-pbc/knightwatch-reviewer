@@ -555,7 +555,8 @@ def run_specialist(
         crit_out, flags=re.MULTILINE | re.DOTALL,
     )
     if deorphaned != crit_out:
-        log(f"{pr_id}: critic-{specialist} stripped surplus probe(s) not in specialist")
+        dropped = sorted(set(_PROBE_HEADER_RE.findall(crit_out)) - spec_probe_ids, key=int)
+        log(f"{pr_id}: critic-{specialist} stripped surplus probe(s) {dropped} not in specialist")
         crit_out = deorphaned
 
     layered = spec_out + "\n\n---\n\n" + crit_out
