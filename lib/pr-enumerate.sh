@@ -36,8 +36,9 @@
 # srosro repos into 1 call per owner (~3 pts each), keeping cncorp/* on
 # per-repo because those orgs are only partially tracked.
 
-_enumerate_graphql_query='query($q: String!) {
-  search(query: $q, type: ISSUE, first: 100) {
+_enumerate_graphql_query='query($q: String!, $after: String) {
+  search(query: $q, type: ISSUE, first: 100, after: $after) {
+    pageInfo { hasNextPage endCursor }
     nodes {
       ... on PullRequest {
         number title headRefName headRefOid updatedAt
@@ -60,21 +61,35 @@ enumerate_open_prs() {
     local pieces=() owner repo raw nodes
     declare -A _seen_owners=()
 
-    # 1. ORGS-batched path: one graphql call per fully-tracked owner.
+    # 1. ORGS-batched path: paginated graphql search per fully-tracked owner.
+    #    Paged (not just first:100) because a FULL_ORGS owner claims whole-org
+    #    coverage — a >100-open-PR org would otherwise silently miss page 2.
+    #    archived:false mirrors org-sync's `gh repo list --no-archived`: never
+    #    review an archived repo's stale open PRs (read-only; nothing to do).
+    #    Residual cap (unaddressed): GitHub's search connection returns at most
+    #    1000 results total regardless of cursoring, so an org with >1000 open
+    #    PRs would still truncate. Far beyond the current operating point (tens
+    #    per org); noted so "never miss page 2" isn't read as "never miss any".
+    local after
     for owner in "${ORGS[@]}"; do
         [ -n "${_seen_owners[$owner]:-}" ] && continue
         _seen_owners[$owner]=1
-        # archived:false mirrors org-sync's `gh repo list --no-archived`: a
-        # FULL_ORGS owner's coverage must not pull in an archived repo's stale
-        # open PRs (archived = read-only; nothing to review). Harmless for the
-        # REPOS-allowlist path too — we never want to review an archived repo.
-        if ! raw=$(gh api graphql \
-                -F q="user:${owner} is:pr is:open archived:false" \
-                -f query="$_enumerate_graphql_query" 2>/dev/null); then
-            return 1
-        fi
-        nodes=$(printf '%s' "$raw" | jq -c '.data.search.nodes // []') || return 1
-        pieces+=("$nodes")
+        after=""
+        while :; do
+            if [ -n "$after" ]; then
+                raw=$(gh api graphql -F q="user:${owner} is:pr is:open archived:false" \
+                        -F after="$after" -f query="$_enumerate_graphql_query" 2>/dev/null) || return 1
+            else
+                raw=$(gh api graphql -F q="user:${owner} is:pr is:open archived:false" \
+                        -f query="$_enumerate_graphql_query" 2>/dev/null) || return 1
+            fi
+            nodes=$(printf '%s' "$raw" | jq -c '.data.search.nodes // []') || return 1
+            pieces+=("$nodes")
+            # endCursor only when there is a next page (else empty → stop). A
+            # malformed hasNextPage-without-cursor stops too, not loop forever.
+            after=$(printf '%s' "$raw" | jq -r '.data.search.pageInfo // {} | if .hasNextPage then (.endCursor // empty) else empty end') || return 1
+            [ -n "$after" ] || break
+        done
     done
 
     # 2. Per-repo fallthrough for manual entries in non-ORGS namespaces.
@@ -153,7 +168,7 @@ repos_with_bot_activity_since() {
     for owner in "${ORGS[@]}"; do
         [ -n "${_seen_owners[$owner]:-}" ] && continue
         _seen_owners[$owner]=1
-        q="user:${owner} is:pr commenter:${bot} updated:>=${since}"
+        q="user:${owner} is:pr commenter:${bot} updated:>=${since} archived:false"
         after=""
         while :; do
             if [ -n "$after" ]; then
@@ -169,21 +184,34 @@ repos_with_bot_activity_since() {
         done
     done
     if [ ${#pieces[@]} -eq 0 ]; then return 0; fi
-    local t r
+    local t r o
+    declare -A _full=()
     for t in "${REPOS[@]}"; do _tracked["$t"]=1; done
+    # Same coverage rule as enumerate_open_prs: a discovered repo counts when
+    # it's in REPOS OR its owner is a FULL_ORGS owner — so the calibration
+    # consumers (learn-from-replies, specialist-bakeoff) discover the same
+    # full-org universe the review path reviews.
+    if declare -p FULL_ORGS >/dev/null 2>&1 && [ "${#FULL_ORGS[@]}" -gt 0 ]; then
+        for o in "${FULL_ORGS[@]}"; do _full["$o"]=1; done
+    fi
     # Process-substitution (not a pipe) so the loop runs in this shell and the
     # function's exit status is the explicit `return 0` below — NOT the loop's
     # last-body status, which is 1 whenever the final repo is untracked (the
     # `[ ] && printf` short-circuits false). A non-zero return here would trip
     # the caller's `set -e` on `out=$(repos_with_bot_activity_since …)`.
-    #
-    # Stays REPOS-only (NOT extended to FULL_ORGS): the sole consumer,
-    # specialist-bakeoff.sh, walks `${REPOS[@]}` and uses this set only to
-    # skip inactive repos — so full-org calibration coverage needs a matching
-    # bakeoff change and is deferred to a focused follow-up. The review path
-    # (enumerate_open_prs) is where FULL_ORGS coverage lives.
     while IFS= read -r r; do
-        [ -n "${_tracked[$r]:-}" ] && printf '%s\n' "$r"
+        o="${r%%/*}"
+        { [ -n "${_tracked[$r]:-}" ] || [ -n "${_full[$o]:-}" ]; } && printf '%s\n' "$r"
     done < <(printf '%s\n' "${pieces[@]}" | grep -v '^$' | sort -u)
     return 0
+}
+
+# union_with_repos — read discovered repo slugs on stdin and print the
+# sorted-unique union with the static REPOS allowlist. The one shared
+# "tracked-target expansion" seam for per-repo bot-activity walks: both
+# calibration consumers (learn-from-replies, specialist-bakeoff) feed it the
+# repos_with_bot_activity_since result so each walks REPOS plus the FULL_ORGS
+# repos discovered as active — the same universe the review path reviews.
+union_with_repos() {
+    { printf '%s\n' "${REPOS[@]}"; cat; } | grep -v '^$' | sort -u
 }

@@ -69,9 +69,29 @@ stage_search_roots() {
             done <<< "$sibling_list"
             ;;
         1)
-            # ABSENT: default to all tracked REPOS minus self
+            # ABSENT: default to the REPOS allowlist, PLUS any FULL_ORGS repo
+            # the operator gave a SOURCE_PATHS checkout (so a full-org repo can
+            # join the cross-repo grep surface without a REPOS entry) — minus
+            # self. Partial-org setups have no FULL_ORGS owners, so the second
+            # loop adds nothing and the set stays exactly REPOS. We add only
+            # FULL_ORGS-owned SOURCE_PATHS keys, not every key — a SOURCE_PATHS
+            # entry for a non-tracked repo is not implicitly a sibling.
+            local _fo
+            declare -A _seen_sib=() _full_set=()
+            if declare -p FULL_ORGS >/dev/null 2>&1 && [ "${#FULL_ORGS[@]}" -gt 0 ]; then
+                for _fo in "${FULL_ORGS[@]}"; do _full_set["$_fo"]=1; done
+            fi
             for sibling_repo in "${REPOS[@]}"; do
                 [ "$sibling_repo" = "$repo" ] && continue
+                [ -n "${_seen_sib[$sibling_repo]:-}" ] && continue
+                _seen_sib[$sibling_repo]=1
+                siblings+=("$sibling_repo")
+            done
+            for sibling_repo in "${!SOURCE_PATHS[@]}"; do
+                [ -n "${_full_set[${sibling_repo%%/*}]:-}" ] || continue
+                [ "$sibling_repo" = "$repo" ] && continue
+                [ -n "${_seen_sib[$sibling_repo]:-}" ] && continue
+                _seen_sib[$sibling_repo]=1
                 siblings+=("$sibling_repo")
             done
             ;;

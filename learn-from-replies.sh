@@ -33,7 +33,11 @@ CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
 # goes through.
 REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 . "$REVIEWER_LIB_DIR/tracked-repos.sh"
-[ ${#REPOS[@]} -ge 1 ] || { echo "FATAL: no tracked repos — populate $STATE_DIR/repos.conf or set REPOS in config.env" >&2; exit 1; }
+require_tracked_targets
+# Discovery window for FULL_ORGS bot-active repos (below). Memorize replies
+# land soon after a review, so a modest lookback catches them; the
+# REPLIES_SEEN dedup makes re-scanning idempotent regardless.
+LEARN_ACTIVITY_LOOKBACK_DAYS="${LEARN_ACTIVITY_LOOKBACK_DAYS:-30}"
 BOT_USER="${BOT_USER:-srosro}"
 BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
 BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
@@ -43,6 +47,7 @@ BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-pos
 . "$REVIEWER_LIB_DIR/auth.sh"
 . "$REVIEWER_LIB_DIR/state-io.sh"
 . "$REVIEWER_LIB_DIR/gh-comments.sh"
+. "$REVIEWER_LIB_DIR/pr-enumerate.sh"
 
 [ -f "$REPLIES_SEEN_FILE" ] || echo '{}' > "$REPLIES_SEEN_FILE"
 
@@ -59,7 +64,24 @@ REPLIES=""
 REPLIES_META_FILE=$(mktemp)
 trap 'rm -f "$REPLIES_META_FILE"' EXIT
 
-for REPO in "${REPOS[@]}"; do
+# Scan set = manual REPOS ∪ FULL_ORGS repos with recent bot activity, via the
+# shared union_with_repos seam (same universe specialist-bakeoff walks). A
+# discovery outage degrades to REPOS-only rather than aborting the memorize
+# scan; the REPLIES_SEEN dedup keeps re-scanning idempotent.
+if ! _activity_since=$(date -u -d "${LEARN_ACTIVITY_LOOKBACK_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null); then
+    # No silent collapse to "now": a non-numeric LEARN_ACTIVITY_LOOKBACK_DAYS or
+    # a non-GNU `date` makes the window unparseable. Surface it (vs masquerading
+    # as an empty discovery) and scan REPOS only this tick.
+    log "could not compute lookback from LEARN_ACTIVITY_LOOKBACK_DAYS='${LEARN_ACTIVITY_LOOKBACK_DAYS}' (need GNU date + numeric value) — scanning REPOS only this tick"
+    mapfile -t _scan_repos < <(union_with_repos </dev/null)
+elif _active=$(repos_with_bot_activity_since "$_activity_since" "$BOT_USER" 2>>"$LOG_FILE"); then
+    mapfile -t _scan_repos < <(printf '%s\n' "$_active" | union_with_repos)
+else
+    log "bot-activity discovery failed — scanning REPOS only this tick"
+    mapfile -t _scan_repos < <(union_with_repos </dev/null)
+fi
+
+for REPO in "${_scan_repos[@]}"; do
     # Same fail-loud-then-skip pattern as the comments fetch below: an
     # outage on `gh pr list` shouldn't look like "this repo had no PRs"
     # in the operator's journal.

@@ -32,7 +32,7 @@ BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-pos
 
 REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 . "$REVIEWER_LIB_DIR/tracked-repos.sh"
-[ ${#REPOS[@]} -ge 1 ] || { echo "FATAL: no tracked repos — populate $STATE_DIR/repos.conf or set REPOS in config.env" >&2; exit 1; }
+require_tracked_targets
 
 . "$REVIEWER_LIB_DIR/bakeoff-parsers.sh"
 . "$REVIEWER_LIB_DIR/bakeoff-store.sh"
@@ -85,7 +85,12 @@ fi
 declare -A active_repos=()
 while IFS= read -r _ar; do [ -n "$_ar" ] && active_repos["$_ar"]=1; done <<< "$active_list"
 
-for repo in "${REPOS[@]}"; do
+# Walk set = manual REPOS ∪ the FULL_ORGS repos discovered active above
+# (union_with_repos — the shared tracked-target expansion seam). Inactive
+# full-org repos never enter the set; the inactive-ORG skip below still
+# retires stale rows for any ORG-owned repo that lingers in REPOS.
+mapfile -t _walk < <(printf '%s\n' "${!active_repos[@]}" | union_with_repos)
+for repo in "${_walk[@]}"; do
     # Skip ORG repos with no bot activity since the floor (batched discovery
     # above). Stamp the skipped repo's walks row 0/0 at the discovery pass time
     # so a stale row can't pin the next run's floor (min last_walked_at) or
