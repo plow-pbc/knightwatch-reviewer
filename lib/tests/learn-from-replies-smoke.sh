@@ -69,7 +69,7 @@ if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
         echo '[]'
     fi
 elif [ "$1" = "api" ] && [ "$2" = "graphql" ]; then
-    # FULL_ORGS bot-activity discovery (repos_with_bot_activity_since).
+    # Whole-org (ORGS) bot-activity discovery (repos_with_bot_activity_since).
     # Default: no discovered repos → walk set collapses to REPOS, so the
     # REPOS-only scenarios below are unaffected. MOCK_BOT_ACTIVITY_NODES
     # overrides to exercise full-org discovery.
@@ -192,14 +192,13 @@ echo "[]" > "$MOCK_COMMENTS_FILE"
 MOCK_GH_API_FAIL=1 run_learn
 grep -q "comments fetch failed — skipping this PR for this tick" "$LOG_FILE" || { echo "FAIL scenario 4: expected fail-loud log line on gh api failure"; cat "$LOG_FILE"; exit 1; }
 
-# Scenario 5: FULL_ORGS coverage — a repo discovered active by
+# Scenario 5: whole-org (ORGS) coverage — a repo discovered active by
 # repos_with_bot_activity_since (not in REPOS) is folded into the scan set
 # via union_with_repos, so learn polls it for memorize replies too.
-echo "  scenario 5: FULL_ORGS bot-active repo (absent from REPOS) is scanned..."
+echo "  scenario 5: ORGS bot-active repo (absent from REPOS) is scanned..."
 cat > "$STATE_DIR/config.env" <<'CONF'
 REPOS=("test-org/probe-repo")
 ORGS=(plow-pbc)
-FULL_ORGS=(plow-pbc)
 CONF
 echo "[]" > "$MOCK_COMMENTS_FILE"
 MOCK_BOT_ACTIVITY_NODES='[{"repository":{"nameWithOwner":"plow-pbc/discovered"}}]' run_learn
@@ -212,7 +211,6 @@ echo "  scenario 6: bad LEARN_ACTIVITY_LOOKBACK_DAYS → logged degrade, REPOS-o
 cat > "$STATE_DIR/config.env" <<'CONF'
 REPOS=("test-org/probe-repo")
 ORGS=(plow-pbc)
-FULL_ORGS=(plow-pbc)
 CONF
 echo "[]" > "$MOCK_COMMENTS_FILE"
 LEARN_ACTIVITY_LOOKBACK_DAYS="not-a-number" MOCK_BOT_ACTIVITY_NODES='[{"repository":{"nameWithOwner":"plow-pbc/discovered"}}]' run_learn

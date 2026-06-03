@@ -34,7 +34,7 @@ CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
 REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 . "$REVIEWER_LIB_DIR/tracked-repos.sh"
 require_tracked_targets
-# Discovery window for FULL_ORGS bot-active repos (below). Memorize replies
+# Discovery window for whole-org (ORGS) bot-active repos (below). Memorize replies
 # land soon after a review, so a modest lookback catches them; the
 # REPLIES_SEEN dedup makes re-scanning idempotent regardless.
 LEARN_ACTIVITY_LOOKBACK_DAYS="${LEARN_ACTIVITY_LOOKBACK_DAYS:-30}"
@@ -64,7 +64,7 @@ REPLIES=""
 REPLIES_META_FILE=$(mktemp)
 trap 'rm -f "$REPLIES_META_FILE"' EXIT
 
-# Scan set = manual REPOS ∪ FULL_ORGS repos with recent bot activity, via the
+# Scan set = manual REPOS ∪ whole-org (ORGS) repos with recent bot activity, via the
 # shared union_with_repos seam (same universe specialist-bakeoff walks). A
 # discovery outage degrades to REPOS-only rather than aborting the memorize
 # scan; the REPLIES_SEEN dedup keeps re-scanning idempotent.

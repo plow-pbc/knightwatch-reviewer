@@ -49,26 +49,20 @@ declare -A SOURCE_PATHS=(
     ["your-org/example-repo"]="$HOME/Hacking/example-repo"
 )
 
-# Orgs auto-synced hourly by org-sync.sh / pr-reviewer-org-sync.timer.
-# Each entry is a GitHub org name (NOT org/repo). For each org, the
-# sync runs `gh repo list <org> --source --no-archived` (excludes
-# archived + forks), clones any missing repos into
-# $HOME/services/kwr-repos/<name>, and writes the resulting
-# auto-tracked set to a separate file — $STATE_DIR/repos.conf.auto —
-# that lib/tracked-repos.sh sources after this one. We never write
-# THIS file. Leave ORGS empty to disable auto-sync entirely (and to
-# truncate any prior repos.conf.auto).
+# Orgs reviewed in FULL — the whole-org config alongside the per-repo REPOS
+# allowlist above. Each entry is a GitHub org name (NOT org/repo). Every
+# non-archived open PR in an ORGS owner is eligible, with no per-repo REPOS
+# entry required: a repo created later is reviewed the moment it has a PR, no
+# manifest edit. lib/pr-enumerate.sh covers each ORGS owner with ONE batched
+# `search(user:<org> is:pr is:open archived:false)` per tick — it does NOT
+# fan out per-repo (that would scale GitHub-quota cost with org size on every
+# poll). Partial orgs — where you want only specific repos reviewed (e.g.
+# cncorp/plow) — stay OUT of ORGS and list those repos in REPOS, which the
+# per-repo fallthrough fetches with a bounded `gh pr list`.
+#
+# org-sync.sh / pr-reviewer-org-sync.timer also use ORGS (host path only):
+# hourly `gh repo list <org> --source --no-archived`, cloning missing repos
+# into $HOME/services/kwr-repos/<name> for kid-prior-art. Leave ORGS empty
+# to disable both whole-org review and auto-sync.
+#   e.g. ORGS=(your-org)   # review every repo in your-org
 ORGS=()
-
-# Orgs reviewed in FULL — every open PR in the org is eligible, with no
-# per-repo REPOS entry required. This is the org-level coverage REPOS can
-# only approximate: list a repo in FULL_ORGS's org and a PR there is
-# reviewed the moment it exists, no manifest edit. lib/pr-enumerate.sh keeps
-# a batched-search result when its owner is in FULL_ORGS (in addition to the
-# REPOS allowlist). A FULL_ORGS owner MUST also appear in ORGS so its PRs are
-# actually searched (the batched `search(user:<org> is:pr is:open
-# archived:false)` only runs for ORGS owners). Partial orgs — where you want
-# only specific repos reviewed — stay OUT of FULL_ORGS and list those repos
-# in REPOS instead. Leave empty to keep the strict per-repo allowlist.
-#   e.g. FULL_ORGS=(your-org)   # review every repo in your-org
-FULL_ORGS=()

@@ -12,11 +12,10 @@
 #       updatedAt/author per PR.
 #   For each entry in REPOS whose owner is NOT in ORGS:
 #       gh pr list --repo OWNER/NAME --json … — fallthrough for
-#       partially-tracked owners (today: cncorp/plow, cncorp/plow-content).
-#   Concatenates results, post-filters against ${REPOS[@]} so a batched
-#   ORG search can't surface a repo we don't actually track (e.g. one
-#   removed from repos.conf.auto between org-sync ticks, or an archived
-#   repo whose pruning hasn't propagated yet).
+#       partially-tracked owners (today: cncorp/plow).
+#   Concatenates results with NO post-filter: ORGS owners are reviewed in
+#   FULL (every result is wanted), and the per-repo path only fetches the
+#   explicit non-ORGS REPOS entries — so nothing untracked is ever fetched.
 #
 # On success: prints one JSON array on stdout (possibly empty), exits 0.
 # Output shape per element:
@@ -61,11 +60,19 @@ enumerate_open_prs() {
     local pieces=() owner repo raw nodes
     declare -A _seen_owners=()
 
-    # 1. ORGS-batched path: paginated graphql search per fully-tracked owner.
-    #    Paged (not just first:100) because a FULL_ORGS owner claims whole-org
-    #    coverage — a >100-open-PR org would otherwise silently miss page 2.
+    # 1. ORGS-batched path: paginated graphql search per ORGS owner. ORGS are
+    #    reviewed in FULL, so one batched search per owner per tick covers the
+    #    whole org — it does NOT fan out per-repo (that would scale gh-quota
+    #    cost with org size on every poll). Paged (not just first:100) because
+    #    whole-org coverage of a >100-open-PR owner would otherwise miss page 2.
     #    archived:false mirrors org-sync's `gh repo list --no-archived`: never
     #    review an archived repo's stale open PRs (read-only; nothing to do).
+    #    It mirrors only HALF of org-sync's filter — there's no `--source`
+    #    equivalent, so an open PR on an org-owned FORK is in scope here even
+    #    though org-sync wouldn't clone it. Intended ("every open PR in the
+    #    org") and harmless at our operating point (source orgs, no forks with
+    #    open PRs); `fork:false` is NOT the fix — it's a repo/code-search
+    #    qualifier the issues index free-texts, which zeroes the results.
     #    Residual cap (unaddressed): GitHub's search connection returns at most
     #    1000 results total regardless of cursoring, so an org with >1000 open
     #    PRs would still truncate. Far beyond the current operating point (tens
@@ -108,27 +115,14 @@ enumerate_open_prs() {
         pieces+=("$nodes")
     done
 
-    # 3. Concat all pieces, then keep a PR when its repo is in the REPOS
-    #    allowlist OR its owner is a FULL_ORGS (review-the-whole-org) owner.
-    #    The FULL_ORGS arm is what lets a newly-created repo in a full-coverage
-    #    org be reviewed without a manifest edit; the REPOS arm keeps partial
-    #    orgs (e.g. cncorp) scoped to specific repos. Both arms also guard the
-    #    batched ORG search from surfacing a repo we don't actually track.
-    local tracked_json full_orgs_json='[]'
-    tracked_json=$(printf '%s\n' "${REPOS[@]}" | jq -R . | jq -s .)
-    if declare -p FULL_ORGS >/dev/null 2>&1 && [ "${#FULL_ORGS[@]}" -gt 0 ]; then
-        full_orgs_json=$(printf '%s\n' "${FULL_ORGS[@]}" | jq -R . | jq -s .)
-    fi
+    # 3. Concat all pieces. No post-filter needed: an ORGS owner is reviewed
+    #    in FULL (every result is wanted), and the per-repo fallthrough only
+    #    fetches explicit REPOS entries — so nothing untracked is ever fetched.
     if [ ${#pieces[@]} -eq 0 ]; then
         echo "[]"
         return 0
     fi
-    printf '%s\n' "${pieces[@]}" | jq -s \
-        --argjson tracked "$tracked_json" --argjson full_orgs "$full_orgs_json" \
-        'add // [] | map(select(
-            .repository.nameWithOwner as $r
-            | ($tracked | index($r)) or ($full_orgs | index($r | split("/")[0]))
-        ))'
+    printf '%s\n' "${pieces[@]}" | jq -s 'add // []'
 }
 
 _bot_activity_graphql_query='query($q: String!, $after: String) {
@@ -140,11 +134,11 @@ _bot_activity_graphql_query='query($q: String!, $after: String) {
 
 # repos_with_bot_activity_since SINCE_ISO BOT_USER
 #
-# Prints (newline-separated, deduped) the tracked ORG-owned repos that have a
-# PR the bot commented on and that was updated since SINCE_ISO — a paginated
-# gh api graphql search per ORG owner, vs a per-repo issues/comments fetch for
-# every tracked repo. Post-filtered against ${REPOS[@]}. Non-ORG owners (e.g.
-# cncorp/*) are NOT searched; callers walk those unconditionally.
+# Prints (newline-separated, deduped) the ORGS-owned repos that have a PR the
+# bot commented on and that was updated since SINCE_ISO — a paginated gh api
+# graphql search per ORGS owner. ORGS owners are reviewed in full, so every
+# discovered repo is wanted (no allowlist filter). Non-ORGS owners (e.g.
+# cncorp/*) are NOT searched; callers union these with REPOS (union_with_repos).
 #
 # Why: specialist-bakeoff.sh fans a paginated comments + collaborators fetch
 # across all ~45 tracked repos every run, exhausting the 5000/hr budget
@@ -164,7 +158,7 @@ repos_with_bot_activity_since() {
     # carries the dependency — enumerate_open_prs callers stay unburdened.
     . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-retry.sh"
     local since="$1" bot="$2" owner q raw after pieces=()
-    declare -A _seen_owners=() _tracked=()
+    declare -A _seen_owners=()
     for owner in "${ORGS[@]}"; do
         [ -n "${_seen_owners[$owner]:-}" ] && continue
         _seen_owners[$owner]=1
@@ -184,25 +178,18 @@ repos_with_bot_activity_since() {
         done
     done
     if [ ${#pieces[@]} -eq 0 ]; then return 0; fi
-    local t r o
-    declare -A _full=()
-    for t in "${REPOS[@]}"; do _tracked["$t"]=1; done
-    # Same coverage rule as enumerate_open_prs: a discovered repo counts when
-    # it's in REPOS OR its owner is a FULL_ORGS owner — so the calibration
-    # consumers (learn-from-replies, specialist-bakeoff) discover the same
-    # full-org universe the review path reviews.
-    if declare -p FULL_ORGS >/dev/null 2>&1 && [ "${#FULL_ORGS[@]}" -gt 0 ]; then
-        for o in "${FULL_ORGS[@]}"; do _full["$o"]=1; done
-    fi
-    # Process-substitution (not a pipe) so the loop runs in this shell and the
-    # function's exit status is the explicit `return 0` below — NOT the loop's
-    # last-body status, which is 1 whenever the final repo is untracked (the
-    # `[ ] && printf` short-circuits false). A non-zero return here would trip
-    # the caller's `set -e` on `out=$(repos_with_bot_activity_since …)`.
-    while IFS= read -r r; do
-        o="${r%%/*}"
-        { [ -n "${_tracked[$r]:-}" ] || [ -n "${_full[$o]:-}" ]; } && printf '%s\n' "$r"
-    done < <(printf '%s\n' "${pieces[@]}" | grep -v '^$' | sort -u)
+    # Every searched owner is in ORGS (reviewed in full), so all discovered
+    # repos are wanted — just dedupe and emit. Callers union with REPOS.
+    #
+    # `|| true` is load-bearing: on empty discovery (a common, expected
+    # outcome — quiet window, fresh deploy) every page appends "" to pieces,
+    # so the count guard above doesn't fire, and `grep -v '^$'` then matches
+    # nothing and exits 1. Under the callers' `set -euo pipefail`
+    # (specialist-bakeoff.sh, learn-from-replies.sh) that 1 would abort the
+    # command-substitution subshell BEFORE the explicit `return 0`, making a
+    # successful empty discovery look like an API failure. Absorb it so the
+    # documented "prints possibly-empty set, exits 0" contract holds.
+    printf '%s\n' "${pieces[@]}" | grep -v '^$' | sort -u || true
     return 0
 }
 
@@ -210,8 +197,8 @@ repos_with_bot_activity_since() {
 # sorted-unique union with the static REPOS allowlist. The one shared
 # "tracked-target expansion" seam for per-repo bot-activity walks: both
 # calibration consumers (learn-from-replies, specialist-bakeoff) feed it the
-# repos_with_bot_activity_since result so each walks REPOS plus the FULL_ORGS
-# repos discovered as active — the same universe the review path reviews.
+# repos_with_bot_activity_since result so each walks REPOS plus the ORGS repos
+# discovered as active — the same universe the review path reviews.
 union_with_repos() {
     { printf '%s\n' "${REPOS[@]}"; cat; } | grep -v '^$' | sort -u
 }

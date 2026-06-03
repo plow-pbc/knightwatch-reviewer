@@ -85,7 +85,7 @@ fi
 declare -A active_repos=()
 while IFS= read -r _ar; do [ -n "$_ar" ] && active_repos["$_ar"]=1; done <<< "$active_list"
 
-# Walk set = manual REPOS ∪ the FULL_ORGS repos discovered active above
+# Walk set = manual REPOS ∪ the ORGS repos discovered active above
 # (union_with_repos — the shared tracked-target expansion seam). Inactive
 # full-org repos never enter the set; the inactive-ORG skip below still
 # retires stale rows for any ORG-owned repo that lingers in REPOS.

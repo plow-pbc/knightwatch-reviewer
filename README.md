@@ -116,19 +116,18 @@ The tracked-repo manifest is split into a committed template ([`repos.conf.examp
 
 ```sh
 # Whole-org coverage: review every non-archived open PR in the org,
-# including repos created later — no manifest edit per new repo. A
-# FULL_ORGS owner MUST also be in ORGS (that's what gets it searched).
+# including repos created later — no manifest edit per new repo. One
+# batched search per org per tick (not a per-repo fan-out).
 ORGS=(your-org)
-FULL_ORGS=(your-org)
 
 # Per-repo allowlist: for partially-tracked orgs where you want only
-# specific repos reviewed (leave such an org OUT of FULL_ORGS).
+# specific repos reviewed (leave such an org OUT of ORGS).
 REPOS=(
     "other-org/just-this-repo"
 )
 ```
 
-The host auxiliary timers pick it up on their next tick. **The containerized review loop reads a separate manifest** — `docker/secrets/repos.conf` (mounted at `/shared/repos.conf`), polled every 30s — so edit *that* copy to change which repos the fleet reviews. Set `FULL_ORGS` (+ matching `ORGS`) there for whole-org coverage; reserve `REPOS` for specific repos in partially-tracked orgs. `SOURCE_PATHS` in the same file enables cross-repo grep/search-roots and `KID_PATHS` wires kid-prior-art lookup. Per-repo policy (product context, review priority, sibling allowlist, dead-code command, strict-typing command) lives in each tracked repo's `.knightwatch/` directory and is read from the base branch via `lib/knightwatch-config.sh`. See the inline comments in [`repos.conf.example`](repos.conf.example) for shapes and `lib/tracked-repos.sh` for the loader.
+The host auxiliary timers pick it up on their next tick. **The containerized review loop reads a separate manifest** — `docker/secrets/repos.conf` (mounted at `/shared/repos.conf`), polled every 30s — so edit *that* copy to change which repos the fleet reviews. Set `ORGS` there for whole-org coverage; reserve `REPOS` for specific repos in partially-tracked orgs. `SOURCE_PATHS` in the same file enables cross-repo grep/search-roots and `KID_PATHS` wires kid-prior-art lookup. Per-repo policy (product context, review priority, sibling allowlist, dead-code command, strict-typing command) lives in each tracked repo's `.knightwatch/` directory and is read from the base branch via `lib/knightwatch-config.sh`. See the inline comments in [`repos.conf.example`](repos.conf.example) for shapes and `lib/tracked-repos.sh` for the loader.
 
 ## Use on a PR
 

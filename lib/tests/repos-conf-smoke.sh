@@ -128,53 +128,25 @@ rm -f "$SAND_STATE/repos.conf" "$SAND_STATE/config.env"
 out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; REPO=cncorp/nonexistent; echo \"v=[\${KID_PATHS[\$REPO]:-}]\"" 2>&1)
 [ "$out" = "v=[]" ] || { echo "FAIL B4: loader output: $out"; exit 1; }
 
-echo "  B4-fullorgs-ok: FULL_ORGS ⊆ ORGS loads cleanly..."
-cat > "$SAND_STATE/repos.conf" <<'CONF'
-REPOS=("acme/foo")
-declare -A KID_PATHS=([acme/foo]=/x/foo)
-ORGS=(acme widgets)
-FULL_ORGS=(acme)
-CONF
-out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; echo \"FULL_ORGS=\${FULL_ORGS[0]}\"" 2>&1)
-[ "$out" = "FULL_ORGS=acme" ] || { echo "FAIL B4-fullorgs-ok: loader output: $out"; exit 1; }
-
-echo "  B4-fullorgs-fail: FULL_ORGS owner absent from ORGS fails loud (non-zero + FATAL line)..."
-# A full-org owner that isn't searched (not in ORGS) would silently cover
-# nothing — the loader must abort, not under-cover quietly.
-cat > "$SAND_STATE/repos.conf" <<'CONF'
-REPOS=("acme/foo")
-declare -A KID_PATHS=([acme/foo]=/x/foo)
-ORGS=(acme)
-FULL_ORGS=(acme widgets)
-CONF
-if out=$(STATE_DIR="$SAND_STATE" bash -c ". '$LOADER'; echo SHOULD_NOT_REACH" 2>&1); then
-    echo "FAIL B4-fullorgs-fail: loader exited 0 (expected non-zero); output: $out"; exit 1
-fi
-printf '%s' "$out" | grep -q 'FATAL: FULL_ORGS owner(s) not in ORGS' || { echo "FAIL B4-fullorgs-fail: missing FATAL line; output: $out"; exit 1; }
-printf '%s' "$out" | grep -q 'widgets' || { echo "FAIL B4-fullorgs-fail: FATAL line omits the offending owner; output: $out"; exit 1; }
-printf '%s' "$out" | grep -q 'SHOULD_NOT_REACH' && { echo "FAIL B4-fullorgs-fail: loader continued past the abort; output: $out"; exit 1; }
-rm -f "$SAND_STATE/repos.conf"
-
 # require_tracked_targets — the startup guard shared by the PR-enumeration
 # entry scripts (review.sh / approve-from-replies.sh / re-request-poller.sh).
-# Locks the contract that a FULL_ORGS-only manifest (no REPOS) is satisfiable,
-# and that a wholly-empty manifest still fails loud.
-echo "  B4-targets-fullorgs-only: require_tracked_targets accepts FULL_ORGS with empty REPOS..."
+# Locks the contract that a whole-org (ORGS-only, no REPOS) manifest is
+# satisfiable, and that a wholly-empty manifest still fails loud.
+echo "  B4-targets-orgs-only: require_tracked_targets accepts ORGS with empty REPOS..."
 cat > "$SAND_STATE/repos.conf" <<'CONF'
 ORGS=(acme)
-FULL_ORGS=(acme)
 CONF
 out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; require_tracked_targets; echo OK" 2>&1)
-[ "$out" = "OK" ] || { echo "FAIL B4-targets-fullorgs-only: expected OK (guard should pass); output: $out"; exit 1; }
+[ "$out" = "OK" ] || { echo "FAIL B4-targets-orgs-only: expected OK (guard should pass); output: $out"; exit 1; }
 
-echo "  B4-targets-repos-only: require_tracked_targets accepts REPOS with empty FULL_ORGS..."
+echo "  B4-targets-repos-only: require_tracked_targets accepts REPOS with empty ORGS..."
 cat > "$SAND_STATE/repos.conf" <<'CONF'
 REPOS=("acme/foo")
 CONF
 out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; require_tracked_targets; echo OK" 2>&1)
 [ "$out" = "OK" ] || { echo "FAIL B4-targets-repos-only: expected OK; output: $out"; exit 1; }
 
-echo "  B4-targets-empty: require_tracked_targets aborts loud when neither REPOS nor FULL_ORGS is set..."
+echo "  B4-targets-empty: require_tracked_targets aborts loud when neither REPOS nor ORGS is set..."
 rm -f "$SAND_STATE/repos.conf"   # both arrays empty
 if out=$(STATE_DIR="$SAND_STATE" bash -c ". '$LOADER'; require_tracked_targets; echo SHOULD_NOT_REACH" 2>&1); then
     echo "FAIL B4-targets-empty: guard exited 0 (expected non-zero); output: $out"; exit 1
