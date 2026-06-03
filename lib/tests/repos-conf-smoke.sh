@@ -155,6 +155,33 @@ printf '%s' "$out" | grep -q 'widgets' || { echo "FAIL B4-fullorgs-fail: FATAL l
 printf '%s' "$out" | grep -q 'SHOULD_NOT_REACH' && { echo "FAIL B4-fullorgs-fail: loader continued past the abort; output: $out"; exit 1; }
 rm -f "$SAND_STATE/repos.conf"
 
+# require_tracked_targets — the startup guard shared by the PR-enumeration
+# entry scripts (review.sh / approve-from-replies.sh / re-request-poller.sh).
+# Locks the contract that a FULL_ORGS-only manifest (no REPOS) is satisfiable,
+# and that a wholly-empty manifest still fails loud.
+echo "  B4-targets-fullorgs-only: require_tracked_targets accepts FULL_ORGS with empty REPOS..."
+cat > "$SAND_STATE/repos.conf" <<'CONF'
+ORGS=(acme)
+FULL_ORGS=(acme)
+CONF
+out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; require_tracked_targets; echo OK" 2>&1)
+[ "$out" = "OK" ] || { echo "FAIL B4-targets-fullorgs-only: expected OK (guard should pass); output: $out"; exit 1; }
+
+echo "  B4-targets-repos-only: require_tracked_targets accepts REPOS with empty FULL_ORGS..."
+cat > "$SAND_STATE/repos.conf" <<'CONF'
+REPOS=("acme/foo")
+CONF
+out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; require_tracked_targets; echo OK" 2>&1)
+[ "$out" = "OK" ] || { echo "FAIL B4-targets-repos-only: expected OK; output: $out"; exit 1; }
+
+echo "  B4-targets-empty: require_tracked_targets aborts loud when neither REPOS nor FULL_ORGS is set..."
+rm -f "$SAND_STATE/repos.conf"   # both arrays empty
+if out=$(STATE_DIR="$SAND_STATE" bash -c ". '$LOADER'; require_tracked_targets; echo SHOULD_NOT_REACH" 2>&1); then
+    echo "FAIL B4-targets-empty: guard exited 0 (expected non-zero); output: $out"; exit 1
+fi
+printf '%s' "$out" | grep -q 'FATAL: no tracked targets' || { echo "FAIL B4-targets-empty: missing FATAL line; output: $out"; exit 1; }
+printf '%s' "$out" | grep -q 'SHOULD_NOT_REACH' && { echo "FAIL B4-targets-empty: continued past abort; output: $out"; exit 1; }
+
 echo "  B5: repos.conf.auto consumer — manual wins, stale auto KID_PATHS get convention-defaulted..."
 # Pin the split-file manifest contract:
 #   - Loader sources both files and exposes the merged view.

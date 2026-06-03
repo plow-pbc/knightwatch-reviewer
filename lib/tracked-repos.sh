@@ -102,6 +102,20 @@ if [ "${#FULL_ORGS[@]}" -gt 0 ]; then
     unset _missing _fo _o _in
 fi
 
+# Startup guard for the PR-enumeration entry scripts (review.sh,
+# approve-from-replies.sh, re-request-poller.sh): they enumerate via
+# enumerate_open_prs, which honors FULL_ORGS, so a non-empty REPOS OR a
+# non-empty FULL_ORGS is a satisfiable config. Emits a FATAL line and
+# exits when neither is set — one copy of the message, called by all
+# three (learn-from-replies / specialist-bakeoff do per-repo walks and
+# keep their own REPOS-only guard inline).
+require_tracked_targets() {
+    [ "${#REPOS[@]}" -ge 1 ] || [ "${#FULL_ORGS[@]}" -ge 1 ] || {
+        echo "FATAL: no tracked targets — populate $STATE_DIR/repos.conf with REPOS and/or FULL_ORGS (or set them in config.env)" >&2
+        exit 1
+    }
+}
+
 # Auto-clone root for org-sync-discovered repos. Single source of truth
 # for the convention path — org-sync.sh's clone dest, install.sh's
 # systemd template substitution, the org-sync systemd unit's

@@ -153,7 +153,7 @@ repos_with_bot_activity_since() {
     for owner in "${ORGS[@]}"; do
         [ -n "${_seen_owners[$owner]:-}" ] && continue
         _seen_owners[$owner]=1
-        q="user:${owner} is:pr commenter:${bot} updated:>=${since} archived:false"
+        q="user:${owner} is:pr commenter:${bot} updated:>=${since}"
         after=""
         while :; do
             if [ -n "$after" ]; then
@@ -169,23 +169,21 @@ repos_with_bot_activity_since() {
         done
     done
     if [ ${#pieces[@]} -eq 0 ]; then return 0; fi
-    local t r o
-    declare -A _full=()
+    local t r
     for t in "${REPOS[@]}"; do _tracked["$t"]=1; done
-    # Same coverage rule as enumerate_open_prs: a repo counts as tracked when
-    # it's in REPOS OR its owner is a FULL_ORGS owner — so learn/bakeoff
-    # discovery follows the same full-org coverage as the review path.
-    if declare -p FULL_ORGS >/dev/null 2>&1 && [ "${#FULL_ORGS[@]}" -gt 0 ]; then
-        for o in "${FULL_ORGS[@]}"; do _full["$o"]=1; done
-    fi
     # Process-substitution (not a pipe) so the loop runs in this shell and the
     # function's exit status is the explicit `return 0` below — NOT the loop's
     # last-body status, which is 1 whenever the final repo is untracked (the
     # `[ ] && printf` short-circuits false). A non-zero return here would trip
     # the caller's `set -e` on `out=$(repos_with_bot_activity_since …)`.
+    #
+    # Stays REPOS-only (NOT extended to FULL_ORGS): the sole consumer,
+    # specialist-bakeoff.sh, walks `${REPOS[@]}` and uses this set only to
+    # skip inactive repos — so full-org calibration coverage needs a matching
+    # bakeoff change and is deferred to a focused follow-up. The review path
+    # (enumerate_open_prs) is where FULL_ORGS coverage lives.
     while IFS= read -r r; do
-        o="${r%%/*}"
-        { [ -n "${_tracked[$r]:-}" ] || [ -n "${_full[$o]:-}" ]; } && printf '%s\n' "$r"
+        [ -n "${_tracked[$r]:-}" ] && printf '%s\n' "$r"
     done < <(printf '%s\n' "${pieces[@]}" | grep -v '^$' | sort -u)
     return 0
 }

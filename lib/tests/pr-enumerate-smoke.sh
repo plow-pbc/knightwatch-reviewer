@@ -179,7 +179,7 @@ export MOCK_PR_LIST_FAIL=1
 # 6a: single ORG, search returns active repos (with a dup) → deduped, tracked-only.
 : > "$STUB_CALL_LOG"
 S6_SINCE="2026-05-01T00:00:00Z"
-s6q="user:plow-pbc is:pr commenter:testbot updated:>=$S6_SINCE archived:false"
+s6q="user:plow-pbc is:pr commenter:testbot updated:>=$S6_SINCE"
 export "MOCK_GRAPHQL_${s6q//[^A-Za-z0-9]/_}"='{"data":{"search":{"nodes":[
     {"repository":{"nameWithOwner":"plow-pbc/seed"}},
     {"repository":{"nameWithOwner":"plow-pbc/seed"}},
@@ -216,7 +216,7 @@ unset MOCK_GRAPHQL_FAIL
 # 6d: pages past first:100 — a repo whose only match is on page 2 is still found.
 : > "$STUB_CALL_LOG"
 S6D_SINCE="2026-05-02T00:00:00Z"
-s6dq="user:plow-pbc is:pr commenter:testbot updated:>=$S6D_SINCE archived:false"
+s6dq="user:plow-pbc is:pr commenter:testbot updated:>=$S6D_SINCE"
 export "MOCK_GRAPHQL_${s6dq//[^A-Za-z0-9]/_}"='{"data":{"search":{"pageInfo":{"hasNextPage":true,"endCursor":"CUR1"},"nodes":[{"repository":{"nameWithOwner":"plow-pbc/page1repo"}}]}}}'
 export MOCK_GRAPHQL_AFTER='{"data":{"search":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"repository":{"nameWithOwner":"plow-pbc/page2repo"}}]}}}'
 ( REPOS=("plow-pbc/page1repo" "plow-pbc/page2repo"); ORGS=("plow-pbc")
@@ -226,26 +226,5 @@ export MOCK_GRAPHQL_AFTER='{"data":{"search":{"pageInfo":{"hasNextPage":false,"e
   assert_eq "6d made 2 graphql calls" 2 "$(grep -c '^graphql ' "$STUB_CALL_LOG")"
 )
 unset MOCK_GRAPHQL_AFTER
-
-# 6e: FULL_ORGS owner → a bot-active repo absent from REPOS is still kept, so
-#     learn/bakeoff discovery follows the same org-level coverage as reviews.
-#     Same fixture as 6a (seed + seed-1password), REPOS lists only seed.
-: > "$STUB_CALL_LOG"
-( REPOS=("plow-pbc/seed"); ORGS=("plow-pbc"); FULL_ORGS=("plow-pbc")
-  source "$PROJECT_ROOT/lib/pr-enumerate.sh"
-  out=$(repos_with_bot_activity_since "$S6_SINCE" "testbot")
-  assert_eq "6e full-org keeps repo absent from REPOS" \
-    $'plow-pbc/seed\nplow-pbc/seed-1password' "$(echo "$out" | sort)"
-)
-
-# 6f: FULL_ORGS naming a DIFFERENT org does not widen the searched org —
-#     mirrors scenario 8 for the discovery path. seed-1password (owner
-#     plow-pbc, not in FULL_ORGS=cncorp, not in REPOS) stays dropped.
-: > "$STUB_CALL_LOG"
-( REPOS=("plow-pbc/seed"); ORGS=("plow-pbc"); FULL_ORGS=("cncorp")
-  source "$PROJECT_ROOT/lib/pr-enumerate.sh"
-  out=$(repos_with_bot_activity_since "$S6_SINCE" "testbot")
-  assert_eq "6f unrelated FULL_ORGS does not widen" "plow-pbc/seed" "$out"
-)
 
 echo "ALL PASS: pr-enumerate-smoke.sh"

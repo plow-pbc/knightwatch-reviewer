@@ -38,7 +38,7 @@ MAX_CONCURRENT="${MAX_CONCURRENT:-4}"
 REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 . "$REVIEWER_LIB_DIR/tracked-repos.sh"
 . "$REVIEWER_LIB_DIR/gh-comments.sh"
-[ ${#REPOS[@]} -ge 1 ] || { echo "FATAL: no tracked repos — populate $STATE_DIR/repos.conf or set REPOS in config.env" >&2; exit 1; }
+require_tracked_targets
 # Container entrypoint (review-loop.sh) pins one in-flight review per account.
 # Re-assert AFTER config.env is sourced (just above, via tracked-repos.sh) so a
 # stray legacy MAX_CONCURRENT/WAIT_FOR_WORKERS in config.env can't silently break
