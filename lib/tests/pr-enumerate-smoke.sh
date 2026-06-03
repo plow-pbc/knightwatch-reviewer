@@ -223,4 +223,19 @@ export MOCK_GRAPHQL_AFTER='{"data":{"search":{"pageInfo":{"hasNextPage":false,"e
 )
 unset MOCK_GRAPHQL_AFTER
 
+# 6e: empty discovery (search returns zero nodes — quiet window / fresh deploy)
+#     → exit 0 with empty stdout, even under the callers' `set -o pipefail`
+#     (specialist-bakeoff.sh's `active_list=$(…)`). Load-bearing: an accidental
+#     non-zero return there aborts the run as a false PARTIAL.
+: > "$STUB_CALL_LOG"
+( set -o pipefail
+  REPOS=("plow-pbc/seed"); ORGS=("plow-pbc")   # no MOCK fixture for this query → stub returns []
+  source "$PROJECT_ROOT/lib/pr-enumerate.sh"
+  if out=$(repos_with_bot_activity_since "2030-01-01T00:00:00Z" "nobody"); then
+      assert_eq "6e empty discovery → empty stdout, exit 0" "" "$out"
+  else
+      echo "FAIL: 6e empty discovery exited non-zero under pipefail"; exit 1
+  fi
+)
+
 echo "ALL PASS: pr-enumerate-smoke.sh"

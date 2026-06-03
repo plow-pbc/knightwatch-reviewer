@@ -154,6 +154,23 @@ fi
 printf '%s' "$out" | grep -q 'FATAL: no tracked targets' || { echo "FAIL B4-targets-empty: missing FATAL line; output: $out"; exit 1; }
 printf '%s' "$out" | grep -q 'SHOULD_NOT_REACH' && { echo "FAIL B4-targets-empty: continued past abort; output: $out"; exit 1; }
 
+# require_repos — the calibration-timer guard (learn-from-replies / bakeoff).
+# Empty REPOS is a clean opt-out (exit 0, message on stderr); non-empty continues.
+echo "  B4-repos-empty: require_repos exits 0 (clean opt-out) on empty REPOS..."
+rm -f "$SAND_STATE/repos.conf"   # REPOS empty
+out=$(STATE_DIR="$SAND_STATE" bash -c ". '$LOADER'; require_repos; echo CONTINUED" 2>&1) \
+    || { echo "FAIL B4-repos-empty: require_repos exited non-zero (expected 0 opt-out); output: $out"; exit 1; }
+printf '%s' "$out" | grep -q 'CONTINUED' && { echo "FAIL B4-repos-empty: continued past require_repos on empty REPOS"; exit 1; }
+printf '%s' "$out" | grep -q 'per-repo calibration scans REPOS only' || { echo "FAIL B4-repos-empty: missing opt-out message; output: $out"; exit 1; }
+
+echo "  B4-repos-nonempty: require_repos continues when REPOS is set..."
+cat > "$SAND_STATE/repos.conf" <<'CONF'
+REPOS=("acme/foo")
+CONF
+out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; require_repos; echo CONTINUED" 2>&1)
+printf '%s' "$out" | grep -q 'CONTINUED' || { echo "FAIL B4-repos-nonempty: expected to continue past require_repos; output: $out"; exit 1; }
+rm -f "$SAND_STATE/repos.conf"
+
 echo "  B5: repos.conf.auto consumer — manual wins, stale auto KID_PATHS get convention-defaulted..."
 # Pin the split-file manifest contract:
 #   - Loader sources both files and exposes the merged view.

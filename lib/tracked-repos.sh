@@ -82,12 +82,24 @@ fi
 # enumerate_open_prs, which covers whole ORGS plus per-repo REPOS, so a
 # non-empty REPOS OR a non-empty ORGS is a satisfiable config. Emits a FATAL
 # line and exits when neither is set — one copy of the message, called by all
-# three (learn-from-replies / specialist-bakeoff do per-repo walks and keep
-# their own REPOS-only guard inline).
+# three (learn-from-replies / specialist-bakeoff do per-repo walks and use the
+# REPOS-only require_repos guard below instead).
 require_tracked_targets() {
     [ "${#REPOS[@]}" -ge 1 ] || [ "${#ORGS[@]}" -ge 1 ] || {
         echo "FATAL: no tracked targets — populate $STATE_DIR/repos.conf with REPOS and/or ORGS (or set them in config.env)" >&2
         exit 1
+    }
+}
+
+# Guard for the per-repo calibration timers (learn-from-replies.sh,
+# specialist-bakeoff.sh): these walk REPOS only — whole-org ORGS coverage is
+# the review path's, not theirs. An empty REPOS is a legitimate opt-out
+# ("nothing to calibrate"), NOT an error — so exit 0 cleanly (vs a FATAL that
+# would leave the timers as permanently-failed units on an ORGS-only manifest).
+require_repos() {
+    [ "${#REPOS[@]}" -ge 1 ] || {
+        echo "no REPOS configured — per-repo calibration scans REPOS only (ORGS covers the review path, not this); nothing to do this tick" >&2
+        exit 0
     }
 }
 
