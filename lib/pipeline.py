@@ -407,8 +407,8 @@ def _validate_critic_output(spec_text: str, crit_text: str) -> str | None:
     Surplus probe ids the specialist didn't raise are NOT a violation — they're
     stale ids the model carries in from prior-review / pr-comments context
     (the `### Probe N` token namespace is shared across the staged files) and
-    are stripped before layering by `_strip_orphan_critic_probes`, not aborted
-    on. Returns None on success, an error message on failure."""
+    are stripped before layering by run_specialist, not aborted on. Returns
+    None on success, an error message on failure."""
     spec_probe_id_list = _PROBE_HEADER_RE.findall(spec_text)
     spec_dupes = _duplicate_ids(spec_probe_id_list)
     if spec_dupes:
@@ -435,10 +435,9 @@ def _validate_critic_output(spec_text: str, crit_text: str) -> str | None:
     crit_probe_id_list = _PROBE_HEADER_RE.findall(crit_text)
     # A duplicate of a *real* specialist probe is genuinely ambiguous — two
     # conflicting resolutions for one probe — so it stays fatal. A duplicate of
-    # a surplus/orphan id is just more carried-in noise that
-    # `_strip_orphan_critic_probes` removes wholesale (re.sub drops every
-    # matching block), so don't abort on it; scoping the dupe gate to
-    # spec_probe_ids keeps a repeated stale `### Probe 2` from nuking the review.
+    # a surplus/orphan id is just more carried-in noise that run_specialist's
+    # de-orphan re.sub removes wholesale, so don't abort on it; scoping the dupe
+    # gate to spec_probe_ids keeps a repeated stale `### Probe 2` from nuking it.
     crit_dupes = _duplicate_ids([i for i in crit_probe_id_list if i in spec_probe_ids])
     if crit_dupes:
         return (
@@ -465,21 +464,6 @@ def _validate_critic_output(spec_text: str, crit_text: str) -> str | None:
             return f"critic probe {probe_id} missing **Evidence:** field"
 
     return None
-
-
-def _strip_orphan_critic_probes(crit_text: str, spec_probe_ids: set[str]) -> str:
-    """Remove `### Probe N` blocks whose id isn't in the specialist's probe
-    set, leaving the H2 header and every in-set resolution intact. Surplus
-    blocks are stale ids the critic carried in from prior-review / pr-comments
-    context; dropping them keeps the layered file a clean bijection with the
-    specialist's probes. A no-op (returns the text unchanged) when there's no
-    surplus."""
-    return re.sub(
-        r"^### Probe (\d+)\b.*?(?=^### Probe |\Z)",
-        lambda m: m.group(0) if m.group(1) in spec_probe_ids else "",
-        crit_text,
-        flags=re.MULTILINE | re.DOTALL,
-    )
 
 
 def run_specialist(
@@ -559,16 +543,20 @@ def run_specialist(
 
     # A critic may emit a stale `### Probe N` carried in from prior-review /
     # pr-comments context (the `Probe N` token namespace is shared across the
-    # staged files). The specialist's own probes are all resolved, so this is
-    # surplus, not breakage — strip it rather than aborting the whole review.
-    # (Mirrors the rc=124 soft-degrade below: a non-fatal critic defect drops
-    # surplus; it doesn't nuke all 7 angles. Logged so the drop isn't silent.)
+    # staged files). The specialist's own probes are all resolved, so surplus
+    # is noise, not breakage — drop those blocks (re.sub no-ops when there are
+    # none) so the layered file stays a clean bijection the aggregator can
+    # trust, rather than aborting all 7 angles. Mirrors the rc=124 soft-degrade
+    # below; logged so the drop isn't silent.
     spec_probe_ids = set(_PROBE_HEADER_RE.findall(spec_out))
-    extra = set(_PROBE_HEADER_RE.findall(crit_out)) - spec_probe_ids
-    if extra:
-        log(f"{pr_id}: critic-{specialist} emitted surplus probe(s) "
-            f"{sorted(extra, key=int)} not in specialist — stripping")
-        crit_out = _strip_orphan_critic_probes(crit_out, spec_probe_ids)
+    deorphaned = re.sub(
+        r"^### Probe (\d+)\b.*?(?=^### Probe |\Z)",
+        lambda m: m.group(0) if m.group(1) in spec_probe_ids else "",
+        crit_out, flags=re.MULTILINE | re.DOTALL,
+    )
+    if deorphaned != crit_out:
+        log(f"{pr_id}: critic-{specialist} stripped surplus probe(s) not in specialist")
+        crit_out = deorphaned
 
     layered = spec_out + "\n\n---\n\n" + crit_out
     (spec_agent_dir / "layered.md").write_text(layered)

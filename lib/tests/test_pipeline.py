@@ -668,9 +668,10 @@ class TestValidateCriticOutput(unittest.TestCase):
         """A surplus `### Probe N` the specialist didn't raise is NOT a
         failure — it's a stale id carried in from prior-review / pr-comments
         context (shared `Probe N` namespace), and the specialist's own probes
-        are all resolved. Validation passes; the surplus is stripped before
-        layering (see test_strip_orphan_critic_probes). Previously this aborted
-        the whole review via rc=4 — a cosmetic over-emission nuking 7 angles."""
+        are all resolved. Validation passes; run_specialist strips the surplus
+        before layering (TestRunSpecialist.test_critic_surplus_probe_stripped).
+        Previously this aborted the whole review via rc=4 — a cosmetic
+        over-emission nuking 7 angles."""
         spec = "### Probe 1\n- **From:** security\n"
         crit = (
             "## Critic counter-arguments\n\n"
@@ -679,40 +680,11 @@ class TestValidateCriticOutput(unittest.TestCase):
         )
         self.assertIsNone(pipeline._validate_critic_output(spec, crit))
 
-    def test_strip_orphan_critic_probes(self):
-        """A *mid-list* orphan is removed while the in-set probe AFTER it
-        survives intact — exercising the regex's `(?=^### Probe |\\Z)` boundary
-        (a regression that over-consumed into the following block, e.g. losing
-        the lazy quantifier or the lookahead, would pass an orphan-last suite).
-        The H2 header and every in-set resolution are preserved."""
-        crit = (
-            "## Critic counter-arguments\n\n"
-            "### Probe 1\n- **Answer:** yes\n- **Evidence:** x\n\n"
-            "### Probe 2\n- **Answer:** no\n- **Evidence:** y\n\n"  # orphan, mid-list
-            "### Probe 3\n- **Answer:** yes\n- **Evidence:** z\n"
-        )
-        cleaned = pipeline._strip_orphan_critic_probes(crit, {"1", "3"})
-        self.assertIn("## Critic counter-arguments", cleaned)
-        self.assertIn("### Probe 1", cleaned)
-        self.assertIn("**Evidence:** x", cleaned)
-        self.assertNotIn("### Probe 2", cleaned)   # mid-list orphan gone
-        self.assertNotIn("**Evidence:** y", cleaned)
-        self.assertIn("### Probe 3", cleaned)       # block after the orphan intact
-        self.assertIn("**Evidence:** z", cleaned)
-
-    def test_strip_orphan_critic_probes_noop_when_all_in_set(self):
-        """No surplus → text is returned unchanged (no spurious rewriting)."""
-        crit = (
-            "## Critic counter-arguments\n\n"
-            "### Probe 1\n- **Answer:** yes\n- **Evidence:** x\n"
-        )
-        self.assertEqual(pipeline._strip_orphan_critic_probes(crit, {"1"}), crit)
-
     def test_critic_duplicate_orphan_probe_is_tolerated(self):
         """A *repeated* surplus id (two `### Probe 2` blocks the specialist
         never raised) is still just orphan noise — the dupe gate is scoped to
-        spec_probe_ids so it doesn't abort, and the stripper removes both. A
-        duplicate of a *real* probe stays fatal (next test)."""
+        spec_probe_ids so it doesn't abort. A duplicate of a *real* probe stays
+        fatal (next test)."""
         spec = "### Probe 1\n- **From:** security\n"
         crit = (
             "## Critic counter-arguments\n\n"
@@ -721,8 +693,6 @@ class TestValidateCriticOutput(unittest.TestCase):
             "### Probe 2\n- **Answer:** no\n- **Evidence:** z\n"  # duplicate orphan
         )
         self.assertIsNone(pipeline._validate_critic_output(spec, crit))
-        cleaned = pipeline._strip_orphan_critic_probes(crit, {"1"})
-        self.assertNotIn("### Probe 2", cleaned)
 
     def test_specialist_with_duplicate_probe_ids_returns_error(self):
         """Specialist emitting two `### Probe 1` blocks would let set(...)
@@ -974,17 +944,20 @@ class TestRunSpecialist(unittest.TestCase):
 
     @patch("pipeline.subprocess.Popen")
     def test_critic_surplus_probe_stripped_not_aborted(self, mock_popen):
-        """Production-seam coverage for the carried-in stale probe: specialist
-        emits only Probe 1, critic resolves it AND re-emits an orphan Probe 2
-        (a stale id from prior-review context). run_specialist must succeed
-        (rc=0) with the orphan stripped from the layered file — not abort the
-        whole review. Regression guard for the cncorp/plow#796 abort loop."""
+        """Production-seam coverage for the carried-in stale probe (regression
+        guard for the cncorp/plow#796 abort loop). The orphan (`Probe 9`) sits
+        *between* two real resolutions, so this also exercises the strip regex's
+        `(?=^### Probe |\\Z)` boundary — the in-set `Probe 2` after it must
+        survive intact (an over-consuming regression would eat it). Specialist
+        raises Probe 1 + Probe 2; critic resolves both and re-emits a mid-list
+        orphan. run_specialist must succeed (rc=0) with only the orphan gone."""
         mock_popen.side_effect = _make_codex_stub({
-            "security": (0, "### Probe 1\nspecialist body\n"),
+            "security": (0, "### Probe 1\nbody\n\n### Probe 2\nbody\n"),
             "critic-security": (0,
                 "## Critic counter-arguments\n\n"
-                "### Probe 1\n- **Answer:** yes\n- **Evidence:** keep-me\n\n"
-                "### Probe 2\n- **Answer:** no\n- **Evidence:** orphan-drop-me\n"),
+                "### Probe 1\n- **Answer:** yes\n- **Evidence:** keep-1\n\n"
+                "### Probe 9\n- **Answer:** no\n- **Evidence:** orphan-drop-me\n\n"
+                "### Probe 2\n- **Answer:** yes\n- **Evidence:** keep-2\n"),
         })
         rc = pipeline.run_specialist(
             specialist="security",
@@ -996,8 +969,9 @@ class TestRunSpecialist(unittest.TestCase):
         layered = (self.run_dir / "agents" / "security" / "layered.md").read_text()
         scratch = (self.repo_dir / ".codex-scratch" / "specialists" / "security.md").read_text()
         self.assertEqual(layered, scratch)
-        self.assertIn("keep-me", layered)            # valid Probe 1 resolution survives
-        self.assertNotIn("### Probe 2", layered)     # orphan stripped
+        self.assertIn("keep-1", layered)             # resolution before the orphan
+        self.assertIn("keep-2", layered)             # resolution AFTER the orphan intact
+        self.assertNotIn("### Probe 9", layered)     # mid-list orphan stripped
         self.assertNotIn("orphan-drop-me", layered)
 
     @patch("pipeline.subprocess.Popen")
