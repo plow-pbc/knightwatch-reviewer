@@ -269,7 +269,21 @@ fi
 # pipeline) so untrusted content never reaches codex. Trusted (push-access)
 # authors review normally; the host (non-container) path is unaffected. Lifts
 # when the daemon is unprivileged. Reused below for the .env-mirror/just-test gate.
-if is_trusted_repo_author "$REPO" "$PR_AUTHOR"; then IS_TRUSTED_AUTHOR=true; else IS_TRUSTED_AUTHOR=false; fi
+# Tri-state trust (lib/auth.sh): 0=trusted, 1=definitively untrusted,
+# 2=indeterminate (403 rate-limit / 5xx / network — couldn't verify). An
+# indeterminate result must NEVER fall through to untrusted-and-skip: a
+# throttled lookup of a genuinely-trusted author (e.g. repo owner) would
+# silently drop their PR. Defer instead (exit 1, like the gh pr view / gh
+# repo view guards above) so the next tick re-checks once the throttle clears.
+is_trusted_repo_author "$REPO" "$PR_AUTHOR"; TRUST_RC=$?
+case "$TRUST_RC" in
+    0) IS_TRUSTED_AUTHOR=true ;;
+    *) IS_TRUSTED_AUTHOR=false ;;
+esac
+if [ "$TRUST_RC" -eq 2 ]; then
+    log "$PR_ID: trust check deferred — API error ($PR_AUTHOR); retrying next tick"
+    exit 1
+fi
 if [ -n "${REVIEWER_CONTAINER_MODE:-}" ] && [ "$IS_TRUSTED_AUTHOR" != true ]; then
     log "$PR_ID: skipping review — untrusted author ($PR_AUTHOR, no push access) in container mode (codex↔privileged-dind; trusted authors only until rootless dind)"
     exit 0

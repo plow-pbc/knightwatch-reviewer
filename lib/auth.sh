@@ -14,13 +14,45 @@
 #
 # Both gates call `is_trusted_repo_author REPO USER`. Trust is "has push
 # access" — `admin`, `write`, or `maintain` from the collaborators API.
-# Anything else (including 404 / non-collaborator) is untrusted.
+#
+# TRI-STATE by exit code (the 2>/dev/null swallow used to make a 403
+# rate-limit indistinguishable from "untrusted", silently skipping a
+# genuinely-trusted author while throttled):
+#   0 — trusted        : clean 200 + a push role (admin/write/maintain)
+#   1 — untrusted      : DEFINITIVELY not — clean 200 + non-push role, or a
+#                        404 non-collaborator (also: empty user)
+#   2 — indeterminate  : couldn't verify — 403/5xx/network, or any non-zero
+#                        gh exit that isn't a clean "not a collaborator"
+# Callers that only branch trusted/untrusted (`if is_trusted_repo_author`)
+# treat 2 as falsy → fail closed; the container gate in review-one-pr.sh
+# branches on 2 explicitly to DEFER (retry next tick) instead of mislabeling.
+#
+# Reuses gh_api_retry: it bounded-retries 5xx/network but intentionally NOT
+# 403 — exactly the "transient couldn't-verify vs definitive" split here.
+_AUTH_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$_AUTH_LIB_DIR/gh-retry.sh"  # gh_api_retry
 
 is_trusted_repo_author() {
     local repo="$1" user="$2"
     [ -z "$user" ] && return 1
-    local perm
-    perm=$(gh api "repos/$repo/collaborators/$user/permission" --jq '.permission' 2>/dev/null)
+    local perm err rc errfile
+    # Capture stdout (role), stderr (gh's error text), and the real exit code
+    # separately — no 2>/dev/null, so a 403/5xx is a non-zero rc we can read,
+    # not an empty body masquerading as untrusted. gh_api_retry routes gh's
+    # error text to stderr, so the 404 marker lives in $err on the fail path.
+    errfile=$(mktemp)
+    perm=$(gh_api_retry "repos/$repo/collaborators/$user/permission" --jq '.permission' 2>"$errfile"); rc=$?
+    err=$(cat "$errfile"); rm -f "$errfile"
+    if [ "$rc" -ne 0 ]; then
+        # Non-zero gh exit. A genuine non-collaborator returns 404 with a
+        # "Not Found"/HTTP 404 message → DEFINITIVELY untrusted. Any other
+        # failure (403 rate-limit, 5xx, network) → indeterminate, defer.
+        case "$err" in
+            *"HTTP 404"*|*"Not Found"*) return 1 ;;
+        esac
+        return 2
+    fi
+    # Clean 200. A push role is trusted; any other role is definitively not.
     case "$perm" in
         admin|write|maintain) return 0 ;;
         *) return 1 ;;

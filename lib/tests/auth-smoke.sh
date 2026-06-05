@@ -35,12 +35,16 @@ if [ "$1" = "api" ]; then
         case "$arg" in repos/*) endpoint="$arg" ;; esac
     done
     if [[ "$endpoint" == */collaborators/*/permission ]]; then
-        user="${endpoint##*/collaborators/}"
-        user="${user%/permission}"
-        for trusted in ${MOCK_TRUSTED_USERS:-}; do
-            if [ "$user" = "$trusted" ]; then echo "write"; exit 0; fi
-        done
-        echo "none"
+        # MOCK_PERM_MODE drives the tri-state matrix below. Mirrors how real
+        # `gh api` behaves per outcome: stdout = role (200), stderr + non-zero
+        # exit = API error. gh_api_retry passes both through to the caller.
+        case "${MOCK_PERM_MODE:-role}" in
+            403) echo "gh: HTTP 403: API rate limit exceeded" >&2; exit 1 ;;
+            5xx) echo "gh: HTTP 503: Service Unavailable" >&2; exit 1 ;;
+            empty) exit 1 ;;  # non-zero exit, no stdout/stderr (network drop)
+            404) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+            *) echo "${MOCK_PERM_ROLE:-none}" ;;  # clean 200 + role
+        esac
     else
         echo "{}"
     fi
@@ -65,12 +69,43 @@ reset_state() {
     : > "$GH_REVIEW_LOG"
 }
 
-# --- is_trusted_repo_author ---
-echo "  scenario 1: is_trusted_repo_author returns true for a write-access user..."
-MOCK_TRUSTED_USERS="srosro someuser" is_trusted_repo_author "cncorp/plow" "someuser" || { echo "FAIL scenario 1: expected trust"; exit 1; }
+# --- is_trusted_repo_author: tri-state by exit code ---
+#   0 = trusted (clean 200 + push role)
+#   1 = definitively untrusted (clean 200 + non-push role, OR a 404)
+#   2 = indeterminate (403 / 5xx / network — defer, never mislabel as untrusted)
+# Parametrized matrix: "label|MODE|ROLE|expected_rc" (no padding — fields are
+# split on the bare delimiter). MODE drives the gh stub above.
+# GH_API_RETRY_MAX=1 keeps the 5xx case from sleeping/retrying.
+echo "  scenario 1: is_trusted_repo_author tri-state matrix..."
+TRUST_MATRIX=(
+    "clean-200 admin|role|admin|0"
+    "clean-200 write|role|write|0"
+    "clean-200 maintain|role|maintain|0"
+    "clean-200 read (none)|role|none|1"
+    "clean-200 read (read)|role|read|1"
+    "404 non-collaborator|404||1"
+    "403 rate-limit|403||2"
+    "5xx server error|5xx||2"
+    "empty (network drop)|empty||2"
+)
+for row in "${TRUST_MATRIX[@]}"; do
+    IFS='|' read -r label mode role want <<<"$row"
+    set +e
+    GH_API_RETRY_MAX=1 MOCK_PERM_MODE="$mode" MOCK_PERM_ROLE="$role" \
+        is_trusted_repo_author "cncorp/plow" "someuser"
+    got=$?
+    set -e
+    [ "$got" = "$want" ] || { echo "FAIL scenario 1 [$label]: expected rc=$want, got rc=$got"; exit 1; }
+done
 
-echo "  scenario 2: is_trusted_repo_author returns false for a non-collaborator..."
-MOCK_TRUSTED_USERS="srosro" is_trusted_repo_author "cncorp/plow" "stranger" && { echo "FAIL scenario 2: expected no trust"; exit 1; } || true
+echo "  scenario 2: indeterminate (403) must NOT be trusted — security invariant..."
+# The load-bearing invariant: an indeterminate result must defer, never grant
+# trust. rc must be 2 (caller defers), and crucially NOT 0 (would run untrusted code).
+set +e
+GH_API_RETRY_MAX=1 MOCK_PERM_MODE=403 is_trusted_repo_author "cncorp/plow" "srosro"
+got=$?
+set -e
+[ "$got" = 2 ] || { echo "FAIL scenario 2: indeterminate must yield rc=2 (defer), got rc=$got"; exit 1; }
 
 echo "  scenario 3: is_trusted_repo_author returns false for empty user..."
 is_trusted_repo_author "cncorp/plow" "" && { echo "FAIL scenario 3: empty user should not be trusted"; exit 1; } || true
@@ -111,4 +146,4 @@ reason=$(just_test_skip_reason "" true)
 [ -n "$reason" ] || { echo "FAIL scenario 9: missing justfile should skip"; exit 1; }
 printf '%s' "$reason" | grep -qi "justfile" || { echo "FAIL scenario 9: skip reason should name the missing justfile, got: $reason"; exit 1; }
 
-echo "  PASS (9 scenarios: trust-yes, trust-no, trust-empty, approval-self-skipped, approval-success, approval-failure-fail-loud, just-test run/untrusted-skip/no-justfile)"
+echo "  PASS (9 scenarios: trust-tristate-matrix[9 rows: 3×trusted/2×untrusted/404/403/5xx/empty], indeterminate-defers-not-trusted, trust-empty, approval-self-skipped, approval-success, approval-failure-fail-loud, just-test run/untrusted-skip/no-justfile)"
