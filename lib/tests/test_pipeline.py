@@ -24,6 +24,13 @@ def setUpModule():
     os.environ["REPO_VISIBILITY"] = "private"
 
 
+def tearDownModule():
+    # Don't leak the module-scoped env mutation into other test modules that
+    # share this process under `unittest discover` — a later module asserting
+    # the unset case would otherwise silently pick up "private".
+    os.environ.pop("REPO_VISIBILITY", None)
+
+
 @contextmanager
 def _fast_watchdog(stale=0.1, poll=0.05, timeout=5.0):
     """Shrinks the watchdog constants for the duration of a `with` block.
