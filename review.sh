@@ -398,11 +398,13 @@ consume_queue() {
         # capped/offline account doesn't keep claiming + aborting later queued
         # PRs before the loop's top-of-tick check arms the longer pause/offline.
         if [ -n "${REVIEWER_CONTAINER_MODE:-}" ]; then
-            if quota_active; then
-                log "codex quota hit — stopping further claims this tick (paused until the reset window)"
-                break
-            elif auth_offline_active; then
+            # Fatal auth dominates quota (matches review-loop.sh / review-one-pr.sh):
+            # a 401-on-refresh never yields a usage cap, so auth-offline must win.
+            if auth_offline_active; then
                 log "codex auth invalid — stopping further claims this tick (worker offline until re-login)"
+                break
+            elif quota_active; then
+                log "codex quota hit — stopping further claims this tick (paused until the reset window)"
                 break
             fi
         fi
