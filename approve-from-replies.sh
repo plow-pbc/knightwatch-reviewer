@@ -118,12 +118,9 @@ while IFS= read -r PR_JSON; do
                 continue
                 ;;
         esac
-        # Trust gate (tri-state, lib/auth.sh): 0=trusted → approve;
-        # 1=definitively untrusted (drive-by) → record seen so we don't re-log
-        # every tick; 2=indeterminate (403 rate-limit / 5xx / network — couldn't
-        # verify) → DEFER: do NOT mark seen, so the next tick retries once the
-        # throttle clears. Marking an indeterminate result seen would permanently
-        # drop a genuine collaborator's approve made during a trust-check outage.
+        # Trust (lib/auth.sh tri-state): 0 → approve; 1 → ignore + mark seen;
+        # 2 (indeterminate) → defer, NOT seen, so the next tick retries —
+        # marking it seen would permanently drop a trusted approve under throttle.
         is_trusted_repo_author "$REPO" "$USER"; TRUST_RC=$?
         if [ "$TRUST_RC" -eq 2 ]; then
             log "$APPROVE_KEY: /${BOT_CMD_PREFIX}-approve trust check deferred — API error (@$USER); retrying next tick"

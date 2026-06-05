@@ -263,14 +263,9 @@ refresh_queue() {
                     # auto-approve path.
                     is_trusted_repo_author "$REPO" "$TRIGGER_USER"; TRIGGER_TRUST_RC=$?
                     if [ "$TRIGGER_TRUST_RC" -eq 2 ]; then
-                        # Indeterminate (403 rate-limit / 5xx / network — couldn't
-                        # verify): DEFER the whole PR this tick rather than running
-                        # the review WITHOUT the trusted trigger prose and then
-                        # advancing the cutoff past it (which would drop the
-                        # request). The trigger comment stays unconsumed
-                        # (created_at > reviewed_at), so the next tick retries once
-                        # the throttle clears. Mirrors the approve / container-gate
-                        # defer.
+                        # Indeterminate → defer this PR: don't run without the
+                        # trusted trigger prose and advance the cutoff past it
+                        # (dropping it). Trigger stays unconsumed → retried next tick.
                         log "$PR_ID: trigger from @$TRIGGER_USER — trust check deferred (API error); retrying next tick"
                         continue
                     fi
