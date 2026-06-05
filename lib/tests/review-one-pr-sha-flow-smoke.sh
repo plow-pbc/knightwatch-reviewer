@@ -53,6 +53,19 @@ write_gh_stub() {
     local stub_path="$1" base_ref="$2" head_oid="$3"
     cat > "$stub_path" <<STUB
 #!/bin/bash
+# Trust-permission endpoint: opt-in non-zero exit (simulates a 403 rate-limit on
+# the collaborators/permission check → an INDETERMINATE trust result). Default
+# unset → falls through to the no-output/exit-0 path below (a clean 200 with no
+# push role = definitively-untrusted), preserving every existing scenario.
+if [ -n "\${GH_STUB_PERMISSION_RC:-}" ]; then
+    for arg in "\$@"; do
+        case "\$arg" in
+            */collaborators/*/permission)
+                echo "gh: HTTP 403: API rate limit exceeded for user (simulated)" >&2
+                exit "\$GH_STUB_PERMISSION_RC" ;;
+        esac
+    done
+fi
 fields=""
 for ((i=1; i<=\$#; i++)); do
     if [ "\${!i}" = "--json" ]; then
@@ -687,7 +700,48 @@ if grep -q "posted reviewing placeholder" "$LOG5"; then
     exit 1
 fi
 
-echo "  PASS (5 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip)"
+# ===== Scenario 6: container-mode gate DEFERS on an indeterminate trust check =====
+# A 403/5xx/network failure of the collaborators/permission lookup (e.g. the
+# shared account is rate-limited) must NOT read as "untrusted" — that would
+# silently drop a genuinely-trusted author's PR. The worker defers (exit 1, like
+# the gh pr view / gh repo view guards) so the next tick retries once the
+# throttle clears. Same stub as scenario 5 but with the permission call forced to
+# a 403 (GH_STUB_PERMISSION_RC), flipping the trust result untrusted→indeterminate.
+echo "  scenario: container-mode gate DEFERS (exit 1) on an indeterminate trust check, no placeholder..."
+STATE_IND="$TMPDIR/state-ind"   # distinct dir — must not collide with later scenarios' STATE6
+seed_state_dir "$STATE_IND"
+write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"
+(
+    export STATE_DIR="$STATE_IND" STATE_FILE="$STATE_IND/state.json" REPOS_DIR="$STATE_IND/repos" \
+           WORKDIRS_DIR="$STATE_IND/workdirs" CANONICAL_LOCKS_DIR="$STATE_IND/canonical-locks" \
+           PR_REVIEW_LOCK_DIR="$STATE_IND/locks" REVIEWER_CONTAINER_MODE=1 GH_STUB_PERMISSION_RC=1
+    write_probe_repos_conf "$STATE_IND/repos.conf"
+    TRIGGER_COMMENT_FILE="" \
+        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
+        "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Indeterminate PR" "false" \
+        >/dev/null 2>&1
+)
+GATE_IND_EC=$?
+RUN_IND=$(find "$STATE_IND/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' | head -1)
+[ -n "$RUN_IND" ] || { echo "FAIL: indeterminate-defer — worker allocated no run-dir"; exit 1; }
+LOG_IND="$RUN_IND/run.log"
+if [ "$GATE_IND_EC" -ne 1 ]; then
+    echo "FAIL: indeterminate-defer — worker exited $GATE_IND_EC (expected 1 = defer on indeterminate trust)"
+    [ -f "$LOG_IND" ] && { echo "--- run.log ---"; cat "$LOG_IND"; }
+    exit 1
+fi
+if ! grep -q "trust check deferred" "$LOG_IND"; then
+    echo "FAIL: indeterminate-defer — run.log missing the 'trust check deferred' line"
+    [ -f "$LOG_IND" ] && { echo "--- run.log ---"; cat "$LOG_IND"; }
+    exit 1
+fi
+if grep -q "posted reviewing placeholder" "$LOG_IND"; then
+    echo "FAIL: indeterminate-defer — placeholder WAS posted (defer fired too late)"
+    cat "$LOG_IND"
+    exit 1
+fi
+
+echo "  PASS (6 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer)"
 
 # ===== Scenario 6: repeated transient aborts reuse one placeholder =====
 # Fences the anti-spam reuse path in lib/review-one-pr.sh. During a transient
@@ -819,7 +873,7 @@ if [ "$PLACEHOLDER_COUNT" != "1" ]; then
     exit 1
 fi
 
-echo "  PASS (6 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + placeholder reuse anti-spam)"
+echo "  PASS (7 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam)"
 
 
 # ===== Scenario 7: transient codex 429 → short backoff (not hard-abort+retry) =====
@@ -885,4 +939,4 @@ if [ "$PAUSE_UNTIL" -le "$(date +%s)" ]; then
     exit 1
 fi
 
-echo "  PASS (7 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + placeholder reuse anti-spam + codex 429 backoff)"
+echo "  PASS (8 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff)"

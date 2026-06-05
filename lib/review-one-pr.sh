@@ -280,11 +280,20 @@ case "$TRUST_RC" in
     0) IS_TRUSTED_AUTHOR=true ;;
     *) IS_TRUSTED_AUTHOR=false ;;
 esac
-if [ "$TRUST_RC" -eq 2 ]; then
-    log "$PR_ID: trust check deferred — API error ($PR_AUTHOR); retrying next tick"
-    exit 1
-fi
+# The defer/skip is CONTAINER-MODE ONLY — that's the path where untrusted code
+# must never run (codex↔privileged-dind). On the host path an untrusted author
+# is reviewed anyway (just without the .env-mirror / just-test, gated on
+# IS_TRUSTED_AUTHOR below), so an indeterminate result there needs no defer —
+# scoping it here keeps host behavior unchanged.
 if [ -n "${REVIEWER_CONTAINER_MODE:-}" ] && [ "$IS_TRUSTED_AUTHOR" != true ]; then
+    if [ "$TRUST_RC" -eq 2 ]; then
+        # Indeterminate (403 rate-limit / 5xx / network — couldn't verify): a
+        # throttled lookup of a genuinely-trusted author would otherwise be
+        # mislabeled untrusted and skipped. Defer (exit 1, like the gh pr view /
+        # gh repo view guards) so the next tick re-checks once the throttle clears.
+        log "$PR_ID: trust check deferred — API error ($PR_AUTHOR); retrying next tick"
+        exit 1
+    fi
     log "$PR_ID: skipping review — untrusted author ($PR_AUTHOR, no push access) in container mode (codex↔privileged-dind; trusted authors only until rootless dind)"
     exit 0
 fi

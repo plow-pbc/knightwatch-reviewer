@@ -118,10 +118,18 @@ while IFS= read -r PR_JSON; do
                 continue
                 ;;
         esac
-        # Trust gate: only push-access collaborators can trigger an
-        # approval. Drive-by commenters are recorded as seen so we
-        # don't re-log on every tick.
-        if ! is_trusted_repo_author "$REPO" "$USER"; then
+        # Trust gate (tri-state, lib/auth.sh): 0=trusted → approve;
+        # 1=definitively untrusted (drive-by) → record seen so we don't re-log
+        # every tick; 2=indeterminate (403 rate-limit / 5xx / network — couldn't
+        # verify) → DEFER: do NOT mark seen, so the next tick retries once the
+        # throttle clears. Marking an indeterminate result seen would permanently
+        # drop a genuine collaborator's approve made during a trust-check outage.
+        is_trusted_repo_author "$REPO" "$USER"; TRUST_RC=$?
+        if [ "$TRUST_RC" -eq 2 ]; then
+            log "$APPROVE_KEY: /${BOT_CMD_PREFIX}-approve trust check deferred — API error (@$USER); retrying next tick"
+            continue
+        fi
+        if [ "$TRUST_RC" -ne 0 ]; then
             log "$APPROVE_KEY: /${BOT_CMD_PREFIX}-approve from @$USER ignored (no push access)"
             seen_set "$APPROVES_SEEN_FILE" "$APPROVE_KEY"
             SKIPPED_UNTRUSTED=$((SKIPPED_UNTRUSTED + 1))

@@ -136,6 +136,12 @@ elif [ "$1" = "api" ]; then
             cat "$MOCK_COMMENTS_FILE"
         fi
     elif [[ "$endpoint" == */collaborators/*/permission ]]; then
+        # Opt-in: simulate a 403 rate-limit on the permission check → an
+        # INDETERMINATE trust result (rc=2). Default unset → normal path below.
+        if [ -n "${MOCK_PERMISSION_RC:-}" ]; then
+            echo "gh: HTTP 403: API rate limit exceeded (simulated)" >&2
+            exit "$MOCK_PERMISSION_RC"
+        fi
         user="${endpoint##*/collaborators/}"
         user="${user%/permission}"
         for trusted in ${MOCK_TRUSTED_USERS:-}; do
@@ -155,6 +161,7 @@ chmod +x "$HOME/.local/bin/gh"
 export REVIEWER_LIB_DIR="$TMPDIR/lib"
 mkdir -p "$REVIEWER_LIB_DIR"
 cp "$PROJECT_ROOT/lib/auth.sh"          "$REVIEWER_LIB_DIR/auth.sh"
+cp "$PROJECT_ROOT/lib/gh-retry.sh"      "$REVIEWER_LIB_DIR/gh-retry.sh"   # auth.sh sources it
 cp "$PROJECT_ROOT/lib/state-io.sh"      "$REVIEWER_LIB_DIR/state-io.sh"
 cp "$PROJECT_ROOT/lib/tracked-repos.sh" "$REVIEWER_LIB_DIR/tracked-repos.sh"
 cp "$PROJECT_ROOT/lib/gh-comments.sh"   "$REVIEWER_LIB_DIR/gh-comments.sh"
@@ -330,4 +337,18 @@ n=$(count_approves)
 [ "$n" -eq 0 ] || { echo "FAIL scenario 13: expected 0 approves on api failure, got $n"; cat "$STUB_ACTIONS_LOG"; exit 1; }
 grep -q "comments fetch failed — skipping this PR for this tick" "$LOG_FILE" || { echo "FAIL scenario 13: expected fail-loud log line on gh api failure"; cat "$LOG_FILE"; exit 1; }
 
-echo "  PASS (13 scenarios: empty, trusted-approve, already-seen, bot-self-marker, untrusted-skip, [bot]-skip, mid-sentence-no-match, second-line-match, trailing-arg-match, gh-failure-marked-seen, REPOS-override-observed, page-2-paginated, gh-api-failure-fail-loud)"
+# Scenario 14: indeterminate trust check (403 on the permission lookup) — defer,
+# NOT marked seen. A trusted collaborator's approve made while the account is
+# rate-limited must not be permanently dropped: 0 approves this tick, but the
+# comment is left UNSEEN so the next tick retries (contrast scenario 5's drive-by
+# untrusted, which IS marked seen). Regression for the permanent-drop bug.
+echo "  scenario 14: indeterminate trust (403) — no approve, NOT marked seen (deferred)..."
+echo '{}' > "$APPROVES_SEEN_FILE"
+printf '[{"id":1014,"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-approve"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+MOCK_PERMISSION_RC=1 run_approve
+n=$(count_approves)
+[ "$n" -eq 0 ] || { echo "FAIL scenario 14: expected 0 approves under indeterminate trust, got $n"; cat "$STUB_ACTIONS_LOG"; exit 1; }
+[ -z "$(jq -r '."test-org/probe-repo#1#1014" // empty' "$APPROVES_SEEN_FILE")" ] || { echo "FAIL scenario 14: deferred approve was marked seen (permanently dropped) — must retry next tick"; cat "$APPROVES_SEEN_FILE"; exit 1; }
+grep -q "trust check deferred" "$LOG_FILE" || { echo "FAIL scenario 14: missing 'trust check deferred' log"; cat "$LOG_FILE"; exit 1; }
+
+echo "  PASS (14 scenarios: empty, trusted-approve, already-seen, bot-self-marker, untrusted-skip, [bot]-skip, mid-sentence-no-match, second-line-match, trailing-arg-match, gh-failure-marked-seen, REPOS-override-observed, page-2-paginated, gh-api-failure-fail-loud, indeterminate-trust-deferred)"

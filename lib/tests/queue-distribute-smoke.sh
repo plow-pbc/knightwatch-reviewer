@@ -48,7 +48,7 @@ write_worker_flock_stub_if_missing "$HOME/.local/bin"
 write_worker_timeout_stub_if_missing "$HOME/.local/bin"
 
 export REVIEWER_LIB_DIR="$TMPDIR_BASE/lib"; mkdir -p "$REVIEWER_LIB_DIR"
-for f in state-io.sh auth.sh locking.sh tracked-repos.sh gh-comments.sh run-dir.sh pr-enumerate.sh queue.sh; do
+for f in state-io.sh auth.sh gh-retry.sh locking.sh tracked-repos.sh gh-comments.sh run-dir.sh pr-enumerate.sh queue.sh; do
     cp "$PROJECT_ROOT/lib/$f" "$REVIEWER_LIB_DIR/$f"
 done
 cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<'WORKER'
