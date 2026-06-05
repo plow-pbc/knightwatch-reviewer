@@ -181,4 +181,32 @@ f_dispatched=$(grep -c '^WORKER_DISPATCHED ' "$LOG_FILE" 2>/dev/null || true); f
 grep -qE 'auth invalid.*stopping further claims this tick' "$LOG_FILE" || { echo "FAIL F: missing same-tick auth-offline claim-stop log"; cat "$LOG_FILE"; exit 1; }
 [ -s "$F_LOCAL_STATE/auth-offline" ] || { echo "FAIL F: auth-offline not written to the per-container LOCAL_STATE_DIR"; exit 1; }
 echo "  OK F"
+
+# --- F2. both sentinels at once: fatal-auth must DOMINATE an active quota pause
+#        in review.sh's same-tick gate (the precedence locked across
+#        review-loop.sh / review-one-pr.sh — a 401-on-refresh never yields a usage
+#        cap). Worker dispatches, sets a future quota pause AND marks auth offline;
+#        assert the auth-invalid stop log wins and the quota log never fires. ---
+echo "  F2: both auth-offline + quota-paused → fatal-auth wins the gate..."
+rm -f "$STATE_DIR/queue.json" "$F_LOCAL_STATE/auth-offline" "$F_LOCAL_STATE/quota-paused-until"
+cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<'WORKER'
+#!/bin/bash
+echo "WORKER_DISPATCHED repo=$1 pr=$2 sha=$3" >> "$LOG_FILE"
+. "$REVIEWER_LIB_DIR/state-io.sh"
+printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$(quota_pause_file)"   # active quota pause
+mark_auth_offline                                                  # AND fatal auth, same tick
+WORKER
+chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
+write_queue "$STATE_DIR" "$(date +%s)" "$TWO_SPECS"
+: > "$LOG_FILE"
+LOCAL_STATE_DIR="$F_LOCAL_STATE" REVIEWER_CONTAINER_MODE=1 ENUMERATE_SECS=999 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
+wait_dispatched
+# Precondition: the quota pause must actually be established + in the future, else
+# the negative quota assertion below passes vacuously (auth breaks first, so quota
+# is never evaluated) — a broken quota-write would give false "dominated an active
+# pause" confidence. Mirrors scenario F's auth-offline existence check.
+[ -s "$F_LOCAL_STATE/quota-paused-until" ] || { echo "FAIL F2: quota pause not established — precedence assertion would be vacuous"; cat "$LOG_FILE"; exit 1; }
+grep -qE 'auth invalid.*stopping further claims this tick' "$LOG_FILE" || { echo "FAIL F2: auth-invalid stop log must win when both sentinels are set"; cat "$LOG_FILE"; exit 1; }
+grep -qE 'quota hit.*stopping further claims this tick' "$LOG_FILE" && { echo "FAIL F2: quota log fired — fatal-auth must dominate an active quota pause"; cat "$LOG_FILE"; exit 1; }
+echo "  OK F2"
 echo "ALL PASS: queue-distribute-smoke.sh"
