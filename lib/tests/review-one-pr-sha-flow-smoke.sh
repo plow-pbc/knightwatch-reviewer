@@ -940,3 +940,102 @@ if [ "$PAUSE_UNTIL" -le "$(date +%s)" ]; then
 fi
 
 echo "  PASS (8 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff)"
+
+
+# ===== Scenario 8: BOTH 429 + fatal-auth sentinels → fatal-auth wins =====
+# Fences the stop-state PRECEDENCE introduced by this branch: when a run leaves
+# BOTH _codex_rate_limit.txt (429) AND _codex_auth_fatal.txt in $RUN_DIR,
+# review-one-pr.sh must take the worker OFFLINE (auth-fatal) and must NOT also
+# stamp a 120s quota-pause file — the 429-backoff block is guarded to skip when
+# fatal-auth is present (review-one-pr.sh:1484/1491). Without that guard the 429
+# block would race the auth-fatal block and leave a short timed pause that lets
+# the worker re-claim PRs on a fatally-invalid token (re-running the 401 storm
+# the offline path exists to stop).
+#
+# pipeline.py's classifier writes at most one sentinel per run (mutually-
+# exclusive elif chain), so the combined state can't arise from a single fake-
+# codex stderr line alone. The fake codex therefore writes _codex_rate_limit.txt
+# directly into the run dir (derived from its -o output path) AND emits the
+# fatal-auth stderr line so pipeline.py writes _codex_auth_fatal.txt — producing
+# the both-present state the precedence guard exists to resolve.
+#
+# Behavior asserted (user-visible): the placeholder says the worker is OFFLINE
+# (auth invalid), $STATE/auth-offline exists, and $STATE/quota-paused-until does
+# NOT — i.e. fatal-auth won and no timed backoff was stamped.
+echo "  scenario: BOTH 429 + fatal-auth sentinels → fatal-auth wins (offline, no quota-pause)..."
+
+cat > "$HOME/.local/bin/codex" <<'CODEX'
+#!/usr/bin/env bash
+# Recover $RUN_DIR from the -o <run_dir>/agents/<name>/output.md arg pipeline.py
+# passes, then seed the 429 sentinel directly (pipeline's elif chain writes only
+# the auth-fatal one from the stderr line below, so both can't come from stderr).
+out=""
+prev=""
+for arg in "$@"; do
+    [ "$prev" = "-o" ] && out="$arg" && break
+    prev="$arg"
+done
+# Fail loud if we can't establish the BOTH-sentinel state: without the 429
+# seed the run degrades to auth-fatal-only (covered elsewhere) and the scenario
+# would silently false-pass instead of fencing the precedence it exists for.
+if [ -z "$out" ]; then
+    echo "fake-codex: no -o arg found; cannot seed _codex_rate_limit.txt for combined-sentinel scenario" >&2
+    exit 2
+fi
+run_dir="$(dirname "$(dirname "$(dirname "$out")")")"
+printf 'codex 429 rate limit\n' > "$run_dir/_codex_rate_limit.txt"
+echo "ERROR: Your access token could not be refreshed because your refresh token was already used (refresh_token_reused). Please log out and sign in again." >&2
+exit 1
+CODEX
+chmod +x "$HOME/.local/bin/codex"
+
+STORE8="$TMPDIR/comment-store-8.json"
+echo "[]" > "$STORE8"
+write_stateful_gh_stub "$HOME/.local/bin/gh" "$STORE8" "main" "$NEW_PR_SHA"
+
+STATE8="$TMPDIR/state-8"
+seed_state_dir "$STATE8"
+git clone -q "$GITHUB_BARE" "$STATE8/repos/test-org_probe-repo"
+
+(
+    export STATE_DIR="$STATE8"
+    export STATE_FILE="$STATE8/state.json"
+    export REPOS_DIR="$STATE8/repos"
+    export WORKDIRS_DIR="$STATE8/workdirs"
+    export CANONICAL_LOCKS_DIR="$STATE8/canonical-locks"
+    export PR_REVIEW_LOCK_DIR="$STATE8/locks"
+    write_probe_repos_conf "$STATE8/repos.conf"
+    TRIGGER_COMMENT_FILE="" \
+        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
+        "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" \
+        >/dev/null 2>&1 || true
+)
+
+rm -f "$HOME/.local/bin/codex"   # don't leak the fake codex past this scenario
+
+# Setup guard: prove the BOTH-sentinel state was actually established (the fake
+# codex seeded _codex_rate_limit.txt AND pipeline.py wrote _codex_auth_fatal.txt
+# from the stderr line). If the 429 seed silently no-op'd, the run is auth-fatal-
+# only — covered elsewhere — and the precedence assertions below would false-pass.
+if ! ls "$STATE8"/runs/*/_codex_rate_limit.txt >/dev/null 2>&1 \
+   || ! ls "$STATE8"/runs/*/_codex_auth_fatal.txt >/dev/null 2>&1; then
+    echo "FAIL: scenario 8 — both-sentinel state not established (rate_limit + auth_fatal must coexist in \$RUN_DIR); scenario is not exercising the precedence it claims"
+    ls -la "$STATE8"/runs/*/ 2>/dev/null | grep -E '_codex_(rate_limit|auth_fatal)' || echo "  (no sentinels found)"
+    exit 1
+fi
+
+if ! jq -e '[.[] | select(.body | contains("knightwatch offline") and contains("auth"))] | length == 1' "$STORE8" >/dev/null; then
+    echo "FAIL: scenario 8 — placeholder body not the auth-offline message (fatal-auth did not win the both-sentinel race)"
+    jq -r '.[] | "  id=\(.id) body=\(.body | gsub("\n";" ") | .[0:100])"' "$STORE8"
+    exit 1
+fi
+if [ ! -f "$STATE8/auth-offline" ]; then
+    echo "FAIL: scenario 8 — \$STATE/auth-offline missing (worker not taken offline despite fatal-auth sentinel)"
+    exit 1
+fi
+if [ -f "$STATE8/quota-paused-until" ]; then
+    echo "FAIL: scenario 8 — \$STATE/quota-paused-until exists ($(head -n1 "$STATE8/quota-paused-until")); the 429 block stamped a timed pause despite fatal-auth precedence"
+    exit 1
+fi
+
+echo "  PASS (9 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence)"
