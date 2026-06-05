@@ -72,7 +72,7 @@ The shell-to-Python migration is incidental: once the splitter is gone, the rema
 - `lib/tests/build-specialist-prompt-smoke.sh` (sized similarly)
 
 **Unchanged:**
-- All other `lib/*.sh` helpers (`state-io.sh`, `run-dir.sh`, `gh-comments.sh`, `tracked-repos.sh`, `auth.sh`, `decline-history.sh`, `loc-trend.sh`, `scratch.sh`, `path-scrub.sh`, `locking.sh`, `knightwatch-config.sh`, `search-roots.sh`, `sibling-symlinks.sh`, `diff-build.sh`, `go-deep-rank.sh`, `checks/*`).
+- All other `lib/*.sh` helpers (`state-io.sh`, `run-dir.sh`, `gh-comments.sh`, `tracked-repos.sh`, `auth.sh`, `loc-trend.sh`, `scratch.sh`, `path-scrub.sh`, `locking.sh`, `knightwatch-config.sh`, `search-roots.sh`, `sibling-symlinks.sh`, `diff-build.sh`, `go-deep-rank.sh`, `checks/*`).
 - `review.sh`, `learn-from-replies.sh`, `approve-from-replies.sh`, `plow-kid-refresh.sh`, `re-request-poller.sh`.
 - All other smokes (~16 files, untouched).
 - All systemd unit files.
@@ -180,7 +180,7 @@ Coverage:
 **Shell smokes preserved unchanged** (orthogonal to pipeline orchestration):
 - `review-one-pr-sha-flow-smoke.sh`, `repos-conf-smoke.sh`, `install-smoke.sh` — high-level system tests
 - `approve-from-replies-smoke.sh`, `learn-from-replies-smoke.sh`, `plow-kid-refresh-smoke.sh`, `re-request-poller-smoke.sh` — separate timer scripts
-- `decline-history-smoke.sh`, `loc-trend-smoke.sh`, `gh-comments-smoke.sh`, `auth-smoke.sh`, `path-scrub-smoke.sh`, `diff-build-smoke.sh`, `divergent-clock-smoke.sh`, `finalize-meta-smoke.sh`, `knightwatch-config-smoke.sh`, `prior-reviews-smoke.sh`, `run-dir-smoke.sh`, `search-roots-smoke.sh`, `sibling-symlinks-smoke.sh`, `strict-typing-checks-smoke.sh`, `codex-scratch-redirect-smoke.sh`, `momentum-wire-smoke.sh` (or whatever survived prior consolidations)
+- `loc-trend-smoke.sh`, `gh-comments-smoke.sh`, `auth-smoke.sh`, `path-scrub-smoke.sh`, `diff-build-smoke.sh`, `divergent-clock-smoke.sh`, `finalize-meta-smoke.sh`, `knightwatch-config-smoke.sh`, `prior-reviews-smoke.sh`, `run-dir-smoke.sh`, `search-roots-smoke.sh`, `sibling-symlinks-smoke.sh`, `strict-typing-checks-smoke.sh`, `codex-scratch-redirect-smoke.sh`, `momentum-wire-smoke.sh` (or whatever survived prior consolidations)
 - `replay-smoke.sh`, `replay-source-chain-smoke.sh` — replay updated to call Python entrypoint, smoke updates accordingly
 
 **Shell smokes trimmed** (`prompt-contracts-smoke.sh`):
