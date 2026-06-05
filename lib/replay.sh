@@ -200,7 +200,7 @@ PR_AUTHOR="$(gh pr view "$PR" --repo "$REPO" --json author --jq .author.login)"
 # falls back to pipeline.py's `private` default and a public-repo canary
 # never exercises the public prompt path this PR adds.
 REPO_VISIBILITY="$(gh repo view "$REPO" --json visibility --jq .visibility | tr '[:upper:]' '[:lower:]')"
-[ -n "$REPO_VISIBILITY" ] || { echo "replay: gh repo view --repo $REPO returned no visibility" >&2; exit 1; }
+[ -n "$REPO_VISIBILITY" ] || { echo "replay: gh repo view $REPO returned no visibility" >&2; exit 1; }
 LOG_FILE="$OUT/run.log"
 
 # `python3 lib/pipeline.py` returns a non-zero exit on any-stage failure

@@ -73,8 +73,9 @@ seen_set() {
 # back to STATE_DIR for non-container single-account runs.
 quota_pause_file() { printf '%s' "${LOCAL_STATE_DIR:-$STATE_DIR}/quota-paused-until"; }
 
-# True while the pause window is still in the future. A missing/empty file reads
-# as epoch 0, i.e. not paused.
+# True while the pause window is still in the future. A missing file reads as
+# epoch 0, i.e. not paused (the sole writer always writes a numeric epoch, so an
+# empty file never occurs in practice).
 quota_active() { [ "$(date +%s)" -lt "$(head -n1 "$(quota_pause_file)" 2>/dev/null || echo 0)" ]; }
 
 # Fatal-auth offline marker: when codex's token is invalidated (reused/rotated

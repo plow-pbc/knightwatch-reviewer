@@ -1470,21 +1470,24 @@ if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
     # retries against a rate limit) — not a usage cap, so no reset time. Back
     # this worker off for one rate window instead of immediately retrying and
     # re-saturating the account (the 2026-06-03 post-restart 429 storm). Reuses
-    # the quota-pause file review-loop.sh already honors; only fires when the
-    # usage-cap sentinel is absent (a usage cap is the more specific signal).
+    # the quota-pause file review-loop.sh already honors; only fires when neither
+    # the usage-cap nor the fatal-auth sentinel is present — both are more
+    # specific signals whose own handling owns the worker's stop-state (a usage
+    # cap has its own reset timer; fatal-auth takes the worker fully offline), so
+    # a transient 429 alongside either must not also stamp a 120s pause file.
     RATE_LIMIT_SENTINEL="$RUN_DIR/_codex_rate_limit.txt"
-    if [ ! -s "$QUOTA_SENTINEL" ] && [ -s "$RATE_LIMIT_SENTINEL" ]; then
+    # pipeline.py writes this when codex's token is FATALLY invalid (reused/
+    # rotated refresh token or revoked session) — not a usage cap, so there's no
+    # reset time. Take the worker OFFLINE until re-login instead of spin-aborting
+    # + commenting on every PR (the shared-login 401 storm of 2026-05-30).
+    AUTH_FATAL_SENTINEL="$RUN_DIR/_codex_auth_fatal.txt"
+    if [ ! -s "$QUOTA_SENTINEL" ] && [ ! -s "$AUTH_FATAL_SENTINEL" ] && [ -s "$RATE_LIMIT_SENTINEL" ]; then
         BACKOFF_SECS=120
         BACKOFF_UNTIL=$(( $(date +%s) + BACKOFF_SECS ))
         EYES_ABORT_BODY="⏸ knightwatch paused — codex rate limit (429). Backing off ~${BACKOFF_SECS}s; will retry on the next tick."
         printf '%s\n' "$BACKOFF_UNTIL" > "$(quota_pause_file)"
         log "$PR_ID: codex 429 rate-limit — backing off this worker ${BACKOFF_SECS}s (until epoch ${BACKOFF_UNTIL})"
     fi
-    # pipeline.py writes this when codex's token is FATALLY invalid (reused/
-    # rotated refresh token or revoked session) — not a usage cap, so there's no
-    # reset time. Take the worker OFFLINE until re-login instead of spin-aborting
-    # + commenting on every PR (the shared-login 401 storm of 2026-05-30).
-    AUTH_FATAL_SENTINEL="$RUN_DIR/_codex_auth_fatal.txt"
     if [ -s "$AUTH_FATAL_SENTINEL" ]; then
         EYES_ABORT_BODY="⏸ knightwatch offline — codex auth for this account is invalid (token reused/revoked, not a usage cap). Awaiting operator re-login; reviews resume automatically once re-authenticated."
         # Record the live auth.json mtime; review-loop.sh (auth_offline_active,
