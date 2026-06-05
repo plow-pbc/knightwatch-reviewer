@@ -148,6 +148,12 @@ elif [ "$1" = "api" ]; then
         # regression that leaks through doesn't hang on a missing stub.
         echo "2020-01-01T00:00:00Z"
     elif [[ "$url" == */collaborators/*/permission ]]; then
+        # Opt-in: simulate a 403 rate-limit on the permission check → an
+        # INDETERMINATE trust result (rc=2). Default unset → normal path below.
+        if [ -n "${MOCK_PERMISSION_RC:-}" ]; then
+            echo "gh: HTTP 403: API rate limit exceeded (simulated)" >&2
+            exit "$MOCK_PERMISSION_RC"
+        fi
         # Extract the username segment between "collaborators/" and "/permission".
         user="${url##*/collaborators/}"
         user="${user%/permission}"
@@ -438,6 +444,32 @@ fi
 if grep -qE 'trigger_file=[^[:space:]]+' "$LOG_FILE"; then
     echo "FAIL scenario 6 (trust gate regression): expected trigger_file empty for untrusted commenter, but a path was staged"
     echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+
+# Scenario 6b (indeterminate-trigger-defer): same SHA, /srosro-review from a
+# commenter whose permission check returns 403 (rate-limited account → rc=2
+# indeterminate). Unlike the untrusted case above (which still dispatches), the
+# dispatcher must DEFER — no dispatch, and no same-SHA idle watermark — so the
+# unconsumed trigger retries next tick once the throttle clears. Fences
+# review.sh's trigger-defer branch.
+echo "  scenario 6b: same SHA + /srosro-review under indeterminate trust (403) → defer, no dispatch, no watermark..."
+rm -f "$STATE_DIR/seen-updated/cncorp_plow__1"   # clear any residue so the assertion is decisive
+printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+MOCK_PERMISSION_RC=1 run_orchestrator
+n=$(count_dispatches)
+if [ "$n" -ne 0 ]; then
+    echo "FAIL scenario 6b: expected 0 dispatches under indeterminate trust (defer), got $n"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+if ! grep -q "trust check deferred" "$LOG_FILE"; then
+    echo "FAIL scenario 6b: expected 'trust check deferred' log line on the deferred trigger"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+if [ -f "$STATE_DIR/seen-updated/cncorp_plow__1" ]; then
+    echo "FAIL scenario 6b: idle watermark written on a deferred trigger — must stay unconsumed for next-tick retry"
     exit 1
 fi
 
@@ -943,4 +975,4 @@ if [ "$fetches" -lt 1 ]; then
     exit 1
 fi
 
-echo "  PASS (21 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches)"
+echo "  PASS (22 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches)"
