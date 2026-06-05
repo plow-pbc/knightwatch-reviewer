@@ -261,7 +261,20 @@ refresh_queue() {
                     # has push access. Otherwise drive-by commenters could
                     # shape intent inference + aggregator on the
                     # auto-approve path.
-                    if is_trusted_repo_author "$REPO" "$TRIGGER_USER"; then
+                    is_trusted_repo_author "$REPO" "$TRIGGER_USER"; TRIGGER_TRUST_RC=$?
+                    if [ "$TRIGGER_TRUST_RC" -eq 2 ]; then
+                        # Indeterminate (403 rate-limit / 5xx / network — couldn't
+                        # verify): DEFER the whole PR this tick rather than running
+                        # the review WITHOUT the trusted trigger prose and then
+                        # advancing the cutoff past it (which would drop the
+                        # request). The trigger comment stays unconsumed
+                        # (created_at > reviewed_at), so the next tick retries once
+                        # the throttle clears. Mirrors the approve / container-gate
+                        # defer.
+                        log "$PR_ID: trigger from @$TRIGGER_USER — trust check deferred (API error); retrying next tick"
+                        continue
+                    fi
+                    if [ "$TRIGGER_TRUST_RC" -eq 0 ]; then
                         # Capture body now; materialize the file post-skip
                         # (below) so an unchanged-SHA /srosro-update-review
                         # never allocates a tempfile only the worker would
