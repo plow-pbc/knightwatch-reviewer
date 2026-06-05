@@ -136,6 +136,21 @@ def _codex_capacity_line() -> str:
     return "ERROR: Selected model is at capacity. Please try a different model.\n"
 
 
+def _codex_cyber_refusal_lines() -> str:
+    """Shape of codex's terminal stderr when OpenAI's cyber-safety filter
+    refuses the request (offensive-security read on a non-Trusted-Access
+    account) — the security specialist's usual failure. Per-call (one angle
+    bounces while siblings succeed), so it degrades that angle (rc=124),
+    never hard-aborts the review. Crucially MULTI-LINE: the refusal spans two
+    sentences, so the *terminal* line is the program-URL tail, not the leading
+    `ERROR:` — detection pins to `chatgpt.com/cyber`, the genuinely-last line."""
+    return (
+        "ERROR: This content was flagged for possible cybersecurity risk.\n"
+        "To get authorized for security work, join the Trusted Access for "
+        "Cyber program: https://chatgpt.com/cyber\n"
+    )
+
+
 def _inject_intent_stream(stream: str, line: str):
     """Returns a before_write callback that appends `line` to the intent
     agent's <stream>.txt (`err` = codex CLI stderr / real error path, `log`
@@ -1505,37 +1520,78 @@ class TestRunPipeline(unittest.TestCase):
         self.assertFalse((self.run_dir / "_codex_quota.txt").exists())
 
     @patch("pipeline.subprocess.Popen")
-    def test_capacity_phrase_in_pr_reflected_stderr_still_aborts(self, mock_popen):
-        """Spoof guard: a REAL specialist failure (rc=1) must NOT be downgraded to
-        the rc=124 skip path just because reflected PR stderr carries the capacity
-        phrase — even as an EXACT crafted `ERROR: Selected model is at capacity`
-        line — when it isn't codex's terminal diagnostic. Detection keys off the
-        LAST non-empty stderr line (codex's real error lands last), so both a
-        mid-prose mention and an exact-but-non-terminal spoofed line still abort."""
-        def inject_spoof(name, out_path):
-            if name == "critic-shape":
+    def test_cyber_refusal_degrades_like_capacity_not_abort(self, mock_popen):
+        """OpenAI's cyber-safety filter refusing the security specialist (rc=1 with
+        the 'flagged for possible cybersecurity risk' ERROR line) degrades just that
+        angle via the rc=124 soft-degrade path and the review COMPLETES — it must
+        NOT hard-abort the whole pipeline (the pre-fix bug left PRs with only the
+        placeholder). Per-call refusal → no account-wide pause sentinel."""
+        def inject_refusal(name, out_path):
+            if name == "security":
                 out_path.parent.mkdir(parents=True, exist_ok=True)
+                # codex streams tool/reasoning activity first, then its multi-line
+                # refusal. The terminal line is the program-URL tail (NOT the
+                # leading `ERROR:`), so detection must pin to that tail — an
+                # `^ERROR:`-anchored last-line match would miss it and hard-abort.
                 (out_path.parent / "err.txt").write_text(
-                    # mid-prose mention …
-                    "reasoning: the diff notes the model is at capacity, unrelated\n"
-                    # … AND an exact crafted capacity line, but NOT terminal …
-                    + _codex_capacity_line()
-                    # … because codex's genuine terminal error is what lands last.
-                    + "ERROR: specialist crashed (segfault)\n"
+                    "tool: scanning auth paths...\n" + _codex_cyber_refusal_lines()
                 )
         mock_popen.side_effect = _make_codex_stub(
             plan={
                 "intent": (0, "Inferred intent: stub.\n"),
                 "dead-code-search": (0, "dc\n"),
-                "shape": (0, "### Probe 1\nreal shape finding\n"),
-                "critic-shape": (1, ""),  # genuine failure; phrase is only reflected, not the ERROR line
+                "security": (1, ""),  # exits non-zero; err.txt carries the refusal
                 "aggregator": (0, "# Review\nVERDICT: APPROVE\n"),
             },
-            before_write=inject_spoof,
+            before_write=inject_refusal,
         )
         rc = self._run()
-        self.assertNotEqual(rc, 0)  # genuine failure still hard-aborts
-        self.assertFalse((self.run_dir / "_wave_b_timeouts.txt").exists())
+        self.assertEqual(rc, 0)  # degraded + completed, not aborted
+        self.assertIn("security", (self.run_dir / "_wave_b_timeouts.txt").read_text())
+        self.assertTrue((self.run_dir / "agents" / "aggregator" / "output.md").exists())
+        # per-call refusal → never an account-wide pause sentinel
+        self.assertFalse((self.run_dir / "_codex_rate_limit.txt").exists())
+        self.assertFalse((self.run_dir / "_codex_quota.txt").exists())
+
+    @patch("pipeline.subprocess.Popen")
+    def test_soft_degrade_phrase_in_pr_reflected_stderr_still_aborts(self, mock_popen):
+        """Spoof guard for BOTH suppress-a-failure phrases (capacity + cyber
+        refusal): a REAL specialist failure (rc=1) must NOT be downgraded to the
+        rc=124 skip path just because reflected PR stderr carries the phrase —
+        even as an EXACT crafted line — when it isn't codex's terminal diagnostic.
+        Detection keys off the LAST non-empty stderr line (codex's real error
+        lands last), so a mid-stream mention + a genuine terminal failure abort.
+        Parametrized over both phrases so each regex's spoof resistance is
+        demonstrated, not inferred from the shared last-line mechanism."""
+        for label, reflected in (
+            ("capacity", _codex_capacity_line()),
+            ("cyber-refusal", _codex_cyber_refusal_lines()),
+        ):
+            with self.subTest(phrase=label):
+                self.tearDown()  # drop the prior case's temp dir …
+                self.setUp()     # … and re-provision fresh repo/run dirs
+                def inject_spoof(name, out_path, reflected=reflected):
+                    if name == "critic-shape":
+                        out_path.parent.mkdir(parents=True, exist_ok=True)
+                        (out_path.parent / "err.txt").write_text(
+                            # the crafted soft-degrade phrase, reflected mid-stream …
+                            reflected
+                            # … but codex's genuine terminal error is what lands last.
+                            + "ERROR: specialist crashed (segfault)\n"
+                        )
+                mock_popen.side_effect = _make_codex_stub(
+                    plan={
+                        "intent": (0, "Inferred intent: stub.\n"),
+                        "dead-code-search": (0, "dc\n"),
+                        "shape": (0, "### Probe 1\nreal shape finding\n"),
+                        "critic-shape": (1, ""),  # genuine failure; phrase only reflected, not terminal
+                        "aggregator": (0, "# Review\nVERDICT: APPROVE\n"),
+                    },
+                    before_write=inject_spoof,
+                )
+                rc = self._run()
+                self.assertNotEqual(rc, 0)  # genuine failure still hard-aborts
+                self.assertFalse((self.run_dir / "_wave_b_timeouts.txt").exists())
 
     @patch("pipeline.subprocess.Popen")
     def test_hard_failure_aborts_without_timeouts_sentinel(self, mock_popen):

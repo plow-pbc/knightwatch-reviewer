@@ -121,6 +121,31 @@ _CODEX_CAPACITY_RE = re.compile(
     r"^ERROR: Selected model is at capacity\b",
     re.IGNORECASE,
 )
+# OpenAI's cyber-safety filter refuses the request when it reads a prompt as
+# offensive-security tasking and the account isn't in the Trusted Access for
+# Cyber program — codex exits non-zero. The security specialist's vocabulary
+# (injection, SSRF, sandbox escape, weak crypto) is the usual trigger; the prompt
+# is framed defensively to minimize this, but the filter is account/model-
+# dependent, so one specialist can still bounce while its siblings on the same
+# account succeed. That makes it a PER-CALL transient, exactly like a capacity
+# bounce: degrade THIS angle via rc=124 and let the review complete, never hard-
+# abort the whole pipeline over one refusal.
+#
+# Unlike the capacity diagnostic (a genuine single line), the refusal spans two
+# sentences — "...flagged for possible cybersecurity risk." then "...join the
+# Trusted Access for Cyber program: https://chatgpt.com/cyber" — so codex's
+# *terminal* stderr line is the program-URL tail, NOT the leading `ERROR:`. We
+# pin to that tail (`chatgpt.com/cyber`) and match it against the last non-empty
+# line. Spoof-resistance is identical to _CODEX_CAPACITY_RE and rests ENTIRELY on
+# the terminal-last-line contract — NOT on the token being unreflectable (a PR
+# touching this very file carries `chatgpt.com/cyber` in its diff): codex's
+# genuine refusal lands last, so reflected mid-stream content can't occupy the
+# terminal position and downgrade a real failure to the skip path. The tail
+# anchor (vs an `^ERROR:` one) is just what survives the multi-line layout.
+_CODEX_CYBER_REFUSAL_RE = re.compile(
+    r"chatgpt\.com/cyber\b",
+    re.IGNORECASE,
+)
 # Cap on simultaneous Wave-B codex calls per review. Firing all 7+ specialists
 # at once put ~8 concurrent calls on a single account and tripped 429s (the
 # 2026-06-03 storm); bounding peak concurrency spreads them out (the executor
@@ -360,6 +385,20 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
             # the existing Wave-B drop-angle path + run_specialist's crit_rc==124
             # scratch-drop handle it with no new seam.
             log(f"{name}: model at capacity — degrading this angle (per-call transient)")
+            return 124
+        elif _CODEX_CYBER_REFUSAL_RE.search(last_err_line):
+            # OpenAI cyber-safety refusal (typically the security specialist on a
+            # non-Trusted-Access account): per-call, not account-wide, so reuse the
+            # same rc=124 soft-degrade path as capacity — drop this angle, finish
+            # the review with the rest. One refusal must never nuke the whole
+            # review (the pre-fix behavior left PRs with only the placeholder).
+            # The partial-review header conflates this with a timeout ("did not
+            # complete — timed out or model at capacity"); that's intentional —
+            # all three are "this angle is absent, the rest shipped", and the
+            # precise reason lives in this agent's own log.txt for triage. A
+            # distinct header label would expand the shared sentinel format for
+            # no operator gain (YAGNI).
+            log(f"{name}: cyber-safety refusal — degrading this angle (per-call transient)")
             return 124
         return exit_code
 
