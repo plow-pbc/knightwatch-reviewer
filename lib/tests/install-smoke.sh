@@ -439,4 +439,27 @@ run_install "$COLD_OVERLAY/install.sh" || { echo "FAIL scenario 7: install abort
 grep -q 'neworg' "$HOME/services/kwr-config/config.json" || { echo "FAIL scenario 7: cache content lost across a no-op redeploy"; exit 1; }
 rm -f "$INSTALL_DIR/config.env"
 
-echo "  PASS (7 scenarios: first-run, idempotent-rerun, new-unit-incremental-enables-new-timer, retired-legacy-unit-removal, cold-cache-activation, deploy-time-origin-swap, unchanged-origin-redeploy-noop)"
+# --- Scenario 8: contended org-sync.lock → install fails fast (not a long block) -
+# The serialization guard's POINT is the contended path: if an org-sync run holds
+# the lock, install must fail loud quickly, not block forever. Pre-hold the lock on
+# a background fd, run install with ORG_SYNC_LOCK_WAIT=1, and assert it exits
+# non-zero with the timeout message. (run_install swallows output, so invoke
+# install directly here to capture stderr.)
+echo "  scenario 8: contended org-sync.lock — install fails fast with the timeout message..."
+( exec 8>"$INSTALL_DIR/org-sync.lock"; flock 8; touch "$TMPDIR/s8-lock-held"; sleep 10 ) &
+s8_holder=$!
+for _ in $(seq 1 100); do if [ -e "$TMPDIR/s8-lock-held" ]; then break; fi; sleep 0.05; done
+[ -e "$TMPDIR/s8-lock-held" ] || { echo "FAIL scenario 8: lock holder never signalled"; kill "$s8_holder" 2>/dev/null; exit 1; }
+# set +e to capture install's non-zero rc — under set -e the assignment from a
+# failing command substitution would abort the suite before $? is read.
+set +e
+s8_out=$(ORG_SYNC_LOCK_WAIT=1 PATH="$STUB_BIN:$PATH" bash "$COLD_OVERLAY/install.sh" 2>&1)
+s8_rc=$?
+set -e
+kill "$s8_holder" 2>/dev/null || true; wait "$s8_holder" 2>/dev/null || true
+rm -f "$TMPDIR/s8-lock-held"
+[ "$s8_rc" -ne 0 ] || { echo "FAIL scenario 8: install succeeded despite a held org-sync.lock — serialization is a no-op"; exit 1; }
+printf '%s\n' "$s8_out" | grep -q 'could not acquire' \
+  || { echo "FAIL scenario 8: install did not fail-loud with the lock-timeout message"; printf '%s\n' "$s8_out" | tail -5; exit 1; }
+
+echo "  PASS (8 scenarios: first-run, idempotent-rerun, new-unit-incremental-enables-new-timer, retired-legacy-unit-removal, cold-cache-activation, deploy-time-origin-swap, unchanged-origin-redeploy-noop, contended-lock-fail-fast)"

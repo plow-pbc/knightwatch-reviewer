@@ -200,8 +200,12 @@ mkdir -p "$KWR_CONFIG_DIR"
 # acquire (a stuck org-sync run), rather than block forever. Released right after
 # the overlay source; the remaining systemd render is install-local.
 command -v flock >/dev/null 2>&1 || fail "flock not on PATH (util-linux) — needed to serialize kwr-config sync against org-sync"
-exec 9>"$INSTALL_DIR/org-sync.lock"
-flock -w 120 9 || fail "could not acquire $INSTALL_DIR/org-sync.lock within 120s — an org-sync run may be stuck; investigate before re-running install"
+# Same var org-sync.sh derives its lock from (STATE_DIR, =INSTALL_DIR here) so the
+# two stay the SAME file by construction, not by coincident literals. Timeout is
+# overridable so the contended fail-loud path is testable (install-smoke pre-holds
+# the lock with ORG_SYNC_LOCK_WAIT=1).
+exec 9>"$STATE_DIR/org-sync.lock"
+flock -w "${ORG_SYNC_LOCK_WAIT:-120}" 9 || fail "could not acquire $STATE_DIR/org-sync.lock within ${ORG_SYNC_LOCK_WAIT:-120}s — an org-sync run may be stuck; investigate before re-running install"
 if [ -n "${KWR_CONFIG_REPO:-}" ]; then
   # Deploy-time origin swap (install.sh OWNS this; the hourly org-sync path keeps
   # last-good on a mismatch). If the cache is from a DIFFERENT repo, drop it so
