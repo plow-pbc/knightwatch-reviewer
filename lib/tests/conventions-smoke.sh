@@ -205,7 +205,10 @@ echo "  sync_kwr_config: plain https + scp-style ssh URLs are NOT rejected by th
 OCC="$T/occupied"; mkdir -p "$OCC"; : > "$OCC/x"
 for okurl in "https://example.com/o/r.git" "git@example.com:o/r.git" "ssh://git@example.com/o/r.git"; do
     err=$( ( export KWR_CONFIG_REPO="$okurl" KWR_CONFIG_DIR="$OCC"; sync_kwr_config ) 2>&1 )
-    echo "$err" | grep -qiE 'must not (contain|embed)' && fail "plain/key-auth URL wrongly rejected by hygiene guard: $okurl"
+    # Match the SAME rejection patterns as the negative rows (incl. the token path)
+    # so a future _ui/scp-pattern tweak that misclassifies bare key-auth as
+    # credential-bearing is caught — silently breaking private-repo clones otherwise.
+    echo "$err" | grep -qiE 'must not (contain|embed)|looks like a token' && fail "plain/key-auth URL wrongly rejected by hygiene guard: $okurl"
 done
 
 echo "  PASS (conventions: 6 config-valid + 13 resolve_binding + 2 path-guard + url-hygiene + origin-change-reclone + 2 frontmatter + 2 body + 1 stage + 2 standards)"
