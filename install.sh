@@ -193,7 +193,7 @@ if [ -n "${KWR_CONFIG_REPO:-}" ]; then
   . "$REPO_DIR/lib/conventions.sh"
   if sync_kwr_config; then
     ok "kwr-config cache synced ($KWR_CONFIG_DIR)"
-  elif [ -f "$KWR_CONFIG_DIR/config.json" ]; then
+  elif kwr_config_valid; then
     info "kwr-config sync failed — proceeding on last-good cache"
   else
     fail "kwr-config sync failed and no cache present — the reviewer containers fail loud on a missing cache; fix KWR_CONFIG_REPO/creds and re-run"
