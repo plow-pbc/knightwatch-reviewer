@@ -177,6 +177,29 @@ STATE_DIR="$INSTALL_DIR"
 . "$REPO_DIR/lib/tracked-repos.sh"
 mkdir -p "$KWR_CLONE_ROOT"
 
+# kwr-config cache. Host org-sync clones/pulls it here, and the reviewer
+# containers mount this same host path read-only (docker-compose.yml). HOME-
+# relative (a sibling of $KWR_CLONE_ROOT, NOT clone-path-relative) so the rendered
+# systemd ReadWritePaths is stable across prod-clone moves. Create it
+# unconditionally so the org-sync unit's ReadWritePaths target exists at namespace
+# setup; populate it now (before the containers come up) when KWR_CONFIG_REPO is
+# set — a missing cache would make the containers fail loud. KWR_CONFIG_REPO is
+# sourced from config.env via tracked-repos.sh above.
+KWR_CONFIG_DIR="$HOME/services/kwr-config"
+export KWR_CONFIG_DIR
+mkdir -p "$KWR_CONFIG_DIR"
+if [ -n "${KWR_CONFIG_REPO:-}" ]; then
+  # shellcheck disable=SC1091
+  . "$REPO_DIR/lib/conventions.sh"
+  if sync_kwr_config; then
+    ok "kwr-config cache synced ($KWR_CONFIG_DIR)"
+  elif [ -f "$KWR_CONFIG_DIR/config.json" ]; then
+    info "kwr-config sync failed — proceeding on last-good cache"
+  else
+    fail "kwr-config sync failed and no cache present — the reviewer containers fail loud on a missing cache; fix KWR_CONFIG_REPO/creds and re-run"
+  fi
+fi
+
 # Dedupe + sort for stable rendering across runs so cmp-based idempotency
 # doesn't trigger spurious copies when bash hashing reorders the assoc
 # array between runs.
@@ -188,10 +211,11 @@ for unit in "${units[@]}"; do
   name="$(basename "$unit")"
   dst="$SYSTEMD_DIR/$name"
   rendered="$unit"
-  if grep -qE '@(KID_RW_PATHS|KWR_CLONE_ROOT)@' "$unit"; then
+  if grep -qE '@(KID_RW_PATHS|KWR_CLONE_ROOT|KWR_CONFIG_DIR)@' "$unit"; then
     rendered="$(mktemp)"
     sed -e "s|@KID_RW_PATHS@|$KID_RW_PATHS|g" \
         -e "s|@KWR_CLONE_ROOT@|$KWR_CLONE_ROOT|g" \
+        -e "s|@KWR_CONFIG_DIR@|$KWR_CONFIG_DIR|g" \
         "$unit" > "$rendered"
   fi
   if [[ -f "$dst" ]] && cmp -s "$rendered" "$dst"; then

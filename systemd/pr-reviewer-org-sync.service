@@ -12,6 +12,11 @@ Environment=HOME=/home/odio
 # PATH: system dirs FIRST (see pr-reviewer-bakeoff.service for rationale —
 # defense-in-depth on top of the ~/.local-not-in-ReadWritePaths fix).
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/odio/.nvm/versions/node/v24.15.0/bin:/home/odio/.local/bin
+# Where org-sync clones/pulls the operator kwr-config cache (rendered at install
+# time). The reviewer containers mount this same host path read-only. Set
+# unconditionally — org-sync no-ops when KWR_CONFIG_REPO is unset, so the path +
+# RW grant are harmless until activation.
+Environment=KWR_CONFIG_DIR=@KWR_CONFIG_DIR@
 ExecStart=/home/odio/.pr-reviewer/org-sync.sh
 # First-sync budget: cloning N missing checkouts is serial and each
 # clone can take seconds-to-tens-of-seconds for a non-trivial repo.
@@ -50,7 +55,10 @@ ProtectHome=read-only
 # happens through `gh auth login`, not hourly. ~/.cache holds gh's
 # command-history sink so keep that writable. Drop ~/.config to tighten
 # the sandbox; restore if operator hits a write-attempt in journalctl.
-ReadWritePaths=/home/odio/.pr-reviewer @KWR_CLONE_ROOT@ /home/odio/.cache
+# @KWR_CONFIG_DIR@ grants RW on the kwr-config cache (~/services/kwr-config, under
+# HOME → ProtectHome=read-only would otherwise block org-sync's clone/pull).
+# Rendered to a concrete path by install.sh on every run.
+ReadWritePaths=/home/odio/.pr-reviewer @KWR_CLONE_ROOT@ @KWR_CONFIG_DIR@ /home/odio/.cache
 
 [Install]
 WantedBy=multi-user.target

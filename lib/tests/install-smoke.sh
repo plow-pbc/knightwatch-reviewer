@@ -188,20 +188,24 @@ EXPECTED_KID_RW_PATHS=$(
 # lib/tracked-repos.sh. The sandboxed HOME is $TMPDIR/home; install.sh
 # substitutes the resolved literal path into the unit template.
 EXPECTED_KWR_CLONE_ROOT="$HOME/services/kwr-repos"
+# KWR_CONFIG_DIR is HOME-relative (sibling of kwr-repos), like KWR_CLONE_ROOT —
+# stable across overlays, so the org-sync unit renders identically each scenario.
+EXPECTED_KWR_CONFIG_DIR="$HOME/services/kwr-config"
 
 # Every unit file copied
 for unit in "${PROD_UNITS[@]}"; do
     name="$(basename "$unit")"
     [ -f "$SYSTEMD_DIR/$name" ] || { echo "FAIL scenario 1: $SYSTEMD_DIR/$name missing"; exit 1; }
-    if grep -qE '@(KID_RW_PATHS|KWR_CLONE_ROOT)@' "$unit"; then
+    if grep -qE '@(KID_RW_PATHS|KWR_CLONE_ROOT|KWR_CONFIG_DIR)@' "$unit"; then
         # Templated unit — compare against rendered version.
         rendered_expected="$TMPDIR/${name}.expected"
         sed -e "s|@KID_RW_PATHS@|$EXPECTED_KID_RW_PATHS|g" \
             -e "s|@KWR_CLONE_ROOT@|$EXPECTED_KWR_CLONE_ROOT|g" \
+            -e "s|@KWR_CONFIG_DIR@|$EXPECTED_KWR_CONFIG_DIR|g" \
             "$unit" > "$rendered_expected"
         cmp -s "$rendered_expected" "$SYSTEMD_DIR/$name" || { echo "FAIL scenario 1: $name rendered content differs from installed"; diff "$rendered_expected" "$SYSTEMD_DIR/$name"; exit 1; }
         # Verbose check: no placeholder leaks into the installed unit.
-        grep -qE '@(KID_RW_PATHS|KWR_CLONE_ROOT)@' "$SYSTEMD_DIR/$name" && { echo "FAIL scenario 1: installed $name still contains a @...@ placeholder (substitution broke)"; exit 1; }
+        grep -qE '@(KID_RW_PATHS|KWR_CLONE_ROOT|KWR_CONFIG_DIR)@' "$SYSTEMD_DIR/$name" && { echo "FAIL scenario 1: installed $name still contains a @...@ placeholder (substitution broke)"; exit 1; }
     else
         cmp -s "$unit" "$SYSTEMD_DIR/$name" || { echo "FAIL scenario 1: $name content differs from source"; exit 1; }
     fi
@@ -217,6 +221,10 @@ done
 # actual directive ships broken — the exact gap knightwatch flagged on PR #41.
 declare -A REQUIRED_PLACEHOLDER=(
     [pr-reviewer-kid-refresh.service]='@KID_RW_PATHS@'
+    # org-sync writes the kwr-config cache under HOME (~/services/kwr-config),
+    # which ProtectHome=read-only would block without this RW grant; pin it so a
+    # future edit can't silently drop it and break the cache pull at activation.
+    [pr-reviewer-org-sync.service]='@KWR_CONFIG_DIR@'
 )
 for required in "${!REQUIRED_PLACEHOLDER[@]}"; do
     placeholder="${REQUIRED_PLACEHOLDER[$required]}"
