@@ -220,7 +220,7 @@ resolve_standards() {
 #   last-good cache in place rather than blanking config. Returns non-zero on
 #   clone/pull failure for the caller to log.
 sync_kwr_config() {
-    local _auth _cur _tmp _rc _ui
+    local _auth _cur _ui
     [ -n "${KWR_CONFIG_REPO:-}" ] || return 0
     # Clone-URL hygiene (same rule the SEED convention enforces): `git clone <url>`
     # puts the whole URL in process argv (visible via /proc + shell history) and
@@ -264,37 +264,18 @@ sync_kwr_config() {
             git -C "$KWR_CONFIG_DIR" pull --ff-only --quiet
             return
         fi
-        # Different origin (operator changed KWR_CONFIG_REPO, or a stale/credential
-        # origin): re-clone, but IN PLACE — the reviewer containers bind-mount this
-        # dir, so an `rm -rf` + recreate would swap the dir inode and leave running
-        # reviewers on the old (now-unlinked) copy until restart. Clone to a temp
-        # sibling and mirror its contents in with `rsync --delete`, preserving the
-        # dir inode. (A plain ff-pull can't be used here — unrelated histories — and
-        # would silently keep serving the OLD repo. Re-cloning from the hygiene-
-        # checked URL also drops any credential origin so it can't leak to the log.)
-        # rsync is required ONLY on this path; assert it here (not up front) and
-        # fail loud if absent — falling back would keep serving the wrong origin,
-        # the exact stale-serving this re-clone exists to prevent.
-        if ! command -v rsync >/dev/null 2>&1; then
-            echo "conventions: rsync required to adopt a changed KWR_CONFIG_REPO origin (in-place re-clone) — install rsync; refusing to keep serving the old origin" >&2
-            return 1
-        fi
-        _tmp="${KWR_CONFIG_DIR}.reclone.$$"
-        rm -rf "$_tmp"
-        if git clone --quiet "$KWR_CONFIG_REPO" "$_tmp"; then
-            # --checksum, NOT the default size+mtime quick-check: a changed
-            # config.json can be byte-identical in length to the old one and written
-            # in the same second (e.g. two `{"orgs":[...]}` of equal length), which
-            # rsync's quick-check would skip — silently keeping the old content.
-            rsync -a --delete --checksum "$_tmp"/ "$KWR_CONFIG_DIR"/; _rc=$?
-            rm -rf "$_tmp"
-            [ "$_rc" -eq 0 ] || echo "conventions: origin-change re-clone rsync failed (rc=$_rc) — cache may be STALE (old origin); do not rely on it until resolved" >&2
-            return "$_rc"
-        fi
-        rm -rf "$_tmp"
-        return 1
+        # Different origin (operator pointed KWR_CONFIG_REPO at a new repo): a plain
+        # ff-pull can't adopt it (unrelated histories) and would silently keep
+        # serving the OLD repo, so drop the wrong-repo cache and fall through to a
+        # fresh clone. This swaps the cache dir inode, so already-running reviewer
+        # containers (bind mount) keep serving the old cache until they restart —
+        # which is fine: changing KWR_CONFIG_REPO is an activation/deploy action that
+        # restarts the fleet (install.sh re-syncs here, then the staggered reviewer
+        # restart picks up the new inode). An org-sync tick adopting it before that
+        # restart is a brief, self-correcting window, not a hot-swap we engineer for.
+        rm -rf "$KWR_CONFIG_DIR"
     fi
-    # Fresh clone: no cache yet (no bind mount to preserve).
+    # Fresh clone: no cache, or the wrong-origin cache just dropped above.
     mkdir -p "$(dirname "$KWR_CONFIG_DIR")"
     git clone --quiet "$KWR_CONFIG_REPO" "$KWR_CONFIG_DIR"
 }
