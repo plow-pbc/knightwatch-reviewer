@@ -173,24 +173,25 @@ shopt -u nullglob
 # ReadWritePaths to exist at namespace setup (before ExecStart runs),
 # so the mkdir below has to run at install time, not first-clone time.
 STATE_DIR="$INSTALL_DIR"
-# shellcheck disable=SC1091
-. "$REPO_DIR/lib/tracked-repos.sh"
-mkdir -p "$KWR_CLONE_ROOT"
+CONFIG_ENV_FILE="${CONFIG_ENV_FILE:-$INSTALL_DIR/config.env}"
 
-# kwr-config cache. Host org-sync clones/pulls it here, and the reviewer
-# containers mount this same host path read-only (docker-compose.yml). HOME-
-# relative (a sibling of $KWR_CLONE_ROOT, NOT clone-path-relative) so the rendered
-# systemd ReadWritePaths is stable across prod-clone moves. Create it
+# kwr-config cache — the PRODUCER, and it MUST run BEFORE tracked-repos.sh below:
+# that loader's overlay fail-louds on a cold cache when KWR_CONFIG_REPO is set, so
+# the cache has to exist first (the cold-cache first-activation ordering). Source
+# config.env (for KWR_CONFIG_REPO) + conventions.sh (for sync_kwr_config), create +
+# populate the cache, THEN source tracked-repos.sh — its overlay now sees a valid
+# config.json. HOME-relative (sibling of $KWR_CLONE_ROOT, NOT clone-path-relative)
+# so the rendered systemd ReadWritePaths is stable across prod-clone moves. Created
 # unconditionally so the org-sync unit's ReadWritePaths target exists at namespace
-# setup; populate it now (before the containers come up) when KWR_CONFIG_REPO is
-# set — a missing cache would make the containers fail loud. KWR_CONFIG_REPO is
-# sourced from config.env via tracked-repos.sh above.
+# setup; populated now (before the containers come up) when KWR_CONFIG_REPO is set
+# — a missing cache would make the containers fail loud.
+if [ -f "$CONFIG_ENV_FILE" ]; then . "$CONFIG_ENV_FILE"; fi
+# shellcheck disable=SC1091
+. "$REPO_DIR/lib/conventions.sh"
 KWR_CONFIG_DIR="$HOME/services/kwr-config"
 export KWR_CONFIG_DIR
 mkdir -p "$KWR_CONFIG_DIR"
 if [ -n "${KWR_CONFIG_REPO:-}" ]; then
-  # shellcheck disable=SC1091
-  . "$REPO_DIR/lib/conventions.sh"
   if sync_kwr_config; then
     ok "kwr-config cache synced ($KWR_CONFIG_DIR)"
   elif kwr_config_valid; then
@@ -199,6 +200,10 @@ if [ -n "${KWR_CONFIG_REPO:-}" ]; then
     fail "kwr-config sync failed and no cache present — the reviewer containers fail loud on a missing cache; fix KWR_CONFIG_REPO/creds and re-run"
   fi
 fi
+
+# shellcheck disable=SC1091
+. "$REPO_DIR/lib/tracked-repos.sh"
+mkdir -p "$KWR_CLONE_ROOT"
 
 # Dedupe + sort for stable rendering across runs so cmp-based idempotency
 # doesn't trigger spurious copies when bash hashing reorders the assoc

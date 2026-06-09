@@ -177,10 +177,12 @@ ln -s "$T/sym-target.txt" "$SYM/conventions/sneak.md" # VALID symlink INSIDE the
 printf '{ "bindings": [ { "match": {"org":"evil","marker":"SEED.md"}, "doc":"conventions/sneak.md" } ] }\n' > "$SYM/config.json"
 ( export KWR_CONFIG_DIR="$SYM"; resolve_binding "evil/x" "$REPO" "$BASE_SHA" >/dev/null 2>&1 ); [ "$?" -eq 2 ] || fail "symlinked doc escaping the repo must be rejected with rc 2"
 
-echo "  sync_kwr_config: rejects credential-bearing (incl. bare-token) / query / fragment URLs..."
-for badurl in "https://user:tok@example.com/o/r.git" "https://ghp_xxx@example.com/o/r.git" "https://example.com/o/r.git?x=1" "https://example.com/o/r.git#f"; do
+echo "  sync_kwr_config: rejects credential-bearing (incl. bare-token + ssh) / query / fragment URLs..."
+for badurl in "https://user:tok@example.com/o/r.git" "https://ghp_xxx@example.com/o/r.git" \
+              "ssh://user:tok@example.com/o/r.git" "ssh://ghp_xxx@example.com/o/r.git" \
+              "https://example.com/o/r.git?x=1" "https://example.com/o/r.git#f"; do
     err=$( ( export KWR_CONFIG_REPO="$badurl" KWR_CONFIG_DIR="$T/wont-clone"; sync_kwr_config ) 2>&1 )
-    echo "$err" | grep -qiE 'must not (contain|embed)' || fail "unsafe URL not rejected by hygiene guard: $badurl"
+    echo "$err" | grep -qiE 'must not (contain|embed)|looks like a token' || fail "unsafe URL not rejected by hygiene guard: $badurl"
     [ -d "$T/wont-clone" ] && fail "hygiene guard let a clone proceed for: $badurl"
 done
 echo "  sync_kwr_config: origin change → re-clone (not a stale ff-pull of the old repo)..."

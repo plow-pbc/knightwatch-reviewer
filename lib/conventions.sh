@@ -220,29 +220,40 @@ resolve_standards() {
 #   last-good cache in place rather than blanking config. Returns non-zero on
 #   clone/pull failure for the caller to log.
 sync_kwr_config() {
-    local _auth _cur _tmp _rc
+    local _auth _cur _tmp _rc _ui
     [ -n "${KWR_CONFIG_REPO:-}" ] || return 0
     # Clone-URL hygiene (same rule the SEED convention enforces): `git clone <url>`
     # puts the whole URL in process argv (visible via /proc + shell history) and
     # sync_kwr_config's output is captured into the persistent org-sync log, so a
-    # credential-bearing URL leaks the token. Reject query/fragment, and — for
-    # http/https — ANY userinfo in the authority, which covers both `user:tok@host`
-    # AND the bare-token `https://ghp_xxx@host` form GitHub documents. scp-style
-    # `git@host:...` and `ssh://git@host` are key-auth (not credential-in-URL), so
-    # they're left alone. Auth private config repos via the git credential helper.
+    # credential-bearing URL leaks the token. Reject query/fragment outright; then
+    # check the URL's userinfo across EVERY scheme (not just http/https — an
+    # `ssh://user:tok@host` would otherwise slip through): reject any http(s)
+    # userinfo at all (covers `https://TOKEN@host` + `https://user:tok@host`), and
+    # for any scheme reject a password (colon) or a token-shaped userinfo. Bare
+    # key-auth usernames (`git@host:...`, `ssh://git@host`) are fine — auth private
+    # config repos via the git credential helper / ssh keys, not an inline secret.
     case "$KWR_CONFIG_REPO" in
         *"?"*|*"#"*)
             echo "conventions: KWR_CONFIG_REPO must not contain a query/fragment (argv+log leak)" >&2
             return 1 ;;
     esac
+    _ui=""
+    case "$KWR_CONFIG_REPO" in
+        *://*)  _auth="${KWR_CONFIG_REPO#*://}"; _auth="${_auth%%/*}"
+                case "$_auth" in *@*) _ui="${_auth%@*}" ;; esac ;;
+        *@*:*)  _ui="${KWR_CONFIG_REPO%%@*}" ;;   # scp-style user@host:path
+    esac
     case "$KWR_CONFIG_REPO" in
         http://*|https://*)
-            _auth="${KWR_CONFIG_REPO#*://}"; _auth="${_auth%%/*}"
-            case "$_auth" in
-                *@*)
-                    echo "conventions: http(s) KWR_CONFIG_REPO must not embed credentials (userinfo) — use a credential helper" >&2
-                    return 1 ;;
-            esac ;;
+            [ -n "$_ui" ] && { echo "conventions: http(s) KWR_CONFIG_REPO must not embed credentials (userinfo) — use a credential helper" >&2; return 1; } ;;
+    esac
+    case "$_ui" in
+        *:*)
+            echo "conventions: KWR_CONFIG_REPO userinfo must not contain a password (argv+log leak) — use a credential helper / ssh key" >&2
+            return 1 ;;
+        ghp_*|gho_*|ghs_*|ghu_*|github_pat_*|sk-*|xox*|AKIA*|ASIA*)
+            echo "conventions: KWR_CONFIG_REPO userinfo looks like a token (argv+log leak) — use a credential helper / ssh key" >&2
+            return 1 ;;
     esac
     if [ -d "$KWR_CONFIG_DIR/.git" ]; then
         _cur=$(git -C "$KWR_CONFIG_DIR" remote get-url origin 2>/dev/null || echo "")

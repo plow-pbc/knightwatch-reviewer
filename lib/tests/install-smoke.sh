@@ -388,4 +388,25 @@ done
 MOCK_TIMERS_ENABLED=1 run_install "$OVERLAY_LEGACY/install.sh" || { echo "FAIL scenario 4: install.sh exited non-zero on idempotent rerun"; cat "$STUB_LOG"; exit 1; }
 [ "$(count_stub 'SYSTEMCTL disable --now pr-reviewer')" = "0" ] || { echo "FAIL scenario 4: legacy disable fired again once units were gone (branch not guarded by -f)"; cat "$STUB_LOG"; exit 1; }
 
-echo "  PASS (4 scenarios: first-run, idempotent-rerun, new-unit-incremental-enables-new-timer, retired-legacy-unit-removal)"
+# --- Scenario 5: cold-cache activation (KWR_CONFIG_REPO set, no cache yet) ------
+# Fences the producer/consumer ordering: install.sh must create+populate the
+# kwr-config cache BEFORE sourcing tracked-repos.sh, whose overlay fail-louds on a
+# cold cache when KWR_CONFIG_REPO is set. Pre-fix, install aborted before the
+# initial clone could run, so first-time activation could never bootstrap.
+echo "  scenario 5: cold-cache activation — install clones the kwr-config cache before tracked-repos consumes it..."
+COLD_OVERLAY="$TMPDIR/repo-overlay-cold"
+make_install_overlay "$COLD_OVERLAY"
+KCFG_SRC5="$TMPDIR/kwrcfg5-src"; git init -q -b main "$KCFG_SRC5"
+git -C "$KCFG_SRC5" config user.email t@t; git -C "$KCFG_SRC5" config user.name t; git -C "$KCFG_SRC5" config commit.gpgsign false
+printf '{"orgs":["coldorg"],"bindings":[]}\n' > "$KCFG_SRC5/config.json"
+git -C "$KCFG_SRC5" add config.json; git -C "$KCFG_SRC5" commit -qm init
+KCFG_BARE5="$TMPDIR/kwrcfg5.git"; git clone -q --bare "$KCFG_SRC5" "$KCFG_BARE5"
+mkdir -p "$INSTALL_DIR"
+printf 'export KWR_CONFIG_REPO="%s"\n' "$KCFG_BARE5" > "$INSTALL_DIR/config.env"   # install.sh sources this first
+rm -rf "$HOME/services/kwr-config"                                                 # cold: no pre-existing cache
+run_install "$COLD_OVERLAY/install.sh" || { echo "FAIL scenario 5: cold-cache install aborted (producer/consumer ordering regressed?)"; cat "$STUB_LOG"; exit 1; }
+[ -f "$HOME/services/kwr-config/config.json" ] || { echo "FAIL scenario 5: install did not populate the kwr-config cache before tracked-repos consumed it"; exit 1; }
+grep -q 'coldorg' "$HOME/services/kwr-config/config.json" || { echo "FAIL scenario 5: cached config.json missing expected content"; exit 1; }
+rm -f "$INSTALL_DIR/config.env"   # don't perturb other scenarios' assertions
+
+echo "  PASS (5 scenarios: first-run, idempotent-rerun, new-unit-incremental-enables-new-timer, retired-legacy-unit-removal, cold-cache-activation)"
