@@ -261,6 +261,13 @@ sync_kwr_config() {
         # dir inode. (A plain ff-pull can't be used here — unrelated histories — and
         # would silently keep serving the OLD repo. Re-cloning from the hygiene-
         # checked URL also drops any credential origin so it can't leak to the log.)
+        # rsync is required ONLY on this path; assert it here (not up front) and
+        # fail loud if absent — falling back would keep serving the wrong origin,
+        # the exact stale-serving this re-clone exists to prevent.
+        if ! command -v rsync >/dev/null 2>&1; then
+            echo "conventions: rsync required to adopt a changed KWR_CONFIG_REPO origin (in-place re-clone) — install rsync; refusing to keep serving the old origin" >&2
+            return 1
+        fi
         _tmp="${KWR_CONFIG_DIR}.reclone.$$"
         rm -rf "$_tmp"
         if git clone --quiet "$KWR_CONFIG_REPO" "$_tmp"; then
@@ -270,6 +277,7 @@ sync_kwr_config() {
             # rsync's quick-check would skip — silently keeping the old content.
             rsync -a --delete --checksum "$_tmp"/ "$KWR_CONFIG_DIR"/; _rc=$?
             rm -rf "$_tmp"
+            [ "$_rc" -eq 0 ] || echo "conventions: origin-change re-clone rsync failed (rc=$_rc) — cache may be STALE (old origin); do not rely on it until resolved" >&2
             return "$_rc"
         fi
         rm -rf "$_tmp"
