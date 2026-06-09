@@ -47,4 +47,16 @@ printf '%s\n' "$claims_block" | grep -q 'external: true' \
 printf '%s\n' "$claims_block" | grep -q 'name: kwr_claims' \
   || fail "claims external name is not kwr_claims (durability contract regressed — PR #130)"
 
+# kwr-config cache delivery: the convention/standards cache reaches the fleet ONLY
+# via the read-only host mount + KWR_CONFIG_DIR env. Pin both for EVERY reviewer —
+# a reviewer missing either silently can't find the convention cache (and would
+# fail loud at review time when KWR_CONFIG_REPO is set). Pure text assertion.
+grep -qF 'KWR_CONFIG_DIR: /root/.kwr-config' "$COMPOSE" \
+  || fail "x-reviewer-env missing KWR_CONFIG_DIR: /root/.kwr-config (containers can't locate the convention cache)"
+n_reviewers=$(grep -cE '^  reviewer-[0-9]+:' "$COMPOSE")
+n_mounts=$(grep -cF '${HOME}/services/kwr-config:/root/.kwr-config:ro' "$COMPOSE")
+[ "$n_reviewers" -ge 1 ] || fail "no reviewer-N services found in compose"
+[ "$n_mounts" -eq "$n_reviewers" ] \
+  || fail "kwr-config cache mount on $n_mounts of $n_reviewers reviewers — every reviewer must mount it read-only"
+
 echo "PASS: container-state-split-smoke"

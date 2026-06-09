@@ -831,6 +831,13 @@ case $_conv_rc in
         rm -rf "$REPO_DIR"; exit 1 ;;
 esac
 
+# Read standards HERE too, in the same early moment as the convention body/note —
+# both come from the mutable kwr-config cache (org-sync git-pulls it), so reading
+# them together avoids staging convention docs and standards/*.md from different
+# revisions if a pull lands mid-review. resolve_standards (lib/conventions.sh):
+# kwr-config standards/*.md when active, else the ~/.claude bundle.
+STANDARDS=$(resolve_standards)
+
 # `just test` runs PR-controlled code. Skip it when there's no justfile, or when
 # the author is untrusted (no push access) — on EVERY path. Untrusted test code
 # would otherwise run with the reviewer's home-dir read access (~/.ssh, the gh
@@ -929,10 +936,9 @@ ${TEST_LOG_TAIL:-(no output captured)}
 \`\`\`"
 
 # ---- standards ----
-# resolve_standards (lib/conventions.sh): the operator's kwr-config standards/*.md
-# when an external kwr-config is active, else the ~/.claude bundle (back-compat
-# for the current deploy + the open-source no-config default).
-STANDARDS=$(resolve_standards)
+# $STANDARDS was captured in the early convention-read section above (alongside the
+# convention body/note) so a mid-review org-sync pull can't split it from the
+# convention docs across revisions.
 
 # ---- kid prior-art ----
 PRIOR_ART=""

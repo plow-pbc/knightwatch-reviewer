@@ -192,6 +192,15 @@ KWR_CONFIG_DIR="$HOME/services/kwr-config"
 export KWR_CONFIG_DIR
 mkdir -p "$KWR_CONFIG_DIR"
 if [ -n "${KWR_CONFIG_REPO:-}" ]; then
+  # Deploy-time origin swap (install.sh OWNS this; the hourly org-sync path keeps
+  # last-good on a mismatch). If the cache is from a DIFFERENT repo, drop it so
+  # sync_kwr_config's fresh-clone path adopts the new origin — safe here because the
+  # deploy restarts the reviewer fleet right after, so the cache dir inode swap
+  # doesn't strand running containers.
+  if [ -d "$KWR_CONFIG_DIR/.git" ]; then
+    cache_origin="$(git -C "$KWR_CONFIG_DIR" remote get-url origin 2>/dev/null || echo "")"
+    [ "$cache_origin" != "$KWR_CONFIG_REPO" ] && rm -rf "$KWR_CONFIG_DIR"
+  fi
   if sync_kwr_config; then
     ok "kwr-config cache synced ($KWR_CONFIG_DIR)"
   elif kwr_config_valid; then

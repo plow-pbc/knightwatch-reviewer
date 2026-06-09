@@ -264,18 +264,17 @@ sync_kwr_config() {
             git -C "$KWR_CONFIG_DIR" pull --ff-only --quiet
             return
         fi
-        # Different origin (operator pointed KWR_CONFIG_REPO at a new repo): a plain
-        # ff-pull can't adopt it (unrelated histories) and would silently keep
-        # serving the OLD repo, so drop the wrong-repo cache and fall through to a
-        # fresh clone. This swaps the cache dir inode, so already-running reviewer
-        # containers (bind mount) keep serving the old cache until they restart —
-        # which is fine: changing KWR_CONFIG_REPO is an activation/deploy action that
-        # restarts the fleet (install.sh re-syncs here, then the staggered reviewer
-        # restart picks up the new inode). An org-sync tick adopting it before that
-        # restart is a brief, self-correcting window, not a hot-swap we engineer for.
-        rm -rf "$KWR_CONFIG_DIR"
+        # Different origin (operator pointed KWR_CONFIG_REPO at a new repo). Do NOT
+        # touch the cache here: this helper runs hourly from org-sync against a cache
+        # bind-mounted into running reviewers, so destroying/replacing it would swap
+        # the inode and disrupt them. Origin swaps are DEPLOY events — install.sh
+        # drops a stale-origin cache before calling this (the deploy then restarts
+        # the fleet), so the fresh-clone path below only runs at activation. Hourly,
+        # keep the last-good cache and fail loud so the operator redeploys to adopt.
+        echo "conventions: cache origin differs from KWR_CONFIG_REPO — keeping last-good; rerun install.sh / redeploy to adopt the new origin" >&2
+        return 1
     fi
-    # Fresh clone: no cache, or the wrong-origin cache just dropped above.
+    # Fresh clone: no cache (first activation, or install.sh dropped a stale-origin one).
     mkdir -p "$(dirname "$KWR_CONFIG_DIR")"
     git clone --quiet "$KWR_CONFIG_REPO" "$KWR_CONFIG_DIR"
 }

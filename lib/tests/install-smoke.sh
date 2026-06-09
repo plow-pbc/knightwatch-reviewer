@@ -409,4 +409,21 @@ run_install "$COLD_OVERLAY/install.sh" || { echo "FAIL scenario 5: cold-cache in
 grep -q 'coldorg' "$HOME/services/kwr-config/config.json" || { echo "FAIL scenario 5: cached config.json missing expected content"; exit 1; }
 rm -f "$INSTALL_DIR/config.env"   # don't perturb other scenarios' assertions
 
-echo "  PASS (5 scenarios: first-run, idempotent-rerun, new-unit-incremental-enables-new-timer, retired-legacy-unit-removal, cold-cache-activation)"
+# --- Scenario 6: deploy-time origin swap (warm cache, KWR_CONFIG_REPO repointed) -
+# install.sh OWNS origin swaps (the hourly org-sync path keeps last-good): a warm
+# cache from a DIFFERENT repo must be dropped + re-cloned to the new origin here.
+# Scenario 5 left $HOME/services/kwr-config cloned from KCFG_BARE5 (coldorg).
+echo "  scenario 6: deploy-time origin swap — install drops the stale-origin cache + clones the new repo..."
+[ -f "$HOME/services/kwr-config/config.json" ] || { echo "FAIL scenario 6: precondition — scenario 5's cache missing"; exit 1; }
+KCFG2_SRC="$TMPDIR/kwrcfg6-src"; git init -q -b main "$KCFG2_SRC"
+git -C "$KCFG2_SRC" config user.email t@t; git -C "$KCFG2_SRC" config user.name t; git -C "$KCFG2_SRC" config commit.gpgsign false
+printf '{"orgs":["neworg"],"bindings":[]}\n' > "$KCFG2_SRC/config.json"
+git -C "$KCFG2_SRC" add config.json; git -C "$KCFG2_SRC" commit -qm init
+KCFG2_BARE="$TMPDIR/kwrcfg6.git"; git clone -q --bare "$KCFG2_SRC" "$KCFG2_BARE"
+printf 'export KWR_CONFIG_REPO="%s"\n' "$KCFG2_BARE" > "$INSTALL_DIR/config.env"   # repoint to a new origin
+run_install "$COLD_OVERLAY/install.sh" || { echo "FAIL scenario 6: install aborted on origin swap"; cat "$STUB_LOG"; exit 1; }
+grep -q 'neworg' "$HOME/services/kwr-config/config.json" || { echo "FAIL scenario 6: install did not adopt the new origin (still serving the old cache)"; cat "$HOME/services/kwr-config/config.json"; exit 1; }
+grep -q 'coldorg' "$HOME/services/kwr-config/config.json" && { echo "FAIL scenario 6: stale old-origin content survived the deploy-time swap"; exit 1; }
+rm -f "$INSTALL_DIR/config.env"
+
+echo "  PASS (6 scenarios: first-run, idempotent-rerun, new-unit-incremental-enables-new-timer, retired-legacy-unit-removal, cold-cache-activation, deploy-time-origin-swap)"
