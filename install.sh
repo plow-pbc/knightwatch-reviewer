@@ -191,6 +191,17 @@ if [ -f "$CONFIG_ENV_FILE" ]; then . "$CONFIG_ENV_FILE"; fi
 KWR_CONFIG_DIR="$HOME/services/kwr-config"
 export KWR_CONFIG_DIR
 mkdir -p "$KWR_CONFIG_DIR"
+# Serialize cache mutation + the tracked-repos overlay read against the hourly
+# org-sync writer, which already guards the SAME kwr-config checkout + the
+# repos.conf.auto rewrite behind this exact lock (org-sync.sh:31). Without it an
+# org-sync tick firing mid-install would race install's clone/rm/pull and the
+# auto-file rewrite. Blocking with a bound (not org-sync's -n skip): a deploy
+# should wait a tick out, not skip the activation — but fail loud if it can't
+# acquire (a stuck org-sync run), rather than block forever. Released right after
+# the overlay source; the remaining systemd render is install-local.
+command -v flock >/dev/null 2>&1 || fail "flock not on PATH (util-linux) — needed to serialize kwr-config sync against org-sync"
+exec 9>"$INSTALL_DIR/org-sync.lock"
+flock -w 120 9 || fail "could not acquire $INSTALL_DIR/org-sync.lock within 120s — an org-sync run may be stuck; investigate before re-running install"
 if [ -n "${KWR_CONFIG_REPO:-}" ]; then
   # Deploy-time origin swap (install.sh OWNS this; the hourly org-sync path keeps
   # last-good on a mismatch). If the cache is from a DIFFERENT repo, drop it so
@@ -213,6 +224,7 @@ fi
 
 # shellcheck disable=SC1091
 . "$REPO_DIR/lib/tracked-repos.sh"
+exec 9>&-   # release the org-sync lock — the remaining systemd render is install-local
 mkdir -p "$KWR_CLONE_ROOT"
 
 # Dedupe + sort for stable rendering across runs so cmp-based idempotency
