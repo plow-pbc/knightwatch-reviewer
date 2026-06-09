@@ -424,6 +424,19 @@ printf 'export KWR_CONFIG_REPO="%s"\n' "$KCFG2_BARE" > "$INSTALL_DIR/config.env"
 run_install "$COLD_OVERLAY/install.sh" || { echo "FAIL scenario 6: install aborted on origin swap"; cat "$STUB_LOG"; exit 1; }
 grep -q 'neworg' "$HOME/services/kwr-config/config.json" || { echo "FAIL scenario 6: install did not adopt the new origin (still serving the old cache)"; cat "$HOME/services/kwr-config/config.json"; exit 1; }
 grep -q 'coldorg' "$HOME/services/kwr-config/config.json" && { echo "FAIL scenario 6: stale old-origin content survived the deploy-time swap"; exit 1; }
+
+# --- Scenario 7: ordinary redeploy, origin UNCHANGED (the common path) ---------
+# The most-common install path: warm cache, KWR_CONFIG_REPO still at the SAME repo.
+# install must NOT rm+reclone — it ff-syncs in place, preserving the cache dir
+# (a needless reclone swaps the bind-mount inode under running containers). An
+# untracked sentinel survives an in-place sync but dies in an rm -rf reclone, so
+# its survival proves the no-op path didn't drop the cache. (config.env from
+# scenario 6 still points at KCFG2_BARE — matching origin.)
+echo "  scenario 7: redeploy with unchanged origin — install preserves the warm cache (no needless reclone)..."
+touch "$HOME/services/kwr-config/.kwr-no-op-sentinel"
+run_install "$COLD_OVERLAY/install.sh" || { echo "FAIL scenario 7: install aborted on a matching-origin redeploy"; cat "$STUB_LOG"; exit 1; }
+[ -f "$HOME/services/kwr-config/.kwr-no-op-sentinel" ] || { echo "FAIL scenario 7: matching-origin redeploy dropped the cache (sentinel gone — needless rm -rf + reclone)"; exit 1; }
+grep -q 'neworg' "$HOME/services/kwr-config/config.json" || { echo "FAIL scenario 7: cache content lost across a no-op redeploy"; exit 1; }
 rm -f "$INSTALL_DIR/config.env"
 
-echo "  PASS (6 scenarios: first-run, idempotent-rerun, new-unit-incremental-enables-new-timer, retired-legacy-unit-removal, cold-cache-activation, deploy-time-origin-swap)"
+echo "  PASS (7 scenarios: first-run, idempotent-rerun, new-unit-incremental-enables-new-timer, retired-legacy-unit-removal, cold-cache-activation, deploy-time-origin-swap, unchanged-origin-redeploy-noop)"

@@ -199,7 +199,8 @@ if [ -n "${KWR_CONFIG_REPO:-}" ]; then
   # doesn't strand running containers.
   if [ -d "$KWR_CONFIG_DIR/.git" ]; then
     cache_origin="$(git -C "$KWR_CONFIG_DIR" remote get-url origin 2>/dev/null || echo "")"
-    [ "$cache_origin" != "$KWR_CONFIG_REPO" ] && rm -rf "$KWR_CONFIG_DIR"
+    # if/then over `[ … ] && rm` — matches org-sync.sh's documented set -e idiom.
+    if [ "$cache_origin" != "$KWR_CONFIG_REPO" ]; then rm -rf "$KWR_CONFIG_DIR"; fi
   fi
   if sync_kwr_config; then
     ok "kwr-config cache synced ($KWR_CONFIG_DIR)"
