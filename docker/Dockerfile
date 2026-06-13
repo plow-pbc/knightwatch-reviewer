@@ -11,6 +11,13 @@ FROM node:24.15.0-bookworm
 ARG GH_VERSION=2.90.0
 ARG JUST_VERSION=1.36.0
 ARG DOCKER_CLI_VERSION=27.3.1
+# Compose plugin: reviewed repos' `just test` (plow et al.) drive their db stack
+# with `docker compose` (api/justfile `_ensure-dbs`). The static docker tarball
+# below ships only the client, so without the plugin every compose-based suite
+# died at db-setup with "unknown flag: --env-file" → "databases not ready" → a
+# guaranteed false "🧪 Tests failed" on every PR. v5.1.x matches the dev host's
+# compose line, so the reviewer runs what plow is actually tested against.
+ARG COMPOSE_VERSION=5.1.4
 ARG CODEX_CLI_VERSION=0.134.0
 
 # sqlite3: a target repo whose `just test` runs directly in THIS container (no
@@ -27,10 +34,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && curl -fsSL https://just.systems/install.sh | bash -s -- --tag "${JUST_VERSION}" --to /usr/local/bin \
  && rm -rf /var/lib/apt/lists/*
 
-# docker CLI (client only — the daemon lives in the dind sidecar)
+# docker CLI (client only — the daemon lives in the dind sidecar) + the compose
+# plugin into the system cli-plugins dir, so it resolves for every user incl. the
+# `env -i HOME=/home/reviewer-test` test user (default plugin search path).
 RUN curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_CLI_VERSION}.tgz" -o /tmp/d.tgz \
  && tar -xzf /tmp/d.tgz -C /usr/local/bin --strip-components=1 docker/docker \
- && rm /tmp/d.tgz
+ && rm /tmp/d.tgz \
+ && mkdir -p /usr/local/lib/docker/cli-plugins \
+ && curl -fsSL "https://github.com/docker/compose/releases/download/v${COMPOSE_VERSION}/docker-compose-linux-x86_64" \
+      -o /usr/local/lib/docker/cli-plugins/docker-compose \
+ && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 
 # uv (python tool runner used by plow `just test`)
 RUN curl -fsSL https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
