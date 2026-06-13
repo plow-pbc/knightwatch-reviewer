@@ -603,8 +603,9 @@ fi
 # rather than at run-dir allocation so `sha` records what was actually
 # reviewed (REVIEWED_SHA) instead of the orchestrator's enumeration SHA
 # (PR_SHA). Worker abort paths between RUN_DIR allocation and this point
-# leave no meta.json; finalize_meta_json's missing-file path is
-# tolerant. started_at uses REVIEW_START_ISO (captured at script entry,
+# leave no meta.json; finalize_run no-ops via its `[ -f "$RUN_DIR/meta.json" ]`
+# guard, so the strict finalize_meta_json never sees the missing file.
+# started_at uses REVIEW_START_ISO (captured at script entry,
 # single-clock-read alongside REVIEW_START_TS) so review.sh's "comments
 # newer than this review" cutoff doesn't drift past comments posted
 # during the worker's setup window. Title is JSON-escaped via jq so
