@@ -20,15 +20,23 @@ ARG DOCKER_CLI_VERSION=27.3.1
 ARG COMPOSE_VERSION=5.1.4
 ARG CODEX_CLI_VERSION=0.134.0
 
-# sqlite3: a target repo whose `just test` runs directly in THIS container (no
-# docker-compose-in-dind — e.g. knightwatch-reviewer reviewing itself) needs its
-# own dev test deps. The suite shells out to sqlite3 (the bakeoff.db store);
-# without it `just test` aborts at exit 127 and reviews post "🧪 Tests not run".
+# System deps a reviewed repo's `just test` shells out to. The May-2026
+# containerization (#103) + host-reviewer retirement (#119) moved test execution
+# off the host into THIS minimal image, dropping the host's *ambient* toolchain;
+# each tool a suite needs has to be re-declared here or its absence reads as a
+# false "🧪 Tests failed" on every PR. Source of truth for a repo's needs is its
+# own CI — keep this in sync with it (don't invent a second dep declaration):
+#   - sqlite3: knightwatch-reviewer reviewing ITSELF (its suite uses the bakeoff.db
+#     store); without it `just test` exit-127s → "🧪 Tests not run".
+#   - ffmpeg: plow's `just test` (the local-dev path the reviewer runs) — dtu/linq
+#     audio conversion + test_ffmpeg_real_conversion. plow CI declares exactly this
+#     one apt dep (.github/workflows/test.yml). Pairs with the compose plugin (#157)
+#     to fully restore what the host had pre-containerization.
 # (No shellcheck: the suite syntax-checks with `bash -n`; the repo's
 # `# shellcheck source=` lines are directives for external linting, not runs.)
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git jq ca-certificates curl gnupg coreutils procps python3 python3-venv \
-      sqlite3 \
+      sqlite3 ffmpeg \
  && curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.deb" -o /tmp/gh.deb \
  && apt-get install -y /tmp/gh.deb && rm /tmp/gh.deb \
  && curl -fsSL https://just.systems/install.sh | bash -s -- --tag "${JUST_VERSION}" --to /usr/local/bin \
