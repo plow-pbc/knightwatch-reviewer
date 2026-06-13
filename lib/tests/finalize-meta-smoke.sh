@@ -19,11 +19,12 @@
 #      the bot wanted fenced — gh succeeded but early stamp failed) →
 #      add finished_at + status="aborted" + posted_at=finished_at.
 #   4. Malformed input meta.json → return 1, no .tmp file leak.
-#   5. Missing meta.json (run aborted before checkout ever wrote it —
-#      concurrent-skip dedup gate, refs/pull not-yet-published) → return 0.
-#      Nothing to finalize is a benign pre-checkout exit, not a failure;
-#      treating it as one logged a spurious "finalize_run failed" on every
-#      clean concurrent-skip (78 in one day across 4 workers).
+#   5. Missing meta.json → return 1 (fail-loud), no .tmp file leak. This
+#      helper does NOT tolerate absence: "stamp this run's meta" presupposes
+#      a run wrote one. The caller that can legitimately have no meta (a
+#      pre-checkout abort) pre-checks existence itself — review-one-pr.sh's
+#      finalize_run guards `[ -f meta.json ]`, mirroring cleanup_eyes. Pinned
+#      here so the guard is never pushed back down into this hermetic helper.
 #
 # Hermetic: sources lib/run-dir.sh directly and invokes the helper with
 # explicit args; no closure state needed.
@@ -126,11 +127,11 @@ if [ "$(cat "$META")" != "this is not json {{" ]; then
     exit 1
 fi
 
-# ---- scenario 5: missing input meta → return 0 (pre-checkout abort is benign) ----
-echo "  scenario 5: missing input meta → return 0, no tmp file leak..."
+# ---- scenario 5: missing input meta → return 1 (fail-loud, no tmp leak) ----
+echo "  scenario 5: missing input meta → return 1 (fail-loud), no tmp file leak..."
 META="$TMPDIR/m5-does-not-exist.json"
-if ! finalize_meta_json "$META" "$EXIT_TS" "aborted" "false"; then
-    echo "FAIL: scenario 5 — finalize returned non-zero on a missing meta file"
+if finalize_meta_json "$META" "$EXIT_TS" "aborted" "false"; then
+    echo "FAIL: scenario 5 — finalize returned 0 on a missing meta file (should fail loud)"
     exit 1
 fi
 if [ -e "$META" ] || [ -e "$META.tmp" ]; then
@@ -139,4 +140,4 @@ if [ -e "$META" ] || [ -e "$META.tmp" ]; then
     exit 1
 fi
 
-echo "  PASS (5 scenarios: early-posted_at-preserved, no-gratuitous-stamp, REPAIR-on-gh-posted, bad-input-returns-1, missing-input-returns-0)"
+echo "  PASS (5 scenarios: early-posted_at-preserved, no-gratuitous-stamp, REPAIR-on-gh-posted, malformed-returns-1, missing-returns-1)"

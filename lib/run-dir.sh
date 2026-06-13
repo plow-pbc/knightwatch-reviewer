@@ -79,20 +79,16 @@ allocate_run_dir() {
 # non-zero return so the smoke can drive the function without setting up
 # log()/PR_ID/LOG_FILE state.
 #
-# Returns 0 on success or when $META_FILE doesn't exist (a pre-checkout
-# abort left nothing to finalize — benign); returns 1 on jq parse / mv
-# failure (and cleans up the .tmp file). The worker's EXIT trap calls this;
-# failures are caught by the trap and logged. Smoke regression-fences the
-# branches the worker depends on (see lib/tests/finalize-meta-smoke.sh).
+# Returns 0 on success; returns 1 on unusable input — a missing OR malformed
+# $META_FILE — and on mv failure (cleaning up the .tmp file). Fail-loud by
+# design: "stamp this run's meta" presupposes the run wrote one, so a caller
+# that can legitimately have no meta (a pre-checkout abort) must pre-check
+# existence itself — review-one-pr.sh's finalize_run does, mirroring how its
+# sibling cleanup_eyes self-guards on EYES_COMMENT_ID. Smoke regression-fences
+# the branches the worker depends on (see lib/tests/finalize-meta-smoke.sh).
 finalize_meta_json() {
     local meta_file="$1" finished_at="$2" status="$3" gh_posted="$4"
     local tmp="${meta_file}.tmp"
-    # A run that aborted before checkout never wrote meta.json (the
-    # concurrent-skip dedup gate and the refs/pull not-yet-published exit
-    # both leave EXIT before review-one-pr.sh's post-checkout stamp). Nothing
-    # to finalize — a benign pre-checkout exit, not a failure. An existing
-    # but malformed file still fails below; absence ≠ corruption.
-    [ -f "$meta_file" ] || return 0
     if ! jq --arg ts "$finished_at" --arg status "$status" --arg gh_posted "$gh_posted" \
             '. + {finished_at: $ts, status: $status} + (if ($gh_posted == "true") and ((.posted_at // "") == "") then {posted_at: $ts} else {} end)' \
             "$meta_file" > "$tmp" 2>/dev/null; then

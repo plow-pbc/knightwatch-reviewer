@@ -226,9 +226,13 @@ USED_FALLBACK=false
 finalize_run() {
     # Thin wrapper around finalize_meta_json (lib/run-dir.sh) that supplies
     # the worker's runtime closure (RUN_DIR / RUN_STATUS / GH_POSTED / now).
-    # Helper handles the atomic jq+mv + posted_at repair; this only logs
-    # on failure (the trap fires from EXIT, so we can't recover, but we
-    # can fail loud rather than silently leaving meta.json un-stamped).
+    # The EXIT trap fires on every exit, including the pre-checkout clean
+    # skips (concurrent-dedup gate, refs/pull not-yet-published) that never
+    # started a real run. No meta.json means no run to finalize — a benign
+    # no-op, the finalize-side mirror of cleanup_eyes's EYES_COMMENT_ID guard.
+    # Past checkout meta.json always exists, so finalize_meta_json staying
+    # fail-loud below catches a genuinely un-stamped real run.
+    [ -f "$RUN_DIR/meta.json" ] || return 0
     if ! finalize_meta_json "$RUN_DIR/meta.json" \
             "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$RUN_STATUS" "$GH_POSTED"; then
         log "$PR_ID: finalize_run failed — meta.json left un-stamped"

@@ -654,6 +654,15 @@ if grep -q "posted reviewing placeholder" "$GATE_LOG"; then
     cat "$GATE_LOG"
     exit 1
 fi
+# A clean pre-checkout skip never wrote meta.json, so the EXIT trap's
+# finalize_run must no-op (its `[ -f meta.json ]` self-guard) — NOT log a
+# spurious finalize failure. Behavioral fence for the bug that spammed
+# "finalize_run failed — meta.json left un-stamped" on every concurrent-skip.
+if grep -q "finalize_run failed" "$GATE_LOG"; then
+    echo "FAIL: scenario 4 — clean skip logged a spurious finalize_run failure"
+    { echo "--- run.log ---"; cat "$GATE_LOG"; }
+    exit 1
+fi
 
 # ===== Scenario 5: container-mode gate skips untrusted-author PRs =====
 # codex review agents run sandbox-bypassed and share the privileged dind
