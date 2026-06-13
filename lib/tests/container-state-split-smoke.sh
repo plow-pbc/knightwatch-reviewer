@@ -59,4 +59,20 @@ n_mounts=$(grep -cF '${HOME}/services/kwr-config:/root/.kwr-config:ro' "$COMPOSE
 [ "$n_mounts" -eq "$n_reviewers" ] \
   || fail "kwr-config cache mount on $n_mounts of $n_reviewers reviewers — every reviewer must mount it read-only"
 
+# docker compose plugin: the static docker tarball ships only the client, so the
+# reviewer image must install the compose plugin into the default cli-plugins dir
+# or every compose-based reviewed suite (plow's `_ensure-dbs`) fails at db-setup
+# with "unknown flag: --env-file" → a guaranteed false "Tests failed" while THIS
+# suite stays green (it never builds the image). Pure text assertion pins the
+# install contract so a Dockerfile edit can't silently drop it. (PR #157.)
+DOCKERFILE="$(cd "$HERE/.." && pwd)/docker/Dockerfile"
+grep -qE '^ARG COMPOSE_VERSION=' "$DOCKERFILE" \
+  || fail "Dockerfile missing pinned ARG COMPOSE_VERSION (compose plugin install regressed — PR #157)"
+grep -qF '/usr/local/lib/docker/cli-plugins/docker-compose' "$DOCKERFILE" \
+  || fail "Dockerfile not installing the compose plugin into the default cli-plugins dir (PR #157)"
+grep -qF 'docker-compose-linux-x86_64' "$DOCKERFILE" \
+  || fail "Dockerfile not downloading the compose release asset (PR #157)"
+grep -qF 'chmod +x /usr/local/lib/docker/cli-plugins/docker-compose' "$DOCKERFILE" \
+  || fail "Dockerfile not making the compose plugin executable (PR #157)"
+
 echo "PASS: container-state-split-smoke"
