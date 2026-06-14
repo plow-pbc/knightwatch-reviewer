@@ -62,6 +62,15 @@ services:
     <<: *dind
     volumes:
       - dind1-lib:/var/lib/docker   # persist build cache across reviews
+      # Shared with reviewer-1 at the SAME path. A reviewed repo's `just test`
+      # (e.g. plow's test-scenarios) can bind-mount a host path the test runner
+      # wrote into a stack container — but that mount is resolved by THIS dind
+      # daemon's filesystem, not the reviewer's. Without a path shared between
+      # the two, the daemon mounts an empty auto-created dir and the container's
+      # token wait blocks → "Unable to reach your agent". XDG_CACHE_HOME points
+      # the recipe's shared dir here (lib/run-dir.sh). Per-pair to match the
+      # dindN-lib/reviewerN-local isolation model.
+      - scenario-shared1:/scenario-shared
 
   reviewer-1:
     <<: *reviewer
@@ -73,6 +82,7 @@ services:
     volumes:
       - claims:/shared
       - reviewer1-local:/local
+      - scenario-shared1:/scenario-shared   # token-passing bridge to dind-1 (see dind-1)
       # Writable (NOT :ro): codex loads/migrates config and refreshes its OAuth
       # token inside its home — a read-only mount makes every codex call die with
       # "Error loading configuration: Read-only file system". The creds stay
@@ -88,6 +98,7 @@ services:
     <<: *dind
     volumes:
       - dind2-lib:/var/lib/docker
+      - scenario-shared2:/scenario-shared   # see dind-1
 
   reviewer-2:
     <<: *reviewer
@@ -99,6 +110,7 @@ services:
     volumes:
       - claims:/shared
       - reviewer2-local:/local
+      - scenario-shared2:/scenario-shared   # see dind-1
       - ./docker/secrets/codex-account-b:/root/.codex          # OpenAI account B (writable — see account A note)
       - ./docker/secrets/repos.conf:/shared/repos.conf:ro
       - ./docker/secrets/config.env:/root/.kwr/config.env:ro
@@ -109,6 +121,7 @@ services:
     <<: *dind
     volumes:
       - dind3-lib:/var/lib/docker
+      - scenario-shared3:/scenario-shared   # see dind-1
 
   reviewer-3:
     <<: *reviewer
@@ -120,6 +133,7 @@ services:
     volumes:
       - claims:/shared
       - reviewer3-local:/local
+      - scenario-shared3:/scenario-shared   # see dind-1
       - ./docker/secrets/codex-account-c:/root/.codex          # OpenAI account C (writable — see account A note)
       - ./docker/secrets/repos.conf:/shared/repos.conf:ro
       - ./docker/secrets/config.env:/root/.kwr/config.env:ro
@@ -130,6 +144,7 @@ services:
     <<: *dind
     volumes:
       - dind4-lib:/var/lib/docker
+      - scenario-shared4:/scenario-shared   # see dind-1
 
   reviewer-4:
     <<: *reviewer
@@ -141,6 +156,7 @@ services:
     volumes:
       - claims:/shared
       - reviewer4-local:/local
+      - scenario-shared4:/scenario-shared   # see dind-1
       - ./docker/secrets/codex-account-d:/root/.codex          # OpenAI account D (writable — see account A note)
       - ./docker/secrets/repos.conf:/shared/repos.conf:ro
       - ./docker/secrets/config.env:/root/.kwr/config.env:ro
@@ -163,3 +179,8 @@ volumes:
   dind2-lib:
   dind3-lib:
   dind4-lib:
+  # Per-pair token-passing bridge for nested-dind scenario stacks (see dind-1).
+  scenario-shared1:
+  scenario-shared2:
+  scenario-shared3:
+  scenario-shared4:
