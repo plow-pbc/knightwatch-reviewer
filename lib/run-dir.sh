@@ -215,8 +215,13 @@ run_just_test() {
         # scenario-shared* → /scenario-shared). XDG_CACHE_HOME steers the recipe's
         # shared dir here (plow keys it off ${XDG_CACHE_HOME:-$HOME/.cache}); 1777
         # lets the unprivileged test user create its per-run subdir. Harmless when
-        # the mount is absent (pre-recreate): it's just a normal cache dir then.
-        mkdir -p /scenario-shared && chmod 1777 /scenario-shared
+        # the mount is absent (pre-recreate): root just creates a local cache dir.
+        # Fail LOUD at this seam if prep genuinely can't happen (broken/read-only
+        # mount) — review-one-pr.sh runs without `set -e`, so a bare `&&` would
+        # otherwise let a broken bridge surface downstream as an opaque "Unable to
+        # reach your agent" instead of here at the cause.
+        mkdir -p /scenario-shared && chmod 1777 /scenario-shared \
+            || { log "$PR_ID: FATAL — /scenario-shared prep failed (broken token-bridge mount?)"; exit 1; }
         local rc=0
         timeout -k "$test_kill_after" "$test_timeout" \
             runuser -u "$REVIEWER_TEST_USER" -- \
