@@ -92,4 +92,20 @@ grep -qF -- '-o /usr/local/bin/jq' "$DOCKERFILE" \
 grep -qF 'chmod +x /usr/local/bin/jq' "$DOCKERFILE" \
   || fail "Dockerfile not making the jq binary executable (PR #160)"
 
+# Nested-dind token bridge: plow's test-scenarios passes a token to a stack
+# container via a host bind mount the dind daemon resolves in ITS filesystem, so
+# the path must live on a volume mounted at the SAME location in both reviewer-N
+# and dind-N. Pin both mounts per pair + the volume declaration so a compose edit
+# can't silently drop the bridge and re-break "Unable to reach your agent". (PR #161.)
+for n in 1 2 3 4; do
+  dind_block=$(awk "/^  dind-$n:/{f=1;next} /^  [a-z]/{f=0} f" "$COMPOSE")
+  printf '%s\n' "$dind_block" | grep -qF "scenario-shared$n:/scenario-shared" \
+    || fail "dind-$n missing scenario-shared$n:/scenario-shared mount (nested-dind token bridge regressed — PR #161)"
+  rev_block=$(awk "/^  reviewer-$n:/{f=1;next} /^  [a-z]/{f=0} f" "$COMPOSE")
+  printf '%s\n' "$rev_block" | grep -qF "scenario-shared$n:/scenario-shared" \
+    || fail "reviewer-$n missing scenario-shared$n:/scenario-shared mount (nested-dind token bridge regressed — PR #161)"
+  grep -qE "^  scenario-shared$n:" "$COMPOSE" \
+    || fail "scenario-shared$n volume not declared (PR #161)"
+done
+
 echo "PASS: container-state-split-smoke"

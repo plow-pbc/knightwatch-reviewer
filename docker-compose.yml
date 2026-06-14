@@ -17,7 +17,9 @@
 #
 # Scale-out (add account N): add a dind-N + reviewer-N pair. Each reviewer is
 # the `<<: *reviewer` + `<<: *reviewer-env` contract plus only its per-account
-# overrides — network_mode, WORKER_ID, local volume, codex-account mount.
+# overrides — network_mode, WORKER_ID, local volume, codex-account mount, and
+# the `scenario-sharedN:/scenario-shared` bridge on BOTH dind-N and reviewer-N
+# (+ a `scenario-sharedN` volume declaration).
 # Memory: reviewer (codex agents) + dind (just-test compose stack) per unit is
 # capped near the legacy single-unit budget so prod Plow keeps headroom on the
 # 128G host. Tune after observing real peaks.

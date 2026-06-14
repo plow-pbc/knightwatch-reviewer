@@ -216,7 +216,7 @@ run_just_test() {
         # shared dir here (plow keys it off ${XDG_CACHE_HOME:-$HOME/.cache}); 1777
         # lets the unprivileged test user create its per-run subdir. Harmless when
         # the mount is absent (pre-recreate): it's just a normal cache dir then.
-        mkdir -p /scenario-shared && chmod 1777 /scenario-shared
+        mkdir -p /scenario-shared 2>/dev/null && chmod 1777 /scenario-shared 2>/dev/null || true
         local rc=0
         timeout -k "$test_kill_after" "$test_timeout" \
             runuser -u "$REVIEWER_TEST_USER" -- \
