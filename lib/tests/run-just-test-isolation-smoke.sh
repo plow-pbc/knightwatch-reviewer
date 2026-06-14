@@ -25,6 +25,22 @@ printf '#!/bin/bash\nexit 0\n'             > "$d/bin/chown"
 # loop proceeds cleanly.
 printf '#!/bin/bash\nexit 0\n'             > "$d/bin/pkill"
 printf '#!/bin/bash\nexit 1\n'             > "$d/bin/pgrep"
+# /scenario-shared is a root-owned named volume in prod; run_just_test's
+# `mkdir -p /scenario-shared && chmod 1777` on it is a privileged op like the
+# chown above (it fails un-privileged, and as reviewer-test in the container
+# self-review chmod hits EPERM). No-op those two ONLY for that path so this
+# un-privileged smoke doesn't trip; every other mkdir/chmod (the repo-dir
+# mode-strip asserted below) passes through to the real binary, kept honest.
+cat > "$d/bin/mkdir" <<'STUB'
+#!/bin/bash
+for a in "$@"; do [ "$a" = /scenario-shared ] && exit 0; done
+exec "$(command -v -p mkdir)" "$@"
+STUB
+cat > "$d/bin/chmod" <<'STUB'
+#!/bin/bash
+for a in "$@"; do [ "$a" = /scenario-shared ] && exit 0; done
+exec "$(command -v -p chmod)" "$@"
+STUB
 cat > "$d/bin/just" <<'STUB'
 #!/bin/bash
 echo "GH_TOKEN_VISIBLE=${GH_TOKEN:-<unset>}"
