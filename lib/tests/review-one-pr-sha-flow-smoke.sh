@@ -1280,4 +1280,42 @@ if [ ! -s "$STATE10/repos/test-org_probe-repo/.env.test-live" ]; then
     exit 1
 fi
 
-echo "  PASS (11 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror)"
+# Negative case: a seed that can't be written must FAIL LOUD (the probe-3 fix) —
+# abort before the mirror, never run the test with missing/stale creds. Induce a
+# deterministic failure with `mkdir` over a pre-created FILE at the target's
+# parent (fails even as root, so it holds in the container self-review too).
+echo "  scenario: repo-env seed failure aborts loud (no silent continue to the test)..."
+STATE10B="$TMPDIR/state-10b"
+seed_state_dir "$STATE10B"
+git clone -q "$GITHUB_BARE10" "$STATE10B/repos/test-org_probe-repo"
+# Block the seed: source uses an api/ subdir, but canonical's `api` is a FILE.
+touch "$STATE10B/repos/test-org_probe-repo/api"
+REPO_ENV10B="$TMPDIR/repo-env-10b"
+mkdir -p "$REPO_ENV10B/test-org_probe-repo/api"
+echo "ANTHROPIC_API_KEY=sk-test-live-fixture" > "$REPO_ENV10B/test-org_probe-repo/api/.env.test-live"
+write_gh_stub "$HOME/.local/bin/gh" "main" "$PR_SHA10"
+(
+    export STATE_DIR="$STATE10B" STATE_FILE="$STATE10B/state.json" REPOS_DIR="$STATE10B/repos" \
+           WORKDIRS_DIR="$STATE10B/workdirs" CANONICAL_LOCKS_DIR="$STATE10B/canonical-locks" \
+           PR_REVIEW_LOCK_DIR="$STATE10B/locks" \
+           REPO_ENV_DIR="$REPO_ENV10B" GH_STUB_PERMISSION_ROLE=write
+    write_probe_repos_conf "$STATE10B/repos.conf"
+    TRIGGER_COMMENT_FILE="" \
+        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
+        "test-org/probe-repo" "10" "$PR_SHA10" "feat/test" "Live-cred PR" "false" \
+        >/dev/null 2>&1 || true
+)
+RUN_DIR10B=$(find "$STATE10B/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
+[ -n "$RUN_DIR10B" ] || { echo "FAIL: scenario 10b — worker produced no run dir"; exit 1; }
+LOG10B="$RUN_DIR10B/run.log"
+if ! grep -q "FATAL — repo-env seed of 'api/.env.test-live' failed" "$LOG10B"; then
+    echo "FAIL: scenario 10b — run.log missing the fail-loud seed abort (silent-continue regressed)"
+    [ -f "$LOG10B" ] && { echo "--- run.log ---"; tail -n 30 "$LOG10B"; }
+    exit 1
+fi
+if grep -q "mirrored .* env file(s) from canonical" "$LOG10B"; then
+    echo "FAIL: scenario 10b — worker reached the .env mirror despite a failed seed (didn't abort at the seam)"
+    exit 1
+fi
+
+echo "  PASS (12 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud)"
