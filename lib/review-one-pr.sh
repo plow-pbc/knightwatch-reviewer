@@ -435,6 +435,29 @@ if [ "$FORCE_WHOLE_PR" != "true" ]; then
     fi
 fi
 
+# Seed operator-provided per-repo secret env files into the canonical clone so
+# the trusted-author .env mirror (further below) copies them into the per-PR test
+# dir. Source is a read-only, /root-only (0700) mount of host secrets — e.g.
+# plow's api/.env.test-live (live test-scenario creds CI has but a fresh container
+# lacks; without them test-scenarios fails the ANTHROPIC_API_KEY gate). NEVER
+# committed (docker/secrets/ is gitignored). Seed the CANONICAL clone, not
+# REPO_DIR directly: `git clone --shared` carries only tracked content, and the
+# mirror that copies these untracked files into a workdir is push-access-gated —
+# so untrusted authors never receive them. Absent dir = clean no-op (most repos
+# need no live creds). Runs after the KNOWN_SHA skip so a deduped review doesn't
+# seed pointlessly.
+repo_env_src="${REPO_ENV_DIR:-/root/.kwr/repo-env}/$REPO_SLUG"
+if [ -d "$repo_env_src" ]; then
+    repo_env_seeded=0
+    while IFS= read -r -d '' env_file; do
+        env_rel="${env_file#"$repo_env_src"/}"
+        mkdir -p "$CANONICAL_DIR/$(dirname "$env_rel")"
+        cp "$env_file" "$CANONICAL_DIR/$env_rel"
+        repo_env_seeded=$((repo_env_seeded + 1))
+    done < <(find "$repo_env_src" -type f -print0)
+    [ "$repo_env_seeded" -gt 0 ] && log "$PR_ID: seeded $repo_env_seeded operator repo-env file(s) into canonical"
+fi
+
 # Post the "reviewing" placeholder NOW that the canonical fetch confirmed
 # the PR head is reachable. The full run (`just test` up to 30m + 6
 # specialists + critic + aggregator) can take many minutes; the

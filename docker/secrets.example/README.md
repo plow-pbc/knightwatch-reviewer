@@ -16,24 +16,34 @@ cp -r docker/secrets.example docker/secrets
 | `config.env` | shared | Ops knobs + child-process tokens, **shell-sourced** by `review.sh` (via `CONFIG_ENV_FILE`). Mounted at the **root-only** path `/root/.kwr/config.env` so the unprivileged `reviewer-test` user that runs `just test` can't read the token *file* (the `env -i` scrub only covers its environment). Use `export GH_TOKEN=…` so `gh` and the worker inherit it. `ANTHROPIC_API_KEY` does NOT belong here — it's a `just test` dependency delivered via the `.env` mirror below, not the reviewer env. **Operator-managed review config (optional):** to activate it set `export KWR_CONFIG_REPO=https://github.com/<you>/kwr-config.git` here **and** in the host `~/.pr-reviewer/config.env` (both are sourced — host `install.sh`/org-sync pull the `${HOME}/services/kwr-config` cache, the containers read it via the read-only `/root/.kwr-config` mount). Unset = the config layer is a no-op. Use a credential helper / ssh key for a private repo — never an inline-credential URL (the worker rejects userinfo/token-bearing URLs). |
 | `repos.conf` | shared | The tracked-target manifest. For whole-org coverage set `ORGS=(...)` (every non-archived open PR in the org is reviewed, new repos included, via one batched search per org per tick); reserve `REPOS=(...)` for specific repos in partially-tracked orgs (kept OUT of ORGS). Also holds `KID_PATHS`/`SOURCE_PATHS`. Mounted into the shared volume at `/shared/repos.conf`. Start from the repo-root `repos.conf.example`. |
 | `claude-standards/` | shared | The four review-standards files the worker stages into the prompt: `CODING_STANDARDS.md`, `REVIEW_PRACTICES.md`, `TESTING.md`, `COMMENT_REVIEW_MISTAKES.md`. Mounted read-only at `/root/.claude`. Copy just these four from your `~/.claude` — NOT the whole dir, so prompt-injectable review agents can't read global config/secrets. |
+| `repo-env/` | shared | Operator per-repo secret env files seeded into each reviewed repo's canonical clone for the trusted-author `.env` mirror (live `just test` creds CI has but a fresh container lacks — e.g. plow's `ANTHROPIC_API_KEY`). Layout: `repo-env/<repo-slug>/<relpath>` (e.g. `repo-env/cncorp_plow/api/.env.test-live`). Mounted **read-only** at the root-only `/root/.kwr/repo-env`. Optional — omit for repos needing no live creds. See *Live-credential `just test`* below. |
 | `codex-account-a/` | reviewer-1's OpenAI account | A full `~/.codex` directory for account A (must contain `auth.json`). Mounted **writable** at reviewer-1's `/root/.codex` — codex rotates its own tokens/session state, and fatal-auth recovery keys on a newer `auth.json` mtime. If a worker goes offline on invalid auth, re-login that account's dir (`CODEX_HOME=docker/secrets/codex-account-a codex login --device-auth`, or copy in a fresh `auth.json`); the newer mtime auto-clears the offline marker. |
 | `codex-account-b/` | reviewer-2's OpenAI account | Same, for account B → reviewer-2. |
 
 ## Live-credential `just test` (trusted-author scenario suites)
 
-There is **no single `.env.test-live` mount**. The worker mirrors real env
-files into each PR checkout by, for every `.env*.example` the target repo
-ships, copying the matching real file (name minus `.example`) **from that
-repo's canonical clone working tree** — see `lib/review-one-pr.sh` §"mirror
-.env from canonical". For plow that means `api/.env.test-live`,
-`cli/.env.test-live`, etc., must exist inside the canonical clone at
-`$REPOS_DIR/<repo-slug>/...` (a per-container volume).
+Some suites need real credentials — plow's `test-scenarios` requires
+`ANTHROPIC_API_KEY` (+ Gmail/Slack tokens) from `api/.env.test-live`, which CI
+has but a fresh container lacks. Provide them via the **`repo-env/` mount**:
 
-Wiring that seeding into the container lifecycle is a **bring-up step**
-(see the plan's Task 7): place each repo's real env files into its canonical
-clone after the first clone. Until then, trusted-author scenario suites that
-require live keys trip their `${VAR:?}` guards — the same graceful behavior
-untrusted PRs already get. Non-scenario tests are unaffected.
+```
+docker/secrets/repo-env/<repo-slug>/<relpath>
+# e.g. docker/secrets/repo-env/cncorp_plow/api/.env.test-live
+```
+
+`<repo-slug>` is the repo with `/`→`_` (`cncorp/plow` → `cncorp_plow`);
+`<relpath>` mirrors the path inside the repo so the seeded file lands next to
+the matching `.env*.example`. The dir is mounted read-only at the root-only
+`/root/.kwr/repo-env` (the unprivileged `reviewer-test` user can't read it).
+
+`lib/review-one-pr.sh` seeds these into the repo's **canonical clone** right
+after the canonical fetch; the existing **trust-gated** `.env` mirror (for every
+`.env*.example` the repo ships, copy the matching real file) then delivers them
+into each trusted-author PR checkout. Untrusted PRs never receive them —
+`git clone --shared` carries only tracked content and the mirror is push-access-
+gated — so their `${VAR:?}` guards trip with the same graceful behavior as
+before. Repos that need no live creds just omit their subdir (clean no-op);
+non-scenario tests are unaffected.
 
 ## Generating a codex account directory
 
@@ -54,8 +64,10 @@ Only `auth.json` is strictly required; copying the whole dir is simplest.
    the shared contract — `<<: *reviewer` and `<<: *reviewer-env` — overriding
    only `network_mode: service:dind-3`, `WORKER_ID: "3"`, the `reviewer3-local`
    volume, the `scenario-shared3:/scenario-shared` bridge (same path as dind-3,
-   so the nested-dind scenario token mount resolves), and the `codex-account-c`
-   mount. Add `reviewer3-local` + `dind3-lib` + `scenario-shared3` to the
+   so the nested-dind scenario token mount resolves), the shared
+   `./docker/secrets/repo-env:/root/.kwr/repo-env:ro` mount (same on every
+   reviewer), and the `codex-account-c` mount. Add `reviewer3-local` +
+   `dind3-lib` + `scenario-shared3` to the
    `volumes:` block.
 3. `docker compose up -d`.
 

@@ -59,6 +59,17 @@ n_mounts=$(grep -cF '${HOME}/services/kwr-config:/root/.kwr-config:ro' "$COMPOSE
 [ "$n_mounts" -eq "$n_reviewers" ] \
   || fail "kwr-config cache mount on $n_mounts of $n_reviewers reviewers — every reviewer must mount it read-only"
 
+# Per-repo secret env seam: every reviewer mounts the operator repo-env dir
+# read-only under /root, and x-reviewer-env points REPO_ENV_DIR at it. review-
+# one-pr.sh seeds these into the canonical clone for the trust-gated .env mirror
+# (e.g. plow's api/.env.test-live); dropping the mount/env silently re-breaks
+# test-scenarios on the ANTHROPIC_API_KEY gate while THIS suite stays green.
+grep -qF 'REPO_ENV_DIR: /root/.kwr/repo-env' "$COMPOSE" \
+  || fail "x-reviewer-env missing REPO_ENV_DIR: /root/.kwr/repo-env (per-repo secret seam regressed)"
+n_repo_env=$(grep -cF './docker/secrets/repo-env:/root/.kwr/repo-env:ro' "$COMPOSE")
+[ "$n_repo_env" -eq "$n_reviewers" ] \
+  || fail "repo-env mount on $n_repo_env of $n_reviewers reviewers — every reviewer must mount it read-only"
+
 # docker compose plugin: the static docker tarball ships only the client, so the
 # reviewer image must install the compose plugin into the default cli-plugins dir
 # or every compose-based reviewed suite (plow's `_ensure-dbs`) fails at db-setup
