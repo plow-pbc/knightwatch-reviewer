@@ -66,6 +66,15 @@ if [ -n "\${GH_STUB_PERMISSION_RC:-}" ]; then
         esac
     done
 fi
+# Clean 200 with an explicit push role → trusted author (is_trusted_repo_author
+# reads --jq '.permission'; the stub already strips --jq so it prints the role).
+if [ -n "\${GH_STUB_PERMISSION_ROLE:-}" ]; then
+    for arg in "\$@"; do
+        case "\$arg" in
+            */collaborators/*/permission) printf '%s\n' "\$GH_STUB_PERMISSION_ROLE"; exit 0 ;;
+        esac
+    done
+fi
 fields=""
 for ((i=1; i<=\$#; i++)); do
     if [ "\${!i}" = "--json" ]; then
@@ -1194,4 +1203,81 @@ if ! grep -qx "convention.md" "$SCRATCH_SNAPSHOT9"; then
     exit 1
 fi
 
-echo "  PASS (10 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence + convention-repo scratch staging)"
+# ===== Scenario 10: repo-env seed → trusted-author .env mirror (durable creds) =====
+# Fences the fresh-container live-cred recovery path end-to-end through the real
+# worker: an operator file at REPO_ENV_DIR/<slug>/<relpath> must (1) be seeded
+# into the canonical clone, then (2) be delivered into the per-PR workdir by the
+# existing trust-gated .env mirror (because the repo ships the matching
+# .env*.example AND the author is trusted). The compose-mount smoke only proves
+# the mount exists; this proves the mount→canonical→trusted-workdir flow.
+echo "  scenario: repo-env seed → trusted-author .env mirror (live-cred recovery path)..."
+
+GITHUB_BARE10="$TMPDIR/github-side-10.git"
+git init -q --bare -b main "$GITHUB_BARE10"
+WORKING10="$TMPDIR/working-10"
+git clone -q "$GITHUB_BARE10" "$WORKING10"
+(
+    cd "$WORKING10"
+    git config user.email t@t; git config user.name t; git config commit.gpgsign false
+    # The repo SHIPS the example (tracked) — the mirror keys off it; the real
+    # .env.test-live is untracked and arrives via the seed → mirror, not the clone.
+    echo "ANTHROPIC_API_KEY=" > .env.test-live.example
+    echo "readme" > README.md
+    git add .env.test-live.example README.md
+    git commit -qm "init: ships .env.test-live.example"
+    git push -q origin main
+    git checkout -qb feat/test
+    echo "feature" > feature.txt
+    git add feature.txt
+    git commit -qm "PR feature"
+)
+PR_SHA10=$(git -C "$WORKING10" rev-parse HEAD)
+git -C "$WORKING10" push -q origin feat/test:refs/pull/10/head
+
+STATE10="$TMPDIR/state-10"
+seed_state_dir "$STATE10"
+git clone -q "$GITHUB_BARE10" "$STATE10/repos/test-org_probe-repo"
+
+# Operator secret store (the read-only /root/.kwr/repo-env mount in prod): one
+# real env file under the repo slug, the seed source.
+REPO_ENV10="$TMPDIR/repo-env-10"
+mkdir -p "$REPO_ENV10/test-org_probe-repo"
+echo "ANTHROPIC_API_KEY=sk-test-live-fixture" > "$REPO_ENV10/test-org_probe-repo/.env.test-live"
+
+write_gh_stub "$HOME/.local/bin/gh" "main" "$PR_SHA10"
+
+(
+    export STATE_DIR="$STATE10" STATE_FILE="$STATE10/state.json" REPOS_DIR="$STATE10/repos" \
+           WORKDIRS_DIR="$STATE10/workdirs" CANONICAL_LOCKS_DIR="$STATE10/canonical-locks" \
+           PR_REVIEW_LOCK_DIR="$STATE10/locks" \
+           REPO_ENV_DIR="$REPO_ENV10" GH_STUB_PERMISSION_ROLE=write
+    write_probe_repos_conf "$STATE10/repos.conf"
+    TRIGGER_COMMENT_FILE="" \
+        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
+        "test-org/probe-repo" "10" "$PR_SHA10" "feat/test" "Live-cred PR" "false" \
+        >/dev/null 2>&1 || true
+)
+
+RUN_DIR10=$(find "$STATE10/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
+[ -n "$RUN_DIR10" ] || { echo "FAIL: scenario 10 — worker produced no run dir"; exit 1; }
+LOG10="$RUN_DIR10/run.log"
+
+# Decisive: the seed wrote the real file into canonical, AND the trust-gated
+# mirror then copied it into the workdir — both observable in run.log.
+if ! grep -q "seeded 1 operator repo-env file(s) into canonical" "$LOG10"; then
+    echo "FAIL: scenario 10 — run.log missing the repo-env seed line (seed step didn't fire)"
+    [ -f "$LOG10" ] && { echo "--- run.log ---"; tail -n 30 "$LOG10"; }
+    exit 1
+fi
+if ! grep -qE "mirrored 1 env file\(s\) from canonical .*trusted" "$LOG10"; then
+    echo "FAIL: scenario 10 — run.log missing the trusted-author .env mirror line (seeded file didn't reach the workdir)"
+    [ -f "$LOG10" ] && { echo "--- run.log ---"; tail -n 30 "$LOG10"; }
+    exit 1
+fi
+# Belt-and-suspenders: the seeded file really landed in canonical (not just logged).
+if [ ! -s "$STATE10/repos/test-org_probe-repo/.env.test-live" ]; then
+    echo "FAIL: scenario 10 — .env.test-live not present in canonical clone after seed"
+    exit 1
+fi
+
+echo "  PASS (11 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror)"

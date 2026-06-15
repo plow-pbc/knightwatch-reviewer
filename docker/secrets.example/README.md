@@ -45,6 +45,15 @@ gated — so their `${VAR:?}` guards trip with the same graceful behavior as
 before. Repos that need no live creds just omit their subdir (clean no-op);
 non-scenario tests are unaffected.
 
+**Rotating / withdrawing a credential:** the seed *copies* (it doesn't prune),
+so replacing a host file rotates the cred on the next review (overwrite), but
+*removing* one leaves the prior copy in the persistent canonical clone. To fully
+withdraw, remove the host file **and** drop the canonical copy — `docker compose
+down -v` (the seed re-provisions only what's still in `repo-env/` on the next
+review) or `docker exec <reviewer> rm /local/repos/<slug>/<relpath>`. The stale
+copy only reaches trusted-author test runs (never untrusted PRs), so a revoked
+key surfaces as a loud test failure, not an exposure.
+
 ## Generating a codex account directory
 
 Run `codex login` once on any machine logged into that OpenAI/ChatGPT account,

@@ -451,8 +451,14 @@ if [ -d "$repo_env_src" ]; then
     repo_env_seeded=0
     while IFS= read -r -d '' env_file; do
         env_rel="${env_file#"$repo_env_src"/}"
-        mkdir -p "$CANONICAL_DIR/$(dirname "$env_rel")"
-        cp "$env_file" "$CANONICAL_DIR/$env_rel"
+        # Fail loud: review-one-pr.sh runs without `set -e`, so an unchecked
+        # mkdir/cp failure would count as seeded and let the test run with missing
+        # or stale live creds (an opaque downstream ${VAR:?} / scenario failure).
+        if ! mkdir -p "$CANONICAL_DIR/$(dirname "$env_rel")" \
+           || ! cp "$env_file" "$CANONICAL_DIR/$env_rel"; then
+            log "$PR_ID: FATAL — repo-env seed of '$env_rel' failed; aborting before the test runs with missing/stale creds"
+            exit 1
+        fi
         repo_env_seeded=$((repo_env_seeded + 1))
     done < <(find "$repo_env_src" -type f -print0)
     [ "$repo_env_seeded" -gt 0 ] && log "$PR_ID: seeded $repo_env_seeded operator repo-env file(s) into canonical"
