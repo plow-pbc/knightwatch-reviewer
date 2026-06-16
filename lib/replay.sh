@@ -151,6 +151,7 @@ write_scratch "$REPO_DIR" "reeval-status.md" "$(cat <<'REEVAL_EOF'
 
 ## This round
 REEVAL-LOC-TRIGGER: not-fired (replay default)
+REEVAL-SIZE-TRIGGER: not-applicable (replay default)
 
 ## Already fired in a prior round (durable — do NOT re-fire these)
 REEVAL-LOC-FIRED: no

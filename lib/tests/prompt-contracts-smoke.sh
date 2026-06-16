@@ -581,6 +581,14 @@ assert_grep "aggregator.md should read the REEVAL-LOC-TRIGGER flag for T1" \
 assert_grep "review-one-pr.sh should fold the LOC trigger into reeval-status.md" \
     "REEVAL-LOC-TRIGGER" lib/review-one-pr.sh
 
+echo "  asserting T-SIZE born-large trigger is wired producer -> consumer..."
+assert_grep "loc-trend.sh should emit the deterministic REEVAL-SIZE-TRIGGER flag" \
+    "REEVAL-SIZE-TRIGGER" lib/loc-trend.sh
+assert_grep "aggregator.md should read the REEVAL-SIZE-TRIGGER flag for the Path 1 size redirect" \
+    "REEVAL-SIZE-TRIGGER" prompts/aggregator.md
+assert_grep "review-one-pr.sh should fold REEVAL-SIZE-TRIGGER into reeval-status.md" \
+    "REEVAL-SIZE-TRIGGER" lib/review-one-pr.sh
+
 # Fire-once markers MUST be byte-identical between the emitter (aggregator.md
 # stamps them into the posted body) and the detector (review-one-pr.sh greps
 # them out of prior posted reviews). A drift on either side silently breaks

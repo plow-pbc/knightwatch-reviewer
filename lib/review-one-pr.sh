@@ -1386,6 +1386,8 @@ write_scratch "$REPO_DIR" "loc-trend.md" "$LOC_TREND"
 #     here; the aggregator owns deciding whether T2 fires this round.
 REEVAL_LOC_LINE=$(printf '%s\n' "$LOC_TREND" | grep -E '^REEVAL-LOC-TRIGGER:' | head -n1)
 [ -z "$REEVAL_LOC_LINE" ] && REEVAL_LOC_LINE="REEVAL-LOC-TRIGGER: unknown (no flag emitted)"
+REEVAL_SIZE_LINE=$(printf '%s\n' "$LOC_TREND" | grep -E '^REEVAL-SIZE-TRIGGER:' | head -n1)
+[ -z "$REEVAL_SIZE_LINE" ] && REEVAL_SIZE_LINE="REEVAL-SIZE-TRIGGER: unknown (no flag emitted)"
 # Suppress T1 on the whole-PR (/srosro-review) path. That path evaluates
 # from scratch with an empty previous-review.md, so pipeline.py does not
 # run the momentum standalone — and the aggregator's re-eval banner
@@ -1412,6 +1414,7 @@ deterministic triggers; each fires its banner at most once per PR.
 
 ## This round
 $REEVAL_LOC_LINE
+$REEVAL_SIZE_LINE
 
 ## Already fired in a prior round (durable — do NOT re-fire these)
 REEVAL-LOC-FIRED: $REEVAL_LOC_FIRED
