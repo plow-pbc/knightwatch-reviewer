@@ -12,6 +12,23 @@
 _LOC_TREND_LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 . "$_LOC_TREND_LIB_DIR/run-dir.sh"
 
+# _diff_adds_dels <repo_dir> <merge_base> <sha>
+#   echoes "<adds> <dels>" for the three-dot diff merge_base...sha — or
+#   "n/a n/a" when sha is unreachable (evicted / force-pushed) OR the diff
+#   command itself fails (corrupted history / partial fetch). Single owner of
+#   the n/a-safe additions contract, shared by the per-round trajectory loop
+#   and the T1 first-commit baseline (was duplicated across both). "0 0"
+#   (reachable, empty diff) stays distinct from "n/a n/a" (unavailable), so
+#   callers can still tell reachable_zero from unavailable. Never fabricates a
+#   0 for an unreachable sha — momentum must not read that as arithmetic.
+_diff_adds_dels() {
+    local repo_dir="$1" merge_base="$2" sha="$3" numstat ec
+    git -C "$repo_dir" cat-file -e "$sha" 2>/dev/null || { echo "n/a n/a"; return; }
+    numstat=$(git -C "$repo_dir" diff --numstat "${merge_base}...${sha}" 2>/dev/null); ec=$?
+    [ "$ec" -eq 0 ] || { echo "n/a n/a"; return; }
+    printf '%s\n' "$numstat" | awk '{a+=$1; d+=$2} END {print (a+0), (d+0)}'
+}
+
 # compute_loc_trend <repo_slash> <pr_num> <repo_dir> <merge_base_sha> <state_dir> <current_run_dir> <current_sha>
 #   stdout: markdown loc-trend.md content
 #
@@ -83,55 +100,24 @@ compute_loc_trend() {
     # merge-base per (base, sha) pair — each row reflects "what this
     # round looked like at the time," not "what this round looks like vs
     # current main."
+    # Per-round typed state derived from the shared _diff_adds_dels contract:
+    #   "n/a n/a" → unavailable (sha evicted OR diff failed; never a fake 0)
+    #   adds>0    → numeric
+    #   adds=0,dels>0 → deletion_only (`git rm` round)
+    #   adds=0,dels=0 → reachable_zero (reachable, empty diff)
     local round_adds=() round_dels=() round_states=()
-    local round_sha numstat adds dels state diff_exit
+    local round_sha adds dels state
     for line in "${rounds[@]}"; do
         round_sha="${line#*$'\t'}"
-        # Adds defaults to "n/a" (delta unknown) and is overwritten with a
-        # numeric value only on the paths where we actually computed one.
-        # numeric/deletion_only/reachable_zero rows store an integer; the
-        # unavailable rows (SHA evicted OR diff command failed) keep "n/a"
-        # so momentum can't read them as an arithmetic 0.
-        adds="n/a"
-        dels=0
-        if ! git -C "$repo_dir" cat-file -e "$round_sha" 2>/dev/null; then
-            state="unavailable"
+        read -r adds dels < <(_diff_adds_dels "$repo_dir" "$merge_base" "$round_sha")
+        if [ "$adds" = "n/a" ]; then
+            state="unavailable"; dels=0
+        elif [ "$adds" -gt 0 ]; then
+            state="numeric"
+        elif [ "$dels" -gt 0 ]; then
+            state="deletion_only"
         else
-            # Capture stdout AND exit code separately. `2>/dev/null || echo ""`
-            # would mask a non-zero exit and let it fall through as
-            # reachable_zero — wrong, since cat-file -e already confirmed
-            # the SHA is reachable, so a non-zero diff exit means
-            # something else is broken (corrupted history, partial
-            # fetch). Classify as unavailable so a corrupted-history
-            # row does not lie with a fabricated 0-adds count.
-            numstat=$(git -C "$repo_dir" diff --numstat "${merge_base}...${round_sha}" 2>/dev/null)
-            diff_exit=$?
-            if [ $diff_exit -ne 0 ]; then
-                state="unavailable"
-            elif [ -n "$numstat" ]; then
-                adds=$(printf '%s\n' "$numstat" | awk '{sum += $1} END {print sum+0}')
-                dels=$(printf '%s\n' "$numstat" | awk '{sum += $2} END {print sum+0}')
-                if [ "$adds" -gt 0 ]; then
-                    state="numeric"
-                elif [ "$dels" -gt 0 ]; then
-                    # adds=0, dels>0 — `git rm` round. Display calls it
-                    # out as deletion-only so readers don't misread it
-                    # as "no diff."
-                    state="deletion_only"
-                else
-                    # numstat returned rows but both adds and dels are
-                    # 0 across all of them — shouldn't happen in
-                    # practice (every diff row has at least one
-                    # non-zero column), but treat as reachable_zero
-                    # rather than fabricate a state.
-                    state="reachable_zero"
-                fi
-            else
-                # numstat is empty AND diff exited 0 — truly no files in
-                # the diff (legitimate zero-diff round).
-                adds=0
-                state="reachable_zero"
-            fi
+            state="reachable_zero"
         fi
         round_adds+=("$adds")
         round_dels+=("$dels")
@@ -173,19 +159,12 @@ compute_loc_trend() {
     # in-PR over many commits: round-1's review snapshot already captured
     # the grown size, so the round-over-round delta stayed flat and never
     # tripped. The first commit is the true "starting LOC"; growth past it
-    # is creep. Same n/a-safe numstat guard as the per-round loop above:
-    # an evicted first commit or a failed diff yields "n/a" (delta unknown),
-    # never a fabricated 0.
+    # is creep. Uses the shared _diff_adds_dels helper for the n/a-safe
+    # contract: an evicted first commit or a failed diff yields "n/a"
+    # (delta unknown), never a fabricated 0.
     local first_commit base_adds="n/a"
     first_commit=$(git -C "$repo_dir" rev-list --reverse "${merge_base}..${current_sha}" 2>/dev/null | head -1)
-    if [ -n "$first_commit" ] && git -C "$repo_dir" cat-file -e "$first_commit" 2>/dev/null; then
-        local base_numstat base_exit
-        base_numstat=$(git -C "$repo_dir" diff --numstat "${merge_base}...${first_commit}" 2>/dev/null)
-        base_exit=$?
-        if [ "$base_exit" -eq 0 ]; then
-            base_adds=$(printf '%s\n' "$base_numstat" | awk '{sum += $1} END {print sum+0}')
-        fi
-    fi
+    [ -n "$first_commit" ] && read -r base_adds _ < <(_diff_adds_dels "$repo_dir" "$merge_base" "$first_commit")
     local n_rounds=${#round_adds[@]}
     local first_adds="$base_adds" cur_adds="${round_adds[$((n_rounds - 1))]}"
     echo
