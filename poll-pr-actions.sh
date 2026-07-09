@@ -110,9 +110,16 @@ rerequest_check() {
         return 0
     fi
     log "$PR_KEY: re-request review event at $LATEST — posting /${BOT_CMD_PREFIX}-review trigger"
-    # Bare command only — extra prose would be treated as requester framing by
-    # the trigger-comment.md prompts.
-    if gh pr comment "$PR_NUM" --repo "$REPO" --body "/${BOT_CMD_PREFIX}-review" >/dev/null 2>&1; then
+    # Command + a human-facing attribution so the auto-post isn't mistaken for a
+    # hand-typed comment (it lands under BOT_USER, which is the operator's own
+    # identity in a single-account deploy). The trailing BOT_AUTO_TRIGGER_MARKER
+    # tells the orchestrator to treat the body as a bare command — dropping this
+    # note from the staged trigger-comment.md so it isn't weighted as requester
+    # framing (the original reason this was kept bare).
+    RR_BODY="/${BOT_CMD_PREFIX}-review
+
+<sub>↳ auto-posted by the review bot because a reviewer was re-requested — not a manual request.</sub>${BOT_AUTO_TRIGGER_MARKER}"
+    if gh pr comment "$PR_NUM" --repo "$REPO" --body "$RR_BODY" >/dev/null 2>&1; then
         seen_set_value "$RR_SEEN_FILE" "$PR_KEY" "$LATEST"
     else
         log "$PR_KEY: failed to post /${BOT_CMD_PREFIX}-review trigger comment"

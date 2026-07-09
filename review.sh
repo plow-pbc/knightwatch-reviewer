@@ -264,6 +264,10 @@ refresh_queue() {
                         # have cleaned up. STATE_DIR/tmp is durable now
                         # (no PrivateTmp tear-down to mask the leak).
                         TRIGGER_BODY=$(printf '%s' "$TRIGGER_JSON" | jq -r '.body // ""')
+                        # The re-request poller's auto-trigger carries a human-facing
+                        # attribution note; its marker means "treat as bare command",
+                        # so drop the body — the note must not become requester framing.
+                        case "$TRIGGER_BODY" in *"$BOT_AUTO_TRIGGER_MARKER"*) TRIGGER_BODY="" ;; esac
                     else
                         log "$PR_ID: trigger from @$TRIGGER_USER — not staging trigger-comment.md (no push access)"
                     fi

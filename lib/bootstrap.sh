@@ -13,6 +13,12 @@ BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
 # any comment containing it so the bot never self-triggers. Must match the
 # literal in lib/review-one-pr.sh — a smoke scenario catches drift.
 BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
+# Marker on the re-request poller's auto-posted /<prefix>-review trigger. Unlike
+# the auto-post marker above, a comment carrying THIS one still triggers a review
+# (it must — that's its whole job); it only tells the orchestrator to treat the
+# body as a bare command, dropping the poller's human-facing attribution note so
+# it isn't weighted as requester framing. See poll-pr-actions.sh + review.sh.
+BOT_AUTO_TRIGGER_MARKER="${BOT_AUTO_TRIGGER_MARKER:-<!-- knightwatch-reviewer:auto-trigger -->}"
 . "$REVIEWER_LIB_DIR/tracked-repos.sh"
 . "$REVIEWER_LIB_DIR/auth.sh"
 . "$REVIEWER_LIB_DIR/state-io.sh"

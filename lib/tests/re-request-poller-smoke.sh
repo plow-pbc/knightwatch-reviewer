@@ -152,11 +152,16 @@ echo '{}' > "$SEEN_FILE"
 run_poller
 n=$(count_comments)
 [ "$n" -eq 1 ] || { echo "FAIL scenario 2: expected 1 comment, got $n"; cat "$STUB_COMMENT_LOG"; exit 1; }
-# Whole-line exact match — substring would let the pre-fix buggy body
-# `/srosro-review (triggered by GitHub re-request-review)` slip through
-# (PR #34 round-2 regression-fence: the prompt contract treats anything
-# beyond the bare command as substantive requester prose).
-grep -qFx 'COMMENT repo=test-org/probe-repo body=/srosro-review' "$STUB_COMMENT_LOG" || { echo "FAIL scenario 2: comment body must be exactly '/srosro-review' (no parenthetical or other suffix)"; cat "$STUB_COMMENT_LOG"; exit 1; }
+# The body carries the bare command (first line, so it still triggers), a
+# human-facing attribution note, AND the auto-trigger marker. The marker is
+# load-bearing: review.sh treats a marker-bearing trigger as a bare command and
+# drops the note from the staged trigger-comment.md, so the attribution is NOT
+# weighted as requester framing. That satisfies PR #34's original concern (prose
+# beyond the bare command shaping intent inference) via the marker+strip, instead
+# of by keeping the body bare — so the note can be visible without polluting framing.
+grep -qF 'body=/srosro-review' "$STUB_COMMENT_LOG"                 || { echo "FAIL scenario 2: body missing the /srosro-review trigger command"; cat "$STUB_COMMENT_LOG"; exit 1; }
+grep -qF 'knightwatch-reviewer:auto-trigger' "$STUB_COMMENT_LOG"   || { echo "FAIL scenario 2: body missing the auto-trigger marker (review.sh would weight the note as requester framing)"; cat "$STUB_COMMENT_LOG"; exit 1; }
+grep -qiF 'auto-posted by the review bot' "$STUB_COMMENT_LOG"      || { echo "FAIL scenario 2: body missing the human-facing attribution note"; cat "$STUB_COMMENT_LOG"; exit 1; }
 seen=$(jq -r '."test-org/probe-repo#1" // empty' "$SEEN_FILE")
 [ "$seen" = "2026-04-29T10:00:00Z" ] || { echo "FAIL scenario 2: seen timestamp not advanced (got [$seen])"; cat "$SEEN_FILE"; exit 1; }
 
