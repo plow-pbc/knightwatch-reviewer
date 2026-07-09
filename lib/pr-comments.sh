@@ -50,14 +50,19 @@ _pr_comments_from_json() {
     # replies (trusted); everything else non-bot is a participant.
     local operator="${BOT_USER:-srosro}"
     local marker="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
+    # The re-request poller's auto-trigger carries its own marker (not the
+    # auto-post one, which would suppress dispatch). Filter it here too so the
+    # bot's "auto-posted by the review bot" attribution never gets staged as
+    # trusted operator prose and fed back to specialists/aggregator.
+    local trigger_marker="${BOT_AUTO_TRIGGER_MARKER:-<!-- knightwatch-reviewer:auto-trigger -->}"
     local trusted_json
     trusted_json=$(printf '%s\n' "$trusted_logins" | jq -R . | jq -s 'map(select(. != ""))')
 
     # One definition of "human (non-bot), chronological comments" the thread
     # derives from, so the trust/filter contract has a single home.
     local base
-    base=$(printf '%s' "$raw" | jq -c --arg marker "$marker" \
-        '[.[] | select(.body | contains($marker) | not)] | sort_by(.created_at)')
+    base=$(printf '%s' "$raw" | jq -c --arg marker "$marker" --arg tmarker "$trigger_marker" \
+        '[.[] | select((.body | contains($marker) | not) and (.body | contains($tmarker) | not))] | sort_by(.created_at)')
 
     # Channel 1: human thread, restricted to TRUSTED commenters. Untrusted
     # (drive-by, non-push-access) prose must never reach the

@@ -107,4 +107,18 @@ echo "$OUT" | grep -qF "<!-- decline:class=session-scoping -->" || { echo "FAIL:
 # ...and NO operator-marker section is emitted (the channel was deleted).
 echo "$OUT" | grep -qF "Operator decline markers" && { echo "FAIL: deleted marker section re-emitted"; echo "$OUT"; exit 1; } || true
 
+# Bot auto-posts (both the auto-post AND the re-request auto-trigger markers) are
+# filtered out entirely — they're the bot's own output signing as $operator, and
+# must never be re-staged as trusted operator prose fed back to the specialists.
+BOT_BODY=$(cat <<'JSON'
+[
+  {"user":{"login":"srosro"},"created_at":"2026-04-30T11:00:00Z","body":"real operator context: focus on the auth path."},
+  {"user":{"login":"srosro"},"created_at":"2026-04-30T12:00:00Z","body":"/srosro-review\n\n<sub>auto-posted by the review bot because a reviewer was re-requested.</sub><!-- knightwatch-reviewer:auto-trigger -->"}
+]
+JSON
+)
+OUT=$(_pr_comments_from_json "$BOT_BODY" "srosro")
+echo "$OUT" | grep -qF "real operator context" || { echo "FAIL: genuine operator comment was dropped"; echo "$OUT"; exit 1; }
+echo "$OUT" | grep -qF "auto-posted by the review bot" && { echo "FAIL: auto-trigger note leaked into staged pr-comments (should be filtered like auto-post)"; echo "$OUT"; exit 1; } || true
+
 echo "  PASS"
