@@ -419,6 +419,32 @@ if ! grep -qF "trigger_file=$STATE_DIR/tmp/pr-review-trigger" "$LOG_FILE"; then
     exit 1
 fi
 
+# Scenario 5b: same SHA + BOT_USER /srosro-review carrying the auto-trigger
+# marker (the re-request poller's self-identifying trigger). srosro is trusted
+# (as in scenario 5), so the trust gate would stage framing — but review.sh's
+# marker-strip blanks the body first, so the dispatch still happens (whole-PR)
+# with NO trigger_file. This isolates the marker-strip from the trust gate: the
+# poller's "auto-posted" attribution must never reach trigger-comment.md.
+echo "  scenario 5b: same SHA + BOT_USER /srosro-review WITH auto-trigger marker → dispatch, no trigger_file..."
+printf '[{"created_at":"%s","user":{"login":"srosro"},"body":"/srosro-review\\n\\n<sub>auto-posted by the review bot.</sub><!-- knightwatch-reviewer:auto-trigger -->"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+run_orchestrator
+n=$(count_dispatches)
+if [ "$n" -ne 1 ]; then
+    echo "FAIL scenario 5b: expected 1 dispatch (the auto-trigger marker must NOT suppress dispatch), got $n"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+if ! grep -q 'force_whole=true' "$LOG_FILE"; then
+    echo "FAIL scenario 5b: expected force_whole=true in dispatch"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+if grep -qF "trigger_file=$STATE_DIR/tmp/pr-review-trigger" "$LOG_FILE"; then
+    echo "FAIL scenario 5b: the auto-trigger note was staged as trigger-comment.md framing (review.sh marker-strip regressed)"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+
 # Scenario 6 (trigger-comment trust gate): same SHA, /srosro-review from a
 # commenter without push access → the trigger still dispatches a worker
 # (so poll-pr-actions's re-request trigger and external requesters keep working), but the
