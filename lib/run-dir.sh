@@ -235,15 +235,18 @@ run_just_test() {
         case "${DOCKER_HOST:-}" in "tcp://127.0.0.1:2375") ;; *)
             log "$PR_ID: FATAL — refusing dind reap: DOCKER_HOST='${DOCKER_HOST:-}' is not the dedicated dind endpoint tcp://127.0.0.1:2375 (docker-compose.yml)"; exit 1;;
         esac
+        # --host binds each command to the validated endpoint: an inherited
+        # DOCKER_CONTEXT would otherwise override DOCKER_HOST and reroute the
+        # destructive cleanup (CLI precedence: --host > DOCKER_CONTEXT > env).
         local orphans
-        orphans=$(docker ps -aq) \
+        orphans=$(docker --host "$DOCKER_HOST" ps -aq) \
             || { log "$PR_ID: FATAL — dind orphan reap failed (docker ps)"; exit 1; }
         # shellcheck disable=SC2086 — one container id per line, word-split intended
-        [ -z "$orphans" ] || docker rm -f $orphans >/dev/null \
+        [ -z "$orphans" ] || docker --host "$DOCKER_HOST" rm -f $orphans >/dev/null \
             || { log "$PR_ID: FATAL — dind orphan reap failed (docker rm)"; exit 1; }
-        docker network prune -f >/dev/null \
+        docker --host "$DOCKER_HOST" network prune -f >/dev/null \
             || { log "$PR_ID: FATAL — dind orphan reap failed (network prune)"; exit 1; }
-        docker volume prune -af >/dev/null \
+        docker --host "$DOCKER_HOST" volume prune -af >/dev/null \
             || { log "$PR_ID: FATAL — dind orphan reap failed (volume prune)"; exit 1; }
         mkdir -p "$scenario_shared" && find "$scenario_shared" -mindepth 1 -delete && chmod 1777 "$scenario_shared" \
             || { log "$PR_ID: FATAL — $scenario_shared prep failed (broken token-bridge mount?)"; exit 1; }

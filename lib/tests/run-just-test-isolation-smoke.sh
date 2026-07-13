@@ -31,12 +31,14 @@ printf '#!/bin/bash\nexit 1\n'             > "$d/bin/pgrep"
 # un-privileged and the discard contract is asserted for real below. The dind
 # reap (docker) is stubbed: no daemon at unit-test time.
 export SCENARIO_SHARED_DIR="$d/sshared"
-# The stub records argv and answers `ps -aq` with ORPHAN_ID when set, so BOTH
-# reap paths are asserted for real: the common clean-dind run (no orphans →
-# no docker rm, prunes still fire) and the orphan run (found → rm -f'd).
+# The stub records raw argv (so the --host endpoint binding is assertable) and
+# answers `ps -aq` with ORPHAN_ID when set, so BOTH reap paths are asserted for
+# real: the common clean-dind run (no orphans → no docker rm, prunes still
+# fire) and the orphan run (found → rm -f'd).
 cat > "$d/bin/docker" <<STUB
 #!/bin/bash
 echo "docker \$*" >> "$d/docker.calls"
+[ "\$1" = --host ] && shift 2
 [ "\$1" = ps ] && [ -n "\${ORPHAN_ID:-}" ] && echo "\$ORPHAN_ID"
 exit 0
 STUB
@@ -64,9 +66,11 @@ mkdir -p "$d/sshared/plow-scenario-shared"; touch "$d/sshared/plow-scenario-shar
 run_just_test /dev/null "$d/repo" "$d/log" 30s 5s
 [ ! -e "$d/sshared/plow-scenario-shared" ] || fail "stale bridge entries survived the per-run reset (issue #172 class)"
 [ "$(stat -c %a "$d/sshared")" = "1777" ]  || fail "bridge root not left mode 1777 after the reset"
-grep -q "docker rm -f" "$d/docker.calls" && fail "reap ran docker rm on a clean dind (no orphans — empty-args rm would abort every review)" || true
-grep -q "docker network prune -f" "$d/docker.calls"   || fail "orphaned stack networks not pruned"
-grep -q "docker volume prune -af" "$d/docker.calls"   || fail "orphaned stack volumes not pruned (cross-run state)"
+grep -q " rm -f" "$d/docker.calls" && fail "reap ran docker rm on a clean dind (no orphans — empty-args rm would abort every review)" || true
+grep -qF "docker --host tcp://127.0.0.1:2375 network prune -f" "$d/docker.calls" \
+    || fail "orphaned stack networks not pruned via the validated --host binding"
+grep -qF "docker --host tcp://127.0.0.1:2375 volume prune -af" "$d/docker.calls" \
+    || fail "orphaned stack volumes not pruned via the validated --host binding (cross-run state)"
 grep -q "GH_TOKEN_VISIBLE=<unset>" "$d/log"            || fail "GH_TOKEN leaked into the test command env despite the env -i scrub"
 grep -q "DOCKER_HOST_VISIBLE=tcp://127.0.0.1:2375" "$d/log" || fail "DOCKER_HOST not preserved for the dind daemon"
 grep -q "XDG_CACHE_HOME_VISIBLE=$d/sshared" "$d/log" || fail "XDG_CACHE_HOME not steered to the bridge dir (nested-dind scenario token bridge missing)"
@@ -88,7 +92,8 @@ export ORPHAN_ID=feedfacecafe   # single authoritative id: the stubs read it fro
 : > "$d/docker.calls"   # phase-scope: the rm assertion below must match THIS run
 run_just_test /dev/null "$d/repo" "$d/log1b" 30s 5s
 (( 8#$(stat -c %a "$d/repo") & 0022 )) && fail "repo_dir still group/other-writable after run_just_test (mode-strip missing)" || true
-grep -qF "docker rm -f $ORPHAN_ID" "$d/docker.calls" || fail "orphan container from ps -aq not force-removed"
+grep -qF "docker --host tcp://127.0.0.1:2375 rm -f $ORPHAN_ID" "$d/docker.calls" \
+    || fail "orphan container from ps -aq not force-removed via the validated --host binding"
 
 # Bridge-reset fail-loud contracts: anything but the pinned dind endpoint must
 # refuse the reap (unset/unix:// aims the CLI at the HOST daemon; a foreign
@@ -116,7 +121,7 @@ done
 # (inert on the ps row by design: a failed ps aborts before answering).
 for row in "ps:docker ps" "rm:docker rm" "network:network prune" "volume:volume prune"; do
     step=${row%%:*}; diag=${row#*:}
-    printf '#!/bin/bash\n[ "$1" = %s ] && exit 1\n[ "$1" = ps ] && echo "$ORPHAN_ID"\nexit 0\n' "$step" > "$d/bin/docker"
+    printf '#!/bin/bash\n[ "$1" = --host ] && shift 2\n[ "$1" = %s ] && exit 1\n[ "$1" = ps ] && echo "$ORPHAN_ID"\nexit 0\n' "$step" > "$d/bin/docker"
     out=$( (run_just_test /dev/null "$d/repo" "$d/log-$step" 30s 5s) 2>&1 ) \
         && fail "run_just_test proceeded past a failed $diag"
     grep -qF "dind orphan reap failed ($diag)" <<<"$out" || fail "failed $diag abort missing its step-named FATAL diagnostic"
