@@ -44,6 +44,18 @@ export REVIEWER_CONTAINER_MODE=1
 # see run_just_test in lib/run-dir.sh.
 export REVIEWER_TEST_USER="${REVIEWER_TEST_USER:-reviewer-test}"
 
+# Reclaim stale root-owned entries on the persistent scenario-shared volume
+# (issue #172: a root-owned plow-scenario-shared/ from the #161 rollout failed
+# 66/66 plow runs on one worker — mktemp EACCES rendered as a generic test
+# failure). run_just_test's 1777 prep covers only the volume ROOT; nested
+# fixed-name dirs keep whatever ownership they were created with, and the
+# volume outlives ownership-model changes. Repairing in place is safe ONLY
+# here, before the review loop starts: no PR-controlled process is alive to
+# race the chown (the symlink/ownership race that made #165 move the uv/pip
+# caches off-volume instead). chown -R defaults to -P, so stale PR-left
+# symlinks are not followed. Absent mount (host/systemd path) is a no-op.
+chown -R "$REVIEWER_TEST_USER" /scenario-shared 2>/dev/null || true
+
 # Block until the dind daemon answers, so the first `just test` doesn't
 # race the sidecar's startup. Fail loud if it never comes up.
 for i in $(seq 1 60); do
