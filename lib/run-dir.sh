@@ -218,36 +218,22 @@ run_just_test() {
         # lets the unprivileged test user create its per-run subdir.
         # (SCENARIO_SHARED_DIR is a test seam; prod always uses the default.)
         local scenario_shared="${SCENARIO_SHARED_DIR:-/scenario-shared}"
-        # Reset the bridge before EVERY run, not once at container startup: the
-        # named volume is persistent and PR-influenceable (dind-side stack
-        # containers run as root), so a stale root-owned nested dir — whose
-        # creation-time ownership the volume keeps forever — turns every later
-        # run's mktemp into EACCES rendered as a generic test failure (issue
-        # #172: 66/66 false failures on one worker for a month). DISCARD stale
-        # contents rather than chown -R them to the test user: ownership
-        # transfer over a PR-influenceable tree can be steered via persisted
-        # hard links, and every consumer recreates what it needs as the right
-        # user; the volume root stays root-owned 1777. The volume is per-run
-        # scratch BY DESIGN: #165 moved cache-valuable state (uv/pip) to the
-        # test user's HOME, and anything cache-shaped a future repo lands here
-        # should be steered off-volume the same way — persisting PR-written
-        # state across runs on a shared volume is a cross-PR poisoning surface,
-        # never a cache. Reap leftover dind containers first — a timed-out/died
-        # review leaves its stack running (dind serves only this reviewer,
-        # MAX_CONCURRENT=1, so anything alive here is an orphan), and deleting
-        # under a live writer is the race #165 warns about; the network/volume
-        # prunes clear what dead stacks leave behind (leaked networks exhaust
-        # dind's address pool; a leaked named volume is cross-run state the
-        # next review's compose stack would silently inherit). The DOCKER_HOST
-        # guard pins the dind tcp endpoint shape: unset or a unix:// socket
-        # means the CLI would aim the reap at the HOST daemon — the reviewer
-        # fleet and everything else on the box. Fail LOUD at this seam
-        # (review-one-pr.sh runs without `set -e`, and its lack of `pipefail`
-        # is why the `docker ps` status is checked explicitly, not via a
-        # pipeline) so a broken bridge surfaces here at the cause, not
-        # downstream as an opaque "Unable to reach your agent".
-        case "${DOCKER_HOST:-}" in tcp://*) ;; *)
-            log "$PR_ID: FATAL — refusing dind reap: DOCKER_HOST='${DOCKER_HOST:-}' is not the dind tcp endpoint (would target the HOST daemon)"; exit 1;;
+        # Reset the bridge before EVERY run: the named volume persists
+        # PR-written state, and a stale root-owned nested dir turns later runs'
+        # mktemp into EACCES rendered as a generic test failure (issue #172 —
+        # 66/66 false failures on one worker). Order matters: reap dind
+        # leftovers first (a timed-out/died review leaves its stack running;
+        # dind serves only this reviewer, so anything alive is an orphan — and
+        # the prunes clear leaked networks/volumes, which are cross-run state),
+        # THEN discard contents outright — a chown -R repair could be steered
+        # via persisted hard links. Root keeps the 1777 volume root; consumers
+        # recreate their dirs. The guard pins the dedicated sidecar endpoint
+        # (docker-compose.yml) so a misrouted DOCKER_HOST can't aim the
+        # destructive cleanup at the host or any other reachable daemon. Fail
+        # LOUD, with explicit per-step statuses: the caller runs without
+        # `set -e`/`pipefail`.
+        case "${DOCKER_HOST:-}" in "tcp://127.0.0.1:2375") ;; *)
+            log "$PR_ID: FATAL — refusing dind reap: DOCKER_HOST='${DOCKER_HOST:-}' is not the dedicated dind endpoint tcp://127.0.0.1:2375 (docker-compose.yml)"; exit 1;;
         esac
         local orphans
         orphans=$(docker ps -aq) \

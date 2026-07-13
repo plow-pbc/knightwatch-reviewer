@@ -53,7 +53,7 @@ echo "UV_CACHE_DIR_VISIBLE=${UV_CACHE_DIR:-<unset>}"
 echo "PIP_CACHE_DIR_VISIBLE=${PIP_CACHE_DIR:-<unset>}"
 STUB
 chmod +x "$d/bin"/*
-export PATH="$d/bin:$PATH" DOCKER_HOST="tcp://dind:2375" GH_TOKEN="secret-xyz"
+export PATH="$d/bin:$PATH" DOCKER_HOST="tcp://127.0.0.1:2375" GH_TOKEN="secret-xyz"   # the pinned dind endpoint (docker-compose.yml)
 
 # Container branch: the token in run_just_test's own env must NOT reach `just`.
 # Seed stale residue on the bridge (a prior run's root-owned dir, issue #172)
@@ -68,7 +68,7 @@ grep -q "docker rm -f" "$d/docker.calls" && fail "reap ran docker rm on a clean 
 grep -q "docker network prune -f" "$d/docker.calls"   || fail "orphaned stack networks not pruned"
 grep -q "docker volume prune -af" "$d/docker.calls"   || fail "orphaned stack volumes not pruned (cross-run state)"
 grep -q "GH_TOKEN_VISIBLE=<unset>" "$d/log"            || fail "GH_TOKEN leaked into the test command env despite the env -i scrub"
-grep -q "DOCKER_HOST_VISIBLE=tcp://dind:2375" "$d/log" || fail "DOCKER_HOST not preserved for the dind daemon"
+grep -q "DOCKER_HOST_VISIBLE=tcp://127.0.0.1:2375" "$d/log" || fail "DOCKER_HOST not preserved for the dind daemon"
 grep -q "XDG_CACHE_HOME_VISIBLE=$d/sshared" "$d/log" || fail "XDG_CACHE_HOME not steered to the bridge dir (nested-dind scenario token bridge missing)"
 # uv/pip package caches must be redirected OFF the dind-shared volume (onto the test
 # user's HOME) so no dind-side process can race them and no stale root ownership can
@@ -90,19 +90,19 @@ run_just_test /dev/null "$d/repo" "$d/log1b" 30s 5s
 (( 8#$(stat -c %a "$d/repo") & 0022 )) && fail "repo_dir still group/other-writable after run_just_test (mode-strip missing)" || true
 grep -qF "docker rm -f $ORPHAN_ID" "$d/docker.calls" || fail "orphan container from ps -aq not force-removed"
 
-# Bridge-reset fail-loud contracts: a non-tcp DOCKER_HOST must refuse the reap
-# (unset/unix:// means the CLI targets the HOST daemon — the reap would rm -f
-# the whole fleet), and a failed reap must abort before the test runs — a
-# broken bridge otherwise resurfaces downstream as opaque per-PR test failures
-# (issue #172 class). Each reap step fails in its own run (ps included — the
-# production caller has no pipefail, so the `docker ps` status must be caught
-# explicitly, not incidentally via a later pipeline stage).
-out=$( (unset DOCKER_HOST; run_just_test /dev/null "$d/repo" "$d/log-guard" 30s 5s) 2>&1 ) \
-    && fail "run_just_test proceeded with DOCKER_HOST unset (host-daemon reap hazard)"
-grep -q "refusing dind reap" <<<"$out" || fail "unset-DOCKER_HOST abort missing its FATAL diagnostic"
-out=$( (DOCKER_HOST=unix:///var/run/docker.sock run_just_test /dev/null "$d/repo" "$d/log-guard" 30s 5s) 2>&1 ) \
-    && fail "run_just_test proceeded with a unix:// DOCKER_HOST (host-daemon reap hazard)"
-grep -q "refusing dind reap" <<<"$out" || fail "unix-socket abort missing its FATAL diagnostic"
+# Bridge-reset fail-loud contracts: anything but the pinned dind endpoint must
+# refuse the reap (unset/unix:// aims the CLI at the HOST daemon; a foreign
+# tcp:// endpoint is some other reachable daemon — either way the destructive
+# cleanup would land off the dedicated sidecar), and a failed reap must abort
+# before the test runs — a broken bridge otherwise resurfaces downstream as
+# opaque per-PR test failures (issue #172 class). Each reap step fails in its
+# own run (ps included — the production caller has no pipefail, so the
+# `docker ps` status must be caught explicitly, not via a later pipeline stage).
+for bad in "" "unix:///var/run/docker.sock" "tcp://dind:2375"; do
+    out=$( (export DOCKER_HOST="$bad"; run_just_test /dev/null "$d/repo" "$d/log-guard" 30s 5s) 2>&1 ) \
+        && fail "run_just_test proceeded with DOCKER_HOST='${bad:-<empty>}' (off-sidecar cleanup hazard)"
+    grep -q "refusing dind reap" <<<"$out" || fail "guard refusal for DOCKER_HOST='${bad:-<empty>}' missing its FATAL diagnostic"
+done
 # Every reap step's abort is the same contract — exit non-zero, no test runs,
 # step-named diagnostic — so one table drives all four. The stub fails on the
 # step's arg and answers ps with the orphan id so later steps are reached
