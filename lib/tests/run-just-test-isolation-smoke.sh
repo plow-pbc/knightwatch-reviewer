@@ -88,39 +88,33 @@ export ORPHAN_ID=feedfacecafe   # single authoritative id: the stubs read it fro
 : > "$d/docker.calls"   # phase-scope: the rm assertion below must match THIS run
 run_just_test /dev/null "$d/repo" "$d/log1b" 30s 5s
 (( 8#$(stat -c %a "$d/repo") & 0022 )) && fail "repo_dir still group/other-writable after run_just_test (mode-strip missing)" || true
-grep -q "docker rm -f $ORPHAN_ID" "$d/docker.calls" || fail "orphan container from ps -aq not force-removed"
+grep -qF "docker rm -f $ORPHAN_ID" "$d/docker.calls" || fail "orphan container from ps -aq not force-removed"
 
 # Bridge-reset fail-loud contracts: a non-tcp DOCKER_HOST must refuse the reap
 # (unset/unix:// means the CLI targets the HOST daemon — the reap would rm -f
 # the whole fleet), and a failed reap must abort before the test runs — a
 # broken bridge otherwise resurfaces downstream as opaque per-PR test failures
-# (issue #172 class). The reap-failure stub fails `ps` specifically: the
+# (issue #172 class). Each reap step fails in its own run (ps included — the
 # production caller has no pipefail, so the `docker ps` status must be caught
-# explicitly, not incidentally via a later pipeline stage.
+# explicitly, not incidentally via a later pipeline stage).
 out=$( (unset DOCKER_HOST; run_just_test /dev/null "$d/repo" "$d/log-guard" 30s 5s) 2>&1 ) \
     && fail "run_just_test proceeded with DOCKER_HOST unset (host-daemon reap hazard)"
 grep -q "refusing dind reap" <<<"$out" || fail "unset-DOCKER_HOST abort missing its FATAL diagnostic"
 out=$( (DOCKER_HOST=unix:///var/run/docker.sock run_just_test /dev/null "$d/repo" "$d/log-guard" 30s 5s) 2>&1 ) \
     && fail "run_just_test proceeded with a unix:// DOCKER_HOST (host-daemon reap hazard)"
 grep -q "refusing dind reap" <<<"$out" || fail "unix-socket abort missing its FATAL diagnostic"
-printf '#!/bin/bash\n[ "$1" = ps ] && exit 1\nexit 0\n' > "$d/bin/docker"    # ps fails
-out=$( (run_just_test /dev/null "$d/repo" "$d/log-reap" 30s 5s) 2>&1 ) \
-    && fail "run_just_test proceeded past a failed dind reap"
-grep -q "dind orphan reap failed (docker ps)" <<<"$out" || fail "failed-ps abort missing its FATAL diagnostic"
-printf '#!/bin/bash\n[ "$1" = rm ] && exit 1\n[ "$1" = ps ] && echo "$ORPHAN_ID"\nexit 0\n' > "$d/bin/docker"  # rm fails (reads the exported id so an orphan reaches rm)
-out=$( (run_just_test /dev/null "$d/repo" "$d/log-rm" 30s 5s) 2>&1 ) \
-    && fail "run_just_test proceeded past a failed docker rm"
-grep -q "dind orphan reap failed (docker rm)" <<<"$out" || fail "failed-rm abort missing its step-specific FATAL diagnostic"
-printf '#!/bin/bash\n[ "$1" = network ] && exit 1\nexit 0\n' > "$d/bin/docker"  # network prune fails
-out=$( (run_just_test /dev/null "$d/repo" "$d/log-network" 30s 5s) 2>&1 ) \
-    && fail "run_just_test proceeded past a failed network prune"
-grep -q "dind orphan reap failed (network prune)" <<<"$out" || fail "failed-network-prune abort missing its step-specific FATAL diagnostic"
-printf '#!/bin/bash\n[ "$1" = volume ] && exit 1\nexit 0\n' > "$d/bin/docker"  # prune fails (the flag-support-sensitive step)
-out=$( (run_just_test /dev/null "$d/repo" "$d/log-prune" 30s 5s) 2>&1 ) \
-    && fail "run_just_test proceeded past a failed volume prune"
-grep -q "dind orphan reap failed (volume prune)" <<<"$out" || fail "failed-prune abort missing its step-specific FATAL diagnostic"
-[ ! -e "$d/log-guard" ] && [ ! -e "$d/log-reap" ] && [ ! -e "$d/log-rm" ] && [ ! -e "$d/log-network" ] && [ ! -e "$d/log-prune" ] \
-    || fail "a test ran despite a failed reap/guard/bridge-reset"
+# Every reap step's abort is the same contract — exit non-zero, no test runs,
+# step-named diagnostic — so one table drives all four: the stub fails on the
+# step's arg but still answers ps with the orphan id so later steps are reached.
+for c in "ps:docker ps" "rm:docker rm" "network:network prune" "volume:volume prune"; do
+    step=${c%%:*}; diag=${c#*:}
+    printf '#!/bin/bash\n[ "$1" = %s ] && exit 1\n[ "$1" = ps ] && echo "$ORPHAN_ID"\nexit 0\n' "$step" > "$d/bin/docker"
+    out=$( (run_just_test /dev/null "$d/repo" "$d/log-$step" 30s 5s) 2>&1 ) \
+        && fail "run_just_test proceeded past a failed $diag"
+    grep -qF "dind orphan reap failed ($diag)" <<<"$out" || fail "failed $diag abort missing its step-named FATAL diagnostic"
+    [ ! -e "$d/log-$step" ] || fail "a test ran despite a failed reap step ($diag)"
+done
+[ ! -e "$d/log-guard" ] || fail "a test ran despite a refused DOCKER_HOST guard"
 unset ORPHAN_ID
 printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"                             # restore
 
