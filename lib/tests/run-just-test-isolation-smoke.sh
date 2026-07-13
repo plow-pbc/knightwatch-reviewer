@@ -104,10 +104,11 @@ out=$( (DOCKER_HOST=unix:///var/run/docker.sock run_just_test /dev/null "$d/repo
     && fail "run_just_test proceeded with a unix:// DOCKER_HOST (host-daemon reap hazard)"
 grep -q "refusing dind reap" <<<"$out" || fail "unix-socket abort missing its FATAL diagnostic"
 # Every reap step's abort is the same contract — exit non-zero, no test runs,
-# step-named diagnostic — so one table drives all four: the stub fails on the
-# step's arg but still answers ps with the orphan id so later steps are reached.
-for c in "ps:docker ps" "rm:docker rm" "network:network prune" "volume:volume prune"; do
-    step=${c%%:*}; diag=${c#*:}
+# step-named diagnostic — so one table drives all four. The stub fails on the
+# step's arg and answers ps with the orphan id so later steps are reached
+# (inert on the ps row by design: a failed ps aborts before answering).
+for row in "ps:docker ps" "rm:docker rm" "network:network prune" "volume:volume prune"; do
+    step=${row%%:*}; diag=${row#*:}
     printf '#!/bin/bash\n[ "$1" = %s ] && exit 1\n[ "$1" = ps ] && echo "$ORPHAN_ID"\nexit 0\n' "$step" > "$d/bin/docker"
     out=$( (run_just_test /dev/null "$d/repo" "$d/log-$step" 30s 5s) 2>&1 ) \
         && fail "run_just_test proceeded past a failed $diag"
