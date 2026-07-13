@@ -25,22 +25,17 @@ printf '#!/bin/bash\nexit 0\n'             > "$d/bin/chown"
 # loop proceeds cleanly.
 printf '#!/bin/bash\nexit 0\n'             > "$d/bin/pkill"
 printf '#!/bin/bash\nexit 1\n'             > "$d/bin/pgrep"
-# /scenario-shared is a root-owned named volume in prod; run_just_test's
-# `mkdir -p /scenario-shared && chmod 1777` on it is a privileged op like the
-# chown above (it fails un-privileged, and as reviewer-test in the container
-# self-review chmod hits EPERM). No-op those two ONLY for that path so this
-# un-privileged smoke doesn't trip; every other mkdir/chmod (the repo-dir
-# mode-strip asserted below) passes through to the real binary, kept honest.
-cat > "$d/bin/mkdir" <<'STUB'
-#!/bin/bash
-for a in "$@"; do [ "$a" = /scenario-shared ] && exit 0; done
-exec "$(command -v -p mkdir)" "$@"
-STUB
-cat > "$d/bin/chmod" <<'STUB'
-#!/bin/bash
-for a in "$@"; do [ "$a" = /scenario-shared ] && exit 0; done
-exec "$(command -v -p chmod)" "$@"
-STUB
+# /scenario-shared is a root-owned named volume in prod, so the bridge reset's
+# fs ops would need root there — point SCENARIO_SHARED_DIR (the test seam in
+# run_just_test) at a sandbox dir instead, so the real mkdir/find/chmod run
+# un-privileged and the discard contract is asserted for real below. The dind
+# reap (docker) is stubbed: no daemon at unit-test time.
+export SCENARIO_SHARED_DIR="$d/sshared"
+printf '#!/bin/bash\nexit 0\n'             > "$d/bin/docker"
+# log()/PR_ID are the worker's context (state-io.sh); the FATAL branches
+# asserted below need both to exist here.
+log() { echo "$*"; }
+PR_ID="pr-test"
 cat > "$d/bin/just" <<'STUB'
 #!/bin/bash
 echo "GH_TOKEN_VISIBLE=${GH_TOKEN:-<unset>}"
@@ -53,17 +48,22 @@ chmod +x "$d/bin"/*
 export PATH="$d/bin:$PATH" DOCKER_HOST="tcp://dind:2375" GH_TOKEN="secret-xyz"
 
 # Container branch: the token in run_just_test's own env must NOT reach `just`.
+# Seed stale residue on the bridge (a prior run's root-owned dir, issue #172)
+# to assert the per-run reset actually discards it and leaves the root 1777.
 export REVIEWER_TEST_USER=reviewer-test
+mkdir -p "$d/sshared/plow-scenario-shared"; touch "$d/sshared/plow-scenario-shared/stale"
 run_just_test /dev/null "$d/repo" "$d/log" 30s 5s
+[ ! -e "$d/sshared/plow-scenario-shared" ] || fail "stale bridge entries survived the per-run reset (issue #172 class)"
+[ "$(stat -c %a "$d/sshared")" = "1777" ]  || fail "bridge root not left mode 1777 after the reset"
 grep -q "GH_TOKEN_VISIBLE=<unset>" "$d/log"            || fail "GH_TOKEN leaked into the test command env despite the env -i scrub"
 grep -q "DOCKER_HOST_VISIBLE=tcp://dind:2375" "$d/log" || fail "DOCKER_HOST not preserved for the dind daemon"
-grep -q "XDG_CACHE_HOME_VISIBLE=/scenario-shared" "$d/log" || fail "XDG_CACHE_HOME not steered to /scenario-shared (nested-dind scenario token bridge missing)"
+grep -q "XDG_CACHE_HOME_VISIBLE=$d/sshared" "$d/log" || fail "XDG_CACHE_HOME not steered to the bridge dir (nested-dind scenario token bridge missing)"
 # uv/pip package caches must be redirected OFF the dind-shared volume (onto the test
 # user's HOME) so no dind-side process can race them and no stale root ownership can
 # accrue there — while XDG_CACHE_HOME stays /scenario-shared for plow's bridge.
 grep -q "UV_CACHE_DIR_VISIBLE=/home/reviewer-test/.cache/uv" "$d/log"   || fail "UV_CACHE_DIR not redirected off /scenario-shared to the test user's HOME"
 grep -q "PIP_CACHE_DIR_VISIBLE=/home/reviewer-test/.cache/pip" "$d/log" || fail "PIP_CACHE_DIR not redirected off /scenario-shared to the test user's HOME"
-grep -qE "(UV|PIP)_CACHE_DIR_VISIBLE=/scenario-shared" "$d/log" && fail "a package cache is still pointed at the dind-shared /scenario-shared volume" || true
+grep -qF "_CACHE_DIR_VISIBLE=$d/sshared" "$d/log" && fail "a package cache is still pointed at the dind-shared bridge volume" || true
 
 # Mode-strip: the container branch strips group/other write from the checkout
 # after the test, so a leftover proc / a test that ran `chmod 777` can't write it
@@ -72,6 +72,20 @@ grep -qE "(UV|PIP)_CACHE_DIR_VISIBLE=/scenario-shared" "$d/log" && fail "a packa
 chmod 0777 "$d/repo"
 run_just_test /dev/null "$d/repo" "$d/log1b" 30s 5s
 (( 8#$(stat -c %a "$d/repo") & 0022 )) && fail "repo_dir still group/other-writable after run_just_test (mode-strip missing)" || true
+
+# Bridge-reset fail-loud contracts: an unset DOCKER_HOST must refuse the reap
+# (the CLI would default to the HOST daemon and rm -f the whole fleet), and a
+# failed reap must abort before the test runs — a broken bridge otherwise
+# resurfaces downstream as opaque per-PR test failures (issue #172 class).
+out=$( (unset DOCKER_HOST; run_just_test /dev/null "$d/repo" "$d/log-guard" 30s 5s) 2>&1 ) \
+    && fail "run_just_test proceeded with DOCKER_HOST unset (host-daemon reap hazard)"
+grep -q "refusing dind reap" <<<"$out" || fail "unset-DOCKER_HOST abort missing its FATAL diagnostic"
+printf '#!/bin/bash\nexit 1\n' > "$d/bin/docker"                             # reap fails
+out=$( (run_just_test /dev/null "$d/repo" "$d/log-reap" 30s 5s) 2>&1 ) \
+    && fail "run_just_test proceeded past a failed dind reap"
+grep -q "dind orphan reap failed" <<<"$out" || fail "failed-reap abort missing its FATAL diagnostic"
+[ ! -e "$d/log-guard" ] && [ ! -e "$d/log-reap" ] || fail "a test ran despite a failed bridge reset"
+printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"                             # restore
 
 # Host branch (no REVIEWER_TEST_USER): unchanged — runs as the operator, env not
 # scrubbed. Pins that the scrub is container-only, not a behavior change on host.

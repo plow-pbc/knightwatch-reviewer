@@ -21,12 +21,6 @@ make_sandbox() {
     # give the sandbox the real lib so the quota-pause check exercises production code.
     cp "$(dirname "$SRC")/lib/state-io.sh" "$d/lib/state-io.sh"
     printf '#!/bin/bash\nexit 0\n' > "$d/bin/sleep"; chmod +x "$d/bin/sleep"  # noop: don't actually wait
-    # The startup bridge reset runs find/chmod against the real /scenario-shared
-    # (present root-owned in the reviewer container, absent on dev hosts) — stub
-    # both so the unprivileged smoke never touches it. Scenario 6 flips find to
-    # a failing stub to assert the reset's fail-loud contract.
-    printf '#!/bin/bash\nexit 0\n' > "$d/bin/find";  chmod +x "$d/bin/find"
-    printf '#!/bin/bash\nexit 0\n' > "$d/bin/chmod"; chmod +x "$d/bin/chmod"
     echo "$d"
 }
 
@@ -97,20 +91,6 @@ touch -d "+1 hour" "$d/codex/auth.json"
 ( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x LOCAL_STATE_DIR="$d/state" CODEX_HOME="$d/codex" ./review-loop.sh ) >/dev/null 2>&1 || true
 [ -e "$d/called" ] || fail "review-loop stayed offline after re-login (newer auth.json mtime should resume)"
 [ ! -e "$d/state/auth-offline" ] || fail "review-loop did not clear the auth-offline marker after re-login"
-rm -rf "$d"
-
-# 6. Bridge-reset contract (issue #172): a failed /scenario-shared reset must
-#    exit non-zero BEFORE any review tick — a broken bridge otherwise resurfaces
-#    downstream as opaque per-PR "Tests failed" false negatives. (The success
-#    path is covered by scenarios 2-5, which all pass through the reset.)
-d=$(make_sandbox)
-printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"; chmod +x "$d/bin/docker"   # dind ready
-printf '#!/bin/bash\nexit 1\n' > "$d/bin/find"                               # reset fails
-printf '#!/bin/bash\ntouch "%s/called"\nexit 0\n' "$d" > "$d/review.sh"; chmod +x "$d/review.sh"
-if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x LOCAL_STATE_DIR="$d/state" ./review-loop.sh ) >/dev/null 2>&1; then
-    fail "review-loop exited 0 when the /scenario-shared reset failed (should fail loud)"
-fi
-[ ! -e "$d/called" ] || fail "review-loop ran a review tick after a failed bridge reset"
 rm -rf "$d"
 
 echo "PASS: review-loop-smoke"
