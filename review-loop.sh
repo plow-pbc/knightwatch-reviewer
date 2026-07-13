@@ -58,7 +58,7 @@ export REVIEWER_TEST_USER="${REVIEWER_TEST_USER:-reviewer-test}"
 # a crash-looping container beats another month of silent false failures.
 if [ -d /scenario-shared ]; then
     err=$(chown -R "$REVIEWER_TEST_USER" /scenario-shared 2>&1) \
-        || { log "[review-loop] FATAL: /scenario-shared reclaim for $REVIEWER_TEST_USER failed: $err"; exit 1; }
+        || { log "[review-loop] FATAL: /scenario-shared reclaim for $REVIEWER_TEST_USER failed: $(printf '%s' "$err" | tr '\n' ';' | cut -c1-500)"; exit 1; }
     log "[review-loop] reclaimed /scenario-shared for $REVIEWER_TEST_USER"
 fi
 
