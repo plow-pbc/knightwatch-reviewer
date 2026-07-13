@@ -98,10 +98,15 @@ grep -qF "docker rm -f $ORPHAN_ID" "$d/docker.calls" || fail "orphan container f
 # opaque per-PR test failures (issue #172 class). Each reap step fails in its
 # own run (ps included — the production caller has no pipefail, so the
 # `docker ps` status must be caught explicitly, not via a later pipeline stage).
-for bad in "" "unix:///var/run/docker.sock" "tcp://dind:2375"; do
-    out=$( (export DOCKER_HOST="$bad"; run_just_test /dev/null "$d/repo" "$d/log-guard" 30s 5s) 2>&1 ) \
-        && fail "run_just_test proceeded with DOCKER_HOST='${bad:-<empty>}' (off-sidecar cleanup hazard)"
-    grep -q "refusing dind reap" <<<"$out" || fail "guard refusal for DOCKER_HOST='${bad:-<empty>}' missing its FATAL diagnostic"
+# The pinned literal lives in both run-dir.sh's guard and docker-compose.yml's
+# reviewer env; catch drift here as a red test instead of a fleet-wide FATAL.
+grep -qF "DOCKER_HOST: tcp://127.0.0.1:2375" "$HERE/../docker-compose.yml" \
+    || fail "docker-compose.yml DOCKER_HOST drifted from run-dir.sh's pinned dind endpoint"
+for bad in "<unset>" "" "unix:///var/run/docker.sock" "tcp://dind:2375"; do
+    out=$( ( if [ "$bad" = "<unset>" ]; then unset DOCKER_HOST; else export DOCKER_HOST="$bad"; fi
+             run_just_test /dev/null "$d/repo" "$d/log-guard" 30s 5s ) 2>&1 ) \
+        && fail "run_just_test proceeded with DOCKER_HOST=$bad (off-sidecar cleanup hazard)"
+    grep -q "refusing dind reap" <<<"$out" || fail "guard refusal for DOCKER_HOST=$bad missing its FATAL diagnostic"
 done
 # Every reap step's abort is the same contract — exit non-zero, no test runs,
 # step-named diagnostic — so one table drives all four. The stub fails on the
