@@ -84,12 +84,11 @@ grep -qF "_CACHE_DIR_VISIBLE=$d/sshared" "$d/log" && fail "a package cache is st
 # This run doubles as the orphan-present reap path: ps answers with a fake id,
 # which must be force-removed.
 chmod 0777 "$d/repo"
-export ORPHAN_ID=feedfacecafe
+export ORPHAN_ID=feedfacecafe   # single authoritative id: the stubs read it from env, the grep below uses it
 : > "$d/docker.calls"   # phase-scope: the rm assertion below must match THIS run
 run_just_test /dev/null "$d/repo" "$d/log1b" 30s 5s
-unset ORPHAN_ID
 (( 8#$(stat -c %a "$d/repo") & 0022 )) && fail "repo_dir still group/other-writable after run_just_test (mode-strip missing)" || true
-grep -q "docker rm -f feedfacecafe" "$d/docker.calls" || fail "orphan container from ps -aq not force-removed"
+grep -q "docker rm -f $ORPHAN_ID" "$d/docker.calls" || fail "orphan container from ps -aq not force-removed"
 
 # Bridge-reset fail-loud contracts: a non-tcp DOCKER_HOST must refuse the reap
 # (unset/unix:// means the CLI targets the HOST daemon — the reap would rm -f
@@ -108,15 +107,21 @@ printf '#!/bin/bash\n[ "$1" = ps ] && exit 1\nexit 0\n' > "$d/bin/docker"    # p
 out=$( (run_just_test /dev/null "$d/repo" "$d/log-reap" 30s 5s) 2>&1 ) \
     && fail "run_just_test proceeded past a failed dind reap"
 grep -q "dind orphan reap failed (docker ps)" <<<"$out" || fail "failed-ps abort missing its FATAL diagnostic"
-printf '#!/bin/bash\n[ "$1" = rm ] && exit 1\n[ "$1" = ps ] && echo feedfacecafe\nexit 0\n' > "$d/bin/docker"  # rm fails (needs an orphan to reach rm)
+printf '#!/bin/bash\n[ "$1" = rm ] && exit 1\n[ "$1" = ps ] && echo "$ORPHAN_ID"\nexit 0\n' > "$d/bin/docker"  # rm fails (reads the exported id so an orphan reaches rm)
 out=$( (run_just_test /dev/null "$d/repo" "$d/log-rm" 30s 5s) 2>&1 ) \
     && fail "run_just_test proceeded past a failed docker rm"
 grep -q "dind orphan reap failed (docker rm)" <<<"$out" || fail "failed-rm abort missing its step-specific FATAL diagnostic"
+printf '#!/bin/bash\n[ "$1" = network ] && exit 1\nexit 0\n' > "$d/bin/docker"  # network prune fails
+out=$( (run_just_test /dev/null "$d/repo" "$d/log-network" 30s 5s) 2>&1 ) \
+    && fail "run_just_test proceeded past a failed network prune"
+grep -q "dind orphan reap failed (network prune)" <<<"$out" || fail "failed-network-prune abort missing its step-specific FATAL diagnostic"
 printf '#!/bin/bash\n[ "$1" = volume ] && exit 1\nexit 0\n' > "$d/bin/docker"  # prune fails (the flag-support-sensitive step)
 out=$( (run_just_test /dev/null "$d/repo" "$d/log-prune" 30s 5s) 2>&1 ) \
     && fail "run_just_test proceeded past a failed volume prune"
 grep -q "dind orphan reap failed (volume prune)" <<<"$out" || fail "failed-prune abort missing its step-specific FATAL diagnostic"
-[ ! -e "$d/log-guard" ] && [ ! -e "$d/log-reap" ] && [ ! -e "$d/log-rm" ] && [ ! -e "$d/log-prune" ] || fail "a test ran despite a failed bridge reset"
+[ ! -e "$d/log-guard" ] && [ ! -e "$d/log-reap" ] && [ ! -e "$d/log-rm" ] && [ ! -e "$d/log-network" ] && [ ! -e "$d/log-prune" ] \
+    || fail "a test ran despite a failed reap/guard/bridge-reset"
+unset ORPHAN_ID
 printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"                             # restore
 
 # Host branch (no REVIEWER_TEST_USER): unchanged — runs as the operator, env not
