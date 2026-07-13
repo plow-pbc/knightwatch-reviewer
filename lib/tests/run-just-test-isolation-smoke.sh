@@ -60,6 +60,7 @@ export PATH="$d/bin:$PATH" DOCKER_HOST="tcp://dind:2375" GH_TOKEN="secret-xyz"
 # to assert the per-run reset actually discards it and leaves the root 1777.
 export REVIEWER_TEST_USER=reviewer-test
 mkdir -p "$d/sshared/plow-scenario-shared"; touch "$d/sshared/plow-scenario-shared/stale"
+: > "$d/docker.calls"   # phase-scope the call ledger: greps below see only this run
 run_just_test /dev/null "$d/repo" "$d/log" 30s 5s
 [ ! -e "$d/sshared/plow-scenario-shared" ] || fail "stale bridge entries survived the per-run reset (issue #172 class)"
 [ "$(stat -c %a "$d/sshared")" = "1777" ]  || fail "bridge root not left mode 1777 after the reset"
@@ -84,6 +85,7 @@ grep -qF "_CACHE_DIR_VISIBLE=$d/sshared" "$d/log" && fail "a package cache is st
 # which must be force-removed.
 chmod 0777 "$d/repo"
 export ORPHAN_ID=feedfacecafe
+: > "$d/docker.calls"   # phase-scope: the rm assertion below must match THIS run
 run_just_test /dev/null "$d/repo" "$d/log1b" 30s 5s
 unset ORPHAN_ID
 (( 8#$(stat -c %a "$d/repo") & 0022 )) && fail "repo_dir still group/other-writable after run_just_test (mode-strip missing)" || true
@@ -106,11 +108,15 @@ printf '#!/bin/bash\n[ "$1" = ps ] && exit 1\nexit 0\n' > "$d/bin/docker"    # p
 out=$( (run_just_test /dev/null "$d/repo" "$d/log-reap" 30s 5s) 2>&1 ) \
     && fail "run_just_test proceeded past a failed dind reap"
 grep -q "dind orphan reap failed (docker ps)" <<<"$out" || fail "failed-ps abort missing its FATAL diagnostic"
+printf '#!/bin/bash\n[ "$1" = rm ] && exit 1\n[ "$1" = ps ] && echo feedfacecafe\nexit 0\n' > "$d/bin/docker"  # rm fails (needs an orphan to reach rm)
+out=$( (run_just_test /dev/null "$d/repo" "$d/log-rm" 30s 5s) 2>&1 ) \
+    && fail "run_just_test proceeded past a failed docker rm"
+grep -q "dind orphan reap failed (docker rm)" <<<"$out" || fail "failed-rm abort missing its step-specific FATAL diagnostic"
 printf '#!/bin/bash\n[ "$1" = volume ] && exit 1\nexit 0\n' > "$d/bin/docker"  # prune fails (the flag-support-sensitive step)
 out=$( (run_just_test /dev/null "$d/repo" "$d/log-prune" 30s 5s) 2>&1 ) \
     && fail "run_just_test proceeded past a failed volume prune"
 grep -q "dind orphan reap failed (volume prune)" <<<"$out" || fail "failed-prune abort missing its step-specific FATAL diagnostic"
-[ ! -e "$d/log-guard" ] && [ ! -e "$d/log-reap" ] && [ ! -e "$d/log-prune" ] || fail "a test ran despite a failed bridge reset"
+[ ! -e "$d/log-guard" ] && [ ! -e "$d/log-reap" ] && [ ! -e "$d/log-rm" ] && [ ! -e "$d/log-prune" ] || fail "a test ran despite a failed bridge reset"
 printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"                             # restore
 
 # Host branch (no REVIEWER_TEST_USER): unchanged — runs as the operator, env not
