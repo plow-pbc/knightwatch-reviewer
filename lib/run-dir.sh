@@ -227,20 +227,34 @@ run_just_test() {
         # contents rather than chown -R them to the test user: ownership
         # transfer over a PR-influenceable tree can be steered via persisted
         # hard links, and every consumer recreates what it needs as the right
-        # user; the volume root stays root-owned 1777. Reap leftover dind
-        # containers first — a timed-out/died review leaves its stack running
-        # (dind serves only this reviewer, MAX_CONCURRENT=1, so anything alive
-        # here is an orphan), and deleting under a live writer is the race #165
-        # warns about; the network prune keeps orphaned stack networks from
-        # exhausting dind's address pool. The DOCKER_HOST guard keeps a
-        # misconfigured run (unset ⇒ the CLI defaults to the HOST daemon) from
-        # force-removing the reviewer fleet + everything else on the host.
-        # Fail LOUD at this seam (review-one-pr.sh runs without `set -e`) so a
-        # broken bridge surfaces here at the cause, not downstream as an opaque
-        # "Unable to reach your agent".
-        [ -n "${DOCKER_HOST:-}" ] \
-            || { log "$PR_ID: FATAL — refusing dind reap: DOCKER_HOST unset (docker would target the host daemon)"; exit 1; }
-        { docker ps -aq | xargs -r docker rm -f && docker network prune -f; } >/dev/null \
+        # user; the volume root stays root-owned 1777. The volume is per-run
+        # scratch BY DESIGN: #165 moved cache-valuable state (uv/pip) to the
+        # test user's HOME, and anything cache-shaped a future repo lands here
+        # should be steered off-volume the same way — persisting PR-written
+        # state across runs on a shared volume is a cross-PR poisoning surface,
+        # never a cache. Reap leftover dind containers first — a timed-out/died
+        # review leaves its stack running (dind serves only this reviewer,
+        # MAX_CONCURRENT=1, so anything alive here is an orphan), and deleting
+        # under a live writer is the race #165 warns about; the network/volume
+        # prunes clear what dead stacks leave behind (leaked networks exhaust
+        # dind's address pool; a leaked named volume is cross-run state the
+        # next review's compose stack would silently inherit). The DOCKER_HOST
+        # guard pins the dind tcp endpoint shape: unset or a unix:// socket
+        # means the CLI would aim the reap at the HOST daemon — the reviewer
+        # fleet and everything else on the box. Fail LOUD at this seam
+        # (review-one-pr.sh runs without `set -e`, and its lack of `pipefail`
+        # is why the `docker ps` status is checked explicitly, not via a
+        # pipeline) so a broken bridge surfaces here at the cause, not
+        # downstream as an opaque "Unable to reach your agent".
+        case "${DOCKER_HOST:-}" in tcp://*) ;; *)
+            log "$PR_ID: FATAL — refusing dind reap: DOCKER_HOST='${DOCKER_HOST:-}' is not the dind tcp endpoint (would target the HOST daemon)"; exit 1;;
+        esac
+        local orphans
+        orphans=$(docker ps -aq) \
+            || { log "$PR_ID: FATAL — dind orphan reap failed (docker ps)"; exit 1; }
+        # shellcheck disable=SC2086 — one container id per line, word-split intended
+        { [ -z "$orphans" ] || docker rm -f $orphans; } >/dev/null \
+            && docker network prune -f >/dev/null && docker volume prune -af >/dev/null \
             || { log "$PR_ID: FATAL — dind orphan reap failed"; exit 1; }
         mkdir -p "$scenario_shared" && find "$scenario_shared" -mindepth 1 -delete && chmod 1777 "$scenario_shared" \
             || { log "$PR_ID: FATAL — $scenario_shared prep failed (broken token-bridge mount?)"; exit 1; }

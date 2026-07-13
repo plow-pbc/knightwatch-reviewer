@@ -31,7 +31,14 @@ printf '#!/bin/bash\nexit 1\n'             > "$d/bin/pgrep"
 # un-privileged and the discard contract is asserted for real below. The dind
 # reap (docker) is stubbed: no daemon at unit-test time.
 export SCENARIO_SHARED_DIR="$d/sshared"
-printf '#!/bin/bash\nexit 0\n'             > "$d/bin/docker"
+# The stub records argv and answers `ps -aq` with a fake orphan id, so the
+# reap's success path is asserted for real (orphan found → rm'd, prunes run).
+cat > "$d/bin/docker" <<STUB
+#!/bin/bash
+echo "docker \$*" >> "$d/docker.calls"
+[ "\$1" = ps ] && echo feedfacecafe
+exit 0
+STUB
 # log()/PR_ID are the worker's context (state-io.sh); the FATAL branches
 # asserted below need both to exist here.
 log() { echo "$*"; }
@@ -55,6 +62,9 @@ mkdir -p "$d/sshared/plow-scenario-shared"; touch "$d/sshared/plow-scenario-shar
 run_just_test /dev/null "$d/repo" "$d/log" 30s 5s
 [ ! -e "$d/sshared/plow-scenario-shared" ] || fail "stale bridge entries survived the per-run reset (issue #172 class)"
 [ "$(stat -c %a "$d/sshared")" = "1777" ]  || fail "bridge root not left mode 1777 after the reset"
+grep -q "docker rm -f feedfacecafe" "$d/docker.calls" || fail "orphan container from ps -aq not force-removed"
+grep -q "docker network prune -f" "$d/docker.calls"   || fail "orphaned stack networks not pruned"
+grep -q "docker volume prune -af" "$d/docker.calls"   || fail "orphaned stack volumes not pruned (cross-run state)"
 grep -q "GH_TOKEN_VISIBLE=<unset>" "$d/log"            || fail "GH_TOKEN leaked into the test command env despite the env -i scrub"
 grep -q "DOCKER_HOST_VISIBLE=tcp://dind:2375" "$d/log" || fail "DOCKER_HOST not preserved for the dind daemon"
 grep -q "XDG_CACHE_HOME_VISIBLE=$d/sshared" "$d/log" || fail "XDG_CACHE_HOME not steered to the bridge dir (nested-dind scenario token bridge missing)"
@@ -73,17 +83,23 @@ chmod 0777 "$d/repo"
 run_just_test /dev/null "$d/repo" "$d/log1b" 30s 5s
 (( 8#$(stat -c %a "$d/repo") & 0022 )) && fail "repo_dir still group/other-writable after run_just_test (mode-strip missing)" || true
 
-# Bridge-reset fail-loud contracts: an unset DOCKER_HOST must refuse the reap
-# (the CLI would default to the HOST daemon and rm -f the whole fleet), and a
-# failed reap must abort before the test runs — a broken bridge otherwise
-# resurfaces downstream as opaque per-PR test failures (issue #172 class).
+# Bridge-reset fail-loud contracts: a non-tcp DOCKER_HOST must refuse the reap
+# (unset/unix:// means the CLI targets the HOST daemon — the reap would rm -f
+# the whole fleet), and a failed reap must abort before the test runs — a
+# broken bridge otherwise resurfaces downstream as opaque per-PR test failures
+# (issue #172 class). The reap-failure stub fails `ps` specifically: the
+# production caller has no pipefail, so the `docker ps` status must be caught
+# explicitly, not incidentally via a later pipeline stage.
 out=$( (unset DOCKER_HOST; run_just_test /dev/null "$d/repo" "$d/log-guard" 30s 5s) 2>&1 ) \
     && fail "run_just_test proceeded with DOCKER_HOST unset (host-daemon reap hazard)"
 grep -q "refusing dind reap" <<<"$out" || fail "unset-DOCKER_HOST abort missing its FATAL diagnostic"
-printf '#!/bin/bash\nexit 1\n' > "$d/bin/docker"                             # reap fails
+out=$( (DOCKER_HOST=unix:///var/run/docker.sock run_just_test /dev/null "$d/repo" "$d/log-guard" 30s 5s) 2>&1 ) \
+    && fail "run_just_test proceeded with a unix:// DOCKER_HOST (host-daemon reap hazard)"
+grep -q "refusing dind reap" <<<"$out" || fail "unix-socket abort missing its FATAL diagnostic"
+printf '#!/bin/bash\n[ "$1" = ps ] && exit 1\nexit 0\n' > "$d/bin/docker"    # ps fails
 out=$( (run_just_test /dev/null "$d/repo" "$d/log-reap" 30s 5s) 2>&1 ) \
     && fail "run_just_test proceeded past a failed dind reap"
-grep -q "dind orphan reap failed" <<<"$out" || fail "failed-reap abort missing its FATAL diagnostic"
+grep -q "dind orphan reap failed (docker ps)" <<<"$out" || fail "failed-ps abort missing its FATAL diagnostic"
 [ ! -e "$d/log-guard" ] && [ ! -e "$d/log-reap" ] || fail "a test ran despite a failed bridge reset"
 printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"                             # restore
 
