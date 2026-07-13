@@ -44,24 +44,6 @@ export REVIEWER_CONTAINER_MODE=1
 # see run_just_test in lib/run-dir.sh.
 export REVIEWER_TEST_USER="${REVIEWER_TEST_USER:-reviewer-test}"
 
-# Reclaim stale root-owned entries on the persistent scenario-shared volume
-# (issue #172: a root-owned plow-scenario-shared/ from the #161 rollout failed
-# 66/66 plow runs on one worker — mktemp EACCES rendered as a generic test
-# failure). run_just_test's 1777 prep covers only the volume ROOT; nested
-# fixed-name dirs keep whatever ownership they were created with, and the
-# volume outlives ownership-model changes. Repairing in place is safe ONLY
-# here, before the review loop starts: no PR-controlled process is alive to
-# race the chown (the symlink/ownership race that made #165 move the uv/pip
-# caches off-volume instead). chown -R defaults to -P, so stale PR-left
-# symlinks are not followed. Absent mount (host/systemd path) → skip; present
-# but unreclaimable → FATAL, matching the fail-loud prep seam in run-dir.sh —
-# a crash-looping container beats another month of silent false failures.
-if [ -d /scenario-shared ]; then
-    err=$(chown -R "$REVIEWER_TEST_USER" /scenario-shared 2>&1) \
-        || { log "[review-loop] FATAL: /scenario-shared reclaim for $REVIEWER_TEST_USER failed: $(printf '%s' "$err" | tr '\n' ';' | cut -c1-500)"; exit 1; }
-    log "[review-loop] reclaimed /scenario-shared for $REVIEWER_TEST_USER"
-fi
-
 # Block until the dind daemon answers, so the first `just test` doesn't
 # race the sidecar's startup. Fail loud if it never comes up.
 for i in $(seq 1 60); do
@@ -70,6 +52,27 @@ for i in $(seq 1 60); do
     sleep 2
 done
 log "[review-loop] dind ready at ${DOCKER_HOST:-default}; polling every ${POLL_SECS}s"
+
+# Reset the persistent scenario-shared bridge volume before any review runs
+# (issue #172: a stale root-owned plow-scenario-shared/ failed 66/66 plow runs
+# on one worker for a month — mktemp EACCES rendered as a generic test failure;
+# run_just_test's per-review prep 1777s only the volume ROOT, and nested
+# fixed-name dirs keep their creation-time ownership forever on the named
+# volume). Reap leftover dind containers first: dind carries no restart policy
+# and outlives this container's restarts, so a PR-controlled stack from a
+# review that died with a previous reviewer instance can still be running with
+# the volume mounted — resetting under a live writer is the race #165 warns
+# about. Then DISCARD stale contents rather than chown -R them to the test
+# user: recursive ownership transfer over a PR-influenceable volume can be
+# steered via persisted hard links, and every consumer (plow's bridge dir,
+# run_just_test's prep) recreates what it needs as the right user anyway. The
+# volume root stays root-owned 1777. A missing mount (broken compose config)
+# fails loud here rather than as an opaque downstream review failure.
+err=$({ docker ps -aq | xargs -r docker rm -f; } 2>&1) \
+    || { log "[review-loop] FATAL: reaping leftover dind containers failed: $(printf '%s' "$err" | tr '\n' ';' | cut -c1-500)"; exit 1; }
+err=$({ find /scenario-shared -mindepth 1 -delete && chmod 1777 /scenario-shared; } 2>&1) \
+    || { log "[review-loop] FATAL: /scenario-shared reset failed: $(printf '%s' "$err" | tr '\n' ';' | cut -c1-500)"; exit 1; }
+log "[review-loop] scenario-shared bridge reset (dind orphans reaped, stale entries discarded)"
 
 # Quota backoff: when codex caps this account, review-one-pr.sh writes the reset
 # epoch to the quota-pause file (see lib/state-io.sh); this loop stops claiming
