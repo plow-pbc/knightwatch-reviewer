@@ -253,9 +253,12 @@ run_just_test() {
         orphans=$(docker ps -aq) \
             || { log "$PR_ID: FATAL — dind orphan reap failed (docker ps)"; exit 1; }
         # shellcheck disable=SC2086 — one container id per line, word-split intended
-        { [ -z "$orphans" ] || docker rm -f $orphans; } >/dev/null \
-            && docker network prune -f >/dev/null && docker volume prune -af >/dev/null \
-            || { log "$PR_ID: FATAL — dind orphan reap failed"; exit 1; }
+        [ -z "$orphans" ] || docker rm -f $orphans >/dev/null \
+            || { log "$PR_ID: FATAL — dind orphan reap failed (docker rm)"; exit 1; }
+        docker network prune -f >/dev/null \
+            || { log "$PR_ID: FATAL — dind orphan reap failed (network prune)"; exit 1; }
+        docker volume prune -af >/dev/null \
+            || { log "$PR_ID: FATAL — dind orphan reap failed (volume prune)"; exit 1; }
         mkdir -p "$scenario_shared" && find "$scenario_shared" -mindepth 1 -delete && chmod 1777 "$scenario_shared" \
             || { log "$PR_ID: FATAL — $scenario_shared prep failed (broken token-bridge mount?)"; exit 1; }
         local rc=0

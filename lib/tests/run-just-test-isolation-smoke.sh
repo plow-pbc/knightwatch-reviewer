@@ -31,12 +31,13 @@ printf '#!/bin/bash\nexit 1\n'             > "$d/bin/pgrep"
 # un-privileged and the discard contract is asserted for real below. The dind
 # reap (docker) is stubbed: no daemon at unit-test time.
 export SCENARIO_SHARED_DIR="$d/sshared"
-# The stub records argv and answers `ps -aq` with a fake orphan id, so the
-# reap's success path is asserted for real (orphan found → rm'd, prunes run).
+# The stub records argv and answers `ps -aq` with ORPHAN_ID when set, so BOTH
+# reap paths are asserted for real: the common clean-dind run (no orphans →
+# no docker rm, prunes still fire) and the orphan run (found → rm -f'd).
 cat > "$d/bin/docker" <<STUB
 #!/bin/bash
 echo "docker \$*" >> "$d/docker.calls"
-[ "\$1" = ps ] && echo feedfacecafe
+[ "\$1" = ps ] && [ -n "\${ORPHAN_ID:-}" ] && echo "\$ORPHAN_ID"
 exit 0
 STUB
 # log()/PR_ID are the worker's context (state-io.sh); the FATAL branches
@@ -62,7 +63,7 @@ mkdir -p "$d/sshared/plow-scenario-shared"; touch "$d/sshared/plow-scenario-shar
 run_just_test /dev/null "$d/repo" "$d/log" 30s 5s
 [ ! -e "$d/sshared/plow-scenario-shared" ] || fail "stale bridge entries survived the per-run reset (issue #172 class)"
 [ "$(stat -c %a "$d/sshared")" = "1777" ]  || fail "bridge root not left mode 1777 after the reset"
-grep -q "docker rm -f feedfacecafe" "$d/docker.calls" || fail "orphan container from ps -aq not force-removed"
+grep -q "docker rm -f" "$d/docker.calls" && fail "reap ran docker rm on a clean dind (no orphans — empty-args rm would abort every review)" || true
 grep -q "docker network prune -f" "$d/docker.calls"   || fail "orphaned stack networks not pruned"
 grep -q "docker volume prune -af" "$d/docker.calls"   || fail "orphaned stack volumes not pruned (cross-run state)"
 grep -q "GH_TOKEN_VISIBLE=<unset>" "$d/log"            || fail "GH_TOKEN leaked into the test command env despite the env -i scrub"
@@ -79,9 +80,14 @@ grep -qF "_CACHE_DIR_VISIBLE=$d/sshared" "$d/log" && fail "a package cache is st
 # after the test, so a leftover proc / a test that ran `chmod 777` can't write it
 # while the root scratch-staging path runs. (The detached-writer reap, pkill -u,
 # needs a real uid switch and is verified at bring-up.)
+# This run doubles as the orphan-present reap path: ps answers with a fake id,
+# which must be force-removed.
 chmod 0777 "$d/repo"
+export ORPHAN_ID=feedfacecafe
 run_just_test /dev/null "$d/repo" "$d/log1b" 30s 5s
+unset ORPHAN_ID
 (( 8#$(stat -c %a "$d/repo") & 0022 )) && fail "repo_dir still group/other-writable after run_just_test (mode-strip missing)" || true
+grep -q "docker rm -f feedfacecafe" "$d/docker.calls" || fail "orphan container from ps -aq not force-removed"
 
 # Bridge-reset fail-loud contracts: a non-tcp DOCKER_HOST must refuse the reap
 # (unset/unix:// means the CLI targets the HOST daemon — the reap would rm -f
@@ -100,7 +106,11 @@ printf '#!/bin/bash\n[ "$1" = ps ] && exit 1\nexit 0\n' > "$d/bin/docker"    # p
 out=$( (run_just_test /dev/null "$d/repo" "$d/log-reap" 30s 5s) 2>&1 ) \
     && fail "run_just_test proceeded past a failed dind reap"
 grep -q "dind orphan reap failed (docker ps)" <<<"$out" || fail "failed-ps abort missing its FATAL diagnostic"
-[ ! -e "$d/log-guard" ] && [ ! -e "$d/log-reap" ] || fail "a test ran despite a failed bridge reset"
+printf '#!/bin/bash\n[ "$1" = volume ] && exit 1\nexit 0\n' > "$d/bin/docker"  # prune fails (the flag-support-sensitive step)
+out=$( (run_just_test /dev/null "$d/repo" "$d/log-prune" 30s 5s) 2>&1 ) \
+    && fail "run_just_test proceeded past a failed volume prune"
+grep -q "dind orphan reap failed (volume prune)" <<<"$out" || fail "failed-prune abort missing its step-specific FATAL diagnostic"
+[ ! -e "$d/log-guard" ] && [ ! -e "$d/log-reap" ] && [ ! -e "$d/log-prune" ] || fail "a test ran despite a failed bridge reset"
 printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"                             # restore
 
 # Host branch (no REVIEWER_TEST_USER): unchanged — runs as the operator, env not
