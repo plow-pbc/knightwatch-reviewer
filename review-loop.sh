@@ -53,8 +53,14 @@ export REVIEWER_TEST_USER="${REVIEWER_TEST_USER:-reviewer-test}"
 # here, before the review loop starts: no PR-controlled process is alive to
 # race the chown (the symlink/ownership race that made #165 move the uv/pip
 # caches off-volume instead). chown -R defaults to -P, so stale PR-left
-# symlinks are not followed. Absent mount (host/systemd path) is a no-op.
-chown -R "$REVIEWER_TEST_USER" /scenario-shared 2>/dev/null || true
+# symlinks are not followed. Absent mount (host/systemd path) → skip; present
+# but unreclaimable → FATAL, matching the fail-loud prep seam in run-dir.sh —
+# a crash-looping container beats another month of silent false failures.
+if [ -d /scenario-shared ]; then
+    chown -R "$REVIEWER_TEST_USER" /scenario-shared \
+        || { log "[review-loop] FATAL: /scenario-shared reclaim for $REVIEWER_TEST_USER failed"; exit 1; }
+    log "[review-loop] reclaimed /scenario-shared for $REVIEWER_TEST_USER"
+fi
 
 # Block until the dind daemon answers, so the first `just test` doesn't
 # race the sidecar's startup. Fail loud if it never comes up.
