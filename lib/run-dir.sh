@@ -235,7 +235,7 @@ run_just_test() {
         esac
         local orphans
         # shellcheck disable=SC2086 — one container id per line, word-split intended
-        orphans=$(docker ps -aq) && { [ -z "$orphans" ] || docker rm -f $orphans >/dev/null; } \
+        orphans=$(docker ps -aq) && { [ -z "$orphans" ] || docker rm -fv $orphans >/dev/null; } \
             && mkdir -p "$scenario_shared" && find "$scenario_shared" -mindepth 1 -delete && chmod 1777 "$scenario_shared" \
             || { log "$PR_ID: FATAL — scenario-shared bridge reset failed (dind reap or bridge prep)"; exit 1; }
         local rc=0

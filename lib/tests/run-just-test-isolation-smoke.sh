@@ -86,7 +86,7 @@ export ORPHAN_ID=feedfacecafe   # single authoritative id: the stubs read it fro
 : > "$d/docker.calls"   # phase-scope: the rm assertion below must match THIS run
 run_just_test /dev/null "$d/repo" "$d/log1b" 30s 5s
 (( 8#$(stat -c %a "$d/repo") & 0022 )) && fail "repo_dir still group/other-writable after run_just_test (mode-strip missing)" || true
-grep -qF "docker rm -f $ORPHAN_ID" "$d/docker.calls" || fail "orphan container from ps -aq not force-removed"
+grep -qF "docker rm -fv $ORPHAN_ID" "$d/docker.calls" || fail "orphan container from ps -aq not force-removed (with its anonymous volumes: -v)"
 
 # Bridge-reset fail-loud contracts: anything but the pinned dind endpoint must
 # refuse the reap (an ambient endpoint could be the HOST daemon — rm -f there
