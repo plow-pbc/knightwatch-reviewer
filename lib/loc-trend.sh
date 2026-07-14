@@ -32,7 +32,7 @@ _diff_adds_dels() {
 # compute_loc_trend <repo_slash> <pr_num> <repo_dir> <merge_base_sha> <state_dir> <current_run_dir> <current_sha>
 #   stdout: markdown loc-trend.md content
 #
-# repo_slash is the GitHub slash-form (e.g. "cncorp/plow"), NOT the
+# repo_slash is the GitHub slash-form (e.g. "some-org/some-repo"), NOT the
 # PR_ID (which carries a "#N" suffix). The function converts to
 # underscore-form for filesystem matching.
 #

@@ -28,8 +28,8 @@ declare -A SOURCE_PATHS=()
 # tick (NOT a per-repo fan-out — see lib/pr-enumerate.sh). A newly-created repo
 # in an ORGS owner is reviewed the moment it has a PR, no manifest edit. This
 # is the whole-org coverage the per-repo REPOS list can only approximate (and
-# silently drifts from). Partial orgs — review only specific repos, e.g.
-# cncorp/plow — stay OUT of ORGS and list those repos in REPOS instead.
+# silently drifts from). Partial orgs — review only specific repos from an owner
+# NOT in ORGS — stay OUT of ORGS and list those repos in REPOS instead.
 # Pre-declared empty so consumers load cleanly under `set -u` when unset.
 declare -a ORGS=()
 # Source order: config.env (ops knobs) → repos.conf (manual) →

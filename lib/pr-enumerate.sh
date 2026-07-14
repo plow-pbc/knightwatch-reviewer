@@ -12,7 +12,7 @@
 #       per-repo fan-out), returns every non-archived open PR.
 #   For each entry in REPOS whose owner is NOT in ORGS:
 #       gh pr list --repo OWNER/NAME --json … — fallthrough for
-#       partially-tracked owners (today: cncorp/plow).
+#       partially-tracked owners (an owner NOT in ORGS).
 #   Concatenates results with NO post-filter: ORGS owners are reviewed in
 #   FULL (every result is wanted), and the per-repo path only fetches the
 #   explicit non-ORGS REPOS entries — so nothing untracked is ever fetched.
@@ -30,9 +30,9 @@
 # poll-pr-actions.sh) was doing 41× `gh pr
 # list --json` = 164 GraphQL points/tick — combined ~19,800 pts/hr
 # against GitHub's 5000/hr per-user GraphQL quota, causing recurring
-# exhaustion (cncorp/plow#642's "review aborted before completion" was
+# exhaustion (plow-pbc/plow#642's "review aborted before completion" was
 # one instance). The ORG-batched search collapses the 39 plow-pbc +
-# srosro repos into 1 call per owner (~3 pts each), keeping cncorp/* on
+# srosro repos into 1 call per owner (~3 pts each), keeping owners not in ORGS on
 # per-repo because those orgs are only partially tracked.
 
 _enumerate_graphql_query='query($q: String!, $after: String) {
@@ -129,8 +129,8 @@ _bot_activity_graphql_query='query($q: String!, $after: String) {
 # Prints (newline-separated, deduped) the tracked ORG-owned repos that have a
 # PR the bot commented on and that was updated since SINCE_ISO — a paginated
 # gh api graphql search per ORG owner, vs a per-repo issues/comments fetch for
-# every tracked repo. Post-filtered against ${REPOS[@]}. Non-ORG owners (e.g.
-# cncorp/*) are NOT searched; callers walk those unconditionally.
+# every tracked repo. Post-filtered against ${REPOS[@]}. Non-ORG owners are NOT
+# searched; callers walk those unconditionally.
 #
 # Why: specialist-bakeoff.sh fans a paginated comments + collaborators fetch
 # across all ~45 tracked repos every run, exhausting the 5000/hr budget

@@ -16,7 +16,7 @@ cp -r docker/secrets.example docker/secrets
 | `config.env` | shared | Ops knobs + child-process tokens, **shell-sourced** by `review.sh` (via `CONFIG_ENV_FILE`). Mounted at the **root-only** path `/root/.kwr/config.env` so the unprivileged `reviewer-test` user that runs `just test` can't read the token *file* (the `env -i` scrub only covers its environment). Use `export GH_TOKEN=…` so `gh` and the worker inherit it. `ANTHROPIC_API_KEY` does NOT belong here — it's a `just test` dependency delivered via the `.env` mirror below, not the reviewer env. **Operator-managed review config (optional):** to activate it set `export KWR_CONFIG_REPO=https://github.com/<you>/kwr-config.git` here **and** in the host `~/.pr-reviewer/config.env` (both are sourced — host `install.sh`/org-sync pull the `${HOME}/services/kwr-config` cache, the containers read it via the read-only `/root/.kwr-config` mount). Unset = the config layer is a no-op. Use a credential helper / ssh key for a private repo — never an inline-credential URL (the worker rejects userinfo/token-bearing URLs). |
 | `repos.conf` | shared | The tracked-target manifest. For whole-org coverage set `ORGS=(...)` (every non-archived open PR in the org is reviewed, new repos included, via one batched search per org per tick); reserve `REPOS=(...)` for specific repos in partially-tracked orgs (kept OUT of ORGS). Also holds `KID_PATHS`/`SOURCE_PATHS`. Mounted into the shared volume at `/shared/repos.conf`. Start from the repo-root `repos.conf.example`. |
 | `claude-standards/` | shared | The four review-standards files the worker stages into the prompt: `CODING_STANDARDS.md`, `REVIEW_PRACTICES.md`, `TESTING.md`, `COMMENT_REVIEW_MISTAKES.md`. Mounted read-only at `/root/.claude`. Copy just these four from your `~/.claude` — NOT the whole dir, so prompt-injectable review agents can't read global config/secrets. |
-| `repo-env/` | shared | Operator per-repo secret env files seeded into each reviewed repo's canonical clone for the trusted-author `.env` mirror (live `just test` creds CI has but a fresh container lacks — e.g. plow's `ANTHROPIC_API_KEY`). Layout: `repo-env/<repo-slug>/<relpath>` (e.g. `repo-env/cncorp_plow/api/.env.test-live`). Mounted **read-only** at the root-only `/root/.kwr/repo-env`. Optional — omit for repos needing no live creds. See *Live-credential `just test`* below. |
+| `repo-env/` | shared | Operator per-repo secret env files seeded into each reviewed repo's canonical clone for the trusted-author `.env` mirror (live `just test` creds CI has but a fresh container lacks — e.g. plow's `ANTHROPIC_API_KEY`). Layout: `repo-env/<repo-slug>/<relpath>` (e.g. `repo-env/plow-pbc_plow/api/.env.test-live`). Mounted **read-only** at the root-only `/root/.kwr/repo-env`. Optional — omit for repos needing no live creds. See *Live-credential `just test`* below. |
 | `codex-account-a/` | reviewer-1's OpenAI account | A full `~/.codex` directory for account A (must contain `auth.json`). Mounted **writable** at reviewer-1's `/root/.codex` — codex rotates its own tokens/session state, and fatal-auth recovery keys on a newer `auth.json` mtime. If a worker goes offline on invalid auth, re-login that account's dir (`CODEX_HOME=docker/secrets/codex-account-a codex login --device-auth`, or copy in a fresh `auth.json`); the newer mtime auto-clears the offline marker. |
 | `codex-account-b/` | reviewer-2's OpenAI account | Same, for account B → reviewer-2. |
 
@@ -28,13 +28,25 @@ has but a fresh container lacks. Provide them via the **`repo-env/` mount**:
 
 ```
 docker/secrets/repo-env/<repo-slug>/<relpath>
-# e.g. docker/secrets/repo-env/cncorp_plow/api/.env.test-live
+# e.g. docker/secrets/repo-env/plow-pbc_plow/api/.env.test-live
 ```
 
-`<repo-slug>` is the repo with `/`→`_` (`cncorp/plow` → `cncorp_plow`);
+`<repo-slug>` is the repo with `/`→`_` (`plow-pbc/plow` → `plow-pbc_plow`);
 `<relpath>` mirrors the path inside the repo so the seeded file lands next to
 the matching `.env*.example`. The dir is mounted read-only at the root-only
 `/root/.kwr/repo-env` (the unprivileged `reviewer-test` user can't read it).
+
+> **Renaming a tracked repo? Rename its `repo-env/<slug>` dir to match, in the
+> same change.** The slug is the lookup key, so creds left under the old name are
+> simply not found: the seed is a **clean no-op** — no log line, no warning — the
+> `.env` mirror copies nothing, and `just test` then dies at its
+> `${ANTHROPIC_API_KEY:?}` gate *after* every unit suite has passed. The reviewer
+> posts a generic `🧪 Tests failed (exit 1)` on every PR in that repo, and the
+> test-coverage specialist reasons against that phantom failure. `cncorp/plow` →
+> `plow-pbc/plow` cost **208 reviews, 0 passes, over five days** before anyone
+> noticed (#171). The tell: CI is green and local `just test` is green, but the
+> reviewer fails every PR — that combination is always reviewer-side infra, never
+> the PR.
 
 `lib/review-one-pr.sh` seeds these into the repo's **canonical clone** right
 after the canonical fetch; the existing **trust-gated** `.env` mirror (for every

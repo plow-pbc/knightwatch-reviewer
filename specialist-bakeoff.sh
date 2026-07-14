@@ -68,7 +68,7 @@ fetch_failures=0
 # repos walked last failed and the whole run exited PARTIAL daily. Repos with no
 # bot activity have no substantive reviews to walk; they're skipped (and their
 # walks row stamped 0/0 below, so a stale row can't pin the next floor or show
-# stale coverage). Manual non-ORG repos (cncorp/*) are always walked. Discovery
+# stale coverage). Manual non-ORG repos (owners not in ORGS) are always walked. Discovery
 # failure FAILS LOUD — it does not fall back to the budget-draining walk-all
 # this change exists to retire. (sqlite reads don't touch the API.)
 # Run-wide rewalk floor (REWALK_HOURS ago), computed once — used both as each
@@ -98,7 +98,7 @@ for repo in "${REPOS[@]}"; do
     # Skip ORG repos with no bot activity since the floor (batched discovery
     # above). Stamp the skipped repo's walks row 0/0 at the discovery pass time
     # so a stale row can't pin the next run's floor (min last_walked_at) or
-    # render as live coverage. Non-ORG manual entries (cncorp/*) are always walked.
+    # render as live coverage. Non-ORG manual entries (owners not in ORGS) are always walked.
     if owner_in_orgs "${repo%%/*}" && [ -z "${active_repos[$repo]:-}" ]; then
         set_repo_coverage "$DB_FILE" "$repo" 0 0 "$discovery_pass_start"
         continue

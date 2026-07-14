@@ -7,9 +7,9 @@
 #
 # Parse contract: command-token split (drops everything after the first
 # whitespace) THEN basename. Without that order, a future
-# `ExecStart=/home/odio/.pr-reviewer/review.sh --repo cncorp/plow`
-# would basename to "plow" (greedy `.*/` eats through the last `/` in
-# `cncorp/plow`) and silently drop review.sh from the managed list.
+# `ExecStart=/home/odio/.pr-reviewer/review.sh --repo some-org/some-repo`
+# would basename to "some-repo" (greedy `.*/` eats through the last `/` in
+# `some-org/some-repo`) and silently drop review.sh from the managed list.
 
 # _iter_execstart_scripts <unit_files...>
 #

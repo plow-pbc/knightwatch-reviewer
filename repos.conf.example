@@ -12,7 +12,7 @@
 # Whole-org review coverage comes from ORGS (see below): list an org there
 # and every non-archived open PR in it is reviewed — new repos included, no
 # per-repo manifest edit. REPOS is only for PARTIAL orgs (review just specific
-# repos, e.g. cncorp/plow) and for optional explicit KID_PATHS/SOURCE_PATHS
+# repos, e.g. some-org/one-repo) and for optional explicit KID_PATHS/SOURCE_PATHS
 # wiring (kid-prior-art + cross-repo grep, which stay per-repo opt-in).
 #
 # To add a partial-org repo (or wire KID/source for one): append a line to
@@ -62,7 +62,7 @@ declare -A SOURCE_PATHS=(
 # `search(user:<org> is:pr is:open archived:false)` per tick — it does NOT
 # fan out per-repo (that would scale GitHub-quota cost with org size on every
 # poll). Partial orgs — where you want only specific repos reviewed (e.g.
-# cncorp/plow) — stay OUT of ORGS and list those repos in REPOS, which the
+# some-org/one-repo) — stay OUT of ORGS and list those repos in REPOS, which the
 # per-repo fallthrough fetches with a bounded `gh pr list`.
 #
 # org-sync.sh / pr-reviewer-org-sync.timer also use ORGS (host path only):
