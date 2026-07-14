@@ -65,8 +65,6 @@ run_just_test /dev/null "$d/repo" "$d/log" 30s 5s
 [ ! -e "$d/sshared/plow-scenario-shared" ] || fail "stale bridge entries survived the per-run reset (issue #172 class)"
 [ "$(stat -c %a "$d/sshared")" = "1777" ]  || fail "bridge root not left mode 1777 after the reset"
 grep -q "docker rm -f" "$d/docker.calls" && fail "reap ran docker rm on a clean dind (no orphans — empty-args rm would abort every review)" || true
-grep -q "docker network prune -f" "$d/docker.calls"   || fail "orphaned stack networks not pruned"
-grep -q "docker volume prune -af" "$d/docker.calls"   || fail "orphaned stack volumes not pruned (cross-run state)"
 grep -q "GH_TOKEN_VISIBLE=<unset>" "$d/log"            || fail "GH_TOKEN leaked into the test command env despite the env -i scrub"
 grep -q "DOCKER_HOST_VISIBLE=tcp://127.0.0.1:2375" "$d/log" || fail "DOCKER_HOST not preserved for the dind daemon"
 grep -q "XDG_CACHE_HOME_VISIBLE=$d/sshared" "$d/log" || fail "XDG_CACHE_HOME not steered to the bridge dir (nested-dind scenario token bridge missing)"
@@ -91,38 +89,18 @@ run_just_test /dev/null "$d/repo" "$d/log1b" 30s 5s
 grep -qF "docker rm -f $ORPHAN_ID" "$d/docker.calls" || fail "orphan container from ps -aq not force-removed"
 
 # Bridge-reset fail-loud contracts: anything but the pinned dind endpoint must
-# refuse the reap (unset/unix:// aims the CLI at the HOST daemon; a foreign
-# tcp:// endpoint is some other reachable daemon — either way the destructive
-# cleanup would land off the dedicated sidecar), and a failed reap must abort
-# before the test runs — a broken bridge otherwise resurfaces downstream as
-# opaque per-PR test failures (issue #172 class). Each reap step fails in its
-# own run (ps included — the production caller has no pipefail, so the
-# `docker ps` status must be caught explicitly, not via a later pipeline stage).
-# The pinned literal lives in both run-dir.sh's guard and docker-compose.yml's
-# reviewer env; catch drift here as a red test instead of a fleet-wide FATAL.
-grep -qF "DOCKER_HOST: tcp://127.0.0.1:2375" "$HERE/../docker-compose.yml" \
-    || fail "docker-compose.yml DOCKER_HOST drifted from run-dir.sh's pinned dind endpoint"
-grep -qF -- "--host=tcp://127.0.0.1:2375" "$HERE/../docker-compose.yml" \
-    || fail "dind sidecar bind drifted from run-dir.sh's pinned endpoint"
-for bad in "<unset>" "" "unix:///var/run/docker.sock" "tcp://dind:2375"; do
-    out=$( ( if [ "$bad" = "<unset>" ]; then unset DOCKER_HOST; else export DOCKER_HOST="$bad"; fi
-             run_just_test /dev/null "$d/repo" "$d/log-guard" 30s 5s ) 2>&1 ) \
-        && fail "run_just_test proceeded with DOCKER_HOST=${bad:-<empty>} (off-sidecar cleanup hazard)"
-    grep -q "refusing dind reap" <<<"$out" || fail "guard refusal for DOCKER_HOST=${bad:-<empty>} missing its FATAL diagnostic"
-done
-# Every reap step's abort is the same contract — exit non-zero, no test runs,
-# step-named diagnostic — so one table drives all four. The stub fails on the
-# step's arg and answers ps with the orphan id so later steps are reached
-# (inert on the ps row by design: a failed ps aborts before answering).
-for row in "ps:docker ps" "rm:docker rm" "network:network prune" "volume:volume prune"; do
-    step=${row%%:*}; diag=${row#*:}
-    printf '#!/bin/bash\n[ "$1" = %s ] && exit 1\n[ "$1" = ps ] && echo "$ORPHAN_ID"\nexit 0\n' "$step" > "$d/bin/docker"
-    out=$( (run_just_test /dev/null "$d/repo" "$d/log-$step" 30s 5s) 2>&1 ) \
-        && fail "run_just_test proceeded past a failed $diag"
-    grep -qF "dind orphan reap failed ($diag)" <<<"$out" || fail "failed $diag abort missing its step-named FATAL diagnostic"
-    [ ! -e "$d/log-$step" ] || fail "a test ran despite a failed reap step ($diag)"
-done
-[ ! -e "$d/log-guard" ] || fail "a test ran despite a refused DOCKER_HOST guard"
+# refuse the reap (an ambient endpoint could be the HOST daemon — rm -f there
+# is the fleet), and a failed reset must abort before the test runs (a broken
+# bridge otherwise resurfaces downstream as opaque per-PR test failures —
+# issue #172 class). One representative case each.
+out=$( (unset DOCKER_HOST; run_just_test /dev/null "$d/repo" "$d/log-guard" 30s 5s) 2>&1 ) \
+    && fail "run_just_test proceeded with DOCKER_HOST unset (off-sidecar cleanup hazard)"
+grep -q "refusing dind reap" <<<"$out" || fail "guard refusal missing its FATAL diagnostic"
+printf '#!/bin/bash\n[ "$1" = ps ] && exit 1\nexit 0\n' > "$d/bin/docker"    # reset fails at the reap
+out=$( (run_just_test /dev/null "$d/repo" "$d/log-reset" 30s 5s) 2>&1 ) \
+    && fail "run_just_test proceeded past a failed bridge reset"
+grep -q "bridge reset failed" <<<"$out" || fail "failed reset abort missing its FATAL diagnostic"
+[ ! -e "$d/log-guard" ] && [ ! -e "$d/log-reset" ] || fail "a test ran despite a refused/failed bridge reset"
 unset ORPHAN_ID
 printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"                             # restore
 

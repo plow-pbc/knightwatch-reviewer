@@ -221,32 +221,23 @@ run_just_test() {
         # Reset the bridge before EVERY run: the named volume persists
         # PR-written state, and a stale root-owned nested dir turns later runs'
         # mktemp into EACCES rendered as a generic test failure (issue #172 —
-        # 66/66 false failures on one worker). Order matters: reap dind
-        # leftovers first (a timed-out/died review leaves its stack running;
-        # dind serves only this reviewer, so anything alive is an orphan — and
-        # the prunes clear leaked networks/volumes, which are cross-run state),
-        # THEN discard contents outright — a chown -R repair could be steered
-        # via persisted hard links. Root keeps the 1777 volume root; consumers
-        # recreate their dirs. The guard pins the dedicated sidecar endpoint
-        # (docker-compose.yml) so a misrouted DOCKER_HOST can't aim the
-        # destructive cleanup at the host or any other reachable daemon. Fail
-        # LOUD, with explicit per-step statuses: the caller runs without
-        # `set -e`/`pipefail`.
+        # 66/66 false failures on one worker). Reap dind leftovers first (a
+        # timed-out/died review leaves its stack running; dind serves only
+        # this reviewer, so anything alive is an orphan that could race the
+        # delete), then discard contents outright — a chown -R repair could be
+        # steered via persisted hard links. Root keeps the 1777 volume root;
+        # consumers recreate their dirs. The endpoint pin makes a misrouted
+        # run (this code executed with a host daemon reachable, e.g. an
+        # unstubbed test harness) refuse instead of rm -f'ing the wrong
+        # daemon. Fail LOUD: the caller runs without `set -e`/`pipefail`.
         case "${DOCKER_HOST:-}" in "tcp://127.0.0.1:2375") ;; *)
-            log "$PR_ID: FATAL — refusing dind reap: DOCKER_HOST='${DOCKER_HOST:-}' is not the dedicated dind endpoint tcp://127.0.0.1:2375 (docker-compose.yml)"; exit 1;;
+            log "$PR_ID: FATAL — refusing dind reap: DOCKER_HOST='${DOCKER_HOST:-}' is not the dedicated dind endpoint (docker-compose.yml)"; exit 1;;
         esac
         local orphans
-        orphans=$(docker ps -aq) \
-            || { log "$PR_ID: FATAL — dind orphan reap failed (docker ps)"; exit 1; }
         # shellcheck disable=SC2086 — one container id per line, word-split intended
-        [ -z "$orphans" ] || docker rm -f $orphans >/dev/null \
-            || { log "$PR_ID: FATAL — dind orphan reap failed (docker rm)"; exit 1; }
-        docker network prune -f >/dev/null \
-            || { log "$PR_ID: FATAL — dind orphan reap failed (network prune)"; exit 1; }
-        docker volume prune -af >/dev/null \
-            || { log "$PR_ID: FATAL — dind orphan reap failed (volume prune)"; exit 1; }
-        mkdir -p "$scenario_shared" && find "$scenario_shared" -mindepth 1 -delete && chmod 1777 "$scenario_shared" \
-            || { log "$PR_ID: FATAL — $scenario_shared prep failed (broken token-bridge mount?)"; exit 1; }
+        orphans=$(docker ps -aq) && { [ -z "$orphans" ] || docker rm -f $orphans >/dev/null; } \
+            && mkdir -p "$scenario_shared" && find "$scenario_shared" -mindepth 1 -delete && chmod 1777 "$scenario_shared" \
+            || { log "$PR_ID: FATAL — scenario-shared bridge reset failed (dind reap or bridge prep)"; exit 1; }
         local rc=0
         # Keep the uv/pip package caches OFF the dind-shared volume: point them at the
         # test user's own HOME via UV_CACHE_DIR/PIP_CACHE_DIR (both override
