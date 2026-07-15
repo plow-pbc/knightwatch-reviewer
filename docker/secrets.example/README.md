@@ -48,14 +48,15 @@ the matching `.env*.example`. The dir is mounted read-only at the root-only
 > reviewer fails every PR — that combination is always reviewer-side infra, never
 > the PR.
 >
-> The slug also keys the review-history dir (`runs/<slug>__<pr>__*`), which the
-> dedup gate reads to skip already-reviewed heads. A rename orphans that too, so
-> the first tick after finds no history and **re-reviews every open PR in the repo
-> once** — duplicate comments plus a round of Codex spend. It self-heals: new runs
-> land under the new slug, so dedup resumes on the next tick. To avoid the flood,
-> rename the run dirs in the same stopped-fleet window
-> (`for d in runs/<old>__*; do mv "$d" "runs/<new>__${d#runs/<old>__}"; done`); the
-> creds `mv` is not optional, this is.
+> The slug also keys the review-history dir (`runs/<slug>__<pr>__*`, in the
+> `claims` volume at `/shared/runs` — not a checkout path), which the dedup gate
+> reads to skip already-reviewed heads. A rename orphans that too, so the first
+> tick after finds no history and **re-reviews every open PR in the repo once** —
+> duplicate comments plus a round of Codex spend. Unlike the creds gap this is
+> one-time and self-heals: new runs land under the new slug, so dedup resumes on
+> the next tick. Renaming those `runs/` dir prefixes inside the volume avoids the
+> flood, but it's fiddly (root-owned, project-named volume) and rarely worth it for
+> a one-time cost — expect the flood instead.
 
 `lib/review-one-pr.sh` seeds these into the repo's **canonical clone** right
 after the canonical fetch; the existing **trust-gated** `.env` mirror (for every
