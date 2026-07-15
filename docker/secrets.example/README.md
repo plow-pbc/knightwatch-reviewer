@@ -49,14 +49,13 @@ the matching `.env*.example`. The dir is mounted read-only at the root-only
 > the PR.
 >
 > The slug also keys the review-history dir (`runs/<slug>__<pr>__*`, in the
-> `claims` volume at `/shared/runs` — not a checkout path), which the dedup gate
-> reads to skip already-reviewed heads. A rename orphans that too, so the first
-> tick after finds no history and **re-reviews every open PR in the repo once** —
-> duplicate comments plus a round of Codex spend. Unlike the creds gap this is
-> one-time and self-heals: new runs land under the new slug, so dedup resumes on
-> the next tick. Renaming those `runs/` dir prefixes inside the volume avoids the
-> flood, but it's fiddly (root-owned, project-named volume) and rarely worth it for
-> a one-time cost — expect the flood instead.
+> `kwr_claims` volume at `/shared/runs`), which the dedup gate reads to skip
+> already-reviewed heads. A rename orphans that too — but unlike the creds gap this
+> is **one-time and self-healing**: the first tick after finds no history and
+> re-reviews every open PR in the repo once (duplicate comments plus a round of
+> Codex spend), then new runs land under the new slug and dedup resumes on the next
+> tick. Just expect the flood; migrating the history dirs to dodge it isn't worth
+> the fiddliness for a one-time cost.
 
 `lib/review-one-pr.sh` seeds these into the repo's **canonical clone** right
 after the canonical fetch; the existing **trust-gated** `.env` mirror (for every
