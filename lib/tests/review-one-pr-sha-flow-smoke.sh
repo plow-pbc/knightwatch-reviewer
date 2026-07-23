@@ -925,6 +925,7 @@ write_stateful_gh_stub "$HOME/.local/bin/gh" "$STORE7" "main" "$NEW_PR_SHA"
 
 STATE7="$TMPDIR/state-7"
 seed_state_dir "$STATE7"
+mkdir -p "$STATE7/pool/solo"   # review-loop's registration, done test-side
 git clone -q "$GITHUB_BARE" "$STATE7/repos/test-org_probe-repo"
 
 run_worker_in_state "$STATE7" \
@@ -1010,13 +1011,7 @@ printf '%s\n' "$(( $(date +%s) + 7200 ))" > "$STATE8/pool/2/quota-paused-until"
 mkdir -p "$STATE8/pool/9"
 printf '%s\n' "$(( $(date +%s) + 7200 ))" > "$STATE8/pool/9/quota-paused-until"
 touch -d '3 hours ago' "$STATE8/pool/9"
-# Seed the aborting account's own dir STALE with an EXISTING marker: overwriting
-# a file doesn't bump the dir mtime, so the 'account solo: 🔒 offline' assertion
-# below only passes if mark_auth_offline's pool_touch really bumps the dir —
-# pinning the fix a bare mkdir -p revert would silently undo.
-mkdir -p "$STATE8/pool/solo"
-echo 0 > "$STATE8/pool/solo/auth-offline"
-touch -d '3 hours ago' "$STATE8/pool/solo/auth-offline" "$STATE8/pool/solo"
+mkdir -p "$STATE8/pool/solo"   # review-loop's registration, done test-side
 
 run_worker_in_state "$STATE8" \
     "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" || true
@@ -1047,11 +1042,8 @@ if ! jq -e '[.[] | select(.body | contains("Pool:") and contains("account 2: ⏸
     jq -r '.[] | "  id=\(.id) body=\(.body | gsub("\n";" ") | .[0:200])"' "$STORE8"
     exit 1
 fi
-# The marker is pre-seeded (backdated) above, so existence alone is vacuous:
-# assert it was REWRITTEN during the run — a fresh mtime proves the fatal-auth
-# path really called mark_auth_offline, not just left the seed in place.
-if [ "$(stat -c %Y "$STATE8/pool/solo/auth-offline" 2>/dev/null || echo 0)" -le $(( $(date +%s) - 3600 )) ]; then
-    echo "FAIL: scenario 8 — auth-offline marker not rewritten during the run (worker not taken offline despite fatal-auth sentinel)"
+if [ ! -f "$STATE8/pool/solo/auth-offline" ]; then
+    echo "FAIL: scenario 8 — \$STATE/auth-offline missing (worker not taken offline despite fatal-auth sentinel)"
     exit 1
 fi
 if [ -f "$STATE8/pool/solo/quota-paused-until" ]; then

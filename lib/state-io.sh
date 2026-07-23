@@ -90,10 +90,11 @@ seen_set_value() { _seen_write "$1" "$2" '$v' "$3"; }
 # non-container runs fall back to the "solo" namespace.
 pool_state_dir() { printf '%s' "${STATE_DIR:-$HOME/.pr-reviewer}/pool/${WORKER_ID:-solo}"; }
 
-# Register + liveness-bump this account's pool dir. Called on every loop tick
-# and at every stop-state write site: writes into an EXISTING dir don't bump
-# its mtime, so without the explicit touch a solo (non-loop) account could
-# render itself "💤 not running" in its own abort message.
+# Register + liveness-bump this account's pool dir. Called ONLY from
+# review-loop.sh's tick — the one deployed entrypoint — which registers the
+# account before any worker dispatch and re-touches at least every POLL_SECS
+# (a tick blocks on an in-flight worker, hence pool_status's 2h threshold).
+# Stop-state writers rely on that registration and fail loudly without it.
 pool_touch() { mkdir -p "$(pool_state_dir)" && touch "$(pool_state_dir)"; }
 quota_pause_file() { printf '%s' "$(pool_state_dir)/quota-paused-until"; }
 
@@ -124,7 +125,6 @@ auth_offline_active() {
 # true until an operator re-login bumps it. (A missing auth.json records 0, so
 # any real re-login clears it.)
 mark_auth_offline() {
-    pool_touch
     stat -c %Y "$(codex_auth_json)" 2>/dev/null > "$(auth_offline_file)" \
         || echo 0 > "$(auth_offline_file)"
 }
@@ -157,5 +157,5 @@ pool_status() {
         fi
         out="${out:+$out · }account $id: $state"
     done
-    printf '%s' "${out:-no accounts registered}"
+    printf '%s' "$out"
 }

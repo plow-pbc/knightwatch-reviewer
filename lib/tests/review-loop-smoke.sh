@@ -83,6 +83,7 @@ mkdir -p "$d/codex"; : > "$d/codex/auth.json"
 # Producer: the same mark_auth_offline (lib/state-io.sh) review-one-pr.sh calls
 # on a fatal-auth abort — exercises the real produce→consume handoff, not a
 # hand-written marker. It records the live auth.json mtime (not re-logged yet).
+mkdir -p "$d/state/pool/solo"   # review-loop's registration, done test-side
 ( cd "$d" && STATE_DIR="$d/state" CODEX_HOME="$d/codex" bash -c '. lib/state-io.sh && mark_auth_offline' )
 [ -s "$d/state/pool/solo/auth-offline" ] || fail "mark_auth_offline did not write the auth-offline marker"
 ( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" ./review-loop.sh ) >/dev/null 2>&1 || true

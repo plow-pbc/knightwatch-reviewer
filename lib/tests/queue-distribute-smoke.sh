@@ -166,7 +166,7 @@ echo "  F: fatal-auth — worker marks offline → no further claims this tick..
 # namespace even when local state is split — the production topology that lets
 # any account render pool_status. WORKER_ID is unset here → "solo" namespace.
 F_LOCAL_STATE="$TMPDIR_BASE/local-state"; mkdir -p "$F_LOCAL_STATE"
-F_POOL="$STATE_DIR/pool/solo"
+F_POOL="$STATE_DIR/pool/solo"; mkdir -p "$F_POOL"   # review-loop's registration, done test-side
 rm -f "$STATE_DIR/queue.json" "$F_POOL/auth-offline" "$F_POOL/quota-paused-until"
 cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<'WORKER'
 #!/bin/bash
@@ -195,7 +195,6 @@ cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<'WORKER'
 #!/bin/bash
 echo "WORKER_DISPATCHED repo=$1 pr=$2 sha=$3" >> "$LOG_FILE"
 . "$REVIEWER_LIB_DIR/state-io.sh"
-pool_touch   # the production quota-write idiom (register + liveness bump)
 printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$(quota_pause_file)"   # active quota pause
 mark_auth_offline                                                  # AND fatal auth, same tick
 WORKER
