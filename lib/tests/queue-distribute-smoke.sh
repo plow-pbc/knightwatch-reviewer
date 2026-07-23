@@ -195,7 +195,7 @@ cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<'WORKER'
 #!/bin/bash
 echo "WORKER_DISPATCHED repo=$1 pr=$2 sha=$3" >> "$LOG_FILE"
 . "$REVIEWER_LIB_DIR/state-io.sh"
-mkdir -p "$(pool_state_dir)"   # production quota-write call site does the same
+pool_touch   # the production quota-write idiom (register + liveness bump)
 printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$(quota_pause_file)"   # active quota pause
 mark_auth_offline                                                  # AND fatal auth, same tick
 WORKER
