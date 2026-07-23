@@ -1000,6 +1000,11 @@ write_stateful_gh_stub "$HOME/.local/bin/gh" "$STORE8" "main" "$NEW_PR_SHA"
 STATE8="$TMPDIR/state-8"
 seed_state_dir "$STATE8"
 git clone -q "$GITHUB_BARE" "$STATE8/repos/test-org_probe-repo"
+# Seed a sibling account with an active quota pause so the abort body's
+# pool_status rendering (multi-account, mixed states) is exercised — every
+# other assertion in this file matches text before the "Pool:" clause.
+mkdir -p "$STATE8/pool/2"
+printf '%s\n' "$(( $(date +%s) + 7200 ))" > "$STATE8/pool/2/quota-paused-until"
 
 run_worker_in_state "$STATE8" \
     "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" || true
@@ -1020,6 +1025,14 @@ fi
 if ! jq -e '[.[] | select(.body | contains("knightwatch offline") and contains("auth"))] | length == 1' "$STORE8" >/dev/null; then
     echo "FAIL: scenario 8 — placeholder body not the auth-offline message (fatal-auth did not win the both-sentinel race)"
     jq -r '.[] | "  id=\(.id) body=\(.body | gsub("\n";" ") | .[0:100])"' "$STORE8"
+    exit 1
+fi
+# pool_status rendering: the body must show BOTH accounts with their real
+# states — the aborting worker (solo, freshly marked offline) and the seeded
+# sibling (2, active quota pause) — not just the aborting account's own state.
+if ! jq -e '[.[] | select(.body | contains("Pool:") and contains("account 2: ⏸ quota-paused") and contains("account solo: 🔒 offline"))] | length == 1' "$STORE8" >/dev/null; then
+    echo "FAIL: scenario 8 — abort body missing the whole-pool status clause (Pool: / account 2 quota-paused / account solo offline)"
+    jq -r '.[] | "  id=\(.id) body=\(.body | gsub("\n";" ") | .[0:200])"' "$STORE8"
     exit 1
 fi
 if [ ! -f "$STATE8/pool/solo/auth-offline" ]; then

@@ -63,6 +63,10 @@ mkdir -p "$(pool_state_dir)"
 # reviews until it passes, so a capped account backs off and the other accounts
 # carry the queue.
 while true; do
+    # Liveness tick: bump the pool dir's mtime so pool_status can tell a
+    # running account from a stopped/decommissioned one whose dir lingers on
+    # the shared volume (registration alone would read "active" forever).
+    touch "$(pool_state_dir)"
     # Fatal auth (invalidated token) → offline until operator re-login, NOT a
     # timed pause. Checked before quota: a 401-on-refresh never yields a usage
     # cap, so without this it would fall through and spin-abort every PR.

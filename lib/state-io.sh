@@ -130,13 +130,19 @@ mark_auth_offline() {
 # from here, but the owning loop clears the marker within one tick of an
 # operator re-login, so presence is accurate enough for a status line.
 pool_status() {
-    local now dir id until state out=""
+    local now dir id until mtime state out=""
     now=$(date +%s)
     for dir in "${STATE_DIR:-$HOME/.pr-reviewer}"/pool/*/; do
         [ -d "$dir" ] || continue
         id=$(basename "$dir")
         until=$(head -n1 "$dir/quota-paused-until" 2>/dev/null || echo 0)
-        if [ -f "$dir/auth-offline" ]; then
+        mtime=$(stat -c %Y "${dir%/}" 2>/dev/null || echo 0)
+        # review-loop touches its dir every tick, but a tick blocks on an
+        # in-flight review (90m worker ceiling) — so only >2h of silence
+        # means the account is actually gone, not just mid-review.
+        if [ $(( now - mtime )) -gt 7200 ]; then
+            state="💤 not running (no tick in $(( (now - mtime) / 3600 ))h)"
+        elif [ -f "$dir/auth-offline" ]; then
             state="🔒 offline (codex auth invalid; awaiting operator re-login)"
         elif [ "$now" -lt "${until:-0}" ]; then
             state="⏸ quota-paused until $(date -d "@$until" '+%a %b %-d %H:%M %Z' 2>/dev/null || echo "epoch $until")"
