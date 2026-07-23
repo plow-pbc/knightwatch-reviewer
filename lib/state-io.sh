@@ -89,6 +89,12 @@ seen_set_value() { _seen_write "$1" "$2" '$v' "$3"; }
 # operator-facing paused message (pool_status below). Single-account
 # non-container runs fall back to the "solo" namespace.
 pool_state_dir() { printf '%s' "${STATE_DIR:-$HOME/.pr-reviewer}/pool/${WORKER_ID:-solo}"; }
+
+# Register + liveness-bump this account's pool dir. Called on every loop tick
+# and at every stop-state write site: writes into an EXISTING dir don't bump
+# its mtime, so without the explicit touch a solo (non-loop) account could
+# render itself "💤 not running" in its own abort message.
+pool_touch() { mkdir -p "$(pool_state_dir)" && touch "$(pool_state_dir)"; }
 quota_pause_file() { printf '%s' "$(pool_state_dir)/quota-paused-until"; }
 
 # True while the pause window is still in the future. A missing file reads as
@@ -118,7 +124,7 @@ auth_offline_active() {
 # true until an operator re-login bumps it. (A missing auth.json records 0, so
 # any real re-login clears it.)
 mark_auth_offline() {
-    mkdir -p "$(pool_state_dir)"
+    pool_touch
     stat -c %Y "$(codex_auth_json)" 2>/dev/null > "$(auth_offline_file)" \
         || echo 0 > "$(auth_offline_file)"
 }

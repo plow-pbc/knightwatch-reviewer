@@ -1005,6 +1005,11 @@ git clone -q "$GITHUB_BARE" "$STATE8/repos/test-org_probe-repo"
 # other assertion in this file matches text before the "Pool:" clause.
 mkdir -p "$STATE8/pool/2"
 printf '%s\n' "$(( $(date +%s) + 7200 ))" > "$STATE8/pool/2/quota-paused-until"
+# And a stale sibling (>2h since last tick) WITH a still-future pause: liveness
+# must win the branch order — a dead account renders 💤, not its stale pause.
+mkdir -p "$STATE8/pool/9"
+printf '%s\n' "$(( $(date +%s) + 7200 ))" > "$STATE8/pool/9/quota-paused-until"
+touch -d '3 hours ago' "$STATE8/pool/9"
 
 run_worker_in_state "$STATE8" \
     "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" || true
@@ -1030,8 +1035,8 @@ fi
 # pool_status rendering: the body must show BOTH accounts with their real
 # states — the aborting worker (solo, freshly marked offline) and the seeded
 # sibling (2, active quota pause) — not just the aborting account's own state.
-if ! jq -e '[.[] | select(.body | contains("Pool:") and contains("account 2: ⏸ quota-paused") and contains("account solo: 🔒 offline"))] | length == 1' "$STORE8" >/dev/null; then
-    echo "FAIL: scenario 8 — abort body missing the whole-pool status clause (Pool: / account 2 quota-paused / account solo offline)"
+if ! jq -e '[.[] | select(.body | contains("Pool:") and contains("account 2: ⏸ quota-paused") and contains("account solo: 🔒 offline") and contains("account 9: 💤 not running"))] | length == 1' "$STORE8" >/dev/null; then
+    echo "FAIL: scenario 8 — abort body missing the whole-pool status clause (Pool: / account 2 quota-paused / account solo offline / account 9 not-running despite future pause)"
     jq -r '.[] | "  id=\(.id) body=\(.body | gsub("\n";" ") | .[0:200])"' "$STORE8"
     exit 1
 fi

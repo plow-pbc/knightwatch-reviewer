@@ -1535,7 +1535,7 @@ if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
         if [ -z "$QUOTA_UNTIL" ] || [ "$QUOTA_UNTIL" -le "$(date +%s)" ]; then
             QUOTA_UNTIL=$(( $(date +%s) + 3600 ))
         fi
-        mkdir -p "$(pool_state_dir)"
+        pool_touch
         printf '%s\n' "$QUOTA_UNTIL" > "$(quota_pause_file)"
         log "$PR_ID: quota-paused this worker until epoch ${QUOTA_UNTIL} (reset=${RESET_AT})"
         # Body composed AFTER the pause file lands so pool_status reflects this
@@ -1563,7 +1563,7 @@ if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
         BACKOFF_SECS=120
         BACKOFF_UNTIL=$(( $(date +%s) + BACKOFF_SECS ))
         EYES_ABORT_BODY="⏸ knightwatch paused — reviewer account ${WORKER_ID:-solo} hit a codex rate limit (429), backing off ~${BACKOFF_SECS}s. This PR stays queued and will be retried on an upcoming tick."
-        mkdir -p "$(pool_state_dir)"
+        pool_touch
         printf '%s\n' "$BACKOFF_UNTIL" > "$(quota_pause_file)"
         log "$PR_ID: codex 429 rate-limit — backing off this worker ${BACKOFF_SECS}s (until epoch ${BACKOFF_UNTIL})"
     fi

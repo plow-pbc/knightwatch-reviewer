@@ -53,20 +53,15 @@ for i in $(seq 1 60); do
 done
 log "[review-loop] dind ready at ${DOCKER_HOST:-default}; polling every ${POLL_SECS}s"
 
-# Register this account in the shared pool namespace so pool_status (the
-# operator-facing paused message) can enumerate every account, active ones
-# included — an active account has no stop-state files, only its dir.
-mkdir -p "$(pool_state_dir)"
-
 # Quota backoff: when codex caps this account, review-one-pr.sh writes the reset
 # epoch to the quota-pause file (see lib/state-io.sh); this loop stops claiming
 # reviews until it passes, so a capped account backs off and the other accounts
 # carry the queue.
 while true; do
-    # Liveness tick: bump the pool dir's mtime so pool_status can tell a
-    # running account from a stopped/decommissioned one whose dir lingers on
-    # the shared volume (registration alone would read "active" forever).
-    touch "$(pool_state_dir)"
+    # Register + liveness tick: bump the pool dir's mtime so pool_status can
+    # tell a running account from a stopped/decommissioned one whose dir
+    # lingers on the shared volume (registration alone reads "active" forever).
+    pool_touch
     # Fatal auth (invalidated token) → offline until operator re-login, NOT a
     # timed pause. Checked before quota: a 401-on-refresh never yields a usage
     # cap, so without this it would fall through and spin-abort every PR.
