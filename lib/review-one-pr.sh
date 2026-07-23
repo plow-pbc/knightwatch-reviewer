@@ -1541,7 +1541,7 @@ if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
         # account's fresh pause. The pause is per-account: the PR stays queued
         # and any active account claims it on an upcoming tick — say so, and
         # show the whole pool so the author can see the real wait.
-        EYES_ABORT_BODY="⏸ knightwatch paused — reviewer account ${WORKER_ID:-solo} hit its codex quota (resets at ${RESET_AT}). This PR stays queued; any active account picks it up on an upcoming tick. If no other account is available, this account retries after its reset. Pool: $(pool_status)"
+        EYES_ABORT_BODY="⏸ knightwatch paused — reviewer account ${WORKER_ID} hit its codex quota (resets at ${RESET_AT}). This PR stays queued; any active account picks it up on an upcoming tick. If no other account is available, this account retries after its reset. Pool: $(pool_status)"
     fi
     # pipeline.py writes this on a transient codex 429 (it exhausted its own
     # retries against a rate limit) — not a usage cap, so no reset time. Back
@@ -1561,7 +1561,7 @@ if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
     if [ ! -s "$QUOTA_SENTINEL" ] && [ ! -s "$AUTH_FATAL_SENTINEL" ] && [ -s "$RATE_LIMIT_SENTINEL" ]; then
         BACKOFF_SECS=120
         BACKOFF_UNTIL=$(( $(date +%s) + BACKOFF_SECS ))
-        EYES_ABORT_BODY="⏸ knightwatch paused — reviewer account ${WORKER_ID:-solo} hit a codex rate limit (429), backing off ~${BACKOFF_SECS}s. This PR stays queued and will be retried on an upcoming tick."
+        EYES_ABORT_BODY="⏸ knightwatch paused — reviewer account ${WORKER_ID} hit a codex rate limit (429), backing off ~${BACKOFF_SECS}s. This PR stays queued and will be retried on an upcoming tick."
         printf '%s\n' "$BACKOFF_UNTIL" > "$(quota_pause_file)"
         log "$PR_ID: codex 429 rate-limit — backing off this worker ${BACKOFF_SECS}s (until epoch ${BACKOFF_UNTIL})"
     fi
@@ -1571,7 +1571,7 @@ if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
         # an operator re-login — auto-clears it. A cheap stat, no reset timer.
         # Marker first so pool_status in the body reflects this account.
         mark_auth_offline
-        EYES_ABORT_BODY="⏸ knightwatch offline — codex auth for reviewer account ${WORKER_ID:-solo} is invalid (token reused/revoked, not a usage cap). This PR stays queued; any active account picks it up on an upcoming tick. This account resumes automatically once the operator re-authenticates it. Pool: $(pool_status)"
+        EYES_ABORT_BODY="⏸ knightwatch offline — codex auth for reviewer account ${WORKER_ID} is invalid (token reused/revoked, not a usage cap). This PR stays queued; any active account picks it up on an upcoming tick. This account resumes automatically once the operator re-authenticates it. Pool: $(pool_status)"
         log "$PR_ID: codex auth invalid — worker OFFLINE until re-login (auth-offline marker @ mtime=$(head -n1 "$(auth_offline_file)" 2>/dev/null))"
     fi
     [ -d "$REPO_DIR" ] && rm -rf "$REPO_DIR"

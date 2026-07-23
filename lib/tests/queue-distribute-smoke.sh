@@ -19,6 +19,7 @@ export STATE_DIR="$TMPDIR_BASE/state"; export LOG_FILE="$STATE_DIR/orchestrator.
 export REPOS_DIR="$STATE_DIR/repos"; export WORKDIRS_DIR="$STATE_DIR/workdirs"
 mkdir -p "$STATE_DIR/locks" "$REPOS_DIR" "$WORKDIRS_DIR"
 export BOT_USER="srosro"
+export WORKER_ID="solo"
 cat > "$STATE_DIR/repos.conf" <<'CONF'
 REPOS=("cncorp/plow" "cncorp/plow-content")
 declare -A KID_PATHS=()
@@ -164,7 +165,7 @@ echo "  F: fatal-auth — worker marks offline → no further claims this tick..
 # Use a DISTINCT LOCAL_STATE_DIR (as production compose does) so the smoke
 # verifies the stop-state lands in the SHARED $STATE_DIR/pool/<account>/
 # namespace even when local state is split — the production topology that lets
-# any account render pool_status. WORKER_ID is unset here → "solo" namespace.
+# any account render pool_status. This harness models one account: "solo".
 F_LOCAL_STATE="$TMPDIR_BASE/local-state"; mkdir -p "$F_LOCAL_STATE"
 F_POOL="$STATE_DIR/pool/solo"; mkdir -p "$F_POOL"   # review-loop's registration, done test-side
 rm -f "$STATE_DIR/queue.json" "$F_POOL/auth-offline" "$F_POOL/quota-paused-until"

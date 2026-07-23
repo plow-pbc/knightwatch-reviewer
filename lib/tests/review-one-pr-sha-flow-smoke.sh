@@ -56,6 +56,7 @@ run_worker_in_state() {
     shift
     (
         export STATE_DIR="$state"
+        export WORKER_ID="solo"   # the modeled account; WORKER_ID is part of the pool-state contract
         export STATE_FILE="$state/state.json"
         export REPOS_DIR="$state/repos"
         export WORKDIRS_DIR="$state/workdirs"
@@ -944,6 +945,52 @@ if [ "$PAUSE_UNTIL" -le "$(date +%s)" ]; then
     exit 1
 fi
 
+# ===== Scenario 7b: codex usage cap → quota placeholder with whole-pool status =====
+# The user-visible path this PR exists to correct: pipeline.py classifies the
+# usage-cap stderr (_CODEX_QUOTA_RE) into _codex_quota.txt and review-one-pr.sh
+# renders the per-account quota placeholder + pool_status. Bare-time reset
+# ("6:26 PM", codex's rolling-window format) so the fixture never goes stale;
+# the conservative-1h parse path stamps a future pause either way.
+echo "  scenario: codex usage cap → quota placeholder (queued + account + pool status)..."
+
+cat > "$HOME/.local/bin/codex" <<'CODEX'
+#!/usr/bin/env bash
+echo "ERROR: You've hit your usage limit. Please try again at 6:26 PM." >&2
+exit 1
+CODEX
+chmod +x "$HOME/.local/bin/codex"
+
+STORE7B="$TMPDIR/comment-store-7b.json"
+echo "[]" > "$STORE7B"
+write_stateful_gh_stub "$HOME/.local/bin/gh" "$STORE7B" "main" "$NEW_PR_SHA"
+
+STATE7B="$TMPDIR/state-7b"
+seed_state_dir "$STATE7B"
+git clone -q "$GITHUB_BARE" "$STATE7B/repos/test-org_probe-repo"
+mkdir -p "$STATE7B/pool/solo" "$STATE7B/pool/1"   # this account + a healthy sibling
+
+run_worker_in_state "$STATE7B" \
+    "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" || true
+
+rm -f "$HOME/.local/bin/codex"   # don't leak the fake codex past this scenario
+
+if ! jq -e '[.[] | select(.body
+        | contains("reviewer account solo hit its codex quota (resets at 6:26 PM)")
+          and contains("This PR stays queued")
+          and contains("any active account picks it up")
+          and contains("Pool:")
+          and contains("account 1: ✅ active")
+          and contains("account solo: ⏸ quota-paused"))] | length == 1' "$STORE7B" >/dev/null; then
+    echo "FAIL: scenario 7b — quota placeholder missing the queued/account/pool-status contract"
+    jq -r '.[] | "  id=\(.id) body=\(.body | gsub("\n";" ") | .[0:220])"' "$STORE7B"
+    exit 1
+fi
+PAUSE_UNTIL7B=$(head -n1 "$STATE7B/pool/solo/quota-paused-until" 2>/dev/null || echo 0)
+if [ "$PAUSE_UNTIL7B" -le "$(date +%s)" ]; then
+    echo "FAIL: scenario 7b — quota-paused-until=$PAUSE_UNTIL7B is not a future epoch (capped account would keep claiming)"
+    exit 1
+fi
+
 echo "  PASS (8 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff)"
 
 
@@ -1414,4 +1461,4 @@ if ! grep -qF "$LOC_LINE12" "$IN12/reeval-status.md"; then
     exit 1
 fi
 
-echo "  PASS (14 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort + whole-PR re-review keeps memory)"
+echo "  PASS (15 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + usage-cap quota placeholder w/ pool status + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort + whole-PR re-review keeps memory)"
