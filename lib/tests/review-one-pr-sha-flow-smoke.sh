@@ -1016,7 +1016,7 @@ touch -d '3 hours ago' "$STATE8/pool/9"
 # pinning the fix a bare mkdir -p revert would silently undo.
 mkdir -p "$STATE8/pool/solo"
 echo 0 > "$STATE8/pool/solo/auth-offline"
-touch -d '3 hours ago' "$STATE8/pool/solo"
+touch -d '3 hours ago' "$STATE8/pool/solo/auth-offline" "$STATE8/pool/solo"
 
 run_worker_in_state "$STATE8" \
     "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" || true
@@ -1047,8 +1047,11 @@ if ! jq -e '[.[] | select(.body | contains("Pool:") and contains("account 2: ⏸
     jq -r '.[] | "  id=\(.id) body=\(.body | gsub("\n";" ") | .[0:200])"' "$STORE8"
     exit 1
 fi
-if [ ! -f "$STATE8/pool/solo/auth-offline" ]; then
-    echo "FAIL: scenario 8 — \$STATE/auth-offline missing (worker not taken offline despite fatal-auth sentinel)"
+# The marker is pre-seeded (backdated) above, so existence alone is vacuous:
+# assert it was REWRITTEN during the run — a fresh mtime proves the fatal-auth
+# path really called mark_auth_offline, not just left the seed in place.
+if [ "$(stat -c %Y "$STATE8/pool/solo/auth-offline" 2>/dev/null || echo 0)" -le $(( $(date +%s) - 3600 )) ]; then
+    echo "FAIL: scenario 8 — auth-offline marker not rewritten during the run (worker not taken offline despite fatal-auth sentinel)"
     exit 1
 fi
 if [ -f "$STATE8/pool/solo/quota-paused-until" ]; then
