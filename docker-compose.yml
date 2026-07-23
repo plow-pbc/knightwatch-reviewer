@@ -11,9 +11,10 @@
 # gate dedup reviews across containers; one container per ENUMERATE_SECS window
 # runs the GraphQL enumerate and writes queue.json, and every reviewer consumes
 # it and claims PRs via the per-PR flock. LOCAL_STATE_DIR is per-container and
-# holds ONLY the canonical clone/fetch lock; per-account codex quota-pause +
-# fatal-auth offline state lives in the SHARED /shared/pool/<WORKER_ID>/
-# namespace (lib/state-io.sh) so any account can render pool status.
+# holds the canonical clone/fetch lock + ephemeral per-PR KID query copies;
+# per-account codex quota-pause + fatal-auth offline state lives in the SHARED
+# /shared/pool/<WORKER_ID>/ namespace (lib/state-io.sh) so any account can
+# render pool status.
 # repos/, workdirs/, ~/.codex are per-container too.
 #
 # Scale-out (add account N): add a dind-N + reviewer-N pair. Each reviewer is
@@ -55,7 +56,7 @@ x-reviewer-env: &reviewer-env
   STATE_DIR: /shared              # per-PR lock + runs/ (SHARED across containers)
   REPOS_DIR: /local/repos         # per-container
   WORKDIRS_DIR: /local/workdirs   # per-container
-  LOCAL_STATE_DIR: /local/state   # canonical clone/fetch lock (per-container; quota-pause + fatal-auth offline live in shared STATE_DIR/pool/<WORKER_ID>/, just-test semaphore in shared STATE_DIR)
+  LOCAL_STATE_DIR: /local/state   # canonical clone/fetch lock + ephemeral KID query copies (per-container; quota-pause + fatal-auth offline live in shared STATE_DIR/pool/<WORKER_ID>/, just-test semaphore in shared STATE_DIR)
   DOCKER_HOST: tcp://127.0.0.1:2375
   CONFIG_ENV_FILE: /root/.kwr/config.env  # root-only path → reviewer-test (just test) can't read the token file
   KWR_CONFIG_DIR: /root/.kwr-config       # mount point of the host-pulled kwr-config cache (read-only; see the per-reviewer volume). KWR_CONFIG_REPO lives in config.env — unset = no-op.

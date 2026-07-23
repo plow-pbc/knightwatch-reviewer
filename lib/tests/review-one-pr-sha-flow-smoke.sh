@@ -910,29 +910,32 @@ echo "  scenario: codex 429 → backoff (quota-pause + 429 placeholder), not har
 # codex's 429 lands — not an early build_prompt abort.
 cp -r "$PROJECT_ROOT/prompts/." "$HOME/.pr-reviewer/prompts/"
 
-# Fake codex: emit codex's first-party 429 retry-exhaustion line to stderr
-# (err.txt) and exit non-zero, on every `exec`. pipeline.py reads err.txt for
-# the classification regex.
-cat > "$HOME/.local/bin/codex" <<'CODEX'
-#!/usr/bin/env bash
-echo "ERROR: exceeded retry limit, last status: 429 Too Many Requests, request id: 00000000-0000-0000-0000-000000000000" >&2
-exit 1
-CODEX
-chmod +x "$HOME/.local/bin/codex"
+# Shared arrange/act for the codex stop-state abort scenarios (7 = transient
+# 429, 7b = usage cap): a fake codex emitting one stderr line, fresh comment
+# store + state dir (+ any sibling pool accounts), one worker run. Row-specific
+# assertions stay at each call site.
+run_codex_abort_scenario() {  # <state_dir> <store> <stderr_line> [sibling_account]...
+    local state="$1" store="$2" line="$3"; shift 3
+    { printf '#!/usr/bin/env bash\n'
+      printf 'echo "%s" >&2\n' "$line"
+      printf 'exit 1\n'; } > "$HOME/.local/bin/codex"
+    chmod +x "$HOME/.local/bin/codex"
+    echo "[]" > "$store"
+    write_stateful_gh_stub "$HOME/.local/bin/gh" "$store" "main" "$NEW_PR_SHA"
+    seed_state_dir "$state"
+    git clone -q "$GITHUB_BARE" "$state/repos/test-org_probe-repo"
+    mkdir -p "$state/pool/solo"   # review-loop's registration, done test-side
+    local sib; for sib in "$@"; do mkdir -p "$state/pool/$sib"; done
+    run_worker_in_state "$state" \
+        "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" || true
+    rm -f "$HOME/.local/bin/codex"   # don't leak the fake codex past this scenario
+}
 
-STORE7="$TMPDIR/comment-store-7.json"
-echo "[]" > "$STORE7"
-write_stateful_gh_stub "$HOME/.local/bin/gh" "$STORE7" "main" "$NEW_PR_SHA"
-
-STATE7="$TMPDIR/state-7"
-seed_state_dir "$STATE7"
-mkdir -p "$STATE7/pool/solo"   # review-loop's registration, done test-side
-git clone -q "$GITHUB_BARE" "$STATE7/repos/test-org_probe-repo"
-
-run_worker_in_state "$STATE7" \
-    "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" || true
-
-rm -f "$HOME/.local/bin/codex"   # don't leak the fake codex past this scenario
+# Row 1 — transient 429 (codex's first-party retry-exhaustion line; pipeline.py
+# classifies it via _CODEX_RATE_LIMIT_RE into _codex_rate_limit.txt).
+STORE7="$TMPDIR/comment-store-7.json"; STATE7="$TMPDIR/state-7"
+run_codex_abort_scenario "$STATE7" "$STORE7" \
+    "ERROR: exceeded retry limit, last status: 429 Too Many Requests, request id: 00000000-0000-0000-0000-000000000000"
 
 if ! jq -e '[.[] | select(.body | contains("codex rate limit (429)"))] | length == 1' "$STORE7" >/dev/null; then
     echo "FAIL: scenario 7 — placeholder body missing 'codex rate limit (429)' (429 sentinel → backoff body not wired)"
@@ -953,26 +956,11 @@ fi
 # the conservative-1h parse path stamps a future pause either way.
 echo "  scenario: codex usage cap → quota placeholder (queued + account + pool status)..."
 
-cat > "$HOME/.local/bin/codex" <<'CODEX'
-#!/usr/bin/env bash
-echo "ERROR: You've hit your usage limit. Please try again at 6:26 PM." >&2
-exit 1
-CODEX
-chmod +x "$HOME/.local/bin/codex"
-
-STORE7B="$TMPDIR/comment-store-7b.json"
-echo "[]" > "$STORE7B"
-write_stateful_gh_stub "$HOME/.local/bin/gh" "$STORE7B" "main" "$NEW_PR_SHA"
-
-STATE7B="$TMPDIR/state-7b"
-seed_state_dir "$STATE7B"
-git clone -q "$GITHUB_BARE" "$STATE7B/repos/test-org_probe-repo"
-mkdir -p "$STATE7B/pool/solo" "$STATE7B/pool/1"   # this account + a healthy sibling
-
-run_worker_in_state "$STATE7B" \
-    "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" || true
-
-rm -f "$HOME/.local/bin/codex"   # don't leak the fake codex past this scenario
+# Row 2 — usage cap, with a healthy sibling account (pool/1) so the pool clause
+# renders mixed states.
+STORE7B="$TMPDIR/comment-store-7b.json"; STATE7B="$TMPDIR/state-7b"
+run_codex_abort_scenario "$STATE7B" "$STORE7B" \
+    "ERROR: You've hit your usage limit. Please try again at 6:26 PM." 1
 
 if ! jq -e '[.[] | select(.body
         | contains("reviewer account solo hit its codex quota (resets at 6:26 PM)")

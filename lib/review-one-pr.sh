@@ -891,8 +891,9 @@ else
     # #100's global N-slot semaphore, with slots in the SHARED STATE_DIR so the
     # MAX_CONCURRENT_TESTS cap on concurrent `just test` holds ACROSS reviewer
     # containers — protecting the host's memory. (This subsumes the per-container
-    # just-test lock; LOCAL_STATE_DIR now scopes only the canonical clone lock —
-    # per-account stop-state lives in $STATE_DIR/pool/, see lib/state-io.sh.)
+    # just-test lock; LOCAL_STATE_DIR scopes the canonical clone lock + ephemeral
+    # KID query copies — per-account stop-state lives in $STATE_DIR/pool/,
+    # see lib/state-io.sh.)
     acquire_just_test_lock "$STATE_DIR"
     JUST_TEST_LOCK_WAIT=$(( $(date +%s) - JUST_TEST_LOCK_WAIT_START ))
     if [ "$JUST_TEST_LOCK_WAIT" -ge 5 ]; then
