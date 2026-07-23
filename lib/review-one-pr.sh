@@ -1542,7 +1542,7 @@ if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
         # account's fresh pause. The pause is per-account: the PR stays queued
         # and any active account claims it on an upcoming tick — say so, and
         # show the whole pool so the author can see the real wait.
-        EYES_ABORT_BODY="⏸ knightwatch paused — reviewer account ${WORKER_ID:-solo} hit its codex quota (resets at ${RESET_AT}). This PR stays queued; any active account picks it up on an upcoming tick — review waits for the reset only if every account is capped. Pool: $(pool_status)"
+        EYES_ABORT_BODY="⏸ knightwatch paused — reviewer account ${WORKER_ID:-solo} hit its codex quota (resets at ${RESET_AT}). This PR stays queued; any active account picks it up on an upcoming tick. If no other account is available, this account retries after its reset. Pool: $(pool_status)"
     fi
     # pipeline.py writes this on a transient codex 429 (it exhausted its own
     # retries against a rate limit) — not a usage cap, so no reset time. Back
