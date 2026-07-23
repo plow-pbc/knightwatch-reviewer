@@ -991,7 +991,7 @@ if [ "$PAUSE_UNTIL7B" -le "$(date +%s)" ]; then
     exit 1
 fi
 
-echo "  PASS (8 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff)"
+echo "  PASS (9 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + usage-cap quota placeholder w/ pool status)"
 
 
 # ===== Scenario 8: BOTH 429 + fatal-auth sentinels → fatal-auth wins =====
