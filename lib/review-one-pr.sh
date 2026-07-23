@@ -70,13 +70,9 @@ REVIEW_START_ISO="${DISPATCHER_TICK_AT:-$(python3 -c "import datetime; print(dat
 # LOG_FILE defaulted yet (the per-run dir is set up below). Fall back to
 # $STATE_DIR/orchestrator.log so this skip line still lands somewhere durable.
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
-# LOCAL_STATE_DIR holds the per-container canonical clone/fetch lock — sharing
-# it would serialize per-container clones/fetches across reviewers. (The
-# just-test semaphore deliberately stays in the SHARED STATE_DIR so #100's
-# global MAX_CONCURRENT_TESTS cap holds across containers — see the
-# acquire_just_test_lock call below. Per-account stop-state — quota-paused-until,
-# auth-offline — lives in the shared $STATE_DIR/pool/<WORKER_ID>/ namespace so
-# any account can render pool_status; see lib/state-io.sh.) Defaults to
+# LOCAL_STATE_DIR is per-container — sharing it would serialize per-container
+# clones/fetches across reviewers. Contents contract (what lives where) is
+# enumerated once at the acquire_just_test_lock call below. Defaults to
 # STATE_DIR so single-host (non-container) behavior is unchanged.
 LOCAL_STATE_DIR="${LOCAL_STATE_DIR:-$STATE_DIR}"
 _LIB_DIR_EARLY="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"

@@ -917,7 +917,7 @@ cp -r "$PROJECT_ROOT/prompts/." "$HOME/.pr-reviewer/prompts/"
 run_codex_abort_scenario() {  # <state_dir> <store> <stderr_line> [sibling_account]...
     local state="$1" store="$2" line="$3"; shift 3
     { printf '#!/usr/bin/env bash\n'
-      printf 'echo "%s" >&2\n' "$line"
+      printf 'echo %s >&2\n' "$(printf '%q' "$line")"
       printf 'exit 1\n'; } > "$HOME/.local/bin/codex"
     chmod +x "$HOME/.local/bin/codex"
     echo "[]" > "$store"
