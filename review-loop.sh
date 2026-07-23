@@ -53,6 +53,11 @@ for i in $(seq 1 60); do
 done
 log "[review-loop] dind ready at ${DOCKER_HOST:-default}; polling every ${POLL_SECS}s"
 
+# Register this account in the shared pool namespace so pool_status (the
+# operator-facing paused message) can enumerate every account, active ones
+# included — an active account has no stop-state files, only its dir.
+mkdir -p "$(pool_state_dir)"
+
 # Quota backoff: when codex caps this account, review-one-pr.sh writes the reset
 # epoch to the quota-pause file (see lib/state-io.sh); this loop stops claiming
 # reviews until it passes, so a capped account backs off and the other accounts

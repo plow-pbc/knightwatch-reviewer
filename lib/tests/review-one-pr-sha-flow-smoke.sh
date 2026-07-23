@@ -901,7 +901,7 @@ echo "  PASS (7 scenarios: SHA race + non-default-base + canonical alignment + w
 # where a bare 429 hard-aborted + instantly retried into a self-sustaining loop.
 #
 # Behavior asserted (user-visible): the single placeholder says "codex rate
-# limit (429)", and $STATE/quota-paused-until is a FUTURE epoch so the worker
+# limit (429)", and $STATE/pool/solo/quota-paused-until is a FUTURE epoch so the worker
 # backs off instead of immediately re-claiming.
 echo "  scenario: codex 429 → backoff (quota-pause + 429 placeholder), not hard-abort..."
 
@@ -937,7 +937,7 @@ if ! jq -e '[.[] | select(.body | contains("codex rate limit (429)"))] | length 
     jq -r '.[] | "  id=\(.id) body=\(.body | gsub("\n";" ") | .[0:90])"' "$STORE7"
     exit 1
 fi
-PAUSE_UNTIL=$(head -n1 "$STATE7/quota-paused-until" 2>/dev/null || echo 0)
+PAUSE_UNTIL=$(head -n1 "$STATE7/pool/solo/quota-paused-until" 2>/dev/null || echo 0)
 if [ "$PAUSE_UNTIL" -le "$(date +%s)" ]; then
     echo "FAIL: scenario 7 — quota-paused-until=$PAUSE_UNTIL is not a future epoch (worker would re-claim immediately, no backoff)"
     exit 1
@@ -964,7 +964,7 @@ echo "  PASS (8 scenarios: SHA race + non-default-base + canonical alignment + w
 # the both-present state the precedence guard exists to resolve.
 #
 # Behavior asserted (user-visible): the placeholder says the worker is OFFLINE
-# (auth invalid), $STATE/auth-offline exists, and $STATE/quota-paused-until does
+# (auth invalid), $STATE/pool/solo/auth-offline exists, and $STATE/pool/solo/quota-paused-until does
 # NOT — i.e. fatal-auth won and no timed backoff was stamped.
 echo "  scenario: BOTH 429 + fatal-auth sentinels → fatal-auth wins (offline, no quota-pause)..."
 
@@ -1022,12 +1022,12 @@ if ! jq -e '[.[] | select(.body | contains("knightwatch offline") and contains("
     jq -r '.[] | "  id=\(.id) body=\(.body | gsub("\n";" ") | .[0:100])"' "$STORE8"
     exit 1
 fi
-if [ ! -f "$STATE8/auth-offline" ]; then
+if [ ! -f "$STATE8/pool/solo/auth-offline" ]; then
     echo "FAIL: scenario 8 — \$STATE/auth-offline missing (worker not taken offline despite fatal-auth sentinel)"
     exit 1
 fi
-if [ -f "$STATE8/quota-paused-until" ]; then
-    echo "FAIL: scenario 8 — \$STATE/quota-paused-until exists ($(head -n1 "$STATE8/quota-paused-until")); the 429 block stamped a timed pause despite fatal-auth precedence"
+if [ -f "$STATE8/pool/solo/quota-paused-until" ]; then
+    echo "FAIL: scenario 8 — \$STATE/quota-paused-until exists ($(head -n1 "$STATE8/pool/solo/quota-paused-until")); the 429 block stamped a timed pause despite fatal-auth precedence"
     exit 1
 fi
 

@@ -2,8 +2,10 @@
 # Verifies the container state split: the per-PR lock + the just-test semaphore
 # stay SHARED (STATE_DIR) so cross-container dedup and #100's global
 # MAX_CONCURRENT_TESTS cap both hold across reviewer containers, while the
-# canonical clone/fetch lock + per-account stop-state (quota-paused-until,
-# auth-offline) are per-container (LOCAL_STATE_DIR). Sources lib/locking.sh
+# canonical clone/fetch lock is per-container (LOCAL_STATE_DIR). Per-account
+# stop-state (quota-paused-until, auth-offline) lives in the shared
+# $STATE_DIR/pool/<WORKER_ID>/ namespace (lib/state-io.sh) so any account can
+# render pool_status while still honoring only its own files. Sources lib/locking.sh
 # directly — the same functions review-one-pr.sh uses.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -27,8 +29,8 @@ wait "$held"
 
 # Source contract: the just-test semaphore (#100's global N-slot cap) stays on the
 # SHARED STATE_DIR so MAX_CONCURRENT_TESTS holds across containers; the
-# canonical clone/fetch lock + per-account stop-state (quota-paused-until,
-# auth-offline) are per-container (LOCAL_STATE_DIR).
+# canonical clone/fetch lock is per-container (LOCAL_STATE_DIR); per-account
+# stop-state lives in the shared $STATE_DIR/pool/ namespace.
 grep -q 'acquire_just_test_lock "\$STATE_DIR"' "$HERE/review-one-pr.sh" \
   || fail "just-test semaphore not on the shared STATE_DIR (global cap would break across containers)"
 grep -q 'CANONICAL_LOCK_DIR="\$LOCAL_STATE_DIR/canonical-locks"' "$HERE/review-one-pr.sh" \

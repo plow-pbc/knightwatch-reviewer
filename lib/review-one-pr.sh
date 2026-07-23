@@ -70,12 +70,14 @@ REVIEW_START_ISO="${DISPATCHER_TICK_AT:-$(python3 -c "import datetime; print(dat
 # LOG_FILE defaulted yet (the per-run dir is set up below). Fall back to
 # $STATE_DIR/orchestrator.log so this skip line still lands somewhere durable.
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
-# LOCAL_STATE_DIR holds the per-container canonical clone/fetch lock plus
-# per-account stop-state (quota-paused-until, auth-offline) — sharing it
-# would serialize per-container clones/fetches across reviewers. (The just-test
-# semaphore deliberately stays in the SHARED STATE_DIR so #100's global
-# MAX_CONCURRENT_TESTS cap holds across containers — see the acquire_just_test_lock
-# call below.) Defaults to STATE_DIR so single-host (non-container) behavior is unchanged.
+# LOCAL_STATE_DIR holds the per-container canonical clone/fetch lock — sharing
+# it would serialize per-container clones/fetches across reviewers. (The
+# just-test semaphore deliberately stays in the SHARED STATE_DIR so #100's
+# global MAX_CONCURRENT_TESTS cap holds across containers — see the
+# acquire_just_test_lock call below. Per-account stop-state — quota-paused-until,
+# auth-offline — lives in the shared $STATE_DIR/pool/<WORKER_ID>/ namespace so
+# any account can render pool_status; see lib/state-io.sh.) Defaults to
+# STATE_DIR so single-host (non-container) behavior is unchanged.
 LOCAL_STATE_DIR="${LOCAL_STATE_DIR:-$STATE_DIR}"
 _LIB_DIR_EARLY="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 . "$_LIB_DIR_EARLY/locking.sh"
@@ -889,8 +891,8 @@ else
     # #100's global N-slot semaphore, with slots in the SHARED STATE_DIR so the
     # MAX_CONCURRENT_TESTS cap on concurrent `just test` holds ACROSS reviewer
     # containers — protecting the host's memory. (This subsumes the per-container
-    # just-test lock; LOCAL_STATE_DIR now scopes the canonical clone lock +
-    # per-account stop-state (quota-paused-until, auth-offline).)
+    # just-test lock; LOCAL_STATE_DIR now scopes only the canonical clone lock —
+    # per-account stop-state lives in $STATE_DIR/pool/, see lib/state-io.sh.)
     acquire_just_test_lock "$STATE_DIR"
     JUST_TEST_LOCK_WAIT=$(( $(date +%s) - JUST_TEST_LOCK_WAIT_START ))
     if [ "$JUST_TEST_LOCK_WAIT" -ge 5 ]; then
@@ -1518,7 +1520,6 @@ if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
     QUOTA_SENTINEL="$RUN_DIR/_codex_quota.txt"
     if [ -s "$QUOTA_SENTINEL" ]; then
         RESET_AT=$(head -n 1 "$QUOTA_SENTINEL")
-        EYES_ABORT_BODY="⏸ one knightwatch reviewer account hit its codex quota (resets at ${RESET_AT}) — that account is paused, but this PR stays queued and another account should pick it up on an upcoming tick. Review waits for the reset only if every account is capped."
         log "$PR_ID: handing codex-quota-error to cleanup_eyes (resets=${RESET_AT})"
         # Pause THIS container until the quota window resets — review-loop.sh's
         # quota_active() reads the same quota-pause file (lib/state-io.sh) and
@@ -1534,8 +1535,14 @@ if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
         if [ -z "$QUOTA_UNTIL" ] || [ "$QUOTA_UNTIL" -le "$(date +%s)" ]; then
             QUOTA_UNTIL=$(( $(date +%s) + 3600 ))
         fi
+        mkdir -p "$(pool_state_dir)"
         printf '%s\n' "$QUOTA_UNTIL" > "$(quota_pause_file)"
         log "$PR_ID: quota-paused this worker until epoch ${QUOTA_UNTIL} (reset=${RESET_AT})"
+        # Body composed AFTER the pause file lands so pool_status reflects this
+        # account's fresh pause. The pause is per-account: the PR stays queued
+        # and any active account claims it on an upcoming tick — say so, and
+        # show the whole pool so the author can see the real wait.
+        EYES_ABORT_BODY="⏸ knightwatch paused — reviewer account ${WORKER_ID:-solo} hit its codex quota (resets at ${RESET_AT}). This PR stays queued; any active account picks it up on an upcoming tick — review waits for the reset only if every account is capped. Pool: $(pool_status)"
     fi
     # pipeline.py writes this on a transient codex 429 (it exhausted its own
     # retries against a rate limit) — not a usage cap, so no reset time. Back
@@ -1555,16 +1562,18 @@ if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
     if [ ! -s "$QUOTA_SENTINEL" ] && [ ! -s "$AUTH_FATAL_SENTINEL" ] && [ -s "$RATE_LIMIT_SENTINEL" ]; then
         BACKOFF_SECS=120
         BACKOFF_UNTIL=$(( $(date +%s) + BACKOFF_SECS ))
-        EYES_ABORT_BODY="⏸ one knightwatch reviewer account hit a codex rate limit (429) and is backing off ~${BACKOFF_SECS}s — this PR stays queued and will be retried on an upcoming tick."
+        EYES_ABORT_BODY="⏸ knightwatch paused — reviewer account ${WORKER_ID:-solo} hit a codex rate limit (429), backing off ~${BACKOFF_SECS}s. This PR stays queued and will be retried on an upcoming tick."
+        mkdir -p "$(pool_state_dir)"
         printf '%s\n' "$BACKOFF_UNTIL" > "$(quota_pause_file)"
         log "$PR_ID: codex 429 rate-limit — backing off this worker ${BACKOFF_SECS}s (until epoch ${BACKOFF_UNTIL})"
     fi
     if [ -s "$AUTH_FATAL_SENTINEL" ]; then
-        EYES_ABORT_BODY="⏸ knightwatch offline — codex auth for this account is invalid (token reused/revoked, not a usage cap). Awaiting operator re-login; reviews resume automatically once re-authenticated."
         # Record the live auth.json mtime; review-loop.sh (auth_offline_active,
         # lib/state-io.sh) keeps this worker offline until a NEWER mtime — i.e.
         # an operator re-login — auto-clears it. A cheap stat, no reset timer.
+        # Marker first so pool_status in the body reflects this account.
         mark_auth_offline
+        EYES_ABORT_BODY="⏸ knightwatch offline — codex auth for reviewer account ${WORKER_ID:-solo} is invalid (token reused/revoked, not a usage cap). This PR stays queued; any active account picks it up on an upcoming tick. This account resumes automatically once the operator re-authenticates it. Pool: $(pool_status)"
         log "$PR_ID: codex auth invalid — worker OFFLINE until re-login (auth-offline marker @ mtime=$(head -n1 "$(auth_offline_file)" 2>/dev/null))"
     fi
     [ -d "$REPO_DIR" ] && rm -rf "$REPO_DIR"

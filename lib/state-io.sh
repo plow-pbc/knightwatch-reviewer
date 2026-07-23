@@ -77,12 +77,19 @@ seen_set() { _seen_write "$1" "$2" 'true'; }
 seen_set_value() { _seen_write "$1" "$2" '$v' "$3"; }
 
 # Codex quota-pause protocol. When an account hits its codex usage limit the
-# worker (review-one-pr.sh) writes the reset epoch to this per-container file;
-# the orchestrator (review.sh) and its loop (review-loop.sh) read it to stop
+# worker (review-one-pr.sh) writes the reset epoch to its pool file; the
+# orchestrator (review.sh) and its loop (review-loop.sh) read it to stop
 # claiming PRs until the window passes, so a capped account backs off while the
-# other containers carry the queue. LOCAL_STATE_DIR is per-container; it falls
-# back to STATE_DIR for non-container single-account runs.
-quota_pause_file() { printf '%s' "${LOCAL_STATE_DIR:-$STATE_DIR}/quota-paused-until"; }
+# other containers carry the queue.
+#
+# Stop-state lives on the SHARED volume, namespaced per account
+# ($STATE_DIR/pool/<WORKER_ID>/), NOT in per-container LOCAL_STATE_DIR: each
+# account still honors only its OWN files (a capped account never pauses a
+# sibling), but any account can render the whole pool's status for the
+# operator-facing paused message (pool_status below). Single-account
+# non-container runs fall back to the "solo" namespace.
+pool_state_dir() { printf '%s' "${STATE_DIR:-$HOME/.pr-reviewer}/pool/${WORKER_ID:-solo}"; }
+quota_pause_file() { printf '%s' "$(pool_state_dir)/quota-paused-until"; }
 
 # True while the pause window is still in the future. A missing file reads as
 # epoch 0, i.e. not paused (the sole writer always writes a numeric epoch, so an
@@ -95,7 +102,7 @@ quota_active() { [ "$(date +%s)" -lt "$(head -n1 "$(quota_pause_file)" 2>/dev/nu
 # pause there's no reset time, so it stays offline until an operator re-login —
 # detected as a NEWER auth.json mtime — which auto-clears it. A cheap stat per
 # tick, so a broken account stops claiming/commenting instead of spin-aborting.
-auth_offline_file() { printf '%s' "${LOCAL_STATE_DIR:-$STATE_DIR}/auth-offline"; }
+auth_offline_file() { printf '%s' "$(pool_state_dir)/auth-offline"; }
 codex_auth_json()   { printf '%s' "${CODEX_HOME:-$HOME/.codex}/auth.json"; }
 
 # True while the marker exists AND auth.json has NOT been refreshed since it was
@@ -111,6 +118,32 @@ auth_offline_active() {
 # true until an operator re-login bumps it. (A missing auth.json records 0, so
 # any real re-login clears it.)
 mark_auth_offline() {
+    mkdir -p "$(pool_state_dir)"
     stat -c %Y "$(codex_auth_json)" 2>/dev/null > "$(auth_offline_file)" \
         || echo 0 > "$(auth_offline_file)"
+}
+
+# One status clause per account registered under $STATE_DIR/pool/, for the
+# operator/author-facing paused messages. Reads only the stop-state files each
+# account already maintains — no extra bookkeeping, no cross-container probing.
+# A sibling's auth-offline marker can't be mtime-verified against ITS auth.json
+# from here, but the owning loop clears the marker within one tick of an
+# operator re-login, so presence is accurate enough for a status line.
+pool_status() {
+    local now dir id until state out=""
+    now=$(date +%s)
+    for dir in "${STATE_DIR:-$HOME/.pr-reviewer}"/pool/*/; do
+        [ -d "$dir" ] || continue
+        id=$(basename "$dir")
+        until=$(head -n1 "$dir/quota-paused-until" 2>/dev/null || echo 0)
+        if [ -f "$dir/auth-offline" ]; then
+            state="🔒 offline (codex auth invalid; awaiting operator re-login)"
+        elif [ "$now" -lt "${until:-0}" ]; then
+            state="⏸ quota-paused until $(date -d "@$until" '+%a %b %-d %H:%M %Z' 2>/dev/null || echo "epoch $until")"
+        else
+            state="✅ active"
+        fi
+        out="${out:+$out · }account $id: $state"
+    done
+    printf '%s' "${out:-no accounts registered}"
 }
