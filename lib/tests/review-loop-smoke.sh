@@ -65,8 +65,12 @@ printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"; chmod +x "$d/bin/docker"   # d
 printf '#!/bin/bash\ntouch "%s/called"\nexit 1\n' "$d" > "$d/review.sh"; chmod +x "$d/review.sh"
 mkdir -p "$d/state/pool/solo"
 printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$d/state/pool/solo/quota-paused-until"
+# Backdate AFTER the file write (creating a file bumps the dir mtime): the
+# loop's pool_touch is then the only thing that can freshen it — the pin.
+touch -d '3 hours ago' "$d/state/pool/solo"
 ( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" ./review-loop.sh ) >/dev/null 2>&1 || true
 [ ! -e "$d/called" ] || fail "review-loop ran review.sh while quota-paused (should skip the tick)"
+[ "$(stat -c %Y "$d/state/pool/solo")" -gt $(( $(date +%s) - 3600 )) ] || fail "loop tick did not pool_touch the account dir (liveness registration unpinned)"
 printf '%s\n' "$(( $(date +%s) - 10 ))" > "$d/state/pool/solo/quota-paused-until"
 ( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" ./review-loop.sh ) >/dev/null 2>&1 || true
 [ -e "$d/called" ] || fail "review-loop skipped the tick with a PAST quota epoch (should resume)"

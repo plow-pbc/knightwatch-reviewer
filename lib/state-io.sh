@@ -94,7 +94,8 @@ pool_state_dir() { printf '%s' "${STATE_DIR:-$HOME/.pr-reviewer}/pool/${WORKER_I
 # review-loop.sh's tick — the one deployed entrypoint — which registers the
 # account before any worker dispatch and re-touches at least every POLL_SECS
 # (a tick blocks on an in-flight worker, hence pool_status's 2h threshold).
-# Stop-state writers rely on that registration and fail loudly without it.
+# Stop-state writers rely on that registration; without it their redirects
+# silently fail to stick (unreachable: the loop registers before any dispatch).
 pool_touch() { mkdir -p "$(pool_state_dir)" && touch "$(pool_state_dir)"; }
 quota_pause_file() { printf '%s' "$(pool_state_dir)/quota-paused-until"; }
 
