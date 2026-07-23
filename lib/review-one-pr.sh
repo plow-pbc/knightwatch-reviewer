@@ -1518,7 +1518,7 @@ if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
     QUOTA_SENTINEL="$RUN_DIR/_codex_quota.txt"
     if [ -s "$QUOTA_SENTINEL" ]; then
         RESET_AT=$(head -n 1 "$QUOTA_SENTINEL")
-        EYES_ABORT_BODY="⏸ knightwatch paused — codex quota hit, resets at ${RESET_AT}. Will retry on the next tick and should succeed after the quota window resets."
+        EYES_ABORT_BODY="⏸ one knightwatch reviewer account hit its codex quota (resets at ${RESET_AT}) — that account is paused, but this PR stays queued and another account should pick it up on an upcoming tick. Review waits for the reset only if every account is capped."
         log "$PR_ID: handing codex-quota-error to cleanup_eyes (resets=${RESET_AT})"
         # Pause THIS container until the quota window resets — review-loop.sh's
         # quota_active() reads the same quota-pause file (lib/state-io.sh) and
@@ -1555,7 +1555,7 @@ if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
     if [ ! -s "$QUOTA_SENTINEL" ] && [ ! -s "$AUTH_FATAL_SENTINEL" ] && [ -s "$RATE_LIMIT_SENTINEL" ]; then
         BACKOFF_SECS=120
         BACKOFF_UNTIL=$(( $(date +%s) + BACKOFF_SECS ))
-        EYES_ABORT_BODY="⏸ knightwatch paused — codex rate limit (429). Backing off ~${BACKOFF_SECS}s; will retry on the next tick."
+        EYES_ABORT_BODY="⏸ one knightwatch reviewer account hit a codex rate limit (429) and is backing off ~${BACKOFF_SECS}s — this PR stays queued and will be retried on an upcoming tick."
         printf '%s\n' "$BACKOFF_UNTIL" > "$(quota_pause_file)"
         log "$PR_ID: codex 429 rate-limit — backing off this worker ${BACKOFF_SECS}s (until epoch ${BACKOFF_UNTIL})"
     fi
