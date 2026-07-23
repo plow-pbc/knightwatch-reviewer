@@ -1010,6 +1010,13 @@ printf '%s\n' "$(( $(date +%s) + 7200 ))" > "$STATE8/pool/2/quota-paused-until"
 mkdir -p "$STATE8/pool/9"
 printf '%s\n' "$(( $(date +%s) + 7200 ))" > "$STATE8/pool/9/quota-paused-until"
 touch -d '3 hours ago' "$STATE8/pool/9"
+# Seed the aborting account's own dir STALE with an EXISTING marker: overwriting
+# a file doesn't bump the dir mtime, so the 'account solo: 🔒 offline' assertion
+# below only passes if mark_auth_offline's pool_touch really bumps the dir —
+# pinning the fix a bare mkdir -p revert would silently undo.
+mkdir -p "$STATE8/pool/solo"
+echo 0 > "$STATE8/pool/solo/auth-offline"
+touch -d '3 hours ago' "$STATE8/pool/solo"
 
 run_worker_in_state "$STATE8" \
     "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" || true
