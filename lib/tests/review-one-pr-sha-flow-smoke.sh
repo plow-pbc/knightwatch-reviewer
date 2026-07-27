@@ -713,27 +713,30 @@ write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"   # author=test-user; p
 REVIEWER_CONTAINER_MODE=1 run_worker_in_state "$STATE5" \
     "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Untrusted PR" "false"
 GATE5_EC=$?
-RUN5=$(find "$STATE5/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' | head -1)
-if [ -z "$RUN5" ]; then
-    echo "FAIL: scenario 5 — worker allocated no run-dir"
+# The skip fires BEFORE allocate_run_dir (issue #189): a permanently-untrusted
+# PR re-enumerated every ~30s must NOT leak a runs/<id>/ dir per poll. Assert
+# NO run dir was created, and that the skip line landed on the orchestrator-log
+# fallback (LOG_FILE default) instead of a per-run run.log that never exists.
+LOG5="$STATE5/orchestrator.log"
+if find "$STATE5/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' | grep -q .; then
+    echo "FAIL: scenario 5 — worker allocated a run-dir for an untrusted skip (leak; issue #189)"
+    find "$STATE5/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*'
     exit 1
 fi
-LOG5="$RUN5/run.log"
 if [ "$GATE5_EC" -ne 0 ]; then
     echo "FAIL: scenario 5 — worker exited $GATE5_EC (expected 0 from clean container-mode untrusted skip)"
-    [ -f "$LOG5" ] && { echo "--- run.log ---"; cat "$LOG5"; }
+    [ -f "$LOG5" ] && { echo "--- orchestrator.log ---"; cat "$LOG5"; }
     exit 1
 fi
 if ! grep -q "skipping review — untrusted author" "$LOG5"; then
-    echo "FAIL: scenario 5 — run.log missing the container-mode untrusted-author skip line"
-    [ -f "$LOG5" ] && { echo "--- run.log ---"; cat "$LOG5"; }
+    echo "FAIL: scenario 5 — orchestrator.log missing the container-mode untrusted-author skip line"
+    [ -f "$LOG5" ] && { echo "--- orchestrator.log ---"; cat "$LOG5"; }
     exit 1
 fi
-if grep -q "posted reviewing placeholder" "$LOG5"; then
-    echo "FAIL: scenario 5 — placeholder WAS posted (untrusted PR reached the pipeline in container mode)"
-    cat "$LOG5"
-    exit 1
-fi
+# (No separate "placeholder not posted" assertion: the placeholder log line is
+# written to run.log — never orchestrator.log — and the no-run-dir assertion
+# above already dominates it. A regression that reached the placeholder post
+# would first have allocated a run dir, failing the check above.)
 
 # ===== Scenario 6: container-mode gate DEFERS on an indeterminate trust check =====
 # A 403/5xx/network failure of the collaborators/permission lookup (e.g. the
@@ -749,24 +752,28 @@ write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"
 REVIEWER_CONTAINER_MODE=1 GH_STUB_PERMISSION_RC=1 run_worker_in_state "$STATE_IND" \
     "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Indeterminate PR" "false"
 GATE_IND_EC=$?
-RUN_IND=$(find "$STATE_IND/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' | head -1)
-[ -n "$RUN_IND" ] || { echo "FAIL: indeterminate-defer — worker allocated no run-dir"; exit 1; }
-LOG_IND="$RUN_IND/run.log"
+# Like the untrusted skip, the indeterminate DEFER fires before allocate_run_dir
+# (issue #189) — and it retries every tick, so a leaked dir per retry would be
+# the worst offender. Assert NO run dir and the defer line on the orchestrator
+# fallback log.
+LOG_IND="$STATE_IND/orchestrator.log"
+if find "$STATE_IND/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' | grep -q .; then
+    echo "FAIL: indeterminate-defer — worker allocated a run-dir for a deferred review (leak; issue #189)"
+    find "$STATE_IND/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*'
+    exit 1
+fi
 if [ "$GATE_IND_EC" -ne 1 ]; then
     echo "FAIL: indeterminate-defer — worker exited $GATE_IND_EC (expected 1 = defer on indeterminate trust)"
-    [ -f "$LOG_IND" ] && { echo "--- run.log ---"; cat "$LOG_IND"; }
+    [ -f "$LOG_IND" ] && { echo "--- orchestrator.log ---"; cat "$LOG_IND"; }
     exit 1
 fi
 if ! grep -q "trust check deferred" "$LOG_IND"; then
-    echo "FAIL: indeterminate-defer — run.log missing the 'trust check deferred' line"
-    [ -f "$LOG_IND" ] && { echo "--- run.log ---"; cat "$LOG_IND"; }
+    echo "FAIL: indeterminate-defer — orchestrator.log missing the 'trust check deferred' line"
+    [ -f "$LOG_IND" ] && { echo "--- orchestrator.log ---"; cat "$LOG_IND"; }
     exit 1
 fi
-if grep -q "posted reviewing placeholder" "$LOG_IND"; then
-    echo "FAIL: indeterminate-defer — placeholder WAS posted (defer fired too late)"
-    cat "$LOG_IND"
-    exit 1
-fi
+# (No separate placeholder assertion — see scenario 5's note; the no-run-dir
+# check above dominates it.)
 
 echo "  PASS (6 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer)"
 

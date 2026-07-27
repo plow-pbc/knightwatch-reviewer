@@ -161,6 +161,77 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # (Also sources gh-comments.sh; multi-source is idempotent.)
 . "$_LIB_DIR/pr-comments.sh"
 
+# --- author trust + container-mode gate (BEFORE the per-run dir) ---------
+# This must run before allocate_run_dir: a skipped/deferred review that
+# allocated a run dir first would leak runs/<id>/ on every ~30s poll of a
+# permanently-untrusted PR (issue #189). Resolving metadata + trust here and
+# gating before allocation means the skip/defer exits land on the
+# orchestrator-log fallback (LOG_FILE default above) and create nothing —
+# the same shape as the pre-run-dir per-PR lock-contention skip near the top.
+# Resolve PR metadata BEFORE the placeholder post: if `gh pr view` fails
+# (e.g. closingIssuesReferences-bearing gh that the host can't speak),
+# abort cleanly without leaving a "👀 reviewing" placeholder + abort-PATCH
+# pair on every tick. Metadata is consumed downstream for BASE_REF (canonical
+# fetch), PR_AUTHOR (env-mirror trust gate), title/body/linked-issues
+# (AUTHOR_INTENT) — single gh call covers all.
+PR_DATA=$(gh pr view "$PR_NUM" --repo "$REPO" --json baseRefName,title,body,author,closingIssuesReferences 2>/dev/null)
+BASE_REF=$(printf '%s' "$PR_DATA" | jq -r '.baseRefName // empty')
+PR_AUTHOR=$(printf '%s' "$PR_DATA" | jq -r '.author.login // empty')
+if [ -z "$BASE_REF" ] || [ -z "$PR_AUTHOR" ]; then
+    log "$PR_ID: gh pr view returned no baseRefName / author (PR_DATA=${PR_DATA:0:80}) — aborting before placeholder post"
+    exit 1
+fi
+
+# Author trust — computed once, before any placeholder/clone/codex. Container-
+# mode review gate: codex agents run sandbox-bypassed and share the privileged
+# dind daemon's netns, so reviewing an UNTRUSTED-author PR risks prompt-injection
+# → daemon → host root. Skip untrusted authors entirely here (no placeholder, no
+# pipeline) so untrusted content never reaches codex. Trusted (push-access)
+# authors review normally; the host (non-container) path is unaffected. Lifts
+# when the daemon is unprivileged. Reused below for the .env-mirror/just-test gate.
+# Tri-state trust (lib/auth.sh): 0=trusted, 1=definitively untrusted,
+# 2=indeterminate (403 rate-limit / 5xx / network — couldn't verify). An
+# indeterminate result must NEVER fall through to untrusted-and-skip: a
+# throttled lookup of a genuinely-trusted author (e.g. repo owner) would
+# silently drop their PR. Defer instead (exit 1, like the gh pr view guard
+# above) so the next tick re-checks once the throttle clears.
+is_trusted_repo_author "$REPO" "$PR_AUTHOR"; TRUST_RC=$?
+case "$TRUST_RC" in
+    0) IS_TRUSTED_AUTHOR=true ;;
+    *) IS_TRUSTED_AUTHOR=false ;;
+esac
+# The defer/skip is CONTAINER-MODE ONLY — that's the path where untrusted code
+# must never run (codex↔privileged-dind). On the host path an untrusted author
+# is reviewed anyway (just without the .env-mirror / just-test, gated on
+# IS_TRUSTED_AUTHOR below), so an indeterminate result there needs no defer —
+# scoping it here keeps host behavior unchanged.
+if [ -n "${REVIEWER_CONTAINER_MODE:-}" ] && [ "$IS_TRUSTED_AUTHOR" != true ]; then
+    if [ "$TRUST_RC" -eq 2 ]; then
+        # Indeterminate → defer (exit 1, like the gh pr view guard above)
+        # so the next tick re-checks once the throttle clears.
+        log "$PR_ID: trust check deferred — API error ($PR_AUTHOR); retrying next tick"
+        exit 1
+    fi
+    log "$PR_ID: skipping review — untrusted author ($PR_AUTHOR, no push access) in container mode (codex↔privileged-dind; trusted authors only until rootless dind)"
+    exit 0
+fi
+
+# Repo visibility (public|private|internal), lowercased — feeds the security
+# threat model and portability bar into the specialist prompts. `gh repo view`
+# reports visibility UPPERCASE; the prompts branch on the lowercase string.
+# Fail loud on an empty result — same contract as the BASE_REF/PR_AUTHOR guard
+# above: a metadata-lookup break must not silently downgrade a public repo to
+# the quieter private posture (under-calibrated security + portability review).
+# Resolved AFTER the container-mode gate on purpose: an untrusted-author skip
+# re-fires every ~30s per PR, so a `gh repo view` above the gate would burn an
+# API call per skip tick for a review that never runs. Only reviews that get
+# past the gate (and thus reach the prompt build that consumes it) pay for it.
+REPO_VISIBILITY=$(gh repo view "$REPO" --json visibility --jq '.visibility' 2>/dev/null | tr '[:upper:]' '[:lower:]')
+if [ -z "$REPO_VISIBILITY" ]; then
+    log "$PR_ID: gh repo view returned no visibility — aborting before placeholder post (refusing to review under an assumed posture)"
+    exit 1
+fi
+
 # --- per-run dir -------------------------------------------------------------
 # Every worker invocation gets its own runs/<RUN_ID>/ dir holding the run log,
 # input scratch, and one subdir per agent (prompt + output + log). The git
@@ -239,66 +310,6 @@ finalize_run() {
 }
 
 log "Reviewing $PR_ID (force_whole_pr=$FORCE_WHOLE_PR)"
-
-# Resolve PR metadata BEFORE the placeholder post: if `gh pr view` fails
-# (e.g. closingIssuesReferences-bearing gh that the host can't speak),
-# abort cleanly without leaving a "👀 reviewing" placeholder + abort-PATCH
-# pair on every tick. Metadata is consumed downstream for BASE_REF (canonical
-# fetch), PR_AUTHOR (env-mirror trust gate), title/body/linked-issues
-# (AUTHOR_INTENT) — single gh call covers all.
-PR_DATA=$(gh pr view "$PR_NUM" --repo "$REPO" --json baseRefName,title,body,author,closingIssuesReferences 2>/dev/null)
-BASE_REF=$(printf '%s' "$PR_DATA" | jq -r '.baseRefName // empty')
-PR_AUTHOR=$(printf '%s' "$PR_DATA" | jq -r '.author.login // empty')
-if [ -z "$BASE_REF" ] || [ -z "$PR_AUTHOR" ]; then
-    log "$PR_ID: gh pr view returned no baseRefName / author (PR_DATA=${PR_DATA:0:80}) — aborting before placeholder post"
-    exit 1
-fi
-
-# Repo visibility (public|private|internal), lowercased — feeds the security
-# threat model and portability bar into the specialist prompts. `gh repo view`
-# reports visibility UPPERCASE; the prompts branch on the lowercase string.
-# Fail loud on an empty result — same contract as the BASE_REF/PR_AUTHOR guard
-# above: a metadata-lookup break must not silently downgrade a public repo to
-# the quieter private posture (under-calibrated security + portability review).
-REPO_VISIBILITY=$(gh repo view "$REPO" --json visibility --jq '.visibility' 2>/dev/null | tr '[:upper:]' '[:lower:]')
-if [ -z "$REPO_VISIBILITY" ]; then
-    log "$PR_ID: gh repo view returned no visibility — aborting before placeholder post (refusing to review under an assumed posture)"
-    exit 1
-fi
-
-# Author trust — computed once, before any placeholder/clone/codex. Container-
-# mode review gate: codex agents run sandbox-bypassed and share the privileged
-# dind daemon's netns, so reviewing an UNTRUSTED-author PR risks prompt-injection
-# → daemon → host root. Skip untrusted authors entirely here (no placeholder, no
-# pipeline) so untrusted content never reaches codex. Trusted (push-access)
-# authors review normally; the host (non-container) path is unaffected. Lifts
-# when the daemon is unprivileged. Reused below for the .env-mirror/just-test gate.
-# Tri-state trust (lib/auth.sh): 0=trusted, 1=definitively untrusted,
-# 2=indeterminate (403 rate-limit / 5xx / network — couldn't verify). An
-# indeterminate result must NEVER fall through to untrusted-and-skip: a
-# throttled lookup of a genuinely-trusted author (e.g. repo owner) would
-# silently drop their PR. Defer instead (exit 1, like the gh pr view / gh
-# repo view guards above) so the next tick re-checks once the throttle clears.
-is_trusted_repo_author "$REPO" "$PR_AUTHOR"; TRUST_RC=$?
-case "$TRUST_RC" in
-    0) IS_TRUSTED_AUTHOR=true ;;
-    *) IS_TRUSTED_AUTHOR=false ;;
-esac
-# The defer/skip is CONTAINER-MODE ONLY — that's the path where untrusted code
-# must never run (codex↔privileged-dind). On the host path an untrusted author
-# is reviewed anyway (just without the .env-mirror / just-test, gated on
-# IS_TRUSTED_AUTHOR below), so an indeterminate result there needs no defer —
-# scoping it here keeps host behavior unchanged.
-if [ -n "${REVIEWER_CONTAINER_MODE:-}" ] && [ "$IS_TRUSTED_AUTHOR" != true ]; then
-    if [ "$TRUST_RC" -eq 2 ]; then
-        # Indeterminate → defer (exit 1, like the gh pr view / gh repo view
-        # guards) so the next tick re-checks once the throttle clears.
-        log "$PR_ID: trust check deferred — API error ($PR_AUTHOR); retrying next tick"
-        exit 1
-    fi
-    log "$PR_ID: skipping review — untrusted author ($PR_AUTHOR, no push access) in container mode (codex↔privileged-dind; trusted authors only until rootless dind)"
-    exit 0
-fi
 
 # Install the EXIT trap BEFORE the canonical clone/fetch so finalize_run is
 # guaranteed to fire on any abort path. cleanup_eyes is a no-op until
@@ -390,10 +401,11 @@ if [ "$(git -C "$CANONICAL_DIR" rev-parse --is-shallow-repository)" = "true" ]; 
     fi
 fi
 
-# PR_DATA + BASE_REF + PR_AUTHOR were resolved before the placeholder
-# post above so a `gh pr view` failure aborts cleanly without leaving
-# a placeholder. They flow through here to the canonical fetch + the
-# downstream env-mirror trust gate / AUTHOR_INTENT staging unchanged.
+# PR_DATA + BASE_REF + PR_AUTHOR were resolved in the pre-run-dir trust
+# gate block above (before allocate_run_dir) so a `gh pr view` failure
+# aborts cleanly without leaving a placeholder. They flow through here to
+# the canonical fetch + the downstream env-mirror trust gate /
+# AUTHOR_INTENT staging unchanged.
 
 # Fetch latest refs into the canonical clone. We fetch the PR head via
 # `refs/pull/N/head` rather than by branch name, so fork PRs work
