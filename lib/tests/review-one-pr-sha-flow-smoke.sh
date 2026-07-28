@@ -738,8 +738,25 @@ fi
 # whole point — a permanently-untrusted PR is polled indefinitely).
 REVIEWER_CONTAINER_MODE=1 run_worker_in_state "$STATE5" \
     "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Untrusted PR" "false"
+GATE5B_EC=$?
+if [ "$GATE5B_EC" -ne 0 ]; then
+    echo "FAIL: scenario 5 — second untrusted tick exited $GATE5B_EC (expected 0; didn't reach the gate)"
+    exit 1
+fi
 if find "$STATE5/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' | grep -q .; then
     echo "FAIL: scenario 5 — second untrusted tick allocated a run-dir (leak; issue #189)"
+    exit 1
+fi
+# Silence contract — the actual behavior this commit introduces: the container-
+# mode untrusted skip must emit NO per-tick line. A re-added log line at the gate
+# (the flood→marker→TTL regression this branch produced twice) would land on the
+# shared 5 MB orchestrator.log and pass every other assertion here — so pin it.
+# An empty log also discriminates this skip from the lock-contention skip at
+# review-one-pr.sh:83, which DOES log — ruling out a false pass from a leaked
+# tick-1 PR lock or any future exit-0 path added above the gate.
+if [ -f "$STATE5/orchestrator.log" ] && grep -q "test-org/probe-repo#1" "$STATE5/orchestrator.log"; then
+    echo "FAIL: scenario 5 — untrusted skip wrote to orchestrator.log (silence contract broken → shared-log flood risk)"
+    { echo "--- orchestrator.log ---"; cat "$STATE5/orchestrator.log"; }
     exit 1
 fi
 
