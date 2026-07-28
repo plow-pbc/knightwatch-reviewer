@@ -718,65 +718,28 @@ REVIEWER_CONTAINER_MODE=1 run_worker_in_state "$STATE5" \
     "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Untrusted PR" "false"
 GATE5_EC=$?
 # The skip fires BEFORE allocate_run_dir (issue #189): a permanently-untrusted
-# PR re-enumerated every ~30s must NOT leak a runs/<id>/ dir per poll. Assert
-# NO run dir was created, and that the skip line landed on the orchestrator-log
-# fallback (LOG_FILE default) instead of a per-run run.log that never exists.
-LOG5="$STATE5/orchestrator.log"
+# PR re-enumerated every ~30s must NOT leak a runs/<id>/ dir per poll. The
+# behavioral contract is exactly that — clean exit 0, no run dir. The skip is
+# silent (no per-tick log line: it's stable policy re-firing every tick, and the
+# per-run run.log no longer exists — see the gate comment in review-one-pr.sh),
+# so there's nothing to assert on a log. A regression that failed to skip would
+# proceed to clone + allocate a run dir (like scenarios 1-4, same gh stub minus
+# container mode), tripping the no-run-dir assertion below.
 if find "$STATE5/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' | grep -q .; then
-    echo "FAIL: scenario 5 — worker allocated a run-dir for an untrusted skip (leak; issue #189)"
+    echo "FAIL: scenario 5 — worker allocated a run-dir for an untrusted skip (gate didn't fire; leak — issue #189)"
     find "$STATE5/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*'
     exit 1
 fi
 if [ "$GATE5_EC" -ne 0 ]; then
     echo "FAIL: scenario 5 — worker exited $GATE5_EC (expected 0 from clean container-mode untrusted skip)"
-    [ -f "$LOG5" ] && { echo "--- orchestrator.log ---"; cat "$LOG5"; }
     exit 1
 fi
-if ! grep -q "skipping review — untrusted author" "$LOG5"; then
-    echo "FAIL: scenario 5 — orchestrator.log missing the container-mode untrusted-author skip line"
-    [ -f "$LOG5" ] && { echo "--- orchestrator.log ---"; cat "$LOG5"; }
-    exit 1
-fi
-# (No separate "placeholder not posted" assertion: the placeholder log line is
-# written to run.log — never orchestrator.log — and the no-run-dir assertion
-# above already dominates it. A regression that reached the placeholder post
-# would first have allocated a run dir, failing the check above.)
-# Dedupe fence: because the skip now lands on the SHARED orchestrator.log, the
-# ~30s-per-PR tick cadence must NOT append the skip line every tick (that would
-# flood the 5 MB-rotated operator log and evict real history). A per-PR marker
-# under STATE_DIR gates it to once. Re-run the same worker in the same state and
-# assert the skip line count stays at 1 (and still no run dir).
+# Re-run the same PR: the skip must stay clean and dir-free across ticks (the
+# whole point — a permanently-untrusted PR is polled indefinitely).
 REVIEWER_CONTAINER_MODE=1 run_worker_in_state "$STATE5" \
     "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Untrusted PR" "false"
-GATE5B_EC=$?
-# Assert the second tick actually reached the gate (exit 0) — otherwise an
-# earlier abort would hold the skip count at 1 and pass this fence on a false
-# premise (the run_worker helper discards the exit code by default).
-if [ "$GATE5B_EC" -ne 0 ]; then
-    echo "FAIL: scenario 5 — second untrusted tick exited $GATE5B_EC (expected 0; didn't reach the gate)"
-    [ -f "$LOG5" ] && { echo "--- orchestrator.log ---"; cat "$LOG5"; }
-    exit 1
-fi
-SKIP_LINES=$(grep -c "skipping review — untrusted author" "$LOG5")
-if [ "$SKIP_LINES" -ne 1 ]; then
-    echo "FAIL: scenario 5 — untrusted-skip line logged $SKIP_LINES times across 2 ticks (expected 1; per-PR dedupe marker regressed → shared-log flood)"
-    { echo "--- orchestrator.log ---"; cat "$LOG5"; }
-    exit 1
-fi
 if find "$STATE5/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' | grep -q .; then
-    echo "FAIL: scenario 5 — second untrusted skip allocated a run-dir (leak; issue #189)"
-    exit 1
-fi
-# A DIFFERENT PR in the same state must log its own skip line (count → 2). Guards
-# against the marker key degenerating to a constant (dropping ${REPO}/${PR_NUM}),
-# which would silence the skip fleet-wide — indistinguishable from per-PR dedupe
-# if the scenario only ever exercised one PR number.
-REVIEWER_CONTAINER_MODE=1 run_worker_in_state "$STATE5" \
-    "test-org/probe-repo" "2" "$NEW_PR_SHA" "feat/test2" "Untrusted PR 2" "false"
-SKIP_LINES2=$(grep -c "skipping review — untrusted author" "$LOG5")
-if [ "$SKIP_LINES2" -ne 2 ]; then
-    echo "FAIL: scenario 5 — a distinct PR did not log its own skip line (count=$SKIP_LINES2, expected 2; marker key may be global, not per-PR)"
-    { echo "--- orchestrator.log ---"; cat "$LOG5"; }
+    echo "FAIL: scenario 5 — second untrusted tick allocated a run-dir (leak; issue #189)"
     exit 1
 fi
 
@@ -967,7 +930,7 @@ if [ "$PLACEHOLDER_COUNT" != "1" ]; then
     exit 1
 fi
 
-echo "  PASS (7 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam)"
+echo "  placeholder-reuse anti-spam scenario ok"
 
 
 # ===== Scenario 7: transient codex 429 → short backoff (not hard-abort+retry) =====
@@ -1022,7 +985,7 @@ if [ "$PAUSE_UNTIL" -le "$(date +%s)" ]; then
     exit 1
 fi
 
-echo "  PASS (8 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff)"
+echo "  codex 429 backoff scenario ok"
 
 
 # ===== Scenario 8: BOTH 429 + fatal-auth sentinels → fatal-auth wins =====
@@ -1473,4 +1436,4 @@ if ! grep -qF "$LOC_LINE12" "$IN12/reeval-status.md"; then
     exit 1
 fi
 
-echo "  PASS (14 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort + whole-PR re-review keeps memory)"
+echo "  PASS (15 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + metadata-lookup guard pre-allocation abort + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort + whole-PR re-review keeps memory)"
