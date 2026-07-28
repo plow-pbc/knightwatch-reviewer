@@ -748,6 +748,15 @@ fi
 # assert the skip line count stays at 1 (and still no run dir).
 REVIEWER_CONTAINER_MODE=1 run_worker_in_state "$STATE5" \
     "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Untrusted PR" "false"
+GATE5B_EC=$?
+# Assert the second tick actually reached the gate (exit 0) — otherwise an
+# earlier abort would hold the skip count at 1 and pass this fence on a false
+# premise (the run_worker helper discards the exit code by default).
+if [ "$GATE5B_EC" -ne 0 ]; then
+    echo "FAIL: scenario 5 — second untrusted tick exited $GATE5B_EC (expected 0; didn't reach the gate)"
+    [ -f "$LOG5" ] && { echo "--- orchestrator.log ---"; cat "$LOG5"; }
+    exit 1
+fi
 SKIP_LINES=$(grep -c "skipping review — untrusted author" "$LOG5")
 if [ "$SKIP_LINES" -ne 1 ]; then
     echo "FAIL: scenario 5 — untrusted-skip line logged $SKIP_LINES times across 2 ticks (expected 1; per-PR dedupe marker regressed → shared-log flood)"
@@ -756,6 +765,18 @@ if [ "$SKIP_LINES" -ne 1 ]; then
 fi
 if find "$STATE5/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' | grep -q .; then
     echo "FAIL: scenario 5 — second untrusted skip allocated a run-dir (leak; issue #189)"
+    exit 1
+fi
+# A DIFFERENT PR in the same state must log its own skip line (count → 2). Guards
+# against the marker key degenerating to a constant (dropping ${REPO}/${PR_NUM}),
+# which would silence the skip fleet-wide — indistinguishable from per-PR dedupe
+# if the scenario only ever exercised one PR number.
+REVIEWER_CONTAINER_MODE=1 run_worker_in_state "$STATE5" \
+    "test-org/probe-repo" "2" "$NEW_PR_SHA" "feat/test2" "Untrusted PR 2" "false"
+SKIP_LINES2=$(grep -c "skipping review — untrusted author" "$LOG5")
+if [ "$SKIP_LINES2" -ne 2 ]; then
+    echo "FAIL: scenario 5 — a distinct PR did not log its own skip line (count=$SKIP_LINES2, expected 2; marker key may be global, not per-PR)"
+    { echo "--- orchestrator.log ---"; cat "$LOG5"; }
     exit 1
 fi
 
@@ -826,7 +847,7 @@ if ! grep -q "gh pr view returned no baseRefName / author" "$LOG_MD"; then
     exit 1
 fi
 
-echo "  PASS (7 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + metadata-lookup guard pre-allocation abort)"
+echo "  gate/leak scenarios ok (untrusted skip + dedupe + indeterminate defer + metadata-guard pre-allocation abort)"
 
 # ===== Scenario 6: repeated transient aborts reuse one placeholder =====
 # Fences the anti-spam reuse path in lib/review-one-pr.sh. During a transient
