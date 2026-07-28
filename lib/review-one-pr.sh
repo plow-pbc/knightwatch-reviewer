@@ -212,7 +212,20 @@ if [ -n "${REVIEWER_CONTAINER_MODE:-}" ] && [ "$IS_TRUSTED_AUTHOR" != true ]; th
         log "$PR_ID: trust check deferred — API error ($PR_AUTHOR); retrying next tick"
         exit 1
     fi
-    log "$PR_ID: skipping review — untrusted author ($PR_AUTHOR, no push access) in container mode (codex↔privileged-dind; trusted authors only until rootless dind)"
+    # Log the permanently-untrusted skip at most ONCE per PR (fleet-wide), not
+    # on every ~30s tick. This exit now lands on the shared orchestrator.log
+    # (it's above the per-run run.log), so the same high tick cadence that
+    # produced the run-dir leak would otherwise flood the 5 MB-rotated operator
+    # log with skip noise and evict real review history. A shared marker under
+    # STATE_DIR (same shape as review.sh's seen-updated/ watermark) dedupes it;
+    # the marker just goes stale harmlessly if the author later gains push
+    # access (the gate stops firing). The transient defer line above is
+    # low-volume and stays per-tick.
+    UNTRUSTED_SKIP_MARK="$STATE_DIR/untrusted-skip-logged/${REPO//\//_}__${PR_NUM}"
+    if [ ! -e "$UNTRUSTED_SKIP_MARK" ]; then
+        mkdir -p "$(dirname "$UNTRUSTED_SKIP_MARK")" && : > "$UNTRUSTED_SKIP_MARK"
+        log "$PR_ID: skipping review — untrusted author ($PR_AUTHOR, no push access) in container mode (codex↔privileged-dind; trusted authors only until rootless dind)"
+    fi
     exit 0
 fi
 

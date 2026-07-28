@@ -112,7 +112,11 @@ for ((i=1; i<=\$#; i++)); do
 done
 case "\$fields" in
     *baseRefName*)
+        # Opt-in empty result → the BASE_REF/PR_AUTHOR fail-loud guard fires
+        # (simulates a gh pr view that returns no usable metadata).
+        if [ -n "\${GH_STUB_PRVIEW_EMPTY:-}" ]; then printf '{}\n'; else
         printf '{"baseRefName":"$base_ref","title":"Test PR","body":"","author":{"login":"test-user"},"closingIssuesReferences":{"nodes":[]}}\n'
+        fi
         ;;
     *visibility*)
         printf 'PUBLIC\n'
@@ -737,6 +741,23 @@ fi
 # written to run.log — never orchestrator.log — and the no-run-dir assertion
 # above already dominates it. A regression that reached the placeholder post
 # would first have allocated a run dir, failing the check above.)
+# Dedupe fence: because the skip now lands on the SHARED orchestrator.log, the
+# ~30s-per-PR tick cadence must NOT append the skip line every tick (that would
+# flood the 5 MB-rotated operator log and evict real history). A per-PR marker
+# under STATE_DIR gates it to once. Re-run the same worker in the same state and
+# assert the skip line count stays at 1 (and still no run dir).
+REVIEWER_CONTAINER_MODE=1 run_worker_in_state "$STATE5" \
+    "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Untrusted PR" "false"
+SKIP_LINES=$(grep -c "skipping review — untrusted author" "$LOG5")
+if [ "$SKIP_LINES" -ne 1 ]; then
+    echo "FAIL: scenario 5 — untrusted-skip line logged $SKIP_LINES times across 2 ticks (expected 1; per-PR dedupe marker regressed → shared-log flood)"
+    { echo "--- orchestrator.log ---"; cat "$LOG5"; }
+    exit 1
+fi
+if find "$STATE5/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' | grep -q .; then
+    echo "FAIL: scenario 5 — second untrusted skip allocated a run-dir (leak; issue #189)"
+    exit 1
+fi
 
 # ===== Scenario 6: container-mode gate DEFERS on an indeterminate trust check =====
 # A 403/5xx/network failure of the collaborators/permission lookup (e.g. the
@@ -775,7 +796,37 @@ fi
 # (No separate placeholder assertion — see scenario 5's note; the no-run-dir
 # check above dominates it.)
 
-echo "  PASS (6 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer)"
+# ===== Scenario 6b: metadata-lookup guard aborts BEFORE allocate_run_dir =====
+# The gh pr view (BASE_REF/PR_AUTHOR) and gh repo view (REPO_VISIBILITY) guards
+# moved above allocate_run_dir with the trust gate, so a metadata-lookup failure
+# must also abort without leaking a run dir. Fences that half of the relocation
+# (the trust-gate half is scenarios 5/6): a future re-shuffle that pushed the
+# guards back below allocation would otherwise go undetected. gh pr view returns
+# {} → empty BASE_REF/PR_AUTHOR → guard exit 1, no run dir, line on orchestrator.log.
+echo "  scenario: metadata-lookup guard aborts before run-dir allocation (no leak)..."
+STATE_MD="$TMPDIR/state-md"
+seed_state_dir "$STATE_MD"
+write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"
+GH_STUB_PRVIEW_EMPTY=1 run_worker_in_state "$STATE_MD" \
+    "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Metadata-fail PR" "false"
+GATE_MD_EC=$?
+LOG_MD="$STATE_MD/orchestrator.log"
+if find "$STATE_MD/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' | grep -q .; then
+    echo "FAIL: metadata-guard — worker allocated a run-dir before the gh-pr-view abort (leak; issue #189)"
+    exit 1
+fi
+if [ "$GATE_MD_EC" -ne 1 ]; then
+    echo "FAIL: metadata-guard — worker exited $GATE_MD_EC (expected 1 = abort on empty gh pr view)"
+    [ -f "$LOG_MD" ] && { echo "--- orchestrator.log ---"; cat "$LOG_MD"; }
+    exit 1
+fi
+if ! grep -q "gh pr view returned no baseRefName / author" "$LOG_MD"; then
+    echo "FAIL: metadata-guard — orchestrator.log missing the gh-pr-view abort line"
+    [ -f "$LOG_MD" ] && { echo "--- orchestrator.log ---"; cat "$LOG_MD"; }
+    exit 1
+fi
+
+echo "  PASS (7 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + metadata-lookup guard pre-allocation abort)"
 
 # ===== Scenario 6: repeated transient aborts reuse one placeholder =====
 # Fences the anti-spam reuse path in lib/review-one-pr.sh. During a transient
