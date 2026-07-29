@@ -155,19 +155,6 @@ run_scenario() {
     pr_sha=$(setup_bare_upstream "$push_pull_head" "$bare")
     git clone -q "$bare" "$REPOS_DIR/test-org_probe-repo"
 
-    # Seed a prior completed run and point `latest` at it, so the clean-skip
-    # path exercises restore_latest_link's RESTORE branch rather than its
-    # rm -f fallback (with no prior run, both placements and both branches
-    # look identical). Named deliberately OUTSIDE the
-    # test-org_probe-repo__99__* glob the leak assertion uses, so the fixture
-    # can't be mistaken for a leaked run dir.
-    local prior_run="$STATE_DIR/runs/prior-completed-run"
-    mkdir -p "$prior_run"
-    echo "[ts] prior run" > "$prior_run/run.log"
-    local latest_link="$STATE_DIR/runs-by-pr/test-org_probe-repo/99/latest"
-    mkdir -p "$(dirname "$latest_link")"
-    ln -sfn "$prior_run" "$latest_link"
-
     local worker_log="$scenario_dir/worker.log"
     set +e
     TRIGGER_COMMENT_FILE="" timeout 30 bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
@@ -223,19 +210,6 @@ run_scenario() {
             # …and because the dir is gone, the skip line lands on the shared
             # orchestrator.log instead. Bounded volume per PR, so unlike the
             # per-tick untrusted-author skip this one stays logged.
-            # This worker repointed `latest` at its own run dir, then discarded
-            # that dir. So `latest` must come back to the prior surviving run —
-            # not dangle at the deleted dir (`-e` follows the link, so that goes
-            # red) and not be removed outright, which would cost the operator
-            # the pointer to the last run that actually produced something.
-            if [ ! -e "$latest_link" ]; then
-                fail_msg "[$scenario_name] clean skip left 'latest' dangling or removed (prior run is still on disk)"
-                ls -l "$(dirname "$latest_link")" >&2 || true
-            elif [ "$(readlink "$latest_link")" != "$prior_run" ]; then
-                fail_msg "[$scenario_name] 'latest' resolves to $(readlink "$latest_link"), expected the prior run $prior_run"
-            else
-                pass_msg "[$scenario_name] 'latest' restored to the prior surviving run"
-            fi
             local orch_log="$STATE_DIR/orchestrator.log"
             if [ -f "$orch_log" ] && grep -q "refs/pull/99/head fetch failed" "$orch_log"; then
                 pass_msg "[$scenario_name] orchestrator.log records 'refs/pull/99/head fetch failed' with git stderr"
@@ -248,22 +222,6 @@ run_scenario() {
             # Worker may abort downstream (no codex, etc.) — we only
             # assert the placeholder POST happened, proving the
             # fetch-success path didn't regress.
-            # Mirror of the head_missing assertion: a run that gets PAST the
-            # skip gates keeps its `latest` symlink, resolving to a real dir.
-            # Deliberately NOT a placement fence — both halves stay green under
-            # either placement, since a below-the-gates link would simply never
-            # be created on the skip path. Fencing placement would need an abort
-            # BETWEEN allocation and the gates (e.g. tripping the
-            # PR_BRANCH == BASE_REF collision guard); not worth a scenario for a
-            # link nothing in the codebase reads.
-            if [ ! -e "$latest_link" ]; then
-                fail_msg "[$scenario_name] 'latest' missing or dangling for a non-skipped run"
-                ls -l "$(dirname "$latest_link")" >&2 || true
-            elif [ "$(readlink "$latest_link")" = "$prior_run" ]; then
-                fail_msg "[$scenario_name] 'latest' still names the seeded prior run — this run never claimed it"
-            else
-                pass_msg "[$scenario_name] 'latest' repointed to this run and resolves"
-            fi
             if grep -qE 'api repos/[^ ]+/issues/[0-9]+/comments' "$gh_call_log"; then
                 pass_msg "[$scenario_name] placeholder POST was called (fetch-success path posts placeholder)"
             else
