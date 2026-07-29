@@ -137,8 +137,8 @@ fi
 # Inverse of allocate_run_dir: undoes an allocation for a review that then
 # skipped cleanly. Deliberately non-recursive: `rmdir` refusing a non-empty dir
 # is the whole protection against destroying a real review's artifacts — no
-# path check involved — so scenario 6 is the load-bearing one. The two rows ask
-# different questions (empty→gone, artifacts→kept), not one input swapped.
+# path check involved — so scenario 6 is the load-bearing one. The two scenarios
+# ask different questions (empty→gone, artifacts→kept), not one input swapped.
 
 echo "  scenario 5: freshly-allocated dir + run.log → removed, returns 0..."
 RD="$TMPDIR/state/runs/discard-empty-id"
