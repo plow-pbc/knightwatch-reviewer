@@ -219,12 +219,23 @@ def log(msg: str) -> None:
             f.write(line)
 
 
-def _relink(link: Path, target: Path) -> None:
-    """Replace `link` with a symlink to `target`. mkdir parents as needed."""
-    link.parent.mkdir(parents=True, exist_ok=True)
-    if link.exists() or link.is_symlink():
-        link.unlink()
-    link.symlink_to(target)
+def _stage_scratch(dest: Path, data: bytes) -> None:
+    """Stage `data` at `dest` as a real file — the one scratch writer.
+
+    Real, because an agent enumerating with `find -type f` can't see a
+    symlink. Unlink-then-O_EXCL, because every call site runs after agents
+    have executed PR-controlled code in the workdir and Wave B specialists
+    run concurrently, so the entry may be a symlink or hard link pointing
+    outside it: unlink drops the entry without touching its inode, O_EXCL
+    refuses a peer's re-plant in the window after. That reproduces the
+    `_relink` this replaced, whose `symlink_to` was race-safe for free
+    (`symlink(2)` is EEXIST) — a plain write would be a regression, not
+    merely weaker. Fences the entry, not the directory (#190).
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.unlink(missing_ok=True)
+    with os.fdopen(os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644), "wb") as f:
+        f.write(data)
 
 
 def _wait_with_watchdog(
@@ -645,8 +656,7 @@ def run_specialist(
     # via the path documented in prompts/critic.md. Overwritten with layered
     # content after a successful critic.
     scratch_path = repo / ".codex-scratch" / "specialists" / f"{specialist}.md"
-    scratch_path.parent.mkdir(parents=True, exist_ok=True)
-    scratch_path.write_text(spec_out)
+    _stage_scratch(scratch_path, spec_out.encode())
 
     # A specialist that emitted zero probes (the 'No probes.' sentinel, the
     # only other run_codex-valid output) has nothing for the critic to
@@ -657,7 +667,7 @@ def run_specialist(
     if not _probe_ids(spec_out):
         layered = spec_out + "\n\n---\n\nNo probes."
         (spec_agent_dir / "layered.md").write_text(layered)
-        scratch_path.write_text(layered)
+        _stage_scratch(scratch_path, layered.encode())
         return 0
 
     crit_prompt = build_prompt(
@@ -715,7 +725,7 @@ def run_specialist(
 
     layered = spec_out + "\n\n---\n\n" + crit_out
     (spec_agent_dir / "layered.md").write_text(layered)
-    scratch_path.write_text(layered)
+    _stage_scratch(scratch_path, layered.encode())
     return 0
 
 
@@ -808,8 +818,9 @@ def run_pipeline(
         intent_text = _validate_intent(intent_dir / "output.md")
     except ValueError as e:
         return _abort(repo, f"{pr_id}: {e} — aborting")
-    _relink(scratch / "inferred-intent.md", intent_dir / "output.md")
-    _relink(scratch / "dead-code.md", run / "agents" / "dead-code-search" / "output.md")
+    _stage_scratch(scratch / "inferred-intent.md", (intent_dir / "output.md").read_bytes())
+    _stage_scratch(scratch / "dead-code.md",
+                   (run / "agents" / "dead-code-search" / "output.md").read_bytes())
     log(f"{pr_id}: Wave A complete: {intent_text}")
 
     # Wave B: all SPECIALISTS + (momentum if re-review) in parallel. Momentum
@@ -883,9 +894,10 @@ def run_pipeline(
             f"(timeout / model-at-capacity: {', '.join(timed_out)}) — completing review without them"
         )
 
-    # Momentum may itself have timed out; only link a real output.
+    # Momentum may itself have timed out; only stage a real output.
     if has_prev and (run / "agents" / "momentum" / "output.md").exists():
-        _relink(scratch / "momentum.md", run / "agents" / "momentum" / "output.md")
+        _stage_scratch(scratch / "momentum.md",
+                       (run / "agents" / "momentum" / "output.md").read_bytes())
     log(f"{pr_id}: Wave B complete")
 
     # Aggregator (sequential — depends on Waves A + B)

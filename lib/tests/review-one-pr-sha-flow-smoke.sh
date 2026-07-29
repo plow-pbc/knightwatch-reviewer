@@ -45,6 +45,28 @@ seed_state_dir() {
     echo "{}" > "$1/state.json"
 }
 
+# assert_no_probe_pr1_run_dir STATE_DIR LABEL — fail if the worker allocated a
+# run dir for probe-repo#1 under STATE_DIR. The pre-allocation gates (issue #189)
+# must skip/abort before allocate_run_dir, so a leaked runs/<id>/ is the
+# regression. Name pins the hardcoded PR-1 glob so a future reuse for a different
+# PR (#2 exists elsewhere in this file) can't pass vacuously. One helper for the
+# repeated contract across the container-mode untrusted-skip, indeterminate-defer,
+# and metadata-guard scenarios (was four hand-maintained copies).
+assert_no_probe_pr1_run_dir() {
+    # Capture once and test the string — NOT `find … | grep -q .`. Under this
+    # script's `set -o pipefail`, grep -q exiting on the first match can SIGPIPE
+    # find (pipeline status 141 → the `if` is false), silently PASSING the leak
+    # assertion at the exact moment a leak exists — a false-pass in the one fence
+    # whose job is catching #189. Capturing also drops the duplicate find.
+    local leaked
+    leaked=$(find "$1/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*')
+    if [ -n "$leaked" ]; then
+        echo "FAIL: $2 — worker allocated a run-dir (pre-allocation gate didn't fire; leak — issue #189)"
+        printf '%s\n' "$leaked"
+        exit 1
+    fi
+}
+
 # run_worker_in_state <state_dir> <worker arg>... — one worker run against a
 # state dir's standard layout (the six env exports + repos.conf that every
 # scenario repeats). Per-scenario extras (PATH shims, REVIEWER_CONTAINER_MODE,
@@ -113,7 +135,11 @@ for ((i=1; i<=\$#; i++)); do
 done
 case "\$fields" in
     *baseRefName*)
+        # Opt-in empty result → the BASE_REF/PR_AUTHOR fail-loud guard fires
+        # (simulates a gh pr view that returns no usable metadata).
+        if [ -n "\${GH_STUB_PRVIEW_EMPTY:-}" ]; then printf '{}\n'; else
         printf '{"baseRefName":"$base_ref","title":"Test PR","body":"","author":{"login":"test-user"},"closingIssuesReferences":{"nodes":[]}}\n'
+        fi
         ;;
     *visibility*)
         printf 'PUBLIC\n'
@@ -711,28 +737,42 @@ echo "  scenario: container-mode gate skips untrusted-author PR before placehold
 STATE5="$TMPDIR/state-5"
 seed_state_dir "$STATE5"
 write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"   # author=test-user; permission unset → untrusted
-REVIEWER_CONTAINER_MODE=1 run_worker_in_state "$STATE5" \
-    "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Untrusted PR" "false"
-GATE5_EC=$?
-RUN5=$(find "$STATE5/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' | head -1)
-if [ -z "$RUN5" ]; then
-    echo "FAIL: scenario 5 — worker allocated no run-dir"
-    exit 1
-fi
-LOG5="$RUN5/run.log"
-if [ "$GATE5_EC" -ne 0 ]; then
-    echo "FAIL: scenario 5 — worker exited $GATE5_EC (expected 0 from clean container-mode untrusted skip)"
-    [ -f "$LOG5" ] && { echo "--- run.log ---"; cat "$LOG5"; }
-    exit 1
-fi
-if ! grep -q "skipping review — untrusted author" "$LOG5"; then
-    echo "FAIL: scenario 5 — run.log missing the container-mode untrusted-author skip line"
-    [ -f "$LOG5" ] && { echo "--- run.log ---"; cat "$LOG5"; }
-    exit 1
-fi
-if grep -q "posted reviewing placeholder" "$LOG5"; then
-    echo "FAIL: scenario 5 — placeholder WAS posted (untrusted PR reached the pipeline in container mode)"
-    cat "$LOG5"
+# The skip fires BEFORE allocate_run_dir (issue #189): a permanently-untrusted
+# PR re-enumerated every ~30s must NOT leak a runs/<id>/ dir per poll. The
+# behavioral contract is clean exit 0, no run dir, AND silence (no per-tick log
+# line — see the silence assertion below). A regression that failed to skip
+# would proceed to clone + allocate a run dir (like scenarios 1-4, same gh stub
+# minus container mode), tripping the no-run-dir assertion. Run TWO ticks: a
+# permanently-untrusted PR is polled indefinitely, so the skip must stay clean
+# and dir-free every tick.
+for _tick in 1 2; do
+    REVIEWER_CONTAINER_MODE=1 run_worker_in_state "$STATE5" \
+        "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Untrusted PR" "false"
+    _ec=$?
+    # Leak check FIRST: a gate that failed to fire proceeds to clone/allocate
+    # (like scenarios 1-4) AND aborts downstream with a non-zero exit, so the
+    # run-dir/#189 diagnostic is the informative one — the exit-code check would
+    # otherwise mask it. Matches the indeterminate-defer / metadata-guard sites.
+    assert_no_probe_pr1_run_dir "$STATE5" "scenario 5 tick $_tick — untrusted skip"
+    if [ "$_ec" -ne 0 ]; then
+        echo "FAIL: scenario 5 — untrusted tick $_tick exited $_ec (expected 0 from a clean container-mode skip)"
+        [ -f "$STATE5/orchestrator.log" ] && { echo "--- orchestrator.log ---"; cat "$STATE5/orchestrator.log"; }
+        exit 1
+    fi
+done
+# Silence contract — the actual behavior this branch introduces: the container-
+# mode untrusted skip must emit NO per-tick line. A re-added log line at the gate
+# (the flood→marker→TTL regression this branch produced twice) would land on the
+# shared 5 MB orchestrator.log and pass every other assertion here — so pin it.
+# The worker reaches no log call before the gate on this path, so the file must
+# be absent/empty; assert on SIZE (not a PR_ID grep) to catch a gate line of any
+# shape. A non-empty log also discriminates this skip from the lock-contention
+# skip at review-one-pr.sh:83 (which writes via tee -a to this same path),
+# ruling out a false pass from a leaked tick-1 PR lock or a future exit-0 path
+# added above the gate.
+if [ -s "$STATE5/orchestrator.log" ]; then
+    echo "FAIL: scenario 5 — untrusted skip wrote to orchestrator.log (silence contract broken → shared-log flood risk)"
+    { echo "--- orchestrator.log ---"; cat "$STATE5/orchestrator.log"; }
     exit 1
 fi
 
@@ -750,26 +790,53 @@ write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"
 REVIEWER_CONTAINER_MODE=1 GH_STUB_PERMISSION_RC=1 run_worker_in_state "$STATE_IND" \
     "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Indeterminate PR" "false"
 GATE_IND_EC=$?
-RUN_IND=$(find "$STATE_IND/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' | head -1)
-[ -n "$RUN_IND" ] || { echo "FAIL: indeterminate-defer — worker allocated no run-dir"; exit 1; }
-LOG_IND="$RUN_IND/run.log"
+# Like the untrusted skip, the indeterminate DEFER fires before allocate_run_dir
+# (issue #189) — and it retries every tick, so a leaked dir per retry would be
+# the worst offender. Assert NO run dir and the defer line on the orchestrator
+# fallback log.
+LOG_IND="$STATE_IND/orchestrator.log"
+assert_no_probe_pr1_run_dir "$STATE_IND" "indeterminate-defer"
 if [ "$GATE_IND_EC" -ne 1 ]; then
     echo "FAIL: indeterminate-defer — worker exited $GATE_IND_EC (expected 1 = defer on indeterminate trust)"
-    [ -f "$LOG_IND" ] && { echo "--- run.log ---"; cat "$LOG_IND"; }
+    [ -f "$LOG_IND" ] && { echo "--- orchestrator.log ---"; cat "$LOG_IND"; }
     exit 1
 fi
 if ! grep -q "trust check deferred" "$LOG_IND"; then
-    echo "FAIL: indeterminate-defer — run.log missing the 'trust check deferred' line"
-    [ -f "$LOG_IND" ] && { echo "--- run.log ---"; cat "$LOG_IND"; }
+    echo "FAIL: indeterminate-defer — orchestrator.log missing the 'trust check deferred' line"
+    [ -f "$LOG_IND" ] && { echo "--- orchestrator.log ---"; cat "$LOG_IND"; }
     exit 1
 fi
-if grep -q "posted reviewing placeholder" "$LOG_IND"; then
-    echo "FAIL: indeterminate-defer — placeholder WAS posted (defer fired too late)"
-    cat "$LOG_IND"
+# (No separate placeholder assertion — see scenario 5's note; the no-run-dir
+# check above dominates it.)
+
+# ===== Scenario 6b: metadata-lookup guard aborts BEFORE allocate_run_dir =====
+# The gh pr view (BASE_REF/PR_AUTHOR) and gh repo view (REPO_VISIBILITY) guards
+# moved above allocate_run_dir with the trust gate, so a metadata-lookup failure
+# must also abort without leaking a run dir. Fences that half of the relocation
+# (the trust-gate half is scenarios 5/6): a future re-shuffle that pushed the
+# guards back below allocation would otherwise go undetected. gh pr view returns
+# {} → empty BASE_REF/PR_AUTHOR → guard exit 1, no run dir, line on orchestrator.log.
+echo "  scenario: metadata-lookup guard aborts before run-dir allocation (no leak)..."
+STATE_MD="$TMPDIR/state-md"
+seed_state_dir "$STATE_MD"
+write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"
+GH_STUB_PRVIEW_EMPTY=1 run_worker_in_state "$STATE_MD" \
+    "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Metadata-fail PR" "false"
+GATE_MD_EC=$?
+LOG_MD="$STATE_MD/orchestrator.log"
+assert_no_probe_pr1_run_dir "$STATE_MD" "metadata-guard (gh-pr-view abort before allocation)"
+if [ "$GATE_MD_EC" -ne 1 ]; then
+    echo "FAIL: metadata-guard — worker exited $GATE_MD_EC (expected 1 = abort on empty gh pr view)"
+    [ -f "$LOG_MD" ] && { echo "--- orchestrator.log ---"; cat "$LOG_MD"; }
+    exit 1
+fi
+if ! grep -q "gh pr view returned no baseRefName / author" "$LOG_MD"; then
+    echo "FAIL: metadata-guard — orchestrator.log missing the gh-pr-view abort line"
+    [ -f "$LOG_MD" ] && { echo "--- orchestrator.log ---"; cat "$LOG_MD"; }
     exit 1
 fi
 
-echo "  PASS (6 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer)"
+echo "  gate/leak scenarios ok (untrusted skip + dedupe + indeterminate defer + metadata-guard pre-allocation abort)"
 
 # ===== Scenario 6: repeated transient aborts reuse one placeholder =====
 # Fences the anti-spam reuse path in lib/review-one-pr.sh. During a transient
@@ -889,7 +956,7 @@ if [ "$PLACEHOLDER_COUNT" != "1" ]; then
     exit 1
 fi
 
-echo "  PASS (7 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam)"
+echo "  placeholder-reuse anti-spam scenario ok"
 
 
 # ===== Scenario 7: transient codex 429 → short backoff (not hard-abort+retry) =====
@@ -948,6 +1015,8 @@ if [ "$PAUSE_UNTIL" -le "$(date +%s)" ]; then
     exit 1
 fi
 
+echo "  codex 429 backoff scenario ok"
+
 # ===== Scenario 7b: codex usage cap → quota placeholder with whole-pool status =====
 # The user-visible path this PR exists to correct: pipeline.py classifies the
 # usage-cap stderr (_CODEX_QUOTA_RE) into _codex_quota.txt and review-one-pr.sh
@@ -979,8 +1048,7 @@ if [ "$PAUSE_UNTIL7B" -le "$(date +%s)" ]; then
     exit 1
 fi
 
-echo "  PASS (9 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + usage-cap quota placeholder w/ pool status)"
-
+echo "  usage-cap quota placeholder scenario ok"
 
 # ===== Scenario 8: BOTH 429 + fatal-auth sentinels → fatal-auth wins =====
 # Fences the stop-state PRECEDENCE introduced by this branch: when a run leaves
@@ -1204,11 +1272,11 @@ if ! grep -q "ref/verify.sh" "$TEST_RESULTS_MD9"; then
     exit 1
 fi
 
-# The .codex-scratch SYMLINK (what specialists actually read) must be present when
+# The .codex-scratch ENTRY (what specialists actually read) must be present when
 # codex runs. Regression fence for the staging-order bug: staging convention.md at
 # detection time (before the redirect-safe `.codex-scratch` reset) leaves
 # inputs/convention.md intact — so the inputs/ checks above still pass — but wipes
-# the symlink, so specialists never see it. The codex stub captured the dir listing
+# the staged entry, so specialists never see it. The codex stub captured the dir listing
 # at specialist-run time; standards.md is the control (always staged post-reset).
 if [ ! -f "$SCRATCH_SNAPSHOT9" ]; then
     echo "FAIL: scenario 9 — codex stub never ran (worker aborted before specialists) — can't verify convention.md visibility"
@@ -1449,4 +1517,4 @@ if ! grep -qF "$LOC_LINE12" "$IN12/reeval-status.md"; then
     exit 1
 fi
 
-echo "  PASS (15 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + usage-cap quota placeholder w/ pool status + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort + whole-PR re-review keeps memory)"
+echo "  PASS (16 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + metadata-lookup guard pre-allocation abort + placeholder reuse anti-spam + codex 429 backoff + usage-cap quota placeholder w/ pool status + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort + whole-PR re-review keeps memory)"

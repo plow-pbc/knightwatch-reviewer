@@ -124,6 +124,7 @@ refresh_queue() {
     local REVIEWED_AT_ISO COMMENTS_JSON WHOLE_TRIGGER INCREMENTAL_TRIGGER
     local TRIGGER_JSON LAST_COMMIT_DATE LAST_COMMIT_TS AGE_SECS spec
     local PR_UPDATED_AT SEEN_UPDATED_FILE LAST_SEEN_UPDATED_AT
+    local DECLINED_ALREADY DECLINE_ERR DECLINE_HEADER LIVE_SHA
     while IFS= read -r PR_JSON; do
         REPO=$(echo "$PR_JSON" | jq -r '.repository.nameWithOwner')
         PR_NUM=$(echo "$PR_JSON" | jq -r '.number')
@@ -292,6 +293,38 @@ refresh_queue() {
             fi
         fi
 
+        # Re-fetch the live head before judging a trigger "nothing to diff".
+        # PR_SHA comes from the batched GraphQL snapshot taken at the top of
+        # this refresh, but COMMENTS_JSON above is fetched live inside the
+        # loop — so a push that lands between the snapshot and this PR's turn
+        # yields a FRESH trigger evaluated against a STALE head. Observed on
+        # srosro/youtube-live-count-chime#5: head moved at 21:42:18Z, the
+        # /srosro-update-review landed at 21:43:26Z, and the skip below fired
+        # at 21:43:43Z citing the superseded SHA — the requester got a "your
+        # push isn't there" comment 85s after pushing, and the review they
+        # asked for waited for the next tick. Same staleness the worker
+        # already reconciles at checkout ("orchestrator enumerated X, worker
+        # checked out Y"); this is that reconciliation moved early enough to
+        # keep the skip decision honest. Gated on the exact conditions the
+        # skip below tests — an incremental trigger in hand and an
+        # apparently-unchanged head — so it costs one API call only on the
+        # path whose decision it can change. (A whole-PR trigger dispatches
+        # regardless, and the worker re-reads the head at checkout anyway.)
+        # Same `gh pr view --json headRefOid` shape the worker's two head
+        # re-checks use, so there's one live-head idiom in the repo.
+        if [ "$FORCE_REVIEW" = "true" ] && [ "$FORCE_WHOLE_PR" = "false" ] && [ "$PR_SHA" = "$KNOWN_SHA" ]; then
+            LIVE_SHA=$(gh pr view "$PR_NUM" --repo "$REPO" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
+            if [ -z "$LIVE_SHA" ]; then
+                # Fail open — but say so. Falling through silently reproduces
+                # the exact bug this check exists to prevent (declining against
+                # a superseded head), with nothing in the log to attribute it.
+                log "$PR_ID: live-head re-check failed — declining against the enumerated head ${PR_SHA:0:7}"
+            elif [ "$LIVE_SHA" != "$PR_SHA" ]; then
+                log "$PR_ID: enumerated head ${PR_SHA:0:7} is stale — live head is ${LIVE_SHA:0:7}; reviewing the new commits instead of declining"
+                PR_SHA="$LIVE_SHA"
+            fi
+        fi
+
         # Skip if SHA unchanged and not whole-PR-forced. /srosro-update-review
         # on an unchanged SHA would otherwise spawn a worker that runs
         # `git diff KNOWN_SHA..HEAD`, gets an empty diff (KNOWN_SHA == HEAD),
@@ -312,6 +345,71 @@ refresh_queue() {
         # require a state schema change for a low-impact edge case at our
         # scale.
         if [ "$PR_SHA" = "$KNOWN_SHA" ] && [ "$FORCE_WHOLE_PR" = "false" ]; then
+            # Say so when a trigger is what we're swallowing. Without this the
+            # skip is indistinguishable from "the orchestrator never saw the
+            # PR" in the log, and answering "why didn't we get another review?"
+            # means reading meta.json + the seen-updated watermark + the queue
+            # by hand (plow-pbc/plow#1115). Gated on FORCE_REVIEW so the far
+            # commoner no-trigger skip stays quiet, and the watermark write
+            # below caps this at one line per PR-activity event, not per tick.
+            if [ "$FORCE_REVIEW" = "true" ]; then
+                log "$PR_ID: /${BOT_CMD_PREFIX}-update-review on already-reviewed head $PR_SHA — nothing to diff; trigger stays open until a new commit lands (/${BOT_CMD_PREFIX}-review forces a whole-PR pass)"
+                # …and tell the requester, who is usually an agent on the PR with
+                # no access to this log. Same "why you're not getting a review"
+                # family as the worker's ⏭/⏸ posts (lib/review-one-pr.sh), and
+                # the only member of it that used to be silent.
+                #
+                # Idempotency is load-bearing, not polish: posting bumps the PR's
+                # updatedAt past the watermark written below, so the next tick
+                # re-evaluates, finds the SAME still-unconsumed trigger, and would
+                # post again — one comment per tick, forever. Suppress on any
+                # decline already posted since REVIEWED_AT_ISO (the same cutoff
+                # the trigger query uses), so it's one decline per review round no
+                # matter how many triggers land. A real review advances that
+                # cutoff and re-arms the post. It needs no new state, since
+                # COMMENTS_JSON is already in hand here.
+                #
+                # Recognized the same way the worker reuses its placeholder
+                # (lib/review-one-pr.sh:525): BOT_USER authorship + an EXACT
+                # header prefix, off one shared DECLINE_HEADER so the writer and
+                # the matcher can't drift. A bare substring match would let any
+                # commenter mute the requester's notification for the round by
+                # pasting the marker.
+                DECLINE_HEADER="$BOT_AUTO_POST_MARKER
+$BOT_DECLINE_MARKER
+"
+                DECLINED_ALREADY=$(printf '%s' "$COMMENTS_JSON" |
+                    jq --arg since "$REVIEWED_AT_ISO" --arg header "$DECLINE_HEADER" --arg bot "$BOT_USER" \
+                        '[.[] | select(.user.login == $bot and (.body | startswith($header)) and .created_at > $since)] | length')
+                if [ "${DECLINED_ALREADY:-0}" -eq 0 ]; then
+                    # Carries BOT_AUTO_POST_MARKER too, so the trigger filters
+                    # above already exclude it — the decline can't self-trigger.
+                    # Capture gh's stderr rather than /dev/null'ing it (same
+                    # contract as fetch_issue_comments): a locked/archived PR or
+                    # an abuse-limit 403 would otherwise fail every tick behind
+                    # an opaque message with no diagnosable cause.
+                    DECLINE_ERR=$(mktemp)
+                    if ! gh api "repos/$REPO/issues/$PR_NUM/comments" --method POST \
+                        -f body="${DECLINE_HEADER}⏭ nothing to re-review — \`${PR_SHA:0:7}\` is already the reviewed head, so an incremental diff would be empty.
+
+This request stays open and fires automatically on your next push. To force a whole-PR pass on the unchanged head, post \`/${BOT_CMD_PREFIX}-review\`." >/dev/null 2>"$DECLINE_ERR"; then
+                        # Deliberately still watermarked below — a failed POST is
+                        # NOT retried this round. Withholding the watermark to
+                        # retry sounds right but is worse: a PERMANENT failure
+                        # (locked/archived PR, token lost write access) then
+                        # re-fetches and re-POSTs every tick forever, on every
+                        # affected PR — feeding the secondary rate limit the
+                        # idle-skip exists to prevent. Distinguishing terminal
+                        # from transient means parsing gh's error text, which is
+                        # machinery for a rare case. The trigger stays unconsumed,
+                        # so the next real PR event re-evaluates and retries; a
+                        # missed notification recovers, a fleet-wide per-tick POST
+                        # loop does not.
+                        log "$PR_ID: failed to post the already-reviewed decline: $(tr '\n' ' ' < "$DECLINE_ERR" | head -c 400) (not retried until the next PR event)"
+                    fi
+                    rm -f "$DECLINE_ERR"
+                fi
+            fi
             # Record the updatedAt we just evaluated so the next tick's idle-skip
             # gate (above) can avoid re-fetching comments while nothing changes.
             # Written only here, on the nothing-to-dispatch path — a dispatched
@@ -325,8 +423,8 @@ refresh_queue() {
 
         # Log the trigger reason now that we know we're dispatching. Logged
         # AFTER the skip check so the log matches what actually runs (a
-        # /srosro-update-review on an unchanged PR no longer logs
-        # "incremental re-review" before silently skipping).
+        # /srosro-update-review on an unchanged PR logs the skip above
+        # instead of claiming an "incremental re-review" that never runs).
         if [ "$FORCE_WHOLE_PR" = "true" ]; then
             log "$PR_ID: /${BOT_CMD_PREFIX}-review requested — whole-PR re-review"
         elif [ "$FORCE_REVIEW" = "true" ]; then

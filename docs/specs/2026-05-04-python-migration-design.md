@@ -120,11 +120,11 @@ def run_angle(angle: str, ...):
 4. `momentum` (re-reviews only, sequential, fail-loud)
 5. `aggregator` (reads all of the above, fail-loud)
 
-**Symlinks under `.codex-scratch/`** (preserve current pattern):
-- `inferred-intent.md → RUN_DIR/agents/intent/output.md`
-- `dead-code.md → RUN_DIR/agents/dead-code-search/output.md`
-- `momentum.md → RUN_DIR/agents/momentum/output.md`
-- `specialists/<angle>.md` is **NOT a symlink** — it's a regular file written with the layered content (spec + critic). Avoids today's splitter "rewrite-symlink-to-regular-file" dance.
+**Regular files under `.codex-scratch/`** — every entry, no exceptions:
+- `inferred-intent.md`, `dead-code.md`, `momentum.md` — copied from the corresponding `RUN_DIR/agents/<agent>/output.md`, which stays the run archive.
+- `specialists/<angle>.md` — written with the layered content (spec + critic).
+
+These were symlinks into `RUN_DIR` until #188: `find` defaults to `-P`, so a symlink is `-type l` and never matches `-type f`. An aggregator that enumerated `.codex-scratch` that way saw only the specialists' regular files, concluded nothing had been staged, and posted a bail-out in place of a review (plow#1139, howto#25). Any enumeration must see every artifact.
 
 **Re-review carry-forward**: each per-angle critic's prompt receives `previous-review.md` if present. Carry-forward becomes per-angle (each critic addresses prior pushback in its own angle). The aggregator handles cross-angle re-review framing today's central critic does.
 

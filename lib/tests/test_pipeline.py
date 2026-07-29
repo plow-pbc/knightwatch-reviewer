@@ -234,6 +234,65 @@ class TestLog(unittest.TestCase):
                     self.assertEqual("[w7]" in written, want_tag)
 
 
+class TestStageScratch(unittest.TestCase):
+    """Two properties of the writer: the entry ends up a REAL file, and a
+    planted entry is dropped rather than written through — the entry, not
+    the directory (#190). See _stage_scratch."""
+
+    def test_stages_a_real_file_over_any_prior_entry(self):
+        # Whatever is at the path — nothing, a legitimate prior stage (the
+        # specialist path writes raw output then its layered rewrite), or a
+        # plant pointing outside — the result is the same: a real file with
+        # the new bytes, and nothing outside the workdir touched.
+        priors = {
+            "absent": lambda dst, src: None,
+            "real file": lambda dst, src: dst.write_bytes(b"raw\n"),
+            "symlink": lambda dst, src: dst.symlink_to(src),
+            "hardlink": lambda dst, src: os.link(src, dst),
+        }
+        for kind, plant in priors.items():
+            with self.subTest(prior=kind), TemporaryDirectory() as d:
+                root = Path(d)
+                outside = root / "OUTSIDE"
+                outside.write_text("original\n")
+                dest = root / ".codex-scratch" / "specialists" / "security.md"
+                # Only pre-create the parent when something has to be
+                # planted in it — the `absent` case leaves it missing so
+                # the writer's own mkdir is exercised. run_pipeline creates
+                # .codex-scratch but nothing creates specialists/, so
+                # run_specialist depends on it.
+                if kind != "absent":
+                    dest.parent.mkdir(parents=True)
+                plant(dest, outside)
+
+                pipeline._stage_scratch(dest, b"staged\n")
+
+                self.assertTrue(dest.is_file() and not dest.is_symlink())
+                self.assertEqual(dest.read_bytes(), b"staged\n")
+                self.assertEqual(outside.read_text(), "original\n",
+                                 f"wrote through the planted {kind} — escaped the workdir")
+
+    def test_refuses_an_entry_re_planted_after_the_unlink(self):
+        # The unlink covers a plant present on entry; O_EXCL covers the
+        # window after it, which is live — Wave B specialists run
+        # concurrently, so a peer can re-plant there. Suppressing the unlink
+        # simulates losing that race. FileExistsError, not OSError: only
+        # O_EXCL's EEXIST should refuse, and a broader assert would pass on
+        # an incidental failure elsewhere with the fence gone.
+        with TemporaryDirectory() as d:
+            root = Path(d)
+            outside = root / "OUTSIDE"
+            outside.write_text("original\n")
+            dest = root / ".codex-scratch" / "security.md"
+            dest.parent.mkdir(parents=True)
+            dest.symlink_to(outside)
+
+            with patch.object(Path, "unlink"):
+                with self.assertRaises(FileExistsError):
+                    pipeline._stage_scratch(dest, b"staged\n")
+            self.assertEqual(outside.read_text(), "original\n")
+
+
 class TestRunCodex(unittest.TestCase):
     """run_codex wraps `codex exec`; matches lib/run-specialist.sh contract."""
 
@@ -1432,30 +1491,32 @@ class TestRunPipeline(unittest.TestCase):
         self.assertLessEqual(state["peak"], 2)      # never exceeded the cap
 
     @patch("pipeline.subprocess.Popen")
-    def test_wave_b_starts_after_wave_a_artifacts_linked(self, mock_popen):
+    def test_wave_b_starts_after_wave_a_artifacts_staged(self, mock_popen):
         """Wave A → Wave B is a hard barrier: every specialist (and momentum
         on re-review) must see `.codex-scratch/inferred-intent.md` and
-        `.codex-scratch/dead-code.md` linked at the moment they start."""
+        `.codex-scratch/dead-code.md` staged as REGULAR files at the moment
+        they start."""
         (self.run_dir / "inputs" / "previous-review.md").write_text("prior\n")
         scratch = self.repo_dir / ".codex-scratch"
-        seen_links: list[tuple[str, set[str]]] = []
+        seen: list[tuple[str, set[str]]] = []
         lock = threading.Lock()
-        def capture_scratch_links(name, _out_path):
+        def capture_scratch_files(name, _out_path):
             if name in pipeline.SPECIALISTS or name == "momentum":
                 with lock:
-                    seen_links.append((
+                    seen.append((
                         name,
-                        {p.name for p in scratch.iterdir() if p.is_symlink()},
+                        {p.name for p in scratch.iterdir()
+                         if p.is_file() and not p.is_symlink()},
                     ))
-        mock_popen.side_effect = _make_codex_stub(before_write=capture_scratch_links)
+        mock_popen.side_effect = _make_codex_stub(before_write=capture_scratch_files)
         rc = self._run()
         self.assertEqual(rc, 0)
-        self.assertEqual(len(seen_links), len(pipeline.SPECIALISTS) + 1)  # +momentum
-        for name, links in seen_links:
-            self.assertIn("inferred-intent.md", links,
-                          f"{name} started before Wave A linked inferred-intent.md")
-            self.assertIn("dead-code.md", links,
-                          f"{name} started before Wave A linked dead-code.md")
+        self.assertEqual(len(seen), len(pipeline.SPECIALISTS) + 1)  # +momentum
+        for name, staged in seen:
+            self.assertIn("inferred-intent.md", staged,
+                          f"{name} started before Wave A staged inferred-intent.md as a real file")
+            self.assertIn("dead-code.md", staged,
+                          f"{name} started before Wave A staged dead-code.md as a real file")
 
     @patch("pipeline.subprocess.Popen")
     def test_specialist_timeout_completes_review_with_sentinel(self, mock_popen):

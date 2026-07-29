@@ -19,6 +19,11 @@ BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-pos
 # body as a bare command, dropping the poller's human-facing attribution note so
 # it isn't weighted as requester framing. See poll-pr-actions.sh + review.sh.
 BOT_AUTO_TRIGGER_MARKER="${BOT_AUTO_TRIGGER_MARKER:-<!-- knightwatch-reviewer:auto-trigger -->}"
+# Marker on the orchestrator's "nothing to diff" decline post (review.sh). Its
+# body also carries BOT_AUTO_POST_MARKER, so the trigger filters already ignore
+# it and it can't self-trigger; this second marker is the idempotency key that
+# keeps the skip path from re-posting the same decline every tick.
+BOT_DECLINE_MARKER="${BOT_DECLINE_MARKER:-<!-- knightwatch-reviewer:already-reviewed -->}"
 . "$REVIEWER_LIB_DIR/tracked-repos.sh"
 . "$REVIEWER_LIB_DIR/auth.sh"
 . "$REVIEWER_LIB_DIR/state-io.sh"

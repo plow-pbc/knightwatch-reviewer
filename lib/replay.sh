@@ -120,12 +120,12 @@ mkdir -p "$RUN_DIR/agents"
 # Redirect-safe staging: a PR checkout could commit .codex-scratch as a
 # symlink to a writable path; mkdir -p would follow it and subsequent
 # writes would escape the checkout. Wipe-and-recreate matches production
-# (lib/review-one-pr.sh:446-453).
+# (grep "Redirect-safe staging" in lib/review-one-pr.sh).
 rm -rf "$REPO_DIR/.codex-scratch"
 mkdir -p "$REPO_DIR/.codex-scratch"
 
 # Stage scratch via the same write_scratch primitive production uses
-# (lib/scratch.sh) so paths and symlink shape match. Prompts cite paths
+# (lib/scratch.sh) so paths and file shape match. Prompts cite paths
 # like .codex-scratch/standards.md; using the same writer is the only
 # way prompt A/B replays produce production-comparable output.
 #

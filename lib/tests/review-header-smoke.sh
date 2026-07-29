@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Smoke for the unified deterministic-registry rendering path:
 #   prepend_review_header COMMENT_BODY NOTE [NOTE...]
-#   format_review_scope SCOPE  (scope-token → human-readable fragment)
+#   format_review_scope SCOPE HEAD_SHA  (scope-token → human-readable fragment)
 #   compute_review_scope FORCE KNOWN_SHA USED_FALLBACK
 #   classify_just_test_outcome TEST_EXIT TEST_LOG TEST_TIMEOUT
 #   format_tests_note TESTS_RAN TEST_SUMMARY
@@ -191,7 +191,7 @@ assert_fails_with "empty-notes" "empty notes list" -- prepend_review_header "$BO
 # fragments. Verifies the helper handles every typical REVIEW_NOTES
 # composition without splitting into multiple blockquote lines.
 echo "  scope + tests-skip + KID-skip + strict-typing-gap → one blockquote, all four..."
-SCOPE=$(format_review_scope "first")
+SCOPE=$(format_review_scope "first" "$SHA_NEW")
 result=$(prepend_review_header "$BODY" \
     "$SCOPE" \
     "🧪 Tests not run" \
@@ -209,7 +209,7 @@ assert_contains "$result" "❌ Strict typing not enforced" "all-four-signals str
 # get a "diff alone" tail re-introduced anywhere in the output.
 echo "  KID-only skip → no 'diff alone' tail re-introduced (PR #24 round 4 fence)..."
 result=$(prepend_review_header "$BODY" \
-    "$(format_review_scope "first")" \
+    "$(format_review_scope "first" "$SHA_NEW")" \
     "🔍 Prior-art (KID) unavailable")
 if printf '%s' "$result" | grep -q "diff alone"; then
     echo "FAIL: kid-only — re-introduced misleading 'diff alone' tail"
@@ -268,32 +268,42 @@ assert_scope_text() {
 
 echo "  format_review_scope: first → fragment..."
 assert_scope_text \
-    "$(format_review_scope first)" \
-    "📋 First review of this PR" \
+    "$(format_review_scope first "$SHA_NEW")" \
+    "📋 First review of this PR — reviewed \`def9876\`" \
     "first"
 
 echo "  format_review_scope: whole → fragment with /srosro-review citation..."
-result=$(format_review_scope whole)
+result=$(format_review_scope whole "$SHA_NEW")
 assert_contains "$result" "Whole-PR re-review" "whole keyword"
 assert_contains "$result" '`/srosro-review`' "whole cites trigger"
 assert_contains "$result" "full PR diff" "whole discloses full-diff scope"
+assert_contains "$result" '`def9876`' "whole cites the reviewed head"
 
 echo "  format_review_scope: incremental:<from> <to> → cites both SHAs and the git diff command..."
 result=$(format_review_scope "incremental:$SHA_OLD" "$SHA_NEW")
 assert_scope_text "$result" "📋 Re-review of changes from \`abc1234\` to \`def9876\` (\`git diff abc1234..def9876\`)" "incremental"
 
 echo "  format_review_scope: incremental without head_sha → fail-fast (rc=1 + stderr diagnostic)..."
-assert_fails_with "incremental w/o head_sha" "incremental scope requires head_sha" -- \
+assert_fails_with "incremental w/o head_sha" "requires head_sha" -- \
     format_review_scope "incremental:$SHA_OLD"
+
+# Every fragment names the reviewed commit, so head_sha is required on
+# every scope — not just incremental. A scope-only header that omits the
+# SHA is the ambiguity the disclosure exists to remove.
+echo "  format_review_scope: first/whole/fallback without head_sha → fail-fast..."
+assert_fails_with "first w/o head_sha" "requires head_sha" -- format_review_scope first
+assert_fails_with "whole w/o head_sha" "requires head_sha" -- format_review_scope whole
+assert_fails_with "fallback w/o head_sha" "requires head_sha" -- format_review_scope "fallback:$SHA_OLD"
 
 # Wording-fence — fallback MUST NOT be misframed as incremental. A bug
 # class flagged in PR #22 bot review (USED_FALLBACK=true previously got
 # rendered as incremental; pin it here so a regression trips the smoke).
 echo "  format_review_scope: fallback:<sha> → 'clean incremental unavailable' (must NOT match 'Re-review of changes from')..."
-result=$(format_review_scope "fallback:$SHA_OLD")
+result=$(format_review_scope "fallback:$SHA_OLD" "$SHA_NEW")
 assert_contains "$result" "clean incremental unavailable" "fallback names cause"
 assert_contains "$result" "evaluated full PR" "fallback discloses full-PR scope"
 assert_contains "$result" '`abc1234`' "fallback cites short SHA"
+assert_contains "$result" '`def9876`' "fallback cites the reviewed head"
 if printf '%s' "$result" | grep -q "Re-review of changes from"; then
     echo "FAIL: fallback wording — fragment matches incremental wording 'Re-review of changes from' (regression)"
     echo "  got: $result"
@@ -301,7 +311,7 @@ if printf '%s' "$result" | grep -q "Re-review of changes from"; then
 fi
 
 echo "  format_review_scope: bogus → fail-fast (rc=1 + stderr diagnostic)..."
-assert_fails_with "bogus scope" "unknown scope" -- format_review_scope "bogus"
+assert_fails_with "bogus scope" "unknown scope" -- format_review_scope "bogus" "$SHA_NEW"
 
 # ===== compute_review_scope (worker seam) — unchanged =====
 assert_scope() {

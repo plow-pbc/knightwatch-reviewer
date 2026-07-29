@@ -137,7 +137,7 @@ compute_review_scope() {
     fi
 }
 
-# format_review_scope SCOPE [HEAD_SHA]
+# format_review_scope SCOPE HEAD_SHA
 #
 # Maps the scope token (from compute_review_scope) to the human-readable
 # fragment that goes into REVIEW_NOTES. Pure function. Returns 1 on
@@ -147,33 +147,36 @@ compute_review_scope() {
 # regression that misframes fallback as incremental trips a smoke
 # (recurring BCR class — see review-header-smoke.sh).
 #
-# HEAD_SHA is required on `incremental:<sha>` and ignored on every other
-# scope. The incremental fragment cites both endpoints AND the exact
-# git command that produced the diff — `git diff <from>..<to>` (two-dot,
-# matching the worker's KID_INPUT_DIFF derivation) — so a reader can
-# reproduce the review's diff locally with copy-paste, without having
-# to guess which range the bot evaluated. Missing HEAD_SHA on the
-# incremental path is fail-fast (return 1, stderr diagnostic) — the
-# fragment would otherwise silently omit the to-SHA and the command.
+# HEAD_SHA is required on EVERY scope, and every fragment names it: the
+# reviewed commit is the first thing a reader needs to know whether the
+# review covers their latest push, and the head the worker checked out
+# can differ from the one the orchestrator enumerated. Missing HEAD_SHA
+# is fail-fast (return 1, stderr diagnostic) — a fragment that silently
+# omits the reviewed SHA is exactly the ambiguity this disclosure
+# exists to remove. The incremental fragment additionally cites the
+# from-endpoint AND the exact git command that produced the diff —
+# `git diff <from>..<to>` (two-dot, matching the worker's
+# KID_INPUT_DIFF derivation) — so a reader can reproduce the review's
+# diff locally with copy-paste.
 format_review_scope() {
     local scope="$1" head_sha="${2:-}" sha from to
+    if [ -z "$head_sha" ]; then
+        printf 'format_review_scope: scope "%s" requires head_sha — internal invariant violated\n' "$scope" >&2
+        return 1
+    fi
     case "$scope" in
         first)
-            printf '📋 First review of this PR' ;;
+            printf '📋 First review of this PR — reviewed `%s`' "${head_sha:0:7}" ;;
         whole)
-            printf '📋 Whole-PR re-review (`/%s-review`) — evaluated the full PR diff' "${BOT_CMD_PREFIX:-srosro}" ;;
+            printf '📋 Whole-PR re-review (`/%s-review`) — evaluated the full PR diff at `%s`' "${BOT_CMD_PREFIX:-srosro}" "${head_sha:0:7}" ;;
         incremental:*)
             sha="${scope#incremental:}"
-            if [ -z "$head_sha" ]; then
-                printf 'format_review_scope: incremental scope requires head_sha — internal invariant violated\n' >&2
-                return 1
-            fi
             from="${sha:0:7}"
             to="${head_sha:0:7}"
             printf '📋 Re-review of changes from `%s` to `%s` (`git diff %s..%s`)' "$from" "$to" "$from" "$to" ;;
         fallback:*)
             sha="${scope#fallback:}"
-            printf '📋 Re-review — clean incremental unavailable for `%s` (rebase, force-push, or merge from base branch); evaluated full PR' "${sha:0:7}" ;;
+            printf '📋 Re-review at `%s` — clean incremental unavailable for `%s` (rebase, force-push, or merge from base branch); evaluated full PR' "${head_sha:0:7}" "${sha:0:7}" ;;
         *)
             printf 'format_review_scope: unknown scope "%s" — internal invariant violated\n' "$scope" >&2
             return 1
