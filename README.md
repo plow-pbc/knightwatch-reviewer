@@ -116,6 +116,8 @@ Fully reconciling these into one shared host/container seam is the tracked follo
 
 **Security note — before you deploy:** the dind sidecar runs `--privileged`, and the sandbox-bypassed codex agents share its network namespace (`DOCKER_HOST`), so a successful prompt-injection of a review agent could drive the daemon → host root. Untrusted `just test` is already skipped, but the codex path is an **accepted v1 residual to resolve at bring-up** — make the daemon unprivileged (rootless dind / sysbox) or run codex in a container that doesn't share dind, and verify against the live suite, before standing this up against real PRs.
 
+`docker compose config` validates the topology before bringing it up. Add an account by dropping in another `~/.codex` and adding a `dind-N` + `reviewer-N` pair (see `docker/secrets.example/README.md`). Each unit's `reviewer` + `dind` memory limits sum toward the host budget — keep headroom for anything else on the box.
+
 **Watching one review.** `docker compose logs -f reviewer-1` follows a whole unit; to follow a single PR instead, read its per-run dir on the shared `claims` volume. Every worker writes `runs/<slug>__<pr>__<ts>__<sha7>/` containing `run.log` (the worker's own log lines), plus per-agent `prompt.txt` (what the agent was sent), `output.md` (its verdict), `log.txt` (codex **stdout** — model reasoning), and `err.txt` (codex **stderr** — quota / auth / network errors land here, so this is the file to check on a failure). Any reviewer container can read the volume, so pick one and resolve the PR's newest run:
 
 ```sh
@@ -131,9 +133,9 @@ docker exec "$CID" sh -c "$NEWEST"'; tail -f "/shared/runs/$r/agents/aggregator/
 docker exec "$CID" sh -c "$NEWEST"'; cat "/shared/runs/$r/agents/aggregator/err.txt"'
 ```
 
-`sort | tail -1`, not `ls -t | head -1`: `RUN_ID`'s embedded UTC timestamp makes lexical order chronological, so this needs no `stat()`. That matters — the live `runs/` carries directory entries whose inodes are gone (`ls -t` prints `cannot access` for ~28 of them), and an entry `ls -t` can't stat sorts unpredictably and can win `head -1`.
+`-f` is for a run still in flight — swap `tail -f` for `cat` on a finished one, which is the usual case when `err.txt` is what you're after.
 
-`docker compose config` validates the topology before bringing it up. Add an account by dropping in another `~/.codex` and adding a `dind-N` + `reviewer-N` pair (see `docker/secrets.example/README.md`). Each unit's `reviewer` + `dind` memory limits sum toward the host budget — keep headroom for anything else on the box.
+`sort | tail -1`, not `ls -t | head -1`: `RUN_ID`'s embedded UTC timestamp makes lexical order chronological, so this needs no `stat()`. That matters — the live `runs/` carries directory entries whose inodes are gone (`ls -t` prints `cannot access` for ~28 of them), and an entry `ls -t` can't stat sorts unpredictably and can win `head -1`.
 
 ## Configure repos
 
