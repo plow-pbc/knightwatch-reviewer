@@ -116,6 +116,23 @@ Fully reconciling these into one shared host/container seam is the tracked follo
 
 **Security note — before you deploy:** the dind sidecar runs `--privileged`, and the sandbox-bypassed codex agents share its network namespace (`DOCKER_HOST`), so a successful prompt-injection of a review agent could drive the daemon → host root. Untrusted `just test` is already skipped, but the codex path is an **accepted v1 residual to resolve at bring-up** — make the daemon unprivileged (rootless dind / sysbox) or run codex in a container that doesn't share dind, and verify against the live suite, before standing this up against real PRs.
 
+**Watching one review.** `docker compose logs -f reviewer-1` follows a whole unit; to follow a single PR instead, read its per-run dir on the shared `claims` volume. Every worker writes `runs/<slug>__<pr>__<ts>__<sha7>/` containing `run.log` (the worker's own log lines), plus per-agent `prompt.txt` (what the agent was sent), `output.md` (its verdict), `log.txt` (codex **stdout** — model reasoning), and `err.txt` (codex **stderr** — quota / auth / network errors land here, so this is the file to check on a failure). Any reviewer container can read the volume, so pick one and resolve the PR's newest run:
+
+```sh
+CID=$(docker ps -q --filter name=knightwatch-reviewer-reviewer- | head -1)
+SLUG=cncorp_plow; PR=523
+NEWEST='r=$(ls /shared/runs | grep "^'"$SLUG"'__'"$PR"'__" | sort | tail -1)'
+
+# the worker's own log
+docker exec "$CID" sh -c "$NEWEST"'; tail -f "/shared/runs/$r/run.log"'
+
+# one agent's reasoning, then the errors it hit (aggregator is the usual suspect on a stall)
+docker exec "$CID" sh -c "$NEWEST"'; tail -f "/shared/runs/$r/agents/aggregator/log.txt"'
+docker exec "$CID" sh -c "$NEWEST"'; cat "/shared/runs/$r/agents/aggregator/err.txt"'
+```
+
+`sort | tail -1`, not `ls -t | head -1`: `RUN_ID`'s embedded UTC timestamp makes lexical order chronological, so this needs no `stat()`. That matters — the live `runs/` carries directory entries whose inodes are gone (`ls -t` prints `cannot access` for ~28 of them), and an entry `ls -t` can't stat sorts unpredictably and can win `head -1`.
+
 `docker compose config` validates the topology before bringing it up. Add an account by dropping in another `~/.codex` and adding a `dind-N` + `reviewer-N` pair (see `docker/secrets.example/README.md`). Each unit's `reviewer` + `dind` memory limits sum toward the host budget — keep headroom for anything else on the box.
 
 ## Configure repos
@@ -157,27 +174,6 @@ Reviews fire on PR open and again after a period of idle (the `STABLE_SECS` stab
 | `/srosro-props [from: <specialist>]` | Give props to a specialist's contribution |
 | `/srosro-critique [from: <specialist>]` | Flag a specialist's contribution as a misread |
 | `/srosro-memorize` | Teach the bot a calibration lesson from your reply |
-
-### Watch a live review
-
-Every worker writes its own `runs/<slug>__<pr>__<ts>__<sha7>/` under the shared `claims` volume — `run.log` for the worker's own log lines, `agents/<name>/log.txt` for that agent's codex stderr. Any reviewer container can read it (the volume is shared), so pick one and resolve the PR's newest run:
-
-```sh
-CID=$(docker ps -q --filter name=knightwatch-reviewer-reviewer- | head -1)
-SLUG=cncorp_plow; PR=523
-
-# the worker's own log
-docker exec "$CID" sh -c \
-  'r=$(ls /shared/runs | grep "^'"$SLUG"'__'"$PR"'__" | sort | tail -1); tail -f "/shared/runs/$r/run.log"'
-
-# a single agent's turn-by-turn thinking (aggregator is the usual suspect on a stall)
-docker exec "$CID" sh -c \
-  'r=$(ls /shared/runs | grep "^'"$SLUG"'__'"$PR"'__" | sort | tail -1); tail -f "/shared/runs/$r/agents/aggregator/log.txt"'
-```
-
-`sort | tail -1`, not `ls -t | head -1`: `RUN_ID`'s embedded UTC timestamp makes lexical order chronological, so this needs no `stat()`. That matters — the live `runs/` carries directory entries whose inodes are gone (`ls -t` prints `cannot access` for ~28 of them), and an entry `ls -t` can't stat sorts unpredictably and can win `head -1`.
-
-Drop the `-f` and swap `tail` for `cat` to read a finished run. `agents/<name>/prompt.txt` is what that agent was sent; `output.md` is its verdict.
 
 ### Specialist bake-off
 
