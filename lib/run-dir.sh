@@ -45,9 +45,41 @@ allocate_run_dir() {
         # see a phantom run dir without the per-agent + inputs scaffolding
         # the rest of the worker assumes — keeps the "as a unit" contract.
         log "$PR_ID: failed to create $run_dir/{agents,inputs} subdirs — rolling back $run_dir, aborting"
-        rm -rf "$run_dir"
+        discard_empty_run_dir "$run_dir"
         return 1
     fi
+}
+
+# discard_empty_run_dir RUN_DIR
+#   Inverse of allocate_run_dir. Undoes an allocation for a review that then
+#   skipped cleanly — the worker allocated, logged one "Reviewing …" line, and
+#   is exiting 0 without having produced anything. Without this, every such
+#   tick abandons a runs/<id>/ forever (issue #189's residual half: #194 moved
+#   the untrusted-author gate above allocation, but the post-fetch clean skips
+#   can't move — they need the canonical fetch first).
+#
+#   Returns 0 when the dir is gone, 1 when anything was left behind. A 1 is the
+#   SAFE outcome, not an error to escalate: it means the dir held real content,
+#   so it survives and the (bounded) leak stays visible on disk.
+#
+#   Deliberately NOT `rm -rf`. The one guarantee this needs is "don't destroy a
+#   review's artifacts if the caller is wrong about the dir being empty" — and
+#   `rmdir` gives exactly that by refusing a non-empty dir, with a worst-case
+#   blast radius of one file named run.log plus three EMPTY directories. A path
+#   fence rides on top as defense in depth. Don't "simplify" this to rm -rf.
+#
+#   Callers must not `log` into RUN_DIR after this returns 0 — the dir is gone.
+#   Both worker call sites repoint LOG_FILE to the orchestrator log first.
+discard_empty_run_dir() {
+    local run_dir="${1:-}"
+    case "$run_dir" in
+        *..*) return 1 ;;
+        */runs/*) ;;
+        *) return 1 ;;
+    esac
+    rm -f "$run_dir/run.log"
+    rmdir "$run_dir/agents" "$run_dir/inputs" 2>/dev/null
+    rmdir "$run_dir" 2>/dev/null
 }
 
 # stage_prior_reviews STATE_DIR REPO_SLUG PR_NUM CURRENT_RUN_DIR

@@ -10,6 +10,13 @@
 #   4. RUN_DIR's parent unwritable (read-only) → returns 1, logs the
 #      parent-create failure
 #
+# Plus discard_empty_run_dir (the inverse, used by the worker's clean-skip
+# exits — issue #189):
+#   5. Freshly-allocated dir + run.log → removed, returns 0
+#   6. Dir holding agents/aggregator/output.md → kept intact, returns 1
+#   7. Dir holding meta.json → kept intact, returns 1
+#   8. Path fence (outside runs/, traversal, empty) → refused, nothing touched
+#
 # Sources lib/run-dir.sh directly so this test exercises the same
 # function review-one-pr.sh calls. Stubs `log()` to capture log lines
 # locally; the production log() is in lib/state-io.sh.
@@ -126,4 +133,68 @@ else
     chmod +w "$RO_PARENT"
 fi
 
-echo "  PASS (4 scenarios: clean allocation, collision detected, subdir-failure rollback, real failure not mislabeled)"
+# ---- discard_empty_run_dir ------------------------------------------------
+# Inverse of allocate_run_dir: undoes an allocation for a review that then
+# skipped cleanly. Deliberately non-recursive — the fence against destroying a
+# real review's artifacts is `rmdir` refusing a non-empty dir, NOT the path
+# check, so scenarios 6 and 7 are the load-bearing ones. Table-shaped: each
+# scenario asks a different question (empty→gone, artifacts→kept, meta→kept,
+# bad path→refused-and-untouched), not the same question with one input swapped.
+
+echo "  scenario 5: freshly-allocated dir + run.log → removed, returns 0..."
+RD="$TMPDIR/state/runs/discard-empty-id"
+allocate_run_dir "$RD" || { echo "FAIL: setup allocation failed"; exit 1; }
+echo "[ts] Reviewing test/repo#1" > "$RD/run.log"
+if ! discard_empty_run_dir "$RD"; then
+    echo "FAIL: discard returned non-zero on an empty run dir"
+    exit 1
+fi
+if [ -e "$RD" ]; then
+    echo "FAIL: run dir survived discard"
+    ls -laR "$RD"
+    exit 1
+fi
+
+echo "  scenario 6: dir holding aggregator output → kept INTACT, returns 1..."
+RD="$TMPDIR/state/runs/discard-output-id"
+allocate_run_dir "$RD" || { echo "FAIL: setup allocation failed"; exit 1; }
+mkdir -p "$RD/agents/aggregator"
+echo "review body" > "$RD/agents/aggregator/output.md"
+if discard_empty_run_dir "$RD"; then
+    echo "FAIL: discard returned 0 on a dir holding artifacts"
+    exit 1
+fi
+if [ ! -f "$RD/agents/aggregator/output.md" ]; then
+    echo "FAIL: discard destroyed a review's aggregator output"
+    exit 1
+fi
+
+echo "  scenario 7: dir holding meta.json → kept INTACT, returns 1..."
+RD="$TMPDIR/state/runs/discard-meta-id"
+allocate_run_dir "$RD" || { echo "FAIL: setup allocation failed"; exit 1; }
+echo '{"pr_id":"test/repo#1"}' > "$RD/meta.json"
+if discard_empty_run_dir "$RD"; then
+    echo "FAIL: discard returned 0 on a dir holding meta.json"
+    exit 1
+fi
+if [ ! -f "$RD/meta.json" ]; then
+    echo "FAIL: discard destroyed meta.json"
+    exit 1
+fi
+
+echo "  scenario 8: path fence — outside a runs/ root, containing .., empty → all refused..."
+OUTSIDE="$TMPDIR/not-a-run-root/somedir"
+mkdir -p "$OUTSIDE"
+echo "keepme" > "$OUTSIDE/run.log"
+for bad in "$OUTSIDE" "$TMPDIR/state/runs/../not-a-run-root/somedir" ""; do
+    if discard_empty_run_dir "$bad"; then
+        echo "FAIL: path fence accepted '$bad'"
+        exit 1
+    fi
+done
+if [ ! -f "$OUTSIDE/run.log" ]; then
+    echo "FAIL: path fence refused but deleted run.log anyway"
+    exit 1
+fi
+
+echo "  PASS (8 scenarios: clean allocation, collision detected, subdir-failure rollback, real failure not mislabeled, discard empty/artifacts-kept/meta-kept/path-fenced)"
