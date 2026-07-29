@@ -278,13 +278,30 @@ LOG_FILE="$RUN_DIR/run.log"
 # runs-by-pr/<repo-slug>/<pr>/latest/run.log` follow the most recent worker
 # without knowing the run id. Stays HERE, right after allocation, so a run
 # that aborts anywhere downstream (canonical clone, --unshallow, base fetch —
-# the long, forensically-interesting ones) is tailable while it happens. The
-# two clean-skip gates below discard their run dir, so they `rm -f` this link
-# rather than leaving it dangling. Nothing in the codebase READS it — every
-# prior-review consumer goes through author_visible_runs_iter's runs/ glob.
+# the long, forensically-interesting ones) is tailable while it happens.
+# Nothing in the codebase READS it — every prior-review consumer goes through
+# author_visible_runs_iter's runs/ glob.
+#
+# PREV_LATEST remembers what it pointed at, because the two clean-skip gates
+# below discard their run dir: they restore this instead of leaving the link
+# dangling at a deleted dir OR deleting it outright, either of which would
+# cost the operator the pointer to the last run that actually produced
+# something.
 LATEST_LINK_DIR="$STATE_DIR/runs-by-pr/$REPO_SLUG_FOR_RUN/$PR_NUM"
 mkdir -p "$LATEST_LINK_DIR"
+PREV_LATEST=$(readlink "$LATEST_LINK_DIR/latest" 2>/dev/null)
 ln -sfn "$RUN_DIR" "$LATEST_LINK_DIR/latest"
+
+# restore_latest_link — point `latest` back at the run it named before this
+# worker overwrote it, or remove it when that run is gone too. Called only
+# after a SUCCESSFUL discard, so the link never names a deleted dir.
+restore_latest_link() {
+    if [ -n "${PREV_LATEST:-}" ] && [ -d "$PREV_LATEST" ]; then
+        ln -sfn "$PREV_LATEST" "$LATEST_LINK_DIR/latest"
+    else
+        rm -f "$LATEST_LINK_DIR/latest"
+    fi
+}
 
 # Run-status finalization. The success path flips RUN_STATUS to "completed"
 # right before exit 0; every other exit (errors, signals, abort branches)
@@ -459,7 +476,7 @@ if ! fetch_err=$(git -C "$CANONICAL_DIR" fetch origin "+refs/pull/$PR_NUM/head:$
     # is the right home for the skip line (unlike the per-tick untrusted-author
     # skip, which is why THAT one is silent).
     discard_empty_run_dir "$RUN_DIR" \
-        && { rm -f "$LATEST_LINK_DIR/latest"; LOG_FILE="$STATE_DIR/orchestrator.log"; }
+        && { restore_latest_link; LOG_FILE="$STATE_DIR/orchestrator.log"; }
     log "$PR_ID: refs/pull/$PR_NUM/head fetch failed (${fetch_err:0:200}) — skipping"
     exit 0
 fi
@@ -481,7 +498,7 @@ if [ "$FORCE_WHOLE_PR" != "true" ]; then
     if [ -n "$FETCHED_HEAD_SHA" ] && [ "$FETCHED_HEAD_SHA" = "$KNOWN_SHA_GATE" ]; then
         # Same clean-skip discard as the fetch-failure branch above.
         discard_empty_run_dir "$RUN_DIR" \
-            && { rm -f "$LATEST_LINK_DIR/latest"; LOG_FILE="$STATE_DIR/orchestrator.log"; }
+            && { restore_latest_link; LOG_FILE="$STATE_DIR/orchestrator.log"; }
         log "$PR_ID: fetched head $FETCHED_HEAD_SHA already reviewed by concurrent worker — skipping cleanly"
         exit 0
     fi

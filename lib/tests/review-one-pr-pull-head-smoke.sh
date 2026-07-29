@@ -210,9 +210,12 @@ run_scenario() {
             # …and because the dir is gone, the skip line lands on the shared
             # orchestrator.log instead. Bounded volume per PR, so unlike the
             # per-tick untrusted-author skip this one stays logged.
-            # The run dir is gone, so its runs-by-pr `latest` symlink must go
-            # with it — `-e` follows the link, so this catches a DANGLING one,
-            # which is what a discard without the rm -f would leave.
+            # The run dir is gone, so `latest` must not still name it — `-e`
+            # follows the link, so a DANGLING one (what a discard without the
+            # restore would leave) fails here. This fences the RESTORE, not the
+            # link's placement: a discarded skip must leave `latest` either
+            # absent or pointing at an older surviving run, never at the dir
+            # just deleted.
             if [ -e "$STATE_DIR/runs-by-pr/test-org_probe-repo/99/latest" ] \
                || [ -L "$STATE_DIR/runs-by-pr/test-org_probe-repo/99/latest" ]; then
                 fail_msg "[$scenario_name] clean skip left a runs-by-pr 'latest' symlink behind"
@@ -234,8 +237,12 @@ run_scenario() {
             # fetch-success path didn't regress.
             # Mirror of the head_missing assertion: a run that gets PAST the
             # skip gates keeps its `latest` symlink, resolving to a real dir.
-            # Without this half, moving the link creation back below the gates
-            # would leave the suite green.
+            # Deliberately NOT a placement fence — both halves stay green under
+            # either placement, since a below-the-gates link would simply never
+            # be created on the skip path. Fencing placement would need an abort
+            # BETWEEN allocation and the gates (e.g. tripping the
+            # PR_BRANCH == BASE_REF collision guard); not worth a scenario for a
+            # link nothing in the codebase reads.
             if [ -e "$STATE_DIR/runs-by-pr/test-org_probe-repo/99/latest" ]; then
                 pass_msg "[$scenario_name] 'latest' symlink exists and resolves for a non-skipped run"
             else
