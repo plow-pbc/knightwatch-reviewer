@@ -719,12 +719,11 @@ REVIEWER_CONTAINER_MODE=1 run_worker_in_state "$STATE5" \
 GATE5_EC=$?
 # The skip fires BEFORE allocate_run_dir (issue #189): a permanently-untrusted
 # PR re-enumerated every ~30s must NOT leak a runs/<id>/ dir per poll. The
-# behavioral contract is exactly that — clean exit 0, no run dir. The skip is
-# silent (no per-tick log line: it's stable policy re-firing every tick, and the
-# per-run run.log no longer exists — see the gate comment in review-one-pr.sh),
-# so there's nothing to assert on a log. A regression that failed to skip would
-# proceed to clone + allocate a run dir (like scenarios 1-4, same gh stub minus
-# container mode), tripping the no-run-dir assertion below.
+# behavioral contract is clean exit 0, no run dir, AND silence (no per-tick log
+# line — see the silence assertion after the second tick below). A regression
+# that failed to skip would proceed to clone + allocate a run dir (like
+# scenarios 1-4, same gh stub minus container mode), tripping the no-run-dir
+# assertion below.
 if find "$STATE5/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' | grep -q .; then
     echo "FAIL: scenario 5 — worker allocated a run-dir for an untrusted skip (gate didn't fire; leak — issue #189)"
     find "$STATE5/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*'
@@ -741,20 +740,24 @@ REVIEWER_CONTAINER_MODE=1 run_worker_in_state "$STATE5" \
 GATE5B_EC=$?
 if [ "$GATE5B_EC" -ne 0 ]; then
     echo "FAIL: scenario 5 — second untrusted tick exited $GATE5B_EC (expected 0; didn't reach the gate)"
+    [ -f "$STATE5/orchestrator.log" ] && { echo "--- orchestrator.log ---"; cat "$STATE5/orchestrator.log"; }
     exit 1
 fi
 if find "$STATE5/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' | grep -q .; then
     echo "FAIL: scenario 5 — second untrusted tick allocated a run-dir (leak; issue #189)"
     exit 1
 fi
-# Silence contract — the actual behavior this commit introduces: the container-
+# Silence contract — the actual behavior this branch introduces: the container-
 # mode untrusted skip must emit NO per-tick line. A re-added log line at the gate
 # (the flood→marker→TTL regression this branch produced twice) would land on the
 # shared 5 MB orchestrator.log and pass every other assertion here — so pin it.
-# An empty log also discriminates this skip from the lock-contention skip at
-# review-one-pr.sh:83, which DOES log — ruling out a false pass from a leaked
-# tick-1 PR lock or any future exit-0 path added above the gate.
-if [ -f "$STATE5/orchestrator.log" ] && grep -q "test-org/probe-repo#1" "$STATE5/orchestrator.log"; then
+# The worker reaches no log call before the gate on this path, so the file must
+# be absent/empty; assert on SIZE (not a PR_ID grep) to catch a gate line of any
+# shape. A non-empty log also discriminates this skip from the lock-contention
+# skip at review-one-pr.sh:83 (which writes via tee -a to this same path),
+# ruling out a false pass from a leaked tick-1 PR lock or a future exit-0 path
+# added above the gate.
+if [ -s "$STATE5/orchestrator.log" ]; then
     echo "FAIL: scenario 5 — untrusted skip wrote to orchestrator.log (silence contract broken → shared-log flood risk)"
     { echo "--- orchestrator.log ---"; cat "$STATE5/orchestrator.log"; }
     exit 1
