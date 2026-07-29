@@ -189,13 +189,33 @@ run_scenario() {
             else
                 pass_msg "[$scenario_name] no abort PATCH"
             fi
-            local run_log
-            run_log=$(find "$STATE_DIR/runs" -name run.log 2>/dev/null | head -1)
-            if [ -n "$run_log" ] && grep -q "refs/pull/99/head fetch failed" "$run_log"; then
-                pass_msg "[$scenario_name] run.log records 'refs/pull/99/head fetch failed' with git stderr"
+            # This skip is CLEAN (exit 0, nothing produced), so the run dir the
+            # worker allocated before the fetch must be discarded — it recurs
+            # every tick for the whole /head publish window (17+ min observed
+            # on plow-pbc/watchmepivot#20), one abandoned dir per tick
+            # otherwise. Issue #189's residual half.
+            #
+            # Capture the find output and test the string — NOT `find … |
+            # grep -q .`. Under `set -o pipefail`, grep -q exiting on the first
+            # match can SIGPIPE find (status 141 → the `if` reads false),
+            # false-passing the one assertion whose job is catching the leak.
+            local leaked
+            leaked=$(find "$STATE_DIR/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__99__*' 2>/dev/null)
+            if [ -n "$leaked" ]; then
+                fail_msg "[$scenario_name] fetch-failure skip left a run-dir behind (leak — issue #189)"
+                printf '%s\n' "$leaked" >&2
             else
-                fail_msg "[$scenario_name] run.log missing fetch-failure log line (looked at: ${run_log:-<none>})"
-                [ -n "$run_log" ] && { echo "--- run.log ---" >&2; cat "$run_log" >&2 || true; }
+                pass_msg "[$scenario_name] no run-dir left behind by the clean skip"
+            fi
+            # …and because the dir is gone, the skip line lands on the shared
+            # orchestrator.log instead. Bounded volume per PR, so unlike the
+            # per-tick untrusted-author skip this one stays logged.
+            local orch_log="$STATE_DIR/orchestrator.log"
+            if [ -f "$orch_log" ] && grep -q "refs/pull/99/head fetch failed" "$orch_log"; then
+                pass_msg "[$scenario_name] orchestrator.log records 'refs/pull/99/head fetch failed' with git stderr"
+            else
+                fail_msg "[$scenario_name] orchestrator.log missing fetch-failure log line"
+                [ -f "$orch_log" ] && { echo "--- orchestrator.log ---" >&2; cat "$orch_log" >&2 || true; }
             fi
             ;;
         yes)

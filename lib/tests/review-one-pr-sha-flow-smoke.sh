@@ -690,14 +690,22 @@ run_worker_in_state "$STATE_DIR" \
     "test-org/probe-repo" "1" "$OLD_PR_SHA" "feat/test" "Test PR" "false"
 GATE_EC=$?
 
-# The worker DOES allocate a run-dir before the gate fires; find the new
-# one (excluding the seeded fake run-dir and scenario 1's run-dir).
-GATE_RUN=$(find "$STATE_DIR/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' -newer "$GATE_RUN_DIR" | head -1)
-if [ -z "$GATE_RUN" ]; then
-    echo "FAIL: scenario 4 — worker allocated no run-dir (aborted before allocate_run_dir)"
+# The worker allocates a run-dir before this gate can fire (the gate needs the
+# canonical fetch), then DISCARDS it on the clean skip — a permanently-skipping
+# gate must not abandon one runs/<id>/ per tick (issue #189's residual half).
+# The skip evidence moves to the shared orchestrator.log, which is where the
+# assertions below now read from.
+#
+# No `| head -1`: capture the full list so a failure names every leaked dir, and
+# so `set -o pipefail` can't SIGPIPE the find into a false pass — the same trap
+# documented on assert_no_probe_pr1_run_dir above.
+GATE_LEAK=$(find "$STATE_DIR/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' -newer "$GATE_RUN_DIR")
+if [ -n "$GATE_LEAK" ]; then
+    echo "FAIL: scenario 4 — dedup-gate skip left a run-dir behind (leak — issue #189)"
+    printf '%s\n' "$GATE_LEAK"
     exit 1
 fi
-GATE_LOG="$GATE_RUN/run.log"
+GATE_LOG="$STATE_DIR/orchestrator.log"
 
 if [ "$GATE_EC" -ne 0 ]; then
     echo "FAIL: scenario 4 — worker exited $GATE_EC (expected 0 from clean gate skip)"
