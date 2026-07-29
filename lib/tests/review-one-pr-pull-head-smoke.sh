@@ -210,6 +210,16 @@ run_scenario() {
             # …and because the dir is gone, the skip line lands on the shared
             # orchestrator.log instead. Bounded volume per PR, so unlike the
             # per-tick untrusted-author skip this one stays logged.
+            # The run dir is gone, so its runs-by-pr `latest` symlink must go
+            # with it — `-e` follows the link, so this catches a DANGLING one,
+            # which is what a discard without the rm -f would leave.
+            if [ -e "$STATE_DIR/runs-by-pr/test-org_probe-repo/99/latest" ] \
+               || [ -L "$STATE_DIR/runs-by-pr/test-org_probe-repo/99/latest" ]; then
+                fail_msg "[$scenario_name] clean skip left a runs-by-pr 'latest' symlink behind"
+                ls -l "$STATE_DIR/runs-by-pr/test-org_probe-repo/99/" >&2 || true
+            else
+                pass_msg "[$scenario_name] no 'latest' symlink left behind by the clean skip"
+            fi
             local orch_log="$STATE_DIR/orchestrator.log"
             if [ -f "$orch_log" ] && grep -q "refs/pull/99/head fetch failed" "$orch_log"; then
                 pass_msg "[$scenario_name] orchestrator.log records 'refs/pull/99/head fetch failed' with git stderr"
@@ -222,6 +232,16 @@ run_scenario() {
             # Worker may abort downstream (no codex, etc.) — we only
             # assert the placeholder POST happened, proving the
             # fetch-success path didn't regress.
+            # Mirror of the head_missing assertion: a run that gets PAST the
+            # skip gates keeps its `latest` symlink, resolving to a real dir.
+            # Without this half, moving the link creation back below the gates
+            # would leave the suite green.
+            if [ -e "$STATE_DIR/runs-by-pr/test-org_probe-repo/99/latest" ]; then
+                pass_msg "[$scenario_name] 'latest' symlink exists and resolves for a non-skipped run"
+            else
+                fail_msg "[$scenario_name] 'latest' symlink missing or dangling for a non-skipped run"
+                ls -l "$STATE_DIR/runs-by-pr/test-org_probe-repo/99/" >&2 || true
+            fi
             if grep -qE 'api repos/[^ ]+/issues/[0-9]+/comments' "$gh_call_log"; then
                 pass_msg "[$scenario_name] placeholder POST was called (fetch-success path posts placeholder)"
             else

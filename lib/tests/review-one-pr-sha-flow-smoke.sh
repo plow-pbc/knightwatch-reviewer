@@ -666,7 +666,7 @@ echo "  PASS (4 scenarios: orchestrator/worker SHA race + non-default-base canon
 # reviewed_sha = NEW_PR_SHA AND invoke the worker with PR_SHA =
 # OLD_PR_SHA (stale dispatcher). The worker fetches refs/pull/1/head →
 # FETCHED_HEAD_SHA = NEW_PR_SHA, matches reviewed_sha → gate fires.
-# Observable: run.log contains the skip line AND does NOT contain a
+# Observable: orchestrator.log contains the skip line AND does NOT contain a
 # "posted reviewing placeholder" log line.
 #
 # Specifically fencing the FETCHED-head comparison (not just any
@@ -686,6 +686,11 @@ cat > "$GATE_RUN_DIR/meta.json" <<EOF
 }
 EOF
 
+# orchestrator.log is append-only and SHARED by every worker invocation in
+# this state dir, so reading it whole would let an earlier scenario's line
+# satisfy (or false-fail) the assertions below. Truncate first so what remains
+# is exactly this invocation's output.
+: > "$STATE_DIR/orchestrator.log"
 run_worker_in_state "$STATE_DIR" \
     "test-org/probe-repo" "1" "$OLD_PR_SHA" "feat/test" "Test PR" "false"
 GATE_EC=$?
@@ -709,12 +714,12 @@ GATE_LOG="$STATE_DIR/orchestrator.log"
 
 if [ "$GATE_EC" -ne 0 ]; then
     echo "FAIL: scenario 4 — worker exited $GATE_EC (expected 0 from clean gate skip)"
-    [ -f "$GATE_LOG" ] && { echo "--- run.log ---"; cat "$GATE_LOG"; }
+    [ -f "$GATE_LOG" ] && { echo "--- orchestrator.log ---"; cat "$GATE_LOG"; }
     exit 1
 fi
 if ! grep -q "fetched head .* already reviewed by concurrent worker" "$GATE_LOG"; then
-    echo "FAIL: scenario 4 — run.log missing the post-fetch dedup-gate skip line"
-    [ -f "$GATE_LOG" ] && { echo "--- run.log ---"; cat "$GATE_LOG"; }
+    echo "FAIL: scenario 4 — orchestrator.log missing the post-fetch dedup-gate skip line"
+    [ -f "$GATE_LOG" ] && { echo "--- orchestrator.log ---"; cat "$GATE_LOG"; }
     exit 1
 fi
 if grep -q "posted reviewing placeholder" "$GATE_LOG"; then
@@ -728,7 +733,7 @@ fi
 # "finalize_run failed — meta.json left un-stamped" on every concurrent-skip.
 if grep -q "finalize_run failed" "$GATE_LOG"; then
     echo "FAIL: scenario 4 — clean skip logged a spurious finalize_run failure"
-    { echo "--- run.log ---"; cat "$GATE_LOG"; }
+    { echo "--- orchestrator.log ---"; cat "$GATE_LOG"; }
     exit 1
 fi
 

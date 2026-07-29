@@ -274,6 +274,18 @@ LOG_FILE="$RUN_DIR/run.log"
 # $RUN_DIR/inputs/) without reimplementing the contract.
 . "$_LIB_DIR/scratch.sh"
 
+# Convenience symlink: latest run for this PR. Lets `tail -f
+# runs-by-pr/<repo-slug>/<pr>/latest/run.log` follow the most recent worker
+# without knowing the run id. Stays HERE, right after allocation, so a run
+# that aborts anywhere downstream (canonical clone, --unshallow, base fetch —
+# the long, forensically-interesting ones) is tailable while it happens. The
+# two clean-skip gates below discard their run dir, so they `rm -f` this link
+# rather than leaving it dangling. Nothing in the codebase READS it — every
+# prior-review consumer goes through author_visible_runs_iter's runs/ glob.
+LATEST_LINK_DIR="$STATE_DIR/runs-by-pr/$REPO_SLUG_FOR_RUN/$PR_NUM"
+mkdir -p "$LATEST_LINK_DIR"
+ln -sfn "$RUN_DIR" "$LATEST_LINK_DIR/latest"
+
 # Run-status finalization. The success path flips RUN_STATUS to "completed"
 # right before exit 0; every other exit (errors, signals, abort branches)
 # leaves "aborted" so post-mortem tooling can tell completed from "still
@@ -440,12 +452,14 @@ if ! fetch_err=$(git -C "$CANONICAL_DIR" fetch origin "+refs/pull/$PR_NUM/head:$
     # Clean skip, nothing produced: discard the run dir this worker allocated
     # instead of abandoning one per tick for the whole /head publish window
     # (17+ min observed on plow-pbc/watchmepivot#20) — issue #189's residual
-    # half. Repoint the log FIRST: after a successful discard, RUN_DIR/run.log
-    # no longer exists. The `&&` is load-bearing — on the rmdir-refused path
-    # the dir survives, so LOG_FILE correctly stays on run.log. Volume here is
-    # bounded per PR, so the shared orchestrator.log is the right home (unlike
-    # the per-tick untrusted-author skip, which is why THAT one is silent).
-    discard_empty_run_dir "$RUN_DIR" && LOG_FILE="$STATE_DIR/orchestrator.log"
+    # half. The `&&` is load-bearing: only a SUCCESSFUL discard clears the
+    # latest symlink and repoints the log, so on the rmdir-refused path the
+    # dir and its link both correctly survive and the line below still lands
+    # in run.log. Volume here is bounded per PR, so the shared orchestrator.log
+    # is the right home for the skip line (unlike the per-tick untrusted-author
+    # skip, which is why THAT one is silent).
+    discard_empty_run_dir "$RUN_DIR" \
+        && { rm -f "$LATEST_LINK_DIR/latest"; LOG_FILE="$STATE_DIR/orchestrator.log"; }
     log "$PR_ID: refs/pull/$PR_NUM/head fetch failed (${fetch_err:0:200}) — skipping"
     exit 0
 fi
@@ -466,23 +480,13 @@ if [ "$FORCE_WHOLE_PR" != "true" ]; then
     KNOWN_SHA_GATE=$(latest_author_visible_review_sha "$STATE_DIR" "${REPO//\//_}" "$PR_NUM" "")
     if [ -n "$FETCHED_HEAD_SHA" ] && [ "$FETCHED_HEAD_SHA" = "$KNOWN_SHA_GATE" ]; then
         # Same clean-skip discard as the fetch-failure branch above.
-        discard_empty_run_dir "$RUN_DIR" && LOG_FILE="$STATE_DIR/orchestrator.log"
+        discard_empty_run_dir "$RUN_DIR" \
+            && { rm -f "$LATEST_LINK_DIR/latest"; LOG_FILE="$STATE_DIR/orchestrator.log"; }
         log "$PR_ID: fetched head $FETCHED_HEAD_SHA already reviewed by concurrent worker — skipping cleanly"
         exit 0
     fi
 fi
 
-# Convenience symlink: latest run for this PR. Lets `tail -f
-# runs-by-pr/<repo-slug>/<pr>/latest/run.log` follow the most recent worker
-# without knowing the run id. Created AFTER the two clean-skip gates above:
-# those discard their run dir, so linking earlier would leave `latest`
-# dangling on every skipped tick. Nothing in the codebase READS this link —
-# every prior-review consumer goes through author_visible_runs_iter's runs/
-# glob — so it is a human tail -f affordance only, and the few seconds of
-# canonical clone/fetch it now trails by cost nothing.
-LATEST_LINK_DIR="$STATE_DIR/runs-by-pr/$REPO_SLUG_FOR_RUN/$PR_NUM"
-mkdir -p "$LATEST_LINK_DIR"
-ln -sfn "$RUN_DIR" "$LATEST_LINK_DIR/latest"
 
 # Seed operator-provided per-repo secret env files into the canonical clone so
 # the trusted-author .env mirror (further below) copies them into the per-PR test
