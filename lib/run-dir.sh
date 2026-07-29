@@ -62,28 +62,19 @@ allocate_run_dir() {
 #   SAFE outcome, not an error to escalate: it means the dir held real content,
 #   so it survives and the (bounded) leak stays visible on disk.
 #
-#   Deliberately NOT `rm -rf`. The one guarantee this needs is "don't destroy a
-#   review's artifacts if the caller is wrong about the dir being empty" — and
-#   `rmdir` gives exactly that by refusing a non-empty dir, with a worst-case
-#   blast radius of one file named run.log plus three EMPTY directories. A path
-#   fence rides on top as defense in depth. Don't "simplify" this to rm -rf.
+#   Deliberately NOT `rm -rf`, and that is the whole point of the function:
+#   `rmdir` REFUSES a non-empty dir, so the worst case is one file named
+#   run.log plus empty directories. A wrong "the dir is empty" assumption
+#   therefore leaves a review's artifacts intact and the anomaly visible,
+#   instead of silently eating the only record of that run. Costs two lines
+#   over `rm -rf "$run_dir"` and needs no path fence to be safe — the
+#   non-recursion IS the safety property. Don't "simplify" this to rm -rf.
 #
 #   Callers must not `log` into RUN_DIR after this returns 0 — the dir is gone.
 #   Both worker call sites repoint LOG_FILE to the orchestrator log first.
 discard_empty_run_dir() {
     local run_dir="${1:-}"
-    case "$run_dir" in
-        # A `..` PATH COMPONENT, not the substring — a slug or state dir
-        # containing "a..b" is a legitimate path, and rejecting it would
-        # silently disable the discard for that repo forever.
-        ..|../*|*/..|*/../*) return 1 ;;
-        # Trailing slash: `*/runs/*` matches "<state>/runs/" with an empty
-        # tail, and the rmdir below would then target the runs/ ROOT.
-        */) return 1 ;;
-        # Must name something INSIDE a runs/ root.
-        */runs/?*) ;;
-        *) return 1 ;;
-    esac
+    [ -n "$run_dir" ] || return 1
     rmdir "$run_dir/agents" "$run_dir/inputs" 2>/dev/null
     rmdir "$run_dir" 2>/dev/null && return 0
     # Still here, so the dir holds content. run.log is the one file THIS

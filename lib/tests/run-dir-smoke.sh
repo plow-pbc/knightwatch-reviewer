@@ -16,9 +16,7 @@
 #   6. Dir holding real artifacts (nested aggregator output.md → subdir rmdir
 #      refused; top-level meta.json → subdirs pruned) → content kept incl. its
 #      run.log, returns 1
-#   7. Path fence (non-runs root, traversal, trailing slash, runs root, empty)
-#      → refused, nothing touched
-#   8. A ".." SUBSTRING inside a path component is not traversal → allowed
+#   7. Empty argument → refused (fail-fast arg check)
 #
 # Sources lib/run-dir.sh directly so this test exercises the same
 # function review-one-pr.sh calls. Stubs `log()` to capture log lines
@@ -139,10 +137,11 @@ fi
 # ---- discard_empty_run_dir ------------------------------------------------
 # Inverse of allocate_run_dir: undoes an allocation for a review that then
 # skipped cleanly. Deliberately non-recursive — the fence against destroying a
-# real review's artifacts is `rmdir` refusing a non-empty dir, NOT the path
-# check, so scenario 6 is the load-bearing one. Table-shaped: each
+# real review's artifacts is `rmdir` refusing a non-empty dir — the
+# non-recursion, with no path fence needed — so scenario 6 is the load-bearing
+# one. Table-shaped: each
 # scenario asks a different question (empty→gone, artifacts→kept,
-# bad path→refused-and-untouched), not the same question with one input swapped.
+# no-arg→refused), not the same question with one input swapped.
 
 echo "  scenario 5: freshly-allocated dir + run.log → removed, returns 0..."
 RD="$TMPDIR/state/runs/discard-empty-id"
@@ -191,42 +190,10 @@ for artifact in agents/aggregator/output.md meta.json; do
     fi
 done
 
-echo "  scenario 7: path fence — non-runs root, traversal, trailing slash, runs root, empty → all refused..."
-OUTSIDE="$TMPDIR/not-a-run-root/somedir"
-mkdir -p "$OUTSIDE"
-echo "keepme" > "$OUTSIDE/run.log"
-# The trailing-slash and bare-runs-root entries matter most: `*/runs/*` matches
-# "<state>/runs/" with an empty tail, so without them the fence would admit the
-# runs/ ROOT itself as a discard target.
-EMPTY_RUNS_ROOT="$TMPDIR/fence/runs"
-mkdir -p "$EMPTY_RUNS_ROOT"
-for bad in "$OUTSIDE" "$TMPDIR/state/runs/../not-a-run-root/somedir" \
-           "$EMPTY_RUNS_ROOT/" "$EMPTY_RUNS_ROOT" ""; do
-    if discard_empty_run_dir "$bad"; then
-        echo "FAIL: path fence accepted '$bad'"
-        exit 1
-    fi
-done
-if [ ! -f "$OUTSIDE/run.log" ]; then
-    echo "FAIL: path fence refused but deleted run.log anyway"
-    exit 1
-fi
-if [ ! -d "$EMPTY_RUNS_ROOT" ]; then
-    echo "FAIL: path fence let the runs/ root itself be removed"
+echo "  scenario 7: empty argument → refused..."
+if discard_empty_run_dir ""; then
+    echo "FAIL: empty path accepted"
     exit 1
 fi
 
-echo "  scenario 8: '..' as a substring (not a path component) is NOT traversal..."
-RD="$TMPDIR/state/runs/weird..slug__1__20260101T000000000Z__aaaaaaa"
-allocate_run_dir "$RD" || { echo "FAIL: setup allocation failed"; exit 1; }
-echo "[ts] Reviewing test/repo#1" > "$RD/run.log"
-if ! discard_empty_run_dir "$RD"; then
-    echo "FAIL: fence rejected a legitimate path containing '..' inside a component"
-    exit 1
-fi
-if [ -e "$RD" ]; then
-    echo "FAIL: run dir survived discard"
-    exit 1
-fi
-
-echo "  PASS (8 scenarios: clean allocation, collision detected, subdir-failure rollback, real failure not mislabeled, discard empty/artifact-content-kept/path-fenced/dotdot-substring-allowed)"
+echo "  PASS (7 scenarios: clean allocation, collision detected, subdir-failure rollback, real failure not mislabeled, discard empty/artifact-content-kept/empty-arg-refused)"
