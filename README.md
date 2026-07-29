@@ -158,6 +158,27 @@ Reviews fire on PR open and again after a period of idle (the `STABLE_SECS` stab
 | `/srosro-critique [from: <specialist>]` | Flag a specialist's contribution as a misread |
 | `/srosro-memorize` | Teach the bot a calibration lesson from your reply |
 
+### Watch a live review
+
+Every worker writes its own `runs/<slug>__<pr>__<ts>__<sha7>/` under the shared `claims` volume — `run.log` for the worker's own log lines, `agents/<name>/log.txt` for that agent's codex stderr. Any reviewer container can read it (the volume is shared), so pick one and resolve the PR's newest run:
+
+```sh
+CID=$(docker ps -q --filter name=knightwatch-reviewer-reviewer- | head -1)
+SLUG=cncorp_plow; PR=523
+
+# the worker's own log
+docker exec "$CID" sh -c \
+  'r=$(ls /shared/runs | grep "^'"$SLUG"'__'"$PR"'__" | sort | tail -1); tail -f "/shared/runs/$r/run.log"'
+
+# a single agent's turn-by-turn thinking (aggregator is the usual suspect on a stall)
+docker exec "$CID" sh -c \
+  'r=$(ls /shared/runs | grep "^'"$SLUG"'__'"$PR"'__" | sort | tail -1); tail -f "/shared/runs/$r/agents/aggregator/log.txt"'
+```
+
+`sort | tail -1`, not `ls -t | head -1`: `RUN_ID`'s embedded UTC timestamp makes lexical order chronological, so this needs no `stat()`. That matters — the live `runs/` carries directory entries whose inodes are gone (`ls -t` prints `cannot access` for ~28 of them), and an entry `ls -t` can't stat sorts unpredictably and can win `head -1`.
+
+Drop the `-f` and swap `tail` for `cat` to read a finished run. `agents/<name>/prompt.txt` is what that agent was sent; `output.md` is its verdict.
+
 ### Specialist bake-off
 
 A small post-hoc measurement that helps decide which specialists are earning their place. `specialist-bakeoff.sh` runs twice nightly at 02:00 + 04:00 Pacific (off-hours) via systemd, walks the tracked repos in `repos.conf` for bot reviews + feedback comments in the per-repo window `[min(REWALK_HOURS_ago, walks.last_walked_at), last_walked_at + WINDOW_HOURS]` — `WINDOW_HOURS` (16 in production) caps how far forward each run advances the watermark so the two fires split the day's per-PR fetches into smaller off-hours bursts with spare daily capacity (2×16 > 24h) to burn down a missed fire, while the floor still refreshes `edited_after` on recent reviews — and persists one row per (review × specialist) into `~/.pr-reviewer/bakeoff.db`. A markdown snapshot is regenerated at `~/.pr-reviewer/specialist-bakeoff.md` with the following columns per specialist over a rolling 14-day window (configurable via `SCORECARD_DAYS`; the renderer reads accumulated DB state, decoupled from the walker's `REWALK_HOURS`):

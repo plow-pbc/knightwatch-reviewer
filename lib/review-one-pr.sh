@@ -274,18 +274,6 @@ LOG_FILE="$RUN_DIR/run.log"
 # $RUN_DIR/inputs/) without reimplementing the contract.
 . "$_LIB_DIR/scratch.sh"
 
-# Convenience symlink: latest run for this PR. Lets `tail -f
-# runs-by-pr/<repo-slug>/<pr>/latest/run.log` follow the most recent worker
-# without knowing the run id. The link CREATION here is unchanged from before
-# the clean-skip discards below landed; the DANGLE is new — a skipped tick now
-# leaves this pointed at a deleted run dir until the PR's next run repoints it.
-# Cosmetic only because nothing in the codebase READS the link: every
-# prior-review consumer goes through author_visible_runs_iter's runs/ glob.
-# Tracked in #196 rather than grown into the #189 fix.
-LATEST_LINK_DIR="$STATE_DIR/runs-by-pr/$REPO_SLUG_FOR_RUN/$PR_NUM"
-mkdir -p "$LATEST_LINK_DIR"
-ln -sfn "$RUN_DIR" "$LATEST_LINK_DIR/latest"
-
 # Run-status finalization. The success path flips RUN_STATUS to "completed"
 # right before exit 0; every other exit (errors, signals, abort branches)
 # leaves "aborted" so post-mortem tooling can tell completed from "still
