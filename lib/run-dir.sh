@@ -73,12 +73,27 @@ allocate_run_dir() {
 discard_empty_run_dir() {
     local run_dir="${1:-}"
     case "$run_dir" in
-        *..*) return 1 ;;
-        */runs/*) ;;
+        # A `..` PATH COMPONENT, not the substring — a slug or state dir
+        # containing "a..b" is a legitimate path, and rejecting it would
+        # silently disable the discard for that repo forever.
+        ..|../*|*/..|*/../*) return 1 ;;
+        # Trailing slash: `*/runs/*` matches "<state>/runs/" with an empty
+        # tail, and the rmdir below would then target the runs/ ROOT.
+        */) return 1 ;;
+        # Must name something INSIDE a runs/ root.
+        */runs/?*) ;;
         *) return 1 ;;
     esac
-    rm -f "$run_dir/run.log"
     rmdir "$run_dir/agents" "$run_dir/inputs" 2>/dev/null
+    rmdir "$run_dir" 2>/dev/null && return 0
+    # Still here, so the dir holds content. run.log is the one file THIS
+    # function is entitled to remove (the allocation + the worker's first log
+    # line are all a clean skip produces) — but only once it is provably the
+    # sole remaining entry. Deleting it up front would strip a real review's
+    # log while the rmdir correctly spared its artifacts, leaving output.md
+    # and meta.json with no record of the run that wrote them.
+    [ "$(ls -A "$run_dir" 2>/dev/null)" = "run.log" ] || return 1
+    rm -f "$run_dir/run.log"
     rmdir "$run_dir" 2>/dev/null
 }
 
