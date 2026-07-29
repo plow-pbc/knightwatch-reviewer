@@ -731,6 +731,7 @@ if find "$STATE5/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' | g
 fi
 if [ "$GATE5_EC" -ne 0 ]; then
     echo "FAIL: scenario 5 — worker exited $GATE5_EC (expected 0 from clean container-mode untrusted skip)"
+    [ -f "$STATE5/orchestrator.log" ] && { echo "--- orchestrator.log ---"; cat "$STATE5/orchestrator.log"; }
     exit 1
 fi
 # Re-run the same PR: the skip must stay clean and dir-free across ticks (the
