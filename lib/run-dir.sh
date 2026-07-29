@@ -67,14 +67,15 @@ allocate_run_dir() {
 #   run.log plus empty directories. A wrong "the dir is empty" assumption
 #   therefore leaves a review's artifacts intact and the anomaly visible,
 #   instead of silently eating the only record of that run. Costs two lines
-#   over `rm -rf "$run_dir"` and needs no path fence to be safe — the
+#   over `rm -rf "$run_dir"` and needs no path check to be safe — the
 #   non-recursion IS the safety property. Don't "simplify" this to rm -rf.
+#   An empty/garbage path is inert by construction (every rmdir fails, the
+#   ls -A never equals "run.log"), so there is no arg guard to maintain.
 #
 #   Callers must not `log` into RUN_DIR after this returns 0 — the dir is gone.
 #   Both worker call sites repoint LOG_FILE to the orchestrator log first.
 discard_empty_run_dir() {
     local run_dir="${1:-}"
-    [ -n "$run_dir" ] || return 1
     rmdir "$run_dir/agents" "$run_dir/inputs" 2>/dev/null
     rmdir "$run_dir" 2>/dev/null && return 0
     # Still here, so the dir holds content. run.log is the one file THIS

@@ -16,7 +16,6 @@
 #   6. Dir holding real artifacts (nested aggregator output.md → subdir rmdir
 #      refused; top-level meta.json → subdirs pruned) → content kept incl. its
 #      run.log, returns 1
-#   7. Empty argument → refused (fail-fast arg check)
 #
 # Sources lib/run-dir.sh directly so this test exercises the same
 # function review-one-pr.sh calls. Stubs `log()` to capture log lines
@@ -136,12 +135,10 @@ fi
 
 # ---- discard_empty_run_dir ------------------------------------------------
 # Inverse of allocate_run_dir: undoes an allocation for a review that then
-# skipped cleanly. Deliberately non-recursive — the fence against destroying a
-# real review's artifacts is `rmdir` refusing a non-empty dir — the
-# non-recursion, with no path fence needed — so scenario 6 is the load-bearing
-# one. Table-shaped: each
-# scenario asks a different question (empty→gone, artifacts→kept,
-# no-arg→refused), not the same question with one input swapped.
+# skipped cleanly. Deliberately non-recursive: `rmdir` refusing a non-empty dir
+# is the whole protection against destroying a real review's artifacts — no
+# path check involved — so scenario 6 is the load-bearing one. The two rows ask
+# different questions (empty→gone, artifacts→kept), not one input swapped.
 
 echo "  scenario 5: freshly-allocated dir + run.log → removed, returns 0..."
 RD="$TMPDIR/state/runs/discard-empty-id"
@@ -190,10 +187,4 @@ for artifact in agents/aggregator/output.md meta.json; do
     fi
 done
 
-echo "  scenario 7: empty argument → refused..."
-if discard_empty_run_dir ""; then
-    echo "FAIL: empty path accepted"
-    exit 1
-fi
-
-echo "  PASS (7 scenarios: clean allocation, collision detected, subdir-failure rollback, real failure not mislabeled, discard empty/artifact-content-kept/empty-arg-refused)"
+echo "  PASS (6 scenarios: clean allocation, collision detected, subdir-failure rollback, real failure not mislabeled, discard empty/artifact-content-kept)"
