@@ -45,6 +45,28 @@ seed_state_dir() {
     echo "{}" > "$1/state.json"
 }
 
+# assert_no_probe_pr1_run_dir STATE_DIR LABEL — fail if the worker allocated a
+# run dir for probe-repo#1 under STATE_DIR. The pre-allocation gates (issue #189)
+# must skip/abort before allocate_run_dir, so a leaked runs/<id>/ is the
+# regression. Name pins the hardcoded PR-1 glob so a future reuse for a different
+# PR (#2 exists elsewhere in this file) can't pass vacuously. One helper for the
+# repeated contract across the container-mode untrusted-skip, indeterminate-defer,
+# and metadata-guard scenarios (was four hand-maintained copies).
+assert_no_probe_pr1_run_dir() {
+    # Capture once and test the string — NOT `find … | grep -q .`. Under this
+    # script's `set -o pipefail`, grep -q exiting on the first match can SIGPIPE
+    # find (pipeline status 141 → the `if` is false), silently PASSING the leak
+    # assertion at the exact moment a leak exists — a false-pass in the one fence
+    # whose job is catching #189. Capturing also drops the duplicate find.
+    local leaked
+    leaked=$(find "$1/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*')
+    if [ -n "$leaked" ]; then
+        echo "FAIL: $2 — worker allocated a run-dir (pre-allocation gate didn't fire; leak — issue #189)"
+        printf '%s\n' "$leaked"
+        exit 1
+    fi
+}
+
 # run_worker_in_state <state_dir> <worker arg>... — one worker run against a
 # state dir's standard layout (the six env exports + repos.conf that every
 # scenario repeats). Per-scenario extras (PATH shims, REVIEWER_CONTAINER_MODE,
@@ -714,40 +736,29 @@ echo "  scenario: container-mode gate skips untrusted-author PR before placehold
 STATE5="$TMPDIR/state-5"
 seed_state_dir "$STATE5"
 write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"   # author=test-user; permission unset → untrusted
-REVIEWER_CONTAINER_MODE=1 run_worker_in_state "$STATE5" \
-    "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Untrusted PR" "false"
-GATE5_EC=$?
 # The skip fires BEFORE allocate_run_dir (issue #189): a permanently-untrusted
 # PR re-enumerated every ~30s must NOT leak a runs/<id>/ dir per poll. The
 # behavioral contract is clean exit 0, no run dir, AND silence (no per-tick log
-# line — see the silence assertion after the second tick below). A regression
-# that failed to skip would proceed to clone + allocate a run dir (like
-# scenarios 1-4, same gh stub minus container mode), tripping the no-run-dir
-# assertion below.
-if find "$STATE5/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' | grep -q .; then
-    echo "FAIL: scenario 5 — worker allocated a run-dir for an untrusted skip (gate didn't fire; leak — issue #189)"
-    find "$STATE5/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*'
-    exit 1
-fi
-if [ "$GATE5_EC" -ne 0 ]; then
-    echo "FAIL: scenario 5 — worker exited $GATE5_EC (expected 0 from clean container-mode untrusted skip)"
-    [ -f "$STATE5/orchestrator.log" ] && { echo "--- orchestrator.log ---"; cat "$STATE5/orchestrator.log"; }
-    exit 1
-fi
-# Re-run the same PR: the skip must stay clean and dir-free across ticks (the
-# whole point — a permanently-untrusted PR is polled indefinitely).
-REVIEWER_CONTAINER_MODE=1 run_worker_in_state "$STATE5" \
-    "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Untrusted PR" "false"
-GATE5B_EC=$?
-if [ "$GATE5B_EC" -ne 0 ]; then
-    echo "FAIL: scenario 5 — second untrusted tick exited $GATE5B_EC (expected 0; didn't reach the gate)"
-    [ -f "$STATE5/orchestrator.log" ] && { echo "--- orchestrator.log ---"; cat "$STATE5/orchestrator.log"; }
-    exit 1
-fi
-if find "$STATE5/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' | grep -q .; then
-    echo "FAIL: scenario 5 — second untrusted tick allocated a run-dir (leak; issue #189)"
-    exit 1
-fi
+# line — see the silence assertion below). A regression that failed to skip
+# would proceed to clone + allocate a run dir (like scenarios 1-4, same gh stub
+# minus container mode), tripping the no-run-dir assertion. Run TWO ticks: a
+# permanently-untrusted PR is polled indefinitely, so the skip must stay clean
+# and dir-free every tick.
+for _tick in 1 2; do
+    REVIEWER_CONTAINER_MODE=1 run_worker_in_state "$STATE5" \
+        "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Untrusted PR" "false"
+    _ec=$?
+    # Leak check FIRST: a gate that failed to fire proceeds to clone/allocate
+    # (like scenarios 1-4) AND aborts downstream with a non-zero exit, so the
+    # run-dir/#189 diagnostic is the informative one — the exit-code check would
+    # otherwise mask it. Matches the indeterminate-defer / metadata-guard sites.
+    assert_no_probe_pr1_run_dir "$STATE5" "scenario 5 tick $_tick — untrusted skip"
+    if [ "$_ec" -ne 0 ]; then
+        echo "FAIL: scenario 5 — untrusted tick $_tick exited $_ec (expected 0 from a clean container-mode skip)"
+        [ -f "$STATE5/orchestrator.log" ] && { echo "--- orchestrator.log ---"; cat "$STATE5/orchestrator.log"; }
+        exit 1
+    fi
+done
 # Silence contract — the actual behavior this branch introduces: the container-
 # mode untrusted skip must emit NO per-tick line. A re-added log line at the gate
 # (the flood→marker→TTL regression this branch produced twice) would land on the
@@ -783,11 +794,7 @@ GATE_IND_EC=$?
 # the worst offender. Assert NO run dir and the defer line on the orchestrator
 # fallback log.
 LOG_IND="$STATE_IND/orchestrator.log"
-if find "$STATE_IND/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' | grep -q .; then
-    echo "FAIL: indeterminate-defer — worker allocated a run-dir for a deferred review (leak; issue #189)"
-    find "$STATE_IND/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*'
-    exit 1
-fi
+assert_no_probe_pr1_run_dir "$STATE_IND" "indeterminate-defer"
 if [ "$GATE_IND_EC" -ne 1 ]; then
     echo "FAIL: indeterminate-defer — worker exited $GATE_IND_EC (expected 1 = defer on indeterminate trust)"
     [ -f "$LOG_IND" ] && { echo "--- orchestrator.log ---"; cat "$LOG_IND"; }
@@ -816,10 +823,7 @@ GH_STUB_PRVIEW_EMPTY=1 run_worker_in_state "$STATE_MD" \
     "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Metadata-fail PR" "false"
 GATE_MD_EC=$?
 LOG_MD="$STATE_MD/orchestrator.log"
-if find "$STATE_MD/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' | grep -q .; then
-    echo "FAIL: metadata-guard — worker allocated a run-dir before the gh-pr-view abort (leak; issue #189)"
-    exit 1
-fi
+assert_no_probe_pr1_run_dir "$STATE_MD" "metadata-guard (gh-pr-view abort before allocation)"
 if [ "$GATE_MD_EC" -ne 1 ]; then
     echo "FAIL: metadata-guard — worker exited $GATE_MD_EC (expected 1 = abort on empty gh pr view)"
     [ -f "$LOG_MD" ] && { echo "--- orchestrator.log ---"; cat "$LOG_MD"; }
