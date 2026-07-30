@@ -135,6 +135,8 @@ docker exec "$CID" sh -c "$NEWEST"'; cat "/shared/runs/$r/agents/aggregator/err.
 
 `-f` is for a run still in flight — swap `tail -f` for `cat` on a finished one, which is the usual case when `err.txt` is what you're after.
 
+The per-agent files exist only once the agent pipeline has started. A run that aborted before then — canonical clone, `--unshallow`, or base-ref fetch — keeps `run.log` and two empty dirs, so `agents/` being empty *is* the diagnosis: read `run.log`, which carries the abort reason.
+
 `sort | tail -1`, not `ls -t | head -1`: `RUN_ID`'s embedded UTC timestamp makes lexical order chronological, so this needs no `stat()`. That matters — the live `runs/` carries directory entries whose inodes are gone (`ls -t` prints `cannot access` for ~28 of them), and an entry `ls -t` can't stat sorts unpredictably and can win `head -1`.
 
 ## Configure repos
