@@ -27,6 +27,16 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
+# Sandbox the state dir. fetch_issue_comments now goes through gh_api_retry, so
+# a stubbed rate-limit failure below reaches gh_note_rate_limit, which WRITES a
+# fleet-wide pause file. Unsandboxed that lands in $HOME/.pr-reviewer — the real
+# install dir (install.sh's INSTALL_DIR default) — so `just test` on a deploy
+# host would stamp a live pause and skip a real review tick. HOME is redirected
+# too, so the default path can't escape even if STATE_DIR is ignored.
+export STATE_DIR="$TMPDIR/state"
+export HOME="$TMPDIR/home"
+mkdir -p "$STATE_DIR" "$HOME"
+
 # Stub gh: prepend a fake gh shim to PATH that emits canned data based
 # on the test's environment vars. Each scenario overrides
 # STUB_PAGES_DIR / STUB_EXIT before invoking fetch_issue_comments.
@@ -153,5 +163,13 @@ if [ -n "$out4" ]; then
     exit 1
 fi
 unset STUB_STDERR
+
+# Scenario 4's stderr is a rate-limit message, so it reaches gh_note_rate_limit
+# and stamps a pause. Assert it landed ONLY in the sandbox: an escape means
+# `just test` on a deploy host pauses the live fleet.
+if [ -e "$HOME/.pr-reviewer/gh-rate-limited-until" ]; then
+    echo "FAIL: the rate-limit pause escaped the sandbox into the install state dir"
+    exit 1
+fi
 
 echo "  PASS (4 scenarios: multi-page-merge, empty-response, gh-failure-propagates, gh-error-logged)"

@@ -348,7 +348,12 @@ cleanup_eyes() {
     if [ "$EYES_RESOLVED" = "true" ] || [ -z "$EYES_COMMENT_ID" ]; then
         return 0
     fi
-    gh api "repos/$REPO/issues/comments/$EYES_COMMENT_ID" --method PATCH \
+    # GH_API_RETRY_MAX=1 here and at the other two placeholder writes: routed
+    # through the wrapper so a rate limit stamps the fleet pause, but never
+    # retried — a transient failure after the server applied the write would
+    # stack a duplicate placeholder (the very thing the reuse branch above
+    # exists to prevent).
+    GH_API_RETRY_MAX=1 gh_api_retry "repos/$REPO/issues/comments/$EYES_COMMENT_ID" --method PATCH \
         -f body="${PLACEHOLDER_HEADER}${EYES_ABORT_BODY}" \
         >/dev/null 2>&1 || true
 }
@@ -556,7 +561,7 @@ if ALL_ISSUE_COMMENTS=$(fetch_issue_comments "$REPO" "$PR_NUM"); then
     if [ -n "$EYES_COMMENT_ID" ]; then
         log "$PR_ID: reusing prior placeholder (comment id=$EYES_COMMENT_ID) — not stacking a new one"
     else
-        EYES_COMMENT_ID=$(gh api "repos/$REPO/issues/$PR_NUM/comments" \
+        EYES_COMMENT_ID=$(GH_API_RETRY_MAX=1 gh_api_retry "repos/$REPO/issues/$PR_NUM/comments" \
             --method POST \
             -f body="${PLACEHOLDER_HEADER}👀 reviewing — [sam's ai review bot](https://github.com/srosro/knightwatch-reviewer)" \
             --jq '.id' 2>/dev/null) || EYES_COMMENT_ID=""
@@ -1729,7 +1734,7 @@ fi
 # the real review is already up.
 EYES_RESOLVED=true
 if [ -n "$EYES_COMMENT_ID" ]; then
-    if gh api "repos/$REPO/issues/comments/$EYES_COMMENT_ID" --method DELETE \
+    if GH_API_RETRY_MAX=1 gh_api_retry "repos/$REPO/issues/comments/$EYES_COMMENT_ID" --method DELETE \
             >/dev/null 2>&1; then
         log "Posted review on $PR_ID (deleted placeholder id=$EYES_COMMENT_ID)"
     else

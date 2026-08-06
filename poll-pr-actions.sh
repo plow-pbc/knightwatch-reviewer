@@ -94,7 +94,7 @@ rerequest_check() {
     local REPO="$1" PR_NUM="$2" PR_KEY="$1#$2" TIMELINE LATEST LAST_SEEN
     # Fetch + detect failure explicitly (same shape as the comment fetch) so a
     # transient API error is logged + skipped, not silently read as "no event".
-    TIMELINE=$(gh api "repos/$REPO/issues/$PR_NUM/timeline" --paginate 2>/dev/null) || {
+    TIMELINE=$(gh_api_retry "repos/$REPO/issues/$PR_NUM/timeline" --paginate 2>/dev/null) || {
         log "$PR_KEY: timeline fetch failed — skipping re-request check this tick"
         return 0
     }

@@ -389,7 +389,12 @@ $BOT_DECLINE_MARKER
                     # an abuse-limit 403 would otherwise fail every tick behind
                     # an opaque message with no diagnosable cause.
                     DECLINE_ERR=$(mktemp)
-                    if ! gh api "repos/$REPO/issues/$PR_NUM/comments" --method POST \
+                    # GH_API_RETRY_MAX=1 — the wrapper for rate-limit detection
+                    # (it stamps the fleet pause before it ever considers a
+                    # retry), but NO transient retry on a POST: a 5xx/reset can
+                    # follow a request the server already applied, and the retry
+                    # would post a second decline comment.
+                    if ! GH_API_RETRY_MAX=1 gh_api_retry "repos/$REPO/issues/$PR_NUM/comments" --method POST \
                         -f body="${DECLINE_HEADER}⏭ nothing to re-review — \`${PR_SHA:0:7}\` is already the reviewed head, so an incremental diff would be empty.
 
 This request stays open and fires automatically on your next push. To force a whole-PR pass on the unchanged head, post \`/${BOT_CMD_PREFIX}-review\`." >/dev/null 2>"$DECLINE_ERR"; then
@@ -433,7 +438,7 @@ This request stays open and fires automatically on your next push. To force a wh
 
         # Stability cooldown for non-forced re-reviews.
         if [ -n "$KNOWN_SHA" ] && [ "$FORCE_REVIEW" = "false" ]; then
-            LAST_COMMIT_DATE=$(gh api "repos/$REPO/pulls/$PR_NUM/commits" --jq '.[-1].commit.committer.date' 2>/dev/null)
+            LAST_COMMIT_DATE=$(gh_api_retry "repos/$REPO/pulls/$PR_NUM/commits" --jq '.[-1].commit.committer.date' 2>/dev/null)
             if [ -z "$LAST_COMMIT_DATE" ]; then
                 log "$PR_ID: could not get commit date, skipping"
                 continue

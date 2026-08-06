@@ -192,10 +192,18 @@ gh_note_rate_limit() {
     # A stale/absent reset epoch would resume instantly and re-trip; floor it.
     [ "${until:-0}" -gt "$now" ] 2>/dev/null || until=$(( now + ${GH_SECONDARY_PAUSE_SECS:-60} ))
     log "gh rate limit ($kind) — core=${core_rem:-?}/5000 graphql=${gql_rem:-?}/5000 remaining; pausing the FLEET $(( until - now ))s (until epoch $until)"
-    # tmp + atomic rename, like _seen_write above: six containers read this file
-    # every tick, and a plain `>` truncates before it writes.
+    # tmp + atomic rename: six containers read this file every tick, and a plain
+    # `>` truncates before it writes. The temp must be UNIQUE PER WRITER — a
+    # fixed `.tmp` is shared by the same six writers it protects against (B's `>`
+    # truncates the inode A is about to rename into place, publishing an empty
+    # file, and B's own `mv` then fails on the stale path). mktemp, not $$: the
+    # writers are separate containers, so PIDs collide. Unlike _seen_write above
+    # this needs no flock — the rename is the whole critical section, and any
+    # single winner is correct since every writer is stamping "back off".
+    local tmp
     mkdir -p "$(dirname "$(gh_pause_file)")"
-    printf '%s\n' "$until" > "$(gh_pause_file).tmp" && mv -f "$(gh_pause_file).tmp" "$(gh_pause_file)"
+    tmp=$(mktemp "$(gh_pause_file).XXXXXX") || return 1
+    printf '%s\n' "$until" > "$tmp" && mv -f "$tmp" "$(gh_pause_file)"
 }
 
 # One status clause per account registered under $STATE_DIR/pool/, for the
