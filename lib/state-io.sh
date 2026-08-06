@@ -125,15 +125,24 @@ mark_auth_offline() {
 }
 
 # GitHub rate-limit pause protocol. Same shape as the codex quota pause above,
-# with one deliberate difference: it is FLEET-WIDE, not per-account.
+# with one deliberate difference: it is shared across ACCOUNTS, not per-account.
 #
 # Codex quota is per-account — six containers, six independent budgets — so a
 # capped account pauses only itself and its siblings carry the queue. The GitHub
-# PAT is the opposite: every container authenticates as the SAME user, so a
-# throttle applies to all of them at once. Namespacing this under
-# pool/<WORKER_ID>/ would pause the one container that noticed and leave the
-# other five hammering the already-throttled token — the amplification this file
-# exists to stop. Hence bare $STATE_DIR (shared volume), no WORKER_ID.
+# PAT is the opposite: every actor authenticates as the SAME user, so a throttle
+# applies to all of them at once. Namespacing this under pool/<WORKER_ID>/ would
+# pause the one container that noticed and leave the other five hammering the
+# already-throttled token — the amplification this file exists to stop. Hence
+# bare $STATE_DIR, no WORKER_ID.
+#
+# SCOPE, precisely: the file is shared by everyone who shares a $STATE_DIR. That
+# is the six reviewer containers (STATE_DIR=/shared, the kwr_claims volume) as
+# one group, and the host systemd timers (STATE_DIR=$HOME/.pr-reviewer) as
+# another. Those are different filesystems, so a pause does NOT currently cross
+# the host↔container boundary even though both groups spend the same PAT — the
+# containers' bulk consumption can throttle the token without the host timers
+# learning of it, and vice versa. Unifying the two needs a shared mount plus
+# per-unit env, tracked separately; do not read the sharing here as fleet-total.
 gh_pause_file() { printf '%s' "${STATE_DIR:-$HOME/.pr-reviewer}/gh-rate-limited-until"; }
 
 # True while the pause window is still in the future. Missing file reads as

@@ -175,21 +175,36 @@ reach() {
             [ -f "$cand" ] && reach "$cand"
         done
     done
+    # Explicit: the walk's status is incidental (it ends on whether the LAST
+    # candidate path happened to exist), and `set -o pipefail` above would
+    # promote that into the producer test — silently reclassifying a real
+    # producer as gate-exempt, the exact "passes green while the defect is in the
+    # tree" failure this scenario exists to prevent.
+    return 0
 }
 
-produced=0
+produced=0; classified=0
 for entry in $entrypoints; do
     [ -f "$PROJECT_ROOT/$entry" ] || continue
+    classified=$((classified + 1))
     unset _seen_reach; declare -A _seen_reach
+    # Collect the walk into a variable FIRST — piping it straight into the
+    # condition would let reach's exit status (and pipefail) decide the answer.
+    reachable=$(reach "$PROJECT_ROOT/$entry")
     # `gh_api_retry <args>` — an invocation, not the definition or a comment.
-    if reach "$PROJECT_ROOT/$entry" | xargs grep -lE '^[^#]*gh_api_retry[[:space:]]+[^(]' 2>/dev/null | grep -q .; then
+    if printf '%s\n' "$reachable" | xargs grep -lE '^[^#]*gh_api_retry[[:space:]]+[^(]' 2>/dev/null | grep -q .; then
         produced=$((produced + 1))
         grep -q 'gh_pause_active' "$PROJECT_ROOT/$entry" \
             || fail "scenario 8: $entry reaches gh_api_retry (so it can stamp a pause) but never reads one — it would keep calling a throttled token"
     fi
 done
-# Guard the guard: if the derivation stops finding producers the assertion above
-# passes vacuously and this whole scenario silently stops testing anything.
+# Guard the guard, twice over. A threshold alone goes stale the moment a fifth
+# producer lands: one silent misclassification would still total 4 and pass. So
+# also assert every derived entrypoint was actually reached and classified — if
+# the derivation itself breaks, that count collapses and this fails loudly
+# instead of vacuously testing nothing.
+[ "$classified" -eq "$(printf '%s\n' $entrypoints | sort -u | while read -r e; do [ -f "$PROJECT_ROOT/$e" ] && echo x; done | wc -l)" ] \
+    || fail "scenario 8: classified $classified entrypoints but the derived list holds a different number — the scan is dropping scripts"
 [ "$produced" -ge 4 ] \
     || fail "scenario 8: only $produced producing entrypoint(s) derived (expected >=4) — the derivation broke, not the code"
 # …and the gate must precede that script's EARLIEST GitHub call, not merely some

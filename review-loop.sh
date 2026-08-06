@@ -95,10 +95,11 @@ while true; do
     fi
     rm -f "$(quota_pause_file)"   # absent or window passed; resume claiming
     # GitHub rate limit → skip the tick. Unlike the two gates above (per-account
-    # codex state) this one is fleet-wide: every container shares one PAT, so the
-    # container that tripped the limit pauses all of them. Without it each unit
-    # re-attempts against the throttled token every POLL_SECS, which is how a
-    # transient limit turned into a two-day retry storm.
+    # codex state) this one is shared: all six containers share one STATE_DIR and
+    # one PAT, so the container that tripped the limit pauses every reviewer.
+    # Without it each unit re-attempts against the throttled token every
+    # POLL_SECS, which is how a transient limit turned into a two-day retry
+    # storm. (Host timers keep a separate pause file — see lib/state-io.sh.)
     if gh_pause_active; then
         log "[review-loop] github rate-limited — skipping tick (until $(date -d "@$(head -n1 "$(gh_pause_file)")" '+%H:%M:%S' 2>/dev/null || echo 'window'))"
         sleep "$POLL_SECS"; continue

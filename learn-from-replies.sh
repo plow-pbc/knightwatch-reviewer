@@ -43,10 +43,10 @@ is_memorize_request() {
     printf '%s' "$1" | grep -qiF "/${BOT_CMD_PREFIX}-memorize"
 }
 
-# Honor the fleet-wide GitHub pause, like review-loop.sh and poll-pr-actions.sh.
+# Honor the GitHub rate-limit pause, like review-loop.sh and poll-pr-actions.sh.
 # This poller is a PRODUCER of that pause too (fetch_issue_comments routes
 # through gh_api_retry), so an ungated tick would keep calling the throttled PAT
-# it just told the rest of the fleet to back off from.
+# it just told the other host timers to back off from.
 if gh_pause_active; then
     log "github rate-limited — skipping memorize tick"
     exit 0
