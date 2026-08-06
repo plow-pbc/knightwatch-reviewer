@@ -48,7 +48,7 @@ _enumerate_graphql_query='query($q: String!, $after: String) {
   }
 }'
 
-# gh_api_retry, for BOTH search paths below. It was once sourced inside
+# The rate-limit seam (defines gh()). It was once sourced inside
 # repos_with_bot_activity_since alone so enumerate_open_prs stayed unburdened;
 # that split ended when enumerate_open_prs also moved onto the wrapper — it is
 # the fleet's highest-volume GitHub caller (graphql is the loaded bucket at
@@ -86,10 +86,10 @@ enumerate_open_prs() {
         after=""
         while :; do
             if [ -n "$after" ]; then
-                raw=$(gh_api_retry graphql -F q="user:${owner} is:pr is:open archived:false" \
+                raw=$(gh api graphql -F q="user:${owner} is:pr is:open archived:false" \
                         -F after="$after" -f query="$_enumerate_graphql_query" 2>/dev/null) || return 1
             else
-                raw=$(gh_api_retry graphql -F q="user:${owner} is:pr is:open archived:false" \
+                raw=$(gh api graphql -F q="user:${owner} is:pr is:open archived:false" \
                         -f query="$_enumerate_graphql_query" 2>/dev/null) || return 1
             fi
             nodes=$(printf '%s' "$raw" | jq -c '.data.search.nodes // []') || return 1
@@ -103,7 +103,7 @@ enumerate_open_prs() {
     for repo in "${REPOS[@]}"; do
         owner="${repo%%/*}"
         owner_in_orgs "$owner" && continue
-        if ! raw=$(gh_retry pr list --repo "$repo" \
+        if ! raw=$(gh pr list --repo "$repo" \
                 --json number,title,headRefName,headRefOid,updatedAt,author \
                 --state open --limit 200 2>/dev/null); then
             return 1
@@ -163,9 +163,9 @@ repos_with_bot_activity_since() {
         after=""
         while :; do
             if [ -n "$after" ]; then
-                raw=$(gh_api_retry graphql -F q="$q" -F after="$after" -f query="$_bot_activity_graphql_query" 2>/dev/null) || return 1
+                raw=$(gh api graphql -F q="$q" -F after="$after" -f query="$_bot_activity_graphql_query" 2>/dev/null) || return 1
             else
-                raw=$(gh_api_retry graphql -F q="$q" -f query="$_bot_activity_graphql_query" 2>/dev/null) || return 1
+                raw=$(gh api graphql -F q="$q" -f query="$_bot_activity_graphql_query" 2>/dev/null) || return 1
             fi
             pieces+=("$(printf '%s' "$raw" | jq -r '.data.search.nodes[]?.repository.nameWithOwner')") || return 1
             # endCursor only when there is a next page (else empty → stop). A

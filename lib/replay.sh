@@ -116,7 +116,7 @@ git clone "https://github.com/$REPO.git" "$WORK/repo"
 # labelling it another — and a fetch nested in a command substitution had
 # its failure masked by the enclosing builder's exit status. Bare assignment
 # so a failed fetch aborts under `set -e`.
-REPLAY_PR_META="$(gh_retry pr view "$PR" --repo "$REPO" --json "baseRefName,author,$AUTHOR_INTENT_FIELDS")"
+REPLAY_PR_META="$(gh pr view "$PR" --repo "$REPO" --json "baseRefName,author,$AUTHOR_INTENT_FIELDS")"
 BASE_REF="$(printf '%s' "$REPLAY_PR_META" | jq -r '.baseRefName // empty')"
 PR_AUTHOR="$(printf '%s' "$REPLAY_PR_META" | jq -r '.author.login // empty')"
 # Fail loud on a metadata blank, mirroring production's guard: an empty
@@ -261,7 +261,7 @@ PR_URL="https://github.com/$REPO/pull/$PR"
 # security/portability posture production does — without it, every replay
 # falls back to pipeline.py's `private` default and a public-repo canary
 # never exercises the public prompt path this PR adds.
-REPO_VISIBILITY="$(gh_retry repo view "$REPO" --json visibility --jq .visibility | tr '[:upper:]' '[:lower:]')"
+REPO_VISIBILITY="$(gh repo view "$REPO" --json visibility --jq .visibility | tr '[:upper:]' '[:lower:]')"
 [ -n "$REPO_VISIBILITY" ] || { echo "replay: gh repo view $REPO returned no visibility" >&2; exit 1; }
 LOG_FILE="$OUT/run.log"
 

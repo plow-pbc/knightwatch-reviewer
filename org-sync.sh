@@ -128,7 +128,7 @@ fi
 
 for org in "${ORGS[@]}"; do
     log "discovering org=$org"
-    if ! out=$(gh_retry repo list "$org" --source --no-archived --limit 1000 --json name --jq '.[].name' 2>>"$LOG"); then
+    if ! out=$(gh repo list "$org" --source --no-archived --limit 1000 --json name --jq '.[].name' 2>>"$LOG"); then
         log "FATAL: gh repo list $org failed"
         exit 1
     fi
@@ -174,7 +174,7 @@ for full in "${AUTO[@]}"; do
         exit 1
     else
         log "cloning $full → $dest"
-        if ! gh_retry repo clone "$full" "$dest" >>"$LOG" 2>&1; then
+        if ! gh repo clone "$full" "$dest" >>"$LOG" 2>&1; then
             # gh can leave $dest with partial .git + origin on failure;
             # next tick's matching-origin branch would treat it as a
             # complete clone and publish an empty checkout. Clean up.

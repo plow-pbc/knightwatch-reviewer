@@ -3,7 +3,7 @@
 # lib/gh-retry.sh + review-loop.sh's third tick gate).
 #
 # Context: the fleet had NO GitHub rate-limit backoff. A rate-limit 403 fell
-# through gh_api_retry as an ordinary hard failure, so every container
+# through gh api as an ordinary hard failure, so every container
 # re-attempted against the same throttled shared PAT on the next POLL_SECS tick
 # — a transient limit became a two-day retry storm (2,179 deferrals on one unit).
 #
@@ -65,10 +65,10 @@ reset_state
 GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
 GH_SHIM_ERR="$RATE_LIMIT_ERR" \
 GH_SECONDARY_PAUSE_SECS=60 \
-    gh_api_retry "user" >"$TMP/out1" 2>"$TMP/err1" || true
+    gh api "user" >"$TMP/out1" 2>"$TMP/err1" || true
 [ -f "$(gh_pause_file)" ] || fail "scenario 1: rate-limit 403 left no pause file — the fleet would keep hammering"
 # gh_api_retry's stdout IS the API result its callers capture
-# (`perm=$(gh_api_retry …)` in auth.sh) — a diagnostic leaked there would be
+# (`perm=$(gh api …)` in auth.sh) — a diagnostic leaked there would be
 # read back as a permission string.
 grep -q 'rate limit' "$TMP/out1" 2>/dev/null \
     && fail "scenario 1: the diagnostic leaked to stdout, corrupting the value callers capture"
@@ -85,7 +85,7 @@ reset_state
 CORE_RESET=$((NOW + 1800))
 GH_SHIM_BUCKETS="0	$CORE_RESET	4742	$((NOW + 3000))" \
 GH_SHIM_ERR="$RATE_LIMIT_ERR" \
-    gh_api_retry "user" >/dev/null 2>"$TMP/err2" || true
+    gh api "user" >/dev/null 2>"$TMP/err2" || true
 [ "$(head -n1 "$(gh_pause_file)")" = "$CORE_RESET" ] \
     || fail "scenario 2: expected pause until core reset $CORE_RESET, got $(head -n1 "$(gh_pause_file)")"
 grep -q 'primary/core' "$TMP/err2" \
@@ -99,7 +99,7 @@ reset_state
 GQL_RESET=$((NOW + 2400))
 GH_SHIM_BUCKETS="4920	$((NOW + 600))	0	$GQL_RESET" \
 GH_SHIM_ERR="$RATE_LIMIT_ERR" \
-    gh_api_retry "graphql" >/dev/null 2>"$TMP/err3" || true
+    gh api "graphql" >/dev/null 2>"$TMP/err3" || true
 [ "$(head -n1 "$(gh_pause_file)")" = "$GQL_RESET" ] \
     || fail "scenario 3: expected pause until graphql reset $GQL_RESET, got $(head -n1 "$(gh_pause_file)")"
 
@@ -107,7 +107,7 @@ GH_SHIM_ERR="$RATE_LIMIT_ERR" \
 echo "  scenario 4: non-rate-limit failure → no pause..."
 reset_state
 GH_SHIM_ERR='gh: Not Found (HTTP 404)' \
-    gh_api_retry "repos/o/r/collaborators/u/permission" >/dev/null 2>&1 || true
+    gh api "repos/o/r/collaborators/u/permission" >/dev/null 2>&1 || true
 [ ! -f "$(gh_pause_file)" ] \
     || fail "scenario 4: a 404 stamped a fleet pause — any missing collaborator would halt reviewing"
 
@@ -117,7 +117,7 @@ reset_state
 GH_SHIM_BUCKETS="0	$((NOW - 500))	4742	$((NOW + 3000))" \
 GH_SHIM_ERR="$RATE_LIMIT_ERR" \
 GH_SECONDARY_PAUSE_SECS=60 \
-    gh_api_retry "user" >/dev/null 2>&1 || true
+    gh api "user" >/dev/null 2>&1 || true
 [ "$(head -n1 "$(gh_pause_file)")" -gt "$NOW" ] \
     || fail "scenario 5: a past reset epoch produced a non-future pause — would re-trip every tick"
 
@@ -182,7 +182,7 @@ for _ in 1 2 3; do
     GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
     GH_SHIM_ERR="$RATE_LIMIT_ERR" \
     GH_SECONDARY_PAUSE_SECS=60 \
-        gh_api_retry "user" >/dev/null 2>&1 || true
+        gh api "user" >/dev/null 2>&1 || true
 done
 PROBES=$(wc -l < "$GH_SHIM_PROBE_LOG")
 [ "$PROBES" -eq 1 ] \
@@ -193,14 +193,14 @@ PROBES=$(wc -l < "$GH_SHIM_PROBE_LOG")
 # remembering to gate.
 : > "$TMP/calls"
 GH_SHIM_CALL_LOG="$TMP/calls" GH_SHIM_ERR="$RATE_LIMIT_ERR" \
-    gh_api_retry "repos/o/r/pulls/7/commits" >/dev/null 2>&1 || true
+    gh api "repos/o/r/pulls/7/commits" >/dev/null 2>&1 || true
 [ ! -s "$TMP/calls" ] \
     || fail "scenario 9: gh_retry still called gh while the pause was active — it must short-circuit: $(cat "$TMP/calls")"
 FIRST_UNTIL=$(head -n1 "$(gh_pause_file)")
 sleep 1
 GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
 GH_SHIM_ERR="$RATE_LIMIT_ERR" GH_SECONDARY_PAUSE_SECS=60 \
-    gh_api_retry "user" >/dev/null 2>&1 || true
+    gh api "user" >/dev/null 2>&1 || true
 [ "$(head -n1 "$(gh_pause_file)")" = "$FIRST_UNTIL" ] \
     || fail "scenario 9: a later straggler pushed the pause window forward"
 unset GH_SHIM_PROBE_LOG
@@ -225,88 +225,61 @@ echo "  scenario 11: review-loop.sh never rm's the fleet-wide pause file..."
 grep -qE '^[^#]*rm .*gh_pause_file' "$PROJECT_ROOT/review-loop.sh" \
     && fail "scenario 11: review-loop.sh deletes the shared pause file — races a sibling's stamp"
 
-# --- 12. the fleet's highest-volume caller routes through the wrapper ---
-# graphql is the loaded bucket (~30 pts/min vs core ~0). If enumerate_open_prs
-# calls `gh api` directly, a graphql exhaustion never trips the pause at all and
-# scenario 3's classification is unreachable in production.
-echo "  scenario 12: enumerate_open_prs routes through gh_api_retry..."
-grep -qE '^\s*raw=\$\(gh api graphql' "$PROJECT_ROOT/lib/pr-enumerate.sh" \
-    && fail "scenario 12: enumerate_open_prs bypasses gh_api_retry — a graphql rate limit would never pause the fleet"
-grep -q 'gh_api_retry graphql' "$PROJECT_ROOT/lib/pr-enumerate.sh" \
-    || fail "scenario 12: enumerate_open_prs no longer uses gh_api_retry"
-
-# --- 13. a create is never RETRIED; a read still is ---
-# Widening the wrapper from `gh api` to any gh argv made every non-idempotent
-# subcommand retryable. A 5xx/reset can follow a request the server already
-# applied, so a retried create double-posts a public comment. Both write shapes
-# must be covered: the subcommand form and `gh api … --method POST`, which is how
-# two of the three create sites in this repo actually post.
-echo "  scenario 13: creates are not retried on a transient error; reads are..."
-attempts() {   # $1.. = argv passed to gh_retry; echoes the number of gh invocations
-    : > "$TMP/calls"
-    GH_SHIM_CALL_LOG="$TMP/calls" GH_SHIM_ERR='net/http: TLS handshake timeout' \
-    GH_API_RETRY_DELAY=0 gh_retry "$@" >/dev/null 2>&1 || true
-    wc -l < "$TMP/calls"
-}
+# --- 12. the seam: sourcing gh-retry.sh routes every `gh` call, by construction
+# This replaces two earlier scenarios — a systemd/source-graph parser and a
+# per-line allowlist — that existed to hunt call sites bypassing the wrapper.
+# With `gh` itself defined as the wrapper there is nothing left to bypass, so the
+# property is structural rather than asserted, and the hunt is obsolete. What
+# still needs checking is much smaller: the seam exists, it does not recurse, and
+# every producer entrypoint pulls it in.
+echo "  scenario 12: gh() is the seam — intercepts, and does not recurse..."
+: > "$TMP/calls"
 reset_state
-[ "$(attempts pr comment 7 --repo o/r --body hi)" -eq 1 ] \
-    || fail "scenario 13: 'gh pr comment' was retried — a transient blip after the server applied it would double-post"
-# The shape this repo's api-shim writes actually take. The guard's regex also
-# covers `--method=POST` and `-X POST`, but no production caller uses either, so
-# asserting them here would be a compatibility matrix for hypothetical callers.
-[ "$(attempts api repos/o/r/issues/7/comments --method POST -f body=hi)" -eq 1 ] \
-    || fail "scenario 13: 'gh api --method POST' was retried — the shape two of three create sites use"
-[ "$(attempts api repos/o/r/pulls/7/commits)" -eq 3 ] \
-    || fail "scenario 13: a READ lost its retry budget — the transient-blip resilience the wrapper exists for"
+GH_SHIM_CALL_LOG="$TMP/calls" GH_SHIM_ERR='gh: Not Found (HTTP 404)' \
+    gh pr view 7 --repo o/r >/dev/null 2>&1 || true
+[ "$(wc -l < "$TMP/calls")" -eq 1 ] \
+    || fail "scenario 12: a plain `gh pr view` made $(wc -l < "$TMP/calls") underlying calls — the seam is missing or recursing"
+grep -q 'pr view 7' "$TMP/calls" \
+    || fail "scenario 12: the seam did not pass argv through: $(cat "$TMP/calls")"
+# A plain `gh` call must stamp the pause like any other — that IS the point.
+: > "$TMP/calls"; reset_state
+GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+GH_SHIM_ERR="$RATE_LIMIT_ERR" gh pr comment 7 --repo o/r --body hi >/dev/null 2>&1 || true
+[ -f "$(gh_pause_file)" ] \
+    || fail "scenario 12: a rate-limited plain `gh` call left no pause — the seam is not classifying"
 reset_state
 
-# --- 14. EVERY production gh invocation goes through the wrapper ---
-# Inverted on purpose. Matching create-shaped calls could only ever cover the
-# spellings and subcommands someone remembered to add — which is how
-# `gh pr review --approve` survived three rounds of this audit. Asserting the
-# whole property instead makes it immune to spelling, argv position, env prefix,
-# capture form, and read-vs-write: any gh call that is not gh_retry cannot stamp
-# the pause, so it is a hole regardless of shape.
-#
-# The file list is DERIVED from git, not hand-listed — a hand-listed set moves
-# the same "only what someone remembered" failure onto the file axis, and a
-# renamed or deleted path would silently read as clean.
-# Allowlisted per LINE, not per file — exempting a whole file would hide any
-# future bare gh added to it, which is the same "only what someone remembered"
-# hole this scenario exists to close, moved one axis over. Two deliberate calls:
-#   `gh api rate_limit` — the classification probe inside gh_note_rate_limit;
-#                         routing it through gh_retry would recurse.
-#   `gh --version`      — install.sh preflight, not an API call.
-GH_ALLOWED='command -v gh|which gh|gh api rate_limit|gh --version'
-echo "  scenario 14: every production gh call routes through gh_retry..."
-# Quoted spans are stripped before matching so prose can't false-positive:
-# several of these files log a 'gh pr comment FAILED' string on their failure
-# paths, in both quote styles.
-mapfile -t PROD_SH < <(cd "$PROJECT_ROOT" && git ls-files '*.sh' \
-    | grep -v '^lib/tests/' | grep -v '^lib/gh-retry.sh$')
-[ "${#PROD_SH[@]}" -gt 10 ] \
-    || fail "scenario 14: derived only ${#PROD_SH[@]} production scripts — the git ls-files derivation broke, so this asserts nothing"
-for f in "${PROD_SH[@]}"; do
-    [ -f "$PROJECT_ROOT/$f" ] \
-        || fail "scenario 14: derived path $f does not exist — a vanished script must fail loudly, not read as clean"
-    # Quotes stripped BEFORE comments: a '#' inside a quoted span (printf
-    # '…%s#%s…') would otherwise truncate the line mid-string and leave an
-    # unterminated quote the strip can't match.
-    hit=$(sed -e 's/"[^"]*"//g' -e "s/'[^']*'//g" -e 's/#.*//' "$PROJECT_ROOT/$f" \
-          | grep -vE "$GH_ALLOWED" \
-          | grep -nE '(^|[^[:alnum:]_.])gh[[:space:]]' | head -1) || true
-    [ -z "$hit" ] \
-        || fail "scenario 14: $f calls gh directly instead of gh_retry — it cannot stamp the pause: $hit"
-    # NOT checked: a call smuggled through an executor — bash -c "gh pr comment …".
-    # A grep guard for it was tried and removed. It cannot be made sound: the
-    # false-negative side needs data flow (a heredoc or `bash -c "$CMD"` is
-    # invisible to any pattern), and every attempt to tighten the false-positive
-    # side chased prose from comments into strings, since this repo's own log
-    # messages legitimately contain both executor words and `gh pr comment`
-    # phrases. Three rounds of review went into its own defects and it never
-    # caught anything — the repo has no such call. The assertion above covers
-    # every direct call, which is the real surface; a deliberately obfuscated one
-    # is not the threat model here.
+# Every entrypoint that CALLS gh must source the seam; without it those calls go
+# straight to the binary and neither stamp nor honor the pause. review-loop.sh is
+# excluded on purpose: it makes no gh calls of its own (it runs ./review.sh), it
+# only reads the gate — scenario 8 covers that side.
+for entry in poll-pr-actions.sh learn-from-replies.sh specialist-bakeoff.sh org-sync.sh; do
+    grep -qE 'gh-retry\.sh|bootstrap\.sh' "$PROJECT_ROOT/$entry" \
+        || fail "scenario 12: $entry calls gh but never sources the seam — those calls bypass the pause entirely"
 done
+
+# --- 13. a primary classification must not be clobbered by a slower sibling ---
+# Two containers hit the limit at once. A's probe classifies PRIMARY (pause to the
+# bucket's real reset); B's probe fails and falls back to the 60s secondary
+# window. Unserialized, B's write lands last and the fleet resumes ~59 minutes
+# early into a still-exhausted bucket. The lock plus the in-lock recheck means
+# whoever loses the race leaves the winner's answer alone.
+echo "  scenario 13: concurrent classification — the primary pause survives..."
+reset_state
+CORE_RESET=$((NOW + 1800))
+(
+    GH_SHIM_BUCKETS="0	$CORE_RESET	4742	$((NOW + 3000))" \
+    GH_SHIM_ERR="$RATE_LIMIT_ERR" gh api user >/dev/null 2>&1 || true
+) &
+(
+    # No buckets → the probe fails → this sibling would stamp the 60s fallback.
+    GH_SHIM_ERR="$RATE_LIMIT_ERR" GH_SECONDARY_PAUSE_SECS=60 \
+        gh api user >/dev/null 2>&1 || true
+) &
+wait
+GOT=$(head -n1 "$(gh_pause_file)")
+[ "$GOT" = "$CORE_RESET" ] \
+    || fail "scenario 13: pause is $GOT, expected the primary reset $CORE_RESET — a slower sibling's 60s fallback overwrote the real window, so the fleet resumes early"
+reset_state
 
 echo "PASS: gh-rate-limit-smoke"

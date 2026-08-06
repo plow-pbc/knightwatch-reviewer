@@ -313,7 +313,7 @@ refresh_queue() {
         # Same `gh pr view --json headRefOid` shape the worker's two head
         # re-checks use, so there's one live-head idiom in the repo.
         if [ "$FORCE_REVIEW" = "true" ] && [ "$FORCE_WHOLE_PR" = "false" ] && [ "$PR_SHA" = "$KNOWN_SHA" ]; then
-            LIVE_SHA=$(gh_retry pr view "$PR_NUM" --repo "$REPO" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
+            LIVE_SHA=$(gh pr view "$PR_NUM" --repo "$REPO" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
             if [ -z "$LIVE_SHA" ]; then
                 # Fail open — but say so. Falling through silently reproduces
                 # the exact bug this check exists to prevent (declining against
@@ -390,7 +390,7 @@ $BOT_DECLINE_MARKER
                     # an opaque message with no diagnosable cause.
                     DECLINE_ERR=$(mktemp)
                     # Creates a comment — gh_retry's create guard refuses the retry.
-                    if ! gh_api_retry "repos/$REPO/issues/$PR_NUM/comments" --method POST \
+                    if ! gh api "repos/$REPO/issues/$PR_NUM/comments" --method POST \
                         -f body="${DECLINE_HEADER}⏭ nothing to re-review — \`${PR_SHA:0:7}\` is already the reviewed head, so an incremental diff would be empty.
 
 This request stays open and fires automatically on your next push. To force a whole-PR pass on the unchanged head, post \`/${BOT_CMD_PREFIX}-review\`." >/dev/null 2>"$DECLINE_ERR"; then
@@ -434,7 +434,7 @@ This request stays open and fires automatically on your next push. To force a wh
 
         # Stability cooldown for non-forced re-reviews.
         if [ -n "$KNOWN_SHA" ] && [ "$FORCE_REVIEW" = "false" ]; then
-            LAST_COMMIT_DATE=$(gh_api_retry "repos/$REPO/pulls/$PR_NUM/commits" --jq '.[-1].commit.committer.date' 2>/dev/null)
+            LAST_COMMIT_DATE=$(gh api "repos/$REPO/pulls/$PR_NUM/commits" --jq '.[-1].commit.committer.date' 2>/dev/null)
             if [ -z "$LAST_COMMIT_DATE" ]; then
                 log "$PR_ID: could not get commit date, skipping"
                 continue

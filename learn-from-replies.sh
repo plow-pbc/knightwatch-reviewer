@@ -45,7 +45,7 @@ is_memorize_request() {
 
 # Honor the GitHub rate-limit pause, like review-loop.sh and poll-pr-actions.sh.
 # This poller is a PRODUCER of that pause too (fetch_issue_comments routes
-# through gh_api_retry), so an ungated tick would keep calling the throttled PAT
+# through the gh seam), so an ungated tick would keep calling the throttled PAT
 # it just told the other host timers to back off from.
 if gh_pause_active; then
     log "github rate-limited — skipping memorize tick"
@@ -74,7 +74,7 @@ for REPO in "${REPOS[@]}"; do
     # Same fail-loud-then-skip pattern as the comments fetch below: an
     # outage on `gh pr list` shouldn't look like "this repo had no PRs"
     # in the operator's journal.
-    PR_LIST=$(gh_retry pr list --repo "$REPO" --json number --state all --limit 200 2>/dev/null | jq -r '.[].number') || {
+    PR_LIST=$(gh pr list --repo "$REPO" --json number --state all --limit 200 2>/dev/null | jq -r '.[].number') || {
         log "$REPO: pr list failed — skipping this repo for this tick"
         continue
     }
@@ -286,7 +286,7 @@ if [ -n "$ACKS_BLOCK" ]; then
             ACK_PAUSED=1
             break
         fi
-        if gh_retry pr comment "$PR" --repo "$REPO" --body "$COMMENT_BODY" >/dev/null 2>>"$LOG_FILE"; then
+        if gh pr comment "$PR" --repo "$REPO" --body "$COMMENT_BODY" >/dev/null 2>>"$LOG_FILE"; then
             ACK_POSTED=$((ACK_POSTED+1))
             printf '%s\n' "$KEY" >> "$ACK_DONE_FILE"
         else

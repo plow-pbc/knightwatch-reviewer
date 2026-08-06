@@ -106,7 +106,7 @@ rerequest_check() {
     local REPO="$1" PR_NUM="$2" PR_KEY="$1#$2" TIMELINE LATEST LAST_SEEN
     # Fetch + detect failure explicitly (same shape as the comment fetch) so a
     # transient API error is logged + skipped, not silently read as "no event".
-    TIMELINE=$(gh_api_retry "repos/$REPO/issues/$PR_NUM/timeline" --paginate 2>/dev/null) || {
+    TIMELINE=$(gh api "repos/$REPO/issues/$PR_NUM/timeline" --paginate 2>/dev/null) || {
         log "$PR_KEY: timeline fetch failed — skipping re-request check this tick"
         return 0
     }
@@ -135,7 +135,7 @@ rerequest_check() {
     # seen_set_value, so the event stays unseen and re-POSTs every 2-minute tick
     # forever — as a bare `gh` that storm never armed the pause. No
     # GH_API_RETRY_MAX=1 needed: the create-verb guard refuses the retry on argv.
-    if gh_retry pr comment "$PR_NUM" --repo "$REPO" --body "$RR_BODY" >/dev/null 2>&1; then
+    if gh pr comment "$PR_NUM" --repo "$REPO" --body "$RR_BODY" >/dev/null 2>&1; then
         seen_set_value "$RR_SEEN_FILE" "$PR_KEY" "$LATEST"
     else
         log "$PR_KEY: failed to post /${BOT_CMD_PREFIX}-review trigger comment"
@@ -144,7 +144,7 @@ rerequest_check() {
 
 # Honor the GitHub rate-limit pause, like review-loop.sh. This poller is a
 # PRODUCER of that pause (its timeline fetch, comment fetch and trust check all
-# route through gh_api_retry), so without this gate it would stamp a pause and
+# route through the gh seam), so without this gate it would stamp a pause and
 # then keep calling the same throttled PAT itself every two minutes. The pause
 # it writes is shared with the other HOST timers (same $HOME/.pr-reviewer state
 # dir), not with the containers — see lib/state-io.sh for that boundary.

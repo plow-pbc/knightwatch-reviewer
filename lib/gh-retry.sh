@@ -8,7 +8,8 @@
 # timeout that persists past the budget — fall through unretried so the
 # caller's existing fail-loud accounting still fires.
 #
-# Usage: gh_api_retry <args…>            # exactly the args you'd pass to `gh api`
+# Usage: call `gh` normally — sourcing this file makes every call go through
+#        gh_retry below. `command gh` is the un-intercepted escape hatch.
 # Env:   GH_API_RETRY_MAX   (default 3)  total attempts (initial + retries)
 #        GH_API_RETRY_DELAY (default 2)  base backoff seconds, ×attempt number
 
@@ -49,7 +50,7 @@ gh_retry() {
     local errfile out rc
     errfile=$(mktemp)
     while :; do
-        if out=$(gh "$@" 2>"$errfile"); then
+        if out=$(command gh "$@" 2>"$errfile"); then
             cat "$errfile" >&2          # preserve any success-time gh warnings
             printf '%s' "$out"
             rm -f "$errfile"
@@ -98,7 +99,10 @@ gh_retry() {
     done
 }
 
-# Back-compat shim for the many existing `gh_api_retry <path>` callers. Kept as a
-# one-liner rather than rewriting every call site to `gh_retry api …` — the
-# rename would touch a dozen files for no behavior change.
-gh_api_retry() { gh_retry api "$@"; }
+# THE seam. Defining `gh` as a function makes every call site in every script
+# that sources this file routed by construction — no per-call-site edits, no
+# allowlist, no test that greps for stragglers. That whole class of finding
+# ("this call bypasses the wrapper") disappears: there is nothing left to bypass.
+# `command gh` above (and in gh_note_rate_limit's probe) is what keeps it from
+# recursing into itself.
+gh() { gh_retry "$@"; }

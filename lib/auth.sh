@@ -30,7 +30,7 @@
 # Reuses gh_api_retry: it bounded-retries 5xx/network but intentionally NOT
 # 403 — exactly the "transient couldn't-verify vs definitive" split here.
 _AUTH_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-. "$_AUTH_LIB_DIR/gh-retry.sh"  # gh_api_retry
+. "$_AUTH_LIB_DIR/gh-retry.sh"  # defines gh() — the rate-limit seam
 
 is_trusted_repo_author() {
     local repo="$1" user="$2"
@@ -41,7 +41,7 @@ is_trusted_repo_author() {
     # not an empty body masquerading as untrusted. gh_api_retry routes gh's
     # error text to stderr, so the 404 marker lives in $err on the fail path.
     errfile=$(mktemp)
-    perm=$(gh_api_retry "repos/$repo/collaborators/$user/permission" --jq '.permission' 2>"$errfile"); rc=$?
+    perm=$(gh api "repos/$repo/collaborators/$user/permission" --jq '.permission' 2>"$errfile"); rc=$?
     err=$(cat "$errfile"); rm -f "$errfile"
     if [ "$rc" -ne 0 ]; then
         # Non-zero gh exit. A genuine non-collaborator returns 404 with a
@@ -98,7 +98,7 @@ submit_approval() {
     # Via the wrapper: an approve is a content-creating write, so a throttled one
     # must stamp the pause like every other. The create-verb guard covers
     # `pr review` too, so it is never retried into a duplicate approval.
-    if gh_retry pr review "$pr_num" --repo "$repo" --approve --body "$body" 2>&1 >/dev/null; then
+    if gh pr review "$pr_num" --repo "$repo" --approve --body "$body" 2>&1 >/dev/null; then
         log "Approved $repo#$pr_num ($body)"
         return 0
     fi

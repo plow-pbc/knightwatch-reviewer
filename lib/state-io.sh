@@ -184,10 +184,35 @@ gh_pause_active() {
 # the fleet to back off. Re-stamping would also push the window forward on every
 # late straggler.
 gh_note_rate_limit() {
-    local now core_rem core_reset gql_rem gql_reset kind until
-    if gh_pause_active; then return 0; fi
+    # Serialize check -> probe -> publish. Without the lock two containers can
+    # both pass the check, and the LOSER's answer wins the write: if A's
+    # /rate_limit probe classified a PRIMARY limit (pause until the bucket's real
+    # reset, up to an hour) and B's probe failed and fell back to 60s, B's rename
+    # lands last and the whole fleet resumes ~59 minutes early, straight back into
+    # an exhausted bucket. Serializing alone is not enough, because it makes the
+    # FIRST writer win rather than the best-informed one — if the 60s sibling
+    # takes the lock first, the primary window is still lost. So the merge below
+    # keeps the LATER of the two windows: for a back-off, the more conservative
+    # answer is always the safe one, and it makes the outcome independent of who
+    # won the race.
+    # Cheap pre-lock exit: an already-paused fleet needs neither the lock nor the
+    # probe. (gh_retry also refuses before reaching here, so this is belt-and-
+    # braces for any direct caller.)
+    gh_pause_active && return 0
+    local lockfile="$(gh_pause_file).lock"
+    mkdir -p "$(dirname "$lockfile")"
+    exec {_gh_lock_fd}>"$lockfile" || return 1
+    flock "$_gh_lock_fd"
+    local rc=0
+    _gh_note_rate_limit_locked || rc=$?
+    exec {_gh_lock_fd}>&-
+    return "$rc"
+}
+
+_gh_note_rate_limit_locked() {
+    local now core_rem core_reset gql_rem gql_reset kind until existing
     now=$(date +%s)
-    read -r core_rem core_reset gql_rem gql_reset <<<"$(gh api rate_limit \
+    read -r core_rem core_reset gql_rem gql_reset <<<"$(command gh api rate_limit \
         --jq '[.resources.core.remaining, .resources.core.reset,
                .resources.graphql.remaining, .resources.graphql.reset] | @tsv' \
         2>/dev/null | tr '\t' ' ')"
@@ -200,15 +225,21 @@ gh_note_rate_limit() {
     fi
     # A stale/absent reset epoch would resume instantly and re-trip; floor it.
     [ "${until:-0}" -gt "$now" ] 2>/dev/null || until=$(( now + ${GH_SECONDARY_PAUSE_SECS:-60} ))
+    # Keep whichever window ends later — see the merge rationale in the caller.
+    existing=$(head -n1 "$(gh_pause_file)" 2>/dev/null)
+    if [ "${existing:-0}" -gt "$until" ] 2>/dev/null; then
+        log "gh rate limit ($kind) — a sibling already published a longer pause (until epoch $existing); keeping it"
+        return 0
+    fi
     log "gh rate limit ($kind) — core=${core_rem:-?}/5000 graphql=${gql_rem:-?}/5000 remaining; pausing the FLEET $(( until - now ))s (until epoch $until)"
     # tmp + atomic rename: six containers read this file every tick, and a plain
     # `>` truncates before it writes. The temp must be UNIQUE PER WRITER — a
     # fixed `.tmp` is shared by the same six writers it protects against (B's `>`
     # truncates the inode A is about to rename into place, publishing an empty
     # file, and B's own `mv` then fails on the stale path). mktemp, not $$: the
-    # writers are separate containers, so PIDs collide. Unlike _seen_write above
-    # this needs no flock — the rename is the whole critical section, and any
-    # single winner is correct since every writer is stamping "back off".
+    # writers are separate containers, so PIDs collide. The flock in the caller
+    # covers the wider critical section (classification must not be overwritten
+    # by a worse-informed sibling); the atomic rename still matters for readers.
     local tmp
     mkdir -p "$(dirname "$(gh_pause_file)")"
     tmp=$(mktemp "$(gh_pause_file).XXXXXX") || return 1
