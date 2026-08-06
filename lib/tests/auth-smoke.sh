@@ -76,6 +76,12 @@ reset_state() {
 # Parametrized matrix: "label|MODE|ROLE|expected_rc" (no padding — fields are
 # split on the bare delimiter). MODE drives the gh stub above.
 # GH_API_RETRY_MAX=1 keeps the 5xx case from sleeping/retrying.
+# Each scenario models an independent moment, so stop-state must not leak: the
+# 403 stubs above are worded as rate limits and correctly stamp the shared pause,
+# which would then short-circuit gh_retry for every later scenario.
+reset_gh_pause() { rm -f "$(gh_pause_file)"; }
+
+reset_gh_pause
 echo "  scenario 1: is_trusted_repo_author tri-state matrix..."
 TRUST_MATRIX=(
     "clean-200 admin|role|admin|0"
@@ -98,6 +104,7 @@ for row in "${TRUST_MATRIX[@]}"; do
     [ "$got" = "$want" ] || { echo "FAIL scenario 1 [$label]: expected rc=$want, got rc=$got"; exit 1; }
 done
 
+reset_gh_pause
 echo "  scenario 2: indeterminate (403) must NOT be trusted — security invariant..."
 # The load-bearing invariant: an indeterminate result must defer, never grant
 # trust. rc must be 2 (caller defers), and crucially NOT 0 (would run untrusted code).
@@ -107,22 +114,26 @@ got=$?
 set -e
 [ "$got" = 2 ] || { echo "FAIL scenario 2: indeterminate must yield rc=2 (defer), got rc=$got"; exit 1; }
 
+reset_gh_pause
 echo "  scenario 3: is_trusted_repo_author returns false for empty user..."
 is_trusted_repo_author "cncorp/plow" "" && { echo "FAIL scenario 3: empty user should not be trusted"; exit 1; } || true
 
 # --- submit_approval ---
+reset_gh_pause
 echo "  scenario 4: submit_approval skips the API call when bot is the PR author..."
 reset_state
 submit_approval "cncorp/plow" "100" "srosro" "srosro" "Approving per automated review above." && { echo "FAIL scenario 4: expected return 1 on self-author"; exit 1; } || true
 [ ! -s "$GH_REVIEW_LOG" ] || { echo "FAIL scenario 4: gh pr review was called when bot is the PR author"; cat "$GH_REVIEW_LOG"; exit 1; }
 grep -q "Skipping approve on cncorp/plow#100 — PR authored by srosro" "$LOG_FILE" || { echo "FAIL scenario 4: expected 'Skipping approve' log line"; cat "$LOG_FILE"; exit 1; }
 
+reset_gh_pause
 echo "  scenario 5: submit_approval calls gh pr review --approve and returns 0 on success..."
 reset_state
 submit_approval "cncorp/plow" "100" "srosro" "delattre1" "Approving per automated review above." || { echo "FAIL scenario 5: expected return 0 on successful approve"; cat "$LOG_FILE"; exit 1; }
 [ "$(grep -c '^REVIEW' "$GH_REVIEW_LOG")" = "1" ] || { echo "FAIL scenario 5: expected exactly 1 gh pr review call, got $(grep -c '^REVIEW' "$GH_REVIEW_LOG" 2>/dev/null || echo 0)"; cat "$GH_REVIEW_LOG"; exit 1; }
 grep -q "Approved cncorp/plow#100" "$LOG_FILE" || { echo "FAIL scenario 5: expected 'Approved' log line"; cat "$LOG_FILE"; exit 1; }
 
+reset_gh_pause
 echo "  scenario 6: submit_approval logs failure and returns 1 when gh pr review --approve fails..."
 reset_state
 MOCK_GH_REVIEW_FAILS=1 submit_approval "cncorp/plow" "100" "srosro" "delattre1" "Approving per automated review above." && { echo "FAIL scenario 6: expected return 1 on gh failure"; exit 1; } || true
@@ -132,15 +143,18 @@ grep -q "gh pr review --approve FAILED" "$LOG_FILE" || { echo "FAIL scenario 6: 
 # --- just_test_skip_reason ---
 # `just test` executes PR-controlled code; untrusted authors (no push access)
 # must never have their code run — on ANY path, not only container/dind mode.
+reset_gh_pause
 echo "  scenario 7: just_test_skip_reason runs (empty reason) for a trusted author with a justfile..."
 reason=$(just_test_skip_reason "/repo/justfile" true)
 [ -z "$reason" ] || { echo "FAIL scenario 7: trusted author with justfile should run (empty reason), got: $reason"; exit 1; }
 
+reset_gh_pause
 echo "  scenario 8: just_test_skip_reason skips untrusted authors regardless of mode..."
 reason=$(just_test_skip_reason "/repo/justfile" false)
 [ -n "$reason" ] || { echo "FAIL scenario 8: untrusted author should be skipped"; exit 1; }
 printf '%s' "$reason" | grep -qi "untrusted" || { echo "FAIL scenario 8: skip reason should name the untrusted author, got: $reason"; exit 1; }
 
+reset_gh_pause
 echo "  scenario 9: just_test_skip_reason skips when there is no justfile..."
 reason=$(just_test_skip_reason "" true)
 [ -n "$reason" ] || { echo "FAIL scenario 9: missing justfile should skip"; exit 1; }

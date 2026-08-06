@@ -36,6 +36,15 @@ GH_API_RATE_LIMIT_RE='rate limit exceeded|secondary rate limit'
 # a 403 there aborted the caller without ever stamping the pause, and the next
 # tick walked straight back into the throttle.
 gh_retry() {
+    # Short-circuit while the pause is active. The per-loop gates stop a producer
+    # at its next queue boundary, but work already inside a boundary (an inner
+    # loop, a helper that makes several calls) still reached the wire — so the
+    # tick that TRIPPED the limit kept feeding it. Refusing here makes "stop
+    # calling" a property of the seam rather than of remembering to gate, and
+    # callers get the same non-zero a throttled call would have returned.
+    # gh_note_rate_limit's own `gh api rate_limit` probe is a bare gh call, so it
+    # is unaffected and classification still works.
+    gh_pause_active && return 1
     local attempt=1 max="${GH_API_RETRY_MAX:-3}" base="${GH_API_RETRY_DELAY:-2}"
     local errfile out rc
     errfile=$(mktemp)

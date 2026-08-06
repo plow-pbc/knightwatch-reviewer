@@ -55,7 +55,11 @@ fi
 # ---------- Opt-in signal: /srosro-memorize requests from trusted humans ----------
 REPLIES=""
 REPLIES_META_FILE=$(mktemp)
-trap 'rm -f "$REPLIES_META_FILE"' EXIT
+# Keys whose ACK reached a terminal state this tick — posted, or failed for a
+# reason retrying cannot fix. A key absent from here is one the rate limit
+# stopped, and it must stay UNSEEN so the next tick still learns from it.
+ACK_DONE_FILE=$(mktemp)
+trap 'rm -f "$REPLIES_META_FILE" "$ACK_DONE_FILE"' EXIT
 
 for REPO in "${REPOS[@]}"; do
     # Mid-tick pause: a wrapped call in an earlier repo may have stamped it, and
@@ -230,12 +234,18 @@ else
     log "no content change in COMMENT_REVIEW_MISTAKES.md"
 fi
 
-# Mark replies as seen — only after codex succeeded, so a crash leaves them
-# eligible for the next tick. Honor seen_set's fail-loud return code so a
-# silent write failure can't lead to a duplicate ACK + duplicate codex
-# work on the next tick.
+# Mark replies as seen — only after codex succeeded AND this key's ACK reached a
+# terminal state, so a crash (or a rate limit) leaves them eligible for the next
+# tick. Marking every key unconditionally silently dropped a trusted human's
+# memorize request whenever the limit stopped the ACK loop partway. Honor
+# seen_set's fail-loud return code so a silent write failure can't lead to a
+# duplicate ACK + duplicate codex work on the next tick.
 while IFS= read -r META; do
     KEY=$(printf '%s' "$META" | jq -r '.key')
+    if [ -n "$KEY" ] && ! grep -qxF "$KEY" "$ACK_DONE_FILE" 2>/dev/null; then
+        log "$KEY: ACK never completed (rate-limited) — leaving unseen to retry next tick"
+        continue
+    fi
     if [ -n "$KEY" ]; then
         if ! seen_set "$REPLIES_SEEN_FILE" "$KEY"; then
             log "$KEY: WARNING — seen_set failed AFTER posting ACK; next tick may re-learn from this request and post a duplicate ACK"
@@ -293,9 +303,14 @@ if [ -n "$ACKS_BLOCK" ]; then
         fi
         if gh_retry pr comment "$PR" --repo "$REPO" --body "$COMMENT_BODY" >/dev/null 2>>"$LOG_FILE"; then
             ACK_POSTED=$((ACK_POSTED+1))
+            printf '%s\n' "$KEY" >> "$ACK_DONE_FILE"
         else
             log "ack: failed to post on $REPO#$PR to @$USER (see log)"
             ACK_SKIPPED=$((ACK_SKIPPED+1))
+            # A rate-limit failure is retryable, so leave the key unseen. Any
+            # other failure is terminal for this request — record it, or a
+            # permanently-failing ACK re-runs codex every tick forever.
+            gh_pause_active || printf '%s\n' "$KEY" >> "$ACK_DONE_FILE"
         fi
     done <<< "$ACKS_BLOCK"
     log "acknowledgments: posted=$ACK_POSTED skipped=$ACK_SKIPPED"

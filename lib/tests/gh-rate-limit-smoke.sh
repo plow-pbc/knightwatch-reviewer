@@ -187,6 +187,15 @@ done
 PROBES=$(wc -l < "$GH_SHIM_PROBE_LOG")
 [ "$PROBES" -eq 1 ] \
     || fail "scenario 9: $PROBES rate_limit probes across 3 rate-limited calls — expected 1 (amplifying during a throttle)"
+# …and the 2nd/3rd calls never reached the wire at all. The per-loop gates stop a
+# producer at its next queue boundary, but work already inside one kept calling;
+# refusing at the seam is what makes "stop calling" hold without every caller
+# remembering to gate.
+: > "$TMP/calls"
+GH_SHIM_CALL_LOG="$TMP/calls" GH_SHIM_ERR="$RATE_LIMIT_ERR" \
+    gh_api_retry "repos/o/r/pulls/7/commits" >/dev/null 2>&1 || true
+[ ! -s "$TMP/calls" ] \
+    || fail "scenario 9: gh_retry still called gh while the pause was active — it must short-circuit: $(cat "$TMP/calls")"
 FIRST_UNTIL=$(head -n1 "$(gh_pause_file)")
 sleep 1
 GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
