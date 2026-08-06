@@ -150,7 +150,7 @@ esac
 # not see the direct-`gh` bypass that a later review caught by reading the code.
 # Every entrypoint that reaches the wrapper belongs here.
 echo "  scenario 8: every pause-producing entrypoint gates on gh_pause_active..."
-for entry in review-loop.sh poll-pr-actions.sh learn-from-replies.sh specialist-bakeoff.sh; do
+for entry in review-loop.sh poll-pr-actions.sh learn-from-replies.sh specialist-bakeoff.sh org-sync.sh; do
     grep -q 'gh_pause_active' "$PROJECT_ROOT/$entry" \
         || fail "scenario 8: $entry can stamp a pause but never reads one — it would keep calling a throttled token"
 done
@@ -289,12 +289,18 @@ for f in "${PROD_SH[@]}"; do
     hit=$(sed -e 's/"[^"]*"//g' -e "s/'[^']*'//g" -e 's/#.*//' "$PROJECT_ROOT/$f" \
           | grep -vE "$GH_ALLOWED" \
           | grep -nE '(^|[^[:alnum:]_.])gh[[:space:]]' | head -1) || true
-    # Second channel: the strip above removes anything inside quotes, so a real
-    # call smuggled through an executor — bash -c "gh pr comment …" — would read
-    # clean. Prose is quoted too, so match only when the line ALSO carries
-    # something that executes a string.
-    smuggled=$(grep -nE '(bash|sh) -c|eval |ssh |docker exec' "$PROJECT_ROOT/$f" \
-               | grep -E 'gh (api|pr|issue|repo|release)[[:space:]]' | head -1) || true
+    # Second channel: the strip above removes anything inside quotes, so a call
+    # smuggled through an executor — bash -c "gh pr comment …" — would read clean.
+    # Re-scan exactly what the strip removed, on the COMMENT-stripped stream and
+    # with word-anchored executor tokens: unanchored `eval `/`ssh ` match this
+    # repo's ordinary prose ("re-eval", "ssh keys") in comments, which would
+    # eventually accuse a comment of smuggling a call. Matches bare `gh` inside
+    # the span rather than a subcommand list, so it stays shape-independent like
+    # the assertion above.
+    smuggled=$(sed 's/#.*//' "$PROJECT_ROOT/$f" \
+               | grep -nE '\b((ba|z|k)?sh -c|eval|ssh|docker exec)\b' \
+               | grep -oE '"[^"]*"|'"'"'[^'"'"']*'"'"'' \
+               | grep -E '(^|[^[:alnum:]_.])gh[[:space:]]' | head -1) || true
     [ -z "$smuggled" ] \
         || fail "scenario 14: $f smuggles a gh call through an executor string, bypassing the wrapper: $smuggled"
     [ -z "$hit" ] \
