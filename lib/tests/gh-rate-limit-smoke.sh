@@ -289,22 +289,18 @@ for f in "${PROD_SH[@]}"; do
     hit=$(sed -e 's/"[^"]*"//g' -e "s/'[^']*'//g" -e 's/#.*//' "$PROJECT_ROOT/$f" \
           | grep -vE "$GH_ALLOWED" \
           | grep -nE '(^|[^[:alnum:]_.])gh[[:space:]]' | head -1) || true
-    # Second channel: the strip above removes anything inside quotes, so a call
-    # smuggled through an executor — bash -c "gh pr comment …" — would read clean.
-    # Re-scan exactly what the strip removed, on the COMMENT-stripped stream and
-    # with word-anchored executor tokens: unanchored `eval `/`ssh ` match this
-    # repo's ordinary prose ("re-eval", "ssh keys") in comments, which would
-    # eventually accuse a comment of smuggling a call. Matches bare `gh` inside
-    # the span rather than a subcommand list, so it stays shape-independent like
-    # the assertion above.
-    smuggled=$(sed 's/#.*//' "$PROJECT_ROOT/$f" \
-               | grep -nE '\b((ba|z|k)?sh -c|eval|ssh|docker exec)\b' \
-               | grep -oE '"[^"]*"|'"'"'[^'"'"']*'"'"'' \
-               | grep -E '(^|[^[:alnum:]_.])gh[[:space:]]' | head -1) || true
-    [ -z "$smuggled" ] \
-        || fail "scenario 14: $f smuggles a gh call through an executor string, bypassing the wrapper: $smuggled"
     [ -z "$hit" ] \
         || fail "scenario 14: $f calls gh directly instead of gh_retry — it cannot stamp the pause: $hit"
+    # NOT checked: a call smuggled through an executor — bash -c "gh pr comment …".
+    # A grep guard for it was tried and removed. It cannot be made sound: the
+    # false-negative side needs data flow (a heredoc or `bash -c "$CMD"` is
+    # invisible to any pattern), and every attempt to tighten the false-positive
+    # side chased prose from comments into strings, since this repo's own log
+    # messages legitimately contain both executor words and `gh pr comment`
+    # phrases. Three rounds of review went into its own defects and it never
+    # caught anything — the repo has no such call. The assertion above covers
+    # every direct call, which is the real surface; a deliberately obfuscated one
+    # is not the threat model here.
 done
 
 echo "PASS: gh-rate-limit-smoke"
