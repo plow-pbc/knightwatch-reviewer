@@ -417,4 +417,22 @@ grep -q 'FATAL: KWR_CONFIG_REPO set but' "$LOG" || { echo "FAIL scenario 13: exp
 [ "$(auto_sha)" = "$SHA_BEFORE" ] || { echo "FAIL scenario 13: auto file mutated despite fail-loud abort"; exit 1; }
 rm -f "$STATE_DIR/config.env"
 
-echo "  PASS (13 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, clone-failure-no-mutation, lock-held-defers, kwr-config-overlay, broken-config-fail-loud)"
+# --- Scenario 14: GitHub rate-limit pause — skip the tick, touch nothing -------
+# The manifest rewrite below the discovery loop is unconditional, so a paused
+# tick must not reach it: a short or empty DISCOVERED would be published as the
+# org's full coverage and erase every repo that was never listed. Same
+# no-mutation contract as scenario 7's listing failure.
+echo "  scenario 14: github rate-limited — tick skipped, auto file untouched, no clone..."
+write_baseline_conf '"acme"'
+echo 'REPOS+=("prior/auto")' > "$AUTO_CONF"
+SHA_BEFORE=$(auto_sha)
+: > "$LOG"
+printf '%s\n' "$(( $(date +%s) + 300 ))" > "$STATE_DIR/gh-rate-limited-until"
+MOCK_GH_LIST_acme=$'alpha\nbeta' run_sync || { echo "FAIL scenario 14: org-sync must exit 0 on a paused tick (a back-off is not a failure)"; cat "$LOG"; exit 1; }
+rm -f "$STATE_DIR/gh-rate-limited-until"
+assert_auto_unchanged "$SHA_BEFORE"
+n=$(count_gh "repo clone")
+[ "$n" -eq 0 ] || { echo "FAIL scenario 14: expected 0 clones while rate-limited, got $n"; exit 1; }
+grep -q 'github rate-limited — skipping org sync' "$LOG" || { echo "FAIL scenario 14: expected the rate-limit skip log line"; cat "$LOG"; exit 1; }
+
+echo "  PASS (14 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, clone-failure-no-mutation, lock-held-defers, kwr-config-overlay, broken-config-fail-loud, rate-limit-skips-tick)"

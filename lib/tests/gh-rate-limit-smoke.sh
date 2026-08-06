@@ -265,6 +265,13 @@ reset_state
 # The file list is DERIVED from git, not hand-listed — a hand-listed set moves
 # the same "only what someone remembered" failure onto the file axis, and a
 # renamed or deleted path would silently read as clean.
+# Allowlisted per LINE, not per file — exempting a whole file would hide any
+# future bare gh added to it, which is the same "only what someone remembered"
+# hole this scenario exists to close, moved one axis over. Two deliberate calls:
+#   `gh api rate_limit` — the classification probe inside gh_note_rate_limit;
+#                         routing it through gh_retry would recurse.
+#   `gh --version`      — install.sh preflight, not an API call.
+GH_ALLOWED='command -v gh|which gh|gh api rate_limit|gh --version'
 echo "  scenario 14: every production gh call routes through gh_retry..."
 # Quoted spans are stripped before matching so prose can't false-positive:
 # several of these files log a 'gh pr comment FAILED' string on their failure
@@ -276,17 +283,20 @@ mapfile -t PROD_SH < <(cd "$PROJECT_ROOT" && git ls-files '*.sh' \
 for f in "${PROD_SH[@]}"; do
     [ -f "$PROJECT_ROOT/$f" ] \
         || fail "scenario 14: derived path $f does not exist — a vanished script must fail loudly, not read as clean"
-    # Deliberate bare calls, each with a reason it cannot use the wrapper:
-    #   lib/state-io.sh  — `gh api rate_limit` IS the classification probe inside
-    #                      gh_note_rate_limit; routing it through gh_retry recurses.
-    #   install.sh       — `gh --version` preflight, not an API call.
-    case "$f" in lib/state-io.sh|install.sh) continue ;; esac
     # Quotes stripped BEFORE comments: a '#' inside a quoted span (printf
     # '…%s#%s…') would otherwise truncate the line mid-string and leave an
     # unterminated quote the strip can't match.
     hit=$(sed -e 's/"[^"]*"//g' -e "s/'[^']*'//g" -e 's/#.*//' "$PROJECT_ROOT/$f" \
-          | grep -vE 'command -v gh|which gh' \
+          | grep -vE "$GH_ALLOWED" \
           | grep -nE '(^|[^[:alnum:]_.])gh[[:space:]]' | head -1) || true
+    # Second channel: the strip above removes anything inside quotes, so a real
+    # call smuggled through an executor — bash -c "gh pr comment …" — would read
+    # clean. Prose is quoted too, so match only when the line ALSO carries
+    # something that executes a string.
+    smuggled=$(grep -nE '(bash|sh) -c|eval |ssh |docker exec' "$PROJECT_ROOT/$f" \
+               | grep -E 'gh (api|pr|issue|repo|release)[[:space:]]' | head -1) || true
+    [ -z "$smuggled" ] \
+        || fail "scenario 14: $f smuggles a gh call through an executor string, bypassing the wrapper: $smuggled"
     [ -z "$hit" ] \
         || fail "scenario 14: $f calls gh directly instead of gh_retry — it cannot stamp the pause: $hit"
 done

@@ -116,13 +116,17 @@ while IFS= read -r r; do [ -n "$r" ] && MANUAL[$r]=1; done <<< "$MANUAL_LIST"
 # Per-org listing failures are FATAL — silently treating a failed
 # list as "no repos" would erase that org's auto coverage on rewrite.
 declare -A DISCOVERED=()
+# Honor the pause like the sibling timers — BEFORE the loop, and skip the whole
+# tick. A mid-loop break would fall through to the manifest rewrite below with a
+# partial DISCOVERED, and this file's own guard two comments up says why that is
+# unacceptable: a short list is written out as the org's full coverage, erasing
+# the repos that were never listed. Nothing is written on this path.
+if gh_pause_active; then
+    log "github rate-limited — skipping org sync"
+    exit 0
+fi
+
 for org in "${ORGS[@]}"; do
-    # Honor the pause, like the other timers: this loop lists every org and can
-    # clone, so continuing past a stamped limit re-hits the throttled token.
-    if gh_pause_active; then
-        log "github rate-limited — stopping org discovery here"
-        break
-    fi
     log "discovering org=$org"
     if ! out=$(gh_retry repo list "$org" --source --no-archived --limit 1000 --json name --jq '.[].name' 2>>"$LOG"); then
         log "FATAL: gh repo list $org failed"
