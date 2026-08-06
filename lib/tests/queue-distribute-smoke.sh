@@ -155,35 +155,51 @@ e_stale=$(gh_enumerate_calls)
 [ "$e_stale" -ge 1 ] || { echo "FAIL E: stale empty (idle) queue did NOT refetch ($e_stale) — the floor must refresh an idle queue so new PRs are discovered"; cat "$GH_LOG"; exit 1; }
 echo "  OK E"
 
-# --- F. fatal-auth mid-tick claim-stop — a worker that marks itself offline
-#        must stop review.sh from claiming the REST of the queue this same tick
-#        (the review.sh container-mode auth_offline_active stop), not just on the
-#        next loop tick. Without it a fatally-unauthed account spin-aborts every
-#        queued PR. Stub worker dispatches then goes offline; assert exactly one
-#        dispatch (PR2 never claimed) + the auth-offline stop log. ---
-echo "  F: fatal-auth — worker marks offline → no further claims this tick..."
-# Use a DISTINCT LOCAL_STATE_DIR (as production compose does) so the smoke
-# verifies the stop-state lands in the SHARED $STATE_DIR/pool/<account>/
-# namespace even when local state is split — the production topology that lets
-# any account render pool_status. This harness models one account: "solo".
+# --- F / F3. mid-tick claim-stop, one runner over two stop-states -------------
+# A worker that trips a stop-state must stop review.sh claiming the REST of the
+# queue on the SAME tick, not just on the next loop tick — otherwise a capped or
+# throttled account spin-aborts every queued PR. The two cases differ only in
+# which sentinel the worker writes, the env it runs under, and the log it emits,
+# so they share a runner rather than two near-identical copies. (F2 below stays
+# separate: it asserts PRECEDENCE between two sentinels, not the stop itself.)
+#
+# Row: label | worker sentinel line | extra env | expected log | sentinel path
+#   fatal-auth: container mode pins MAX_CONCURRENT=1, which is what makes the
+#               `wait -n` throttle block until the worker's write lands.
+#   github:     runs in HOST mode deliberately — the pause gate is NOT
+#               container-gated, since the host path spends the same PAT — so it
+#               passes MAX_CONCURRENT=1 explicitly to get the same barrier.
 F_LOCAL_STATE="$TMPDIR_BASE/local-state"; mkdir -p "$F_LOCAL_STATE"
 F_POOL="$STATE_DIR/pool/solo"; mkdir -p "$F_POOL"   # review-loop's registration, done test-side
-rm -f "$STATE_DIR/queue.json" "$F_POOL/auth-offline" "$F_POOL/quota-paused-until"
-cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<'WORKER'
+claim_stop_cases=(
+  "fatal-auth|mark_auth_offline|REVIEWER_CONTAINER_MODE=1|auth invalid.*stopping further claims this tick|$F_POOL/auth-offline"
+  "github|printf '%s\\n' \"\$(( \$(date +%s) + 300 ))\" > \"\$(gh_pause_file)\"|MAX_CONCURRENT=1|github rate-limited — stopping further claims this tick|$STATE_DIR/gh-rate-limited-until"
+)
+for case in "${claim_stop_cases[@]}"; do
+    IFS='|' read -r label sentinel extra_env log_re sentinel_path <<< "$case"
+    echo "  $label: worker trips the stop-state → no further claims this tick..."
+    rm -f "$STATE_DIR/queue.json" "$F_POOL/auth-offline" "$F_POOL/quota-paused-until" "$STATE_DIR/gh-rate-limited-until"
+    cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<WORKER
 #!/bin/bash
-echo "WORKER_DISPATCHED repo=$1 pr=$2 sha=$3" >> "$LOG_FILE"
-. "$REVIEWER_LIB_DIR/state-io.sh"; mark_auth_offline   # simulate a fatal-auth abort
+echo "WORKER_DISPATCHED repo=\$1 pr=\$2 sha=\$3" >> "\$LOG_FILE"
+. "\$REVIEWER_LIB_DIR/state-io.sh"
+$sentinel
 WORKER
-chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
-write_queue "$STATE_DIR" "$(date +%s)" "$TWO_SPECS"   # both PRs eligible, locks free
-: > "$LOG_FILE"
-LOCAL_STATE_DIR="$F_LOCAL_STATE" REVIEWER_CONTAINER_MODE=1 ENUMERATE_SECS=999 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
-wait_dispatched
-f_dispatched=$(grep -c '^WORKER_DISPATCHED ' "$LOG_FILE" 2>/dev/null || true); f_dispatched="${f_dispatched:-0}"
-[ "$f_dispatched" -eq 1 ] || { echo "FAIL F: expected exactly 1 dispatch (claim-stop after offline), got $f_dispatched"; cat "$LOG_FILE"; exit 1; }
-grep -qE 'auth invalid.*stopping further claims this tick' "$LOG_FILE" || { echo "FAIL F: missing same-tick auth-offline claim-stop log"; cat "$LOG_FILE"; exit 1; }
-[ -s "$F_POOL/auth-offline" ] || { echo "FAIL F: auth-offline not written to the shared pool namespace"; exit 1; }
-echo "  OK F"
+    chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
+    write_queue "$STATE_DIR" "$(date +%s)" "$TWO_SPECS"   # both PRs eligible, locks free
+    : > "$LOG_FILE"
+    env LOCAL_STATE_DIR="$F_LOCAL_STATE" $extra_env ENUMERATE_SECS=999 \
+        bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
+    wait_dispatched
+    # Precondition: if the sentinel never landed the assertion below would pass
+    # for the wrong reason (nothing to stop on).
+    [ -s "$sentinel_path" ] || { echo "FAIL $label: sentinel $sentinel_path not written — claim-stop assertion would be vacuous"; cat "$LOG_FILE"; exit 1; }
+    n=$(grep -c '^WORKER_DISPATCHED ' "$LOG_FILE" 2>/dev/null || true); n="${n:-0}"
+    [ "$n" -eq 1 ] || { echo "FAIL $label: expected exactly 1 dispatch (claim-stop), got $n"; cat "$LOG_FILE"; exit 1; }
+    grep -qE "$log_re" "$LOG_FILE" || { echo "FAIL $label: missing same-tick claim-stop log"; cat "$LOG_FILE"; exit 1; }
+    echo "  OK $label"
+done
+rm -f "$STATE_DIR/gh-rate-limited-until"
 
 # --- F2. both sentinels at once: fatal-auth must DOMINATE an active quota pause
 #        in review.sh's same-tick gate (the precedence locked across
@@ -212,43 +228,5 @@ wait_dispatched
 grep -qE 'auth invalid.*stopping further claims this tick' "$LOG_FILE" || { echo "FAIL F2: auth-invalid stop log must win when both sentinels are set"; cat "$LOG_FILE"; exit 1; }
 grep -qE 'quota hit.*stopping further claims this tick' "$LOG_FILE" && { echo "FAIL F2: quota log fired — fatal-auth must dominate an active quota pause"; cat "$LOG_FILE"; exit 1; }
 echo "  OK F2"
-
-# --- F3. GitHub rate-limit mid-tick claim-stop — same seam as F, GitHub side.
-#        A worker that trips the shared pause must stop review.sh from claiming
-#        the REST of the queue this same tick; the top-of-tick gate in
-#        review-loop.sh only guards the NEXT one, so without this the dispatcher
-#        keeps handing out queued PRs whose workers each re-hit the throttle.
-#        Unlike F/F2 this gate is deliberately NOT container-gated — the host
-#        path spends the same PAT — so it runs WITHOUT REVIEWER_CONTAINER_MODE,
-#        which also asserts that property. ---
-echo "  F3: github rate-limited — worker stamps the pause → no further claims this tick..."
-rm -f "$STATE_DIR/queue.json" "$F_POOL/auth-offline" "$F_POOL/quota-paused-until"
-cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<'WORKER'
-#!/bin/bash
-echo "WORKER_DISPATCHED repo=$1 pr=$2 sha=$3" >> "$LOG_FILE"
-. "$REVIEWER_LIB_DIR/state-io.sh"
-printf '%s\n' "$(( $(date +%s) + 300 ))" > "$(gh_pause_file)"   # simulate a wrapped call tripping the limit
-WORKER
-chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
-write_queue "$STATE_DIR" "$(date +%s)" "$TWO_SPECS"
-: > "$LOG_FILE"
-# MAX_CONCURRENT=1 explicitly, in HOST mode. F/F2 get this barrier for free from
-# REVIEWER_CONTAINER_MODE, which pins it; dropping container mode here (to assert
-# the not-container-gated property) would otherwise fall back to the default of 4,
-# leaving the `while active >= MAX_CONCURRENT; do wait -n` throttle a no-op — so
-# the dispatcher would race the detached worker's sentinel write and this
-# assertion would turn on scheduling rather than on the gate.
-LOCAL_STATE_DIR="$F_LOCAL_STATE" MAX_CONCURRENT=1 ENUMERATE_SECS=999 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
-wait_dispatched
-# Precondition, mirroring F2's: if the pause never landed the assertion below
-# would pass for the wrong reason (nothing to stop on).
-[ -s "$(STATE_DIR="$STATE_DIR" bash -c '. "'"$REVIEWER_LIB_DIR"'/state-io.sh"; gh_pause_file')" ] \
-    || { echo "FAIL F3: pause file not established — claim-stop assertion would be vacuous"; cat "$LOG_FILE"; exit 1; }
-f3_dispatched=$(grep -c '^WORKER_DISPATCHED ' "$LOG_FILE" 2>/dev/null || true); f3_dispatched="${f3_dispatched:-0}"
-[ "$f3_dispatched" -eq 1 ] || { echo "FAIL F3: expected exactly 1 dispatch (claim-stop after the pause), got $f3_dispatched"; cat "$LOG_FILE"; exit 1; }
-grep -qE 'github rate-limited — stopping further claims this tick' "$LOG_FILE" \
-    || { echo "FAIL F3: missing same-tick github rate-limit claim-stop log"; cat "$LOG_FILE"; exit 1; }
-rm -f "$(STATE_DIR="$STATE_DIR" bash -c '. "'"$REVIEWER_LIB_DIR"'/state-io.sh"; gh_pause_file')"
-echo "  OK F3"
 
 echo "ALL PASS: queue-distribute-smoke.sh"

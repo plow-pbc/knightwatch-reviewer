@@ -389,12 +389,8 @@ $BOT_DECLINE_MARKER
                     # an abuse-limit 403 would otherwise fail every tick behind
                     # an opaque message with no diagnosable cause.
                     DECLINE_ERR=$(mktemp)
-                    # GH_API_RETRY_MAX=1 — the wrapper for rate-limit detection
-                    # (it stamps the fleet pause before it ever considers a
-                    # retry), but NO transient retry on a POST: a 5xx/reset can
-                    # follow a request the server already applied, and the retry
-                    # would post a second decline comment.
-                    if ! GH_API_RETRY_MAX=1 gh_api_retry "repos/$REPO/issues/$PR_NUM/comments" --method POST \
+                    # Creates a comment — gh_retry's create guard refuses the retry.
+                    if ! gh_api_retry "repos/$REPO/issues/$PR_NUM/comments" --method POST \
                         -f body="${DECLINE_HEADER}⏭ nothing to re-review — \`${PR_SHA:0:7}\` is already the reviewed head, so an incremental diff would be empty.
 
 This request stays open and fires automatically on your next push. To force a whole-PR pass on the unchanged head, post \`/${BOT_CMD_PREFIX}-review\`." >/dev/null 2>"$DECLINE_ERR"; then

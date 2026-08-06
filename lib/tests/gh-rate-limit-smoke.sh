@@ -251,14 +251,11 @@ attempts() {   # $1.. = argv passed to gh_retry; echoes the number of gh invocat
 reset_state
 [ "$(attempts pr comment 7 --repo o/r --body hi)" -eq 1 ] \
     || fail "scenario 13: 'gh pr comment' was retried — a transient blip after the server applied it would double-post"
-# All three spellings gh accepts, not just the one this repo happens to use
-# today: the guard exists to protect argv shapes that don't exist yet, and
-# `-X POST` is the form a new caller copies from GitHub's own docs.
-for shape in "--method POST" "--method=POST" "-X POST"; do
-    # shellcheck disable=SC2086 — $shape is a fixed literal, split is intended
-    [ "$(attempts api repos/o/r/issues/7/comments $shape -f body=hi)" -eq 1 ] \
-        || fail "scenario 13: 'gh api $shape' was retried — a create in that spelling would double-post"
-done
+# The shape this repo's api-shim writes actually take. The guard's regex also
+# covers `--method=POST` and `-X POST`, but no production caller uses either, so
+# asserting them here would be a compatibility matrix for hypothetical callers.
+[ "$(attempts api repos/o/r/issues/7/comments --method POST -f body=hi)" -eq 1 ] \
+    || fail "scenario 13: 'gh api --method POST' was retried — the shape two of three create sites use"
 [ "$(attempts api repos/o/r/pulls/7/commits)" -eq 3 ] \
     || fail "scenario 13: a READ lost its retry budget — the transient-blip resilience the wrapper exists for"
 reset_state

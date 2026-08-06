@@ -560,13 +560,8 @@ if ALL_ISSUE_COMMENTS=$(fetch_issue_comments "$REPO" "$PR_NUM"); then
     if [ -n "$EYES_COMMENT_ID" ]; then
         log "$PR_ID: reusing prior placeholder (comment id=$EYES_COMMENT_ID) — not stacking a new one"
     else
-        # GH_API_RETRY_MAX=1 — the wrapper for rate-limit detection (the pause is
-        # stamped before a retry is ever considered) but NO transient retry: this
-        # POST CREATES a comment, so a 5xx/reset following a request the server
-        # already applied would stack a duplicate placeholder — exactly what the
-        # reuse branch above exists to prevent. The idempotent PATCH/DELETE of an
-        # existing $EYES_COMMENT_ID keep the full budget.
-        EYES_COMMENT_ID=$(GH_API_RETRY_MAX=1 gh_api_retry "repos/$REPO/issues/$PR_NUM/comments" \
+        # Creates a comment — gh_retry's create guard refuses the retry (see there).
+        EYES_COMMENT_ID=$(gh_api_retry "repos/$REPO/issues/$PR_NUM/comments" \
             --method POST \
             -f body="${PLACEHOLDER_HEADER}👀 reviewing — [sam's ai review bot](https://github.com/srosro/knightwatch-reviewer)" \
             --jq '.id' 2>/dev/null) || EYES_COMMENT_ID=""
@@ -1714,13 +1709,11 @@ fi
 # public — strip any remaining workdir/<sibling-abs>/.siblings prefixes.
 COMMENT_BODY=$(scrub_review_paths "$COMMENT_BODY" "$REPO_DIR" SOURCE_PATHS)
 
-# GH_API_RETRY_MAX=1 gh_retry, matching the placeholder POST above: this is the
-# fleet's heaviest WRITE, and GitHub's secondary limits are driven mainly by
-# content creation — so it is the call most likely to 403, and as a bare `gh` it
-# was the one call that could not stamp the pause. Unwrapped, a throttled post
-# meant the next tick re-ran the entire review (full LLM spend) only to POST into
-# the same throttle. Capped at one attempt because it CREATES a comment.
-if ! GH_API_RETRY_MAX=1 gh_retry pr comment "$PR_NUM" --repo "$REPO" --body "$COMMENT_BODY"; then
+# The fleet's heaviest WRITE, and GitHub's secondary limits are driven mainly by
+# content creation — so it is the call most likely to 403. As a bare `gh` it was
+# the one call that could not stamp the pause, and a throttled post meant the next
+# tick re-ran the entire review (full LLM spend) to POST into the same throttle.
+if ! gh_retry pr comment "$PR_NUM" --repo "$REPO" --body "$COMMENT_BODY"; then
     log "$PR_ID: gh pr comment FAILED — not updating state (next tick will retry)"
     rm -rf "$REPO_DIR"
     exit 1
