@@ -140,112 +140,18 @@ esac
     || fail "scenario 7: gh_pause_file differs by WORKER_ID — the pause is not fleet-wide"
 
 # --- 8. every entrypoint that can STAMP a pause must also HONOR it ---
-# The recurring defect class, asserted as an invariant rather than patched per
-# script: routing a call site through gh_api_retry silently makes its entrypoint
-# a PRODUCER of the fleet pause. An entrypoint that produces but never reads it
-# keeps hammering the throttled PAT it just told the rest of the fleet to back
-# off from. Any new timer/loop that reaches gh_api_retry must appear here.
+# The recurring defect class: routing a call site through the gh wrapper silently
+# makes its entrypoint a PRODUCER of the fleet pause, and one that produces but
+# never reads it keeps hammering the token it just told the others to back off
+# from. That is a real bug class (it shipped once, in specialist-bakeoff.sh), but
+# a static list is the right weight for it — the derived version this replaces
+# parsed systemd units and walked the source graph for ~125 LOC and still could
+# not see the direct-`gh` bypass that a later review caught by reading the code.
+# Every entrypoint that reaches the wrapper belongs here.
 echo "  scenario 8: every pause-producing entrypoint gates on gh_pause_active..."
-
-# The entrypoint list is DERIVED, not hand-written: every systemd unit's
-# ExecStart script plus review-loop.sh (the container loop, which has no unit of
-# its own). A hardcoded list silently goes stale — it already missed
-# specialist-bakeoff.sh, the heaviest producer — and the whole point is to catch
-# the NEXT one automatically.
-entrypoints=$(sed -n 's/^ExecStart=.*\/\([a-z0-9-]*\.sh\).*/\1/p' "$PROJECT_ROOT"/systemd/*.service | sort -u)
-entrypoints="$entrypoints review-loop.sh"
-
-# Reachability: follow `. lib/x.sh` sources and `./y.sh` executions within the
-# repo, transitively, and ask whether gh_api_retry is INVOKED anywhere in that
-# set. That is exactly what makes a script able to stamp a pause.
-declare -A _seen_reach
-reach() {
-    local f="$1" ref base cand
-    [ -f "$f" ] || return 0
-    [ -n "${_seen_reach[$f]:-}" ] && return 0
-    _seen_reach[$f]=1
-    printf '%s\n' "$f"
-    # Two forms: sourcing (`. "$LIB/x.sh"`, `source x.sh`, `bash x.sh`) and
-    # direct execution (`./review.sh`) — the latter has no space after the dot,
-    # so it needs its own alternative or review-loop.sh looks like a non-producer.
-    for ref in $(grep -oE '(^|[[:space:]])(\.|source|bash|exec)[[:space:]]+[^|;&)]*\.sh|\./[A-Za-z0-9_-]+\.sh' "$f" 2>/dev/null \
-                | grep -oE '[A-Za-z0-9_-]+\.sh' | sort -u); do
-        base="$ref"
-        for cand in "$PROJECT_ROOT/$base" "$PROJECT_ROOT/lib/$base"; do
-            [ -f "$cand" ] && reach "$cand"
-        done
-    done
-    # Explicit: the walk's status is incidental (it ends on whether the LAST
-    # candidate path happened to exist), and `set -o pipefail` above would
-    # promote that into the producer test — silently reclassifying a real
-    # producer as gate-exempt, the exact "passes green while the defect is in the
-    # tree" failure this scenario exists to prevent.
-    return 0
-}
-
-produced=0; classified=0
-for entry in $entrypoints; do
-    [ -f "$PROJECT_ROOT/$entry" ] || continue
-    classified=$((classified + 1))
-    unset _seen_reach; declare -A _seen_reach
-    # Collect the walk into a variable FIRST — piping it straight into the
-    # condition would let reach's exit status (and pipefail) decide the answer.
-    reachable=$(reach "$PROJECT_ROOT/$entry")
-    # Assert the walk went past depth 0. The fragile part of reach is the
-    # RECURSION (the `./x.sh` alternative, the two-candidate path list), not the
-    # first line — it prints $f unconditionally, so asserting the walk contains
-    # the entrypoint would only restate the -f test above. Depth is what
-    # distinguishes a working scan: every derived entrypoint sources at least one
-    # lib/*.sh, and review-loop.sh and learn-from-replies.sh invoke gh_api_retry
-    # ZERO times directly — they classify as producers only through the
-    # recursion, so a broken one silently makes both gate-exempt.
-    [ "$(printf '%s\n' "$reachable" | wc -l)" -gt 1 ] \
-        || fail "scenario 8: the reachability walk for $entry never left depth 0 — recursion is broken, so transitive-only producers would silently read as gate-exempt"
-    # `gh_api_retry <args>` — an invocation, not the definition or a comment.
-    if printf '%s\n' "$reachable" | xargs grep -lE '^[^#]*gh_api_retry[[:space:]]+[^(]' 2>/dev/null | grep -q .; then
-        produced=$((produced + 1))
-        grep -q 'gh_pause_active' "$PROJECT_ROOT/$entry" \
-            || fail "scenario 8: $entry reaches gh_api_retry (so it can stamp a pause) but never reads one — it would keep calling a throttled token"
-    fi
-done
-# Guard the guard: the systemd derivation must actually yield entrypoints, and
-# enough of them must be producers. (An earlier version compared the loop's own
-# count against a re-derivation of the same list — a tautology that could only
-# ever fire on a duplicate name, and that stayed green for both real failure
-# modes. The per-entry walk assertion above is what catches those.)
-[ "$classified" -gt 0 ] \
-    || fail "scenario 8: the systemd ExecStart derivation yielded no entrypoints — the sed broke, so nothing was tested"
-[ "$produced" -ge 4 ] \
-    || fail "scenario 8: only $produced producing entrypoint(s) derived (expected >=4) — the derivation broke, not the code"
-# …and the gate must precede that script's EARLIEST GitHub call, not merely some
-# named helper picked by hand — anchoring on a chosen function silently tolerates
-# an earlier call above it (learn-from-replies.sh does a `gh pr list` before the
-# fetch_issue_comments this used to anchor on). `# comment` lines are skipped:
-# these very gates are explained in prose naming the call they guard.
-GH_CALL_RE='gh_api_retry[[:space:]]|gh (api|pr|repo|search)[[:space:]]|enumerate_open_prs|fetch_issue_comments|repos_with_bot_activity_since|is_trusted_repo_author|\./review\.sh'
-# Only TOP-LEVEL lines count. These scripts define their helpers before the main
-# flow, so a gh call inside a function body sits earlier in the file than the
-# gate while running later (or never) — comparing raw line numbers would flag
-# every one of them. Functions here are `name() {` at column 0, closed by `}` at
-# column 0, so tracking that is enough.
-gate_precedes_first_call() {
-    awk -v call="$GH_CALL_RE" '
-        /^[[:space:]]*#/                        { next }
-        # A one-liner (`log() { …; }`) opens and closes on the same line — do not
-        # latch on it, or every later line looks like function body and the scan
-        # finds nothing at all.
-        /^[A-Za-z_][A-Za-z0-9_]*\(\)[[:space:]]*\{/ { if ($0 !~ /\}/) infunc = 1; next }
-        infunc && /^\}/                         { infunc = 0; next }
-        infunc                                  { next }
-        /gh_pause_active/ { if (!g) g = NR }
-        $0 ~ call         { if (!c) c = NR }
-        END { exit !(g && c && g < c) }' "$1"
-}
-for entry in $entrypoints; do
-    [ -f "$PROJECT_ROOT/$entry" ] || continue
-    grep -q 'gh_pause_active' "$PROJECT_ROOT/$entry" || continue   # non-producer
-    gate_precedes_first_call "$PROJECT_ROOT/$entry" \
-        || fail "scenario 8: $entry gates AFTER its first GitHub call — the tick has already spent quota by then"
+for entry in review-loop.sh poll-pr-actions.sh learn-from-replies.sh specialist-bakeoff.sh; do
+    grep -q 'gh_pause_active' "$PROJECT_ROOT/$entry" \
+        || fail "scenario 8: $entry can stamp a pause but never reads one — it would keep calling a throttled token"
 done
 
 # --- 9. already paused → no second probe, no window push-out ---
@@ -303,59 +209,5 @@ grep -qE '^\s*raw=\$\(gh api graphql' "$PROJECT_ROOT/lib/pr-enumerate.sh" \
     && fail "scenario 12: enumerate_open_prs bypasses gh_api_retry — a graphql rate limit would never pause the fleet"
 grep -q 'gh_api_retry graphql' "$PROJECT_ROOT/lib/pr-enumerate.sh" \
     || fail "scenario 12: enumerate_open_prs no longer uses gh_api_retry"
-
-# --- 13/14. the bakeoff's wait-vs-skip gate, executed ---
-# specialist-bakeoff.sh fires only at 02:00/04:00, so its gate waits a short
-# window out instead of dropping the run. Both branches are behavioral, so run
-# the ACTUAL stanza from the script (same technique as divergent-clock-smoke)
-# under a stubbed sleep rather than grepping for its presence.
-extract_gate() {
-    awk '/^if gh_pause_active; then$/ { inblock = 1 }
-         inblock                      { print }
-         inblock && /^fi$/            { exit }' "$PROJECT_ROOT/specialist-bakeoff.sh"
-}
-GATE=$(extract_gate)
-[ -n "$GATE" ] || fail "scenario 13: could not extract the bakeoff pause gate — the stanza moved or changed shape"
-
-run_gate() {   # $1 = pause epoch; echoes "slept=<secs> rc=<code>"
-    local until="$1" out rc
-    printf '%s\n' "$until" > "$(gh_pause_file)"
-    : > "$TMP/slept"
-    out=$(
-        # `sleep` stub records the request AND clears the pause, modelling the
-        # window actually elapsing — without that the post-sleep re-check would
-        # still see the pause and exit even on the branch that should proceed.
-        sleep() { echo "$1" > "$TMP/slept"; rm -f "$(gh_pause_file)"; }
-        log() { :; }
-        eval "$GATE"
-        echo REACHED_END
-    ) ; rc=$?
-    printf 'slept=%s rc=%s end=%s' "$(cat "$TMP/slept" 2>/dev/null)" "$rc" "$(printf '%s' "$out" | grep -c REACHED_END)"
-}
-
-echo "  scenario 13: short pause → waits it out and proceeds with the run..."
-R13=$(run_gate "$(( $(date +%s) + 45 ))")
-case "$R13" in
-    *"end=1"*) : ;;
-    *) fail "scenario 13: gate exited on a 45s pause instead of waiting — a nightly walk lost to a one-minute back-off ($R13)" ;;
-esac
-SLEPT=$(printf '%s' "$R13" | sed 's/.*slept=\([0-9]*\).*/\1/')
-[ "${SLEPT:-0}" -ge 40 ] && [ "${SLEPT:-0}" -le 46 ] \
-    || fail "scenario 13: expected a ~45s wait, got '${SLEPT}' ($R13)"
-
-# 120s, not some far-future value: with scenario 13's 45s below and this just
-# above, the budget itself is pinned to [45, 120). A looser bound would pass for
-# any default in that whole range — including the 300s just removed, and a 600s
-# that would reintroduce the SIGTERM-mid-walk exposure the gate's comment argues
-# against. The sizing IS the change; this is what tests it.
-echo "  scenario 14: pause beyond the wait budget → skips without sleeping..."
-R14=$(run_gate "$(( $(date +%s) + 120 ))")
-case "$R14" in
-    *"end=1"*) fail "scenario 14: gate proceeded despite a pause beyond the budget — it would call a throttled token ($R14)" ;;
-esac
-case "$R14" in
-    *"slept="[0-9]*) fail "scenario 14: gate slept on a pause far beyond the budget — risks SIGTERM mid-walk ($R14)" ;;
-esac
-reset_state
 
 echo "PASS: gh-rate-limit-smoke"

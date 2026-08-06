@@ -140,6 +140,13 @@ fi
 ALL_PRS=$(enumerate_open_prs) || { log "enumerate_open_prs failed — skipping this tick"; exit 0; }
 
 while IFS= read -r PR_JSON; do
+    # A wrapped call inside this tick may have just stamped the pause. The outer
+    # gate only guards the NEXT tick, so without this the loop walks every
+    # remaining PR (~3 calls each) straight into the throttle it just detected.
+    if gh_pause_active; then
+        log "github rate-limited mid-tick — stopping the poll loop here"
+        break
+    fi
     REPO=$(echo "$PR_JSON" | jq -r '.repository.nameWithOwner')
     PR_NUM=$(echo "$PR_JSON" | jq -r '.number')
     PR_AUTHOR=$(echo "$PR_JSON" | jq -r '.author.login // ""')

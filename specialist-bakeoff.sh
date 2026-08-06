@@ -92,36 +92,21 @@ discovery_pass_start=$(date -u -d now +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u
 # commit/PR fetches across ~17 repos, and five of its call sites go through
 # gh_api_retry — so it is also a pause PRODUCER.
 #
-# WAIT a SHORT window out rather than exit. The other gated timers re-fire in
-# 2 min (poll) or 1 hr (learn), so dropping a tick costs them nothing; this one
-# fires only at 02:00 and 04:00, so exiting would trade a 60s back-off —
-# typically one stamped by the every-2-minutes poller moments earlier — for a
-# lost nightly walk, against the ~8h/day of slack the unit's header notes.
-#
-# The cap is sized to the ONLY window it can help with: the
-# GH_SECONDARY_PAUSE_SECS=60 back-off. A PRIMARY pause runs to the hourly bucket
-# reset and is essentially always longer than any sane wait, so budgeting beyond
-# the secondary window buys nothing and only eats the walk's own time — this
-# sleep is deducted from the same TimeoutStartSec=15min that has to cover
-# hundreds of fetches across ~17 repos, and overrunning it means SIGTERM
-# mid-walk with no PARTIAL RUN log and no OUT_FILE, which is strictly worse than
-# the clean skip. exit 0, not 1: a rate limit is a back-off, not the PARTIAL-RUN
-# failure the discovery guard below reports.
+# Plain log-and-exit, same as the host pollers: a missed fire costs nothing.
+# WINDOW_HOURS=16 across two fires gives 32h/day of forward capacity against 24h
+# of real time, and the watermark never skips a comment, so the next fire burns
+# down the skipped one losslessly (see pr-reviewer-bakeoff.service). A wait
+# branch here would spend the walk's own TimeoutStartSec budget to avoid a loss
+# that the unit is already designed to absorb.
 #
 # Deliberately BELOW the watermark above: gh_pause_active calls `date`, and the
 # stanza above owns this run's first bare-date call (scenario 31). Still above
 # the first fetch, which is all the gate needs.
 if gh_pause_active; then
-    gh_wait_secs=$(( $(head -n1 "$(gh_pause_file)" 2>/dev/null || echo 0) - $(date +%s) ))
-    if [ "$gh_wait_secs" -gt 0 ] && [ "$gh_wait_secs" -le "${GH_PAUSE_MAX_WAIT_SECS:-90}" ]; then
-        log "github rate-limited — waiting ${gh_wait_secs}s for the window rather than dropping the run"
-        sleep "$gh_wait_secs"
-    fi
-    if gh_pause_active; then
-        log "github rate-limited beyond the wait budget — skipping bakeoff run"
-        exit 0
-    fi
+    log "github rate-limited — skipping bakeoff run"
+    exit 0
 fi
+
 if ! active_list=$(repos_with_bot_activity_since "$discovery_floor" "$BOT_USER" 2>>"$LOG_FILE"); then
     log "PARTIAL RUN: batched bot-activity discovery failed (GitHub API budget?) — $OUT_FILE not updated"
     echo "PARTIAL: bot-activity discovery failed; $OUT_FILE not updated" >&2
@@ -131,6 +116,13 @@ declare -A active_repos=()
 while IFS= read -r _ar; do [ -n "$_ar" ] && active_repos["$_ar"]=1; done <<< "$active_list"
 
 for repo in "${REPOS[@]}"; do
+    # Mid-walk pause: stop at the repo boundary rather than paginating the rest
+    # against a throttled token. Lossless — an unwalked repo's watermark is not
+    # advanced, so the next fire picks it up exactly where this one stopped.
+    if gh_pause_active; then
+        log "github rate-limited mid-walk — stopping after the current repo set"
+        break
+    fi
     # Skip ORG repos with no bot activity since the floor (batched discovery
     # above). Stamp the skipped repo's walks row 0/0 at the discovery pass time
     # so a stale row can't pin the next run's floor (min last_walked_at) or

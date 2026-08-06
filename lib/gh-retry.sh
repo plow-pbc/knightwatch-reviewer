@@ -29,12 +29,18 @@ GH_API_RATE_LIMIT_RE='rate limit exceeded|secondary rate limit'
 # that already has it is a no-op.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/state-io.sh"
 
-gh_api_retry() {
+# gh_retry takes a FULL gh argv (`pr view …`, `repo view …`, `api …`), not just
+# an api path. The rate-limit pause is only as good as its coverage, and the
+# hardcoded `gh api` left the highest-volume reads outside it: `gh pr view` runs
+# per worker and `gh pr list` per repo, both on GraphQL — the loaded bucket — so
+# a 403 there aborted the caller without ever stamping the pause, and the next
+# tick walked straight back into the throttle.
+gh_retry() {
     local attempt=1 max="${GH_API_RETRY_MAX:-3}" base="${GH_API_RETRY_DELAY:-2}"
     local errfile out rc
     errfile=$(mktemp)
     while :; do
-        if out=$(gh api "$@" 2>"$errfile"); then
+        if out=$(gh "$@" 2>"$errfile"); then
             cat "$errfile" >&2          # preserve any success-time gh warnings
             printf '%s' "$out"
             rm -f "$errfile"
@@ -64,3 +70,8 @@ gh_api_retry() {
         : > "$errfile"
     done
 }
+
+# Back-compat shim for the many existing `gh_api_retry <path>` callers. Kept as a
+# one-liner rather than rewriting every call site to `gh_retry api …` — the
+# rename would touch a dozen files for no behavior change.
+gh_api_retry() { gh_retry api "$@"; }

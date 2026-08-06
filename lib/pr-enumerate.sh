@@ -103,7 +103,7 @@ enumerate_open_prs() {
     for repo in "${REPOS[@]}"; do
         owner="${repo%%/*}"
         owner_in_orgs "$owner" && continue
-        if ! raw=$(gh pr list --repo "$repo" \
+        if ! raw=$(gh_retry pr list --repo "$repo" \
                 --json number,title,headRefName,headRefOid,updatedAt,author \
                 --state open --limit 200 2>/dev/null); then
             return 1

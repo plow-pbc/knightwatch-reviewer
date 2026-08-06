@@ -313,7 +313,7 @@ refresh_queue() {
         # Same `gh pr view --json headRefOid` shape the worker's two head
         # re-checks use, so there's one live-head idiom in the repo.
         if [ "$FORCE_REVIEW" = "true" ] && [ "$FORCE_WHOLE_PR" = "false" ] && [ "$PR_SHA" = "$KNOWN_SHA" ]; then
-            LIVE_SHA=$(gh pr view "$PR_NUM" --repo "$REPO" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
+            LIVE_SHA=$(gh_retry pr view "$PR_NUM" --repo "$REPO" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
             if [ -z "$LIVE_SHA" ]; then
                 # Fail open — but say so. Falling through silently reproduces
                 # the exact bug this check exists to prevent (declining against
@@ -519,6 +519,14 @@ consume_queue() {
                 log "codex quota hit — stopping further claims this tick (paused until the reset window)"
                 break
             fi
+        fi
+        # Same seam, GitHub side — and NOT container-gated: a worker just drained
+        # may have stamped the shared rate-limit pause, and the host path spends
+        # the same PAT. Without this the dispatcher keeps claiming queued PRs whose
+        # workers each re-hit the throttle before the next top-of-tick gate.
+        if gh_pause_active; then
+            log "github rate-limited — stopping further claims this tick"
+            break
         fi
 
         # PROBE the per-PR flock: skip PRs already in-flight on another
