@@ -83,13 +83,16 @@ Approved on @${USER}'s /${BOT_CMD_PREFIX}-approve request."
         # loud failure logging. Mark seen regardless of outcome — approved,
         # self-approval-skip, or failure — so we don't retry forever; the human
         # can re-post /<prefix>-approve for another attempt.
-        submit_approval "$REPO" "$PR_NUM" "$BOT_USER" "$PR_AUTHOR" "$APPROVE_BODY" || true
         # "Regardless of outcome" above holds for real outcomes — approved,
         # self-approval-skip, permission failure. A rate limit is not an outcome:
         # the request was never delivered, so marking it seen would silently drop
         # a trusted human's approve and make them re-post because WE were
-        # throttled. Leave it eligible; the next unthrottled tick submits it.
-        if gh_pause_active; then
+        # throttled. Branch on THIS call's result, not on global pause state: the
+        # pause file is shared by every host timer, so a sibling stamping one in
+        # the window after a SUCCESSFUL approve would leave the key unseen and
+        # the next tick would post a second approve plus a duplicate comment.
+        if ! submit_approval "$REPO" "$PR_NUM" "$BOT_USER" "$PR_AUTHOR" "$APPROVE_BODY" \
+           && gh_pause_active; then
             log "$APPROVE_KEY: github rate-limited — leaving unseen to retry after the pause"
             continue
         fi

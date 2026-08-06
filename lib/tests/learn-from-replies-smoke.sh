@@ -185,5 +185,19 @@ echo "  scenario 4: gh api comments fetch fails — log + skip (pipefail wins)..
 echo "[]" > "$MOCK_COMMENTS_FILE"
 MOCK_GH_API_FAIL=1 run_learn
 grep -q "comments fetch failed — skipping this PR for this tick" "$LOG_FILE" || { echo "FAIL scenario 4: expected fail-loud log line on gh api failure"; cat "$LOG_FILE"; exit 1; }
+# --- scenario 5 (structural): the seen loop must run AFTER the ACK loop --------
+# This harness deliberately doesn't stub codex, so it can't reach the ACK path
+# behaviorally — which is exactly how an ordering bug shipped: the seen loop read
+# the ACK bookkeeping before the ACK loop wrote it, so NOTHING was ever marked
+# seen. Every hourly tick then re-ran codex at full cost and posted a duplicate
+# ACK, forever, on the normal success path. Line order is the whole contract, so
+# assert it directly rather than building a codex stub for one invariant.
+echo "  scenario 5: seen-marking loop is positioned after the ACK-posting loop..."
+ACK_END=$(grep -n 'done <<< "\$ACKS_BLOCK"' "$PROJECT_ROOT/learn-from-replies.sh" | head -1 | cut -d: -f1)
+SEEN_AT=$(grep -n 'done < "\$REPLIES_META_FILE"' "$PROJECT_ROOT/learn-from-replies.sh" | tail -1 | cut -d: -f1)
+[ -n "$ACK_END" ] && [ -n "$SEEN_AT" ] \
+    || { echo "FAIL scenario 5: could not locate both loops (ack_end=$ACK_END seen=$SEEN_AT) — the anchors moved"; exit 1; }
+[ "$SEEN_AT" -gt "$ACK_END" ] \
+    || { echo "FAIL scenario 5: seen loop at line $SEEN_AT runs BEFORE the ACK loop ends at $ACK_END — nothing would ever be marked seen, so every tick re-runs codex and re-posts a duplicate ACK"; exit 1; }
 
-echo "  PASS (4 scenarios: REPOS-override-observed, untrusted-memorize-ignored, page-2-paginated, gh-api-failure-fail-loud)"
+echo "  PASS (5 scenarios: REPOS-override-observed, untrusted-memorize-ignored, page-2-paginated, gh-api-failure-fail-loud, seen-loop-after-ack-loop)"

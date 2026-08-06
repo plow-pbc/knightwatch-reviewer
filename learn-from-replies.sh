@@ -59,6 +59,9 @@ REPLIES_META_FILE=$(mktemp)
 # reason retrying cannot fix. A key absent from here is one the rate limit
 # stopped, and it must stay UNSEEN so the next tick still learns from it.
 ACK_DONE_FILE=$(mktemp)
+# Set when the rate limit is what stopped the ACK loop. Only then is an
+# un-ACKed key worth holding back for the next tick.
+ACK_PAUSED=0
 trap 'rm -f "$REPLIES_META_FILE" "$ACK_DONE_FILE"' EXIT
 
 for REPO in "${REPOS[@]}"; do
@@ -234,25 +237,6 @@ else
     log "no content change in COMMENT_REVIEW_MISTAKES.md"
 fi
 
-# Mark replies as seen — only after codex succeeded AND this key's ACK reached a
-# terminal state, so a crash (or a rate limit) leaves them eligible for the next
-# tick. Marking every key unconditionally silently dropped a trusted human's
-# memorize request whenever the limit stopped the ACK loop partway. Honor
-# seen_set's fail-loud return code so a silent write failure can't lead to a
-# duplicate ACK + duplicate codex work on the next tick.
-while IFS= read -r META; do
-    KEY=$(printf '%s' "$META" | jq -r '.key')
-    if [ -n "$KEY" ] && ! grep -qxF "$KEY" "$ACK_DONE_FILE" 2>/dev/null; then
-        log "$KEY: ACK never completed (rate-limited) — leaving unseen to retry next tick"
-        continue
-    fi
-    if [ -n "$KEY" ]; then
-        if ! seen_set "$REPLIES_SEEN_FILE" "$KEY"; then
-            log "$KEY: WARNING — seen_set failed AFTER posting ACK; next tick may re-learn from this request and post a duplicate ACK"
-        fi
-    fi
-done < "$REPLIES_META_FILE"
-
 # Post per-reply acknowledgments.
 ACKS_BLOCK=$(echo "$OUTPUT" | awk '/<ACKS>/{found=1; next} found && /<\/ACKS>/{exit} found{print}')
 ACK_POSTED=0
@@ -299,6 +283,7 @@ if [ -n "$ACKS_BLOCK" ]; then
         if gh_pause_active; then
             log "github rate-limited — stopping ack posts here"
             ACK_SKIPPED=$((ACK_SKIPPED+1))
+            ACK_PAUSED=1
             break
         fi
         if gh_retry pr comment "$PR" --repo "$REPO" --body "$COMMENT_BODY" >/dev/null 2>>"$LOG_FILE"; then
@@ -307,16 +292,39 @@ if [ -n "$ACKS_BLOCK" ]; then
         else
             log "ack: failed to post on $REPO#$PR to @$USER (see log)"
             ACK_SKIPPED=$((ACK_SKIPPED+1))
-            # A rate-limit failure is retryable, so leave the key unseen. Any
-            # other failure is terminal for this request — record it, or a
-            # permanently-failing ACK re-runs codex every tick forever.
-            gh_pause_active || printf '%s\n' "$KEY" >> "$ACK_DONE_FILE"
+            # A rate-limit failure is retryable, so hold this key back. Any
+            # other failure is terminal for this request — let it fall through to
+            # seen, or a permanently-failing ACK re-runs codex every tick forever.
+            if gh_pause_active; then ACK_PAUSED=1; else printf '%s\n' "$KEY" >> "$ACK_DONE_FILE"; fi
         fi
     done <<< "$ACKS_BLOCK"
     log "acknowledgments: posted=$ACK_POSTED skipped=$ACK_SKIPPED"
 else
     log "acknowledgments: no <ACKS> block in codex output"
 fi
+
+# Mark replies as seen — AFTER the ACK loop above, which is what populates the
+# bookkeeping this reads. (Running it before left every key unmarked, so each
+# hourly tick re-ran codex at full cost and posted a duplicate ACK, forever.)
+#
+# Default is SEEN; only a key the rate limit stopped is held back. Defaulting the
+# other way looks safer but isn't: a key that never reached a post at all — codex
+# emitted no <ACK> line for it, an empty key/body, no meta — would then stay
+# unseen permanently and re-run codex every tick, which is the unbounded-spend
+# outcome this is trying to avoid. Retrying only helps when a retry can change
+# the answer, and only the pause qualifies.
+while IFS= read -r META; do
+    KEY=$(printf '%s' "$META" | jq -r '.key')
+    [ -n "$KEY" ] || continue
+    if [ "$ACK_PAUSED" -eq 1 ] && ! grep -qxF "$KEY" "$ACK_DONE_FILE" 2>/dev/null; then
+        log "$KEY: ACK stopped by the github rate limit — leaving unseen to retry next tick"
+        continue
+    fi
+    if ! seen_set "$REPLIES_SEEN_FILE" "$KEY"; then
+        log "$KEY: WARNING — seen_set failed AFTER posting ACK; next tick may re-learn from this request and post a duplicate ACK"
+    fi
+done < "$REPLIES_META_FILE"
+
 
 # Auto-commit + push guidance change to claude-config (the repo formerly
 # known as vibe-engineering).
