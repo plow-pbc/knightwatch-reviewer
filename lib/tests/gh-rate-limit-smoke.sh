@@ -35,6 +35,7 @@ export PATH="$TMP/bin:$PATH"
 # stderr text of the failing call. Any non-rate_limit invocation fails.
 cat > "$TMP/bin/gh" <<'SHIM'
 #!/usr/bin/env bash
+[ -n "${GH_SHIM_CALL_LOG:-}" ] && echo "$*" >> "$GH_SHIM_CALL_LOG"
 for a in "$@"; do
     if [ "$a" = "rate_limit" ]; then
         [ -n "${GH_SHIM_PROBE_LOG:-}" ] && echo probe >> "$GH_SHIM_PROBE_LOG"
@@ -224,5 +225,27 @@ grep -qE '^\s*raw=\$\(gh api graphql' "$PROJECT_ROOT/lib/pr-enumerate.sh" \
     && fail "scenario 12: enumerate_open_prs bypasses gh_api_retry — a graphql rate limit would never pause the fleet"
 grep -q 'gh_api_retry graphql' "$PROJECT_ROOT/lib/pr-enumerate.sh" \
     || fail "scenario 12: enumerate_open_prs no longer uses gh_api_retry"
+
+# --- 13. a create is never RETRIED; a read still is ---
+# Widening the wrapper from `gh api` to any gh argv made every non-idempotent
+# subcommand retryable. A 5xx/reset can follow a request the server already
+# applied, so a retried create double-posts a public comment. Both write shapes
+# must be covered: the subcommand form and `gh api … --method POST`, which is how
+# two of the three create sites in this repo actually post.
+echo "  scenario 13: creates are not retried on a transient error; reads are..."
+attempts() {   # $1.. = argv passed to gh_retry; echoes the number of gh invocations
+    : > "$TMP/calls"
+    GH_SHIM_CALL_LOG="$TMP/calls" GH_SHIM_ERR='net/http: TLS handshake timeout' \
+    GH_API_RETRY_DELAY=0 gh_retry "$@" >/dev/null 2>&1 || true
+    wc -l < "$TMP/calls"
+}
+reset_state
+[ "$(attempts pr comment 7 --repo o/r --body hi)" -eq 1 ] \
+    || fail "scenario 13: 'gh pr comment' was retried — a transient blip after the server applied it would double-post"
+[ "$(attempts api repos/o/r/issues/7/comments --method POST -f body=hi)" -eq 1 ] \
+    || fail "scenario 13: 'gh api --method POST' was retried — the shape two of three create sites actually use"
+[ "$(attempts api repos/o/r/pulls/7/commits)" -eq 3 ] \
+    || fail "scenario 13: a READ lost its retry budget — the transient-blip resilience the wrapper exists for"
+reset_state
 
 echo "PASS: gh-rate-limit-smoke"

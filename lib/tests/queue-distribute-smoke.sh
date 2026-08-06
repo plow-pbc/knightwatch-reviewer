@@ -232,7 +232,13 @@ WORKER
 chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
 write_queue "$STATE_DIR" "$(date +%s)" "$TWO_SPECS"
 : > "$LOG_FILE"
-LOCAL_STATE_DIR="$F_LOCAL_STATE" ENUMERATE_SECS=999 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
+# MAX_CONCURRENT=1 explicitly, in HOST mode. F/F2 get this barrier for free from
+# REVIEWER_CONTAINER_MODE, which pins it; dropping container mode here (to assert
+# the not-container-gated property) would otherwise fall back to the default of 4,
+# leaving the `while active >= MAX_CONCURRENT; do wait -n` throttle a no-op — so
+# the dispatcher would race the detached worker's sentinel write and this
+# assertion would turn on scheduling rather than on the gate.
+LOCAL_STATE_DIR="$F_LOCAL_STATE" MAX_CONCURRENT=1 ENUMERATE_SECS=999 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
 wait_dispatched
 # Precondition, mirroring F2's: if the pause never landed the assertion below
 # would pass for the wrong reason (nothing to stop on).

@@ -67,7 +67,14 @@ gh_retry() {
         # request the server already applied, so retrying a create double-posts.
         # This refuses the RETRY, not the call: the rate-limit branch above has
         # already run, so a throttled write still stamps the pause.
-        if grep -qE '^(pr|issue|release) (comment|create)$' <<<"$1 $2"; then
+        # Two argv shapes, because the repo writes both ways: the subcommand form
+        # (`gh pr comment`) and — at two of the three create sites, via the api
+        # shim — `gh api <path> --method POST`. Matching only the first two words
+        # would leave the form most likely to grow a new caller unprotected while
+        # reading as covered. PATCH/DELETE stay retryable: both existing uses
+        # address an existing comment id, so a repeat is idempotent.
+        if grep -qE '^(pr|issue|release) (comment|create)$' <<<"$1 $2" \
+           || grep -qE -- '--method (POST|PUT)' <<<"$*"; then
             rm -f "$errfile"
             return "$rc"
         fi
