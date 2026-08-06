@@ -208,9 +208,11 @@ gh_note_rate_limit() {
     # wait would then block every sibling behind the holder, freezing workers that
     # hold PR locks and their container's tick: a fleet-wide stall introduced by
     # the very code meant to back off gracefully. Losing the lock is strictly
-    # better, because the keep-the-later-window merge below already makes an
-    # unserialized write safe in the direction that matters — a stale 60s stamp
-    # self-corrects on the next trip, an indefinite worker stall does not.
+    # better than blocking: the keep-the-later-window merge below is check-then-act
+    # rather than atomic, so an unserialized write CAN still drop a primary window
+    # — which is why the probe is bounded too (see below). With the probe capped
+    # well under this wait, timing out here should not happen in practice; the
+    # `|| true` is the last resort, not the design.
     flock -w 30 "$_gh_lock_fd" || true
     local rc=0
     _gh_note_rate_limit_locked || rc=$?
@@ -221,7 +223,14 @@ gh_note_rate_limit() {
 _gh_note_rate_limit_locked() {
     local now core_rem core_reset gql_rem gql_reset kind until existing
     now=$(date +%s)
-    read -r core_rem core_reset gql_rem gql_reset <<<"$(command gh api rate_limit \
+    # `timeout … gh`, not `command gh`: timeout EXECS the binary, so the seam
+    # function is bypassed exactly as `command` did — and the bound is the point.
+    # This call runs during a 403 cascade, when GitHub is most likely degraded and
+    # a probe stalls on TCP/TLS. Bounding only the lock's waiters would convert one
+    # process's stall into "everyone proceeds unserialized"; bounding the probe
+    # keeps the critical section shorter than the 30s wait, so the lock keeps
+    # doing its job instead of being traded away.
+    read -r core_rem core_reset gql_rem gql_reset <<<"$(timeout "${GH_RATE_LIMIT_PROBE_SECS:-15}" gh api rate_limit \
         --jq '[.resources.core.remaining, .resources.core.reset,
                .resources.graphql.remaining, .resources.graphql.reset] | @tsv' \
         2>/dev/null | tr '\t' ' ')"

@@ -260,18 +260,28 @@ reset_state
 # repo's single biggest gh caller — while a hand-added exception for auth.sh would
 # just be the same staleness one level down. Fixpoint instead: start at
 # gh-retry.sh and absorb any lib that sources a carrier.
+# Two views of the same set: a plain space-separated list for membership (the
+# regex form can't be matched against — `auth\.sh` as a pattern never matches the
+# literal `auth\.sh` stored in the accumulator, so the old dedup always missed and
+# the guard below counted duplicates, making it unfailable), and the escaped
+# alternation for grepping source lines.
+SEAM_NAMES=" gh-retry.sh "
 SEAM_CARRIERS='gh-retry\.sh'
 for _ in 1 2 3 4; do
     for _lib in "$PROJECT_ROOT"/lib/*.sh; do
         _base=$(basename "$_lib")
-        grep -qE "(^|/)${_base%.sh}\\.sh" <<<"$SEAM_CARRIERS" && continue
+        [[ "$SEAM_NAMES" == *" $_base "* ]] && continue
         _src=$(sed -e 's/#.*//' "$_lib")
-        grep -qE "^[[:space:]]*(\.|source)[[:space:]].*($SEAM_CARRIERS)" <<<"$_src" \
-            && SEAM_CARRIERS="$SEAM_CARRIERS|${_base%.sh}\\.sh"
+        if grep -qE "^[[:space:]]*(\.|source)[[:space:]].*($SEAM_CARRIERS)" <<<"$_src"; then
+            SEAM_NAMES="$SEAM_NAMES$_base "
+            SEAM_CARRIERS="$SEAM_CARRIERS|${_base%.sh}\\.sh"
+        fi
     done
 done
-[ "$(grep -o '|' <<<"$SEAM_CARRIERS" | wc -l)" -ge 2 ] \
-    || fail "scenario 12: seam-carrier closure resolved to '$SEAM_CARRIERS' — expected gh-retry plus at least auth/bootstrap; the resolution broke"
+for _need in auth.sh bootstrap.sh; do
+    [[ "$SEAM_NAMES" == *" $_need "* ]] \
+        || fail "scenario 12: seam-carrier closure is [$SEAM_NAMES] — $_need is missing, so the transitive resolution broke and callers reaching gh() through it would read as unseamed"
+done
 
 mapfile -t GH_CALLERS < <(cd "$PROJECT_ROOT" && git ls-files '*.sh' | grep -v '^lib/tests/' | grep -v '^lib/gh-retry.sh$')
 [ "${#GH_CALLERS[@]}" -gt 10 ] \
@@ -285,9 +295,18 @@ for f in "${GH_CALLERS[@]}"; do
     # SIGPIPE (141), and the PIPELINE reports failure even though the match
     # succeeded — a race that fires on big files whose match is early, i.e.
     # exactly review.sh. It was flaky ~1 run in 12 before this.
-    stripped_code=$(sed -e 's/"[^"]*"//g' -e "s/'[^']*'//g" -e 's/#.*//' "$PROJECT_ROOT/$f")
+    # Strip the two SANCTIONED bypasses — `command gh` and `timeout <n> gh`, both
+    # of which deliberately reach the binary — so a file using them falls out of
+    # the detector naturally. Exempting the FILE instead (as this did for
+    # state-io.sh) is worse than the entry list it replaced: it skips silently,
+    # and state-io.sh is the one place a plain `gh` would RECURSE, since
+    # gh_retry -> gh_note_rate_limit lives there. Now it stays audited.
+    # Bypass strips run BEFORE the quote strip: `timeout "${VAR}" gh` collapses to
+    # `timeout  gh` once the quoted arg is removed, and the pattern would miss it.
+    stripped_code=$(sed -e 's/command gh/ /g' -e 's/timeout [^ ]* gh/ /g' \
+                        -e 's/"[^"]*"//g' -e "s/'[^']*'//g" -e 's/#.*//' "$PROJECT_ROOT/$f")
     grep -qE '(^|[^[:alnum:]_.])gh[[:space:]]' <<<"$stripped_code" || continue
-    case "$f" in lib/state-io.sh|install.sh) continue ;; esac   # `command gh` probe; `gh --version` preflight
+    case "$f" in install.sh) continue ;; esac   # pre-seam `gh --version` preflight
     checked=$((checked + 1))
     stripped_src=$(sed -e 's/#.*//' "$PROJECT_ROOT/$f")
     grep -qE "^[[:space:]]*(\.|source)[[:space:]].*($SEAM_CARRIERS)" <<<"$stripped_src" \
