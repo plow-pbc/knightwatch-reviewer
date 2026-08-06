@@ -139,12 +139,33 @@ esac
 [ "$(WORKER_ID=3 gh_pause_file)" = "$(WORKER_ID=5 gh_pause_file)" ] \
     || fail "scenario 7: gh_pause_file differs by WORKER_ID — the pause is not fleet-wide"
 
-# --- 8. review-loop.sh actually gates on it ---
-echo "  scenario 8: review-loop.sh honors the pause before dispatching..."
-grep -q 'gh_pause_active' "$PROJECT_ROOT/review-loop.sh" \
-    || fail "scenario 8: review-loop.sh has no gh_pause_active gate — the pause would be written but never read"
-awk '/gh_pause_active/{g=NR} /\.\/review\.sh/{r=NR} END{exit !(g && r && g < r)}' "$PROJECT_ROOT/review-loop.sh" \
-    || fail "scenario 8: the gh_pause_active gate does not precede ./review.sh"
+# --- 8. every entrypoint that can STAMP a pause must also HONOR it ---
+# The recurring defect class, asserted as an invariant rather than patched per
+# script: routing a call site through gh_api_retry silently makes its entrypoint
+# a PRODUCER of the fleet pause. An entrypoint that produces but never reads it
+# keeps hammering the throttled PAT it just told the rest of the fleet to back
+# off from. Any new timer/loop that reaches gh_api_retry must appear here.
+echo "  scenario 8: every pause-producing entrypoint gates on gh_pause_active..."
+for entry in review-loop.sh poll-pr-actions.sh learn-from-replies.sh; do
+    grep -q 'gh_pause_active' "$PROJECT_ROOT/$entry" \
+        || fail "scenario 8: $entry can stamp a pause but never reads one — it would keep calling a throttled token"
+done
+# …and the gate must precede the first GitHub call of the tick, not trail it.
+# `# comment` lines are skipped: these very gates are explained in prose that
+# names the function being guarded, which would otherwise match first.
+gate_precedes() {   # $1=file $2=regex of the first real call
+    awk -v call="$2" '
+        /^[[:space:]]*#/ { next }
+        /gh_pause_active/ { if (!g) g = NR }
+        $0 ~ call         { if (!c) c = NR }
+        END { exit !(g && c && g < c) }' "$1"
+}
+gate_precedes "$PROJECT_ROOT/review-loop.sh" '\./review\.sh' \
+    || fail "scenario 8: review-loop.sh's gate does not precede ./review.sh"
+gate_precedes "$PROJECT_ROOT/poll-pr-actions.sh" 'enumerate_open_prs' \
+    || fail "scenario 8: poll-pr-actions.sh gates after it has already enumerated"
+gate_precedes "$PROJECT_ROOT/learn-from-replies.sh" 'fetch_issue_comments' \
+    || fail "scenario 8: learn-from-replies.sh gates after it has already fetched comments"
 
 # --- 9. already paused → no second probe, no window push-out ---
 # The in-flight tick keeps running after the first 403, so every later failing

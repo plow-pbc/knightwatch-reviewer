@@ -355,7 +355,12 @@ n=$(count_approves)
 [ "$n" -eq 0 ] || { echo "FAIL scenario 14: expected 0 approves under indeterminate trust, got $n"; cat "$STUB_ACTIONS_LOG"; exit 1; }
 grep -q "permission check failed (API error)" "$LOG_FILE" || { echo "FAIL scenario 14: expected permission-fetch-failure log line"; cat "$LOG_FILE"; exit 1; }
 [ -z "$(jq -r '."test-org/probe-repo#1#1014" // empty' "$APPROVES_SEEN_FILE")" ] || { echo "FAIL scenario 14: deferred approve marked seen (permanently dropped) — must retry next tick"; cat "$APPROVES_SEEN_FILE"; exit 1; }
-# Recovery: a later tick with the API healthy approves it — proves it was not dropped.
+# Recovery: a LATER tick with the API healthy approves it — proves it was not
+# dropped. The stub's 403 above is worded as a rate limit, so it now also stamps
+# the fleet-wide pause; clearing it is what makes the next tick "later" rather
+# than "immediately after", which is exactly when a real recovery tick runs. The
+# invariant under test is unchanged: deferred, never permanently dropped.
+rm -f "$STATE_DIR/gh-rate-limited-until"
 MOCK_TRUSTED_USERS="someuser" run_approve
 n=$(count_approves)
 [ "$n" -eq 1 ] || { echo "FAIL scenario 14: expected 1 approve on recovery tick, got $n (dropped after transient failure)"; cat "$STUB_ACTIONS_LOG"; cat "$LOG_FILE"; exit 1; }

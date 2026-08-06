@@ -126,6 +126,16 @@ rerequest_check() {
     fi
 }
 
+# Honor the fleet-wide GitHub pause, like review-loop.sh. This poller is a
+# PRODUCER of that pause (its timeline fetch, comment fetch and trust check all
+# route through gh_api_retry), so without this gate it would stamp a pause that
+# halts the six review containers and then keep calling the same throttled PAT
+# itself every two minutes.
+if gh_pause_active; then
+    log "github rate-limited — skipping poll tick"
+    exit 0
+fi
+
 ALL_PRS=$(enumerate_open_prs) || { log "enumerate_open_prs failed — skipping this tick"; exit 0; }
 
 while IFS= read -r PR_JSON; do

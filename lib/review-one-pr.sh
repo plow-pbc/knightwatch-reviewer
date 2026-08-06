@@ -348,12 +348,11 @@ cleanup_eyes() {
     if [ "$EYES_RESOLVED" = "true" ] || [ -z "$EYES_COMMENT_ID" ]; then
         return 0
     fi
-    # GH_API_RETRY_MAX=1 here and at the other two placeholder writes: routed
-    # through the wrapper so a rate limit stamps the fleet pause, but never
-    # retried — a transient failure after the server applied the write would
-    # stack a duplicate placeholder (the very thing the reuse branch above
-    # exists to prevent).
-    GH_API_RETRY_MAX=1 gh_api_retry "repos/$REPO/issues/comments/$EYES_COMMENT_ID" --method PATCH \
+    # Full retry budget: this PATCH is addressed by $EYES_COMMENT_ID and writes a
+    # fixed body, so a retry after a blip the server already applied just rewrites
+    # the same comment. Only the POST that CREATES a placeholder is
+    # non-idempotent, and that one alone caps retries.
+    gh_api_retry "repos/$REPO/issues/comments/$EYES_COMMENT_ID" --method PATCH \
         -f body="${PLACEHOLDER_HEADER}${EYES_ABORT_BODY}" \
         >/dev/null 2>&1 || true
 }
@@ -561,6 +560,12 @@ if ALL_ISSUE_COMMENTS=$(fetch_issue_comments "$REPO" "$PR_NUM"); then
     if [ -n "$EYES_COMMENT_ID" ]; then
         log "$PR_ID: reusing prior placeholder (comment id=$EYES_COMMENT_ID) — not stacking a new one"
     else
+        # GH_API_RETRY_MAX=1 — the wrapper for rate-limit detection (the pause is
+        # stamped before a retry is ever considered) but NO transient retry: this
+        # POST CREATES a comment, so a 5xx/reset following a request the server
+        # already applied would stack a duplicate placeholder — exactly what the
+        # reuse branch above exists to prevent. The idempotent PATCH/DELETE of an
+        # existing $EYES_COMMENT_ID keep the full budget.
         EYES_COMMENT_ID=$(GH_API_RETRY_MAX=1 gh_api_retry "repos/$REPO/issues/$PR_NUM/comments" \
             --method POST \
             -f body="${PLACEHOLDER_HEADER}👀 reviewing — [sam's ai review bot](https://github.com/srosro/knightwatch-reviewer)" \
@@ -1734,7 +1739,9 @@ fi
 # the real review is already up.
 EYES_RESOLVED=true
 if [ -n "$EYES_COMMENT_ID" ]; then
-    if GH_API_RETRY_MAX=1 gh_api_retry "repos/$REPO/issues/comments/$EYES_COMMENT_ID" --method DELETE \
+    # Full retry budget: DELETE of a specific comment id is idempotent, and a
+    # blip stranding the 👀 placeholder on the PR is the worse outcome.
+    if gh_api_retry "repos/$REPO/issues/comments/$EYES_COMMENT_ID" --method DELETE \
             >/dev/null 2>&1; then
         log "Posted review on $PR_ID (deleted placeholder id=$EYES_COMMENT_ID)"
     else
