@@ -124,6 +124,60 @@ mark_auth_offline() {
         || echo 0 > "$(auth_offline_file)"
 }
 
+# GitHub rate-limit pause protocol. Same shape as the codex quota pause above,
+# with one deliberate difference: it is FLEET-WIDE, not per-account.
+#
+# Codex quota is per-account — six containers, six independent budgets — so a
+# capped account pauses only itself and its siblings carry the queue. The GitHub
+# PAT is the opposite: every container authenticates as the SAME user, so a
+# throttle applies to all of them at once. Namespacing this under
+# pool/<WORKER_ID>/ would pause the one container that noticed and leave the
+# other five hammering the already-throttled token — the amplification this file
+# exists to stop. Hence bare $STATE_DIR (shared volume), no WORKER_ID.
+gh_pause_file() { printf '%s' "${STATE_DIR:-$HOME/.pr-reviewer}/gh-rate-limited-until"; }
+
+# True while the pause window is still in the future. Missing file reads as
+# epoch 0 (not paused) — mirrors quota_active.
+gh_pause_active() { [ "$(date +%s)" -lt "$(head -n1 "$(gh_pause_file)" 2>/dev/null || echo 0)" ]; }
+
+# Producer side: called by gh_api_retry when a `gh api` failure carries GitHub's
+# rate-limit signature. Emits the diagnostic the fleet previously had none of,
+# and stamps the fleet-wide pause.
+#
+# Why it re-queries instead of parsing the 403 body: GitHub words the PRIMARY
+# (hourly bucket spent) and SECONDARY (burst/concurrency/abuse) limits
+# identically — both are "API rate limit exceeded for user ID N". The only thing
+# that tells them apart is live bucket state, so read it:
+#     remaining == 0 → PRIMARY. Pause until that bucket's own reset.
+#     remaining  > 0 → SECONDARY. /rate_limit CANNOT report secondary limits, so
+#                      a rate-limit 403 with budget left IS the secondary signal.
+#                      Pause a short fixed window (GitHub documents ~60s as the
+#                      minimum backoff when no Retry-After is supplied).
+# The /rate_limit endpoint is exempt from rate limiting, so this diagnostic is
+# free and still answers while throttled. If it can't be reached at all, fall
+# back to the secondary window rather than skipping the pause — an unclassified
+# rate-limit 403 still means "stop calling".
+gh_note_rate_limit() {
+    local now core_rem core_reset gql_rem gql_reset kind until
+    now=$(date +%s)
+    read -r core_rem core_reset gql_rem gql_reset <<<"$(gh api rate_limit \
+        --jq '[.resources.core.remaining, .resources.core.reset,
+               .resources.graphql.remaining, .resources.graphql.reset] | @tsv' \
+        2>/dev/null | tr '\t' ' ')"
+    if [ "${core_rem:-1}" = 0 ]; then
+        kind="primary/core"; until="$core_reset"
+    elif [ "${gql_rem:-1}" = 0 ]; then
+        kind="primary/graphql"; until="$gql_reset"
+    else
+        kind="secondary"; until=$(( now + ${GH_SECONDARY_PAUSE_SECS:-60} ))
+    fi
+    # A stale/absent reset epoch would resume instantly and re-trip; floor it.
+    [ "${until:-0}" -gt "$now" ] 2>/dev/null || until=$(( now + ${GH_SECONDARY_PAUSE_SECS:-60} ))
+    log "gh rate limit ($kind) — core=${core_rem:-?}/5000 graphql=${gql_rem:-?}/5000 remaining; pausing the FLEET $(( until - now ))s (until epoch $until)"
+    mkdir -p "$(dirname "$(gh_pause_file)")"
+    printf '%s\n' "$until" > "$(gh_pause_file)"
+}
+
 # One status clause per account registered under $STATE_DIR/pool/, for the
 # operator/author-facing paused messages. Reads only the stop-state files each
 # account already maintains — no extra bookkeeping, no cross-container probing.

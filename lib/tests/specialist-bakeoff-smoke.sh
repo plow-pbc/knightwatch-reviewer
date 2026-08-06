@@ -258,6 +258,7 @@ cp "$REPO_ROOT/lib/bakeoff-parsers.sh"  "$REVIEWER_LIB_DIR/bakeoff-parsers.sh"
 cp "$REPO_ROOT/lib/bakeoff-store.sh"    "$REVIEWER_LIB_DIR/bakeoff-store.sh"
 cp "$REPO_ROOT/lib/pr-enumerate.sh"     "$REVIEWER_LIB_DIR/pr-enumerate.sh"
 cp "$REPO_ROOT/lib/gh-retry.sh"         "$REVIEWER_LIB_DIR/gh-retry.sh"
+cp "$REPO_ROOT/lib/state-io.sh"         "$REVIEWER_LIB_DIR/state-io.sh"   # gh-retry.sh sources it (gh_note_rate_limit)
 
 # Single tracked repo.
 cat > "$STATE_DIR/repos.conf" <<'CONF'

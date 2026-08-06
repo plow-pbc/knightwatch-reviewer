@@ -94,6 +94,16 @@ while true; do
         sleep "$POLL_SECS"; continue
     fi
     rm -f "$(quota_pause_file)"   # absent or window passed; resume claiming
+    # GitHub rate limit → skip the tick. Unlike the two gates above (per-account
+    # codex state) this one is fleet-wide: every container shares one PAT, so the
+    # container that tripped the limit pauses all of them. Without it each unit
+    # re-attempts against the throttled token every POLL_SECS, which is how a
+    # transient limit turned into a two-day retry storm.
+    if gh_pause_active; then
+        log "[review-loop] github rate-limited — skipping tick (until $(date -d "@$(head -n1 "$(gh_pause_file)")" '+%H:%M:%S' 2>/dev/null || echo 'window'))"
+        sleep "$POLL_SECS"; continue
+    fi
+    rm -f "$(gh_pause_file)"      # absent or window passed; resume claiming
     # review.sh returns 0 on normal/no-PR/transient-enumerate-failure ticks
     # and non-zero ONLY on fatal misconfig (missing worker script, no tracked
     # repos). Surface that loudly via container exit + restart instead of
