@@ -191,12 +191,16 @@ for entry in $entrypoints; do
     # Collect the walk into a variable FIRST — piping it straight into the
     # condition would let reach's exit status (and pipefail) decide the answer.
     reachable=$(reach "$PROJECT_ROOT/$entry")
-    # Assert the WALK produced something and reached the entrypoint itself. This
-    # is the guard that matters: if reach breaks and returns nothing, the grep
-    # below finds no gh_api_retry and the script is silently reclassified as
-    # gate-exempt — the misclassification this whole scenario exists to prevent.
-    printf '%s\n' "$reachable" | grep -qF "$PROJECT_ROOT/$entry" \
-        || fail "scenario 8: the reachability walk for $entry returned nothing (not even itself) — the scan is broken, so every producer would silently read as gate-exempt"
+    # Assert the walk went past depth 0. The fragile part of reach is the
+    # RECURSION (the `./x.sh` alternative, the two-candidate path list), not the
+    # first line — it prints $f unconditionally, so asserting the walk contains
+    # the entrypoint would only restate the -f test above. Depth is what
+    # distinguishes a working scan: every derived entrypoint sources at least one
+    # lib/*.sh, and review-loop.sh and learn-from-replies.sh invoke gh_api_retry
+    # ZERO times directly — they classify as producers only through the
+    # recursion, so a broken one silently makes both gate-exempt.
+    [ "$(printf '%s\n' "$reachable" | wc -l)" -gt 1 ] \
+        || fail "scenario 8: the reachability walk for $entry never left depth 0 — recursion is broken, so transitive-only producers would silently read as gate-exempt"
     # `gh_api_retry <args>` — an invocation, not the definition or a comment.
     if printf '%s\n' "$reachable" | xargs grep -lE '^[^#]*gh_api_retry[[:space:]]+[^(]' 2>/dev/null | grep -q .; then
         produced=$((produced + 1))
@@ -339,10 +343,15 @@ SLEPT=$(printf '%s' "$R13" | sed 's/.*slept=\([0-9]*\).*/\1/')
 [ "${SLEPT:-0}" -ge 40 ] && [ "${SLEPT:-0}" -le 46 ] \
     || fail "scenario 13: expected a ~45s wait, got '${SLEPT}' ($R13)"
 
+# 120s, not some far-future value: with scenario 13's 45s below and this just
+# above, the budget itself is pinned to [45, 120). A looser bound would pass for
+# any default in that whole range — including the 300s just removed, and a 600s
+# that would reintroduce the SIGTERM-mid-walk exposure the gate's comment argues
+# against. The sizing IS the change; this is what tests it.
 echo "  scenario 14: pause beyond the wait budget → skips without sleeping..."
-R14=$(run_gate "$(( $(date +%s) + 4000 ))")
+R14=$(run_gate "$(( $(date +%s) + 120 ))")
 case "$R14" in
-    *"end=1"*) fail "scenario 14: gate proceeded despite a 4000s pause — it would call a throttled token ($R14)" ;;
+    *"end=1"*) fail "scenario 14: gate proceeded despite a pause beyond the budget — it would call a throttled token ($R14)" ;;
 esac
 case "$R14" in
     *"slept="[0-9]*) fail "scenario 14: gate slept on a pause far beyond the budget — risks SIGTERM mid-walk ($R14)" ;;
