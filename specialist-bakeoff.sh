@@ -92,21 +92,28 @@ discovery_pass_start=$(date -u -d now +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u
 # commit/PR fetches across ~17 repos, and five of its call sites go through
 # gh_api_retry — so it is also a pause PRODUCER.
 #
-# WAIT the window out rather than exit. The other gated timers re-fire in 2 min
-# (poll) or 1 hr (learn), so dropping a tick costs them nothing; this one fires
-# only at 02:00 and 04:00, so exiting would trade a 60s back-off — typically one
-# stamped by the every-2-minutes poller moments earlier — for a lost nightly
-# walk, and the unit's header notes only ~8h/day of slack. Bounded well under
-# TimeoutStartSec=15min; if the window is longer than that budget, give up the
-# run rather than be SIGKILLed mid-walk. exit 0, not 1: a rate limit is a
-# back-off, not the PARTIAL-RUN failure the discovery guard below reports.
+# WAIT a SHORT window out rather than exit. The other gated timers re-fire in
+# 2 min (poll) or 1 hr (learn), so dropping a tick costs them nothing; this one
+# fires only at 02:00 and 04:00, so exiting would trade a 60s back-off —
+# typically one stamped by the every-2-minutes poller moments earlier — for a
+# lost nightly walk, against the ~8h/day of slack the unit's header notes.
+#
+# The cap is sized to the ONLY window it can help with: the
+# GH_SECONDARY_PAUSE_SECS=60 back-off. A PRIMARY pause runs to the hourly bucket
+# reset and is essentially always longer than any sane wait, so budgeting beyond
+# the secondary window buys nothing and only eats the walk's own time — this
+# sleep is deducted from the same TimeoutStartSec=15min that has to cover
+# hundreds of fetches across ~17 repos, and overrunning it means SIGTERM
+# mid-walk with no PARTIAL RUN log and no OUT_FILE, which is strictly worse than
+# the clean skip. exit 0, not 1: a rate limit is a back-off, not the PARTIAL-RUN
+# failure the discovery guard below reports.
 #
 # Deliberately BELOW the watermark above: gh_pause_active calls `date`, and the
 # stanza above owns this run's first bare-date call (scenario 31). Still above
 # the first fetch, which is all the gate needs.
 if gh_pause_active; then
     gh_wait_secs=$(( $(head -n1 "$(gh_pause_file)" 2>/dev/null || echo 0) - $(date +%s) ))
-    if [ "$gh_wait_secs" -gt 0 ] && [ "$gh_wait_secs" -le "${GH_PAUSE_MAX_WAIT_SECS:-300}" ]; then
+    if [ "$gh_wait_secs" -gt 0 ] && [ "$gh_wait_secs" -le "${GH_PAUSE_MAX_WAIT_SECS:-90}" ]; then
         log "github rate-limited — waiting ${gh_wait_secs}s for the window rather than dropping the run"
         sleep "$gh_wait_secs"
     fi

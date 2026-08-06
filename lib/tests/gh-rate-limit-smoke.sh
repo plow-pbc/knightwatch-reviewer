@@ -191,6 +191,12 @@ for entry in $entrypoints; do
     # Collect the walk into a variable FIRST — piping it straight into the
     # condition would let reach's exit status (and pipefail) decide the answer.
     reachable=$(reach "$PROJECT_ROOT/$entry")
+    # Assert the WALK produced something and reached the entrypoint itself. This
+    # is the guard that matters: if reach breaks and returns nothing, the grep
+    # below finds no gh_api_retry and the script is silently reclassified as
+    # gate-exempt — the misclassification this whole scenario exists to prevent.
+    printf '%s\n' "$reachable" | grep -qF "$PROJECT_ROOT/$entry" \
+        || fail "scenario 8: the reachability walk for $entry returned nothing (not even itself) — the scan is broken, so every producer would silently read as gate-exempt"
     # `gh_api_retry <args>` — an invocation, not the definition or a comment.
     if printf '%s\n' "$reachable" | xargs grep -lE '^[^#]*gh_api_retry[[:space:]]+[^(]' 2>/dev/null | grep -q .; then
         produced=$((produced + 1))
@@ -198,13 +204,13 @@ for entry in $entrypoints; do
             || fail "scenario 8: $entry reaches gh_api_retry (so it can stamp a pause) but never reads one — it would keep calling a throttled token"
     fi
 done
-# Guard the guard, twice over. A threshold alone goes stale the moment a fifth
-# producer lands: one silent misclassification would still total 4 and pass. So
-# also assert every derived entrypoint was actually reached and classified — if
-# the derivation itself breaks, that count collapses and this fails loudly
-# instead of vacuously testing nothing.
-[ "$classified" -eq "$(printf '%s\n' $entrypoints | sort -u | while read -r e; do [ -f "$PROJECT_ROOT/$e" ] && echo x; done | wc -l)" ] \
-    || fail "scenario 8: classified $classified entrypoints but the derived list holds a different number — the scan is dropping scripts"
+# Guard the guard: the systemd derivation must actually yield entrypoints, and
+# enough of them must be producers. (An earlier version compared the loop's own
+# count against a re-derivation of the same list — a tautology that could only
+# ever fire on a duplicate name, and that stayed green for both real failure
+# modes. The per-entry walk assertion above is what catches those.)
+[ "$classified" -gt 0 ] \
+    || fail "scenario 8: the systemd ExecStart derivation yielded no entrypoints — the sed broke, so nothing was tested"
 [ "$produced" -ge 4 ] \
     || fail "scenario 8: only $produced producing entrypoint(s) derived (expected >=4) — the derivation broke, not the code"
 # …and the gate must precede that script's EARLIEST GitHub call, not merely some
@@ -293,5 +299,54 @@ grep -qE '^\s*raw=\$\(gh api graphql' "$PROJECT_ROOT/lib/pr-enumerate.sh" \
     && fail "scenario 12: enumerate_open_prs bypasses gh_api_retry — a graphql rate limit would never pause the fleet"
 grep -q 'gh_api_retry graphql' "$PROJECT_ROOT/lib/pr-enumerate.sh" \
     || fail "scenario 12: enumerate_open_prs no longer uses gh_api_retry"
+
+# --- 13/14. the bakeoff's wait-vs-skip gate, executed ---
+# specialist-bakeoff.sh fires only at 02:00/04:00, so its gate waits a short
+# window out instead of dropping the run. Both branches are behavioral, so run
+# the ACTUAL stanza from the script (same technique as divergent-clock-smoke)
+# under a stubbed sleep rather than grepping for its presence.
+extract_gate() {
+    awk '/^if gh_pause_active; then$/ { inblock = 1 }
+         inblock                      { print }
+         inblock && /^fi$/            { exit }' "$PROJECT_ROOT/specialist-bakeoff.sh"
+}
+GATE=$(extract_gate)
+[ -n "$GATE" ] || fail "scenario 13: could not extract the bakeoff pause gate — the stanza moved or changed shape"
+
+run_gate() {   # $1 = pause epoch; echoes "slept=<secs> rc=<code>"
+    local until="$1" out rc
+    printf '%s\n' "$until" > "$(gh_pause_file)"
+    : > "$TMP/slept"
+    out=$(
+        # `sleep` stub records the request AND clears the pause, modelling the
+        # window actually elapsing — without that the post-sleep re-check would
+        # still see the pause and exit even on the branch that should proceed.
+        sleep() { echo "$1" > "$TMP/slept"; rm -f "$(gh_pause_file)"; }
+        log() { :; }
+        eval "$GATE"
+        echo REACHED_END
+    ) ; rc=$?
+    printf 'slept=%s rc=%s end=%s' "$(cat "$TMP/slept" 2>/dev/null)" "$rc" "$(printf '%s' "$out" | grep -c REACHED_END)"
+}
+
+echo "  scenario 13: short pause → waits it out and proceeds with the run..."
+R13=$(run_gate "$(( $(date +%s) + 45 ))")
+case "$R13" in
+    *"end=1"*) : ;;
+    *) fail "scenario 13: gate exited on a 45s pause instead of waiting — a nightly walk lost to a one-minute back-off ($R13)" ;;
+esac
+SLEPT=$(printf '%s' "$R13" | sed 's/.*slept=\([0-9]*\).*/\1/')
+[ "${SLEPT:-0}" -ge 40 ] && [ "${SLEPT:-0}" -le 46 ] \
+    || fail "scenario 13: expected a ~45s wait, got '${SLEPT}' ($R13)"
+
+echo "  scenario 14: pause beyond the wait budget → skips without sleeping..."
+R14=$(run_gate "$(( $(date +%s) + 4000 ))")
+case "$R14" in
+    *"end=1"*) fail "scenario 14: gate proceeded despite a 4000s pause — it would call a throttled token ($R14)" ;;
+esac
+case "$R14" in
+    *"slept="[0-9]*) fail "scenario 14: gate slept on a pause far beyond the budget — risks SIGTERM mid-walk ($R14)" ;;
+esac
+reset_state
 
 echo "PASS: gh-rate-limit-smoke"
