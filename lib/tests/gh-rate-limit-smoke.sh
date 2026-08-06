@@ -146,26 +146,82 @@ esac
 # keeps hammering the throttled PAT it just told the rest of the fleet to back
 # off from. Any new timer/loop that reaches gh_api_retry must appear here.
 echo "  scenario 8: every pause-producing entrypoint gates on gh_pause_active..."
-for entry in review-loop.sh poll-pr-actions.sh learn-from-replies.sh; do
-    grep -q 'gh_pause_active' "$PROJECT_ROOT/$entry" \
-        || fail "scenario 8: $entry can stamp a pause but never reads one — it would keep calling a throttled token"
+
+# The entrypoint list is DERIVED, not hand-written: every systemd unit's
+# ExecStart script plus review-loop.sh (the container loop, which has no unit of
+# its own). A hardcoded list silently goes stale — it already missed
+# specialist-bakeoff.sh, the heaviest producer — and the whole point is to catch
+# the NEXT one automatically.
+entrypoints=$(sed -n 's/^ExecStart=.*\/\([a-z0-9-]*\.sh\).*/\1/p' "$PROJECT_ROOT"/systemd/*.service | sort -u)
+entrypoints="$entrypoints review-loop.sh"
+
+# Reachability: follow `. lib/x.sh` sources and `./y.sh` executions within the
+# repo, transitively, and ask whether gh_api_retry is INVOKED anywhere in that
+# set. That is exactly what makes a script able to stamp a pause.
+declare -A _seen_reach
+reach() {
+    local f="$1" ref base cand
+    [ -f "$f" ] || return 0
+    [ -n "${_seen_reach[$f]:-}" ] && return 0
+    _seen_reach[$f]=1
+    printf '%s\n' "$f"
+    # Two forms: sourcing (`. "$LIB/x.sh"`, `source x.sh`, `bash x.sh`) and
+    # direct execution (`./review.sh`) — the latter has no space after the dot,
+    # so it needs its own alternative or review-loop.sh looks like a non-producer.
+    for ref in $(grep -oE '(^|[[:space:]])(\.|source|bash|exec)[[:space:]]+[^|;&)]*\.sh|\./[A-Za-z0-9_-]+\.sh' "$f" 2>/dev/null \
+                | grep -oE '[A-Za-z0-9_-]+\.sh' | sort -u); do
+        base="$ref"
+        for cand in "$PROJECT_ROOT/$base" "$PROJECT_ROOT/lib/$base"; do
+            [ -f "$cand" ] && reach "$cand"
+        done
+    done
+}
+
+produced=0
+for entry in $entrypoints; do
+    [ -f "$PROJECT_ROOT/$entry" ] || continue
+    unset _seen_reach; declare -A _seen_reach
+    # `gh_api_retry <args>` — an invocation, not the definition or a comment.
+    if reach "$PROJECT_ROOT/$entry" | xargs grep -lE '^[^#]*gh_api_retry[[:space:]]+[^(]' 2>/dev/null | grep -q .; then
+        produced=$((produced + 1))
+        grep -q 'gh_pause_active' "$PROJECT_ROOT/$entry" \
+            || fail "scenario 8: $entry reaches gh_api_retry (so it can stamp a pause) but never reads one — it would keep calling a throttled token"
+    fi
 done
-# …and the gate must precede the first GitHub call of the tick, not trail it.
-# `# comment` lines are skipped: these very gates are explained in prose that
-# names the function being guarded, which would otherwise match first.
-gate_precedes() {   # $1=file $2=regex of the first real call
-    awk -v call="$2" '
-        /^[[:space:]]*#/ { next }
+# Guard the guard: if the derivation stops finding producers the assertion above
+# passes vacuously and this whole scenario silently stops testing anything.
+[ "$produced" -ge 4 ] \
+    || fail "scenario 8: only $produced producing entrypoint(s) derived (expected >=4) — the derivation broke, not the code"
+# …and the gate must precede that script's EARLIEST GitHub call, not merely some
+# named helper picked by hand — anchoring on a chosen function silently tolerates
+# an earlier call above it (learn-from-replies.sh does a `gh pr list` before the
+# fetch_issue_comments this used to anchor on). `# comment` lines are skipped:
+# these very gates are explained in prose naming the call they guard.
+GH_CALL_RE='gh_api_retry[[:space:]]|gh (api|pr|repo|search)[[:space:]]|enumerate_open_prs|fetch_issue_comments|repos_with_bot_activity_since|is_trusted_repo_author|\./review\.sh'
+# Only TOP-LEVEL lines count. These scripts define their helpers before the main
+# flow, so a gh call inside a function body sits earlier in the file than the
+# gate while running later (or never) — comparing raw line numbers would flag
+# every one of them. Functions here are `name() {` at column 0, closed by `}` at
+# column 0, so tracking that is enough.
+gate_precedes_first_call() {
+    awk -v call="$GH_CALL_RE" '
+        /^[[:space:]]*#/                        { next }
+        # A one-liner (`log() { …; }`) opens and closes on the same line — do not
+        # latch on it, or every later line looks like function body and the scan
+        # finds nothing at all.
+        /^[A-Za-z_][A-Za-z0-9_]*\(\)[[:space:]]*\{/ { if ($0 !~ /\}/) infunc = 1; next }
+        infunc && /^\}/                         { infunc = 0; next }
+        infunc                                  { next }
         /gh_pause_active/ { if (!g) g = NR }
         $0 ~ call         { if (!c) c = NR }
         END { exit !(g && c && g < c) }' "$1"
 }
-gate_precedes "$PROJECT_ROOT/review-loop.sh" '\./review\.sh' \
-    || fail "scenario 8: review-loop.sh's gate does not precede ./review.sh"
-gate_precedes "$PROJECT_ROOT/poll-pr-actions.sh" 'enumerate_open_prs' \
-    || fail "scenario 8: poll-pr-actions.sh gates after it has already enumerated"
-gate_precedes "$PROJECT_ROOT/learn-from-replies.sh" 'fetch_issue_comments' \
-    || fail "scenario 8: learn-from-replies.sh gates after it has already fetched comments"
+for entry in $entrypoints; do
+    [ -f "$PROJECT_ROOT/$entry" ] || continue
+    grep -q 'gh_pause_active' "$PROJECT_ROOT/$entry" || continue   # non-producer
+    gate_precedes_first_call "$PROJECT_ROOT/$entry" \
+        || fail "scenario 8: $entry gates AFTER its first GitHub call — the tick has already spent quota by then"
+done
 
 # --- 9. already paused → no second probe, no window push-out ---
 # The in-flight tick keeps running after the first 403, so every later failing

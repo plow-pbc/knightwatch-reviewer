@@ -86,6 +86,22 @@ fi
 # specialist-bakeoff-smoke scenario 31's date stub — the walk's first bare-date
 # call is the load-bearing walk_started_at watermark and must stay first.
 discovery_pass_start=$(date -u -d now +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)
+
+# Honor the fleet-wide GitHub pause before the first fetch. This run is the
+# heaviest single consumer of the shared PAT — its own header notes hundreds of
+# commit/PR fetches across ~17 repos, and five of its call sites go through
+# gh_api_retry — so it is also a pause PRODUCER. Ungated it would stamp a pause
+# that halts the six review containers and then keep paginating against the very
+# token GitHub told the fleet to stop using. Exit 0, not 1: a rate limit is a
+# back-off, not the PARTIAL-RUN failure the discovery guard below reports.
+#
+# Deliberately BELOW the watermark above: gh_pause_active calls `date`, and the
+# stanza above owns this run's first bare-date call (scenario 31). Still above
+# the first fetch, which is all the gate needs.
+if gh_pause_active; then
+    log "github rate-limited — skipping bakeoff run"
+    exit 0
+fi
 if ! active_list=$(repos_with_bot_activity_since "$discovery_floor" "$BOT_USER" 2>>"$LOG_FILE"); then
     log "PARTIAL RUN: batched bot-activity discovery failed (GitHub API budget?) — $OUT_FILE not updated"
     echo "PARTIAL: bot-activity discovery failed; $OUT_FILE not updated" >&2
