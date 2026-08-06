@@ -74,7 +74,7 @@ gh_retry() {
         # reading as covered. PATCH/DELETE stay retryable: both existing uses
         # address an existing comment id, so a repeat is idempotent.
         if grep -qE '^(pr|issue|release) (comment|create)$' <<<"$1 $2" \
-           || grep -qE -- '--method (POST|PUT)' <<<"$*"; then
+           || grep -qE -- '(--method[ =]|-X[ =]?)(POST|PUT)' <<<"$*"; then
             rm -f "$errfile"
             return "$rc"
         fi

@@ -119,7 +119,11 @@ rerequest_check() {
     RR_BODY="/${BOT_CMD_PREFIX}-review
 
 <sub>↳ auto-posted by the review bot because a reviewer was re-requested — not a manual request.</sub>${BOT_AUTO_TRIGGER_MARKER}"
-    if gh pr comment "$PR_NUM" --repo "$REPO" --body "$RR_BODY" >/dev/null 2>&1; then
+    # Via the wrapper so a throttled post stamps the pause. On failure this skips
+    # seen_set_value, so the event stays unseen and re-POSTs every 2-minute tick
+    # forever — as a bare `gh` that storm never armed the pause. No
+    # GH_API_RETRY_MAX=1 needed: the create-verb guard refuses the retry on argv.
+    if gh_retry pr comment "$PR_NUM" --repo "$REPO" --body "$RR_BODY" >/dev/null 2>&1; then
         seen_set_value "$RR_SEEN_FILE" "$PR_KEY" "$LATEST"
     else
         log "$PR_KEY: failed to post /${BOT_CMD_PREFIX}-review trigger comment"

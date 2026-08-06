@@ -282,7 +282,10 @@ if [ -n "$ACKS_BLOCK" ]; then
 
         COMMENT_BODY="$BOT_AUTO_POST_MARKER
 @${USER} — noted. ${ACK_BODY}"
-        if gh pr comment "$PR" --repo "$REPO" --body "$COMMENT_BODY" >/dev/null 2>>"$LOG_FILE"; then
+        # Via the wrapper: this posts in a tight loop over $ACKS_BLOCK, so a
+        # secondary-limit 403 on ack 1 would otherwise let acks 2..N keep POSTing
+        # — the loop's only pause check sits upstream of it.
+        if gh_retry pr comment "$PR" --repo "$REPO" --body "$COMMENT_BODY" >/dev/null 2>>"$LOG_FILE"; then
             ACK_POSTED=$((ACK_POSTED+1))
         else
             log "ack: failed to post on $REPO#$PR to @$USER (see log)"
