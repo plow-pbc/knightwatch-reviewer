@@ -254,4 +254,24 @@ done
     || fail "scenario 13: a READ lost its retry budget — the transient-blip resilience the wrapper exists for"
 reset_state
 
+# --- 14. NO create-shaped gh call anywhere outside the wrapper ---
+# The property, asserted structurally instead of enumerated. Scenario 13 checks
+# that the guard handles the spellings it was told about, which can only ever
+# cover what someone remembered to add — `gh pr review --approve` in auth.sh sat
+# outside the wrapper through three rounds of this audit for exactly that reason.
+# This is the same grep-guard idiom as scenarios 11/12, and it covers every
+# future site for free: a new bare create fails the suite the moment it lands.
+echo "  scenario 14: no bare create-shaped gh call remains in production..."
+# Anchored at COMMAND position — optional `if`/`!` then `gh `, at the start of a
+# statement. Matching the phrase anywhere on the line would flag prose: several
+# of these files log "gh pr comment FAILED …" on the failure path. `gh_retry`
+# cannot match either, since the alternation requires a space after `gh`.
+CREATE_RE='^[[:space:]]*(if[[:space:]]+)?(![[:space:]]*)?gh (pr (comment|review|create)|issue (comment|create)|release create)\b'
+for f in review.sh poll-pr-actions.sh learn-from-replies.sh specialist-bakeoff.sh \
+         lib/auth.sh lib/review-one-pr.sh lib/gh-comments.sh lib/pr-enumerate.sh; do
+    hit=$(grep -nE "$CREATE_RE" "$PROJECT_ROOT/$f" 2>/dev/null | head -1) || true
+    [ -z "$hit" ] \
+        || fail "scenario 14: $f has a create-shaped gh call outside gh_retry — it cannot stamp the pause: $hit"
+done
+
 echo "PASS: gh-rate-limit-smoke"

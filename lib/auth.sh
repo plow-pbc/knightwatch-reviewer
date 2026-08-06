@@ -95,7 +95,10 @@ submit_approval() {
         log "Skipping approve on $repo#$pr_num — PR authored by $bot_user (GitHub forbids self-approval)"
         return 1
     fi
-    if gh pr review "$pr_num" --repo "$repo" --approve --body "$body" 2>&1 >/dev/null; then
+    # Via the wrapper: an approve is a content-creating write, so a throttled one
+    # must stamp the pause like every other. The create-verb guard covers
+    # `pr review` too, so it is never retried into a duplicate approval.
+    if gh_retry pr review "$pr_num" --repo "$repo" --approve --body "$body" 2>&1 >/dev/null; then
         log "Approved $repo#$pr_num ($body)"
         return 0
     fi

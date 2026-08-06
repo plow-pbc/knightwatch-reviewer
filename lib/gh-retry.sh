@@ -73,7 +73,7 @@ gh_retry() {
         # would leave the form most likely to grow a new caller unprotected while
         # reading as covered. PATCH/DELETE stay retryable: both existing uses
         # address an existing comment id, so a repeat is idempotent.
-        if grep -qE '^(pr|issue|release) (comment|create)$' <<<"$1 $2" \
+        if grep -qE '^(pr (comment|create|review)|issue (comment|create)|release create)$' <<<"$1 $2" \
            || grep -qE -- '(--method[ =]|-X[ =]?)(POST|PUT)' <<<"$*"; then
             rm -f "$errfile"
             return "$rc"
