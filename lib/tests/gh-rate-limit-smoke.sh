@@ -37,6 +37,7 @@ cat > "$TMP/bin/gh" <<'SHIM'
 #!/usr/bin/env bash
 for a in "$@"; do
     if [ "$a" = "rate_limit" ]; then
+        [ -n "${GH_SHIM_PROBE_LOG:-}" ] && echo probe >> "$GH_SHIM_PROBE_LOG"
         [ -n "${GH_SHIM_BUCKETS:-}" ] || exit 1
         printf '%s\n' "$GH_SHIM_BUCKETS"
         exit 0
@@ -144,5 +145,61 @@ grep -q 'gh_pause_active' "$PROJECT_ROOT/review-loop.sh" \
     || fail "scenario 8: review-loop.sh has no gh_pause_active gate — the pause would be written but never read"
 awk '/gh_pause_active/{g=NR} /\.\/review\.sh/{r=NR} END{exit !(g && r && g < r)}' "$PROJECT_ROOT/review-loop.sh" \
     || fail "scenario 8: the gh_pause_active gate does not precede ./review.sh"
+
+# --- 9. already paused → no second probe, no window push-out ---
+# The in-flight tick keeps running after the first 403, so every later failing
+# call reaches gh_note_rate_limit too. Probing again would turn N failures into
+# 2N requests (×6 containers) during the exact window GitHub wants quiet, and
+# re-stamping would drag the window forward on every straggler.
+echo "  scenario 9: already paused → probe short-circuits, window not extended..."
+reset_state
+export GH_SHIM_PROBE_LOG="$TMP/probes"; : > "$GH_SHIM_PROBE_LOG"
+for _ in 1 2 3; do
+    GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+    GH_SHIM_ERR="$RATE_LIMIT_ERR" \
+    GH_SECONDARY_PAUSE_SECS=60 \
+        gh_api_retry "user" >/dev/null 2>&1 || true
+done
+PROBES=$(wc -l < "$GH_SHIM_PROBE_LOG")
+[ "$PROBES" -eq 1 ] \
+    || fail "scenario 9: $PROBES rate_limit probes across 3 rate-limited calls — expected 1 (amplifying during a throttle)"
+FIRST_UNTIL=$(head -n1 "$(gh_pause_file)")
+sleep 1
+GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+GH_SHIM_ERR="$RATE_LIMIT_ERR" GH_SECONDARY_PAUSE_SECS=60 \
+    gh_api_retry "user" >/dev/null 2>&1 || true
+[ "$(head -n1 "$(gh_pause_file)")" = "$FIRST_UNTIL" ] \
+    || fail "scenario 9: a later straggler pushed the pause window forward"
+unset GH_SHIM_PROBE_LOG
+
+# --- 10. torn read of the shared file must read as PAUSED-safe, not error ---
+# Six containers write this file; a reader can land on a truncated one. head
+# succeeds with empty output, so a bare `[ N -lt "$(head …)" ]` would abort with
+# "integer expression expected" — which reads as NOT paused, the worst default.
+echo "  scenario 10: empty/torn pause file → no error, reads as not-paused..."
+: > "$(gh_pause_file)"
+if gh_pause_active 2>"$TMP/err10"; then
+    fail "scenario 10: an empty pause file read as PAUSED"
+fi
+[ ! -s "$TMP/err10" ] \
+    || fail "scenario 10: gh_pause_active errored on an empty file — $(cat "$TMP/err10")"
+
+# --- 11. the shared pause file must never be deleted by the loop ---
+# The per-account quota/auth files above it each have ONE owner, so their `rm`s
+# are safe; this one has six writers and a delete would race a sibling's fresh
+# stamp, resuming the whole fleet against a throttled token.
+echo "  scenario 11: review-loop.sh never rm's the fleet-wide pause file..."
+grep -qE '^[^#]*rm .*gh_pause_file' "$PROJECT_ROOT/review-loop.sh" \
+    && fail "scenario 11: review-loop.sh deletes the shared pause file — races a sibling's stamp"
+
+# --- 12. the fleet's highest-volume caller routes through the wrapper ---
+# graphql is the loaded bucket (~30 pts/min vs core ~0). If enumerate_open_prs
+# calls `gh api` directly, a graphql exhaustion never trips the pause at all and
+# scenario 3's classification is unreachable in production.
+echo "  scenario 12: enumerate_open_prs routes through gh_api_retry..."
+grep -qE '^\s*raw=\$\(gh api graphql' "$PROJECT_ROOT/lib/pr-enumerate.sh" \
+    && fail "scenario 12: enumerate_open_prs bypasses gh_api_retry — a graphql rate limit would never pause the fleet"
+grep -q 'gh_api_retry graphql' "$PROJECT_ROOT/lib/pr-enumerate.sh" \
+    || fail "scenario 12: enumerate_open_prs no longer uses gh_api_retry"
 
 echo "PASS: gh-rate-limit-smoke"

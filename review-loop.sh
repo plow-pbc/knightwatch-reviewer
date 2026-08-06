@@ -103,7 +103,13 @@ while true; do
         log "[review-loop] github rate-limited — skipping tick (until $(date -d "@$(head -n1 "$(gh_pause_file)")" '+%H:%M:%S' 2>/dev/null || echo 'window'))"
         sleep "$POLL_SECS"; continue
     fi
-    rm -f "$(gh_pause_file)"      # absent or window passed; resume claiming
+    # Deliberately NO `rm` counterpart to the two above. Those files have a
+    # single owner each, so clearing one is safe; this one has six writers, and
+    # the gap between the check above and a delete here is wide enough (subshell,
+    # date, head, log) for a sibling to stamp a fresh pause that we would then
+    # erase — resuming all six against the throttled PAT. Nothing needs the
+    # delete: gh_pause_active treats an expired window and a missing file alike,
+    # and the next limit overwrites it atomically.
     # review.sh returns 0 on normal/no-PR/transient-enumerate-failure ticks
     # and non-zero ONLY on fatal misconfig (missing worker script, no tracked
     # repos). Surface that loudly via container exit + restart instead of

@@ -26,6 +26,8 @@
 # shared seam: any future caller of this endpoint goes through this
 # helper and gets correct pagination — and a uniform failure contract —
 # by construction.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-retry.sh"  # gh_api_retry
+
 fetch_issue_comments() {
     local repo="$1" pr_num="$2" raw err
     # Capture gh's stderr (instead of 2>/dev/null) so a fetch failure logs its
@@ -33,7 +35,12 @@ fetch_issue_comments() {
     # opaque "comments fetch failed" at the call site. stdout (the JSON) is
     # captured separately into $raw, so the success contract is unchanged.
     err=$(mktemp)
-    if ! raw=$(gh api --paginate "repos/${repo}/issues/${pr_num}/comments" 2>"$err"); then
+    # Via gh_api_retry, not bare `gh api`: a rate-limit 403 here has to stamp the
+    # fleet-wide pause like every other `gh api` caller, or the fleet keeps
+    # comment-fetching against a throttled token. Retry semantics on top are the
+    # wrapper's existing transient-blip handling; the failure contract is
+    # unchanged (non-zero + stderr in $err).
+    if ! raw=$(gh_api_retry --paginate "repos/${repo}/issues/${pr_num}/comments" 2>"$err"); then
         printf 'fetch_issue_comments: gh api failed for %s#%s: %s\n' \
             "$repo" "$pr_num" "$(tr '\n' ' ' < "$err" | head -c 400)" >&2
         rm -f "$err"

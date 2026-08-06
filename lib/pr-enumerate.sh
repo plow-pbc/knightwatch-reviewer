@@ -48,6 +48,14 @@ _enumerate_graphql_query='query($q: String!, $after: String) {
   }
 }'
 
+# gh_api_retry, for BOTH search paths below. It was once sourced inside
+# repos_with_bot_activity_since alone so enumerate_open_prs stayed unburdened;
+# that split ended when enumerate_open_prs also moved onto the wrapper — it is
+# the fleet's highest-volume GitHub caller (graphql is the loaded bucket at
+# ~30 pts/min vs core ~0), so a rate limit that surfaces here has to trip the
+# fleet-wide pause rather than being swallowed as a bare non-zero exit.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-retry.sh"
+
 owner_in_orgs() {
     local owner="$1" o
     for o in "${ORGS[@]}"; do
@@ -78,10 +86,10 @@ enumerate_open_prs() {
         after=""
         while :; do
             if [ -n "$after" ]; then
-                raw=$(gh api graphql -F q="user:${owner} is:pr is:open archived:false" \
+                raw=$(gh_api_retry graphql -F q="user:${owner} is:pr is:open archived:false" \
                         -F after="$after" -f query="$_enumerate_graphql_query" 2>/dev/null) || return 1
             else
-                raw=$(gh api graphql -F q="user:${owner} is:pr is:open archived:false" \
+                raw=$(gh_api_retry graphql -F q="user:${owner} is:pr is:open archived:false" \
                         -f query="$_enumerate_graphql_query" 2>/dev/null) || return 1
             fi
             nodes=$(printf '%s' "$raw" | jq -c '.data.search.nodes // []') || return 1
@@ -146,9 +154,6 @@ _bot_activity_graphql_query='query($q: String!, $after: String) {
 # failure policy — specialist-bakeoff.sh fails loud (PARTIAL + exit) rather than
 # re-entering the per-repo fan-out this batched path exists to retire.
 repos_with_bot_activity_since() {
-    # Source gh_api_retry here, not at file scope, so only this discovery path
-    # carries the dependency — enumerate_open_prs callers stay unburdened.
-    . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-retry.sh"
     local since="$1" bot="$2" owner q raw after pieces=()
     declare -A _seen_owners=() _tracked=()
     for owner in "${ORGS[@]}"; do

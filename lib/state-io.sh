@@ -137,8 +137,17 @@ mark_auth_offline() {
 gh_pause_file() { printf '%s' "${STATE_DIR:-$HOME/.pr-reviewer}/gh-rate-limited-until"; }
 
 # True while the pause window is still in the future. Missing file reads as
-# epoch 0 (not paused) — mirrors quota_active.
-gh_pause_active() { [ "$(date +%s)" -lt "$(head -n1 "$(gh_pause_file)" 2>/dev/null || echo 0)" ]; }
+# epoch 0 (not paused) — mirrors quota_active. Unlike quota_active this coerces
+# an EMPTY read to 0 as well: quota_active's file has one owner, but this one is
+# written by any of six containers, so a reader can land mid-write. `head` on a
+# truncated file succeeds with empty output (the `||` fallback never fires), and
+# `[ N -lt "" ]` would abort with "integer expression expected" — read as NOT
+# paused, the worst possible default here.
+gh_pause_active() {
+    local until
+    until=$(head -n1 "$(gh_pause_file)" 2>/dev/null)
+    [ "$(date +%s)" -lt "${until:-0}" ]
+}
 
 # Producer side: called by gh_api_retry when a `gh api` failure carries GitHub's
 # rate-limit signature. Emits the diagnostic the fleet previously had none of,
@@ -153,12 +162,21 @@ gh_pause_active() { [ "$(date +%s)" -lt "$(head -n1 "$(gh_pause_file)" 2>/dev/nu
 #                      a rate-limit 403 with budget left IS the secondary signal.
 #                      Pause a short fixed window (GitHub documents ~60s as the
 #                      minimum backoff when no Retry-After is supplied).
-# The /rate_limit endpoint is exempt from rate limiting, so this diagnostic is
-# free and still answers while throttled. If it can't be reached at all, fall
-# back to the secondary window rather than skipping the pause — an unclassified
-# rate-limit 403 still means "stop calling".
+# If /rate_limit can't be reached at all, fall back to the secondary window
+# rather than skipping the pause — an unclassified rate-limit 403 still means
+# "stop calling".
+#
+# Probes ONLY on the transition into a pause. /rate_limit is exempt from PRIMARY
+# accounting, but that exemption does not extend to the secondary limits — which
+# are about request rate and concurrency, and are the case this classifies most
+# often. Without the short-circuit the in-flight tick keeps going after the first
+# 403, so every subsequent failing call would fire its own probe: N failures
+# become 2N requests, ×6 containers, during the exact window GitHub is telling
+# the fleet to back off. Re-stamping would also push the window forward on every
+# late straggler.
 gh_note_rate_limit() {
     local now core_rem core_reset gql_rem gql_reset kind until
+    if gh_pause_active; then return 0; fi
     now=$(date +%s)
     read -r core_rem core_reset gql_rem gql_reset <<<"$(gh api rate_limit \
         --jq '[.resources.core.remaining, .resources.core.reset,
@@ -174,8 +192,10 @@ gh_note_rate_limit() {
     # A stale/absent reset epoch would resume instantly and re-trip; floor it.
     [ "${until:-0}" -gt "$now" ] 2>/dev/null || until=$(( now + ${GH_SECONDARY_PAUSE_SECS:-60} ))
     log "gh rate limit ($kind) — core=${core_rem:-?}/5000 graphql=${gql_rem:-?}/5000 remaining; pausing the FLEET $(( until - now ))s (until epoch $until)"
+    # tmp + atomic rename, like _seen_write above: six containers read this file
+    # every tick, and a plain `>` truncates before it writes.
     mkdir -p "$(dirname "$(gh_pause_file)")"
-    printf '%s\n' "$until" > "$(gh_pause_file)"
+    printf '%s\n' "$until" > "$(gh_pause_file).tmp" && mv -f "$(gh_pause_file).tmp" "$(gh_pause_file)"
 }
 
 # One status clause per account registered under $STATE_DIR/pool/, for the
