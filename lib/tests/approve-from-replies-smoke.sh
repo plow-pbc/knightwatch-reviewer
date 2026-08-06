@@ -114,8 +114,11 @@ elif [ "$1" = "pr" ] && [ "$2" = "review" ]; then
     # MOCK_SIBLING_STAMPS_PAUSE simulates another host timer stamping the SHARED
     # pause file in the window right after this approve succeeded. The pause file
     # is fleet-shared, so global pause state says nothing about THIS call.
-    [ -n "${MOCK_SIBLING_STAMPS_PAUSE:-}" ] \
-        && printf '%s\n' "$(( $(date +%s) + 300 ))" > "$STATE_DIR/gh-rate-limited-until"
+    if [ -n "${MOCK_SIBLING_STAMPS_PAUSE:-}" ]; then
+        printf '%s\n' "$(( $(date +%s) + 300 ))" > "$STATE_DIR/gh-rate-limited-until"
+    fi
+    exit 0   # explicit: a trailing `[ … ] && …` would exit 1 whenever the var is
+             # unset, turning every ordinary successful approve into a failure
 elif [ "$1" = "api" ]; then
     # MOCK_GH_API_FAIL=1 simulates an API outage on the comments fetch.
     # The script's pipefail-aware `gh api ... | jq` should surface this

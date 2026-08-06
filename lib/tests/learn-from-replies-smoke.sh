@@ -226,7 +226,6 @@ rm -f "$TMPDIR/comments-page2.json"
 echo "  scenario 4: gh api comments fetch fails — log + skip (pipefail wins)..."
 echo "[]" > "$MOCK_COMMENTS_FILE"
 MOCK_GH_API_FAIL=1 run_learn
-unset MOCK_GH_API_FAIL   # bash keeps a VAR=x prefix on a FUNCTION call in effect afterwards
 grep -q "comments fetch failed — skipping this PR for this tick" "$LOG_FILE" || { echo "FAIL scenario 4: expected fail-loud log line on gh api failure"; cat "$LOG_FILE"; exit 1; }
 # --- scenario 5 (structural): the seen loop must run AFTER the ACK loop --------
 # This harness deliberately doesn't stub codex, so it can't reach the ACK path
@@ -291,7 +290,6 @@ rm -f "$STATE_DIR/gh-rate-limited-until"
 echo "  scenario 8: pause arrives between ACKs → posted key seen, un-posted key retained..."
 seed_two_requests
 MOCK_TRUSTED_USERS="trusteduser" MOCK_CODEX_ACKS="$ACKS_TWO" MOCK_SIBLING_STAMPS_PAUSE=1 run_learn
-unset MOCK_SIBLING_STAMPS_PAUSE   # VAR=x on a FUNCTION call persists in bash
 posted=$(grep -c '^ACK_POSTED' "$STUB_ACK_LOG" 2>/dev/null || true); posted="${posted:-0}"
 [ "$posted" -eq 1 ] || { echo "FAIL scenario 8: expected the loop to stop after 1 ACK once the pause arrived, got $posted"; cat "$STUB_ACK_LOG"; cat "$LOG_FILE"; exit 1; }
 [ -n "$(jq -r '."test-org/probe-repo#1#930" // empty' "$REPLIES_SEEN_FILE")" ] \
