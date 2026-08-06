@@ -120,7 +120,14 @@ for repo in "${REPOS[@]}"; do
     # against a throttled token. Lossless — an unwalked repo's watermark is not
     # advanced, so the next fire picks it up exactly where this one stopped.
     if gh_pause_active; then
-        log "github rate-limited mid-walk — stopping after the current repo set"
+        # Count it as a fetch failure so the existing PARTIAL gate owns the
+        # outcome: a truncated walk must NOT rewrite $OUT_FILE. Without this the
+        # run falls through to the reporter and publishes a snapshot whose
+        # per-repo coverage silently mixes this run with older ones, logging
+        # "OK" and exiting 0 — while a SINGLE fetch failure twelve lines below
+        # is considered serious enough to refuse the overwrite.
+        fetch_failures=$(( fetch_failures + 1 ))
+        log "github rate-limited mid-walk — stopping the walk here (PARTIAL: $OUT_FILE left untouched)"
         break
     fi
     # Skip ORG repos with no bot activity since the floor (batched discovery

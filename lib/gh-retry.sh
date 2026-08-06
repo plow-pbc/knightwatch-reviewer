@@ -60,6 +60,17 @@ gh_retry() {
             rm -f "$errfile"
             return "$rc"
         fi
+        # Never retry a call that CREATES something. Widening this wrapper from
+        # `gh api` to any gh argv made every non-idempotent subcommand retryable,
+        # with nothing but remembering GH_API_RETRY_MAX=1 standing between a
+        # transient blip and a duplicate public comment. A 5xx/reset can follow a
+        # request the server already applied, so retrying a create double-posts.
+        # This refuses the RETRY, not the call: the rate-limit branch above has
+        # already run, so a throttled write still stamps the pause.
+        if grep -qE '^(pr|issue|release) (comment|create)$' <<<"$1 $2"; then
+            rm -f "$errfile"
+            return "$rc"
+        fi
         # Out of budget, or not a transient network blip → give up with real rc.
         if [ "$attempt" -ge "$max" ] || ! grep -qiE "$GH_API_TRANSIENT_RE" "$errfile"; then
             rm -f "$errfile"

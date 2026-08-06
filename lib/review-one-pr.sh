@@ -1714,7 +1714,13 @@ fi
 # public — strip any remaining workdir/<sibling-abs>/.siblings prefixes.
 COMMENT_BODY=$(scrub_review_paths "$COMMENT_BODY" "$REPO_DIR" SOURCE_PATHS)
 
-if ! gh pr comment "$PR_NUM" --repo "$REPO" --body "$COMMENT_BODY"; then
+# GH_API_RETRY_MAX=1 gh_retry, matching the placeholder POST above: this is the
+# fleet's heaviest WRITE, and GitHub's secondary limits are driven mainly by
+# content creation — so it is the call most likely to 403, and as a bare `gh` it
+# was the one call that could not stamp the pause. Unwrapped, a throttled post
+# meant the next tick re-ran the entire review (full LLM spend) only to POST into
+# the same throttle. Capped at one attempt because it CREATES a comment.
+if ! GH_API_RETRY_MAX=1 gh_retry pr comment "$PR_NUM" --repo "$REPO" --body "$COMMENT_BODY"; then
     log "$PR_ID: gh pr comment FAILED — not updating state (next tick will retry)"
     rm -rf "$REPO_DIR"
     exit 1

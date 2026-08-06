@@ -154,6 +154,21 @@ for entry in review-loop.sh poll-pr-actions.sh learn-from-replies.sh specialist-
         || fail "scenario 8: $entry can stamp a pause but never reads one — it would keep calling a throttled token"
 done
 
+# TWO gates, not one, for the three that walk a work-list. A top-of-tick check
+# alone only guards the NEXT tick: once a wrapped call trips the limit mid-walk,
+# the loop still visits every remaining PR/repo. Presence alone can't tell the
+# two apart, so require both a column-0 gate (top-of-tick) and an indented one
+# (inside the loop body). review.sh's dispatcher gate is covered behaviorally
+# instead — queue-distribute-smoke F3 asserts it stops claiming after one
+# dispatch; review-loop.sh is exempt because its only gate lives inside `while
+# true`, so indentation can't distinguish the two there.
+for entry in poll-pr-actions.sh learn-from-replies.sh specialist-bakeoff.sh; do
+    grep -qE '^gh_pause_active|^if gh_pause_active' "$PROJECT_ROOT/$entry" \
+        || fail "scenario 8: $entry has no top-of-tick gh_pause_active gate"
+    grep -qE '^[[:space:]]+if gh_pause_active' "$PROJECT_ROOT/$entry" \
+        || fail "scenario 8: $entry gates only at top-of-tick — once a mid-walk call trips the limit it keeps working the rest of the list against a throttled token"
+done
+
 # --- 9. already paused → no second probe, no window push-out ---
 # The in-flight tick keeps running after the first 403, so every later failing
 # call reaches gh_note_rate_limit too. Probing again would turn N failures into

@@ -320,7 +320,7 @@ run_orchestrator() {
     # between them: a scenario whose stub 403s with rate-limit wording correctly
     # stamps the shared pause, which would then make every later scenario's
     # dispatcher stop claiming before reaching the gate under test.
-    rm -f "$STATE_DIR/gh-rate-limited-until"
+    rm -f "$(gh_pause_file)"
     # Fail loud on a malformed comments fixture. An unparseable one makes
     # fetch_issue_comments fail, so the PR is dropped BEFORE any gate under
     # test — every assertion then passes vacuously. The trap is one printf

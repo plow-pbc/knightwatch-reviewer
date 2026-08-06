@@ -212,4 +212,37 @@ wait_dispatched
 grep -qE 'auth invalid.*stopping further claims this tick' "$LOG_FILE" || { echo "FAIL F2: auth-invalid stop log must win when both sentinels are set"; cat "$LOG_FILE"; exit 1; }
 grep -qE 'quota hit.*stopping further claims this tick' "$LOG_FILE" && { echo "FAIL F2: quota log fired — fatal-auth must dominate an active quota pause"; cat "$LOG_FILE"; exit 1; }
 echo "  OK F2"
+
+# --- F3. GitHub rate-limit mid-tick claim-stop — same seam as F, GitHub side.
+#        A worker that trips the shared pause must stop review.sh from claiming
+#        the REST of the queue this same tick; the top-of-tick gate in
+#        review-loop.sh only guards the NEXT one, so without this the dispatcher
+#        keeps handing out queued PRs whose workers each re-hit the throttle.
+#        Unlike F/F2 this gate is deliberately NOT container-gated — the host
+#        path spends the same PAT — so it runs WITHOUT REVIEWER_CONTAINER_MODE,
+#        which also asserts that property. ---
+echo "  F3: github rate-limited — worker stamps the pause → no further claims this tick..."
+rm -f "$STATE_DIR/queue.json" "$F_POOL/auth-offline" "$F_POOL/quota-paused-until"
+cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<'WORKER'
+#!/bin/bash
+echo "WORKER_DISPATCHED repo=$1 pr=$2 sha=$3" >> "$LOG_FILE"
+. "$REVIEWER_LIB_DIR/state-io.sh"
+printf '%s\n' "$(( $(date +%s) + 300 ))" > "$(gh_pause_file)"   # simulate a wrapped call tripping the limit
+WORKER
+chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
+write_queue "$STATE_DIR" "$(date +%s)" "$TWO_SPECS"
+: > "$LOG_FILE"
+LOCAL_STATE_DIR="$F_LOCAL_STATE" ENUMERATE_SECS=999 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
+wait_dispatched
+# Precondition, mirroring F2's: if the pause never landed the assertion below
+# would pass for the wrong reason (nothing to stop on).
+[ -s "$(STATE_DIR="$STATE_DIR" bash -c '. "'"$REVIEWER_LIB_DIR"'/state-io.sh"; gh_pause_file')" ] \
+    || { echo "FAIL F3: pause file not established — claim-stop assertion would be vacuous"; cat "$LOG_FILE"; exit 1; }
+f3_dispatched=$(grep -c '^WORKER_DISPATCHED ' "$LOG_FILE" 2>/dev/null || true); f3_dispatched="${f3_dispatched:-0}"
+[ "$f3_dispatched" -eq 1 ] || { echo "FAIL F3: expected exactly 1 dispatch (claim-stop after the pause), got $f3_dispatched"; cat "$LOG_FILE"; exit 1; }
+grep -qE 'github rate-limited — stopping further claims this tick' "$LOG_FILE" \
+    || { echo "FAIL F3: missing same-tick github rate-limit claim-stop log"; cat "$LOG_FILE"; exit 1; }
+rm -f "$(STATE_DIR="$STATE_DIR" bash -c '. "'"$REVIEWER_LIB_DIR"'/state-io.sh"; gh_pause_file')"
+echo "  OK F3"
+
 echo "ALL PASS: queue-distribute-smoke.sh"
