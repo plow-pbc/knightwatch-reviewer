@@ -52,7 +52,22 @@ echo "[]" > "$MOCK_COMMENTS_FILE"
 # the smoke's "test-org/probe-repo".
 cat > "$HOME/.local/bin/gh" <<'STUB'
 #!/bin/bash
-if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
+if [ "$1" = "pr" ] && [ "$2" = "comment" ]; then
+    # MOCK_ACK_RATE_LIMITED=1 → the first ACK post 403s with rate-limit wording,
+    # so gh_retry stamps the shared pause and the ACK loop must stop there.
+    if [ -n "${MOCK_ACK_RATE_LIMITED:-}" ] && [ ! -s "${STUB_ACK_LOG:-/dev/null}" ]; then
+        echo "ACK_ATTEMPT_THROTTLED" >> "${STUB_ACK_LOG:-/dev/null}"
+        echo "gh: HTTP 403: API rate limit exceeded" >&2
+        exit 1
+    fi
+    echo "ACK_POSTED $3" >> "${STUB_ACK_LOG:-/dev/null}"
+    # MOCK_SIBLING_STAMPS_PAUSE → a sibling timer stamps the shared pause right
+    # after this ACK lands, so the NEXT iteration hits the loop's pre-check break
+    # rather than a failed post. Different code path, same retention contract.
+    [ -n "${MOCK_SIBLING_STAMPS_PAUSE:-}" ] \
+        && printf '%s\n' "$(( $(date +%s) + 300 ))" > "$STATE_DIR/gh-rate-limited-until"
+    exit 0
+elif [ "$1" = "pr" ] && [ "$2" = "list" ]; then
     repo=""
     for ((i=1; i<=$#; i++)); do
         if [ "${!i}" = "--repo" ]; then
@@ -97,6 +112,12 @@ elif [ "$1" = "api" ]; then
             cat "$MOCK_COMMENTS_FILE"
         fi
     elif [[ "$endpoint" == */collaborators/*/permission ]]; then
+        # Honor MOCK_TRUSTED_USERS so a scenario can actually reach the codex/ACK
+        # path; unset (the default) keeps every prior scenario untrusted.
+        u="${endpoint##*/collaborators/}"; u="${u%/permission}"
+        for t in ${MOCK_TRUSTED_USERS:-}; do
+            if [ "$u" = "$t" ]; then echo "write"; exit 0; fi
+        done
         echo "none"
     else
         echo "{}"
@@ -108,6 +129,27 @@ STUB
 chmod +x "$HOME/.local/bin/gh"
 
 # Sandbox lib dir.
+
+# --- codex stub (opt-in via MOCK_CODEX_ACKS) ----------------------------------
+# The suite historically stopped before the codex/ACK path, which is exactly how
+# an ordering bug shipped that marked NOTHING seen. This stub emits the shape the
+# parser expects so ACK retention can be asserted behaviorally, not by layout.
+cat > "$HOME/.local/bin/codex" <<'CODEXSTUB'
+#!/bin/bash
+cat >/dev/null   # drain the prompt on stdin
+echo "codex"
+echo "<COMMENT_REVIEW_MISTAKES>"
+echo "- stub mistake line"
+echo "</COMMENT_REVIEW_MISTAKES>"
+if [ -n "${MOCK_CODEX_ACKS:-}" ]; then
+    echo "<ACKS>"
+    printf '%s\n' "$MOCK_CODEX_ACKS"
+    echo "</ACKS>"
+fi
+echo "tokens used: 1"
+CODEXSTUB
+chmod +x "$HOME/.local/bin/codex"
+
 export REVIEWER_LIB_DIR="$TMPDIR/lib"
 mkdir -p "$REVIEWER_LIB_DIR"
 cp "$PROJECT_ROOT/lib/bootstrap.sh"     "$REVIEWER_LIB_DIR/bootstrap.sh"  # sources the core below
@@ -184,6 +226,7 @@ rm -f "$TMPDIR/comments-page2.json"
 echo "  scenario 4: gh api comments fetch fails — log + skip (pipefail wins)..."
 echo "[]" > "$MOCK_COMMENTS_FILE"
 MOCK_GH_API_FAIL=1 run_learn
+unset MOCK_GH_API_FAIL   # bash keeps a VAR=x prefix on a FUNCTION call in effect afterwards
 grep -q "comments fetch failed — skipping this PR for this tick" "$LOG_FILE" || { echo "FAIL scenario 4: expected fail-loud log line on gh api failure"; cat "$LOG_FILE"; exit 1; }
 # --- scenario 5 (structural): the seen loop must run AFTER the ACK loop --------
 # This harness deliberately doesn't stub codex, so it can't reach the ACK path
@@ -200,4 +243,61 @@ SEEN_AT=$(grep -n 'done < "\$REPLIES_META_FILE"' "$PROJECT_ROOT/learn-from-repli
 [ "$SEEN_AT" -gt "$ACK_END" ] \
     || { echo "FAIL scenario 5: seen loop at line $SEEN_AT runs BEFORE the ACK loop ends at $ACK_END — nothing would ever be marked seen, so every tick re-runs codex and re-posts a duplicate ACK"; exit 1; }
 
-echo "  PASS (5 scenarios: REPOS-override-observed, untrusted-memorize-ignored, page-2-paginated, gh-api-failure-fail-loud, seen-loop-after-ack-loop)"
+# --- scenario 6/7 (behavioral): ACK retention, the half a line-order grep can't see
+# This subsystem already shipped one total regression in this branch (nothing
+# marked seen → codex re-run + duplicate ACK every hour). Scenario 5 pins the
+# ordering; these pin the CONTRACT: default seen, held back only by the pause.
+export STUB_ACK_LOG="$STATE_DIR/gh-ack.log"
+TRUSTED_NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+TRUSTED_EARLIER=$(python3 -c "import datetime; print(datetime.datetime.fromtimestamp($(($(date +%s) - 120)), tz=datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+seed_two_requests() {
+    : > "$STUB_ACK_LOG"
+    echo '{}' > "$REPLIES_SEEN_FILE"
+    rm -f "$STATE_DIR/gh-rate-limited-until"
+    unset MOCK_COMMENTS_FILE_PAGE2
+    # A bot auto-post must come FIRST and be older: the collector skips a repo
+    # with no bot comment, and only counts requests newer than the bot's last one.
+    printf '[{"id":929,"created_at":"%s","user":{"login":"srosro"},"body":"%s\\nbot review"},{"id":930,"created_at":"%s","user":{"login":"trusteduser"},"body":"/srosro-memorize first lesson"},{"id":931,"created_at":"%s","user":{"login":"trusteduser"},"body":"/srosro-memorize second lesson"}]\n' \
+        "$TRUSTED_EARLIER" "$BOT_AUTO_POST_MARKER" "$TRUSTED_NOW" "$TRUSTED_NOW" > "$MOCK_COMMENTS_FILE"
+}
+ACKS_TWO='<ACK key="test-org/probe-repo#1#930">noted one</ACK>
+<ACK key="test-org/probe-repo#1#931">noted two</ACK>'
+
+echo "  scenario 6: ACKs post → both keys marked seen (no re-run next tick)..."
+seed_two_requests
+MOCK_TRUSTED_USERS="trusteduser" MOCK_CODEX_ACKS="$ACKS_TWO" run_learn
+posted=$(grep -c '^ACK_POSTED' "$STUB_ACK_LOG" 2>/dev/null || true); posted="${posted:-0}"
+[ "$posted" -eq 2 ] || { echo "FAIL scenario 6: expected 2 ACKs posted, got $posted"; cat "$STUB_ACK_LOG" 2>/dev/null; cat "$LOG_FILE"; exit 1; }
+for k in 930 931; do
+    [ -n "$(jq -r --arg k "test-org/probe-repo#1#$k" '.[$k] // empty' "$REPLIES_SEEN_FILE")" ] \
+        || { echo "FAIL scenario 6: key $k not marked seen after its ACK posted — next tick re-runs codex and posts a duplicate ACK"; cat "$REPLIES_SEEN_FILE"; cat "$LOG_FILE"; exit 1; }
+done
+
+echo "  scenario 7: first ACK throttled → neither key marked seen, retried next tick..."
+seed_two_requests
+MOCK_TRUSTED_USERS="trusteduser" MOCK_CODEX_ACKS="$ACKS_TWO" MOCK_ACK_RATE_LIMITED=1 run_learn
+for k in 930 931; do
+    [ -z "$(jq -r --arg k "test-org/probe-repo#1#$k" '.[$k] // empty' "$REPLIES_SEEN_FILE")" ] \
+        || { echo "FAIL scenario 7: key $k marked seen despite the rate limit stopping its ACK — a trusted memorize request is silently dropped"; cat "$REPLIES_SEEN_FILE"; cat "$LOG_FILE"; exit 1; }
+done
+# Window cleared → the deferred requests go through, proving they were held not lost.
+rm -f "$STATE_DIR/gh-rate-limited-until"
+: > "$STUB_ACK_LOG"
+MOCK_TRUSTED_USERS="trusteduser" MOCK_CODEX_ACKS="$ACKS_TWO" run_learn
+posted=$(grep -c '^ACK_POSTED' "$STUB_ACK_LOG" 2>/dev/null || true); posted="${posted:-0}"
+[ "$posted" -eq 2 ] || { echo "FAIL scenario 7: deferred ACKs did not post after the pause cleared (got $posted) — the requests were lost"; cat "$STUB_ACK_LOG"; cat "$LOG_FILE"; exit 1; }
+rm -f "$STATE_DIR/gh-rate-limited-until"
+
+echo "  scenario 8: pause arrives between ACKs → posted key seen, un-posted key retained..."
+seed_two_requests
+MOCK_TRUSTED_USERS="trusteduser" MOCK_CODEX_ACKS="$ACKS_TWO" MOCK_SIBLING_STAMPS_PAUSE=1 run_learn
+unset MOCK_SIBLING_STAMPS_PAUSE   # VAR=x on a FUNCTION call persists in bash
+posted=$(grep -c '^ACK_POSTED' "$STUB_ACK_LOG" 2>/dev/null || true); posted="${posted:-0}"
+[ "$posted" -eq 1 ] || { echo "FAIL scenario 8: expected the loop to stop after 1 ACK once the pause arrived, got $posted"; cat "$STUB_ACK_LOG"; cat "$LOG_FILE"; exit 1; }
+[ -n "$(jq -r '."test-org/probe-repo#1#930" // empty' "$REPLIES_SEEN_FILE")" ] \
+    || { echo "FAIL scenario 8: the ACK that DID post was not marked seen — next tick re-posts it as a duplicate"; cat "$REPLIES_SEEN_FILE"; exit 1; }
+[ -z "$(jq -r '."test-org/probe-repo#1#931" // empty' "$REPLIES_SEEN_FILE")" ] \
+    || { echo "FAIL scenario 8: the un-posted key was marked seen — that memorize request is silently dropped"; cat "$REPLIES_SEEN_FILE"; exit 1; }
+rm -f "$STATE_DIR/gh-rate-limited-until"
+
+echo "  PASS (8 scenarios: REPOS-override-observed, untrusted-memorize-ignored, page-2-paginated, gh-api-failure-fail-loud, seen-loop-after-ack-loop, acks-posted-marked-seen, acks-throttled-retained, pause-mid-batch-per-key-retention)"

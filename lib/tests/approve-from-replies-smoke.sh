@@ -111,6 +111,11 @@ elif [ "$1" = "pr" ] && [ "$2" = "review" ]; then
     # Use a sentinel to keep the body single-line in the log.
     body_oneline=$(printf '%s' "$body" | tr '\n' '|')
     echo "APPROVE repo=$repo pr=$pr_num body=$body_oneline" >> "$STUB_ACTIONS_LOG"
+    # MOCK_SIBLING_STAMPS_PAUSE simulates another host timer stamping the SHARED
+    # pause file in the window right after this approve succeeded. The pause file
+    # is fleet-shared, so global pause state says nothing about THIS call.
+    [ -n "${MOCK_SIBLING_STAMPS_PAUSE:-}" ] \
+        && printf '%s\n' "$(( $(date +%s) + 300 ))" > "$STATE_DIR/gh-rate-limited-until"
 elif [ "$1" = "api" ]; then
     # MOCK_GH_API_FAIL=1 simulates an API outage on the comments fetch.
     # The script's pipefail-aware `gh api ... | jq` should surface this
@@ -328,6 +333,27 @@ n=$(count_approves)
 [ "$n" -eq 1 ] || { echo "FAIL scenario 10b: expected the deferred approve to submit after the pause, got $n"; cat "$STUB_ACTIONS_LOG"; cat "$LOG_FILE"; exit 1; }
 rm -f "$STATE_DIR/gh-rate-limited-until"
 
+# Scenario 10c: a SUCCESSFUL approve stays marked seen even when a sibling timer
+# stamps the shared pause immediately afterwards. This is the half 10b cannot
+# see — there the failure and the pause coincide, so a pause-ONLY gate passes it.
+# Here the approve succeeded, so keying on global pause state would leave the key
+# unseen and the next tick would post a SECOND approve plus a duplicate public
+# comment: irreversible and user-visible.
+echo "  scenario 10c: successful approve + sibling stamps the pause → still marked seen..."
+echo '{}' > "$APPROVES_SEEN_FILE"
+rm -f "$STATE_DIR/gh-rate-limited-until"
+printf '[{"id":1012,"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-approve"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+MOCK_TRUSTED_USERS="someuser" MOCK_SIBLING_STAMPS_PAUSE=1 run_approve
+n=$(count_approves)
+[ "$n" -eq 1 ] || { echo "FAIL scenario 10c: expected 1 approve, got $n"; cat "$STUB_ACTIONS_LOG"; cat "$LOG_FILE"; exit 1; }
+[ -n "$(jq -r '."test-org/probe-repo#1#1012" // empty' "$APPROVES_SEEN_FILE")" ] \
+    || { echo "FAIL scenario 10c: a SUCCESSFUL approve was left unseen because a sibling stamped the pause — next tick would post a duplicate approve"; cat "$APPROVES_SEEN_FILE"; cat "$LOG_FILE"; exit 1; }
+rm -f "$STATE_DIR/gh-rate-limited-until"
+MOCK_TRUSTED_USERS="someuser" run_approve
+n=$(count_approves)
+[ "$n" -eq 0 ] || { echo "FAIL scenario 10c: rerun produced a DUPLICATE approve ($n this tick) — the successful approve was not retained as seen"; cat "$STUB_ACTIONS_LOG"; exit 1; }
+rm -f "$STATE_DIR/gh-rate-limited-until"
+
 echo "  scenario 11: REPOS override is observed (not clobbered by hardcoded default)..."
 echo '{}' > "$APPROVES_SEEN_FILE"
 echo "[]" > "$MOCK_COMMENTS_FILE"
@@ -390,4 +416,4 @@ MOCK_TRUSTED_USERS="someuser" run_approve
 n=$(count_approves)
 [ "$n" -eq 1 ] || { echo "FAIL scenario 14: expected 1 approve on recovery tick, got $n (dropped after transient failure)"; cat "$STUB_ACTIONS_LOG"; cat "$LOG_FILE"; exit 1; }
 
-echo "  PASS (15 scenarios: empty, trusted-approve, already-seen, bot-self-marker, untrusted-skip, [bot]-skip, mid-sentence-no-match, second-line-match, trailing-arg-match, gh-failure-marked-seen, rate-limited-approve-deferred, REPOS-override-observed, page-2-paginated, gh-api-failure-fail-loud, indeterminate-trust-deferred-then-retried)"
+echo "  PASS (16 scenarios: empty, trusted-approve, already-seen, bot-self-marker, untrusted-skip, [bot]-skip, mid-sentence-no-match, second-line-match, trailing-arg-match, gh-failure-marked-seen, rate-limited-approve-deferred, successful-approve-retained-across-sibling-pause, REPOS-override-observed, page-2-paginated, gh-api-failure-fail-loud, indeterminate-trust-deferred-then-retried)"
