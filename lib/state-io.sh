@@ -202,7 +202,16 @@ gh_note_rate_limit() {
     local lockfile="$(gh_pause_file).lock"
     mkdir -p "$(dirname "$lockfile")"
     exec {_gh_lock_fd}>"$lockfile" || return 1
-    flock "$_gh_lock_fd"
+    # BOUNDED, and proceed on timeout. The critical section makes a network call
+    # (the /rate_limit probe), and the moment this runs is a 403 cascade — exactly
+    # when GitHub may be degraded and that probe stalls on TCP/TLS. An unbounded
+    # wait would then block every sibling behind the holder, freezing workers that
+    # hold PR locks and their container's tick: a fleet-wide stall introduced by
+    # the very code meant to back off gracefully. Losing the lock is strictly
+    # better, because the keep-the-later-window merge below already makes an
+    # unserialized write safe in the direction that matters — a stale 60s stamp
+    # self-corrects on the next trip, an indefinite worker stall does not.
+    flock -w 30 "$_gh_lock_fd" || true
     local rc=0
     _gh_note_rate_limit_locked || rc=$?
     exec {_gh_lock_fd}>&-

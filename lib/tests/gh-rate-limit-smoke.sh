@@ -249,13 +249,58 @@ GH_SHIM_ERR="$RATE_LIMIT_ERR" gh pr comment 7 --repo o/r --body hi >/dev/null 2>
     || fail "scenario 12: a rate-limited plain `gh` call left no pause — the seam is not classifying"
 reset_state
 
-# Every entrypoint that CALLS gh must source the seam; without it those calls go
-# straight to the binary and neither stamp nor honor the pause. review-loop.sh is
-# excluded on purpose: it makes no gh calls of its own (it runs ./review.sh), it
-# only reads the gate — scenario 8 covers that side.
-for entry in poll-pr-actions.sh learn-from-replies.sh specialist-bakeoff.sh org-sync.sh; do
-    grep -qE 'gh-retry\.sh|bootstrap\.sh' "$PROJECT_ROOT/$entry" \
-        || fail "scenario 12: $entry calls gh but never sources the seam — those calls bypass the pause entirely"
+# The seam is structural only if the script actually SOURCES it — that is the one
+# non-structural precondition, so it gets the strongest check here. Derived from
+# git, not hand-listed (a list omits whatever nobody remembered — it had already
+# dropped review.sh, review-one-pr.sh and replay.sh, the three biggest callers),
+# and matched on a NON-COMMENT source line, since a filename mentioned in prose
+# satisfied the previous grep while the real source line could be deleted.
+# Which libs carry the seam, transitively. review-one-pr.sh reaches gh() only via
+# `. auth.sh` -> gh-retry.sh, so a direct-source check would flag the worker — the
+# repo's single biggest gh caller — while a hand-added exception for auth.sh would
+# just be the same staleness one level down. Fixpoint instead: start at
+# gh-retry.sh and absorb any lib that sources a carrier.
+SEAM_CARRIERS='gh-retry\.sh'
+for _ in 1 2 3 4; do
+    for _lib in "$PROJECT_ROOT"/lib/*.sh; do
+        _base=$(basename "$_lib")
+        grep -qE "(^|/)${_base%.sh}\\.sh" <<<"$SEAM_CARRIERS" && continue
+        _src=$(sed -e 's/#.*//' "$_lib")
+        grep -qE "^[[:space:]]*(\.|source)[[:space:]].*($SEAM_CARRIERS)" <<<"$_src" \
+            && SEAM_CARRIERS="$SEAM_CARRIERS|${_base%.sh}\\.sh"
+    done
+done
+[ "$(grep -o '|' <<<"$SEAM_CARRIERS" | wc -l)" -ge 2 ] \
+    || fail "scenario 12: seam-carrier closure resolved to '$SEAM_CARRIERS' — expected gh-retry plus at least auth/bootstrap; the resolution broke"
+
+mapfile -t GH_CALLERS < <(cd "$PROJECT_ROOT" && git ls-files '*.sh' | grep -v '^lib/tests/' | grep -v '^lib/gh-retry.sh$')
+[ "${#GH_CALLERS[@]}" -gt 10 ] \
+    || fail "scenario 12: derived only ${#GH_CALLERS[@]} scripts — the git derivation broke, so this asserts nothing"
+checked=0
+for f in "${GH_CALLERS[@]}"; do
+    [ -f "$PROJECT_ROOT/$f" ] \
+        || fail "scenario 12: derived path $f does not exist — a vanished script must fail loudly"
+    # Strip into variables first, then match with a herestring. NOT `sed … | grep
+    # -q …`: under `set -o pipefail` grep -q exits on the first match, sed takes
+    # SIGPIPE (141), and the PIPELINE reports failure even though the match
+    # succeeded — a race that fires on big files whose match is early, i.e.
+    # exactly review.sh. It was flaky ~1 run in 12 before this.
+    stripped_code=$(sed -e 's/"[^"]*"//g' -e "s/'[^']*'//g" -e 's/#.*//' "$PROJECT_ROOT/$f")
+    grep -qE '(^|[^[:alnum:]_.])gh[[:space:]]' <<<"$stripped_code" || continue
+    case "$f" in lib/state-io.sh|install.sh) continue ;; esac   # `command gh` probe; `gh --version` preflight
+    checked=$((checked + 1))
+    stripped_src=$(sed -e 's/#.*//' "$PROJECT_ROOT/$f")
+    grep -qE "^[[:space:]]*(\.|source)[[:space:]].*($SEAM_CARRIERS)" <<<"$stripped_src" \
+        || fail "scenario 12: $f calls gh but sources nothing that defines the seam — every one of those calls bypasses the pause"
+done
+[ "$checked" -ge 5 ] \
+    || fail "scenario 12: only $checked gh-calling scripts found (expected >=5) — the call detection broke"
+
+# And the seam must actually be DEFINED by what they source — a rename or a
+# boy-scout deletion of the definition would satisfy every check above.
+for lib in gh-retry.sh bootstrap.sh; do
+    [ "$(cd "$PROJECT_ROOT" && REVIEWER_LIB_DIR="$PROJECT_ROOT/lib" bash -c ". lib/$lib >/dev/null 2>&1; type -t gh")" = function ] \
+        || fail "scenario 12: sourcing lib/$lib does not define gh() — the seam is gone, and every caller silently talks to the real binary"
 done
 
 # --- 13. a primary classification must not be clobbered by a slower sibling ---
@@ -280,6 +325,26 @@ wait
 GOT=$(head -n1 "$(gh_pause_file)")
 [ "$GOT" = "$CORE_RESET" ] \
     || fail "scenario 13: pause is $GOT, expected the primary reset $CORE_RESET — a slower sibling's 60s fallback overwrote the real window, so the fleet resumes early"
+reset_state
+
+# --- 14. a create is never RETRIED; a read still is ---
+# Deleted by accident when scenarios 12/14 were replaced — this is the only
+# coverage for the create guard, and without it a retried create double-posts a
+# public comment on a transient blip.
+echo "  scenario 14: creates are not retried on a transient error; reads are..."
+attempts() {   # $1.. = argv passed through the seam; echoes the gh invocation count
+    : > "$TMP/calls"
+    GH_SHIM_CALL_LOG="$TMP/calls" GH_SHIM_ERR='net/http: TLS handshake timeout' \
+    GH_API_RETRY_DELAY=0 gh "$@" >/dev/null 2>&1 || true
+    wc -l < "$TMP/calls"
+}
+reset_state
+[ "$(attempts pr comment 7 --repo o/r --body hi)" -eq 1 ] \
+    || fail "scenario 14: 'gh pr comment' was retried — a blip after the server applied it would double-post"
+[ "$(attempts api repos/o/r/issues/7/comments --method POST -f body=hi)" -eq 1 ] \
+    || fail "scenario 14: 'gh api --method POST' was retried — the shape the api-shaped create sites use"
+[ "$(attempts api repos/o/r/pulls/7/commits)" -eq 3 ] \
+    || fail "scenario 14: a READ lost its retry budget — the transient-blip resilience the wrapper exists for"
 reset_state
 
 echo "PASS: gh-rate-limit-smoke"
