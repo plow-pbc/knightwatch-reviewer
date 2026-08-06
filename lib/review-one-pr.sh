@@ -390,7 +390,7 @@ flock "$CANONICAL_LOCK_FD" || { log "$PR_ID: canonical flock failed — aborting
 
 if [ ! -d "$CANONICAL_DIR/.git" ]; then
     log "Cloning canonical $REPO..."
-    if ! gh repo clone "$REPO" "$CANONICAL_DIR" -- --no-single-branch; then
+    if ! gh_retry repo clone "$REPO" "$CANONICAL_DIR" -- --no-single-branch; then
         log "$PR_ID: canonical clone failed — aborting"
         exit 1
     fi

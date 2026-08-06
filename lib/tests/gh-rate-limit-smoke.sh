@@ -254,24 +254,41 @@ done
     || fail "scenario 13: a READ lost its retry budget — the transient-blip resilience the wrapper exists for"
 reset_state
 
-# --- 14. NO create-shaped gh call anywhere outside the wrapper ---
-# The property, asserted structurally instead of enumerated. Scenario 13 checks
-# that the guard handles the spellings it was told about, which can only ever
-# cover what someone remembered to add — `gh pr review --approve` in auth.sh sat
-# outside the wrapper through three rounds of this audit for exactly that reason.
-# This is the same grep-guard idiom as scenarios 11/12, and it covers every
-# future site for free: a new bare create fails the suite the moment it lands.
-echo "  scenario 14: no bare create-shaped gh call remains in production..."
-# Anchored at COMMAND position — optional `if`/`!` then `gh `, at the start of a
-# statement. Matching the phrase anywhere on the line would flag prose: several
-# of these files log "gh pr comment FAILED …" on the failure path. `gh_retry`
-# cannot match either, since the alternation requires a space after `gh`.
-CREATE_RE='^[[:space:]]*(if[[:space:]]+)?(![[:space:]]*)?gh (pr (comment|review|create)|issue (comment|create)|release create)\b'
-for f in review.sh poll-pr-actions.sh learn-from-replies.sh specialist-bakeoff.sh \
-         lib/auth.sh lib/review-one-pr.sh lib/gh-comments.sh lib/pr-enumerate.sh; do
-    hit=$(grep -nE "$CREATE_RE" "$PROJECT_ROOT/$f" 2>/dev/null | head -1) || true
+# --- 14. EVERY production gh invocation goes through the wrapper ---
+# Inverted on purpose. Matching create-shaped calls could only ever cover the
+# spellings and subcommands someone remembered to add — which is how
+# `gh pr review --approve` survived three rounds of this audit. Asserting the
+# whole property instead makes it immune to spelling, argv position, env prefix,
+# capture form, and read-vs-write: any gh call that is not gh_retry cannot stamp
+# the pause, so it is a hole regardless of shape.
+#
+# The file list is DERIVED from git, not hand-listed — a hand-listed set moves
+# the same "only what someone remembered" failure onto the file axis, and a
+# renamed or deleted path would silently read as clean.
+echo "  scenario 14: every production gh call routes through gh_retry..."
+# Quoted spans are stripped before matching so prose can't false-positive:
+# several of these files log a 'gh pr comment FAILED' string on their failure
+# paths, in both quote styles.
+mapfile -t PROD_SH < <(cd "$PROJECT_ROOT" && git ls-files '*.sh' \
+    | grep -v '^lib/tests/' | grep -v '^lib/gh-retry.sh$')
+[ "${#PROD_SH[@]}" -gt 10 ] \
+    || fail "scenario 14: derived only ${#PROD_SH[@]} production scripts — the git ls-files derivation broke, so this asserts nothing"
+for f in "${PROD_SH[@]}"; do
+    [ -f "$PROJECT_ROOT/$f" ] \
+        || fail "scenario 14: derived path $f does not exist — a vanished script must fail loudly, not read as clean"
+    # Deliberate bare calls, each with a reason it cannot use the wrapper:
+    #   lib/state-io.sh  — `gh api rate_limit` IS the classification probe inside
+    #                      gh_note_rate_limit; routing it through gh_retry recurses.
+    #   install.sh       — `gh --version` preflight, not an API call.
+    case "$f" in lib/state-io.sh|install.sh) continue ;; esac
+    # Quotes stripped BEFORE comments: a '#' inside a quoted span (printf
+    # '…%s#%s…') would otherwise truncate the line mid-string and leave an
+    # unterminated quote the strip can't match.
+    hit=$(sed -e 's/"[^"]*"//g' -e "s/'[^']*'//g" -e 's/#.*//' "$PROJECT_ROOT/$f" \
+          | grep -vE 'command -v gh|which gh' \
+          | grep -nE '(^|[^[:alnum:]_.])gh[[:space:]]' | head -1) || true
     [ -z "$hit" ] \
-        || fail "scenario 14: $f has a create-shaped gh call outside gh_retry — it cannot stamp the pause: $hit"
+        || fail "scenario 14: $f calls gh directly instead of gh_retry — it cannot stamp the pause: $hit"
 done
 
 echo "PASS: gh-rate-limit-smoke"
