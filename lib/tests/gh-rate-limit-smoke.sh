@@ -303,7 +303,12 @@ for f in "${GH_CALLERS[@]}"; do
     # gh_retry -> gh_note_rate_limit lives there. Now it stays audited.
     # Bypass strips run BEFORE the quote strip: `timeout "${VAR}" gh` collapses to
     # `timeout  gh` once the quoted arg is removed, and the pattern would miss it.
-    stripped_code=$(sed -e 's/command gh/ /g' -e 's/timeout [^ ]* gh/ /g' \
+    # Anchored to the ONE sanctioned call. An unanchored `timeout … gh` would
+    # sanction that spelling repo-wide — and it skips gh_pause_active, retry, and
+    # classification, so a script whose gh calls all took that form would drop out
+    # of the audit silently. `timeout` is already a common idiom here (review.sh,
+    # review-one-pr.sh, run-dir.sh), so that is a plausible next spelling.
+    stripped_code=$(sed -e 's/command gh/ /g' -e 's/timeout [^ ]* gh api rate_limit/ /g' \
                         -e 's/"[^"]*"//g' -e "s/'[^']*'//g" -e 's/#.*//' "$PROJECT_ROOT/$f")
     grep -qE '(^|[^[:alnum:]_.])gh[[:space:]]' <<<"$stripped_code" || continue
     case "$f" in install.sh) continue ;; esac   # pre-seam `gh --version` preflight

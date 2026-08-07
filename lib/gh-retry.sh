@@ -9,7 +9,9 @@
 # caller's existing fail-loud accounting still fires.
 #
 # Usage: call `gh` normally — sourcing this file makes every call go through
-#        gh_retry below. `command gh` is the un-intercepted escape hatch.
+#        gh_retry below. `command gh` reaches the binary un-intercepted;
+#        gh_note_rate_limit's probe uses `timeout <n> gh api rate_limit`, which
+#        execs the binary too and additionally bounds it.
 # Env:   GH_API_RETRY_MAX   (default 3)  total attempts (initial + retries)
 #        GH_API_RETRY_DELAY (default 2)  base backoff seconds, ×attempt number
 
@@ -103,6 +105,7 @@ gh_retry() {
 # that sources this file routed by construction — no per-call-site edits, no
 # allowlist, no test that greps for stragglers. That whole class of finding
 # ("this call bypasses the wrapper") disappears: there is nothing left to bypass.
-# `command gh` above (and in gh_note_rate_limit's probe) is what keeps it from
-# recursing into itself.
+# `command gh` above is what keeps it from recursing into itself;
+# gh_note_rate_limit's probe gets the same effect from `timeout … gh`, which
+# execs the binary rather than re-entering this function.
 gh() { gh_retry "$@"; }
