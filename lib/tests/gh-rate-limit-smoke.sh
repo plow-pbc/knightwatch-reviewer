@@ -372,17 +372,12 @@ reset_state
 reset_state
 
 # --- 15. publishing must not depend on the CALLER's shell options -------------
-# Trimmed to the one assertion that can actually fail. The seam half is gone: I
-# established last round that with today's gh_retry control flow it does not
-# independently fire, which makes it a comment with a runtime cost. The helper
-# went with it — one call site does not need one.
-#
-# This half stays because it is the only falsifiable guard for a bug that shipped
-# here: a bare `( … )` inherits the caller's errexit, and on the FIRST writer
-# `head` on the not-yet-existing pause file exits 1, so the section dies before
-# the log and before the write — no pause, no diagnostic. Every other scenario
-# reaches this code via `gh … || true`, which suppresses errexit for the whole
-# dynamic extent, so none of them would catch it.
+# The only falsifiable guard for a bug that shipped here: a bare `( … )` inherits
+# the caller's errexit, and on the FIRST writer `head` on the not-yet-existing
+# pause file exits 1 — so the critical section dies there, before the log and
+# before the write. No pause published, no diagnostic logged. Every other
+# scenario reaches this code via `gh … || true`, which suppresses errexit for the
+# whole dynamic extent, so none of them would catch a regression.
 echo "  scenario 15: publish survives a set -e caller with no pause file yet..."
 reset_state
 env -u BASH_ENV bash -c '
