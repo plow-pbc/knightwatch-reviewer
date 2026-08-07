@@ -371,4 +371,34 @@ reset_state
     || fail "scenario 14: a READ lost its retry budget — the transient-blip resilience the wrapper exists for"
 reset_state
 
+# --- 15. the FIRST writer must stamp the pause under a `set -e` caller --------
+# Every other scenario calls `gh … || true`, which suppresses errexit for the
+# whole dynamic extent — so none of them exercise the publish path with -e live.
+# That is not hypothetical: lib/replay.sh runs `set -euo pipefail` and its gh
+# calls are deliberately bare assignments so a failed fetch aborts. On the first
+# writer there is no pause file yet, `head` exits 1, and an unguarded critical
+# section dies there — before the log, before the write. No pause, no diagnostic,
+# and the failure propagates into the caller mid-run.
+# --- 15. publishing must not depend on the CALLER's shell options -------------
+# Every other scenario reaches this code via `gh … || true`, which suppresses
+# errexit for the whole dynamic extent, so none of them exercise the publish path
+# with -e live. On the FIRST writer there is no pause file yet and `head` exits 1
+# — an unguarded critical section dies right there, before the log and before the
+# write: no pause, no diagnostic. Whether that is reachable depends on the
+# caller's context, which is exactly the wrong thing for it to depend on, so the
+# suppression is now a property of the function and this pins it.
+echo "  scenario 15: publish survives a set -e caller with no pause file yet..."
+reset_state
+env -u BASH_ENV bash -c '
+    set -euo pipefail
+    export STATE_DIR="'"$STATE_DIR"'" PATH="'"$TMP/bin"'":$PATH
+    export GH_SHIM_BUCKETS="4920	'"$((NOW + 3000))"'	4742	'"$((NOW + 3000))"'"
+    export GH_SECONDARY_PAUSE_SECS=60
+    . "'"$PROJECT_ROOT"'/lib/gh-retry.sh"
+    gh_note_rate_limit >/dev/null 2>&1
+' >/dev/null 2>&1 || true
+[ -f "$(gh_pause_file)" ] \
+    || fail "scenario 15: no pause published under a set -e caller — the critical section aborted on the missing pause file, so the fleet never backs off and no diagnostic is logged"
+reset_state
+
 echo "PASS: gh-rate-limit-smoke"

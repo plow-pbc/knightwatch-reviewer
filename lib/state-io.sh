@@ -224,7 +224,13 @@ gh_note_rate_limit() {
     # 60s, B arriving first would resume the whole fleet ~59 minutes early into an
     # exhausted bucket. For a back-off the more conservative answer is always
     # safe, and keeping the later one makes the outcome independent of who won.
-    local lockfile="$(gh_pause_file).lock" tmp existing
+    # `|| rc=$?`, not a bare `( … )`. A subshell in command position inherits the
+    # CALLER's errexit, and on the first writer `head` on the not-yet-existing
+    # pause file exits 1 — so under a `set -e` caller the section would abort
+    # there, before the log and before the write: no pause, no diagnostic. Putting
+    # it in a `||` list makes bash ignore -e for the whole extent, so publishing
+    # is a property of this function rather than of whoever called it.
+    local lockfile="$(gh_pause_file).lock" tmp existing rc=0
     mkdir -p "$(dirname "$lockfile")"
     (
         exec {fd}>"$lockfile" || exit 1
@@ -240,7 +246,8 @@ gh_note_rate_limit() {
         # containers, so PIDs collide).
         tmp=$(mktemp "$(gh_pause_file).XXXXXX") || exit 1
         printf '%s\n' "$until" > "$tmp" && mv -f "$tmp" "$(gh_pause_file)"
-    )
+    ) || rc=$?
+    return "$rc"
 }
 
 
