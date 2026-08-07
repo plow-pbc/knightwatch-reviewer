@@ -372,44 +372,29 @@ reset_state
 reset_state
 
 # --- 15. publishing must not depend on the CALLER's shell options -------------
-# Every other scenario reaches this code via `gh … || true`, which suppresses
-# errexit for the whole dynamic extent, so none of them exercise the publish path
-# with -e live. On the FIRST writer there is no pause file yet and `head` exits 1,
-# so an unguarded critical section dies right there — before the log and before
-# the write: no pause, no diagnostic.
+# Trimmed to the one assertion that can actually fail. The seam half is gone: I
+# established last round that with today's gh_retry control flow it does not
+# independently fire, which makes it a comment with a runtime cost. The helper
+# went with it — one call site does not need one.
 #
-# Both entry points are driven. The direct call pins the function's own property.
-# The seam call pins the path that actually runs in production and that the
-# severity assessment turned on — `gh_note_rate_limit >&2` sits in an `if` BODY
-# in gh_retry, not in a `&&`/`||` list, so its immunity is a property of today's
-# control flow there; an edit inside gh_retry could break the live path while the
-# direct-call assertion stayed green.
-echo "  scenario 15: publish survives a set -e caller — direct and through the seam..."
-# One harness, two entry points. Runs $1 in a fresh shell with errexit live and
-# the stub on PATH; the outer `|| true` catches the expected abort so the
-# assertion, not the exit status, is what reports.
-errexit_caller() {
-    env -u BASH_ENV bash -c '
-        set -euo pipefail
-        export STATE_DIR="'"$STATE_DIR"'" PATH="'"$TMP/bin"'":$PATH
-        export GH_SHIM_BUCKETS="4920	'"$((NOW + 3000))"'	4742	'"$((NOW + 3000))"'"
-        export GH_SHIM_ERR="'"$RATE_LIMIT_ERR"'" GH_SECONDARY_PAUSE_SECS=60
-        . "'"$PROJECT_ROOT"'/lib/gh-retry.sh"
-        '"$1"'
-    ' >/dev/null 2>&1 || true
-}
-
+# This half stays because it is the only falsifiable guard for a bug that shipped
+# here: a bare `( … )` inherits the caller's errexit, and on the FIRST writer
+# `head` on the not-yet-existing pause file exits 1, so the section dies before
+# the log and before the write — no pause, no diagnostic. Every other scenario
+# reaches this code via `gh … || true`, which suppresses errexit for the whole
+# dynamic extent, so none of them would catch it.
+echo "  scenario 15: publish survives a set -e caller with no pause file yet..."
 reset_state
-errexit_caller 'gh_note_rate_limit'
+env -u BASH_ENV bash -c '
+    set -euo pipefail
+    export STATE_DIR="'"$STATE_DIR"'" PATH="'"$TMP/bin"'":$PATH
+    export GH_SHIM_BUCKETS="4920	'"$((NOW + 3000))"'	4742	'"$((NOW + 3000))"'"
+    export GH_SECONDARY_PAUSE_SECS=60
+    . "'"$PROJECT_ROOT"'/lib/gh-retry.sh"
+    gh_note_rate_limit
+' >/dev/null 2>&1 || true
 [ -f "$(gh_pause_file)" ] \
-    || fail "scenario 15 (direct): no pause published under a set -e caller — the critical section aborted on the missing pause file, so the fleet never backs off and no diagnostic is logged"
-
-# Same via the real seam, using replay.sh's shape: a bare assignment with no
-# post-hoc guard, so errexit stays live through gh -> gh_retry.
-reset_state
-errexit_caller 'VAL="$(gh api user)"; echo "$VAL"'
-[ -f "$(gh_pause_file)" ] \
-    || fail "scenario 15 (seam): a rate-limited call from a set -e caller published no pause — the live gh -> gh_retry path aborts before stamping, so the fleet keeps hammering"
+    || fail "scenario 15: no pause published under a set -e caller — the critical section aborted on the missing pause file, so the fleet never backs off and no diagnostic is logged"
 reset_state
 
 echo "PASS: gh-rate-limit-smoke"
