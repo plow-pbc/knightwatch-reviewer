@@ -43,8 +43,19 @@ declare -a ORGS=()
 # unprivileged reviewer-test user that runs `just test` can't read the token
 # file. Defaults to $STATE_DIR/config.env (unchanged for the host/systemd path).
 CONFIG_ENV_FILE="${CONFIG_ENV_FILE:-${STATE_DIR}/config.env}"
+# REPOS_CONF_FILE lets the container deployment read the manifest out of a
+# DIRECTORY mount (docker/secrets/manifest/) instead of a file mount. Docker
+# pins a FILE bind-mount to the source inode, and every ordinary editor writes
+# a temp file and renames over the original — a new inode the mount never sees.
+# The host file then looks edited while every container serves the pre-edit
+# manifest, with no error. A directory mount re-resolves the name on each open,
+# so an operator edit lands without recreating containers — within one
+# enumerate window (ENUMERATE_SECS, 60s), since the shared queue.json can carry
+# already-enumerated specs for that long. Defaults to $STATE_DIR/repos.conf
+# (unchanged for the host/systemd path).
+REPOS_CONF_FILE="${REPOS_CONF_FILE:-${STATE_DIR}/repos.conf}"
 if [ -f "$CONFIG_ENV_FILE" ];             then . "$CONFIG_ENV_FILE"; fi
-if [ -f "${STATE_DIR}/repos.conf" ];      then . "${STATE_DIR}/repos.conf"; fi
+if [ -f "$REPOS_CONF_FILE" ];             then . "$REPOS_CONF_FILE"; fi
 
 # Snapshot operator-set KID_PATHS keys BEFORE sourcing the auto
 # manifest. A pre-refactor auto manifest may still contain
@@ -113,7 +124,7 @@ fi
 # REPOS-only require_repos guard below instead).
 require_tracked_targets() {
     [ "${#REPOS[@]}" -ge 1 ] || [ "${#ORGS[@]}" -ge 1 ] || {
-        echo "FATAL: no tracked targets — populate $STATE_DIR/repos.conf with REPOS and/or ORGS (or set them in config.env)" >&2
+        echo "FATAL: no tracked targets — populate $REPOS_CONF_FILE with REPOS and/or ORGS (or set them in config.env)" >&2
         exit 1
     }
 }

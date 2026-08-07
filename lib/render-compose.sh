@@ -87,15 +87,29 @@ done < "$FLEET_CONF"
 # (repo-env stays unguarded — absent is a documented no-op.)
 [ -d "$SECRETS_DIR/claude-standards" ] \
     || die "$SECRETS_DIR/claude-standards not found — docker would auto-create it empty and every review would run with no coding/review standards"
-# Worse for the two FILE mounts: docker auto-creates a missing source as a
-# DIRECTORY, and both consumers load it with `[ -f … ] && . …`
+# Worse for the mount sources the loader sources: docker auto-creates a missing
+# one as a DIRECTORY, and the consumer loads it with `[ -f … ] && . …`
 # (lib/tracked-repos.sh) — the -f test fails against that dir and the source is
 # skipped without a word, so the fleet comes up with no GH_TOKEN and an empty
 # ORGS/REPOS and every reviewer idles reviewing nothing.
 # The CONFIG_ENV read above stays `-f`-tolerant on purpose: it is a separate
 # override knob (the smokes point it at a sandbox file), while what must exist
 # is the MOUNT SOURCE the render below emits — which is always $SECRETS_DIR's.
-for f in config.env repos.conf; do
+# Legacy flat layout, checked BEFORE the existence loop below. repos.conf used
+# to mount as a FILE; docker pins a file bind-mount to the source INODE, so an
+# ordinary editor's write-temp-then-rename left the host file looking edited
+# while every container kept serving the pre-edit manifest — silently, until the
+# containers were recreated. It is a DIRECTORY mount now. Refuse to render
+# rather than fall back to the flat path: a fallback would reinstate that bug.
+# Order is load-bearing: run this AFTER the loop and it is unreachable (the loop
+# already died on the absent manifest/repos.conf), so an operator on the old
+# layout would get the generic not-found message instead of the migration —
+# and its natural remedy, touching an empty manifest/repos.conf, renders fine
+# and brings the fleet up reviewing NOTHING with their real manifest stranded.
+if [ -f "$SECRETS_DIR/repos.conf" ] && [ ! -f "$SECRETS_DIR/manifest/repos.conf" ]; then
+    die "$SECRETS_DIR/repos.conf is the legacy flat layout — the manifest is a DIRECTORY mount now so operator edits apply within one enumerate window instead of needing every container recreated. Migrate with: mkdir -p $SECRETS_DIR/manifest && mv $SECRETS_DIR/repos.conf $SECRETS_DIR/manifest/repos.conf"
+fi
+for f in config.env manifest/repos.conf; do
     [ -f "$SECRETS_DIR/$f" ] \
         || die "$SECRETS_DIR/$f not found — docker mounts a DIRECTORY over the missing file, the loader's [ -f ] test then skips it silently, and the fleet comes up with no GH_TOKEN / an empty ORGS+REPOS"
 done
@@ -187,6 +201,7 @@ x-reviewer-env: &reviewer-env
   LOCAL_STATE_DIR: /local/state   # canonical clone/fetch lock + ephemeral KID query copies (per-container; quota-pause + fatal-auth offline live in shared STATE_DIR/pool/<WORKER_ID>/, just-test semaphore in shared STATE_DIR)
   DOCKER_HOST: tcp://127.0.0.1:2375
   CONFIG_ENV_FILE: /root/.kwr/config.env  # root-only path → reviewer-test (just test) can't read the token file
+  REPOS_CONF_FILE: /shared/manifest/repos.conf  # read out of a DIRECTORY mount, not a file mount: docker pins a file bind-mount to the source inode, so an editor's write-temp-then-rename would leave every container serving the pre-edit manifest with no error. config.env stays a file mount above — it carries GH_TOKEN and must stay on the root-only path, off world-readable /shared.
   KWR_CONFIG_DIR: /root/.kwr-config       # mount point of the host-pulled kwr-config cache (read-only; see the per-reviewer volume). KWR_CONFIG_REPO lives in config.env — unset = no-op.
   REPO_ENV_DIR: /root/.kwr/repo-env       # root-only mount of operator per-repo secret env files (e.g. plow-pbc_plow/api/.env.test-live — live test-scenario creds CI has but a fresh container lacks). review-one-pr.sh seeds them into the canonical clone so the trusted-author .env mirror copies them into the per-PR test dir. Empty/absent = no-op.
 
@@ -230,7 +245,7 @@ EOF
       - reviewer$n-local:/local
       - scenario-shared$n:/scenario-shared
       - $SECRETS_REF/$acct:/root/.codex          # writable: codex refreshes its OAuth token in-home
-      - $SECRETS_REF/repos.conf:/shared/repos.conf:ro
+      - $SECRETS_REF/manifest:/shared/manifest:ro
       - $SECRETS_REF/config.env:/root/.kwr/config.env:ro
       - $SECRETS_REF/repo-env:/root/.kwr/repo-env:ro
       - $SECRETS_REF/claude-standards:/root/.claude:ro

@@ -250,6 +250,32 @@ if STATE_DIR="$SAND_STATE" KWR_CONFIG_REPO="x" KWR_CONFIG_DIR="$SAND_STATE/nope-
 fi
 rm -rf "$KWRCFG"; rm -f "$SAND_STATE/repos.conf"
 
+# ----- Contract B7: REPOS_CONF_FILE override --------------------------------
+# The container fleet reads the manifest from a DIRECTORY mount so operator
+# edits apply without a restart (docker pins a FILE bind-mount to its inode, so
+# an editor's rename-over leaves every container on the pre-edit manifest with
+# no error). The override is what lets the mount point live off $STATE_DIR;
+# the default must keep working for the host/systemd path.
+echo "  B7: REPOS_CONF_FILE overrides the default \$STATE_DIR/repos.conf path..."
+# Reuses B1's sandbox (B6c cleared its manifest) — B1 already pins the default
+# path, so this only has to pin the override. The decoy sets a MARKER, not just
+# a REPOS value: comparing REPOS alone can't catch a loader that sources the
+# default AND the override, because the override's wholesale REPOS=(...)
+# clobbers the decoy either way.
+B7_MANIFEST="$TMPDIR/b7-manifest"; mkdir -p "$B7_MANIFEST"
+cat > "$SAND_STATE/repos.conf" <<'CONF'
+DECOY_WAS_SOURCED=1
+REPOS=("decoy/should-not-load")
+CONF
+cat > "$B7_MANIFEST/repos.conf" <<'CONF'
+REPOS=("override/wins")
+CONF
+out=$(STATE_DIR="$SAND_STATE" REPOS_CONF_FILE="$B7_MANIFEST/repos.conf" \
+    bash -c "set -euo pipefail; . '$LOADER'; printf '%s|%s' \"\${REPOS[*]}\" \"\${DECOY_WAS_SOURCED:-unset}\"")
+[ "$out" = "override/wins|unset" ] \
+    || { echo "FAIL B7: expected 'override/wins|unset', got '$out' (a 'set' marker means the default manifest was ALSO sourced)"; exit 1; }
+rm -f "$SAND_STATE/repos.conf"
+
 # ----- Contract C: every production consumer goes through the loader ------
 echo "  C: every production consumer sources lib/tracked-repos.sh..."
 # The manifest loader can be reached directly OR transitively via
@@ -457,4 +483,4 @@ if [ -e "$SAND_INSTALL3/repos.conf" ]; then
     exit 1
 fi
 
-echo "  PASS (A0: privacy-fence; A1-A4: shape; B1-B4: loader; C: $(echo "${#CONSUMERS[@]}") consumers; D.1: bootstrap-exits; D.2: divergent-full-install; D.3: rawcopy-rejected)"
+echo "  PASS (A0: privacy-fence; A1-A4: shape; B1-B4: loader; B7: REPOS_CONF_FILE override; C: $(echo "${#CONSUMERS[@]}") consumers; D.1: bootstrap-exits; D.2: divergent-full-install; D.3: rawcopy-rejected)"

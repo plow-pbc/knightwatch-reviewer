@@ -30,7 +30,6 @@ LOG="${LOG:-$STATE_DIR/org-sync.log}"
 # otherwise split the timer run's lock from an operator shell run's.
 LOCK="${LOCK:-$STATE_DIR/org-sync.lock}"
 REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$STATE_DIR/lib}"
-CONF="${CONF:-$STATE_DIR/repos.conf}"
 AUTO_CONF="${AUTO_CONF:-$STATE_DIR/repos.conf.auto}"
 CONFIG_ENV_FILE="${CONFIG_ENV_FILE:-$STATE_DIR/config.env}"
 
@@ -104,10 +103,14 @@ if ! MANUAL_LIST=$(
     declare -A SOURCE_PATHS=()
     declare -a ORGS=()
     # shellcheck disable=SC1090
-    [ -f "$CONF" ] && . "$CONF"
+    # REPOS_CONF_FILE, not a second CONF seam: lib/tracked-repos.sh (sourced
+    # above, AFTER config.env) is the single owner of this path. Resolving it
+    # here would read a stale value whenever config.env sets it — the manual set
+    # would come back empty and every manually listed repo would fall into AUTO.
+    [ -f "$REPOS_CONF_FILE" ] && . "$REPOS_CONF_FILE"
     printf '%s\n' "${REPOS[@]}"
 ); then
-    log "FATAL: failed to source $CONF — repos.conf may be malformed; aborting before rewrite"
+    log "FATAL: failed to source $REPOS_CONF_FILE — repos.conf may be malformed; aborting before rewrite"
     exit 1
 fi
 declare -A MANUAL=()

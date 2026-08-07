@@ -9,6 +9,23 @@
 # Single source of truth at runtime — sourced by review.sh,
 # learn-from-replies.sh, poll-pr-actions.sh, and lib/review-one-pr.sh.
 #
+# CONTAINER FLEET LAYOUT: the deployed manifest lives at
+# docker/secrets/manifest/repos.conf, and the manifest/ DIRECTORY is mounted
+# at /shared/manifest (the loader reads it via REPOS_CONF_FILE). Directory,
+# not file, on purpose: docker pins a FILE bind-mount to the source inode, and
+# every ordinary editor (sed -i, vim, most agent tooling) writes a temp file
+# and renames over the original — a new inode the mount never sees. The host
+# file then looks edited while every container keeps serving the pre-edit
+# manifest, with no error anywhere. A directory mount re-resolves the name on
+# each open, so an operator edit takes effect with no container restart —
+# within one enumerate window (ENUMERATE_SECS, 60s) rather than instantly: the
+# shared queue.json is refreshed on that floor, so specs enumerated just before
+# the edit can still dispatch for up to a window afterward.
+#
+# config.env is deliberately NOT in manifest/: it carries GH_TOKEN and mounts
+# to the root-only /root/.kwr/config.env so the unprivileged reviewer-test
+# user (just test) can't read it. /shared is readable by that user.
+#
 # Whole-org review coverage comes from ORGS (see below): list an org there
 # and every non-archived open PR in it is reviewed — new repos included, no
 # per-repo manifest edit. REPOS is only for PARTIAL orgs (review just specific

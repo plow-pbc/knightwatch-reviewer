@@ -17,7 +17,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 # source as a DIRECTORY) and consumers stage it behind a `[ -f … ]` that skips.
 SECRETS="$SANDBOX/secrets"
 mkdir -p "$SECRETS"/codex-account-{a,b,d} "$SECRETS/claude-standards"
-: > "$SECRETS/config.env"; : > "$SECRETS/repos.conf"
+: > "$SECRETS/config.env"; mkdir -p "$SECRETS/manifest"; : > "$SECRETS/manifest/repos.conf"
 
 # $SECRETS sits under $OUT's dir, so the generator emits the same
 # compose-relative form it ships with (./docker/secrets → ./secrets here).
@@ -52,12 +52,13 @@ for token in "  dind-1:" "  reviewer-1:" "  dind-4:" "  reviewer-4:" \
              'WORKER_ID: "4"' 'network_mode: "service:dind-4"' "depends_on: [dind-4]" \
              "claims:/shared" "reviewer4-local:/local" "dind4-lib:/var/lib/docker" \
              "./secrets/codex-account-d:/root/.codex" \
-             "./secrets/repos.conf:/shared/repos.conf:ro" \
+             "./secrets/manifest:/shared/manifest:ro" \
              "./secrets/config.env:/root/.kwr/config.env:ro" \
              "./secrets/repo-env:/root/.kwr/repo-env:ro" \
              "./secrets/claude-standards:/root/.claude:ro" \
              '${HOME}/services/kwr-config:/root/.kwr-config:ro' \
              "KWR_CONFIG_DIR: /root/.kwr-config" "REPO_ENV_DIR: /root/.kwr/repo-env" \
+             "REPOS_CONF_FILE: /shared/manifest/repos.conf" \
              "external: true" "name: kwr_claims" "GENERATED"; do
     grep -qF "$token" "$SANDBOX/out.yml" || fail "render is missing: $token"
 done
@@ -114,7 +115,7 @@ assert_render_fails "KID_EXTRA_MOUNTS without KID_ROOT" "1  codex-account-a" \
     "KID_EXTRA_MOUNTS=$EXTRA"
 assert_render_fails "KID_EXTRA_MOUNTS names a missing dir" "1  codex-account-a" "KID_ROOT=$KID
 KID_EXTRA_MOUNTS=$SANDBOX/nope"
-for away in claude-standards config.env repos.conf; do  # the silent-degradation mounts
+for away in claude-standards config.env manifest/repos.conf; do  # the silent-degradation mounts
     mv "$SECRETS/$away" "$SANDBOX/mount-away"
     assert_render_fails "absent $away" "1  codex-account-a"
     mv "$SANDBOX/mount-away" "$SECRETS/$away"
@@ -128,5 +129,24 @@ run_render && fail "absent fleet.conf: render succeeded but must FATAL"
 grep -q 'FATAL' "$SANDBOX/render.log" \
     || fail "absent fleet.conf: died without the generator's guard: $(cat "$SANDBOX/render.log")"
 [ ! -f "$SANDBOX/out.yml" ] || fail "absent fleet.conf: left a partial docker-compose.yml"
+
+# Legacy flat layout must FAIL LOUD, never fall back. A fallback would re-mount
+# repos.conf as a FILE — reinstating the stale-inode bug this layout removes.
+echo "  legacy flat repos.conf: refuses to render, names the migration..."
+: > "$SECRETS/repos.conf"                       # old layout alongside the new one
+mv "$SECRETS/manifest/repos.conf" "$SANDBOX/mount-away"
+printf '%s\n' "1  codex-account-a" > "$SANDBOX/fleet.conf"
+printf '\n' > "$SANDBOX/config.env"
+rm -f "$SANDBOX/out.yml"
+run_render && fail "legacy flat repos.conf: render succeeded but must die"
+# Assert on text UNIQUE to the legacy die. Matching just "manifest/repos.conf"
+# also matches the existence loop's not-found message, so the test would pass
+# with the legacy branch unreachable or deleted outright — which is exactly how
+# it first shipped unreachable.
+grep -q 'legacy flat layout' "$SANDBOX/render.log" \
+    || fail "legacy flat repos.conf: died without the legacy guard (unreachable or removed): $(cat "$SANDBOX/render.log")"
+grep -q 'mv .*manifest/repos.conf' "$SANDBOX/render.log" \
+    || fail "legacy flat repos.conf: die message omits the migration command: $(cat "$SANDBOX/render.log")"
+mv "$SANDBOX/mount-away" "$SECRETS/manifest/repos.conf"; rm -f "$SECRETS/repos.conf"
 
 echo "PASS: render-compose smoke"
