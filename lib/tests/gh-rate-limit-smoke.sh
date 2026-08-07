@@ -385,30 +385,29 @@ reset_state
 # control flow there; an edit inside gh_retry could break the live path while the
 # direct-call assertion stayed green.
 echo "  scenario 15: publish survives a set -e caller — direct and through the seam..."
+# One harness, two entry points. Runs $1 in a fresh shell with errexit live and
+# the stub on PATH; the outer `|| true` catches the expected abort so the
+# assertion, not the exit status, is what reports.
+errexit_caller() {
+    env -u BASH_ENV bash -c '
+        set -euo pipefail
+        export STATE_DIR="'"$STATE_DIR"'" PATH="'"$TMP/bin"'":$PATH
+        export GH_SHIM_BUCKETS="4920	'"$((NOW + 3000))"'	4742	'"$((NOW + 3000))"'"
+        export GH_SHIM_ERR="'"$RATE_LIMIT_ERR"'" GH_SECONDARY_PAUSE_SECS=60
+        . "'"$PROJECT_ROOT"'/lib/gh-retry.sh"
+        '"$1"'
+    ' >/dev/null 2>&1 || true
+}
+
 reset_state
-env -u BASH_ENV bash -c '
-    set -euo pipefail
-    export STATE_DIR="'"$STATE_DIR"'" PATH="'"$TMP/bin"'":$PATH
-    export GH_SHIM_BUCKETS="4920	'"$((NOW + 3000))"'	4742	'"$((NOW + 3000))"'"
-    export GH_SECONDARY_PAUSE_SECS=60
-    . "'"$PROJECT_ROOT"'/lib/gh-retry.sh"
-    gh_note_rate_limit >/dev/null 2>&1
-' >/dev/null 2>&1 || true
+errexit_caller 'gh_note_rate_limit'
 [ -f "$(gh_pause_file)" ] \
     || fail "scenario 15 (direct): no pause published under a set -e caller — the critical section aborted on the missing pause file, so the fleet never backs off and no diagnostic is logged"
-reset_state
 
-# Same, but through the real seam with a bare assignment — replay.sh's shape
-# (set -euo pipefail, no post-hoc guard, so an abort is observable).
-env -u BASH_ENV bash -c '
-    set -euo pipefail
-    export STATE_DIR="'"$STATE_DIR"'" PATH="'"$TMP/bin"'":$PATH
-    export GH_SHIM_BUCKETS="4920	'"$((NOW + 3000))"'	4742	'"$((NOW + 3000))"'"
-    export GH_SHIM_ERR="'"$RATE_LIMIT_ERR"'" GH_SECONDARY_PAUSE_SECS=60
-    . "'"$PROJECT_ROOT"'/lib/gh-retry.sh"
-    VAL="$(gh api user)"
-    echo "$VAL" >/dev/null
-' >/dev/null 2>&1 || true
+# Same via the real seam, using replay.sh's shape: a bare assignment with no
+# post-hoc guard, so errexit stays live through gh -> gh_retry.
+reset_state
+errexit_caller 'VAL="$(gh api user)"; echo "$VAL"'
 [ -f "$(gh_pause_file)" ] \
     || fail "scenario 15 (seam): a rate-limited call from a set -e caller published no pause — the live gh -> gh_retry path aborts before stamping, so the fleet keeps hammering"
 reset_state
