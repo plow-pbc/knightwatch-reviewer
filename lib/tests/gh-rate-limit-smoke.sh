@@ -123,6 +123,7 @@ GH_SECONDARY_PAUSE_SECS=60 \
 
 # --- 6. gh_pause_active window semantics (what the tick gate reads) ---
 echo "  scenario 6: gh_pause_active true inside the window, false after..."
+mkdir -p "$(dirname "$(gh_pause_file)")"
 printf '%s\n' "$(( $(date +%s) + 300 ))" > "$(gh_pause_file)"
 gh_pause_active || fail "scenario 6: gh_pause_active false inside an open window"
 printf '%s\n' "$(( $(date +%s) - 1 ))" > "$(gh_pause_file)"

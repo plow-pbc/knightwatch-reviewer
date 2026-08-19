@@ -27,6 +27,10 @@ export STATE_DIR="$TMPDIR/state"
 export REPLIES_SEEN_FILE="$STATE_DIR/replies-seen.json"
 export LOG_FILE="$STATE_DIR/learn.log"
 mkdir -p "$STATE_DIR"
+# Derived from the production helper, never spelled out: a literal path here is
+# exactly what drifted when the pause file moved under throttle/. Sourced in a
+# SUBSHELL so state-io.sh's log() cannot displace this test's stub.
+export GH_PAUSE_FILE="$(. "$PROJECT_ROOT/lib/state-io.sh"; gh_pause_file)"
 export BOT_USER="srosro"
 export BOT_AUTO_POST_MARKER="<!-- knightwatch-reviewer:auto-post -->"
 # CLAUDE_DIR is only read on the codex path (which we don't reach in
@@ -65,7 +69,7 @@ if [ "$1" = "pr" ] && [ "$2" = "comment" ]; then
     # after this ACK lands, so the NEXT iteration hits the loop's pre-check break
     # rather than a failed post. Different code path, same retention contract.
     [ -n "${MOCK_SIBLING_STAMPS_PAUSE:-}" ] \
-        && printf '%s\n' "$(( $(date +%s) + 300 ))" > "$STATE_DIR/gh-rate-limited-until"
+        && { mkdir -p "$(dirname "$GH_PAUSE_FILE")"; printf '%s\n' "$(( $(date +%s) + 300 ))" > "$GH_PAUSE_FILE"; }
     exit 0
 elif [ "$1" = "pr" ] && [ "$2" = "list" ]; then
     repo=""
@@ -233,7 +237,7 @@ TRUSTED_EARLIER=$(python3 -c "import datetime; print(datetime.datetime.fromtimes
 seed_two_requests() {
     : > "$STUB_ACK_LOG"
     echo '{}' > "$REPLIES_SEEN_FILE"
-    rm -f "$STATE_DIR/gh-rate-limited-until"
+    rm -f "$GH_PAUSE_FILE"
     unset MOCK_COMMENTS_FILE_PAGE2
     # A bot auto-post must come FIRST and be older: the collector skips a repo
     # with no bot comment, and only counts requests newer than the bot's last one.
@@ -251,7 +255,7 @@ for k in 930 931; do
         || { echo "FAIL scenario 5: key $k marked seen despite the rate limit stopping its ACK — a trusted memorize request is silently dropped"; cat "$REPLIES_SEEN_FILE"; cat "$LOG_FILE"; exit 1; }
 done
 # Window cleared → the deferred requests go through, proving they were held not lost.
-rm -f "$STATE_DIR/gh-rate-limited-until"
+rm -f "$GH_PAUSE_FILE"
 : > "$STUB_ACK_LOG"
 MOCK_TRUSTED_USERS="trusteduser" MOCK_CODEX_ACKS="$ACKS_TWO" run_learn
 posted=$(grep -c '^ACK_POSTED' "$STUB_ACK_LOG" 2>/dev/null || true); posted="${posted:-0}"
@@ -262,7 +266,7 @@ for k in 930 931; do
     [ -n "$(jq -r --arg k "test-org/probe-repo#1#$k" '.[$k] // empty' "$REPLIES_SEEN_FILE")" ] \
         || { echo "FAIL scenario 5: key $k not marked seen after its ACK posted — next tick re-runs codex and posts a duplicate ACK"; cat "$REPLIES_SEEN_FILE"; cat "$LOG_FILE"; exit 1; }
 done
-rm -f "$STATE_DIR/gh-rate-limited-until"
+rm -f "$GH_PAUSE_FILE"
 
 echo "  scenario 6: pause arrives between ACKs → posted key seen, un-posted key retained..."
 seed_two_requests
@@ -273,6 +277,6 @@ posted=$(grep -c '^ACK_POSTED' "$STUB_ACK_LOG" 2>/dev/null || true); posted="${p
     || { echo "FAIL scenario 6: the ACK that DID post was not marked seen — next tick re-posts it as a duplicate"; cat "$REPLIES_SEEN_FILE"; exit 1; }
 [ -z "$(jq -r '."test-org/probe-repo#1#931" // empty' "$REPLIES_SEEN_FILE")" ] \
     || { echo "FAIL scenario 6: the un-posted key was marked seen — that memorize request is silently dropped"; cat "$REPLIES_SEEN_FILE"; exit 1; }
-rm -f "$STATE_DIR/gh-rate-limited-until"
+rm -f "$GH_PAUSE_FILE"
 
 echo "  PASS (6 scenarios: REPOS-override-observed, untrusted-memorize-ignored, page-2-paginated, gh-api-failure-fail-loud, acks-throttled-then-recovered-and-seen, pause-mid-batch-per-key-retention)"

@@ -16,6 +16,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TMPDIR_BASE=$(mktemp -d -t queue-dist-XXXXXX); trap 'rm -rf "$TMPDIR_BASE"' EXIT
 export STATE_DIR="$TMPDIR_BASE/state"; export LOG_FILE="$STATE_DIR/orchestrator.log"
+# Derived from the production helper, never spelled out: a literal path here is
+# exactly what drifted when the pause file moved under throttle/. Sourced in a
+# SUBSHELL so state-io.sh's log() cannot displace this test's stub.
+export GH_PAUSE_FILE="$(. "$PROJECT_ROOT/lib/state-io.sh"; gh_pause_file)"
 export REPOS_DIR="$STATE_DIR/repos"; export WORKDIRS_DIR="$STATE_DIR/workdirs"
 mkdir -p "$STATE_DIR/locks" "$REPOS_DIR" "$WORKDIRS_DIR"
 export BOT_USER="srosro"
@@ -173,12 +177,12 @@ F_LOCAL_STATE="$TMPDIR_BASE/local-state"; mkdir -p "$F_LOCAL_STATE"
 F_POOL="$STATE_DIR/pool/solo"; mkdir -p "$F_POOL"   # review-loop's registration, done test-side
 claim_stop_cases=(
   "fatal-auth|mark_auth_offline|REVIEWER_CONTAINER_MODE=1|auth invalid.*stopping further claims this tick|$F_POOL/auth-offline"
-  "github|printf '%s\\n' \"\$(( \$(date +%s) + 300 ))\" > \"\$(gh_pause_file)\"|MAX_CONCURRENT=1|github rate-limited — stopping further claims this tick|$STATE_DIR/gh-rate-limited-until"
+  "github|mkdir -p \"\$(dirname \"\$(gh_pause_file)\")\"; printf '%s\\n' \"\$(( \$(date +%s) + 300 ))\" > \"\$(gh_pause_file)\"|MAX_CONCURRENT=1|github rate-limited — stopping further claims this tick|$GH_PAUSE_FILE"
 )
 for case in "${claim_stop_cases[@]}"; do
     IFS='|' read -r label sentinel extra_env log_re sentinel_path <<< "$case"
     echo "  $label: worker trips the stop-state → no further claims this tick..."
-    rm -f "$STATE_DIR/queue.json" "$F_POOL/auth-offline" "$F_POOL/quota-paused-until" "$STATE_DIR/gh-rate-limited-until"
+    rm -f "$STATE_DIR/queue.json" "$F_POOL/auth-offline" "$F_POOL/quota-paused-until" "$GH_PAUSE_FILE"
     cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<WORKER
 #!/bin/bash
 echo "WORKER_DISPATCHED repo=\$1 pr=\$2 sha=\$3" >> "\$LOG_FILE"
@@ -199,7 +203,7 @@ WORKER
     grep -qE "$log_re" "$LOG_FILE" || { echo "FAIL $label: missing same-tick claim-stop log"; cat "$LOG_FILE"; exit 1; }
     echo "  OK $label"
 done
-rm -f "$STATE_DIR/gh-rate-limited-until"
+rm -f "$GH_PAUSE_FILE"
 
 # --- F2. both sentinels at once: fatal-auth must DOMINATE an active quota pause
 #        in review.sh's same-tick gate (the precedence locked across

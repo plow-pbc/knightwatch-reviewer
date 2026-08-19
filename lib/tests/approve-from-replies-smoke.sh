@@ -39,6 +39,10 @@ export STATE_DIR="$TMPDIR/state"
 export APPROVES_SEEN_FILE="$STATE_DIR/approves-seen.json"
 export LOG_FILE="$STATE_DIR/approve.log"
 mkdir -p "$STATE_DIR"
+# Derived from the production helper, never spelled out: a literal path here is
+# exactly what drifted when the pause file moved under throttle/. Sourced in a
+# SUBSHELL so state-io.sh's log() cannot displace this test's stub.
+export GH_PAUSE_FILE="$(. "$PROJECT_ROOT/lib/state-io.sh"; gh_pause_file)"
 export BOT_USER="srosro"
 export BOT_AUTO_POST_MARKER="<!-- knightwatch-reviewer:auto-post -->"
 
@@ -117,7 +121,8 @@ elif [ "$1" = "pr" ] && [ "$2" = "review" ]; then
     # pause file in the window right after this approve succeeded. The pause file
     # is fleet-shared, so global pause state says nothing about THIS call.
     if [ -n "${MOCK_SIBLING_STAMPS_PAUSE:-}" ]; then
-        printf '%s\n' "$(( $(date +%s) + 300 ))" > "$STATE_DIR/gh-rate-limited-until"
+        mkdir -p "$(dirname "$GH_PAUSE_FILE")"
+        printf '%s\n' "$(( $(date +%s) + 300 ))" > "$GH_PAUSE_FILE"
     fi
     exit 0   # explicit: a trailing `[ … ] && …` would exit 1 whenever the var is
              # unset, turning every ordinary successful approve into a failure
@@ -380,7 +385,7 @@ n=$(count_approves)
 # actually goes through once the window clears.
 echo "  scenario 10b: rate-limited approve — left unseen, submitted after the pause..."
 echo '{}' > "$APPROVES_SEEN_FILE"
-rm -f "$STATE_DIR/gh-rate-limited-until"
+rm -f "$GH_PAUSE_FILE"
 printf '[{"id":1011,"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-approve"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 MOCK_FAIL_PR_REVIEW=1 MOCK_PR_REVIEW_RATE_LIMITED=1 run_approve
 n=$(count_approves)
@@ -388,11 +393,11 @@ n=$(count_approves)
 [ -z "$(jq -r '."test-org/probe-repo#1#1011" // empty' "$APPROVES_SEEN_FILE")" ] \
     || { echo "FAIL scenario 10b: rate-limited approve marked seen — a trusted human's /approve is silently dropped"; cat "$APPROVES_SEEN_FILE"; cat "$LOG_FILE"; exit 1; }
 # Clear the window; the next healthy tick must submit it (proving it wasn't lost).
-rm -f "$STATE_DIR/gh-rate-limited-until"
+rm -f "$GH_PAUSE_FILE"
 run_approve
 n=$(count_approves)
 [ "$n" -eq 1 ] || { echo "FAIL scenario 10b: expected the deferred approve to submit after the pause, got $n"; cat "$STUB_ACTIONS_LOG"; cat "$LOG_FILE"; exit 1; }
-rm -f "$STATE_DIR/gh-rate-limited-until"
+rm -f "$GH_PAUSE_FILE"
 
 # Scenario 10c: a SUCCESSFUL approve stays marked seen even when a sibling timer
 # stamps the shared pause immediately afterwards. This is the half 10b cannot
@@ -402,18 +407,18 @@ rm -f "$STATE_DIR/gh-rate-limited-until"
 # comment: irreversible and user-visible.
 echo "  scenario 10c: successful approve + sibling stamps the pause → still marked seen..."
 echo '{}' > "$APPROVES_SEEN_FILE"
-rm -f "$STATE_DIR/gh-rate-limited-until"
+rm -f "$GH_PAUSE_FILE"
 printf '[{"id":1012,"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-approve"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 MOCK_TRUSTED_USERS="someuser" MOCK_SIBLING_STAMPS_PAUSE=1 run_approve
 n=$(count_approves)
 [ "$n" -eq 1 ] || { echo "FAIL scenario 10c: expected 1 approve, got $n"; cat "$STUB_ACTIONS_LOG"; cat "$LOG_FILE"; exit 1; }
 [ -n "$(jq -r '."test-org/probe-repo#1#1012" // empty' "$APPROVES_SEEN_FILE")" ] \
     || { echo "FAIL scenario 10c: a SUCCESSFUL approve was left unseen because a sibling stamped the pause — next tick would post a duplicate approve"; cat "$APPROVES_SEEN_FILE"; cat "$LOG_FILE"; exit 1; }
-rm -f "$STATE_DIR/gh-rate-limited-until"
+rm -f "$GH_PAUSE_FILE"
 MOCK_TRUSTED_USERS="someuser" run_approve
 n=$(count_approves)
 [ "$n" -eq 0 ] || { echo "FAIL scenario 10c: rerun produced a DUPLICATE approve ($n this tick) — the successful approve was not retained as seen"; cat "$STUB_ACTIONS_LOG"; exit 1; }
-rm -f "$STATE_DIR/gh-rate-limited-until"
+rm -f "$GH_PAUSE_FILE"
 
 echo "  scenario 11: REPOS override is observed (not clobbered by hardcoded default)..."
 echo '{}' > "$APPROVES_SEEN_FILE"
@@ -472,7 +477,7 @@ grep -q "permission check failed (API error)" "$LOG_FILE" || { echo "FAIL scenar
 # the fleet-wide pause; clearing it is what makes the next tick "later" rather
 # than "immediately after", which is exactly when a real recovery tick runs. The
 # invariant under test is unchanged: deferred, never permanently dropped.
-rm -f "$STATE_DIR/gh-rate-limited-until"
+rm -f "$GH_PAUSE_FILE"
 MOCK_TRUSTED_USERS="someuser" run_approve
 n=$(count_approves)
 [ "$n" -eq 1 ] || { echo "FAIL scenario 14: expected 1 approve on recovery tick, got $n (dropped after transient failure)"; cat "$STUB_ACTIONS_LOG"; cat "$LOG_FILE"; exit 1; }

@@ -34,6 +34,10 @@ MANIFEST="$STATE_DIR/repos.conf"
 # Deployment-env scrub lives once in the justfile's `test` recipe.
 export AUTO_CONF="$STATE_DIR/repos.conf.auto"
 mkdir -p "$STATE_DIR"
+# Derived from the production helper, never spelled out: a literal path here is
+# exactly what drifted when the pause file moved under throttle/. Sourced in a
+# SUBSHELL so state-io.sh's log() cannot displace this test's stub.
+export GH_PAUSE_FILE="$(. "$PROJECT_ROOT/lib/state-io.sh"; gh_pause_file)"
 
 export REVIEWER_LIB_DIR="$TMPDIR/lib"
 mkdir -p "$REVIEWER_LIB_DIR"
@@ -467,9 +471,10 @@ write_baseline_conf '"acme"'
 echo 'REPOS+=("prior/auto")' > "$AUTO_CONF"
 SHA_BEFORE=$(auto_sha)
 : > "$LOG"
-printf '%s\n' "$(( $(date +%s) + 300 ))" > "$STATE_DIR/gh-rate-limited-until"
+mkdir -p "$(dirname "$GH_PAUSE_FILE")"
+printf '%s\n' "$(( $(date +%s) + 300 ))" > "$GH_PAUSE_FILE"
 MOCK_GH_LIST_acme=$'alpha\nbeta' run_sync || { echo "FAIL scenario 15: org-sync must exit 0 on a paused tick (a back-off is not a failure)"; cat "$LOG"; exit 1; }
-rm -f "$STATE_DIR/gh-rate-limited-until"
+rm -f "$GH_PAUSE_FILE"
 assert_auto_unchanged "$SHA_BEFORE"
 n=$(count_gh "repo clone")
 [ "$n" -eq 0 ] || { echo "FAIL scenario 15: expected 0 clones while rate-limited, got $n"; exit 1; }
