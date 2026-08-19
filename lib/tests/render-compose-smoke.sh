@@ -59,6 +59,7 @@ for token in "  dind-1:" "  reviewer-1:" "  dind-4:" "  reviewer-4:" \
              '${HOME}/services/kwr-config:/root/.kwr-config:ro' \
              "KWR_CONFIG_DIR: /root/.kwr-config" "REPO_ENV_DIR: /root/.kwr/repo-env" \
              "REPOS_CONF_FILE: /shared/manifest/repos.conf" \
+             '${HOME}/.pr-reviewer/throttle:/shared/throttle' \
              "external: true" "name: kwr_claims" "GENERATED"; do
     grep -qF "$token" "$SANDBOX/out.yml" || fail "render is missing: $token"
 done

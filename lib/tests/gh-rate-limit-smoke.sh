@@ -392,4 +392,24 @@ env -u BASH_ENV bash -c '
     || fail "scenario 15: no pause published under a set -e caller — the critical section aborted on the missing pause file, so the fleet never backs off and no diagnostic is logged"
 reset_state
 
+# --- 16. one pause file for one token, across the host<->container boundary ---
+# The pause is only as good as its REACH. Host timers (STATE_DIR=$HOME/.pr-reviewer)
+# and reviewer containers (STATE_DIR=/shared) spend the SAME PAT but live on
+# different filesystems, so each used to stamp its own pause: whichever half
+# tripped paused only itself while the other kept calling, the throttle never
+# cleared, and each side re-tripped the moment its 60s expired (observed: 93
+# trips in 24h, in clusters of 3-7 about 112s apart). The fix is a `throttle/`
+# subdir that render-compose.sh can bind-mount on its own — sharing ONLY this,
+# never runs/ or locks/, which must stay per-group.
+echo "  scenario 16: the pause file is bind-mountable on its own..."
+[ "$(STATE_DIR="$TMP/s16" gh_pause_file)" = "$TMP/s16/throttle/gh-rate-limited-until" ] \
+    || fail "scenario 16: gh_pause_file is $(STATE_DIR="$TMP/s16" gh_pause_file) — it must sit under throttle/ so the host dir can mount into containers without exposing the rest of STATE_DIR"
+# The container-side path is the mount point render-compose.sh emits; if this
+# drifts, the mount lands somewhere the code never reads and the split silently
+# returns.
+[ "$(STATE_DIR=/shared gh_pause_file)" = "/shared/throttle/gh-rate-limited-until" ] \
+    || fail "scenario 16: container-side pause path drifted from the /shared/throttle mount render-compose.sh emits"
+grep -q 'throttle:/shared/throttle' "$PROJECT_ROOT/lib/render-compose.sh" \
+    || fail "scenario 16: render-compose.sh emits no shared throttle mount — host and containers would keep separate pauses"
+
 echo "PASS: gh-rate-limit-smoke"

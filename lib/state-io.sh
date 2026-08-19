@@ -135,15 +135,21 @@ mark_auth_offline() {
 # already-throttled token — the amplification this file exists to stop. Hence
 # bare $STATE_DIR, no WORKER_ID.
 #
-# SCOPE, precisely: the file is shared by everyone who shares a $STATE_DIR. That
-# is the six reviewer containers (STATE_DIR=/shared, the kwr_claims volume) as
-# one group, and the host systemd timers (STATE_DIR=$HOME/.pr-reviewer) as
-# another. Those are different filesystems, so a pause does NOT currently cross
-# the host↔container boundary even though both groups spend the same PAT — the
-# containers' bulk consumption can throttle the token without the host timers
-# learning of it, and vice versa. Unifying the two needs a shared mount plus
-# per-unit env, tracked separately; do not read the sharing here as fleet-total.
-gh_pause_file() { printf '%s' "${STATE_DIR:-$HOME/.pr-reviewer}/gh-rate-limited-until"; }
+# SCOPE: fleet-total, and that INCLUDES the host↔container boundary. The file
+# sits in a `throttle/` subdir for exactly one reason — it is the only state the
+# two halves share, so it has to be bind-mountable on its own.
+# lib/render-compose.sh mounts the host's ~/.pr-reviewer/throttle at
+# /shared/throttle in every reviewer (nested under the claims volume, the same
+# shape as the manifest mount), so the host systemd timers
+# (STATE_DIR=$HOME/.pr-reviewer) and the containers (STATE_DIR=/shared) write
+# the SAME file. Both spend the same PAT, so anything less is not a backoff:
+# with a file per group, whichever half tripped paused only itself while the
+# other kept calling, so the throttle never cleared and each side re-tripped the
+# moment its window expired — 93 trips in 24h, in clusters of 3-7 about 112s
+# apart, each one costing an in-flight review its post. Sharing only this
+# subdir keeps runs/, locks/ and queue.json per-group, which is what they must
+# stay.
+gh_pause_file() { printf '%s' "${STATE_DIR:-$HOME/.pr-reviewer}/throttle/gh-rate-limited-until"; }
 
 # True while the pause window is still in the future. Missing file reads as
 # epoch 0 (not paused) — mirrors quota_active. Unlike quota_active this coerces

@@ -87,6 +87,12 @@ done < "$FLEET_CONF"
 # (repo-env stays unguarded — absent is a documented no-op.)
 [ -d "$SECRETS_DIR/claude-standards" ] \
     || die "$SECRETS_DIR/claude-standards not found — docker would auto-create it empty and every review would run with no coding/review standards"
+# The single path both halves of the fleet write. Absent, docker auto-creates
+# the bind source as ROOT; the host systemd timers run as the operator, so their
+# pause writes would fail silently and the two groups would drift back to a pause
+# each — the split-brain this mount exists to remove, reintroduced invisibly.
+[ -d "$HOME/.pr-reviewer/throttle" ] \
+    || die "$HOME/.pr-reviewer/throttle not found — it backs the one rate-limit pause the host timers and the containers share. Create it as the operator (NOT via sudo, or it lands root-owned): mkdir -p $HOME/.pr-reviewer/throttle"
 # Worse for the mount sources the loader sources: docker auto-creates a missing
 # one as a DIRECTORY, and the consumer loads it with `[ -f … ] && . …`
 # (lib/tracked-repos.sh) — the -f test fails against that dir and the source is
@@ -246,6 +252,7 @@ EOF
       - scenario-shared$n:/scenario-shared
       - $SECRETS_REF/$acct:/root/.codex          # writable: codex refreshes its OAuth token in-home
       - $SECRETS_REF/manifest:/shared/manifest:ro
+      - \${HOME}/.pr-reviewer/throttle:/shared/throttle   # the ONE pause file the host timers and the containers share (lib/state-io.sh)
       - $SECRETS_REF/config.env:/root/.kwr/config.env:ro
       - $SECRETS_REF/repo-env:/root/.kwr/repo-env:ro
       - $SECRETS_REF/claude-standards:/root/.claude:ro
