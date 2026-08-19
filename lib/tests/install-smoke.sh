@@ -158,6 +158,12 @@ SHARED_OVERLAY="$TMPDIR/repo-overlay-shared"
 make_install_overlay "$SHARED_OVERLAY"
 
 # --- Scenario 1: first-run install -----------------------------------------
+# Pre-created at the WRONG mode so the assertion below exercises install.sh's
+# chmod (the self-heal) rather than its `mkdir -m`. The heal is the half that
+# matters: ~/.pr-reviewer already exists at 0755 on every host that has ever run
+# the installer, so a creation-only fix would be inert in production — the same
+# gap already closed one level down for the lock and the throttle dir.
+mkdir -p "$INSTALL_DIR"; chmod 0755 "$INSTALL_DIR"
 echo "  scenario 1: first-run install — every unit copied, every timer enabled..."
 : > "$STUB_LOG"
 run_install "$SHARED_OVERLAY/install.sh" || { echo "FAIL scenario 1: install.sh exited non-zero"; cat "$STUB_LOG"; exit 1; }

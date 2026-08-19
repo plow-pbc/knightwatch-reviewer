@@ -263,13 +263,33 @@ gh_note_rate_limit() {
         # (dir auto-created root-owned, then flipped and published by a container)
         # the operator would own neither, and `mv` would fail EPERM forever: the
         # pause file is never unlinked, so that state is permanent. The sticky bit
-        # cannot be replaced by tightening the mode here: what a world-writable
-        # dir actually exposes is a symlink swap on the lock, which the next
-        # root publish would open O_CREAT|O_TRUNC and chmod 0666. That is closed
-        # by REACHABILITY instead — install.sh keeps $INSTALL_DIR at 0700, so no
-        # third local user can traverse into this dir at all. Uniformly
-        # world-writable is what makes both UIDs equal writers.
+        # cannot be replaced by tightening the mode here. What a world-writable
+        # dir exposes is a symlink swap on the lock. Against a THIRD LOCAL USER
+        # that is closed by reachability — install.sh keeps $INSTALL_DIR at 0700,
+        # so they cannot traverse in. Against container root it is not closed by
+        # any mode (CAP_FOWNER); the -L refusal at the open below is what handles
+        # that actor. Uniformly world-writable is what makes both UIDs equal
+        # writers.
         chmod 0777 "$(dirname "$lockfile")" 2>/dev/null || true
+        # The lock open is the ONE call in this section that follows a symlink,
+        # and sharing throttle/ across the host↔container boundary is what put two
+        # actors on it. The containers bind-mount this dir, run as ROOT, and are
+        # the untrusted-input boundary (they check out PR branches and execute
+        # repo-supplied scripts). Container root can unlink this path inside the
+        # mount — CAP_FOWNER bypasses the dir mode and a sticky bit alike, so
+        # neither 0777 nor 1777 changes that — and leave a symlink to any
+        # operator-owned host path. The next HOST publish would then O_CREAT|O_TRUNC
+        # and chmod 0666 straight through it: ~/.bashrc, config.env or
+        # authorized_keys truncated and made world-writable, i.e. container→host
+        # execution as the bot user. Refuse instead. mktemp and mv -f need no such
+        # guard — rename(2) replaces a symlink rather than following it.
+        # Residual: a swap between this test and the open still wins (bash has no
+        # O_NOFOLLOW), so this narrows the window rather than closing it; the
+        # durable fix is an unprivileged container runtime.
+        if [ -L "$lockfile" ]; then
+            log "gh rate limit — $lockfile is a symlink; refusing to open it: pause NOT published"
+            exit 1
+        fi
         exec {fd}>"$lockfile" || exit 1
         # SELF-HEALING, not creation-only. umask governs only files this call
         # creates, and the lock is never unlinked — so on any host where a

@@ -480,6 +480,26 @@ grep -q 'pause NOT published' "$TMP/log16f" \
 STRAY=$(find "$(dirname "$(gh_pause_file)")" -maxdepth 1 -name 'gh-rate-limited-until.*' ! -name '*.lock' 2>/dev/null)
 [ -z "$STRAY" ] || fail "scenario 16: a failed publish leaked a temp file: $STRAY"
 chmod 0755 "$(gh_pause_file)"; rmdir "$(gh_pause_file)"
+
+# Container root shares this mount and is the untrusted-input boundary, so it can
+# swap the lock for a symlink no dir mode stops (CAP_FOWNER). The host publish
+# must refuse it rather than O_CREAT|O_TRUNC + chmod 0666 an operator-owned file
+# — container→host execution as the bot user.
+reset_state
+rm -f "$(gh_pause_file).lock"
+VICTIM="$TMP/victim-precious"; printf 'do not truncate me\n' > "$VICTIM"; chmod 0600 "$VICTIM"
+ln -s "$VICTIM" "$(gh_pause_file).lock"
+LOG_FILE="$TMP/log16s"; : > "$LOG_FILE"
+LOG_FILE="$LOG_FILE" \
+GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+GH_SHIM_ERR="$RATE_LIMIT_ERR" gh api "user" >/dev/null 2>&1 || true
+[ -s "$VICTIM" ] \
+    || fail "scenario 16: a symlinked lock let the publish TRUNCATE $VICTIM — container root could point this at ~/.ssh/authorized_keys"
+[ "$(stat -c '%a' "$VICTIM")" = "600" ] \
+    || fail "scenario 16: a symlinked lock let the publish chmod $VICTIM to $(stat -c '%a' "$VICTIM") — an arbitrary operator-owned file made world-writable"
+grep -q 'refusing to open it' "$TMP/log16s" \
+    || fail "scenario 16: the symlinked lock was not refused loudly: $(cat "$TMP/log16s")"
+rm -f "$(gh_pause_file).lock"
 reset_state
 rm -f "$(gh_pause_file).lock"
 : > "$(gh_pause_file).lock"; chmod 0644 "$(gh_pause_file).lock"
