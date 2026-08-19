@@ -318,36 +318,22 @@ gh_note_rate_limit() {
         # that actor. Uniformly world-writable is what makes both UIDs equal
         # writers.
         chmod 0777 "$(dirname "$lockfile")" 2>/dev/null || true
-        # The lock open is the ONE call in this section that follows a symlink,
-        # and sharing throttle/ across the host↔container boundary is what put two
-        # actors on it. The containers bind-mount this dir, run as ROOT, and are
-        # the untrusted-input boundary (they check out PR branches and execute
-        # repo-supplied scripts). Container root can unlink this path inside the
-        # mount — CAP_FOWNER bypasses the dir mode and a sticky bit alike, so
-        # neither 0777 nor 1777 changes that — and leave a symlink to any
-        # operator-owned host path. The next HOST publish would then O_CREAT|O_TRUNC
-        # and chmod 0666 straight through it: ~/.bashrc, config.env or
-        # authorized_keys truncated and made world-writable, i.e. container→host
-        # execution as the bot user. Refuse instead. mktemp and mv -f need no such
-        # guard against a SYMLINK — rename(2) replaces one rather than following
-        # it. A directory is a different matter, handled at the publish below.
-        # "not a regular file", not "is a symlink": the same actor can plant a
-        # FIFO, whose open(O_WRONLY) blocks until a reader that never comes —
-        # hanging the tick until systemd SIGKILLs the unit at TimeoutStartSec,
-        # every tick, a cheaper and more durable denial than the truncate — or a
-        # directory, whose EISDIR would fall into the bare `|| exit 1` below and
-        # exit mute, restoring the no-pause-no-diagnostic failure this series
-        # exists to remove. One condition covers symlink, FIFO, directory and
-        # device, and gives all of them the diagnostic.
-        # Residual: a swap between this test and the open still wins (bash has no
+        # Sharing throttle/ across the host↔container boundary is what put two
+        # actors on this path. The containers bind-mount the dir, run as ROOT, and
+        # are the untrusted-input boundary (they check out PR branches and execute
+        # repo-supplied scripts), so container root can replace the lock with any
+        # file type — CAP_FOWNER bypasses the directory mode and a sticky bit
+        # alike, so neither 0777 nor the 1777 this series tried changes that. A
+        # symlink here would have the next HOST publish O_CREAT|O_TRUNC and chmod
+        # 0666 straight through it (~/.bashrc, config.env, authorized_keys made
+        # world-writable — container→host execution as the bot user); a FIFO would
+        # block the open until systemd SIGKILLs the tick. gh_pause_clear_plant
+        # handles every such shape below. mv -f needs no equivalent guard against a
+        # symlink — rename(2) replaces one rather than following it — but a
+        # directory it never sees, which is why the publish checks too.
+        # Residual: a swap between the test and the open still wins (bash has no
         # O_NOFOLLOW), so this narrows the window rather than closing it; the
         # durable fix is an unprivileged container runtime.
-        # Refusing the lock must NOT cost the pause. The lock only serializes the
-        # merge below; mktemp + mv -f are already safe on their own (rename
-        # replaces, and the temp name is unpredictable). Exiting here would let one
-        # unprivileged mkfifo at this path disable the fleet's backoff permanently
-        # — the fleet hammering GitHub through every 403 IS the original incident,
-        # so losing one trip's later-window merge is by far the smaller loss.
         # The lock must not cost the pause by ANY mechanism, so all three ways of
         # failing to take it share one degrade. It only serializes the merge
         # below; mktemp + mv -f are safe alone (rename replaces, and the temp name

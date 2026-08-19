@@ -543,7 +543,8 @@ reset_state
 #             any operator-owned file made world-writable (container->host exec).
 #   fifo    — open(O_WRONLY) blocks for a reader that never comes, hanging the
 #             tick until systemd SIGKILLs the unit, every tick.
-#   dir     — EISDIR falls into the bare `|| exit 1`, exiting mute.
+#   dir     — cleared, then the publish proceeds (an un-clearable non-empty one
+#             is covered separately above).
 # The bounded `timeout 5` is what makes the fifo row FAIL rather than hang the
 # suite if the guard regresses.
 VICTIM="$TMP/victim-precious"
