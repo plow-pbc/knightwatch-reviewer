@@ -603,6 +603,53 @@ else
     log "$PR_ID: could not fetch comments to check for a prior placeholder — skipping placeholder this tick (continuing)"
 fi
 
+# A prior run FINISHED its review and was throttled on the post. Publish that
+# body instead of spending another ~27 minutes (clone + just test + 7
+# specialists + aggregator) rebuilding an identical one. gh_retry refuses to
+# retry a create — correctly, since a retry after a request the server already
+# applied double-posts — so the work is recovered here rather than by making the
+# post retryable.
+#
+# Position is deliberate: AFTER the placeholder lookup, so the recovered post
+# also clears the 👀 comment the throttled run left on the PR, and BEFORE the
+# workdir clone and every expensive phase below.
+#
+# Matched on the FETCHED head — what the workdir is about to check out, and what
+# the prior run stamped as reviewed_sha — not the orchestrator-enumerated
+# PR_SHA, which can be stale on a fast-cadence push and would re-post a review
+# of code that is no longer the head.
+PENDING_HEAD=$(git -C "$CANONICAL_DIR" rev-parse "refs/heads/$PR_BRANCH" 2>/dev/null)
+PENDING_RUN=""
+[ -n "$PENDING_HEAD" ] && PENDING_RUN=$(pending_review_body "$STATE_DIR" "$REPO_SLUG_FOR_RUN" "$PR_NUM" "$PENDING_HEAD")
+if [ -n "$PENDING_RUN" ]; then
+    log "$PR_ID: a prior run finished its review but its post was throttled ($(basename "$PENDING_RUN")) — posting that body instead of re-reviewing"
+    if gh pr comment "$PR_NUM" --repo "$REPO" --body-file "$PENDING_RUN/pending-comment.md"; then
+        rm -f "$PENDING_RUN/pending-comment.md"
+        # Stamp the ORIGINATING run, not this one: its meta.json carries the
+        # aggregator output, verdict and reviewed_sha, so recurrence detection and
+        # the carried-forward verdict must keep reading THAT round as the one the
+        # author saw. This run wrote no review of its own.
+        if ! finalize_meta_json "$PENDING_RUN/meta.json" \
+                "$(date -u +%Y-%m-%dT%H:%M:%SZ)" completed true; then
+            log "$PR_ID: recovered post landed but stamping $PENDING_RUN/meta.json failed — it may be re-offered next tick"
+        fi
+        EYES_RESOLVED=true
+        if [ -n "$EYES_COMMENT_ID" ]; then
+            gh api "repos/$REPO/issues/comments/$EYES_COMMENT_ID" --method DELETE >/dev/null 2>&1 \
+                || log "$PR_ID: recovered post landed but the placeholder DELETE failed (id=$EYES_COMMENT_ID)"
+        fi
+        # No aggregator output here, so this dir is not author-visible; discard it
+        # rather than leaving an empty run behind. The `&&` is load-bearing (same
+        # as the clean-skip exits above): only a successful discard repoints the
+        # log, so on an rmdir-refused path the line still lands in its run.log.
+        discard_empty_run_dir "$RUN_DIR" && LOG_FILE="$STATE_DIR/orchestrator.log"
+        log "Posted recovered review on $PR_ID (from $(basename "$PENDING_RUN"))"
+        exit 0
+    fi
+    log "$PR_ID: re-post of the recovered review failed — leaving it pending for the next tick"
+    exit 1
+fi
+
 # Align canonical's local base ref BEFORE the `git clone --shared`.
 # The clone maps the source's refs/heads/* into its origin/* refs; it
 # does not copy the source's refs/remotes/origin/*. Fetch advances
@@ -1741,8 +1788,12 @@ COMMENT_BODY=$(scrub_review_paths "$COMMENT_BODY" "$REPO_DIR" SOURCE_PATHS)
 # content creation — so it is the call most likely to 403. As a bare `gh` it was
 # the one call that could not stamp the pause, and a throttled post meant the next
 # tick re-ran the entire review (full LLM spend) to POST into the same throttle.
+# Persist BEFORE the post, not on the failure path: this process can also be
+# SIGKILLed mid-post (the 90m worker ceiling), and a body that exists only in a
+# shell variable dies with it. pending_review_body (lib/run-dir.sh) is the reader.
+printf '%s' "$COMMENT_BODY" > "$RUN_DIR/pending-comment.md"
 if ! gh pr comment "$PR_NUM" --repo "$REPO" --body "$COMMENT_BODY"; then
-    log "$PR_ID: gh pr comment FAILED — not updating state (next tick will retry)"
+    log "$PR_ID: gh pr comment FAILED — review body kept at $RUN_DIR/pending-comment.md; a later tick re-posts it instead of re-reviewing"
     rm -rf "$REPO_DIR"
     exit 1
 fi
@@ -1752,6 +1803,7 @@ fi
 # right away (useful for runs that race two workers); if it fails, the
 # trap repairs it on the way out.
 GH_POSTED=true
+rm -f "$RUN_DIR/pending-comment.md"   # landed; nothing left to recover
 META_TMP="$RUN_DIR/meta.json.tmp"
 if jq --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '. + {posted_at: $ts}' \
         "$RUN_DIR/meta.json" > "$META_TMP" 2>/dev/null; then

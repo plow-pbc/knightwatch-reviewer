@@ -187,4 +187,50 @@ for artifact in agents/aggregator/output.md meta.json; do
     fi
 done
 
-echo "  PASS (6 scenarios: clean allocation, collision detected, subdir-failure rollback, real failure not mislabeled, discard empty/artifact-content-kept)"
+# --- 7. pending_review_body: a throttled post must not discard the review ----
+# The post is the one non-idempotent call in a review, so gh_retry deliberately
+# never retries it. That left a throttled post throwing away a finished review
+# and re-running the whole thing (~27 min: clone + just test + 7 specialists +
+# aggregator) on the next tick. Persisting the body makes that a re-POST.
+echo "  7: pending_review_body finds an unposted body, and only a safe one..."
+PB="$TMPDIR/pending"; RD7="$PB/runs/acme_repo__7__20260819T000000000Z__abc1234"
+mkdir -p "$RD7"
+printf 'the finished review body\n' > "$RD7/pending-comment.md"
+
+jq -n '{reviewed_sha:"abc1234def"}' > "$RD7/meta.json"
+if [ "$(pending_review_body "$PB" acme_repo 7 abc1234def)" != "$RD7" ]; then
+    echo "FAIL: an unposted body for the current head was not found — the next tick re-runs the entire review instead of re-posting"
+    exit 1
+fi
+
+# Already posted → never re-offer, or every tick double-posts the review.
+jq -n '{reviewed_sha:"abc1234def", posted_at:"2026-08-19T00:00:00Z"}' > "$RD7/meta.json"
+if [ -n "$(pending_review_body "$PB" acme_repo 7 abc1234def)" ]; then
+    echo "FAIL: a run that already posted was offered for re-post — that double-posts the review"
+    exit 1
+fi
+
+# Different head → a body describes the diff it was written against; posting it
+# after new commits would review code that is no longer there.
+jq -n '{reviewed_sha:"abc1234def"}' > "$RD7/meta.json"
+if [ -n "$(pending_review_body "$PB" acme_repo 7 9999999fff)" ]; then
+    echo "FAIL: a body reviewed at a different SHA was offered — it describes code that is no longer the head"
+    exit 1
+fi
+
+# An empty body file is not a review. Posting it would replace a real review
+# with a blank comment and stamp the run as posted.
+: > "$RD7/pending-comment.md"
+if [ -n "$(pending_review_body "$PB" acme_repo 7 abc1234def)" ]; then
+    echo "FAIL: an EMPTY pending body was offered — posting it publishes a blank review and marks the round done"
+    exit 1
+fi
+
+# Another PR's pending body must never leak into this PR.
+printf 'other pr body\n' > "$RD7/pending-comment.md"
+if [ -n "$(pending_review_body "$PB" acme_repo 99 abc1234def)" ]; then
+    echo "FAIL: PR 7's pending body was offered for PR 99 — a review would post on the wrong PR"
+    exit 1
+fi
+
+echo "  PASS (7 scenarios: clean allocation, collision detected, subdir-failure rollback, real failure not mislabeled, discard empty/artifact-content-kept, pending-body recovery)"

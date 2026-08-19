@@ -764,6 +764,42 @@ latest_author_visible_review_sha() {
     jq -r '.reviewed_sha // .sha // empty' "$latest/meta.json" 2>/dev/null
 }
 
+# pending_review_body <state_dir> <repo_slug> <pr_num> <sha>
+#   stdout: the newest run dir holding a finished-but-unposted review body for
+#   <sha>, or empty when there is nothing safe to re-post.
+#
+# The `gh pr comment` that publishes a review is the one non-idempotent call in
+# the whole run, so gh_retry deliberately refuses to retry it — a retry after a
+# request the server already applied double-posts. The cost of that correct
+# choice landed in the wrong place: a throttled post discarded a COMPLETED
+# review and the next tick rebuilt the identical one from scratch (clone +
+# `just test` + 7 specialists + aggregator, ~27 minutes). Persisting the body
+# turns a re-REVIEW into a re-POST, without making the post retryable.
+#
+# Three conditions, each of which would otherwise publish something wrong:
+#   posted_at unset — a stamped run already landed (finalize_meta_json
+#     guarantees the stamp even when the inline write fails), so re-offering it
+#     double-posts.
+#   reviewed_sha == sha — a body describes the diff it was written against.
+#     Posting it after new commits reviews code that is no longer the head.
+#   non-empty body — an empty file would publish a blank review and stamp the
+#     round as done, burying the real one.
+#
+# Walks the same run-dir glob as author_visible_runs_iter rather than reusing
+# it: that iterator's predicate is "the author has SEEN this", and a pending
+# body is by definition one the author has not seen — the two are complements,
+# so sharing a filter would make one of them wrong.
+pending_review_body() {
+    local state_dir="$1" repo_slug="$2" pr_num="$3" sha="$4" run_dir found=""
+    while IFS= read -r run_dir; do
+        [ -s "$run_dir/pending-comment.md" ] || continue
+        [ -z "$(jq -r '.posted_at // empty' "$run_dir/meta.json" 2>/dev/null)" ] || continue
+        [ "$(jq -r '.reviewed_sha // .sha // empty' "$run_dir/meta.json" 2>/dev/null)" = "$sha" ] || continue
+        found="$run_dir"   # last wins; find|sort is ascending by RUN_TS
+    done < <(find "$state_dir/runs" -maxdepth 1 -type d -name "${repo_slug}__${pr_num}__*" 2>/dev/null | sort)
+    printf '%s' "$found"
+}
+
 # latest_author_visible_review_approved <state_dir> <repo_slug> <pr_num> <current_run_dir>
 #   stdout: "true" if the latest author-visible round actually approved
 #   (per review_is_approval — APPROVE verdict AND full coverage), "false"
