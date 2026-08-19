@@ -283,11 +283,19 @@ gh_note_rate_limit() {
         # authorized_keys truncated and made world-writable, i.e. container→host
         # execution as the bot user. Refuse instead. mktemp and mv -f need no such
         # guard — rename(2) replaces a symlink rather than following it.
+        # "not a regular file", not "is a symlink": the same actor can plant a
+        # FIFO, whose open(O_WRONLY) blocks until a reader that never comes —
+        # hanging the tick until systemd SIGKILLs the unit at TimeoutStartSec,
+        # every tick, a cheaper and more durable denial than the truncate — or a
+        # directory, whose EISDIR would fall into the bare `|| exit 1` below and
+        # exit mute, restoring the no-pause-no-diagnostic failure this series
+        # exists to remove. One condition covers symlink, FIFO, directory and
+        # device, and gives all of them the diagnostic.
         # Residual: a swap between this test and the open still wins (bash has no
         # O_NOFOLLOW), so this narrows the window rather than closing it; the
         # durable fix is an unprivileged container runtime.
-        if [ -L "$lockfile" ]; then
-            log "gh rate limit — $lockfile is a symlink; refusing to open it: pause NOT published"
+        if [ -L "$lockfile" ] || { [ -e "$lockfile" ] && [ ! -f "$lockfile" ]; }; then
+            log "gh rate limit — $lockfile is not a regular file; refusing to open it: pause NOT published"
             exit 1
         fi
         exec {fd}>"$lockfile" || exit 1

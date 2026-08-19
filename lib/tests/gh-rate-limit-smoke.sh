@@ -482,24 +482,52 @@ STRAY=$(find "$(dirname "$(gh_pause_file)")" -maxdepth 1 -name 'gh-rate-limited-
 chmod 0755 "$(gh_pause_file)"; rmdir "$(gh_pause_file)"
 
 # Container root shares this mount and is the untrusted-input boundary, so it can
-# swap the lock for a symlink no dir mode stops (CAP_FOWNER). The host publish
-# must refuse it rather than O_CREAT|O_TRUNC + chmod 0666 an operator-owned file
-# — container→host execution as the bot user.
-reset_state
-rm -f "$(gh_pause_file).lock"
-VICTIM="$TMP/victim-precious"; printf 'do not truncate me\n' > "$VICTIM"; chmod 0600 "$VICTIM"
-ln -s "$VICTIM" "$(gh_pause_file).lock"
-LOG_FILE="$TMP/log16s"; : > "$LOG_FILE"
-LOG_FILE="$LOG_FILE" \
-GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
-GH_SHIM_ERR="$RATE_LIMIT_ERR" gh api "user" >/dev/null 2>&1 || true
-[ -s "$VICTIM" ] \
-    || fail "scenario 16: a symlinked lock let the publish TRUNCATE $VICTIM — container root could point this at ~/.ssh/authorized_keys"
-[ "$(stat -c '%a' "$VICTIM")" = "600" ] \
-    || fail "scenario 16: a symlinked lock let the publish chmod $VICTIM to $(stat -c '%a' "$VICTIM") — an arbitrary operator-owned file made world-writable"
-grep -q 'refusing to open it' "$TMP/log16s" \
-    || fail "scenario 16: the symlinked lock was not refused loudly: $(cat "$TMP/log16s")"
-rm -f "$(gh_pause_file).lock"
+# replace the lock path with anything — CAP_FOWNER means no dir mode or sticky
+# bit stops it. Each planted type is a different attack on the SAME path, so they
+# run as a table over one contract: refuse, log, touch nothing outside throttle/,
+# and return promptly.
+#   symlink — the host publish would O_CREAT|O_TRUNC + chmod 0666 through it:
+#             any operator-owned file made world-writable (container->host exec).
+#   fifo    — open(O_WRONLY) blocks for a reader that never comes, hanging the
+#             tick until systemd SIGKILLs the unit, every tick.
+#   dir     — EISDIR falls into the bare `|| exit 1`, exiting mute.
+# The bounded `timeout 5` is what makes the fifo row FAIL rather than hang the
+# suite if the guard regresses.
+VICTIM="$TMP/victim-precious"
+# Non-recursive on purpose: rm -f handles the file/symlink/fifo plants, rmdir the
+# dir one, and rmdir's refusal to remove a NON-empty dir is the safety property —
+# a stray `rm -rf` of a path built from a variable is how a test eats a real tree.
+unplant() { rm -f "$(gh_pause_file).lock" 2>/dev/null || true; rmdir "$(gh_pause_file).lock" 2>/dev/null || true; }
+for plant in symlink fifo dir; do
+    PLANT_RC=0
+    reset_state
+    unplant
+    printf 'do not truncate me\n' > "$VICTIM"; chmod 0600 "$VICTIM"
+    case "$plant" in
+        symlink) ln -s "$VICTIM" "$(gh_pause_file).lock" ;;
+        fifo)    mkfifo "$(gh_pause_file).lock" ;;
+        dir)     mkdir "$(gh_pause_file).lock" ;;
+    esac
+    : > "$TMP/log16-$plant"
+    # Sourced in the CHILD (scenario 15's shape) so the seam function exists
+    # there — `timeout … bash -c 'gh …'` alone reaches the PATH shim directly and
+    # bypasses the very wrapper under test. `|| PLANT_RC=$?` because this file
+    # runs under set -e, where the non-zero a refused publish returns would abort
+    # before any assertion below could read it.
+    timeout 5 env -u BASH_ENV STATE_DIR="$STATE_DIR" PATH="$TMP/bin:$PATH" \
+        LOG_FILE="$TMP/log16-$plant" GH_SECONDARY_PAUSE_SECS=60 \
+        GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+        GH_SHIM_ERR="$RATE_LIMIT_ERR" \
+        bash -c '. "'"$PROJECT_ROOT"'/lib/gh-retry.sh"; gh api user' \
+        >/dev/null 2>&1 || PLANT_RC=$?
+    [ "$PLANT_RC" -ne 124 ] \
+        || fail "scenario 16: a $plant at the lock path HUNG the publish — every tick would burn its TimeoutStartSec and be SIGKILLed until someone unlinks it by hand"
+    grep -q 'refusing to open it' "$TMP/log16-$plant" \
+        || fail "scenario 16: a $plant at the lock path was not refused loudly: $(cat "$TMP/log16-$plant")"
+    [ -s "$VICTIM" ] && [ "$(stat -c '%a' "$VICTIM")" = "600" ] \
+        || fail "scenario 16: a $plant at the lock path let the publish reach $VICTIM (size $(stat -c '%s' "$VICTIM"), mode $(stat -c '%a' "$VICTIM")) — container root could point this at ~/.ssh/authorized_keys"
+    unplant
+done
 reset_state
 rm -f "$(gh_pause_file).lock"
 : > "$(gh_pause_file).lock"; chmod 0644 "$(gh_pause_file).lock"
