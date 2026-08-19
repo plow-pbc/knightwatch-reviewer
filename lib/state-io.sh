@@ -319,8 +319,23 @@ gh_note_rate_limit() {
         # unprivileged mkfifo at this path disable the fleet's backoff permanently
         # — the fleet hammering GitHub through every 403 IS the original incident,
         # so losing one trip's later-window merge is by far the smaller loss.
+        # Clear a plant rather than refusing forever. Refusing is fail-open in the
+        # throttle-DISABLING direction — gh_pause_active reads not-paused and every
+        # publish declines — so one no-capability mkdir would leave the fleet
+        # calling through every 403, the original incident, with nothing to clear
+        # it. It is also hotter than the silent version: gh_note_rate_limit's cheap
+        # "already paused" exit can never fire, so every failing call adds its own
+        # rate_limit probe during the window GitHub is telling the fleet to back
+        # off. Removal is possible at all because the dir is deliberately 0777 and
+        # non-sticky, so unlink depends on the directory bits, not on who owns the
+        # plant. Non-recursive on purpose: rmdir REFUSES a non-empty directory, so
+        # a surprise fails loudly instead of being eaten.
         if ! gh_pause_path_sane "$lockfile"; then
-            log "gh rate limit — $lockfile is not a regular file; publishing UNSERIALIZED (only the later-window merge is lost)"
+            rm -f "$lockfile" 2>/dev/null || true
+            rmdir "$lockfile" 2>/dev/null || true
+        fi
+        if ! gh_pause_path_sane "$lockfile"; then
+            log "gh rate limit — $lockfile is not a regular file and could not be cleared; publishing UNSERIALIZED (only the later-window merge is lost)"
         else
             exec {fd}>"$lockfile" || exit 1
             # SELF-HEALING, not creation-only. umask governs only files this call
@@ -341,8 +356,13 @@ gh_note_rate_limit() {
         # side sees no pause — the silent split-brain this protocol exists to
         # close, restored by one no-capability mkdir. rename(2) handles a symlink
         # safely; a directory it never sees.
+        # Same clear-then-refuse as the lock above — see that comment.
         if ! gh_pause_path_sane "$(gh_pause_file)"; then
-            log "gh rate limit — $(gh_pause_file) is not a regular file: pause NOT published despite the line above"
+            rm -f "$(gh_pause_file)" 2>/dev/null || true
+            rmdir "$(gh_pause_file)" 2>/dev/null || true
+        fi
+        if ! gh_pause_path_sane "$(gh_pause_file)"; then
+            log "gh rate limit — $(gh_pause_file) is not a regular file and could not be cleared: pause NOT published despite the line above"
             exit 1
         fi
         existing=$(head -n1 "$(gh_pause_file)" 2>/dev/null)

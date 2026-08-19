@@ -464,13 +464,14 @@ GH_SHIM_ERR="$RATE_LIMIT_ERR" gh api "user" >/dev/null 2>&1 || true
 [ "$(head -n1 "$(gh_pause_file)")" -gt "$NOW" ] 2>/dev/null \
     || fail "scenario 16: publishing over an existing pause file did not move the epoch forward — the rename was refused (sticky dir), so a host that has paused once can never pause again"
 
-# The loud-failure branch. The destination is a directory the publisher cannot
-# write into, so the final `mv` fails (a WRITABLE directory would not do it —
-# `mv file dir` moves the file inside and succeeds). The self-heal above chmods
-# the throttle dir, not this path, so it stays 0555 through the call.
+# The loud-failure branch, now that a plant is cleared rather than refused: use a
+# NON-EMPTY directory, which rmdir refuses to remove. That is the deliberate
+# safety property of the non-recursive clear — an unexpected directory with
+# contents fails loudly instead of being eaten by an rm -rf built from a
+# variable — and it is the one shape the publish genuinely cannot recover from.
 reset_state
 rm -f "$(gh_pause_file).lock"
-mkdir -p "$(gh_pause_file)"; chmod 0555 "$(gh_pause_file)"
+mkdir -p "$(gh_pause_file)/unexpected-contents"
 LOG_FILE="$TMP/log16f"; : > "$LOG_FILE"
 LOG_FILE="$LOG_FILE" \
 GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
@@ -479,7 +480,7 @@ grep -q 'pause NOT published' "$TMP/log16f" \
     || fail "scenario 16: a failed publish said nothing, leaving the log asserting a pause that never landed: $(cat "$TMP/log16f")"
 STRAY=$(find "$(dirname "$(gh_pause_file)")" -maxdepth 1 -name 'gh-rate-limited-until.*' ! -name '*.lock' 2>/dev/null)
 [ -z "$STRAY" ] || fail "scenario 16: a failed publish leaked a temp file: $STRAY"
-chmod 0755 "$(gh_pause_file)"; rmdir "$(gh_pause_file)"
+rmdir "$(gh_pause_file)/unexpected-contents"; rmdir "$(gh_pause_file)"
 
 # Container root shares this mount and is the untrusted-input boundary, so it can
 # replace the lock path with anything — CAP_FOWNER means no dir mode or sticky
@@ -531,20 +532,19 @@ for target in lock pause; do
         >/dev/null 2>&1 || PLANT_RC=$?
     [ "$PLANT_RC" -ne 124 ] \
         || fail "scenario 16: a $plant at the $target path HUNG the publish — every tick would burn its TimeoutStartSec and be SIGKILLed until someone unlinks it by hand"
-    grep -qE 'is not a regular file' "$TMP/log16-$target-$plant" \
-        || fail "scenario 16: a $plant at the $target path was not called out loudly: $(cat "$TMP/log16-$target-$plant")"
+    # No "refused" assertion here: a removable plant is CLEARED and the publish
+    # proceeds, which is the point — refusing would be a permanent throttle
+    # bypass. The un-clearable case (a non-empty directory) is covered on its
+    # own above, where the loud "pause NOT published" line is the contract.
     [ -s "$VICTIM" ] && [ "$(stat -c '%a' "$VICTIM")" = "600" ] \
         || fail "scenario 16: a $plant at the $target path let the publish reach $VICTIM (size $(stat -c '%s' "$VICTIM"), mode $(stat -c '%a' "$VICTIM")) — container root could point this at ~/.ssh/authorized_keys"
-    # A planted LOCK must still publish (degrade to unserialized); a planted
-    # PAUSE path cannot be published to at all, and must say so rather than
-    # logging "pausing the FLEET" over a pause that never lands.
-    if [ "$target" = lock ]; then
-        [ -f "$(gh_pause_file)" ] \
-            || fail "scenario 16: a $plant at the lock path disabled the backoff entirely — the fleet keeps hammering GitHub through every 403, which is the original incident"
-    else
-        grep -q 'pause NOT published' "$TMP/log16-$target-$plant" \
-            || fail "scenario 16: a $plant at the pause path was swallowed silently: $(cat "$TMP/log16-$target-$plant")"
-    fi
+    # Whichever path was planted, the trip must still end PAUSED. Refusing is
+    # fail-open in the throttle-disabling direction, and permanently so — the
+    # fleet calling through every 403 is the original incident.
+    [ -f "$(gh_pause_file)" ] \
+        || fail "scenario 16: a $plant at the $target path left the fleet UNPAUSED — one no-capability mkdir would disable the backoff permanently, which is the original incident"
+    [ "$(head -n1 "$(gh_pause_file)")" -gt "$NOW" ] 2>/dev/null \
+        || fail "scenario 16: a $plant at the $target path published no future pause epoch"
     unplant "$PLANT_PATH"
   done
 done
