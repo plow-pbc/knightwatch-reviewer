@@ -103,6 +103,8 @@ write_gh_stub() {
     local stub_path="$1" base_ref="$2" head_oid="$3"
     cat > "$stub_path" <<STUB
 #!/bin/bash
+# Opt-in argv log, so a scenario can assert WHICH GitHub calls a path made.
+[ -n "\${GH_STUB_CALL_LOG:-}" ] && printf '%s\n' "\$*" >> "\$GH_STUB_CALL_LOG"
 $(gh_permission_stub_body)
 
 # Issue-comments endpoint: opt-in JSON fixture (scenario 12's operator thread).
@@ -122,7 +124,7 @@ case "\$fields" in
         # Opt-in empty result → the BASE_REF/PR_AUTHOR fail-loud guard fires
         # (simulates a gh pr view that returns no usable metadata).
         if [ -n "\${GH_STUB_PRVIEW_EMPTY:-}" ]; then printf '{}\n'; else
-        printf '{"baseRefName":"$base_ref","title":"Test PR","body":"","author":{"login":"test-user"},"closingIssuesReferences":{"nodes":[]}}\n'
+        printf '{"baseRefName":"$base_ref","title":"Test PR","body":"","author":{"login":"'"\${GH_STUB_PR_AUTHOR:-test-user}"'"},"closingIssuesReferences":{"nodes":[]}}\n'
         fi
         ;;
     *closingIssuesReferences*)
@@ -1566,4 +1568,67 @@ if ! grep -qF "$LOC_LINE12" "$IN12/reeval-status.md"; then
     exit 1
 fi
 
-echo "  PASS (16 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + requester-gate skip + metadata-lookup guard pre-allocation abort + placeholder reuse anti-spam + codex 429 backoff + usage-cap quota placeholder w/ pool status + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort + whole-PR re-review keeps memory)"
+# ===== Scenarios 17-18: a throttled post is recovered, not re-reviewed =====
+# The unit test covers the pending_review_body SELECTOR. What needs covering
+# here is the block that acts on it: it makes an irreversible GitHub write,
+# submits the approval, stamps a DIFFERENT run's meta.json, and short-circuits
+# the worker with exit 0 — none of which the selector can see.
+echo "  scenario: a finished review whose post was throttled is re-posted, not re-reviewed..."
+STATE17="$TMPDIR/state-17"
+seed_state_dir "$STATE17"
+git clone -q "$GITHUB_BARE" "$STATE17/repos/test-org_probe-repo"
+PEND_RUN="$STATE17/runs/test-org_probe-repo__1__20260101T000000000Z__pend123"
+mkdir -p "$PEND_RUN/agents/aggregator"
+printf 'the finished review body\n' > "$PEND_RUN/pending-comment.md"
+# reviewed_sha is the FETCHED head (NEW_PR_SHA), which is what the worker
+# compares against — not the enumerated OLD_PR_SHA it is invoked with.
+printf '{"pr_id":"test-org/probe-repo#1","reviewed_sha":"%s"}\n' "$NEW_PR_SHA" > "$PEND_RUN/meta.json"
+printf 'findings\nVERDICT: APPROVE\n' > "$PEND_RUN/agents/aggregator/output.md"
+
+CALLS17="$TMPDIR/calls-17"; : > "$CALLS17"
+GH_STUB_CALL_LOG="$CALLS17" GH_STUB_TRUSTED_USERS="someuser" GH_STUB_PR_AUTHOR="someuser" \
+    run_worker_in_state "$STATE17" \
+    "test-org/probe-repo" "1" "$OLD_PR_SHA" "feat/test" "Test PR" "false" "someuser"
+EC17=$?
+LOG17="$STATE17/orchestrator.log"
+
+[ "$EC17" -eq 0 ] || { echo "FAIL: scenario 17 — worker exited $EC17 (expected 0 from the recovery short-circuit)"; cat "$LOG17" 2>/dev/null; find "$STATE17/runs" -name run.log -exec cat {} + 2>/dev/null; exit 1; }
+grep -q -- '--body-file' "$CALLS17" \
+    || { echo "FAIL: scenario 17 — the saved body was never posted (no --body-file call)"; cat "$CALLS17"; exit 1; }
+# The whole point: none of the expensive phases may run.
+grep -q "Wave A" "$LOG17" 2>/dev/null \
+    && { echo "FAIL: scenario 17 — the worker re-ran the review instead of re-posting the saved body"; cat "$LOG17"; exit 1; }
+# Stamped, so the round reads as author-visible and is never re-offered.
+grep -q '"posted_at"' "$PEND_RUN/meta.json" \
+    || { echo "FAIL: scenario 17 — the ORIGINATING run was not stamped posted_at; the next tick re-reviews and double-posts"; cat "$PEND_RUN/meta.json"; exit 1; }
+[ ! -f "$PEND_RUN/pending-comment.md" ] \
+    || { echo "FAIL: scenario 17 — the recovered body was left behind; it would be posted again next tick"; exit 1; }
+# An APPROVE round must still approve. Publishing the body alone leaves a PR
+# whose comment says "Approving per automated review above." with no approval,
+# permanently — the stamp above makes the round author-visible, so the dedup
+# gate skips it forever after.
+grep -q 'pr review' "$CALLS17" \
+    || { echo "FAIL: scenario 17 — recovery published an APPROVE round without submitting the approval"; cat "$CALLS17"; exit 1; }
+
+echo "  scenario: a pending body from a superseded head is NOT posted..."
+STATE18="$TMPDIR/state-18"
+seed_state_dir "$STATE18"
+git clone -q "$GITHUB_BARE" "$STATE18/repos/test-org_probe-repo"
+PEND18="$STATE18/runs/test-org_probe-repo__1__20260101T000000000Z__stale12"
+mkdir -p "$PEND18/agents/aggregator"
+printf 'a review of code that is no longer the head\n' > "$PEND18/pending-comment.md"
+# Reviewed at the OLD head; the worker fetches NEW_PR_SHA, so this body
+# describes a diff that no longer exists and must not be published.
+printf '{"pr_id":"test-org/probe-repo#1","reviewed_sha":"%s"}\n' "$OLD_PR_SHA" > "$PEND18/meta.json"
+printf 'findings\nVERDICT: COMMENT\n' > "$PEND18/agents/aggregator/output.md"
+
+CALLS18="$TMPDIR/calls-18"; : > "$CALLS18"
+GH_STUB_CALL_LOG="$CALLS18" GH_STUB_TRUSTED_USERS="someuser" GH_STUB_PR_AUTHOR="someuser" \
+    run_worker_in_state "$STATE18" \
+    "test-org/probe-repo" "1" "$OLD_PR_SHA" "feat/test" "Test PR" "false" "someuser"
+grep -q -- '--body-file' "$CALLS18" \
+    && { echo "FAIL: scenario 18 — a body reviewed at a superseded head was posted; it describes code that is no longer there"; cat "$CALLS18"; exit 1; }
+[ -f "$PEND18/pending-comment.md" ] \
+    || { echo "FAIL: scenario 18 — the stale pending body was consumed rather than left for its own head"; exit 1; }
+
+echo "  PASS (18 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + requester-gate skip + metadata-lookup guard pre-allocation abort + placeholder reuse anti-spam + codex 429 backoff + usage-cap quota placeholder w/ pool status + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort + whole-PR re-review keeps memory + throttled-post recovery + superseded-head refusal)"

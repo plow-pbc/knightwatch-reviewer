@@ -624,14 +624,34 @@ PENDING_RUN=""
 if [ -n "$PENDING_RUN" ]; then
     log "$PR_ID: a prior run finished its review but its post was throttled ($(basename "$PENDING_RUN")) — posting that body instead of re-reviewing"
     if gh pr comment "$PR_NUM" --repo "$REPO" --body-file "$PENDING_RUN/pending-comment.md"; then
-        rm -f "$PENDING_RUN/pending-comment.md"
         # Stamp the ORIGINATING run, not this one: its meta.json carries the
         # aggregator output, verdict and reviewed_sha, so recurrence detection and
         # the carried-forward verdict must keep reading THAT round as the one the
         # author saw. This run wrote no review of its own.
+        #
+        # STAMP BEFORE DELETE, and never the reverse. finalize_run only repairs
+        # $RUN_DIR, which this branch discards, so there is no EXIT-trap safety
+        # net here: deleting first and then failing (or being SIGKILLed at the 90m
+        # ceiling) would leave the round un-stamped AND its only body gone, and the
+        # next tick would re-review and post a SECOND copy of a review already on
+        # the PR. Stamped first, a failure after this point is inert — the leftover
+        # file is skipped on pending_review_body's posted_at check.
         if ! finalize_meta_json "$PENDING_RUN/meta.json" \
                 "$(date -u +%Y-%m-%dT%H:%M:%SZ)" completed true; then
-            log "$PR_ID: recovered post landed but stamping $PENDING_RUN/meta.json failed — it may be re-offered next tick"
+            log "$PR_ID: recovered post landed but stamping $PENDING_RUN/meta.json failed — the round may be re-reviewed and double-posted"
+        fi
+        rm -f "$PENDING_RUN/pending-comment.md"
+        # Carry the APPROVAL too, or recovery silently downgrades the round. The
+        # normal path posts and then submits the GitHub --approve; publishing the
+        # body alone would leave a PR whose review comment reads "Approving per
+        # automated review above." with no approval on it — and permanently, since
+        # the stamp above makes the round author-visible, so the next tick's dedup
+        # gate skips cleanly and nothing re-attempts it. Read the verdict from the
+        # originating run, whose aggregator output is the round being published.
+        PENDING_VERDICT=$(grep '^VERDICT:' "$PENDING_RUN/agents/aggregator/output.md" 2>/dev/null | tail -1)
+        if review_is_approval "$PENDING_VERDICT" "$PENDING_RUN"; then
+            submit_approval "$REPO" "$PR_NUM" "$BOT_USER" "$PR_AUTHOR" \
+                "$(approval_body "$PENDING_VERDICT")" || true
         fi
         EYES_RESOLVED=true
         if [ -n "$EYES_COMMENT_ID" ]; then
@@ -1836,15 +1856,9 @@ if review_is_approval "$VERDICT" "$RUN_DIR"; then
     # possibly security, timed out) falls through to the no-approval else: it's
     # posted (the ⏱️ header discloses the gap) but never auto-APPROVEd, and the
     # carried-forward `approved` projection reads the same decision next round.
-    if [[ "$VERDICT" == *"pending:"* ]]; then
-        PENDING_NOTE=$(echo "$VERDICT" | sed 's/.*pending: *//')
-        APPROVE_BODY="Approving — pending: $PENDING_NOTE"
-    else
-        APPROVE_BODY="Approving per automated review above."
-    fi
     # PR_AUTHOR was fetched at line ~305 — pass it through so submit_approval
     # doesn't re-query GitHub for a value the worker already has.
-    submit_approval "$REPO" "$PR_NUM" "$BOT_USER" "$PR_AUTHOR" "$APPROVE_BODY" || true
+    submit_approval "$REPO" "$PR_NUM" "$BOT_USER" "$PR_AUTHOR" "$(approval_body "$VERDICT")" || true
 else
     log "Commented on $PR_ID (no approval)"
 fi

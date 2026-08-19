@@ -833,6 +833,19 @@ pending_review_body() {
 # so partial coverage can never greenlight in one place while reading as
 # approved in the other. A partial review (a specialist, possibly security,
 # was skipped) is never an approval — disclosed by the ⏱️ header instead.
+# approval_body <verdict> → the body text for the GitHub approval submission.
+#
+# Lives beside review_is_approval so "what counts as an approval" and "how an
+# approval is worded" stay with each other. Two callers now — the normal post
+# path and the throttled-post recovery — and a recovery that worded its approval
+# differently would be a visible inconsistency on the PR for no reason.
+approval_body() {
+    case "$1" in
+        *"pending:"*) printf 'Approving — pending: %s' "${1#*pending: }" ;;
+        *)            printf 'Approving per automated review above.' ;;
+    esac
+}
+
 review_is_approval() {
     local verdict="$1" run_dir="$2"
     [[ "$verdict" == VERDICT:\ APPROVE* ]] || return 1
