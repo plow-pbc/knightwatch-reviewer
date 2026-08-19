@@ -21,9 +21,14 @@ mkdir -p "$SECRETS"/codex-account-{a,b,d} "$SECRETS/claude-standards"
 
 # $SECRETS sits under $OUT's dir, so the generator emits the same
 # compose-relative form it ships with (./docker/secrets → ./secrets here).
+# Sandboxed like every other input. Inheriting the invoking user's $HOME would
+# make the render depend on whether THAT user happens to have the throttle dir —
+# green on the author's box, red for reviewer-test in container mode.
+THROTTLE="$SANDBOX/throttle"; mkdir -p "$THROTTLE"
 run_render() {  # the sandbox invocation, shared with the absent-fleet.conf case
     SECRETS_DIR="$SECRETS" FLEET_CONF="$SANDBOX/fleet.conf" \
         CONFIG_ENV="$SANDBOX/config.env" OUT="$SANDBOX/out.yml" \
+        THROTTLE_DIR="${THROTTLE_DIR-$THROTTLE}" \
         bash "$REPO_ROOT/lib/render-compose.sh" >"$SANDBOX/render.log" 2>&1
 }
 render() {  # render <fleet-conf> [config-env] -> $SANDBOX/out.yml
@@ -59,7 +64,7 @@ for token in "  dind-1:" "  reviewer-1:" "  dind-4:" "  reviewer-4:" \
              '${HOME}/services/kwr-config:/root/.kwr-config:ro' \
              "KWR_CONFIG_DIR: /root/.kwr-config" "REPO_ENV_DIR: /root/.kwr/repo-env" \
              "REPOS_CONF_FILE: /shared/manifest/repos.conf" \
-             '${HOME}/.pr-reviewer/throttle:/shared/throttle' \
+             "$THROTTLE:/shared/throttle" \
              "external: true" "name: kwr_claims" "GENERATED"; do
     grep -qF "$token" "$SANDBOX/out.yml" || fail "render is missing: $token"
 done
@@ -149,5 +154,11 @@ grep -q 'legacy flat layout' "$SANDBOX/render.log" \
 grep -q 'mv .*manifest/repos.conf' "$SANDBOX/render.log" \
     || fail "legacy flat repos.conf: die message omits the migration command: $(cat "$SANDBOX/render.log")"
 mv "$SANDBOX/mount-away" "$SECRETS/manifest/repos.conf"; rm -f "$SECRETS/repos.conf"
+
+echo "  4: absent throttle dir refuses to render..."
+THROTTLE_DIR="$SANDBOX/no-such-throttle" render "1  codex-account-a" \
+    && fail "render succeeded with no throttle dir — docker would auto-create the bind source root-owned and the operator-run host timers could never write the shared pause"
+grep -q 'no-such-throttle' "$SANDBOX/render.log" \
+    || fail "the absent-throttle die does not name the path to create: $(cat "$SANDBOX/render.log")"
 
 echo "PASS: render-compose smoke"

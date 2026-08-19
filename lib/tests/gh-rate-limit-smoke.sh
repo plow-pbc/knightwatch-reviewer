@@ -410,8 +410,25 @@ echo "  scenario 16: the pause file is bind-mountable on its own..."
 # returns.
 [ "$(STATE_DIR=/shared gh_pause_file)" = "/shared/throttle/gh-rate-limited-until" ] \
     || fail "scenario 16: container-side pause path drifted from the /shared/throttle mount render-compose.sh emits"
-grep -q 'throttle:/shared/throttle' "$PROJECT_ROOT/lib/render-compose.sh" \
-    || fail "scenario 16: render-compose.sh emits no shared throttle mount — host and containers would keep separate pauses"
+# Sharing the PATH is not sharing the pause. The two writers are different UIDs
+# (containers run as root, host timers as the operator), so a default-mode file
+# is unreadable/unlockable by the other side — `head` gets EACCES, reads empty,
+# and ${until:-0} says NOT paused. The split returns at the permission level,
+# silently, which is why the modes are asserted rather than assumed.
+reset_state
+GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+GH_SHIM_ERR="$RATE_LIMIT_ERR" gh api "user" >/dev/null 2>&1 || true
+PAUSE_MODE=$(stat -c '%a' "$(gh_pause_file)" 2>/dev/null)
+case "$PAUSE_MODE" in
+    *6|*7) : ;;
+    *) fail "scenario 16: pause file is mode ${PAUSE_MODE:-missing} — the other UID cannot read it, so it reads as NOT paused and the fleet keeps calling" ;;
+esac
+LOCK_MODE=$(stat -c '%a' "$(gh_pause_file).lock" 2>/dev/null)
+case "$LOCK_MODE" in
+    *6|*7) : ;;
+    *) fail "scenario 16: lock is mode ${LOCK_MODE:-missing} — the other UID's exec {fd}> fails EACCES and it publishes neither a pause nor a diagnostic" ;;
+esac
+reset_state
 
 # --- 17. a throttled call names the endpoint that tripped ---------------------
 # Diagnosing a trip used to be archaeology. Callers capture gh's stderr into
@@ -440,6 +457,11 @@ LOG_FILE="$LOG_FILE" \
 GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
 GH_SHIM_ERR="$RATE_LIMIT_ERR" \
     gh pr comment 7 --repo o/r --body "SECRET-REVIEW-BODY" >/dev/null 2>&1 || true
+# Positive anchor first: without it this is a bare negative that passes whenever
+# the create-shaped call stops reaching the logging branch at all (a reordered
+# create guard, shim drift), silently turning the redaction guarantee vacuous.
+grep -q 'rate-limited on' "$TMP/log17b" \
+    || fail "scenario 17: the create-shaped call never reached the endpoint log — the payload check below would prove nothing"
 grep -qF 'SECRET-REVIEW-BODY' "$TMP/log17b" \
     && fail "scenario 17: the --body payload was logged — the argv slice is too wide"
 reset_state

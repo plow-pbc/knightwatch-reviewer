@@ -79,7 +79,13 @@ gh_retry() {
             # genuinely reached GitHub and got a 403 arrive here.
             # First three argv words only — enough to identify the endpoint, and
             # narrow enough that a `--body` payload can never spill into a log.
-            log "gh rate-limited on \`gh $1 ${2:-} ${3:-}\` — $(head -c 160 "$errfile" | tr '\n' ' ')" >&2
+            # `|| true`: log() returns tee's status, and this sits in command
+            # position on a path that inherits the caller's errexit (lib/replay.sh
+            # runs set -euo pipefail). An unwritable/full LOG_FILE would otherwise
+            # abort gh_retry here — before gh_note_rate_limit — publishing no pause
+            # and no diagnostic, the exact failure gh_note_rate_limit's own `|| rc=$?`
+            # was hardened against. A diagnostic must never cost the backoff.
+            log "gh rate-limited on \`gh $1 ${2:-} ${3:-}\` — $(head -c 160 "$errfile" | tr '\n' ' ')" >&2 || true
             # >&2 like the errfile spill above: this function's stdout is the
             # API result its callers capture (`perm=$(gh_api_retry …)`), so the
             # diagnostic must not land there. log()'s LOG_FILE tee is unaffected.

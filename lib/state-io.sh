@@ -239,6 +239,15 @@ gh_note_rate_limit() {
     local lockfile="$(gh_pause_file).lock" tmp existing rc=0
     mkdir -p "$(dirname "$lockfile")"
     (
+        # umask 000 for the LOCK, 0666 for the pause file below. The two writers
+        # are different UIDs — the reviewer containers run as root, the host
+        # systemd timers as the operator — so default modes silently restore the
+        # very split this file was moved into a shared mount to remove, in the
+        # direction that matters most (root bypasses DAC, so container→host is
+        # the broken one, and the containers make the bulk of the calls and trip
+        # first). A root-created 0644 lock makes the host's `exec {fd}>` fail
+        # EACCES, which exits before the log — no pause AND no diagnostic.
+        umask 000
         exec {fd}>"$lockfile" || exit 1
         flock "$fd"
         existing=$(head -n1 "$(gh_pause_file)" 2>/dev/null)
@@ -251,6 +260,10 @@ gh_note_rate_limit() {
         # must be unique per writer (mktemp, not $$ — the writers are separate
         # containers, so PIDs collide).
         tmp=$(mktemp "$(gh_pause_file).XXXXXX") || exit 1
+        # mktemp is 0600 and mv carries the mode onto the published file, so
+        # without this the other UID's `head` gets EACCES → empty → reads as NOT
+        # paused. Silently, which is the worst possible default here.
+        chmod 0666 "$tmp"
         printf '%s\n' "$until" > "$tmp" && mv -f "$tmp" "$(gh_pause_file)"
     ) || rc=$?
     return "$rc"

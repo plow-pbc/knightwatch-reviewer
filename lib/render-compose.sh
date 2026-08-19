@@ -91,8 +91,22 @@ done < "$FLEET_CONF"
 # the bind source as ROOT; the host systemd timers run as the operator, so their
 # pause writes would fail silently and the two groups would drift back to a pause
 # each — the split-brain this mount exists to remove, reintroduced invisibly.
-[ -d "$HOME/.pr-reviewer/throttle" ] \
-    || die "$HOME/.pr-reviewer/throttle not found — it backs the one rate-limit pause the host timers and the containers share. Create it as the operator (NOT via sudo, or it lands root-owned): mkdir -p $HOME/.pr-reviewer/throttle"
+# Parameterized like every other input, and for the same reason: the render can
+# run under a $HOME that is not the operator's. This repo's own `just test` runs
+# as reviewer-test in container mode, so a guard hardcoded to render-time $HOME
+# would fail every render and take the gate red on every PR.
+THROTTLE_DIR="${THROTTLE_DIR:-}"
+if [ -n "$THROTTLE_DIR" ]; then
+    THROTTLE_REF="$THROTTLE_DIR"
+else
+    THROTTLE_DIR="$HOME/.pr-reviewer/throttle"
+    # Left UNEXPANDED, same convention as the kwr-config mount: it resolves at
+    # `compose up`, so the mount and the host units agree on one path instead of
+    # baking the generating user's $HOME in at render time.
+    THROTTLE_REF='${HOME}/.pr-reviewer/throttle'
+fi
+[ -d "$THROTTLE_DIR" ] \
+    || die "$THROTTLE_DIR not found — it backs the one rate-limit pause the host timers and the containers share. Create it as the operator (NOT via sudo, or it lands root-owned): mkdir -p $THROTTLE_DIR"
 # Worse for the mount sources the loader sources: docker auto-creates a missing
 # one as a DIRECTORY, and the consumer loads it with `[ -f … ] && . …`
 # (lib/tracked-repos.sh) — the -f test fails against that dir and the source is
@@ -252,7 +266,7 @@ EOF
       - scenario-shared$n:/scenario-shared
       - $SECRETS_REF/$acct:/root/.codex          # writable: codex refreshes its OAuth token in-home
       - $SECRETS_REF/manifest:/shared/manifest:ro
-      - \${HOME}/.pr-reviewer/throttle:/shared/throttle   # the ONE pause file the host timers and the containers share (lib/state-io.sh)
+      - $THROTTLE_REF:/shared/throttle   # the ONE pause file the host timers and the containers share (lib/state-io.sh)
       - $SECRETS_REF/config.env:/root/.kwr/config.env:ro
       - $SECRETS_REF/repo-env:/root/.kwr/repo-env:ro
       - $SECRETS_REF/claude-standards:/root/.claude:ro

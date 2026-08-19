@@ -134,6 +134,12 @@ DIRS=(lib docs prompts)
 CONFIG_FILES=(repos.conf)
 
 mkdir -p "$INSTALL_DIR"
+# The one rate-limit pause the host timers and the reviewer containers share
+# (bind-mounted to /shared/throttle; lib/state-io.sh). Created here so a fresh
+# install satisfies render-compose.sh's guard without a manual step — and as the
+# operator, since docker would otherwise auto-create the bind source root-owned
+# and the host units could not write it.
+mkdir -p "$INSTALL_DIR/throttle"
 for script in "${SCRIPTS[@]}"; do
   src="$REPO_DIR/$script"
   [[ -f "$src" ]] || fail "missing repo script: $src"

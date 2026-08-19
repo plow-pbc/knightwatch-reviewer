@@ -167,7 +167,12 @@ unset STUB_STDERR
 # Scenario 4's stderr is a rate-limit message, so it reaches gh_note_rate_limit
 # and stamps a pause. Assert it landed ONLY in the sandbox: an escape means
 # `just test` on a deploy host pauses the live fleet.
-if [ -e "$HOME/.pr-reviewer/gh-rate-limited-until" ]; then
+# Derived, never spelled out: a literal path here silently stops checking the
+# moment the pause file moves (it did — into throttle/), and unlike an assertion
+# that fails loudly, a vacuous one announces nothing. `unset STATE_DIR` in a
+# subshell yields the DEFAULT path this is guarding against; HOME is already
+# sandboxed above, so it stays inside the tmpdir either way.
+if [ -e "$(unset STATE_DIR; gh_pause_file)" ]; then
     echo "FAIL: the rate-limit pause escaped the sandbox into the install state dir"
     exit 1
 fi
