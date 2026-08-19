@@ -233,4 +233,20 @@ if [ -n "$(pending_review_body "$PB" acme_repo 99 abc1234def)" ]; then
     exit 1
 fi
 
-echo "  PASS (7 scenarios: clean allocation, collision detected, subdir-failure rollback, real failure not mislabeled, discard empty/artifact-content-kept, pending-body recovery)"
+# --- 8. approval_body: the wording that reaches the PR ----------------------
+# Centralizing this wording is only safe if the parse is covered. The verdict is
+# model-authored, so the spacing after `pending:` varies; a form that fails to
+# strip publishes the whole verdict line as the approval body on a real PR.
+echo "  8: approval_body renders each verdict form..."
+while IFS='|' read -r verdict want; do
+    got=$(approval_body "$verdict")
+    [ "$got" = "$want" ] || { echo "FAIL: approval_body '$verdict' -> '$got' (want '$want')"; exit 1; }
+done <<'CASES'
+VERDICT: APPROVE|Approving per automated review above.
+VERDICT: COMMENT|Approving per automated review above.
+VERDICT: APPROVE — pending: refactor X|Approving — pending: refactor X
+VERDICT: APPROVE — pending:refactor X|Approving — pending: refactor X
+VERDICT: APPROVE — pending:   refactor X|Approving — pending: refactor X
+CASES
+
+echo "  PASS (8 scenarios: clean allocation, collision detected, subdir-failure rollback, real failure not mislabeled, discard empty/artifact-content-kept, pending-body recovery, approval wording)"

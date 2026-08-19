@@ -1626,6 +1626,16 @@ CALLS18="$TMPDIR/calls-18"; : > "$CALLS18"
 GH_STUB_CALL_LOG="$CALLS18" GH_STUB_TRUSTED_USERS="someuser" GH_STUB_PR_AUTHOR="someuser" \
     run_worker_in_state "$STATE18" \
     "test-org/probe-repo" "1" "$OLD_PR_SHA" "feat/test" "Test PR" "false" "someuser"
+LOG18="$STATE18/orchestrator.log"
+# Positive anchor FIRST. Both assertions below are negatives, and a negative
+# alone passes trivially if the worker aborted before ever reaching the recovery
+# decision (a gate change, the canonical fetch, stub drift) — green while proving
+# nothing. A run dir carrying meta.json only exists past the post-checkout stamp,
+# which is downstream of the recovery block the short-circuit would have skipped.
+[ -n "$(find "$STATE18/runs" -maxdepth 2 -name meta.json 2>/dev/null)" ] \
+    || { echo "FAIL: scenario 18 — the worker never got past the recovery decision, so the assertions below prove nothing"; cat "$LOG18" 2>/dev/null; exit 1; }
+grep -q 'posting that body instead of re-reviewing' "$LOG18" 2>/dev/null \
+    && { echo "FAIL: scenario 18 — the recovery fired for a body reviewed at a superseded head"; cat "$LOG18"; exit 1; }
 grep -q -- '--body-file' "$CALLS18" \
     && { echo "FAIL: scenario 18 — a body reviewed at a superseded head was posted; it describes code that is no longer there"; cat "$CALLS18"; exit 1; }
 [ -f "$PEND18/pending-comment.md" ] \

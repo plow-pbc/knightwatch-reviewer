@@ -839,10 +839,19 @@ pending_review_body() {
 # approval is worded" stay with each other. Two callers now — the normal post
 # path and the throttled-post recovery — and a recovery that worded its approval
 # differently would be a visible inconsistency on the PR for no reason.
+# Whitespace after the colon is stripped rather than assumed: the verdict is
+# model-authored, so `pending:x`, `pending: x` and `pending:  x` all occur. A
+# fixed "${1#*pending: }" matches none but the middle one and returns the whole
+# verdict line, which would publish `Approving — pending: VERDICT: APPROVE —
+# pending:x` as the approval body on the PR.
 approval_body() {
+    local note
     case "$1" in
-        *"pending:"*) printf 'Approving — pending: %s' "${1#*pending: }" ;;
-        *)            printf 'Approving per automated review above.' ;;
+        *"pending:"*)
+            note=${1#*pending:}
+            note=${note#"${note%%[![:space:]]*}"}
+            printf 'Approving — pending: %s' "$note" ;;
+        *)  printf 'Approving per automated review above.' ;;
     esac
 }
 

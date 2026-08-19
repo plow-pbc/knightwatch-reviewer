@@ -624,6 +624,15 @@ PENDING_RUN=""
 if [ -n "$PENDING_RUN" ]; then
     log "$PR_ID: a prior run finished its review but its post was throttled ($(basename "$PENDING_RUN")) — posting that body instead of re-reviewing"
     if gh pr comment "$PR_NUM" --repo "$REPO" --body-file "$PENDING_RUN/pending-comment.md"; then
+        # FIRST, before anything that can be interrupted. `trap 'exit 143' TERM`
+        # routes SIGTERM into the EXIT trap, and cleanup_eyes PATCHes the 👀
+        # comment to "review aborted before completion — will retry next tick".
+        # The recovered review is already ON the PR at this point, and the stamp
+        # below makes the round author-visible, so the next tick's dedup gate
+        # skips and nothing ever corrects that marker: the PR would carry a
+        # permanent "aborted" notice above a posted review. Same invariant the
+        # normal post path states at its own EYES_RESOLVED assignment.
+        EYES_RESOLVED=true
         # Stamp the ORIGINATING run, not this one: its meta.json carries the
         # aggregator output, verdict and reviewed_sha, so recurrence detection and
         # the carried-forward verdict must keep reading THAT round as the one the
@@ -653,7 +662,6 @@ if [ -n "$PENDING_RUN" ]; then
             submit_approval "$REPO" "$PR_NUM" "$BOT_USER" "$PR_AUTHOR" \
                 "$(approval_body "$PENDING_VERDICT")" || true
         fi
-        EYES_RESOLVED=true
         if [ -n "$EYES_COMMENT_ID" ]; then
             gh api "repos/$REPO/issues/comments/$EYES_COMMENT_ID" --method DELETE >/dev/null 2>&1 \
                 || log "$PR_ID: recovered post landed but the placeholder DELETE failed (id=$EYES_COMMENT_ID)"
