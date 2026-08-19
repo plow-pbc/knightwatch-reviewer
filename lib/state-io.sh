@@ -348,24 +348,36 @@ gh_note_rate_limit() {
         # unprivileged mkfifo at this path disable the fleet's backoff permanently
         # — the fleet hammering GitHub through every 403 IS the original incident,
         # so losing one trip's later-window merge is by far the smaller loss.
-        # Refusing the lock must not cost the pause: it only serializes the merge
-        # below, and mktemp + mv -f are safe alone (rename replaces, and the temp
-        # name is unpredictable). One trip's later-window merge is a far smaller
-        # loss than the backoff itself.
-        if ! gh_pause_clear_plant "$lockfile"; then
-            log "gh rate limit — $lockfile is not a regular file and could not be cleared; publishing UNSERIALIZED (only the later-window merge is lost)"
+        # The lock must not cost the pause by ANY mechanism, so all three ways of
+        # failing to take it share one degrade. It only serializes the merge
+        # below; mktemp + mv -f are safe alone (rename replaces, and the temp name
+        # is unpredictable), so one trip's later-window merge is a far smaller loss
+        # than the backoff itself — which is the whole incident.
+        #   plant   a non-regular file (handled by gh_pause_clear_plant).
+        #   EACCES  a legacy root-owned 0644 lock. The chmod self-heal below runs
+        #           AFTER the open, so only root — who never needed it — gets
+        #           there; the operator would abort mutely, which is exactly the
+        #           no-pause-no-diagnostic failure this protocol exists to remove.
+        #           The predicate cannot help: 0644 is a perfectly sane regular
+        #           file.
+        #   stall   a sibling holding the lock. A bare `flock` waits forever,
+        #           hanging the tick until systemd SIGKILLs the unit — the same
+        #           denial the non-regular-file guard exists to prevent, on the
+        #           same path. Hence -w.
+        # `exec {fd}>` in a condition degrades rather than killing the subshell
+        # (verified, not assumed — a bare failing `exec` redirection would).
+        if ! gh_pause_clear_plant "$lockfile" \
+           || ! exec {fd}>"$lockfile" 2>/dev/null \
+           || ! flock -w "${GH_PAUSE_LOCK_WAIT_SECS:-5}" "$fd"; then
+            log "gh rate limit — could not take $lockfile; publishing UNSERIALIZED (only the later-window merge is lost)"
         else
-            exec {fd}>"$lockfile" || exit 1
-            # SELF-HEALING, not creation-only. umask governs only files this call
-            # creates, and the lock is never unlinked — so on any host where a
-            # container has already tripped a limit, the lock exists root-owned 0644
-            # and the operator's `exec` above keeps failing EACCES forever: the fix
-            # would be inert on exactly the deployment it targets. Only root's chmod
-            # succeeds here, which is the direction that needs healing. Never `rm` the
-            # stale lock instead — unlinking it while a container holds flock hands the
-            # next writer a fresh inode and gives two concurrent writers.
+            # SELF-HEALING for the NEXT writer, not this one: the lock is never
+            # unlinked, so on a host where a container has already tripped, it
+            # exists root-owned 0644 and the operator's open above fails. Only
+            # root's chmod succeeds here, which is the healing direction. Never
+            # `rm` the stale lock instead — unlinking it while a container holds
+            # flock hands the next writer a fresh inode and two concurrent writers.
             chmod 0666 "$lockfile" 2>/dev/null || true
-            flock "$fd"
         fi
         # Before ANY use of the pause path — the merge read below is a `head`,
         # which blocks forever on a planted FIFO. And `mv -f tmp dir` is not a

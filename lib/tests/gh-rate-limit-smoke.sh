@@ -499,6 +499,39 @@ grep -q 'publishing UNSERIALIZED' "$TMP/log16u" \
 [ -f "$(gh_pause_file)" ] && [ "$(head -n1 "$(gh_pause_file)")" -gt "$NOW" ] 2>/dev/null \
     || fail "scenario 16: an un-clearable lock cost the PAUSE — one mkdir would disable the fleet's backoff permanently, which is the original incident"
 rmdir "$(gh_pause_file).lock/unexpected-contents"; rmdir "$(gh_pause_file).lock"
+
+# The other two ways to fail to take the lock. Both used to cost the pause: an
+# unopenable lock aborted mutely, and a held one waited forever, hanging the tick
+# until systemd SIGKILLed the unit. Each must degrade to an unserialized publish
+# and still land the pause, inside the bound.
+for lockfail in unopenable held; do
+    LF_RC=0
+    reset_state
+    rm -f "$(gh_pause_file).lock"
+    : > "$(gh_pause_file).lock"
+    HOLDER=""
+    case "$lockfail" in
+        # 0000 denies the owner too, so this is reachable without a second UID.
+        unopenable) chmod 0000 "$(gh_pause_file).lock" ;;
+        held)       flock "$(gh_pause_file).lock" -c 'sleep 30' & HOLDER=$!; sleep 0.3 ;;
+    esac
+    timeout 20 env -u BASH_ENV STATE_DIR="$STATE_DIR" PATH="$TMP/bin:$PATH" \
+        LOG_FILE="$TMP/log16-$lockfail" GH_SECONDARY_PAUSE_SECS=60 \
+        GH_PAUSE_LOCK_WAIT_SECS=2 \
+        GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+        GH_SHIM_ERR="$RATE_LIMIT_ERR" \
+        bash -c '. "'"$PROJECT_ROOT"'/lib/gh-retry.sh"; gh api user' \
+        >/dev/null 2>&1 || LF_RC=$?
+    [ -n "$HOLDER" ] && { kill "$HOLDER" 2>/dev/null || true; wait "$HOLDER" 2>/dev/null || true; }
+    [ "$LF_RC" -ne 124 ] \
+        || fail "scenario 16: an $lockfail lock HUNG the publish — the tick burns its TimeoutStartSec and is SIGKILLed, every tick"
+    grep -q 'publishing UNSERIALIZED' "$TMP/log16-$lockfail" \
+        || fail "scenario 16: an $lockfail lock did not degrade to an unserialized publish: $(cat "$TMP/log16-$lockfail")"
+    chmod 0644 "$(gh_pause_file).lock" 2>/dev/null || true
+    [ -f "$(gh_pause_file)" ] && [ "$(head -n1 "$(gh_pause_file)")" -gt "$NOW" ] 2>/dev/null \
+        || fail "scenario 16: an $lockfail lock cost the PAUSE — the fleet keeps hammering GitHub through every 403, which is the original incident"
+done
+rm -f "$(gh_pause_file).lock"
 reset_state
 
 # Container root shares this mount and is the untrusted-input boundary, so it can
