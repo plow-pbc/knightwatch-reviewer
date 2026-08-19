@@ -65,6 +65,21 @@ gh_retry() {
         # (below) rather than burning this call's remaining attempts against a
         # token GitHub has just told us to stop using.
         if grep -qiE "$GH_API_RATE_LIMIT_RE" "$errfile"; then
+            # Name the endpoint. Every gh call in the repo routes through this
+            # function, so logging here covers every call site by construction —
+            # none to add, none to forget. It earns its line because the raw 403
+            # reached no log at all: the busiest callers capture gh's stderr into
+            # their own errfile (is_trusted_repo_author, fetch_issue_comments), so
+            # identifying which call tripped a limit meant reading journald on the
+            # host and orchestrator.log in the containers and correlating by
+            # timestamp. Unconditional on purpose — gh_note_rate_limit below
+            # early-returns once a pause is up, which would blind exactly the
+            # cluster of trips worth seeing. It cannot spam either: gh_retry
+            # returns before the wire while a pause is active, so only calls that
+            # genuinely reached GitHub and got a 403 arrive here.
+            # First three argv words only — enough to identify the endpoint, and
+            # narrow enough that a `--body` payload can never spill into a log.
+            log "gh rate-limited on \`gh $1 ${2:-} ${3:-}\` — $(head -c 160 "$errfile" | tr '\n' ' ')" >&2
             # >&2 like the errfile spill above: this function's stdout is the
             # API result its callers capture (`perm=$(gh_api_retry …)`), so the
             # diagnostic must not land there. log()'s LOG_FILE tee is unaffected.

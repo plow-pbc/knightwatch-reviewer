@@ -412,4 +412,35 @@ echo "  scenario 16: the pause file is bind-mountable on its own..."
 grep -q 'throttle:/shared/throttle' "$PROJECT_ROOT/lib/render-compose.sh" \
     || fail "scenario 16: render-compose.sh emits no shared throttle mount — host and containers would keep separate pauses"
 
+# --- 17. a throttled call names the endpoint that tripped ---------------------
+# Diagnosing a trip used to be archaeology. Callers capture gh's stderr into
+# their own errfile (is_trusted_repo_author, fetch_issue_comments), so the raw
+# 403 reached NO log; the pause diagnostic said a limit was hit but never WHICH
+# call hit it. Finding it meant reading journald on the host and orchestrator.log
+# in the containers and correlating by timestamp. gh_retry is the one seam every
+# gh call already routes through, so naming the endpoint there covers every call
+# site by construction.
+echo "  scenario 17: a throttled call names its endpoint..."
+reset_state
+LOG_FILE="$TMP/log17"; : > "$LOG_FILE"
+LOG_FILE="$LOG_FILE" \
+GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+GH_SHIM_ERR="$RATE_LIMIT_ERR" \
+    gh api "repos/acme/repo/issues/7/comments" >/dev/null 2>&1 || true
+grep -q 'rate-limited on' "$TMP/log17" \
+    || fail "scenario 17: a throttled call logged no endpoint — every trip is anonymous again: $(cat "$TMP/log17")"
+grep -qF 'repos/acme/repo/issues/7/comments' "$TMP/log17" \
+    || fail "scenario 17: the throttled ENDPOINT is absent from the log line — knowing which call trips the limit is the whole point: $(cat "$TMP/log17")"
+# A --body payload must never reach the log: review bodies are large and can
+# quote PR content, and a log line is not the place for either.
+reset_state
+LOG_FILE="$TMP/log17b"; : > "$LOG_FILE"
+LOG_FILE="$LOG_FILE" \
+GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+GH_SHIM_ERR="$RATE_LIMIT_ERR" \
+    gh pr comment 7 --repo o/r --body "SECRET-REVIEW-BODY" >/dev/null 2>&1 || true
+grep -qF 'SECRET-REVIEW-BODY' "$TMP/log17b" \
+    && fail "scenario 17: the --body payload was logged — the argv slice is too wide"
+reset_state
+
 echo "PASS: gh-rate-limit-smoke"
