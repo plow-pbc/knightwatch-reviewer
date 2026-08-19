@@ -255,12 +255,18 @@ gh_note_rate_limit() {
         # (install.sh, a docker bind auto-create, or a prior publish). A
         # root-owned 0755 one is the docker-auto-create case that render-compose's
         # -d guard and install.sh's mkdir PREVENT but cannot HEAL — and healing
-        # only the lock makes it worse, not better: the operator then gets past
-        # exec/flock, logs "pausing the FLEET", and fails at mktemp, leaving
-        # evidence of a pause that was never published. Sticky, because a
-        # world-writable dir under $HOME must not let another local user unlink
-        # root's pause file.
-        chmod 1777 "$(dirname "$lockfile")" 2>/dev/null || true
+        # only the lock makes it worse: the operator then gets past exec/flock,
+        # logs "pausing the FLEET", and fails creating the temp.
+        #
+        # 0777 and NOT sticky. rename(2) into a sticky dir requires the caller to
+        # own the file, own the dir, or be root — so on the very hosts this heals
+        # (dir auto-created root-owned, then flipped and published by a container)
+        # the operator would own neither, and `mv` would fail EPERM forever: the
+        # pause file is never unlinked, so that state is permanent. The sticky bit
+        # buys nothing here anyway — the pause file is deliberately 0666, so a
+        # local user who could unlink it can already write a far-future epoch into
+        # it. Uniformly world-writable is what makes both UIDs equal writers.
+        chmod 0777 "$(dirname "$lockfile")" 2>/dev/null || true
         exec {fd}>"$lockfile" || exit 1
         # SELF-HEALING, not creation-only. umask governs only files this call
         # creates, and the lock is never unlinked — so on any host where a
@@ -281,23 +287,23 @@ gh_note_rate_limit() {
         # tmp + atomic rename so a reader never sees a half-written file. The temp
         # must be unique per writer (mktemp, not $$ — the writers are separate
         # containers, so PIDs collide).
-        # Loud, because the "pausing the FLEET" line above has ALREADY been
-        # written: a mute failure here leaves the operator's evidence asserting a
-        # pause while gh_pause_active reads not-paused and the fleet keeps calling
-        # — the split-brain restored silently, which is the failure this whole
+        # ONE failure path for the whole publish, not one per step. The
+        # "pausing the FLEET" line above has ALREADY been written, so a mute
+        # failure anywhere in here leaves the operator's evidence asserting a
+        # pause while gh_pause_active reads not-paused and the fleet keeps
+        # calling — the split-brain restored silently, which is the failure this
         # protocol exists to close. The caller discards our exit code, so the log
-        # is the only channel.
-        tmp=$(mktemp "$(gh_pause_file).XXXXXX") || {
-            log "gh rate limit — could not create a temp in $(dirname "$lockfile") (mode $(stat -c '%a' "$(dirname "$lockfile")" 2>/dev/null || echo '?')): pause NOT published despite the line above"
-            exit 1
-        }
-        # mktemp is 0600 and mv carries the mode onto the published file, so
-        # without this the other UID's `head` gets EACCES → empty → reads as NOT
-        # paused. Silently, which is the worst possible default here.
-        chmod 0666 "$tmp"
-        printf '%s\n' "$until" > "$tmp" && mv -f "$tmp" "$(gh_pause_file)" || {
-            log "gh rate limit — publish to $(gh_pause_file) FAILED: pause NOT published despite the line above"
-            rm -f "$tmp"
+        # is the only channel. Collapsed into a single branch so it is reachable
+        # from one test rather than being three separately-untestable ones.
+        # The chmod is inside the chain: mktemp is 0600 and mv carries that mode
+        # onto the published file, so without it the other UID's `head` gets
+        # EACCES → empty → reads as NOT paused. Silently, the worst default here.
+        tmp=$(mktemp "$(gh_pause_file).XXXXXX") \
+            && chmod 0666 "$tmp" \
+            && printf '%s\n' "$until" > "$tmp" \
+            && mv -f "$tmp" "$(gh_pause_file)" || {
+            log "gh rate limit — publish to $(gh_pause_file) FAILED (throttle dir mode $(stat -c '%a' "$(dirname "$lockfile")" 2>/dev/null || echo '?')): pause NOT published despite the line above"
+            [ -n "${tmp:-}" ] && rm -f "$tmp"
             exit 1
         }
     ) || rc=$?

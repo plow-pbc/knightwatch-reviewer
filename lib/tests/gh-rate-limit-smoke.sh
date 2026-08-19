@@ -448,6 +448,33 @@ case "$DIR_MODE" in
 esac
 [ -f "$(gh_pause_file)" ] \
     || fail "scenario 16: no pause published against a 0755 throttle dir"
+DIR_MODE=$(stat -c '%a' "$(dirname "$(gh_pause_file)")" 2>/dev/null || echo missing)
+[ "$DIR_MODE" = "777" ] \
+    || fail "scenario 16: throttle dir is $DIR_MODE, not 777 — a sticky dir makes rename(2) require owning the file or the dir, so the other UID could never replace a pause file it does not own, permanently"
+
+# Publishing OVER an existing pause file is the case every other scenario skips
+# (they all publish into an empty dir), and it is the one a sticky dir breaks.
+GH_SHIM_BUCKETS="4920	$((NOW + 4000))	4742	$((NOW + 4000))" \
+GH_SHIM_ERR="$RATE_LIMIT_ERR" gh api "user" >/dev/null 2>&1 || true
+[ -s "$(gh_pause_file)" ] \
+    || fail "scenario 16: a second publish over an existing pause file left it empty — rename was refused"
+
+# The loud-failure branch. The destination is a directory the publisher cannot
+# write into, so the final `mv` fails (a WRITABLE directory would not do it —
+# `mv file dir` moves the file inside and succeeds). The self-heal above chmods
+# the throttle dir, not this path, so it stays 0555 through the call.
+reset_state
+rm -f "$(gh_pause_file).lock"
+mkdir -p "$(gh_pause_file)"; chmod 0555 "$(gh_pause_file)"
+LOG_FILE="$TMP/log16f"; : > "$LOG_FILE"
+LOG_FILE="$LOG_FILE" \
+GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+GH_SHIM_ERR="$RATE_LIMIT_ERR" gh api "user" >/dev/null 2>&1 || true
+grep -q 'pause NOT published' "$TMP/log16f" \
+    || fail "scenario 16: a failed publish said nothing, leaving the log asserting a pause that never landed: $(cat "$TMP/log16f")"
+STRAY=$(find "$(dirname "$(gh_pause_file)")" -maxdepth 1 -name 'gh-rate-limited-until.*' ! -name '*.lock' 2>/dev/null)
+[ -z "$STRAY" ] || fail "scenario 16: a failed publish leaked a temp file: $STRAY"
+chmod 0755 "$(gh_pause_file)"; rmdir "$(gh_pause_file)"
 reset_state
 rm -f "$(gh_pause_file).lock"
 : > "$(gh_pause_file).lock"; chmod 0644 "$(gh_pause_file).lock"
