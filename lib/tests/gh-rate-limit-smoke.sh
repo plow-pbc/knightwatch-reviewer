@@ -551,10 +551,11 @@ for target in lock pause; do
         >/dev/null 2>&1 || PLANT_RC=$?
     [ "$PLANT_RC" -ne 124 ] \
         || fail "scenario 16: a $plant at the $target path HUNG the publish — every tick would burn its TimeoutStartSec and be SIGKILLed until someone unlinks it by hand"
-    # No "refused" assertion here: a removable plant is CLEARED and the publish
-    # proceeds, which is the point — refusing would be a permanent throttle
-    # bypass. The un-clearable case (a non-empty directory) is covered on its
-    # own above, where the loud "pause NOT published" line is the contract.
+    # A removable plant is CLEARED and the publish proceeds — refusing would be a
+    # permanent throttle bypass — but the clear must still be VISIBLE: it is the
+    # only evidence a container→host plant was attempted.
+    grep -q 'planted?); clearing it' "$TMP/log16-$target-$plant" \
+        || fail "scenario 16: a $plant at the $target path was repaired SILENTLY — the only signal of a plant is gone: $(cat "$TMP/log16-$target-$plant")"
     [ -s "$VICTIM" ] && [ "$(stat -c '%a' "$VICTIM")" = "600" ] \
         || fail "scenario 16: a $plant at the $target path let the publish reach $VICTIM (size $(stat -c '%s' "$VICTIM"), mode $(stat -c '%a' "$VICTIM")) — container root could point this at ~/.ssh/authorized_keys"
     # Whichever path was planted, the trip must still end PAUSED. Refusing is

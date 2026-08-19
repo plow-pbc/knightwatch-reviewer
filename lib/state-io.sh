@@ -173,6 +173,35 @@ gh_pause_path_sane() {
     [ -f "$1" ]
 }
 
+# gh_pause_clear_plant PATH → 0 iff PATH is now safe to use.
+#
+# The repair shares an owner with the predicate above, for the same reason the
+# predicate has one: a per-site copy is what let the lock get four rounds of
+# attention while the pause file beside it stayed open. Callers differ only in
+# what they do when the path is STILL unusable, so that is all they branch on.
+#
+# Clearing rather than refusing, because refusing is fail-open in the
+# throttle-DISABLING direction and permanent: gh_pause_active would read
+# not-paused and every publish would decline, so one no-capability mkdir leaves
+# the fleet calling through every 403 — the original incident — with nothing to
+# clear it. It is also hotter than the silent version, since gh_note_rate_limit's
+# cheap "already paused" exit could never fire and every failing call would add
+# its own rate_limit probe during the window GitHub is telling the fleet to back
+# off. Removal is possible because the throttle dir is deliberately 0777 and
+# non-sticky, so unlink depends on the directory bits rather than on who owns the
+# plant. Non-recursive on purpose: rm -f covers the symlink/FIFO/device shapes
+# and rmdir REFUSES a non-empty directory, so an unexpected one fails loudly
+# instead of being eaten by an rm -rf built from a variable. Logged even when the
+# repair succeeds — a non-regular file on a shared throttle path is the signature
+# of a container→host plant, and a silent repair erases the only evidence.
+gh_pause_clear_plant() {
+    gh_pause_path_sane "$1" && return 0
+    log "gh rate limit — $1 is not a regular file (planted?); clearing it"
+    rm -f "$1" 2>/dev/null || true
+    rmdir "$1" 2>/dev/null || true
+    gh_pause_path_sane "$1"
+}
+
 gh_pause_active() {
     local until
     # Before `head`, because head on a planted FIFO blocks forever — and this is
@@ -319,26 +348,11 @@ gh_note_rate_limit() {
         # unprivileged mkfifo at this path disable the fleet's backoff permanently
         # — the fleet hammering GitHub through every 403 IS the original incident,
         # so losing one trip's later-window merge is by far the smaller loss.
-        # Clear a plant rather than refusing forever. Refusing is fail-open in the
-        # throttle-DISABLING direction — gh_pause_active reads not-paused and every
-        # publish declines — so one no-capability mkdir would leave the fleet
-        # calling through every 403, the original incident, with nothing to clear
-        # it. It is also hotter than the silent version: gh_note_rate_limit's cheap
-        # "already paused" exit can never fire, so every failing call adds its own
-        # rate_limit probe during the window GitHub is telling the fleet to back
-        # off. Removal is possible at all because the dir is deliberately 0777 and
-        # non-sticky, so unlink depends on the directory bits, not on who owns the
-        # plant. Non-recursive on purpose: rmdir REFUSES a non-empty directory, so
-        # a surprise fails loudly instead of being eaten.
-        if ! gh_pause_path_sane "$lockfile"; then
-            # Logged even when the clear SUCCEEDS: a non-regular file on a shared
-            # throttle path is the signature of a container→host plant, and a
-            # silent repair would erase the only evidence it ever happened.
-            log "gh rate limit — $lockfile is not a regular file (planted?); clearing it"
-            rm -f "$lockfile" 2>/dev/null || true
-            rmdir "$lockfile" 2>/dev/null || true
-        fi
-        if ! gh_pause_path_sane "$lockfile"; then
+        # Refusing the lock must not cost the pause: it only serializes the merge
+        # below, and mktemp + mv -f are safe alone (rename replaces, and the temp
+        # name is unpredictable). One trip's later-window merge is a far smaller
+        # loss than the backoff itself.
+        if ! gh_pause_clear_plant "$lockfile"; then
             log "gh rate limit — $lockfile is not a regular file and could not be cleared; publishing UNSERIALIZED (only the later-window merge is lost)"
         else
             exec {fd}>"$lockfile" || exit 1
@@ -360,16 +374,7 @@ gh_note_rate_limit() {
         # side sees no pause — the silent split-brain this protocol exists to
         # close, restored by one no-capability mkdir. rename(2) handles a symlink
         # safely; a directory it never sees.
-        # Same clear-then-refuse as the lock above — see that comment.
-        if ! gh_pause_path_sane "$(gh_pause_file)"; then
-            # Logged even when the clear SUCCEEDS: a non-regular file on a shared
-            # throttle path is the signature of a container→host plant, and a
-            # silent repair would erase the only evidence it ever happened.
-            log "gh rate limit — $(gh_pause_file) is not a regular file (planted?); clearing it"
-            rm -f "$(gh_pause_file)" 2>/dev/null || true
-            rmdir "$(gh_pause_file)" 2>/dev/null || true
-        fi
-        if ! gh_pause_path_sane "$(gh_pause_file)"; then
+        if ! gh_pause_clear_plant "$(gh_pause_file)"; then
             log "gh rate limit — $(gh_pause_file) is not a regular file and could not be cleared: pause NOT published despite the line above"
             exit 1
         fi
