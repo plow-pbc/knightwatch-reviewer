@@ -431,6 +431,23 @@ esac
 # The case that actually bites on deploy: the lock is never unlinked, so a host
 # where a container already tripped a limit carries a root-owned 0644 lock that
 # a creation-time umask cannot touch. Publishing must heal it, not skip it.
+# The dir the lock and the pause file live in needs the same self-heal: mkdir -p
+# is a no-op on an existing one, and a root-owned 0755 dir lets the operator get
+# PAST exec/flock (now that the lock heals) only to fail at mktemp — after the
+# "pausing the FLEET" line is already written. A false positive is worse than the
+# original silent failure.
+reset_state
+rm -f "$(gh_pause_file).lock"
+chmod 0755 "$(dirname "$(gh_pause_file)")"
+GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+GH_SHIM_ERR="$RATE_LIMIT_ERR" gh api "user" >/dev/null 2>&1 || true
+DIR_MODE=$(stat -c '%a' "$(dirname "$(gh_pause_file)")" 2>/dev/null || echo missing)
+case "$DIR_MODE" in
+    *7|*6) : ;;
+    *) fail "scenario 16: throttle dir stayed mode $DIR_MODE — the other UID cannot create the temp, so publish fails AFTER logging that the fleet was paused" ;;
+esac
+[ -f "$(gh_pause_file)" ] \
+    || fail "scenario 16: no pause published against a 0755 throttle dir"
 reset_state
 rm -f "$(gh_pause_file).lock"
 : > "$(gh_pause_file).lock"; chmod 0644 "$(gh_pause_file).lock"

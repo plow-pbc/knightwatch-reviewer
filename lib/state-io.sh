@@ -250,6 +250,17 @@ gh_note_rate_limit() {
         # Inside the subshell, so the umask applies: a 0755 root-created dir
         # would deny the operator mktemp/mv and defeat the modes below it.
         mkdir -p "$(dirname "$lockfile")"
+        # Same self-heal as the lock, and for the same reason: mkdir -p is a
+        # no-op on an existing dir, and this dir exists on every host by now
+        # (install.sh, a docker bind auto-create, or a prior publish). A
+        # root-owned 0755 one is the docker-auto-create case that render-compose's
+        # -d guard and install.sh's mkdir PREVENT but cannot HEAL — and healing
+        # only the lock makes it worse, not better: the operator then gets past
+        # exec/flock, logs "pausing the FLEET", and fails at mktemp, leaving
+        # evidence of a pause that was never published. Sticky, because a
+        # world-writable dir under $HOME must not let another local user unlink
+        # root's pause file.
+        chmod 1777 "$(dirname "$lockfile")" 2>/dev/null || true
         exec {fd}>"$lockfile" || exit 1
         # SELF-HEALING, not creation-only. umask governs only files this call
         # creates, and the lock is never unlinked — so on any host where a
@@ -270,12 +281,25 @@ gh_note_rate_limit() {
         # tmp + atomic rename so a reader never sees a half-written file. The temp
         # must be unique per writer (mktemp, not $$ — the writers are separate
         # containers, so PIDs collide).
-        tmp=$(mktemp "$(gh_pause_file).XXXXXX") || exit 1
+        # Loud, because the "pausing the FLEET" line above has ALREADY been
+        # written: a mute failure here leaves the operator's evidence asserting a
+        # pause while gh_pause_active reads not-paused and the fleet keeps calling
+        # — the split-brain restored silently, which is the failure this whole
+        # protocol exists to close. The caller discards our exit code, so the log
+        # is the only channel.
+        tmp=$(mktemp "$(gh_pause_file).XXXXXX") || {
+            log "gh rate limit — could not create a temp in $(dirname "$lockfile") (mode $(stat -c '%a' "$(dirname "$lockfile")" 2>/dev/null || echo '?')): pause NOT published despite the line above"
+            exit 1
+        }
         # mktemp is 0600 and mv carries the mode onto the published file, so
         # without this the other UID's `head` gets EACCES → empty → reads as NOT
         # paused. Silently, which is the worst possible default here.
         chmod 0666 "$tmp"
-        printf '%s\n' "$until" > "$tmp" && mv -f "$tmp" "$(gh_pause_file)"
+        printf '%s\n' "$until" > "$tmp" && mv -f "$tmp" "$(gh_pause_file)" || {
+            log "gh rate limit — publish to $(gh_pause_file) FAILED: pause NOT published despite the line above"
+            rm -f "$tmp"
+            exit 1
+        }
     ) || rc=$?
     return "$rc"
 }
