@@ -331,6 +331,10 @@ gh_note_rate_limit() {
         # plant. Non-recursive on purpose: rmdir REFUSES a non-empty directory, so
         # a surprise fails loudly instead of being eaten.
         if ! gh_pause_path_sane "$lockfile"; then
+            # Logged even when the clear SUCCEEDS: a non-regular file on a shared
+            # throttle path is the signature of a container→host plant, and a
+            # silent repair would erase the only evidence it ever happened.
+            log "gh rate limit — $lockfile is not a regular file (planted?); clearing it"
             rm -f "$lockfile" 2>/dev/null || true
             rmdir "$lockfile" 2>/dev/null || true
         fi
@@ -358,6 +362,10 @@ gh_note_rate_limit() {
         # safely; a directory it never sees.
         # Same clear-then-refuse as the lock above — see that comment.
         if ! gh_pause_path_sane "$(gh_pause_file)"; then
+            # Logged even when the clear SUCCEEDS: a non-regular file on a shared
+            # throttle path is the signature of a container→host plant, and a
+            # silent repair would erase the only evidence it ever happened.
+            log "gh rate limit — $(gh_pause_file) is not a regular file (planted?); clearing it"
             rm -f "$(gh_pause_file)" 2>/dev/null || true
             rmdir "$(gh_pause_file)" 2>/dev/null || true
         fi

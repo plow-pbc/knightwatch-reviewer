@@ -482,6 +482,25 @@ STRAY=$(find "$(dirname "$(gh_pause_file)")" -maxdepth 1 -name 'gh-rate-limited-
 [ -z "$STRAY" ] || fail "scenario 16: a failed publish leaked a temp file: $STRAY"
 rmdir "$(gh_pause_file)/unexpected-contents"; rmdir "$(gh_pause_file)"
 
+# The unserialized-degrade branch: an UN-clearable lock. Every plant in the table
+# below is removable, so all six rows re-test sane and take the lock+flock path —
+# leaving the branch that exists to answer "refusing the lock must not cost the
+# pause" with no coverage at all. Measured by its consequence: the trip still
+# ends paused.
+reset_state
+rm -f "$(gh_pause_file).lock"   # prior scenarios leave a regular lock here
+mkdir -p "$(gh_pause_file).lock/unexpected-contents"
+: > "$TMP/log16u"
+LOG_FILE="$TMP/log16u" \
+GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+GH_SHIM_ERR="$RATE_LIMIT_ERR" gh api "user" >/dev/null 2>&1 || true
+grep -q 'publishing UNSERIALIZED' "$TMP/log16u" \
+    || fail "scenario 16: an un-clearable lock did not degrade to an unserialized publish: $(cat "$TMP/log16u")"
+[ -f "$(gh_pause_file)" ] && [ "$(head -n1 "$(gh_pause_file)")" -gt "$NOW" ] 2>/dev/null \
+    || fail "scenario 16: an un-clearable lock cost the PAUSE — one mkdir would disable the fleet's backoff permanently, which is the original incident"
+rmdir "$(gh_pause_file).lock/unexpected-contents"; rmdir "$(gh_pause_file).lock"
+reset_state
+
 # Container root shares this mount and is the untrusted-input boundary, so it can
 # replace the lock path with anything — CAP_FOWNER means no dir mode or sticky
 # bit stops it. Each planted type is a different attack on the SAME path, so they
