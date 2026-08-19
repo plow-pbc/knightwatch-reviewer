@@ -263,9 +263,12 @@ gh_note_rate_limit() {
         # (dir auto-created root-owned, then flipped and published by a container)
         # the operator would own neither, and `mv` would fail EPERM forever: the
         # pause file is never unlinked, so that state is permanent. The sticky bit
-        # buys nothing here anyway — the pause file is deliberately 0666, so a
-        # local user who could unlink it can already write a far-future epoch into
-        # it. Uniformly world-writable is what makes both UIDs equal writers.
+        # cannot be replaced by tightening the mode here: what a world-writable
+        # dir actually exposes is a symlink swap on the lock, which the next
+        # root publish would open O_CREAT|O_TRUNC and chmod 0666. That is closed
+        # by REACHABILITY instead — install.sh keeps $INSTALL_DIR at 0700, so no
+        # third local user can traverse into this dir at all. Uniformly
+        # world-writable is what makes both UIDs equal writers.
         chmod 0777 "$(dirname "$lockfile")" 2>/dev/null || true
         exec {fd}>"$lockfile" || exit 1
         # SELF-HEALING, not creation-only. umask governs only files this call

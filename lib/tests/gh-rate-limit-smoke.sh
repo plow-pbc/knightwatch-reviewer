@@ -453,11 +453,16 @@ DIR_MODE=$(stat -c '%a' "$(dirname "$(gh_pause_file)")" 2>/dev/null || echo miss
     || fail "scenario 16: throttle dir is $DIR_MODE, not 777 — a sticky dir makes rename(2) require owning the file or the dir, so the other UID could never replace a pause file it does not own, permanently"
 
 # Publishing OVER an existing pause file is the case every other scenario skips
-# (they all publish into an empty dir), and it is the one a sticky dir breaks.
-GH_SHIM_BUCKETS="4920	$((NOW + 4000))	4742	$((NOW + 4000))" \
+# (they all publish into an empty dir) and the one a sticky dir breaks. The pause
+# must be EXPIRED first or nothing runs: gh_retry short-circuits on an active
+# pause before the shim, and gh_note_rate_limit early-returns on one too, so the
+# assertion would pass on the file the previous publish left and the rename would
+# execute zero times.
+printf '%s\n' "$((NOW - 10))" > "$(gh_pause_file)"
+GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
 GH_SHIM_ERR="$RATE_LIMIT_ERR" gh api "user" >/dev/null 2>&1 || true
-[ -s "$(gh_pause_file)" ] \
-    || fail "scenario 16: a second publish over an existing pause file left it empty — rename was refused"
+[ "$(head -n1 "$(gh_pause_file)")" -gt "$NOW" ] 2>/dev/null \
+    || fail "scenario 16: publishing over an existing pause file did not move the epoch forward — the rename was refused (sticky dir), so a host that has paused once can never pause again"
 
 # The loud-failure branch. The destination is a directory the publisher cannot
 # write into, so the final `mv` fails (a WRITABLE directory would not do it —

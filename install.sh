@@ -133,7 +133,17 @@ mapfile -t SCRIPTS < <(list_execstart_shell_scripts "$REPO_DIR" "${service_units
 DIRS=(lib docs prompts)
 CONFIG_FILES=(repos.conf)
 
-mkdir -p "$INSTALL_DIR"
+# 0700, and healed on every run. throttle/ below is deliberately world-writable
+# (both UIDs publish the shared pause into it; a sticky bit there would break the
+# cross-UID rename — lib/state-io.sh). A world-writable dir is only dangerous if
+# a third local user can REACH it: they could swap the lock for a symlink that
+# the next container publish, running as root, opens O_CREAT|O_TRUNC and chmods
+# 0666 — an arbitrary-file truncate-and-world-write primitive. Making the parent
+# unreachable removes it without touching the shared dir's own modes. The
+# operator owns this tree and the containers bind-mount throttle/ as root, so
+# neither loses access.
+mkdir -p -m 0700 "$INSTALL_DIR"
+chmod 0700 "$INSTALL_DIR"
 # The one rate-limit pause the host timers and the reviewer containers share
 # (bind-mounted to /shared/throttle; lib/state-io.sh). Created here so a fresh
 # install satisfies render-compose.sh's guard without a manual step — and as the

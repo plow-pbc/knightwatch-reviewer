@@ -173,6 +173,12 @@ done
 # source the reviewer containers mount at /shared/throttle. Created here so it is
 # operator-owned — absent, docker auto-creates it ROOT-owned and the host timers
 # can never write the shared pause, silently restoring the split-brain.
+# 0700 is what makes throttle/'s deliberate world-writability safe: it stops a
+# third local user reaching in to swap the lock for a symlink that the next
+# root-run container publish would open O_CREAT|O_TRUNC and chmod 0666.
+DIR_MODE=$(stat -c '%a' "$INSTALL_DIR" 2>/dev/null || echo missing)
+[ "$DIR_MODE" = "700" ] \
+    || { echo "FAIL scenario 1: $INSTALL_DIR is mode $DIR_MODE, not 700 — the world-writable throttle/ inside it becomes reachable by any local user"; exit 1; }
 [ -d "$INSTALL_DIR/throttle" ] \
     || { echo "FAIL scenario 1: $INSTALL_DIR/throttle missing — docker would auto-create the bind source root-owned and the host timers could never publish a pause"; exit 1; }
 
