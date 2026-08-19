@@ -99,7 +99,10 @@ THROTTLE_DIR="${THROTTLE_DIR:-}"
 if [ -n "$THROTTLE_DIR" ]; then
     THROTTLE_REF="$THROTTLE_DIR"
 else
-    THROTTLE_DIR="$HOME/.pr-reviewer/throttle"
+    # Derived from the one owner of this path rather than respelled. STATE_DIR is
+    # deliberately cleared: the render wants the HOST default, not whatever the
+    # invoking environment happens to export.
+    THROTTLE_DIR="$(dirname "$(STATE_DIR= ; . "$REPO_ROOT/lib/state-io.sh"; gh_pause_file)")"
     # Left UNEXPANDED, same convention as the kwr-config mount: it resolves at
     # `compose up`, so the mount and the host units agree on one path instead of
     # baking the generating user's $HOME in at render time.

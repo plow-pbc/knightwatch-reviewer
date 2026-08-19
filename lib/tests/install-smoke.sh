@@ -169,6 +169,12 @@ done
 for d in lib docs prompts; do
     [ -L "$INSTALL_DIR/$d" ] || { echo "FAIL scenario 1: $INSTALL_DIR/$d not a symlink"; exit 1; }
 done
+# The operator-side half of the shared rate-limit pause: this dir is the bind
+# source the reviewer containers mount at /shared/throttle. Created here so it is
+# operator-owned — absent, docker auto-creates it ROOT-owned and the host timers
+# can never write the shared pause, silently restoring the split-brain.
+[ -d "$INSTALL_DIR/throttle" ] \
+    || { echo "FAIL scenario 1: $INSTALL_DIR/throttle missing — docker would auto-create the bind source root-owned and the host timers could never publish a pause"; exit 1; }
 
 # Render the same @KID_RW_PATHS@ / @KWR_CLONE_ROOT@
 # values install.sh derives from the overlay's repos.conf, so the cmp

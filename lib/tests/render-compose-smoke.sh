@@ -155,7 +155,22 @@ grep -q 'mv .*manifest/repos.conf' "$SANDBOX/render.log" \
     || fail "legacy flat repos.conf: die message omits the migration command: $(cat "$SANDBOX/render.log")"
 mv "$SANDBOX/mount-away" "$SECRETS/manifest/repos.conf"; rm -f "$SECRETS/repos.conf"
 
-echo "  4: absent throttle dir refuses to render..."
+# The default branch is the one that SHIPS, and its whole point is emitting
+# ${HOME} unexpanded so the compose mount and the host systemd units resolve the
+# same path at `compose up`. Every render above passes THROTTLE_DIR and so takes
+# the override branch — without this, a future edit that expands $HOME at render
+# time bakes the generating user's home into the fleet's compose file with every
+# test still green.
+echo "  4: the shipped branch emits \${HOME} unexpanded..."
+FAKE_HOME="$SANDBOX/fake-home"; mkdir -p "$FAKE_HOME/.pr-reviewer/throttle"
+( THROTTLE_DIR= HOME="$FAKE_HOME" render "1  codex-account-a" ) \
+    || fail "render failed with THROTTLE_DIR unset: $(cat "$SANDBOX/render.log")"
+grep -qF '${HOME}/.pr-reviewer/throttle:/shared/throttle' "$SANDBOX/out.yml" \
+    || fail "the shipped branch did not emit \${HOME} unexpanded — the generating user's home is baked into the fleet compose file"
+grep -qF "$FAKE_HOME/.pr-reviewer/throttle:/shared/throttle" "$SANDBOX/out.yml" \
+    && fail "the render expanded \$HOME at render time — the mount and the host units would disagree on the path"
+
+echo "  5: absent throttle dir refuses to render..."
 THROTTLE_DIR="$SANDBOX/no-such-throttle" render "1  codex-account-a" \
     && fail "render succeeded with no throttle dir — docker would auto-create the bind source root-owned and the operator-run host timers could never write the shared pause"
 grep -q 'no-such-throttle' "$SANDBOX/render.log" \

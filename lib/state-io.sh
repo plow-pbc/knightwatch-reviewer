@@ -237,9 +237,8 @@ gh_note_rate_limit() {
     # it in a `||` list makes bash ignore -e for the whole extent, so publishing
     # is a property of this function rather than of whoever called it.
     local lockfile="$(gh_pause_file).lock" tmp existing rc=0
-    mkdir -p "$(dirname "$lockfile")"
     (
-        # umask 000 for the LOCK, 0666 for the pause file below. The two writers
+        # umask 000 for the LOCK and the dir, 0666 for the pause file below. The two writers
         # are different UIDs — the reviewer containers run as root, the host
         # systemd timers as the operator — so default modes silently restore the
         # very split this file was moved into a shared mount to remove, in the
@@ -248,7 +247,19 @@ gh_note_rate_limit() {
         # first). A root-created 0644 lock makes the host's `exec {fd}>` fail
         # EACCES, which exits before the log — no pause AND no diagnostic.
         umask 000
+        # Inside the subshell, so the umask applies: a 0755 root-created dir
+        # would deny the operator mktemp/mv and defeat the modes below it.
+        mkdir -p "$(dirname "$lockfile")"
         exec {fd}>"$lockfile" || exit 1
+        # SELF-HEALING, not creation-only. umask governs only files this call
+        # creates, and the lock is never unlinked — so on any host where a
+        # container has already tripped a limit, the lock exists root-owned 0644
+        # and the operator's `exec` above keeps failing EACCES forever: the fix
+        # would be inert on exactly the deployment it targets. Only root's chmod
+        # succeeds here, which is the direction that needs healing. Never `rm` the
+        # stale lock instead — unlinking it while a container holds flock hands the
+        # next writer a fresh inode and gives two concurrent writers.
+        chmod 0666 "$lockfile" 2>/dev/null || true
         flock "$fd"
         existing=$(head -n1 "$(gh_pause_file)" 2>/dev/null)
         if [ "${existing:-0}" -gt "$until" ] 2>/dev/null; then

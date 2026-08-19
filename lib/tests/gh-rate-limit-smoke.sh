@@ -418,17 +418,33 @@ echo "  scenario 16: the pause file is bind-mountable on its own..."
 reset_state
 GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
 GH_SHIM_ERR="$RATE_LIMIT_ERR" gh api "user" >/dev/null 2>&1 || true
-PAUSE_MODE=$(stat -c '%a' "$(gh_pause_file)" 2>/dev/null)
+PAUSE_MODE=$(stat -c '%a' "$(gh_pause_file)" 2>/dev/null || echo missing)
 case "$PAUSE_MODE" in
     *6|*7) : ;;
     *) fail "scenario 16: pause file is mode ${PAUSE_MODE:-missing} — the other UID cannot read it, so it reads as NOT paused and the fleet keeps calling" ;;
 esac
-LOCK_MODE=$(stat -c '%a' "$(gh_pause_file).lock" 2>/dev/null)
+LOCK_MODE=$(stat -c '%a' "$(gh_pause_file).lock" 2>/dev/null || echo missing)
 case "$LOCK_MODE" in
     *6|*7) : ;;
     *) fail "scenario 16: lock is mode ${LOCK_MODE:-missing} — the other UID's exec {fd}> fails EACCES and it publishes neither a pause nor a diagnostic" ;;
 esac
+# The case that actually bites on deploy: the lock is never unlinked, so a host
+# where a container already tripped a limit carries a root-owned 0644 lock that
+# a creation-time umask cannot touch. Publishing must heal it, not skip it.
 reset_state
+rm -f "$(gh_pause_file).lock"
+: > "$(gh_pause_file).lock"; chmod 0644 "$(gh_pause_file).lock"
+GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+GH_SHIM_ERR="$RATE_LIMIT_ERR" gh api "user" >/dev/null 2>&1 || true
+[ -f "$(gh_pause_file)" ] \
+    || fail "scenario 16: no pause published against a pre-existing 0644 lock — the deployed fix would be inert on every host that already tripped once"
+HEALED=$(stat -c '%a' "$(gh_pause_file).lock" 2>/dev/null || echo missing)
+case "$HEALED" in
+    *6|*7) : ;;
+    *) fail "scenario 16: a pre-existing lock stayed mode $HEALED — the other UID can still never publish" ;;
+esac
+reset_state
+rm -f "$(gh_pause_file).lock"
 
 # --- 17. a throttled call names the endpoint that tripped ---------------------
 # Diagnosing a trip used to be archaeology. Callers capture gh's stderr into
