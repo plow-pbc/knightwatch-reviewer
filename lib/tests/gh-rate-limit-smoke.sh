@@ -497,36 +497,56 @@ VICTIM="$TMP/victim-precious"
 # Non-recursive on purpose: rm -f handles the file/symlink/fifo plants, rmdir the
 # dir one, and rmdir's refusal to remove a NON-empty dir is the safety property —
 # a stray `rm -rf` of a path built from a variable is how a test eats a real tree.
-unplant() { rm -f "$(gh_pause_file).lock" 2>/dev/null || true; rmdir "$(gh_pause_file).lock" 2>/dev/null || true; }
-for plant in symlink fifo dir; do
+unplant() { rm -f "$1" 2>/dev/null || true; rmdir "$1" 2>/dev/null || true; }
+# Both shared paths, because they are the same attack surface: the lock got four
+# rounds of attention while the pause file beside it stayed open, where the same
+# no-capability `mkdir` is HOTTER — `mv file dir` moves the temp inside and
+# succeeds, so every trip logs "pausing the FLEET" while the read sees no pause.
+for target in lock pause; do
+  case "$target" in
+      lock)  PLANT_PATH="$(gh_pause_file).lock" ;;
+      pause) PLANT_PATH="$(gh_pause_file)" ;;
+  esac
+  for plant in symlink fifo dir; do
     PLANT_RC=0
     reset_state
-    unplant
+    unplant "$PLANT_PATH"
     printf 'do not truncate me\n' > "$VICTIM"; chmod 0600 "$VICTIM"
     case "$plant" in
-        symlink) ln -s "$VICTIM" "$(gh_pause_file).lock" ;;
-        fifo)    mkfifo "$(gh_pause_file).lock" ;;
-        dir)     mkdir "$(gh_pause_file).lock" ;;
+        symlink) ln -s "$VICTIM" "$PLANT_PATH" ;;
+        fifo)    mkfifo "$PLANT_PATH" ;;
+        dir)     mkdir "$PLANT_PATH" ;;
     esac
-    : > "$TMP/log16-$plant"
+    : > "$TMP/log16-$target-$plant"
     # Sourced in the CHILD (scenario 15's shape) so the seam function exists
     # there — `timeout … bash -c 'gh …'` alone reaches the PATH shim directly and
     # bypasses the very wrapper under test. `|| PLANT_RC=$?` because this file
     # runs under set -e, where the non-zero a refused publish returns would abort
     # before any assertion below could read it.
     timeout 5 env -u BASH_ENV STATE_DIR="$STATE_DIR" PATH="$TMP/bin:$PATH" \
-        LOG_FILE="$TMP/log16-$plant" GH_SECONDARY_PAUSE_SECS=60 \
+        LOG_FILE="$TMP/log16-$target-$plant" GH_SECONDARY_PAUSE_SECS=60 \
         GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
         GH_SHIM_ERR="$RATE_LIMIT_ERR" \
         bash -c '. "'"$PROJECT_ROOT"'/lib/gh-retry.sh"; gh api user' \
         >/dev/null 2>&1 || PLANT_RC=$?
     [ "$PLANT_RC" -ne 124 ] \
-        || fail "scenario 16: a $plant at the lock path HUNG the publish — every tick would burn its TimeoutStartSec and be SIGKILLed until someone unlinks it by hand"
-    grep -q 'refusing to open it' "$TMP/log16-$plant" \
-        || fail "scenario 16: a $plant at the lock path was not refused loudly: $(cat "$TMP/log16-$plant")"
+        || fail "scenario 16: a $plant at the $target path HUNG the publish — every tick would burn its TimeoutStartSec and be SIGKILLed until someone unlinks it by hand"
+    grep -qE 'is not a regular file' "$TMP/log16-$target-$plant" \
+        || fail "scenario 16: a $plant at the $target path was not called out loudly: $(cat "$TMP/log16-$target-$plant")"
     [ -s "$VICTIM" ] && [ "$(stat -c '%a' "$VICTIM")" = "600" ] \
-        || fail "scenario 16: a $plant at the lock path let the publish reach $VICTIM (size $(stat -c '%s' "$VICTIM"), mode $(stat -c '%a' "$VICTIM")) — container root could point this at ~/.ssh/authorized_keys"
-    unplant
+        || fail "scenario 16: a $plant at the $target path let the publish reach $VICTIM (size $(stat -c '%s' "$VICTIM"), mode $(stat -c '%a' "$VICTIM")) — container root could point this at ~/.ssh/authorized_keys"
+    # A planted LOCK must still publish (degrade to unserialized); a planted
+    # PAUSE path cannot be published to at all, and must say so rather than
+    # logging "pausing the FLEET" over a pause that never lands.
+    if [ "$target" = lock ]; then
+        [ -f "$(gh_pause_file)" ] \
+            || fail "scenario 16: a $plant at the lock path disabled the backoff entirely — the fleet keeps hammering GitHub through every 403, which is the original incident"
+    else
+        grep -q 'pause NOT published' "$TMP/log16-$target-$plant" \
+            || fail "scenario 16: a $plant at the pause path was swallowed silently: $(cat "$TMP/log16-$target-$plant")"
+    fi
+    unplant "$PLANT_PATH"
+  done
 done
 reset_state
 rm -f "$(gh_pause_file).lock"

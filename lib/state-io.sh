@@ -158,8 +158,26 @@ gh_pause_file() { printf '%s' "${STATE_DIR:-$HOME/.pr-reviewer}/throttle/gh-rate
 # truncated file succeeds with empty output (the `||` fallback never fires), and
 # `[ N -lt "" ]` would abort with "integer expression expected" — read as NOT
 # paused, the worst possible default here.
+# gh_pause_path_sane PATH → 0 iff PATH is absent or a plain regular file.
+#
+# throttle/ is bind-mounted into every reviewer container; those run as root and
+# are the untrusted-input boundary (they check out PR branches and execute
+# repo-supplied scripts), so they can replace either shared path with any file
+# type and no directory mode stops them (CAP_FOWNER). Both paths need the same
+# answer in both roles, so the question has one owner rather than a guard per
+# call site — the per-site version is what let the lock get four rounds of
+# attention while the pause file next to it stayed open.
+gh_pause_path_sane() {
+    [ -L "$1" ] && return 1
+    [ -e "$1" ] || return 0
+    [ -f "$1" ]
+}
+
 gh_pause_active() {
     local until
+    # Before `head`, because head on a planted FIFO blocks forever — and this is
+    # the hot path, consulted by every gh call and every tick.
+    gh_pause_path_sane "$(gh_pause_file)" || return 1
     until=$(head -n1 "$(gh_pause_file)" 2>/dev/null)
     [ "$(date +%s)" -lt "${until:-0}" ]
 }
@@ -282,7 +300,8 @@ gh_note_rate_limit() {
         # and chmod 0666 straight through it: ~/.bashrc, config.env or
         # authorized_keys truncated and made world-writable, i.e. container→host
         # execution as the bot user. Refuse instead. mktemp and mv -f need no such
-        # guard — rename(2) replaces a symlink rather than following it.
+        # guard against a SYMLINK — rename(2) replaces one rather than following
+        # it. A directory is a different matter, handled at the publish below.
         # "not a regular file", not "is a symlink": the same actor can plant a
         # FIFO, whose open(O_WRONLY) blocks until a reader that never comes —
         # hanging the tick until systemd SIGKILLs the unit at TimeoutStartSec,
@@ -294,21 +313,38 @@ gh_note_rate_limit() {
         # Residual: a swap between this test and the open still wins (bash has no
         # O_NOFOLLOW), so this narrows the window rather than closing it; the
         # durable fix is an unprivileged container runtime.
-        if [ -L "$lockfile" ] || { [ -e "$lockfile" ] && [ ! -f "$lockfile" ]; }; then
-            log "gh rate limit — $lockfile is not a regular file; refusing to open it: pause NOT published"
+        # Refusing the lock must NOT cost the pause. The lock only serializes the
+        # merge below; mktemp + mv -f are already safe on their own (rename
+        # replaces, and the temp name is unpredictable). Exiting here would let one
+        # unprivileged mkfifo at this path disable the fleet's backoff permanently
+        # — the fleet hammering GitHub through every 403 IS the original incident,
+        # so losing one trip's later-window merge is by far the smaller loss.
+        if ! gh_pause_path_sane "$lockfile"; then
+            log "gh rate limit — $lockfile is not a regular file; publishing UNSERIALIZED (only the later-window merge is lost)"
+        else
+            exec {fd}>"$lockfile" || exit 1
+            # SELF-HEALING, not creation-only. umask governs only files this call
+            # creates, and the lock is never unlinked — so on any host where a
+            # container has already tripped a limit, the lock exists root-owned 0644
+            # and the operator's `exec` above keeps failing EACCES forever: the fix
+            # would be inert on exactly the deployment it targets. Only root's chmod
+            # succeeds here, which is the direction that needs healing. Never `rm` the
+            # stale lock instead — unlinking it while a container holds flock hands the
+            # next writer a fresh inode and gives two concurrent writers.
+            chmod 0666 "$lockfile" 2>/dev/null || true
+            flock "$fd"
+        fi
+        # Before ANY use of the pause path — the merge read below is a `head`,
+        # which blocks forever on a planted FIFO. And `mv -f tmp dir` is not a
+        # rename-over: it moves the temp INSIDE and succeeds, so a planted
+        # directory would make every trip log "pausing the FLEET" while the read
+        # side sees no pause — the silent split-brain this protocol exists to
+        # close, restored by one no-capability mkdir. rename(2) handles a symlink
+        # safely; a directory it never sees.
+        if ! gh_pause_path_sane "$(gh_pause_file)"; then
+            log "gh rate limit — $(gh_pause_file) is not a regular file: pause NOT published despite the line above"
             exit 1
         fi
-        exec {fd}>"$lockfile" || exit 1
-        # SELF-HEALING, not creation-only. umask governs only files this call
-        # creates, and the lock is never unlinked — so on any host where a
-        # container has already tripped a limit, the lock exists root-owned 0644
-        # and the operator's `exec` above keeps failing EACCES forever: the fix
-        # would be inert on exactly the deployment it targets. Only root's chmod
-        # succeeds here, which is the direction that needs healing. Never `rm` the
-        # stale lock instead — unlinking it while a container holds flock hands the
-        # next writer a fresh inode and gives two concurrent writers.
-        chmod 0666 "$lockfile" 2>/dev/null || true
-        flock "$fd"
         existing=$(head -n1 "$(gh_pause_file)" 2>/dev/null)
         if [ "${existing:-0}" -gt "$until" ] 2>/dev/null; then
             log "gh rate limit ($kind) — a sibling already published a longer pause (until epoch $existing); keeping it"
