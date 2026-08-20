@@ -135,26 +135,54 @@ mark_auth_offline() {
 # already-throttled token — the amplification this file exists to stop. Hence
 # bare $STATE_DIR, no WORKER_ID.
 #
-# SCOPE, precisely: the file is shared by everyone who shares a $STATE_DIR. That
-# is the six reviewer containers (STATE_DIR=/shared, the kwr_claims volume) as
-# one group, and the host systemd timers (STATE_DIR=$HOME/.pr-reviewer) as
-# another. Those are different filesystems, so a pause does NOT currently cross
-# the host↔container boundary even though both groups spend the same PAT — the
-# containers' bulk consumption can throttle the token without the host timers
-# learning of it, and vice versa. Unifying the two needs a shared mount plus
-# per-unit env, tracked separately; do not read the sharing here as fleet-total.
+# SCOPE: fleet-total, host timers and reviewer containers alike. The path below
+# is deliberately unchanged by that unification — the host writes
+# ~/.pr-reviewer/gh-rate-limited-until and a container writes
+# /shared/gh-rate-limited-until, and lib/render-compose.sh bind-mounts the
+# former ONTO the latter, so both spellings are one inode. Both groups spend the
+# same PAT, so anything less is not a backoff: with a file per group, whichever
+# half tripped paused only itself while the other kept calling, the throttle
+# never cleared, and each side re-tripped the moment its window expired (93
+# trips in 24h, in clusters of 3-7 about 112s apart, each costing an in-flight
+# review its post).
+#
+# A FILE bind, never the enclosing directory. The containers run as root and are
+# the untrusted-input boundary (they check out PR branches and execute
+# repo-supplied scripts); given a writable host DIRECTORY they could replace this
+# path with a symlink, FIFO or directory and no mode would stop them
+# (CAP_FOWNER). A bind-mount target cannot be unlinked — EBUSY — so the inode is
+# pinned, there are no siblings to create, and the whole plant class is absent
+# rather than guarded.
 gh_pause_file() { printf '%s' "${STATE_DIR:-$HOME/.pr-reviewer}/gh-rate-limited-until"; }
 
 # True while the pause window is still in the future. Missing file reads as
 # epoch 0 (not paused) — mirrors quota_active. Unlike quota_active this coerces
 # an EMPTY read to 0 as well: quota_active's file has one owner, but this one is
-# written by any of six containers, so a reader can land mid-write. `head` on a
-# truncated file succeeds with empty output (the `||` fallback never fires), and
-# `[ N -lt "" ]` would abort with "integer expression expected" — read as NOT
-# paused, the worst possible default here.
+# written by every container AND the host timers, so a reader can land mid-write.
+# `head` on a truncated file succeeds with empty output (the `||` fallback never
+# fires), and `[ N -lt "" ]` would abort with "integer expression expected" —
+# read as NOT paused, the worst possible default here.
+#
+# The shared flock is load-bearing rather than belt-and-braces: the publish
+# writes IN PLACE (see gh_note_rate_limit — a bind-mounted file is inode-pinned,
+# so the old temp+rename would strand every container on the pre-write inode),
+# which makes the truncate window genuinely reachable where an atomic rename made
+# it impossible. `flock -s` on the same inode both writers hold closes it.
+#
+# BOUNDED, and reads anyway on timeout. This runs on the hot path — every gh call
+# and every tick — so an unbounded wait would let one stuck exclusive holder wedge
+# the entire fleet, which is strictly worse than the split-brain this replaces.
+# Falling through to an unlocked read restores exactly the pre-existing behaviour:
+# a torn read yields empty, which coerces to NOT paused, same as a missing file.
 gh_pause_active() {
     local until
-    until=$(head -n1 "$(gh_pause_file)" 2>/dev/null)
+    # `9<` and NOT flock's `flock <file> <cmd>` form: that form opens O_CREAT, so
+    # merely ASKING whether the fleet is paused would create the pause file — and
+    # every "did a non-rate-limit failure stamp a pause?" check would see one.
+    # A read-only fd cannot create it, and a missing file fails the redirect,
+    # leaving $until empty → not paused, which is the intended answer.
+    until=$( { flock -s -w "${GH_PAUSE_READ_WAIT_SECS:-2}" 9 || true; head -n1 <&9; } \
+                2>/dev/null 9<"$(gh_pause_file)" )
     [ "$(date +%s)" -lt "${until:-0}" ]
 }
 
@@ -230,22 +258,39 @@ gh_note_rate_limit() {
     # there, before the log and before the write: no pause, no diagnostic. Putting
     # it in a `||` list makes bash ignore -e for the whole extent, so publishing
     # is a property of this function rather than of whoever called it.
-    local lockfile="$(gh_pause_file).lock" tmp existing rc=0
-    mkdir -p "$(dirname "$lockfile")"
+    # Locked on the pause file ITSELF, not a sidecar .lock. The bind carries one
+    # file, so a sidecar would live in the container's own volume and serialize
+    # nothing across the boundary — the two halves would interleave writes on the
+    # very inode the mount exists to share. `>>` because it must not truncate:
+    # this fd is the lock handle, and the merge below still has to read the
+    # current value through it.
+    local existing rc=0
     (
-        exec {fd}>"$lockfile" || exit 1
-        flock "$fd"
+        # Both exits log. gh_retry discards this function's status (it returns
+        # gh's rc), so a silent failure here means the fleet does not back off AND
+        # nothing says why — the exact class this protocol exists to remove.
+        # The timeout is genuinely reachable, not defensive: gh_pause_active now
+        # takes `flock -s` on this same inode on EVERY gh call across every
+        # container and the host timers, and flock is not FIFO-fair, so a stream
+        # of shared holders can starve the exclusive waiter — during precisely the
+        # 403 cascade when every actor is retrying at once.
+        exec {fd}>>"$(gh_pause_file)" \
+            || { log "gh rate limit ($kind) — could not open $(gh_pause_file): pause NOT published"; exit 1; }
+        flock -w "${GH_PAUSE_LOCK_WAIT_SECS:-5}" "$fd" \
+            || { log "gh rate limit ($kind) — could not lock $(gh_pause_file) within ${GH_PAUSE_LOCK_WAIT_SECS:-5}s (shared readers starving the writer?): pause NOT published"; exit 1; }
         existing=$(head -n1 "$(gh_pause_file)" 2>/dev/null)
         if [ "${existing:-0}" -gt "$until" ] 2>/dev/null; then
             log "gh rate limit ($kind) — a sibling already published a longer pause (until epoch $existing); keeping it"
             exit 0
         fi
         log "gh rate limit ($kind) — core=${core_rem:-?}/5000 graphql=${gql_rem:-?}/5000 remaining; pausing the FLEET $(( until - now ))s (until epoch $until)"
-        # tmp + atomic rename so a reader never sees a half-written file. The temp
-        # must be unique per writer (mktemp, not $$ — the writers are separate
-        # containers, so PIDs collide).
-        tmp=$(mktemp "$(gh_pause_file).XXXXXX") || exit 1
-        printf '%s\n' "$until" > "$tmp" && mv -f "$tmp" "$(gh_pause_file)"
+        # IN PLACE, never temp+rename. A rename gives the path a new inode, and
+        # docker pins a file bind-mount to the source inode — so every container
+        # would keep reading the pre-write one, silently, forever. (Same property
+        # that sent repos.conf the other way, from a file mount to a directory
+        # mount; here the pin is the feature.) Readers take a shared flock on this
+        # same inode, so the truncate window is covered.
+        printf '%s\n' "$until" > "$(gh_pause_file)"
     ) || rc=$?
     return "$rc"
 }

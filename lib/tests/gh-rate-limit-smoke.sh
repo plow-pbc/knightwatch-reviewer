@@ -392,4 +392,82 @@ env -u BASH_ENV bash -c '
     || fail "scenario 15: no pause published under a set -e caller — the critical section aborted on the missing pause file, so the fleet never backs off and no diagnostic is logged"
 reset_state
 
+# --- 16. the pause survives as ONE inode, so a file bind can carry it ---------
+# The host timers and the containers spend the same PAT but live on different
+# filesystems, so the pause is unified by bind-mounting the host's file onto the
+# container's path. That only works if publishing never replaces the inode:
+# docker pins a file bind-mount to its source inode, so a temp+rename would leave
+# every container reading the pre-write one — silently, forever. (The same
+# property sent repos.conf the other way, to a directory mount; here the pin is
+# what makes the sharing possible.)
+echo "  scenario 16: publishing keeps the inode (a bind-mounted file stays bound)..."
+reset_state
+printf '%s\n' "$(( NOW - 10 ))" > "$(gh_pause_file)"
+INO_BEFORE=$(stat -c '%i' "$(gh_pause_file)")
+GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+GH_SHIM_ERR="$RATE_LIMIT_ERR" GH_SECONDARY_PAUSE_SECS=60 \
+    gh api "user" >/dev/null 2>&1 || true
+[ "$(stat -c '%i' "$(gh_pause_file)")" = "$INO_BEFORE" ] \
+    || fail "scenario 16: publishing replaced the inode — docker pins a file bind-mount to the source inode, so every container would read the pre-write file forever"
+[ "$(head -n1 "$(gh_pause_file)")" -gt "$NOW" ] 2>/dev/null \
+    || fail "scenario 16: publishing over an existing pause did not move the epoch forward"
+# No sidecar lock: it would land in the container's own volume and serialize
+# nothing across the boundary, on the one inode the mount exists to share.
+[ ! -e "$(gh_pause_file).lock" ] \
+    || fail "scenario 16: a sidecar .lock was created — it is not covered by the file bind, so the two halves would interleave writes on the shared inode"
+reset_state
+
+# --- 17. a throttled call names the endpoint that tripped --------------------
+# Diagnosing a trip used to be archaeology: callers capture gh's stderr into
+# their own errfile, so the raw 403 reached no log at all and finding the call
+# meant correlating journald on the host with orchestrator.log in the containers.
+echo "  scenario 17: a throttled call names its endpoint..."
+reset_state
+: > "$TMP/log17"
+LOG_FILE="$TMP/log17" \
+GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+GH_SHIM_ERR="$RATE_LIMIT_ERR" \
+    gh api "repos/acme/repo/issues/7/comments" >/dev/null 2>&1 || true
+grep -qF 'repos/acme/repo/issues/7/comments' "$TMP/log17" \
+    || fail "scenario 17: the throttled endpoint is absent from the log — knowing WHICH call trips the limit is the whole point: $(cat "$TMP/log17")"
+# A review body must never reach a log line.
+reset_state
+: > "$TMP/log17b"
+LOG_FILE="$TMP/log17b" \
+GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+GH_SHIM_ERR="$RATE_LIMIT_ERR" \
+    gh pr comment 7 --repo o/r --body "SECRET-REVIEW-BODY" >/dev/null 2>&1 || true
+grep -q 'rate-limited on' "$TMP/log17b" \
+    || fail "scenario 17: the create-shaped call never reached the endpoint log — the payload check below would prove nothing"
+grep -qF 'SECRET-REVIEW-BODY' "$TMP/log17b" \
+    && fail "scenario 17: the --body payload was logged — the argv slice is too wide"
+reset_state
+
+# --- 18. a publish that cannot take the lock says so ------------------------
+# gh_retry discards this function's status, so the log is the only channel: a
+# silent failure would mean the fleet does not back off AND nothing says why —
+# the class this whole protocol exists to remove. Reachable rather than
+# defensive: readers take `flock -s` on this same inode on EVERY gh call across
+# every container and the host timers, and flock is not FIFO-fair.
+echo "  scenario 18: an unlockable pause file fails loudly, not silently..."
+reset_state
+: > "$(gh_pause_file)"
+# The holder is a parent-owned fd locked SYNCHRONOUSLY — no background process,
+# no fixed sleep to race against the scheduler, nothing to kill afterwards.
+exec {holder_fd}>>"$(gh_pause_file)"
+flock -x "$holder_fd"
+: > "$TMP/log18"
+LOCK_RC=0
+timeout 15 env -u BASH_ENV STATE_DIR="$STATE_DIR" PATH="$TMP/bin:$PATH" \
+    LOG_FILE="$TMP/log18" GH_SECONDARY_PAUSE_SECS=60 GH_PAUSE_LOCK_WAIT_SECS=1 \
+    GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+    GH_SHIM_ERR="$RATE_LIMIT_ERR" \
+    bash -c '. "'"$PROJECT_ROOT"'/lib/gh-retry.sh"; gh api user' >/dev/null 2>&1 || LOCK_RC=$?
+exec {holder_fd}>&-
+[ "$LOCK_RC" -ne 124 ] \
+    || fail "scenario 18: a held lock HUNG the publish — the tick would burn its TimeoutStartSec and be SIGKILLed"
+grep -q 'pause NOT published' "$TMP/log18" \
+    || fail "scenario 18: a publish that could not lock said nothing — the fleet keeps calling with no diagnostic: $(cat "$TMP/log18")"
+reset_state
+
 echo "PASS: gh-rate-limit-smoke"

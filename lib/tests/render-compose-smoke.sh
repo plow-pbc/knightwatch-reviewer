@@ -21,9 +21,17 @@ mkdir -p "$SECRETS"/codex-account-{a,b,d} "$SECRETS/claude-standards"
 
 # $SECRETS sits under $OUT's dir, so the generator emits the same
 # compose-relative form it ships with (./docker/secrets → ./secrets here).
+# $HOME is sandboxed rather than the pause path being overridable: the renderer
+# resolves the canonical ~/.pr-reviewer/gh-rate-limited-until with no test seam,
+# so the test moves $HOME instead of production growing a second mount-source
+# contract. Also keeps the render independent of whether the INVOKING user has
+# the file — green on the author's box, red for reviewer-test in container mode.
+FAKE_HOME="$SANDBOX/fake-home"; mkdir -p "$FAKE_HOME/.pr-reviewer"
+PAUSE_SRC="$FAKE_HOME/.pr-reviewer/gh-rate-limited-until"; : > "$PAUSE_SRC"
 run_render() {  # the sandbox invocation, shared with the absent-fleet.conf case
     SECRETS_DIR="$SECRETS" FLEET_CONF="$SANDBOX/fleet.conf" \
         CONFIG_ENV="$SANDBOX/config.env" OUT="$SANDBOX/out.yml" \
+        HOME="$FAKE_HOME" \
         bash "$REPO_ROOT/lib/render-compose.sh" >"$SANDBOX/render.log" 2>&1
 }
 render() {  # render <fleet-conf> [config-env] -> $SANDBOX/out.yml
@@ -59,6 +67,7 @@ for token in "  dind-1:" "  reviewer-1:" "  dind-4:" "  reviewer-4:" \
              '${HOME}/services/kwr-config:/root/.kwr-config:ro' \
              "KWR_CONFIG_DIR: /root/.kwr-config" "REPO_ENV_DIR: /root/.kwr/repo-env" \
              "REPOS_CONF_FILE: /shared/manifest/repos.conf" \
+             '${HOME}/.pr-reviewer/gh-rate-limited-until:/shared/gh-rate-limited-until' \
              "external: true" "name: kwr_claims" "GENERATED"; do
     grep -qF "$token" "$SANDBOX/out.yml" || fail "render is missing: $token"
 done
@@ -148,5 +157,16 @@ grep -q 'legacy flat layout' "$SANDBOX/render.log" \
 grep -q 'mv .*manifest/repos.conf' "$SANDBOX/render.log" \
     || fail "legacy flat repos.conf: die message omits the migration command: $(cat "$SANDBOX/render.log")"
 mv "$SANDBOX/mount-away" "$SECRETS/manifest/repos.conf"; rm -f "$SECRETS/repos.conf"
+
+echo "  4: absent pause file refuses to render..."
+rm -f "$PAUSE_SRC"
+render "1  codex-account-a" \
+    && fail "render succeeded with no pause file — docker would auto-create the bind source as a DIRECTORY, which every reader sees as never-paused"
+# The RESOLVED host path, not the bare filename: the die exists to tell the
+# operator exactly what to create, so an assertion that also passes for a
+# constant string or for the unexpanded ${HOME} ref pins nothing.
+grep -qF "$PAUSE_SRC" "$SANDBOX/render.log" \
+    || fail "the absent-pause die does not name the resolved path to create: $(cat "$SANDBOX/render.log")"
+: > "$PAUSE_SRC"
 
 echo "PASS: render-compose smoke"
