@@ -162,8 +162,11 @@ echo "  4: absent pause file refuses to render..."
 rm -f "$PAUSE_SRC"
 render "1  codex-account-a" \
     && fail "render succeeded with no pause file — docker would auto-create the bind source as a DIRECTORY, which every reader sees as never-paused"
-grep -qF 'gh-rate-limited-until' "$SANDBOX/render.log" \
-    || fail "the absent-pause die does not name the path to create: $(cat "$SANDBOX/render.log")"
+# The RESOLVED host path, not the bare filename: the die exists to tell the
+# operator exactly what to create, so an assertion that also passes for a
+# constant string or for the unexpanded ${HOME} ref pins nothing.
+grep -qF "$PAUSE_SRC" "$SANDBOX/render.log" \
+    || fail "the absent-pause die does not name the resolved path to create: $(cat "$SANDBOX/render.log")"
 : > "$PAUSE_SRC"
 
 echo "PASS: render-compose smoke"
