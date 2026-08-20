@@ -133,7 +133,20 @@ mapfile -t SCRIPTS < <(list_execstart_shell_scripts "$REPO_DIR" "${service_units
 DIRS=(lib docs prompts)
 CONFIG_FILES=(repos.conf)
 
-mkdir -p "$INSTALL_DIR"
+# 0700, healed on every run. The pause file below must be 0666 — the host timers
+# write it as the operator and the containers write it as root — so the tree
+# around it is what keeps a third local user from pausing the fleet at will.
+mkdir -p -m 0700 "$INSTALL_DIR"
+chmod 0700 "$INSTALL_DIR"
+# The single rate-limit pause the host timers and the reviewer containers share,
+# bind-mounted into every reviewer at /shared/gh-rate-limited-until. Pre-created
+# because docker would otherwise auto-create the bind source as a DIRECTORY,
+# which every reader sees as "never paused" — silently. install -m only creates;
+# an existing file keeps its contents (a live pause survives a redeploy) and gets
+# its mode reasserted.
+[ -f "$INSTALL_DIR/gh-rate-limited-until" ] \
+  || install -m 0666 /dev/null "$INSTALL_DIR/gh-rate-limited-until"
+chmod 0666 "$INSTALL_DIR/gh-rate-limited-until"
 for script in "${SCRIPTS[@]}"; do
   src="$REPO_DIR/$script"
   [[ -f "$src" ]] || fail "missing repo script: $src"

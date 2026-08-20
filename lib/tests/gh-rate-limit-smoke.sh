@@ -392,4 +392,55 @@ env -u BASH_ENV bash -c '
     || fail "scenario 15: no pause published under a set -e caller — the critical section aborted on the missing pause file, so the fleet never backs off and no diagnostic is logged"
 reset_state
 
+# --- 16. the pause survives as ONE inode, so a file bind can carry it ---------
+# The host timers and the containers spend the same PAT but live on different
+# filesystems, so the pause is unified by bind-mounting the host's file onto the
+# container's path. That only works if publishing never replaces the inode:
+# docker pins a file bind-mount to its source inode, so a temp+rename would leave
+# every container reading the pre-write one — silently, forever. (The same
+# property sent repos.conf the other way, to a directory mount; here the pin is
+# what makes the sharing possible.)
+echo "  scenario 16: publishing keeps the inode (a bind-mounted file stays bound)..."
+reset_state
+printf '%s\n' "$(( NOW - 10 ))" > "$(gh_pause_file)"
+INO_BEFORE=$(stat -c '%i' "$(gh_pause_file)")
+GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+GH_SHIM_ERR="$RATE_LIMIT_ERR" GH_SECONDARY_PAUSE_SECS=60 \
+    gh api "user" >/dev/null 2>&1 || true
+[ "$(stat -c '%i' "$(gh_pause_file)")" = "$INO_BEFORE" ] \
+    || fail "scenario 16: publishing replaced the inode — docker pins a file bind-mount to the source inode, so every container would read the pre-write file forever"
+[ "$(head -n1 "$(gh_pause_file)")" -gt "$NOW" ] 2>/dev/null \
+    || fail "scenario 16: publishing over an existing pause did not move the epoch forward"
+# No sidecar lock: it would land in the container's own volume and serialize
+# nothing across the boundary, on the one inode the mount exists to share.
+[ ! -e "$(gh_pause_file).lock" ] \
+    || fail "scenario 16: a sidecar .lock was created — it is not covered by the file bind, so the two halves would interleave writes on the shared inode"
+reset_state
+
+# --- 17. a throttled call names the endpoint that tripped --------------------
+# Diagnosing a trip used to be archaeology: callers capture gh's stderr into
+# their own errfile, so the raw 403 reached no log at all and finding the call
+# meant correlating journald on the host with orchestrator.log in the containers.
+echo "  scenario 17: a throttled call names its endpoint..."
+reset_state
+: > "$TMP/log17"
+LOG_FILE="$TMP/log17" \
+GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+GH_SHIM_ERR="$RATE_LIMIT_ERR" \
+    gh api "repos/acme/repo/issues/7/comments" >/dev/null 2>&1 || true
+grep -qF 'repos/acme/repo/issues/7/comments' "$TMP/log17" \
+    || fail "scenario 17: the throttled endpoint is absent from the log — knowing WHICH call trips the limit is the whole point: $(cat "$TMP/log17")"
+# A review body must never reach a log line.
+reset_state
+: > "$TMP/log17b"
+LOG_FILE="$TMP/log17b" \
+GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+GH_SHIM_ERR="$RATE_LIMIT_ERR" \
+    gh pr comment 7 --repo o/r --body "SECRET-REVIEW-BODY" >/dev/null 2>&1 || true
+grep -q 'rate-limited on' "$TMP/log17b" \
+    || fail "scenario 17: the create-shaped call never reached the endpoint log — the payload check below would prove nothing"
+grep -qF 'SECRET-REVIEW-BODY' "$TMP/log17b" \
+    && fail "scenario 17: the --body payload was logged — the argv slice is too wide"
+reset_state
+
 echo "PASS: gh-rate-limit-smoke"

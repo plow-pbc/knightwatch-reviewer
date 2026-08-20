@@ -158,6 +158,11 @@ SHARED_OVERLAY="$TMPDIR/repo-overlay-shared"
 make_install_overlay "$SHARED_OVERLAY"
 
 # --- Scenario 1: first-run install -----------------------------------------
+# Pre-created at the WRONG mode so the assertions below exercise install.sh's
+# chmod (the self-heal), not its `mkdir -m`. ~/.pr-reviewer already exists at
+# 0755 on every host that has ever run the installer, so a creation-only fix
+# would be inert exactly where it matters.
+mkdir -p "$INSTALL_DIR"; chmod 0755 "$INSTALL_DIR"
 echo "  scenario 1: first-run install — every unit copied, every timer enabled..."
 : > "$STUB_LOG"
 run_install "$SHARED_OVERLAY/install.sh" || { echo "FAIL scenario 1: install.sh exited non-zero"; cat "$STUB_LOG"; exit 1; }
@@ -169,6 +174,20 @@ done
 for d in lib docs prompts; do
     [ -L "$INSTALL_DIR/$d" ] || { echo "FAIL scenario 1: $INSTALL_DIR/$d not a symlink"; exit 1; }
 done
+# The shared rate-limit pause. It must exist as a regular FILE before any
+# `compose up`: docker auto-creates a missing bind source as a DIRECTORY, and
+# every reader then sees "never paused" — silently, which is the failure the
+# whole protocol exists to remove. 0666 because the host timers write it as the
+# operator and the containers write it as root; 0700 on the tree around it is
+# what keeps that from being reachable by a third local user.
+[ -f "$INSTALL_DIR/gh-rate-limited-until" ] \
+    || { echo "FAIL scenario 1: $INSTALL_DIR/gh-rate-limited-until missing — docker would bind a DIRECTORY over it and the fleet would never see a pause"; exit 1; }
+PAUSE_MODE=$(stat -c '%a' "$INSTALL_DIR/gh-rate-limited-until" 2>/dev/null || echo missing)
+[ "$PAUSE_MODE" = "666" ] \
+    || { echo "FAIL scenario 1: pause file is mode $PAUSE_MODE, not 666 — one of the two UIDs that share it cannot write it"; exit 1; }
+DIR_MODE=$(stat -c '%a' "$INSTALL_DIR" 2>/dev/null || echo missing)
+[ "$DIR_MODE" = "700" ] \
+    || { echo "FAIL scenario 1: $INSTALL_DIR is mode $DIR_MODE, not 700 — the 0666 pause file inside it becomes writable by any local user"; exit 1; }
 
 # Render the same @KID_RW_PATHS@ / @KWR_CLONE_ROOT@
 # values install.sh derives from the overlay's repos.conf, so the cmp
