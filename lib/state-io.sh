@@ -168,6 +168,12 @@ gh_pause_file() { printf '%s' "${STATE_DIR:-$HOME/.pr-reviewer}/gh-rate-limited-
 # so the old temp+rename would strand every container on the pre-write inode),
 # which makes the truncate window genuinely reachable where an atomic rename made
 # it impossible. `flock -s` on the same inode both writers hold closes it.
+#
+# BOUNDED, and reads anyway on timeout. This runs on the hot path — every gh call
+# and every tick — so an unbounded wait would let one stuck exclusive holder wedge
+# the entire fleet, which is strictly worse than the split-brain this replaces.
+# Falling through to an unlocked read restores exactly the pre-existing behaviour:
+# a torn read yields empty, which coerces to NOT paused, same as a missing file.
 gh_pause_active() {
     local until
     # `9<` and NOT flock's `flock <file> <cmd>` form: that form opens O_CREAT, so
@@ -175,7 +181,8 @@ gh_pause_active() {
     # every "did a non-rate-limit failure stamp a pause?" check would see one.
     # A read-only fd cannot create it, and a missing file fails the redirect,
     # leaving $until empty → not paused, which is the intended answer.
-    until=$( { flock -s 9 && head -n1 <&9; } 2>/dev/null 9<"$(gh_pause_file)" )
+    until=$( { flock -s -w "${GH_PAUSE_READ_WAIT_SECS:-2}" 9 || true; head -n1 <&9; } \
+                2>/dev/null 9<"$(gh_pause_file)" )
     [ "$(date +%s)" -lt "${until:-0}" ]
 }
 
@@ -259,8 +266,18 @@ gh_note_rate_limit() {
     # current value through it.
     local existing rc=0
     (
-        exec {fd}>>"$(gh_pause_file)" || exit 1
-        flock -w "${GH_PAUSE_LOCK_WAIT_SECS:-5}" "$fd" || exit 1
+        # Both exits log. gh_retry discards this function's status (it returns
+        # gh's rc), so a silent failure here means the fleet does not back off AND
+        # nothing says why — the exact class this protocol exists to remove.
+        # The timeout is genuinely reachable, not defensive: gh_pause_active now
+        # takes `flock -s` on this same inode on EVERY gh call across every
+        # container and the host timers, and flock is not FIFO-fair, so a stream
+        # of shared holders can starve the exclusive waiter — during precisely the
+        # 403 cascade when every actor is retrying at once.
+        exec {fd}>>"$(gh_pause_file)" \
+            || { log "gh rate limit ($kind) — could not open $(gh_pause_file): pause NOT published"; exit 1; }
+        flock -w "${GH_PAUSE_LOCK_WAIT_SECS:-5}" "$fd" \
+            || { log "gh rate limit ($kind) — could not lock $(gh_pause_file) within ${GH_PAUSE_LOCK_WAIT_SECS:-5}s (shared readers starving the writer?): pause NOT published"; exit 1; }
         existing=$(head -n1 "$(gh_pause_file)" 2>/dev/null)
         if [ "${existing:-0}" -gt "$until" ] 2>/dev/null; then
             log "gh rate limit ($kind) — a sibling already published a longer pause (until epoch $existing); keeping it"

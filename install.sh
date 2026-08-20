@@ -144,6 +144,13 @@ chmod 0700 "$INSTALL_DIR"
 # which every reader sees as "never paused" — silently. install -m only creates;
 # an existing file keeps its contents (a live pause survives a redeploy) and gets
 # its mode reasserted.
+# Fail loud on a non-regular path rather than papering over it: if docker has
+# already auto-created the bind source as a DIRECTORY (an operator `rm`, a
+# botched restore), `install` would cheerfully write gh-rate-limited-until/null
+# and chmod would strip +x off the directory — exit 0 having "created" a pause
+# file that is still a directory, which every reader sees as never-paused.
+[ ! -e "$INSTALL_DIR/gh-rate-limited-until" ] || [ -f "$INSTALL_DIR/gh-rate-limited-until" ] \
+  || fail "$INSTALL_DIR/gh-rate-limited-until exists but is not a regular file — docker auto-created the bind source. Remove it and re-run: rmdir '$INSTALL_DIR/gh-rate-limited-until'"
 [ -f "$INSTALL_DIR/gh-rate-limited-until" ] \
   || install -m 0666 /dev/null "$INSTALL_DIR/gh-rate-limited-until"
 chmod 0666 "$INSTALL_DIR/gh-rate-limited-until"

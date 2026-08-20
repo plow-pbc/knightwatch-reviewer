@@ -443,4 +443,29 @@ grep -qF 'SECRET-REVIEW-BODY' "$TMP/log17b" \
     && fail "scenario 17: the --body payload was logged — the argv slice is too wide"
 reset_state
 
+# --- 18. a publish that cannot take the lock says so ------------------------
+# gh_retry discards this function's status, so the log is the only channel: a
+# silent failure would mean the fleet does not back off AND nothing says why —
+# the class this whole protocol exists to remove. Reachable rather than
+# defensive: readers take `flock -s` on this same inode on EVERY gh call across
+# every container and the host timers, and flock is not FIFO-fair.
+echo "  scenario 18: an unlockable pause file fails loudly, not silently..."
+reset_state
+: > "$(gh_pause_file)"
+flock -x "$(gh_pause_file)" -c 'sleep 20' & HOLDER=$!
+sleep 0.3
+: > "$TMP/log18"
+LOCK_RC=0
+timeout 15 env -u BASH_ENV STATE_DIR="$STATE_DIR" PATH="$TMP/bin:$PATH" \
+    LOG_FILE="$TMP/log18" GH_SECONDARY_PAUSE_SECS=60 GH_PAUSE_LOCK_WAIT_SECS=1 \
+    GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+    GH_SHIM_ERR="$RATE_LIMIT_ERR" \
+    bash -c '. "'"$PROJECT_ROOT"'/lib/gh-retry.sh"; gh api user' >/dev/null 2>&1 || LOCK_RC=$?
+kill "$HOLDER" 2>/dev/null || true; wait "$HOLDER" 2>/dev/null || true
+[ "$LOCK_RC" -ne 124 ] \
+    || fail "scenario 18: a held lock HUNG the publish — the tick would burn its TimeoutStartSec and be SIGKILLed"
+grep -q 'pause NOT published' "$TMP/log18" \
+    || fail "scenario 18: a publish that could not lock said nothing — the fleet keeps calling with no diagnostic: $(cat "$TMP/log18")"
+reset_state
+
 echo "PASS: gh-rate-limit-smoke"

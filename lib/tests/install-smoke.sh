@@ -180,6 +180,16 @@ done
 # whole protocol exists to remove. 0666 because the host timers write it as the
 # operator and the containers write it as root; 0700 on the tree around it is
 # what keeps that from being reachable by a third local user.
+# A DIRECTORY at that path is docker's auto-create outcome, and install must
+# refuse it rather than write gh-rate-limited-until/null and exit 0 having
+# "created" a pause file that is still a directory.
+mv "$INSTALL_DIR/gh-rate-limited-until" "$INSTALL_DIR/.pause-bak"
+mkdir "$INSTALL_DIR/gh-rate-limited-until"
+run_install "$SHARED_OVERLAY/install.sh" \
+    && { echo "FAIL scenario 1: install.sh accepted a DIRECTORY at the pause path — every reader would see never-paused forever"; exit 1; }
+rmdir "$INSTALL_DIR/gh-rate-limited-until"
+mv "$INSTALL_DIR/.pause-bak" "$INSTALL_DIR/gh-rate-limited-until"
+
 [ -f "$INSTALL_DIR/gh-rate-limited-until" ] \
     || { echo "FAIL scenario 1: $INSTALL_DIR/gh-rate-limited-until missing — docker would bind a DIRECTORY over it and the fleet would never see a pause"; exit 1; }
 PAUSE_MODE=$(stat -c '%a' "$INSTALL_DIR/gh-rate-limited-until" 2>/dev/null || echo missing)
