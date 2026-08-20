@@ -90,18 +90,11 @@ done < "$FLEET_CONF"
 # The one file both halves of the fleet write. Absent, docker auto-creates the
 # bind source as a DIRECTORY, and every `head` on it then returns empty — read as
 # NOT paused, so the fleet would never back off and the failure would be silent.
-# Parameterized like every other input because the render can run under a $HOME
-# that is not the operator's (this repo's own `just test` runs as reviewer-test).
-GH_PAUSE_SRC="${GH_PAUSE_SRC:-}"
-if [ -n "$GH_PAUSE_SRC" ]; then
-    GH_PAUSE_REF="$GH_PAUSE_SRC"
-else
-    GH_PAUSE_SRC="$HOME/.pr-reviewer/gh-rate-limited-until"
-    # Left UNEXPANDED, same convention as the kwr-config mount: it resolves at
-    # `compose up`, so the mount and the host units agree on one path instead of
-    # baking the generating user's $HOME in at render time.
-    GH_PAUSE_REF='${HOME}/.pr-reviewer/gh-rate-limited-until'
-fi
+GH_PAUSE_SRC="$HOME/.pr-reviewer/gh-rate-limited-until"
+# Left UNEXPANDED, same convention as the kwr-config mount: it resolves at
+# `compose up`, so the mount and the host units agree on one path instead of
+# baking the generating user's $HOME in at render time.
+GH_PAUSE_REF='${HOME}/.pr-reviewer/gh-rate-limited-until'
 [ -f "$GH_PAUSE_SRC" ] \
     || die "$GH_PAUSE_SRC not found (or not a regular file) — it is the single rate-limit pause the host timers and the containers share, and docker would auto-create it as a DIRECTORY, which reads as never-paused. Create it as the operator: install -m 0666 /dev/null $GH_PAUSE_SRC"
 # Worse for the mount sources the loader sources: docker auto-creates a missing

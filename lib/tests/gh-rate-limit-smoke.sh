@@ -452,8 +452,10 @@ reset_state
 echo "  scenario 18: an unlockable pause file fails loudly, not silently..."
 reset_state
 : > "$(gh_pause_file)"
-flock -x "$(gh_pause_file)" -c 'sleep 20' & HOLDER=$!
-sleep 0.3
+# The holder is a parent-owned fd locked SYNCHRONOUSLY — no background process,
+# no fixed sleep to race against the scheduler, nothing to kill afterwards.
+exec {holder_fd}>>"$(gh_pause_file)"
+flock -x "$holder_fd"
 : > "$TMP/log18"
 LOCK_RC=0
 timeout 15 env -u BASH_ENV STATE_DIR="$STATE_DIR" PATH="$TMP/bin:$PATH" \
@@ -461,7 +463,7 @@ timeout 15 env -u BASH_ENV STATE_DIR="$STATE_DIR" PATH="$TMP/bin:$PATH" \
     GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
     GH_SHIM_ERR="$RATE_LIMIT_ERR" \
     bash -c '. "'"$PROJECT_ROOT"'/lib/gh-retry.sh"; gh api user' >/dev/null 2>&1 || LOCK_RC=$?
-kill "$HOLDER" 2>/dev/null || true; wait "$HOLDER" 2>/dev/null || true
+exec {holder_fd}>&-
 [ "$LOCK_RC" -ne 124 ] \
     || fail "scenario 18: a held lock HUNG the publish — the tick would burn its TimeoutStartSec and be SIGKILLed"
 grep -q 'pause NOT published' "$TMP/log18" \
