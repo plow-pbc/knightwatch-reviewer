@@ -537,8 +537,8 @@ reset_state
 # Container root shares this mount and is the untrusted-input boundary, so it can
 # replace the lock path with anything — CAP_FOWNER means no dir mode or sticky
 # bit stops it. Each planted type is a different attack on the SAME path, so they
-# run as a table over one contract: refuse, log, touch nothing outside throttle/,
-# and return promptly.
+# run as a table over one contract: clear the plant, log that clearing happened,
+# touch nothing outside throttle/, still publish the pause, and return promptly.
 #   symlink — the host publish would O_CREAT|O_TRUNC + chmod 0666 through it:
 #             any operator-owned file made world-writable (container->host exec).
 #   fifo    — open(O_WRONLY) blocks for a reader that never comes, hanging the
@@ -575,8 +575,8 @@ for target in lock pause; do
     # Sourced in the CHILD (scenario 15's shape) so the seam function exists
     # there — `timeout … bash -c 'gh …'` alone reaches the PATH shim directly and
     # bypasses the very wrapper under test. `|| PLANT_RC=$?` because this file
-    # runs under set -e, where the non-zero a refused publish returns would abort
-    # before any assertion below could read it.
+    # runs under set -e: an un-clearable plant still returns non-zero, which would
+    # abort before any assertion below could read the outcome.
     timeout 5 env -u BASH_ENV STATE_DIR="$STATE_DIR" PATH="$TMP/bin:$PATH" \
         LOG_FILE="$TMP/log16-$target-$plant" GH_SECONDARY_PAUSE_SECS=60 \
         GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \

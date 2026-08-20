@@ -314,8 +314,8 @@ gh_note_rate_limit() {
         # dir exposes is a symlink swap on the lock. Against a THIRD LOCAL USER
         # that is closed by reachability — install.sh keeps $INSTALL_DIR at 0700,
         # so they cannot traverse in. Against container root it is not closed by
-        # any mode (CAP_FOWNER); the -L refusal at the open below is what handles
-        # that actor. Uniformly world-writable is what makes both UIDs equal
+        # any mode (CAP_FOWNER); gh_pause_clear_plant at the open below is what
+        # handles that actor. Uniformly world-writable is what makes both UIDs equal
         # writers.
         chmod 0777 "$(dirname "$lockfile")" 2>/dev/null || true
         # Sharing throttle/ across the host↔container boundary is what put two
