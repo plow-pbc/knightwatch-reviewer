@@ -238,6 +238,51 @@ gh_top_callers() {
     printf '%s' "$out"
 }
 
+# ONE parser for /rate_limit. Two hand-rolled ones is what produced the SAME bug
+# twice — @tsv renders a JSON null as an EMPTY field, `tr` + default IFS swallows
+# it, and every later field shifts left. In the report that printed corrupted
+# figures beside a permanent false warning; in the classifier it put core's reset
+# epoch into core_rem, so a genuine PRIMARY exhaustion paused 60s instead of until
+# the real reset and the fleet re-tripped on the next window. One owner means the
+# next caller cannot re-grow it.
+#
+# Field order is deliberate: the four CLASSIFICATION fields first, the two
+# display-only limits appended. A short or truncated read therefore still yields a
+# correct pause decision and only degrades the rendered numbers.
+#
+# `// -1` keeps the tuple positional. -1 carries a '-', so it fails a numeric gate
+# as UNKNOWN instead of reading as a real 0 — which would mean "exhausted", the
+# opposite of "unmeasured". Returns non-zero when the probe itself produced
+# nothing; sentinels are set either way, so a caller may ignore the status.
+_gh_num() { case "${1:-}" in ''|*[!0-9]*) printf '%s' -1 ;; *) printf '%s' "$1" ;; esac; }
+
+gh_probe_buckets() {
+    local raw
+    GH_BUCKET_CORE_REM=-1; GH_BUCKET_CORE_RESET=-1; GH_BUCKET_GQL_REM=-1
+    GH_BUCKET_GQL_RESET=-1; GH_BUCKET_CORE_LIM=-1; GH_BUCKET_GQL_LIM=-1
+    raw=$(timeout "${GH_RATE_LIMIT_PROBE_SECS:-15}" gh api rate_limit \
+        --jq '[(.resources.core.remaining // -1), (.resources.core.reset // -1),
+               (.resources.graphql.remaining // -1), (.resources.graphql.reset // -1),
+               (.resources.core.limit // -1), (.resources.graphql.limit // -1)] | @tsv' \
+        2>/dev/null | tr '\t' ' ')
+    [ -n "$raw" ] || return 1
+    read -r GH_BUCKET_CORE_REM GH_BUCKET_CORE_RESET GH_BUCKET_GQL_REM \
+            GH_BUCKET_GQL_RESET GH_BUCKET_CORE_LIM GH_BUCKET_GQL_LIM <<<"$raw"
+    GH_BUCKET_CORE_REM=$(_gh_num "$GH_BUCKET_CORE_REM")
+    GH_BUCKET_CORE_RESET=$(_gh_num "$GH_BUCKET_CORE_RESET")
+    GH_BUCKET_GQL_REM=$(_gh_num "$GH_BUCKET_GQL_REM")
+    GH_BUCKET_GQL_RESET=$(_gh_num "$GH_BUCKET_GQL_RESET")
+    GH_BUCKET_CORE_LIM=$(_gh_num "$GH_BUCKET_CORE_LIM")
+    GH_BUCKET_GQL_LIM=$(_gh_num "$GH_BUCKET_GQL_LIM")
+    return 0
+}
+
+# Render a bucket figure for a human: the sentinel prints as `?`, never as -1, so
+# an operator reading an incident log can tell "we could not measure the buckets"
+# from a real measurement. Distinguishing exactly those two is the whole point of
+# the trip diagnostic.
+gh_bucket_txt() { [ "${1:--1}" -ge 0 ] 2>/dev/null && printf '%s' "$1" || printf '?'; }
+
 # Periodic headroom + attribution, and a WARNING while there is still budget to
 # act on. /rate_limit does not consume quota, so the probe is free; `timeout … gh`
 # execs the binary so this can neither recurse into the seam nor tally itself.
@@ -252,34 +297,23 @@ gh_quota_report() {
     [ "$(( now - last ))" -ge "$interval" ] || return 0
     mkdir -p "$(dirname "$(gh_quota_stamp_file)")" 2>/dev/null || true
     printf '%s\n' "$now" > "$(gh_quota_stamp_file)" 2>/dev/null || true
-    read -r core_rem core_lim core_reset gql_rem gql_lim <<<"$(timeout "${GH_RATE_LIMIT_PROBE_SECS:-15}" gh api rate_limit \
-        --jq '[(.resources.core.remaining // -1), (.resources.core.limit // 0), (.resources.core.reset // 0),
-               (.resources.graphql.remaining // -1), (.resources.graphql.limit // 0)] | @tsv' \
-        2>/dev/null | tr '\t' ' ')"
     # A failed probe earns no log line, but the stamp above already moved so a
-    # flapping API cannot turn this into a per-tick storm of its own. `// -1`
-    # above keeps every field non-empty: @tsv renders a JSON null as an EMPTY
-    # field, which `tr` + default IFS would swallow, shifting each later field
-    # left — that silently turned a missing bucket into a permanent false alarm
-    # whose own numbers were corrupted, so it could not be read back off the log.
-    # -1 carries a '-', so it fails the numeric gate as "unknown" rather than 0.
-    case "${core_rem:-}" in ''|*[!0-9]*) return 0 ;; esac
-    [ "${core_lim:-0}" -gt 0 ] 2>/dev/null || return 0
+    # flapping API cannot turn this into a per-tick storm of its own.
+    gh_probe_buckets || return 0
+    [ "$GH_BUCKET_CORE_REM" -ge 0 ] && [ "$GH_BUCKET_CORE_LIM" -gt 0 ] || return 0
     top=$(gh_top_callers 3)
-    core_pct=$(( core_rem * 100 / core_lim ))
+    core_pct=$(( GH_BUCKET_CORE_REM * 100 / GH_BUCKET_CORE_LIM ))
     # GraphQL is the loaded bucket here (gh pr view per worker, gh pr list per
     # repo — lib/gh-retry.sh), so a core-only gate could watch it drain in
-    # silence. Absent/unparseable is UNKNOWN, never 0: reporting a missing bucket
-    # as empty would fire the warning forever and drown the one that matters.
+    # silence. Absent is UNKNOWN, never 0: a missing bucket reported as empty
+    # would fire the warning forever and drown the one that matters.
     gql_txt="unknown"; gql_short="unknown"; gql_pct=-1
-    case "${gql_rem:-}" in
-        ''|*[!0-9]*) ;;
-        *) if [ "${gql_lim:-0}" -gt 0 ] 2>/dev/null; then
-               gql_pct=$(( gql_rem * 100 / gql_lim ))
-               gql_txt="${gql_rem}/${gql_lim} (${gql_pct}%)"; gql_short="${gql_pct}%"
-           fi ;;
-    esac
-    log "[gh-quota] core=${core_rem}/${core_lim} (${core_pct}%) graphql=${gql_txt} reset in $(( (core_reset - now + 59) / 60 ))m${top:+ — top callers: $top}"
+    if [ "$GH_BUCKET_GQL_REM" -ge 0 ] && [ "$GH_BUCKET_GQL_LIM" -gt 0 ]; then
+        gql_pct=$(( GH_BUCKET_GQL_REM * 100 / GH_BUCKET_GQL_LIM ))
+        gql_txt="${GH_BUCKET_GQL_REM}/${GH_BUCKET_GQL_LIM} (${gql_pct}%)"
+        gql_short="${gql_pct}%"
+    fi
+    log "[gh-quota] core=${GH_BUCKET_CORE_REM}/${GH_BUCKET_CORE_LIM} (${core_pct}%) graphql=${gql_txt} reset in $(( (GH_BUCKET_CORE_RESET - now + 59) / 60 ))m${top:+ — top callers: $top}"
     # Headroom cannot predict a SECONDARY limit — /rate_limit does not expose one
     # and the incident that motivated this had core at 4997/5000. That is what the
     # attribution above is for; this gate covers the primary buckets only.
@@ -353,7 +387,7 @@ gh_note_rate_limit() {
     # (gh_retry refuses before reaching here too, so this covers direct callers.)
     gh_pause_active && return 0
 
-    local now core_rem core_reset gql_rem gql_reset kind until top
+    local now kind until top
     now=$(date +%s)
     # Read the tally BEFORE the probe and the lock — it is pure filesystem work,
     # and a trip is exactly when "what were we spending it on?" is worth naming.
@@ -368,27 +402,13 @@ gh_note_rate_limit() {
     #
     # `timeout … gh`, not `command gh`: timeout EXECS the binary, so the seam
     # function is bypassed the same way, and it can't outlive its bound.
-    read -r core_rem core_reset gql_rem gql_reset <<<"$(timeout "${GH_RATE_LIMIT_PROBE_SECS:-15}" gh api rate_limit \
-        --jq '[(.resources.core.remaining // -1), (.resources.core.reset // 0),
-               (.resources.graphql.remaining // -1), (.resources.graphql.reset // 0)] | @tsv' \
-        2>/dev/null | tr '\t' ' ')"
-    # These four fields ARE the classification, so the null-shift that only
-    # cosmetically dirtied gh_quota_report's log line picks the pause WINDOW here.
-    # @tsv renders a JSON null as an EMPTY field; `tr` + default IFS swallows it
-    # and shifts every later field left, so a null core.remaining would put core's
-    # RESET EPOCH into core_rem. Neither test then matches 0, and a genuine
-    # PRIMARY exhaustion is paused for 60s instead of until the real reset — the
-    # fleet resumes into an empty bucket and re-trips, which is the clustered
-    # re-trip incident this file's header describes. `// -1` keeps the fields
-    # positional, and -1 carries a '-' so it fails the numeric gate as UNKNOWN.
+    gh_probe_buckets || true   # sentinels are set either way; unknown => secondary
     # An unknown bucket falls through to the secondary window deliberately: it is
     # the shorter, safer pause to be wrong with.
-    case "${core_rem:-}" in ''|*[!0-9]*) core_rem=-1 ;; esac
-    case "${gql_rem:-}" in ''|*[!0-9]*) gql_rem=-1 ;; esac
-    if [ "$core_rem" = 0 ]; then
-        kind="primary/core"; until="$core_reset"
-    elif [ "$gql_rem" = 0 ]; then
-        kind="primary/graphql"; until="$gql_reset"
+    if [ "$GH_BUCKET_CORE_REM" = 0 ]; then
+        kind="primary/core"; until="$GH_BUCKET_CORE_RESET"
+    elif [ "$GH_BUCKET_GQL_REM" = 0 ]; then
+        kind="primary/graphql"; until="$GH_BUCKET_GQL_RESET"
     else
         kind="secondary"; until=$(( now + ${GH_SECONDARY_PAUSE_SECS:-60} ))
     fi
@@ -436,7 +456,7 @@ gh_note_rate_limit() {
             log "gh rate limit ($kind) — a sibling already published a longer pause (until epoch $existing); keeping it"
             exit 0
         fi
-        log "gh rate limit ($kind) — core=${core_rem:-?}/5000 graphql=${gql_rem:-?}/5000 remaining; pausing the FLEET $(( until - now ))s (until epoch $until)${top:+ — top callers: $top}"
+        log "gh rate limit ($kind) — core=$(gh_bucket_txt "$GH_BUCKET_CORE_REM")/$(gh_bucket_txt "$GH_BUCKET_CORE_LIM") graphql=$(gh_bucket_txt "$GH_BUCKET_GQL_REM")/$(gh_bucket_txt "$GH_BUCKET_GQL_LIM") remaining; pausing the FLEET $(( until - now ))s (until epoch $until)${top:+ — top callers: $top}"
         # IN PLACE, never temp+rename. A rename gives the path a new inode, and
         # docker pins a file bind-mount to the source inode — so every container
         # would keep reading the pre-write one, silently, forever. (Same property

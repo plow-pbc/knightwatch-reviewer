@@ -524,7 +524,7 @@ gh_tally_call api repos/o/r/collaborators/u/permission --jq .permission
 gh_tally_call api repos/o/r/collaborators/u2/permission --jq .permission
 rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log21"
 LOG_FILE="$TMP/log21" GH_QUOTA_REPORT_SECS=300 \
-    GH_SHIM_BUCKETS="4977	5000	$((NOW + 1200))	4775	5000" gh_quota_report
+    GH_SHIM_BUCKETS="4977	$((NOW + 1200))	4775	$((NOW + 1200))	5000	5000" gh_quota_report
 grep -q '\[gh-quota\] core=4977/5000 (99%) graphql=4775/5000 (95%)' "$TMP/log21" \
     || fail "scenario 21: no per-bucket headroom line — operators cannot see the budget: $(cat "$TMP/log21")"
 grep -q 'top callers: repos/\*/\*/collaborators/\*/permission=2' "$TMP/log21" \
@@ -533,20 +533,20 @@ grep -q 'top callers: repos/\*/\*/collaborators/\*/permission=2' "$TMP/log21" \
 # Second call inside the interval must stay silent, or six containers ticking
 # every 30s would each emit and drown the log they exist to clarify.
 LOG_FILE="$TMP/log21" GH_QUOTA_REPORT_SECS=300 \
-    GH_SHIM_BUCKETS="4977	5000	$((NOW + 1200))	4775	5000" gh_quota_report
+    GH_SHIM_BUCKETS="4977	$((NOW + 1200))	4775	$((NOW + 1200))	5000	5000" gh_quota_report
 [ "$(grep -c '\[gh-quota\] core=' "$TMP/log21")" = 1 ] \
     || fail "scenario 21: a second report inside the interval emitted anyway"
 
 echo "  scenario 22: low headroom WARNs while there is still budget to act on..."
 rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log22"
 LOG_FILE="$TMP/log22" GH_QUOTA_REPORT_SECS=0 GH_QUOTA_WARN_PCT=20 \
-    GH_SHIM_BUCKETS="100	5000	$((NOW + 1200))	4775	5000" gh_quota_report
+    GH_SHIM_BUCKETS="100	$((NOW + 1200))	4775	$((NOW + 1200))	5000	5000" gh_quota_report
 grep -q '\[gh-quota\] WARNING' "$TMP/log22" \
     || fail "scenario 22: 100/5000 raised no warning — the whole point is to see it coming: $(cat "$TMP/log22")"
 # And a healthy bucket must NOT warn, or the signal is noise.
 rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log22b"
 LOG_FILE="$TMP/log22b" GH_QUOTA_REPORT_SECS=0 GH_QUOTA_WARN_PCT=20 \
-    GH_SHIM_BUCKETS="4977	5000	$((NOW + 1200))	4775	5000" gh_quota_report
+    GH_SHIM_BUCKETS="4977	$((NOW + 1200))	4775	$((NOW + 1200))	5000	5000" gh_quota_report
 grep -q 'WARNING' "$TMP/log22b" && fail "scenario 22: warned at 99% headroom — the signal would be noise"
 # A failed probe earns no line, but must still stamp, so a flapping API cannot
 # become a per-tick storm of its own.
@@ -561,7 +561,7 @@ echo "  scenario 23: GraphQL exhaustion warns too — a core-only gate watches t
 # the bucket most likely to go first here. A core-only threshold cannot fire for it.
 rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log23"
 LOG_FILE="$TMP/log23" GH_QUOTA_REPORT_SECS=0 GH_QUOTA_WARN_PCT=20 \
-    GH_SHIM_BUCKETS="4977	5000	$((NOW + 1200))	100	5000" gh_quota_report
+    GH_SHIM_BUCKETS="4977	$((NOW + 1200))	100	$((NOW + 1200))	5000	5000" gh_quota_report
 grep -q 'WARNING — graphql headroom under' "$TMP/log23" \
     || fail "scenario 23: graphql at 100/5000 raised no warning — the loaded bucket is unmonitored: $(cat "$TMP/log23")"
 
@@ -591,7 +591,7 @@ echo "  scenario 26: an absent graphql bucket reads as UNKNOWN, never as 0 — n
 # unfalsifiable from the log, and it would drown the warning that matters.
 rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log26"
 LOG_FILE="$TMP/log26" GH_QUOTA_REPORT_SECS=0 GH_QUOTA_WARN_PCT=20 \
-    GH_SHIM_BUCKETS="4977	5000	$((NOW + 1200))" gh_quota_report
+    GH_SHIM_BUCKETS="4977	$((NOW + 1200))	-1	-1	5000	-1" gh_quota_report
 grep -q 'graphql=unknown' "$TMP/log26" \
     || fail "scenario 26: a missing graphql bucket was not reported as unknown: $(cat "$TMP/log26")"
 grep -q 'WARNING' "$TMP/log26" \
@@ -614,21 +614,33 @@ BYTES=$(wc -c < "$(gh_tally_file)")
     || fail "scenario 27: the cap emptied the tally entirely — attribution would always be blank"
 : > "$(gh_tally_file)"
 
-echo "  scenario 28: a real null bucket runs through real jq — interior nulls must not shift fields..."
-# GH_SHIM_BUCKETS never executes --jq, so this drives a genuine /rate_limit body
-# where .resources.graphql is null — the way GitHub would actually return a bucket
-# it did not report. Without the `// -1` defaults @tsv emits an EMPTY field, `tr`
-# collapses it, and graphql's numbers land in core's slots.
+echo "  scenario 28: an INTERIOR null runs through real jq — the report must not render shifted fields..."
+# GH_SHIM_BUCKETS never executes --jq, so this drives a genuine /rate_limit body.
+# core.remaining is null with everything after it present: exactly the interior
+# case. Without the jq defaults @tsv emits an EMPTY field, `tr` collapses it, and
+# core.limit slides into core_rem — yielding a plausible-looking
+# `core=5000/<reset epoch> (0%)` line plus a permanent WARNING beside figures too
+# corrupted to notice it by. With them, core is UNKNOWN and the report says
+# nothing at all.
 rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log28"
-NULL_GQL_JSON='{"resources":{"core":{"remaining":4977,"limit":5000,"reset":'"$((NOW + 1200))"'},"graphql":null}}'
+INTERIOR_NULL_JSON='{"resources":{"core":{"remaining":null,"limit":5000,"reset":'"$((NOW + 1200))"'},"graphql":{"remaining":4775,"limit":5000,"reset":'"$((NOW + 1200))"'}}}'
 LOG_FILE="$TMP/log28" GH_QUOTA_REPORT_SECS=0 GH_QUOTA_WARN_PCT=20 \
-    GH_SHIM_JSON="$NULL_GQL_JSON" gh_quota_report
-grep -q 'core=4977/5000 (99%)' "$TMP/log28" \
-    || fail "scenario 28: core figures were corrupted by the null graphql bucket — the fields shifted: $(cat "$TMP/log28")"
-grep -q 'graphql=unknown' "$TMP/log28" \
-    || fail "scenario 28: a null graphql bucket did not report as unknown: $(cat "$TMP/log28")"
-grep -q 'WARNING' "$TMP/log28" \
-    && fail "scenario 28: a null graphql bucket raised a warning — it would fire on every report forever: $(cat "$TMP/log28")"
+    GH_SHIM_JSON="$INTERIOR_NULL_JSON" gh_quota_report
+grep -q 'gh-quota' "$TMP/log28" \
+    && fail "scenario 28: an unreadable core bucket still produced a report — the fields shifted: $(cat "$TMP/log28")"
+
+echo "  scenario 28b: a failed probe renders '?', never the -1 sentinel..."
+# The trip diagnostic exists to separate "probe failed, classification guessed"
+# from "buckets healthy, genuinely secondary" — and a failed probe is the LIKELY
+# path, since it runs during a 403 cascade when GitHub is degraded (which is why
+# it is wrapped in timeout at all). Printing -1 reads as a measurement.
+reset_state; : > "$TMP/log28b"
+LOG_FILE="$TMP/log28b" GH_SHIM_BUCKETS="" GH_SHIM_ERR="$RATE_LIMIT_ERR" gh_note_rate_limit
+grep -q 'core=?/? graphql=?/? remaining' "$TMP/log28b" \
+    || fail "scenario 28b: an unmeasured bucket did not render as '?' — an operator cannot tell it from a real reading: $(cat "$TMP/log28b")"
+grep -q -- '-1' "$TMP/log28b" \
+    && fail "scenario 28b: the -1 sentinel leaked into operator-facing text: $(cat "$TMP/log28b")"
+reset_state
 
 echo "  scenario 29: a null core.remaining must not misclassify a PRIMARY graphql exhaustion as secondary..."
 # The same shift in gh_note_rate_limit picks the pause WINDOW. With graphql truly
