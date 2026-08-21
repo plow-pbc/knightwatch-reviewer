@@ -51,6 +51,12 @@ seen_get() {
 # (seen_set_value). The two public writers are thin wrappers over this.
 _seen_write() {
     local file="$1" key="$2" value_expr="$3" value="${4:-}"
+    # Provision the store's directory. Every prior caller happened to write into
+    # a STATE_DIR that bootstrap had already made, so a missing parent surfaced
+    # as three cryptic redirect errors and an "unbound variable" from the lock
+    # subshell rather than as anything nameable. Owning it here fixes that for
+    # every caller instead of pushing an mkdir into each one.
+    mkdir -p "$(dirname "$file")" 2>/dev/null || true
     [ -f "$file" ] || echo '{}' > "$file"
     local lockfile="${file}.lock"
     if ! (
@@ -155,6 +161,88 @@ mark_auth_offline() {
 # rather than guarded.
 gh_pause_file() { printf '%s' "${STATE_DIR:-$HOME/.pr-reviewer}/gh-rate-limited-until"; }
 
+# Author-trust verdict cache. Unlike the pause file above this is NOT a file
+# bind: it lives in the shared `claims` volume, so all six containers answer
+# from one store and _seen_write's .lock/.tmp sidecars actually serialize
+# across them. The host timers keep their own copy under ~/.pr-reviewer for the
+# same reason they keep their own STATE_DIR — two independent caches of the
+# same near-static fact, not a split brain over one.
+trust_cache_file() { printf '%s' "${STATE_DIR:-$HOME/.pr-reviewer}/trust-cache.json"; }
+
+# --- GitHub quota telemetry -------------------------------------------------
+# The fleet kept hitting limits and each incident restarted the same forensic
+# dig: correlate six containers' logs by timestamp to guess the top consumer.
+# These make consumption legible BEFORE a limit trips, which is the whole point
+# — a 403 tells you which call drew the short straw, not which call spent the
+# budget.
+gh_tally_file()       { printf '%s' "${STATE_DIR:-$HOME/.pr-reviewer}/gh-call-tally"; }
+gh_quota_stamp_file() { printf '%s' "${STATE_DIR:-$HOME/.pr-reviewer}/gh-quota-last-report"; }
+
+# Collapse a gh argv to a stable endpoint SHAPE. Without this the tally scatters
+# one bucket per repo/PR/user and the top-consumer answer is unreadable. Skips
+# flags to find the api path, which sits at $2 for `gh api <path> --jq` but at
+# $3 for `gh api --paginate <path>`.
+gh_endpoint_shape() {
+    local verb="${1:-}" a
+    [ "$verb" = api ] || { printf '%s %s' "$verb" "${2:-}"; return 0; }
+    shift
+    for a in "$@"; do
+        case "$a" in -*) continue ;; esac
+        printf '%s' "$a" | sed -e 's#^repos/[^/]*/[^/]*#repos/*/*#' \
+                               -e 's#^orgs/[^/]*#orgs/*#' \
+                               -e 's#/[0-9][0-9]*#/*#g' \
+                               -e 's#collaborators/[^/]*#collaborators/*#'
+        return 0
+    done
+    printf 'api'
+}
+
+# One O_APPEND line per attempted call. Short appends are atomic, so this needs
+# no lock, and a report truncating concurrently can only drop a sample — this is
+# telemetry, not state, so a lost line costs nothing while a lock on the hot
+# path would cost real latency on every call the fleet makes.
+gh_tally_call() {
+    printf '%s\n' "$(gh_endpoint_shape "$@")" >> "$(gh_tally_file)" 2>/dev/null || true
+}
+
+# Top N endpoint shapes since the last report, comma-joined.
+gh_top_callers() {
+    local n="${1:-3}"
+    [ -s "$(gh_tally_file)" ] || return 0
+    sort "$(gh_tally_file)" 2>/dev/null | uniq -c | sort -rn | head -n "$n" \
+        | awk '{c=$1; $1=""; sub(/^ +/,""); printf "%s%s=%d", sep, $0, c; sep=", "}'
+}
+
+# Periodic headroom + attribution, and a WARNING while there is still budget to
+# act on. /rate_limit does not consume quota, so the probe is free; `timeout … gh`
+# execs the binary so this can neither recurse into the seam nor tally itself.
+# Throttled fleet-wide by a stamp file. The check-then-write is deliberately
+# unlocked: two workers racing emit one duplicate line, which is cheaper than a
+# lock on a path every tick crosses.
+gh_quota_report() {
+    local now interval last core_rem core_lim core_reset gql_rem gql_lim top pct
+    now=$(date +%s); interval="${GH_QUOTA_REPORT_SECS:-300}"
+    last=$(head -n1 "$(gh_quota_stamp_file)" 2>/dev/null || echo 0)
+    case "$last" in ''|*[!0-9]*) last=0 ;; esac
+    [ "$(( now - last ))" -ge "$interval" ] || return 0
+    mkdir -p "$(dirname "$(gh_quota_stamp_file)")" 2>/dev/null || true
+    printf '%s\n' "$now" > "$(gh_quota_stamp_file)" 2>/dev/null || true
+    read -r core_rem core_lim core_reset gql_rem gql_lim <<<"$(timeout "${GH_RATE_LIMIT_PROBE_SECS:-15}" gh api rate_limit \
+        --jq '[.resources.core.remaining, .resources.core.limit, .resources.core.reset,
+               .resources.graphql.remaining, .resources.graphql.limit] | @tsv' \
+        2>/dev/null | tr '\t' ' ')"
+    # A failed probe earns no log line, but the stamp above already moved so a
+    # flapping API cannot turn this into a per-tick retry storm of its own.
+    case "${core_rem:-}" in ''|*[!0-9]*) return 0 ;; esac
+    top=$(gh_top_callers 3)
+    : > "$(gh_tally_file)" 2>/dev/null || true
+    pct=$(( core_rem * 100 / ${core_lim:-5000} ))
+    log "[gh-quota] core=${core_rem}/${core_lim} (${pct}%) graphql=${gql_rem}/${gql_lim} reset in $(( (core_reset - now + 59) / 60 ))m${top:+ — top callers: $top}"
+    [ "$pct" -lt "${GH_QUOTA_WARN_PCT:-20}" ] \
+        && log "[gh-quota] WARNING — core headroom under ${GH_QUOTA_WARN_PCT:-20}%; the fleet will start 403ing${top:+ — top callers: $top}"
+    return 0
+}
+
 # True while the pause window is still in the future. Missing file reads as
 # epoch 0 (not paused) — mirrors quota_active. Unlike quota_active this coerces
 # an EMPTY read to 0 as well: quota_active's file has one owner, but this one is
@@ -216,8 +304,11 @@ gh_note_rate_limit() {
     # (gh_retry refuses before reaching here too, so this covers direct callers.)
     gh_pause_active && return 0
 
-    local now core_rem core_reset gql_rem gql_reset kind until
+    local now core_rem core_reset gql_rem gql_reset kind until top
     now=$(date +%s)
+    # Read the tally BEFORE the probe and the lock — it is pure filesystem work,
+    # and a trip is exactly when "what were we spending it on?" is worth naming.
+    top=$(gh_top_callers 3)
     # PROBE OUTSIDE THE LOCK. It is the only slow thing here — a network call,
     # made during a 403 cascade, when GitHub is most likely degraded and it can
     # stall. Holding a lock across it would block every sibling behind whoever
@@ -283,7 +374,7 @@ gh_note_rate_limit() {
             log "gh rate limit ($kind) — a sibling already published a longer pause (until epoch $existing); keeping it"
             exit 0
         fi
-        log "gh rate limit ($kind) — core=${core_rem:-?}/5000 graphql=${gql_rem:-?}/5000 remaining; pausing the FLEET $(( until - now ))s (until epoch $until)"
+        log "gh rate limit ($kind) — core=${core_rem:-?}/5000 graphql=${gql_rem:-?}/5000 remaining; pausing the FLEET $(( until - now ))s (until epoch $until)${top:+ — top callers: $top}"
         # IN PLACE, never temp+rename. A rename gives the path a new inode, and
         # docker pins a file bind-mount to the source inode — so every container
         # would keep reading the pre-write one, silently, forever. (Same property

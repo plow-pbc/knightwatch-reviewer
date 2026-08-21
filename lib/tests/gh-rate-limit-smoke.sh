@@ -470,4 +470,66 @@ grep -q 'pause NOT published' "$TMP/log18" \
     || fail "scenario 18: a publish that could not lock said nothing — the fleet keeps calling with no diagnostic: $(cat "$TMP/log18")"
 reset_state
 
+# --- 19-22. Quota telemetry (#233) -----------------------------------------
+# The fleet kept tripping limits and every incident restarted the same dig:
+# correlate six containers' logs by timestamp to guess the top consumer. These
+# fence the surface that makes consumption legible BEFORE a limit trips.
+reset_state
+echo "  scenario 19: gh_endpoint_shape collapses owner/repo/number/user to a stable shape..."
+# Without a shape the tally scatters one bucket per repo/PR/user and the
+# top-consumer answer — the whole point — is unreadable. The api path sits at $2
+# for `gh api <path> --jq` but at $3 for `gh api --paginate <path>`.
+[ "$(gh_endpoint_shape api repos/plow-pbc/plow/collaborators/srosro/permission --jq .permission)" \
+    = "repos/*/*/collaborators/*/permission" ] || fail "scenario 19: permission shape"
+[ "$(gh_endpoint_shape api --paginate repos/plow-pbc/plow/issues/1348/comments)" \
+    = "repos/*/*/issues/*/comments" ] || fail "scenario 19: paginated comments shape (path is not \$2)"
+[ "$(gh_endpoint_shape pr view 1348 --repo x/y)" = "pr view" ] \
+    || fail "scenario 19: non-api argv should collapse to '<verb> <sub>'"
+
+echo "  scenario 20: the tally aggregates by shape..."
+: > "$(gh_tally_file)"
+gh_tally_call api repos/o/r/collaborators/u/permission --jq .permission
+gh_tally_call api repos/o/r/collaborators/u2/permission --jq .permission
+gh_tally_call api --paginate repos/o/r/issues/7/comments
+TOP=$(gh_top_callers 3)
+case "$TOP" in
+    "repos/*/*/collaborators/*/permission=2"*) ;;
+    *) fail "scenario 20: two different users must fold into ONE permission bucket, ranked first — got '$TOP'" ;;
+esac
+
+echo "  scenario 21: report emits headroom + top callers, truncates the tally, then throttles..."
+rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log21"
+LOG_FILE="$TMP/log21" GH_QUOTA_REPORT_SECS=300 \
+    GH_SHIM_BUCKETS="4977	5000	$((NOW + 1200))	4775	5000" gh_quota_report
+grep -q '\[gh-quota\] core=4977/5000 (99%)' "$TMP/log21" \
+    || fail "scenario 21: no headroom line — operators cannot see the budget: $(cat "$TMP/log21")"
+grep -q 'top callers: repos/\*/\*/collaborators/\*/permission=2' "$TMP/log21" \
+    || fail "scenario 21: headroom without attribution is the whack-a-mole this replaces: $(cat "$TMP/log21")"
+[ ! -s "$(gh_tally_file)" ] || fail "scenario 21: tally not truncated — counts would accumulate across reports"
+# Second call inside the interval must stay silent, or six containers ticking
+# every 30s would each emit and drown the log they exist to clarify.
+LOG_FILE="$TMP/log21" GH_QUOTA_REPORT_SECS=300 \
+    GH_SHIM_BUCKETS="4977	5000	$((NOW + 1200))	4775	5000" gh_quota_report
+[ "$(grep -c '\[gh-quota\] core=' "$TMP/log21")" = 1 ] \
+    || fail "scenario 21: a second report inside the interval emitted anyway"
+
+echo "  scenario 22: low headroom WARNs while there is still budget to act on..."
+rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log22"
+LOG_FILE="$TMP/log22" GH_QUOTA_REPORT_SECS=0 GH_QUOTA_WARN_PCT=20 \
+    GH_SHIM_BUCKETS="100	5000	$((NOW + 1200))	4775	5000" gh_quota_report
+grep -q '\[gh-quota\] WARNING' "$TMP/log22" \
+    || fail "scenario 22: 100/5000 raised no warning — the whole point is to see it coming: $(cat "$TMP/log22")"
+# And a healthy bucket must NOT warn, or the signal is noise.
+rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log22b"
+LOG_FILE="$TMP/log22b" GH_QUOTA_REPORT_SECS=0 GH_QUOTA_WARN_PCT=20 \
+    GH_SHIM_BUCKETS="4977	5000	$((NOW + 1200))	4775	5000" gh_quota_report
+grep -q 'WARNING' "$TMP/log22b" && fail "scenario 22: warned at 99% headroom — the signal would be noise"
+# A failed probe earns no line, but must still stamp, so a flapping API cannot
+# become a per-tick storm of its own.
+rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log22c"
+LOG_FILE="$TMP/log22c" GH_QUOTA_REPORT_SECS=0 GH_SHIM_BUCKETS="" gh_quota_report
+grep -q 'gh-quota' "$TMP/log22c" && fail "scenario 22: a failed probe logged a bogus quota line"
+[ -s "$(gh_quota_stamp_file)" ] || fail "scenario 22: a failed probe left no stamp — every tick would re-probe"
+reset_state
+
 echo "PASS: gh-rate-limit-smoke"

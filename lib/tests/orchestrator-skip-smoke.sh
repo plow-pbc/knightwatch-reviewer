@@ -370,6 +370,12 @@ run_orchestrator() {
     # stamps the shared pause, which would then make every later scenario's
     # dispatcher stop claiming before reaching the gate under test.
     rm -f "$(gh_pause_file)"
+    # The author-trust verdict cache (#233) is stop-state for the same reason: a
+    # warm entry answers WITHOUT probing, so a scenario asserting a probe branch
+    # (untrusted, 404, indeterminate) would silently exercise the cache instead
+    # and pass vacuously. Scenarios that deliberately test cache behaviour across
+    # ticks set KEEP_TRUST_CACHE=1.
+    [ -n "${KEEP_TRUST_CACHE:-}" ] || rm -f "$(trust_cache_file)" "$(trust_cache_file).lock"
     # Fail loud on a malformed comments fixture. An unparseable one makes
     # fetch_issue_comments fail, so the PR is dropped BEFORE any gate under
     # test — every assertion then passes vacuously. The trap is one printf
@@ -636,6 +642,32 @@ if ! grep -q "trust check deferred" "$LOG_FILE"; then
 fi
 if [ -f "$STATE_DIR/seen-updated/cncorp_plow__1" ]; then
     echo "FAIL scenario 6b: idle watermark written on a deferred trigger — must stay unconsumed for next-tick retry"
+    exit 1
+fi
+
+# Scenario 6c (warm-cache-survives-throttle): the same indeterminate probe, but
+# with a RECENT definitive verdict already cached. This is the behaviour change
+# #233 buys: a PR whose author we verified minutes ago no longer stalls because
+# GitHub is throttling right now. Deferring here is what produced the retry storm
+# — the trigger stayed unconsumed, so every tick re-probed and re-tripped the
+# secondary limit. Trust is bounded by GH_TRUST_CACHE_TTL_SECS, which is minutes
+# precisely because it is also the window a REVOKED collaborator stays trusted.
+echo "  scenario 6c: same SHA + /srosro-review, indeterminate probe but WARM cache → dispatches on the cached verdict..."
+rm -f "$STATE_DIR/seen-updated/cncorp_plow__1"
+rm -f "$(trust_cache_file)" "$(trust_cache_file).lock"
+printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+KEEP_TRUST_CACHE=1 run_orchestrator   # tick 1: clean 200 → warms the cache
+rm -f "$STATE_DIR/seen-updated/cncorp_plow__1"
+KEEP_TRUST_CACHE=1 MOCK_PERMISSION_RC=1 MOCK_PERMISSION_ERR="gh: HTTP 418: unverifiable (simulated)" run_orchestrator
+n=$(count_dispatches)
+if [ "$n" -eq 0 ]; then
+    echo "FAIL scenario 6c: a warm trusted verdict must survive a throttled probe — 0 dispatches means the cache was not consulted"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+if grep -q "trust check deferred" "$LOG_FILE"; then
+    echo "FAIL scenario 6c: deferred despite a warm cache — the probe was made when it should have been skipped"
+    echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
 
@@ -1640,4 +1672,4 @@ grep -qE 'just_test_skip_reason "\$JUST_FILE" "\$IS_TRUSTED_AUTHOR"' "$w" \
 # that scenario to describe. Deleted rather than left dormant: it can no longer
 # reach a branch that exists.
 
-echo "  PASS (27 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, failed-decline-watermarked-no-retry-storm, stale-enumerated-head-dispatches, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated)"
+echo "  PASS (28 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, warm-trust-cache-survives-throttle, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, failed-decline-watermarked-no-retry-storm, stale-enumerated-head-dispatches, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated)"

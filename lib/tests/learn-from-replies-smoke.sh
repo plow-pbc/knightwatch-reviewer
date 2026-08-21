@@ -170,6 +170,10 @@ CONF
 run_learn() {
     : > "$STUB_PR_LIST_LOG"
     : > "$LOG_FILE"
+    # The author-trust verdict cache (#233) is stop-state: a warm entry answers
+    # WITHOUT probing, so a scenario asserting a probe branch would exercise the
+    # cache instead. Each scenario models an independent tick, so it starts cold.
+    rm -f "$STATE_DIR/trust-cache.json" "$STATE_DIR/trust-cache.json.lock"
     bash "$PROJECT_ROOT/learn-from-replies.sh" >/dev/null 2>&1 || true
 }
 

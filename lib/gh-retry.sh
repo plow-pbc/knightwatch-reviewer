@@ -52,6 +52,9 @@ gh_retry() {
     local errfile out rc
     errfile=$(mktemp)
     while :; do
+        # Tally every ATTEMPT — a retry is another real request against the same
+        # budget, so counting calls instead would under-report the hot paths.
+        gh_tally_call "$@"
         if out=$(command gh "$@" 2>"$errfile"); then
             cat "$errfile" >&2          # preserve any success-time gh warnings
             printf '%s' "$out"

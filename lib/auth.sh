@@ -48,9 +48,10 @@ is_bot_account() {
     esac
 }
 
-is_trusted_repo_author() {
+# The verdict logic, unchanged and extracted so the cache wrapper below stays
+# thin and the tri-state contract keeps exactly one owner.
+_trust_probe() {
     local repo="$1" user="$2"
-    [ -z "$user" ] && return 1
     local perm err rc errfile
     # Capture stdout (role), stderr (gh's error text), and the real exit code
     # separately — no 2>/dev/null, so a 403/5xx is a non-zero rc we can read,
@@ -73,6 +74,38 @@ is_trusted_repo_author() {
         admin|write|maintain) return 0 ;;
         *) return 1 ;;
     esac
+}
+
+# A (repo,user) role is near-static, but this ran UNCACHED once per PR per tick
+# per container — the one call that tripped GitHub's SECONDARY limit fleet-wide
+# (#233: every attributed trip in orchestrator.log was this endpoint, while
+# core sat at 4997/5000, which is why "primary looks fine" kept hiding it).
+#
+# The TTL is minutes, not hours, because it bounds how long a REVOKED
+# collaborator keeps a trusted verdict — and a trusted verdict is what lets
+# `just test` execute PR-supplied code. Even at 15 minutes this turns ~480
+# lookups/hour/PR into 4.
+is_trusted_repo_author() {
+    local repo="$1" user="$2"
+    [ -z "$user" ] && return 1
+    local ttl="${GH_TRUST_CACHE_TTL_SECS:-900}" file key now entry stamp cached rc
+    file=$(trust_cache_file); key="$repo|$user"; now=$(date +%s)
+    entry=$(seen_get "$file" "$key" 2>/dev/null || true)
+    if [ -n "$entry" ]; then
+        stamp="${entry%%:*}"; cached="${entry##*:}"
+        # A malformed entry (torn write, format change) falls through to a live
+        # probe rather than aborting on arithmetic against a non-number.
+        case "$stamp$cached" in
+            ''|*[!0-9]*) ;;
+            *) [ "$(( now - stamp ))" -lt "$ttl" ] && return "$cached" ;;
+        esac
+    fi
+    _trust_probe "$repo" "$user"; rc=$?
+    # DEFINITIVE verdicts only. rc=2 means "the API did not answer" — caching it
+    # would freeze a non-answer for the whole TTL and make a throttled lookup
+    # read as settled, which is the exact failure this cache exists to end.
+    [ "$rc" -ne 2 ] && seen_set_value "$file" "$key" "$now:$rc"
+    return "$rc"
 }
 
 # just_test_skip_reason JUST_FILE IS_TRUSTED → echoes why `just test` must NOT

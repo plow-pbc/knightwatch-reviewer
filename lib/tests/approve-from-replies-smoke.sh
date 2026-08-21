@@ -204,6 +204,12 @@ run_approve() {
     : > "$STUB_ACTIONS_LOG"   # reset action log
     : > "$STUB_PR_LIST_LOG"   # reset pr-list log so override scenario can assert per-run
     : > "$LOG_FILE"           # reset script log
+    # The author-trust verdict cache (#233) is stop-state: a warm entry answers
+    # WITHOUT probing, so a scenario asserting a probe branch (untrusted, 404,
+    # indeterminate) would exercise the cache instead and pass vacuously. Each
+    # scenario models an independent tick, so it starts cold — the same reason
+    # these smokes already clear the fleet pause file.
+    rm -f "$STATE_DIR/trust-cache.json" "$STATE_DIR/trust-cache.json.lock"
     bash "$PROJECT_ROOT/poll-pr-actions.sh" >/dev/null 2>&1 || true
 }
 
