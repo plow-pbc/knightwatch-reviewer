@@ -369,12 +369,25 @@ gh_note_rate_limit() {
     # `timeout … gh`, not `command gh`: timeout EXECS the binary, so the seam
     # function is bypassed the same way, and it can't outlive its bound.
     read -r core_rem core_reset gql_rem gql_reset <<<"$(timeout "${GH_RATE_LIMIT_PROBE_SECS:-15}" gh api rate_limit \
-        --jq '[.resources.core.remaining, .resources.core.reset,
-               .resources.graphql.remaining, .resources.graphql.reset] | @tsv' \
+        --jq '[(.resources.core.remaining // -1), (.resources.core.reset // 0),
+               (.resources.graphql.remaining // -1), (.resources.graphql.reset // 0)] | @tsv' \
         2>/dev/null | tr '\t' ' ')"
-    if [ "${core_rem:-1}" = 0 ]; then
+    # These four fields ARE the classification, so the null-shift that only
+    # cosmetically dirtied gh_quota_report's log line picks the pause WINDOW here.
+    # @tsv renders a JSON null as an EMPTY field; `tr` + default IFS swallows it
+    # and shifts every later field left, so a null core.remaining would put core's
+    # RESET EPOCH into core_rem. Neither test then matches 0, and a genuine
+    # PRIMARY exhaustion is paused for 60s instead of until the real reset — the
+    # fleet resumes into an empty bucket and re-trips, which is the clustered
+    # re-trip incident this file's header describes. `// -1` keeps the fields
+    # positional, and -1 carries a '-' so it fails the numeric gate as UNKNOWN.
+    # An unknown bucket falls through to the secondary window deliberately: it is
+    # the shorter, safer pause to be wrong with.
+    case "${core_rem:-}" in ''|*[!0-9]*) core_rem=-1 ;; esac
+    case "${gql_rem:-}" in ''|*[!0-9]*) gql_rem=-1 ;; esac
+    if [ "$core_rem" = 0 ]; then
         kind="primary/core"; until="$core_reset"
-    elif [ "${gql_rem:-1}" = 0 ]; then
+    elif [ "$gql_rem" = 0 ]; then
         kind="primary/graphql"; until="$gql_reset"
     else
         kind="secondary"; until=$(( now + ${GH_SECONDARY_PAUSE_SECS:-60} ))

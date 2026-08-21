@@ -39,6 +39,21 @@ cat > "$TMP/bin/gh" <<'SHIM'
 for a in "$@"; do
     if [ "$a" = "rate_limit" ]; then
         [ -n "${GH_SHIM_PROBE_LOG:-}" ] && echo probe >> "$GH_SHIM_PROBE_LOG"
+        # GH_SHIM_JSON: a real /rate_limit body run through real jq, so the --jq
+        # expression under test actually EXECUTES. GH_SHIM_BUCKETS alone prints a
+        # canned TSV and never runs jq, which left the `// -1` defaults — the fix
+        # for an interior null shifting every later field — unreachable from the
+        # suite, and deletable while every scenario stayed green.
+        if [ -n "${GH_SHIM_JSON:-}" ]; then
+            jq_expr=""; take_next=0
+            for a in "$@"; do
+                [ "$take_next" = 1 ] && { jq_expr="$a"; break; }
+                [ "$a" = "--jq" ] && take_next=1
+            done
+            [ -n "$jq_expr" ] || exit 1
+            printf '%s' "$GH_SHIM_JSON" | jq -r "$jq_expr"
+            exit 0
+        fi
         [ -n "${GH_SHIM_BUCKETS:-}" ] || exit 1
         printf '%s\n' "$GH_SHIM_BUCKETS"
         exit 0
@@ -598,5 +613,37 @@ BYTES=$(wc -c < "$(gh_tally_file)")
 [ -s "$(gh_tally_file)" ] \
     || fail "scenario 27: the cap emptied the tally entirely — attribution would always be blank"
 : > "$(gh_tally_file)"
+
+echo "  scenario 28: a real null bucket runs through real jq — interior nulls must not shift fields..."
+# GH_SHIM_BUCKETS never executes --jq, so this drives a genuine /rate_limit body
+# where .resources.graphql is null — the way GitHub would actually return a bucket
+# it did not report. Without the `// -1` defaults @tsv emits an EMPTY field, `tr`
+# collapses it, and graphql's numbers land in core's slots.
+rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log28"
+NULL_GQL_JSON='{"resources":{"core":{"remaining":4977,"limit":5000,"reset":'"$((NOW + 1200))"'},"graphql":null}}'
+LOG_FILE="$TMP/log28" GH_QUOTA_REPORT_SECS=0 GH_QUOTA_WARN_PCT=20 \
+    GH_SHIM_JSON="$NULL_GQL_JSON" gh_quota_report
+grep -q 'core=4977/5000 (99%)' "$TMP/log28" \
+    || fail "scenario 28: core figures were corrupted by the null graphql bucket — the fields shifted: $(cat "$TMP/log28")"
+grep -q 'graphql=unknown' "$TMP/log28" \
+    || fail "scenario 28: a null graphql bucket did not report as unknown: $(cat "$TMP/log28")"
+grep -q 'WARNING' "$TMP/log28" \
+    && fail "scenario 28: a null graphql bucket raised a warning — it would fire on every report forever: $(cat "$TMP/log28")"
+
+echo "  scenario 29: a null core.remaining must not misclassify a PRIMARY graphql exhaustion as secondary..."
+# The same shift in gh_note_rate_limit picks the pause WINDOW. With graphql truly
+# exhausted, a left-shift makes neither bucket test as 0, so a primary exhaustion
+# pauses 60s instead of until the real reset — the fleet resumes into an empty
+# bucket and re-trips, the clustered re-trip this file's header describes.
+reset_state
+GQL_RESET=$((NOW + 2400))
+SHIFT_JSON='{"resources":{"core":{"remaining":null,"reset":'"$((NOW + 1200))"'},"graphql":{"remaining":0,"reset":'"$GQL_RESET"'}}}'
+: > "$TMP/log29"
+LOG_FILE="$TMP/log29" GH_SHIM_JSON="$SHIFT_JSON" gh_note_rate_limit
+grep -q 'primary/graphql' "$TMP/log29" \
+    || fail "scenario 29: a null core.remaining shifted the fields and hid a primary/graphql exhaustion: $(cat "$TMP/log29")"
+[ "$(head -n1 "$(gh_pause_file)")" = "$GQL_RESET" ] \
+    || fail "scenario 29: paused until $(head -n1 "$(gh_pause_file)") instead of graphql's real reset $GQL_RESET — the fleet would resume into an exhausted bucket"
+reset_state
 
 echo "PASS: gh-rate-limit-smoke"
