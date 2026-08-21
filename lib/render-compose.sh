@@ -208,7 +208,7 @@ x-reviewer-env: &reviewer-env
   STATE_DIR: /shared              # per-PR lock + runs/ (SHARED across containers)
   REPOS_DIR: /local/repos         # per-container
   WORKDIRS_DIR: /local/workdirs   # per-container
-  LOCAL_STATE_DIR: /local/state   # canonical clone/fetch lock + ephemeral KID query copies (per-container; quota-pause + fatal-auth offline live in shared STATE_DIR/pool/<WORKER_ID>/, just-test semaphore in shared STATE_DIR)
+  LOCAL_STATE_DIR: /local/state   # canonical clone/fetch lock + ephemeral KID query copies + the author-trust verdict cache (per-container BECAUSE it is authorization state — a shared one lets a compromised `just test` run plant fleet-wide push-access trust; quota-pause + fatal-auth offline live in shared STATE_DIR/pool/<WORKER_ID>/, just-test semaphore in shared STATE_DIR)
   DOCKER_HOST: tcp://127.0.0.1:2375
   CONFIG_ENV_FILE: /root/.kwr/config.env  # root-only path → reviewer-test (just test) can't read the token file
   REPOS_CONF_FILE: /shared/manifest/repos.conf  # read out of a DIRECTORY mount, not a file mount: docker pins a file bind-mount to the source inode, so an editor's write-temp-then-rename would leave every container serving the pre-edit manifest with no error. config.env stays a file mount above — it carries GH_TOKEN and must stay on the root-only path, off world-readable /shared.

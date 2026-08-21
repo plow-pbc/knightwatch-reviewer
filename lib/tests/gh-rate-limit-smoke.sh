@@ -569,4 +569,34 @@ N25=$(grep -cx 'repos/\*/\*/issues/\*/comments' "$(gh_tally_file)")
     || fail "scenario 25: expected 3 tally lines for 3 attempts, got $N25 — retries would be under-reported"
 reset_state; : > "$(gh_tally_file)"
 
+echo "  scenario 26: an absent graphql bucket reads as UNKNOWN, never as 0 — no permanent false alarm..."
+# @tsv renders a JSON null as an EMPTY field; `tr` + default IFS swallows it and
+# every later field shifts left. Read as 0 that would fire "graphql headroom
+# under 20%" on every report forever, with corrupted numbers printed beside it —
+# unfalsifiable from the log, and it would drown the warning that matters.
+rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log26"
+LOG_FILE="$TMP/log26" GH_QUOTA_REPORT_SECS=0 GH_QUOTA_WARN_PCT=20 \
+    GH_SHIM_BUCKETS="4977	5000	$((NOW + 1200))" gh_quota_report
+grep -q 'graphql=unknown' "$TMP/log26" \
+    || fail "scenario 26: a missing graphql bucket was not reported as unknown: $(cat "$TMP/log26")"
+grep -q 'WARNING' "$TMP/log26" \
+    && fail "scenario 26: an absent graphql bucket raised a warning — a missing bucket is not an empty one: $(cat "$TMP/log26")"
+# core must still report normally alongside it.
+grep -q 'core=4977/5000 (99%)' "$TMP/log26" \
+    || fail "scenario 26: an unknown graphql bucket suppressed the core headroom line too"
+
+echo "  scenario 27: the tally is capped where it is written (host units consume it on neither happy path)..."
+: > "$(gh_tally_file)"
+# Cap set locally so the scenario is self-contained rather than depending on the
+# production default holding at whatever value it drifts to.
+for _i in $(seq 1 400); do
+    GH_TALLY_MAX_BYTES=2048 GH_TALLY_KEEP_LINES=50 gh_tally_call api "repos/o/r/issues/$_i/comments"
+done
+BYTES=$(wc -c < "$(gh_tally_file)")
+[ "$BYTES" -le 4096 ] \
+    || fail "scenario 27: tally grew to ${BYTES}B past a 2048B cap — a host unit that never trips would grow it forever"
+[ -s "$(gh_tally_file)" ] \
+    || fail "scenario 27: the cap emptied the tally entirely — attribution would always be blank"
+: > "$(gh_tally_file)"
+
 echo "PASS: gh-rate-limit-smoke"

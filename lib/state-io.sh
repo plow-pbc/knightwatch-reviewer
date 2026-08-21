@@ -208,7 +208,20 @@ gh_endpoint_shape() {
 # telemetry, not state, so a lost line costs nothing while a lock on the hot
 # path would cost real latency on every call the fleet makes.
 gh_tally_call() {
-    printf '%s\n' "$(gh_endpoint_shape "$@")" >> "$(gh_tally_file)" 2>/dev/null || true
+    local f; f=$(gh_tally_file)
+    printf '%s\n' "$(gh_endpoint_shape "$@")" >> "$f" 2>/dev/null || true
+    # Cap it HERE, not at the readers. On the host neither consumer runs on the
+    # happy path — the periodic report is called only from review-loop.sh
+    # (container-only) and the trip diagnostic only on a 403, which #233 exists to
+    # make rare — so the five host units would append forever with no reaper. The
+    # trigger is a byte size (fstat, O(1)); the trim is by LINES so a shape is
+    # never cut in half, and only runs on the rare crossing.
+    local max="${GH_TALLY_MAX_BYTES:-131072}"
+    if [ "$(wc -c < "$f" 2>/dev/null || echo 0)" -gt "$max" ] 2>/dev/null; then
+        tail -n "${GH_TALLY_KEEP_LINES:-2000}" "$f" > "$f.trim" 2>/dev/null \
+            && mv -f "$f.trim" "$f" 2>/dev/null || rm -f "$f.trim" 2>/dev/null
+    fi
+    return 0
 }
 
 # Top N endpoint shapes SINCE THE LAST LOOK, comma-joined. Reading consumes the
@@ -232,7 +245,7 @@ gh_top_callers() {
 # unlocked: two workers racing emit one duplicate line, which is cheaper than a
 # lock on a path every tick crosses.
 gh_quota_report() {
-    local now interval last core_rem core_lim core_reset gql_rem gql_lim top core_pct gql_pct
+    local now interval last core_rem core_lim core_reset gql_rem gql_lim top core_pct gql_pct gql_txt gql_short
     now=$(date +%s); interval="${GH_QUOTA_REPORT_SECS:-300}"
     last=$(head -n1 "$(gh_quota_stamp_file)" 2>/dev/null || echo 0)
     case "$last" in ''|*[!0-9]*) last=0 ;; esac
@@ -240,26 +253,42 @@ gh_quota_report() {
     mkdir -p "$(dirname "$(gh_quota_stamp_file)")" 2>/dev/null || true
     printf '%s\n' "$now" > "$(gh_quota_stamp_file)" 2>/dev/null || true
     read -r core_rem core_lim core_reset gql_rem gql_lim <<<"$(timeout "${GH_RATE_LIMIT_PROBE_SECS:-15}" gh api rate_limit \
-        --jq '[.resources.core.remaining, .resources.core.limit, .resources.core.reset,
-               .resources.graphql.remaining, .resources.graphql.limit] | @tsv' \
+        --jq '[(.resources.core.remaining // -1), (.resources.core.limit // 0), (.resources.core.reset // 0),
+               (.resources.graphql.remaining // -1), (.resources.graphql.limit // 0)] | @tsv' \
         2>/dev/null | tr '\t' ' ')"
     # A failed probe earns no log line, but the stamp above already moved so a
-    # flapping API cannot turn this into a per-tick retry storm of its own.
+    # flapping API cannot turn this into a per-tick storm of its own. `// -1`
+    # above keeps every field non-empty: @tsv renders a JSON null as an EMPTY
+    # field, which `tr` + default IFS would swallow, shifting each later field
+    # left — that silently turned a missing bucket into a permanent false alarm
+    # whose own numbers were corrupted, so it could not be read back off the log.
+    # -1 carries a '-', so it fails the numeric gate as "unknown" rather than 0.
     case "${core_rem:-}" in ''|*[!0-9]*) return 0 ;; esac
+    [ "${core_lim:-0}" -gt 0 ] 2>/dev/null || return 0
     top=$(gh_top_callers 3)
-    # Per bucket, and warn on EITHER. GraphQL is the loaded bucket in this repo
-    # (gh pr view per worker, gh pr list per repo — lib/gh-retry.sh), so a
-    # core-only gate could watch it drain to zero in silence. A literal 0 limit
-    # would leave pct unassigned and trip set -u in the caller, so floor it.
-    core_pct=$(( core_rem * 100 / $([ "${core_lim:-0}" -gt 0 ] 2>/dev/null && printf %s "$core_lim" || printf 5000) ))
-    gql_pct=$(( ${gql_rem:-0} * 100 / $([ "${gql_lim:-0}" -gt 0 ] 2>/dev/null && printf %s "$gql_lim" || printf 5000) ))
-    log "[gh-quota] core=${core_rem}/${core_lim} (${core_pct}%) graphql=${gql_rem}/${gql_lim} (${gql_pct}%) reset in $(( (core_reset - now + 59) / 60 ))m${top:+ — top callers: $top}"
-    # Headroom cannot predict a SECONDARY limit — /rate_limit does not expose one,
+    core_pct=$(( core_rem * 100 / core_lim ))
+    # GraphQL is the loaded bucket here (gh pr view per worker, gh pr list per
+    # repo — lib/gh-retry.sh), so a core-only gate could watch it drain in
+    # silence. Absent/unparseable is UNKNOWN, never 0: reporting a missing bucket
+    # as empty would fire the warning forever and drown the one that matters.
+    gql_txt="unknown"; gql_short="unknown"; gql_pct=-1
+    case "${gql_rem:-}" in
+        ''|*[!0-9]*) ;;
+        *) if [ "${gql_lim:-0}" -gt 0 ] 2>/dev/null; then
+               gql_pct=$(( gql_rem * 100 / gql_lim ))
+               gql_txt="${gql_rem}/${gql_lim} (${gql_pct}%)"; gql_short="${gql_pct}%"
+           fi ;;
+    esac
+    log "[gh-quota] core=${core_rem}/${core_lim} (${core_pct}%) graphql=${gql_txt} reset in $(( (core_reset - now + 59) / 60 ))m${top:+ — top callers: $top}"
+    # Headroom cannot predict a SECONDARY limit — /rate_limit does not expose one
     # and the incident that motivated this had core at 4997/5000. That is what the
     # attribution above is for; this gate covers the primary buckets only.
-    if [ "$core_pct" -lt "${GH_QUOTA_WARN_PCT:-20}" ] || [ "$gql_pct" -lt "${GH_QUOTA_WARN_PCT:-20}" ]; then
-        log "[gh-quota] WARNING — $([ "$core_pct" -lt "$gql_pct" ] && echo core || echo graphql) headroom under ${GH_QUOTA_WARN_PCT:-20}% (core ${core_pct}%, graphql ${gql_pct}%); the fleet will start 403ing${top:+ — top callers: $top}"
-    fi
+    local w="${GH_QUOTA_WARN_PCT:-20}" which=""
+    [ "$core_pct" -lt "$w" ] && which="core"
+    [ "$gql_pct" -ge 0 ] && [ "$gql_pct" -lt "$w" ] \
+        && { [ -z "$which" ] && which="graphql" || which="core+graphql"; }
+    [ -n "$which" ] \
+        && log "[gh-quota] WARNING — $which headroom under ${w}% (core ${core_pct}%, graphql ${gql_short}); the fleet will start 403ing${top:+ — top callers: $top}"
     return 0
 }
 
