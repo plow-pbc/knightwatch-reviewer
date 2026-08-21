@@ -161,13 +161,19 @@ mark_auth_offline() {
 # rather than guarded.
 gh_pause_file() { printf '%s' "${STATE_DIR:-$HOME/.pr-reviewer}/gh-rate-limited-until"; }
 
-# Author-trust verdict cache. Unlike the pause file above this is NOT a file
-# bind: it lives in the shared `claims` volume, so all six containers answer
-# from one store and _seen_write's .lock/.tmp sidecars actually serialize
-# across them. The host timers keep their own copy under ~/.pr-reviewer for the
-# same reason they keep their own STATE_DIR — two independent caches of the
-# same near-static fact, not a split brain over one.
-trust_cache_file() { printf '%s' "${STATE_DIR:-$HOME/.pr-reviewer}/trust-cache.json"; }
+# Author-trust verdict cache. PER-CONTAINER (LOCAL_STATE_DIR), deliberately not
+# the shared volume: this is authorization state — a trusted verdict is what
+# mirrors canonical .env* into the workdir and lets `just test` execute PR code.
+# The containers ARE the untrusted-input boundary (they run repo-supplied
+# scripts) and they mount /shared, so a shared store would let one compromised
+# run plant `{"org/repo|attacker": "<now>:0"}` and hold fleet-wide push-access
+# trust for the whole TTL — the same reasoning that makes gh_pause_file a
+# host-owned file bind, applied to a strictly higher-value store. Per-container
+# still collapses ~480 lookups/hour/PR to ~24 fleet-wide, which is far below
+# what tripped the limit; the extra reduction is not worth the escalation.
+# Falls back to STATE_DIR the same way lib/review-one-pr.sh does, so the host
+# timers and the smokes keep a working path.
+trust_cache_file() { printf '%s' "${LOCAL_STATE_DIR:-${STATE_DIR:-$HOME/.pr-reviewer}}/trust-cache.json"; }
 
 # --- GitHub quota telemetry -------------------------------------------------
 # The fleet kept hitting limits and each incident restarted the same forensic
@@ -205,12 +211,18 @@ gh_tally_call() {
     printf '%s\n' "$(gh_endpoint_shape "$@")" >> "$(gh_tally_file)" 2>/dev/null || true
 }
 
-# Top N endpoint shapes since the last report, comma-joined.
+# Top N endpoint shapes SINCE THE LAST LOOK, comma-joined. Reading consumes the
+# window: every consumer (the periodic report, and the trip diagnostic) resets
+# it, so attribution always describes recent traffic and the file cannot grow
+# without bound on a host unit that only ever trips. A truncate racing an append
+# drops a sample, which is free — this is telemetry, not state.
 gh_top_callers() {
-    local n="${1:-3}"
+    local n="${1:-3}" out
     [ -s "$(gh_tally_file)" ] || return 0
-    sort "$(gh_tally_file)" 2>/dev/null | uniq -c | sort -rn | head -n "$n" \
-        | awk '{c=$1; $1=""; sub(/^ +/,""); printf "%s%s=%d", sep, $0, c; sep=", "}'
+    out=$(sort "$(gh_tally_file)" 2>/dev/null | uniq -c | sort -rn | head -n "$n" \
+        | awk '{c=$1; $1=""; sub(/^ +/,""); printf "%s%s=%d", sep, $0, c; sep=", "}')
+    : > "$(gh_tally_file)" 2>/dev/null || true
+    printf '%s' "$out"
 }
 
 # Periodic headroom + attribution, and a WARNING while there is still budget to
@@ -220,7 +232,7 @@ gh_top_callers() {
 # unlocked: two workers racing emit one duplicate line, which is cheaper than a
 # lock on a path every tick crosses.
 gh_quota_report() {
-    local now interval last core_rem core_lim core_reset gql_rem gql_lim top pct
+    local now interval last core_rem core_lim core_reset gql_rem gql_lim top core_pct gql_pct
     now=$(date +%s); interval="${GH_QUOTA_REPORT_SECS:-300}"
     last=$(head -n1 "$(gh_quota_stamp_file)" 2>/dev/null || echo 0)
     case "$last" in ''|*[!0-9]*) last=0 ;; esac
@@ -235,11 +247,19 @@ gh_quota_report() {
     # flapping API cannot turn this into a per-tick retry storm of its own.
     case "${core_rem:-}" in ''|*[!0-9]*) return 0 ;; esac
     top=$(gh_top_callers 3)
-    : > "$(gh_tally_file)" 2>/dev/null || true
-    pct=$(( core_rem * 100 / ${core_lim:-5000} ))
-    log "[gh-quota] core=${core_rem}/${core_lim} (${pct}%) graphql=${gql_rem}/${gql_lim} reset in $(( (core_reset - now + 59) / 60 ))m${top:+ — top callers: $top}"
-    [ "$pct" -lt "${GH_QUOTA_WARN_PCT:-20}" ] \
-        && log "[gh-quota] WARNING — core headroom under ${GH_QUOTA_WARN_PCT:-20}%; the fleet will start 403ing${top:+ — top callers: $top}"
+    # Per bucket, and warn on EITHER. GraphQL is the loaded bucket in this repo
+    # (gh pr view per worker, gh pr list per repo — lib/gh-retry.sh), so a
+    # core-only gate could watch it drain to zero in silence. A literal 0 limit
+    # would leave pct unassigned and trip set -u in the caller, so floor it.
+    core_pct=$(( core_rem * 100 / $([ "${core_lim:-0}" -gt 0 ] 2>/dev/null && printf %s "$core_lim" || printf 5000) ))
+    gql_pct=$(( ${gql_rem:-0} * 100 / $([ "${gql_lim:-0}" -gt 0 ] 2>/dev/null && printf %s "$gql_lim" || printf 5000) ))
+    log "[gh-quota] core=${core_rem}/${core_lim} (${core_pct}%) graphql=${gql_rem}/${gql_lim} (${gql_pct}%) reset in $(( (core_reset - now + 59) / 60 ))m${top:+ — top callers: $top}"
+    # Headroom cannot predict a SECONDARY limit — /rate_limit does not expose one,
+    # and the incident that motivated this had core at 4997/5000. That is what the
+    # attribution above is for; this gate covers the primary buckets only.
+    if [ "$core_pct" -lt "${GH_QUOTA_WARN_PCT:-20}" ] || [ "$gql_pct" -lt "${GH_QUOTA_WARN_PCT:-20}" ]; then
+        log "[gh-quota] WARNING — $([ "$core_pct" -lt "$gql_pct" ] && echo core || echo graphql) headroom under ${GH_QUOTA_WARN_PCT:-20}% (core ${core_pct}%, graphql ${gql_pct}%); the fleet will start 403ing${top:+ — top callers: $top}"
+    fi
     return 0
 }
 

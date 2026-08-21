@@ -496,16 +496,25 @@ case "$TOP" in
     "repos/*/*/collaborators/*/permission=2"*) ;;
     *) fail "scenario 20: two different users must fold into ONE permission bucket, ranked first — got '$TOP'" ;;
 esac
+# Reading CONSUMES the window. Without this every consumer attributes over all
+# history — on a host unit that only ever trips, that is months of traffic, the
+# trip diagnostic names the wrong endpoint, and the file never stops growing
+# (only the container loop calls the periodic report).
+[ ! -s "$(gh_tally_file)" ] \
+    || fail "scenario 20: gh_top_callers did not consume the window — attribution would drift to all-time and the tally would grow unbounded"
 
-echo "  scenario 21: report emits headroom + top callers, truncates the tally, then throttles..."
+echo "  scenario 21: report emits per-bucket headroom + top callers, consumes the tally, then throttles..."
+# Scenario 20 consumed the window, so repopulate before reporting.
+gh_tally_call api repos/o/r/collaborators/u/permission --jq .permission
+gh_tally_call api repos/o/r/collaborators/u2/permission --jq .permission
 rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log21"
 LOG_FILE="$TMP/log21" GH_QUOTA_REPORT_SECS=300 \
     GH_SHIM_BUCKETS="4977	5000	$((NOW + 1200))	4775	5000" gh_quota_report
-grep -q '\[gh-quota\] core=4977/5000 (99%)' "$TMP/log21" \
-    || fail "scenario 21: no headroom line — operators cannot see the budget: $(cat "$TMP/log21")"
+grep -q '\[gh-quota\] core=4977/5000 (99%) graphql=4775/5000 (95%)' "$TMP/log21" \
+    || fail "scenario 21: no per-bucket headroom line — operators cannot see the budget: $(cat "$TMP/log21")"
 grep -q 'top callers: repos/\*/\*/collaborators/\*/permission=2' "$TMP/log21" \
     || fail "scenario 21: headroom without attribution is the whack-a-mole this replaces: $(cat "$TMP/log21")"
-[ ! -s "$(gh_tally_file)" ] || fail "scenario 21: tally not truncated — counts would accumulate across reports"
+[ ! -s "$(gh_tally_file)" ] || fail "scenario 21: tally not consumed — counts would accumulate across reports"
 # Second call inside the interval must stay silent, or six containers ticking
 # every 30s would each emit and drown the log they exist to clarify.
 LOG_FILE="$TMP/log21" GH_QUOTA_REPORT_SECS=300 \
@@ -531,5 +540,33 @@ LOG_FILE="$TMP/log22c" GH_QUOTA_REPORT_SECS=0 GH_SHIM_BUCKETS="" gh_quota_report
 grep -q 'gh-quota' "$TMP/log22c" && fail "scenario 22: a failed probe logged a bogus quota line"
 [ -s "$(gh_quota_stamp_file)" ] || fail "scenario 22: a failed probe left no stamp — every tick would re-probe"
 reset_state
+
+echo "  scenario 23: GraphQL exhaustion warns too — a core-only gate watches the loaded bucket drain in silence..."
+# gh pr view (per worker) and gh pr list (per repo) are GraphQL, so GraphQL is
+# the bucket most likely to go first here. A core-only threshold cannot fire for it.
+rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log23"
+LOG_FILE="$TMP/log23" GH_QUOTA_REPORT_SECS=0 GH_QUOTA_WARN_PCT=20 \
+    GH_SHIM_BUCKETS="4977	5000	$((NOW + 1200))	100	5000" gh_quota_report
+grep -q 'WARNING — graphql headroom under' "$TMP/log23" \
+    || fail "scenario 23: graphql at 100/5000 raised no warning — the loaded bucket is unmonitored: $(cat "$TMP/log23")"
+
+echo "  scenario 24: the SEAM is wired to the tally — a call through gh() is counted..."
+# Scenarios 19-22 exercise the helpers directly, so deleting `gh_tally_call` from
+# gh_retry would leave every one of them green while the feature is inert. This
+# asserts the single line that wires it, through the real seam.
+reset_state; : > "$(gh_tally_file)"
+GH_SHIM_ERR='gh: Not Found (HTTP 404)' \
+    gh api repos/o/r/collaborators/someuser/permission --jq .permission >/dev/null 2>&1 || true
+grep -qx 'repos/\*/\*/collaborators/\*/permission' "$(gh_tally_file)" \
+    || fail "scenario 24: a call through the seam produced no tally line — gh_tally_call is not wired into gh_retry: $(cat "$(gh_tally_file)")"
+
+echo "  scenario 25: every ATTEMPT is tallied, not every call — a retry spends real budget..."
+reset_state; : > "$(gh_tally_file)"
+GH_SHIM_ERR='gh: HTTP 502: Bad Gateway' GH_API_RETRY_MAX=3 GH_API_RETRY_DELAY=0 \
+    gh api repos/o/r/issues/7/comments >/dev/null 2>&1 || true
+N25=$(grep -cx 'repos/\*/\*/issues/\*/comments' "$(gh_tally_file)")
+[ "$N25" = 3 ] \
+    || fail "scenario 25: expected 3 tally lines for 3 attempts, got $N25 — retries would be under-reported"
+reset_state; : > "$(gh_tally_file)"
 
 echo "PASS: gh-rate-limit-smoke"
