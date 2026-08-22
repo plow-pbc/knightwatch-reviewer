@@ -651,18 +651,26 @@ done
 INO_AFTER=$(stat -c %i "$(gh_tally_file)" 2>/dev/null || stat -f %i "$(gh_tally_file)")
 [ "$INO_BEFORE" = "$INO_AFTER" ] \
     || fail "scenario 27: compaction replaced the tally's inode ($INO_BEFORE -> $INO_AFTER) — under the file bind that strands every container on the orphaned inode"
-# A compaction that lands on an already-truncated file must leave it EMPTY, not
-# re-seed a lone newline: `[ -s ]` would pass, and awk renders the blank line as
-# the token "=1" in the very lines the attribution exists to fill.
+# A compaction whose `tail` yields nothing must leave the file EMPTY, not re-seed
+# a lone newline. GH_TALLY_KEEP_LINES=0 drives that branch directly: `tail -n 0`
+# returns nothing, which is exactly the state a concurrent reader's `: >` produces
+# between the append and the tail. (Truncating *before* the call cannot reach it —
+# gh_tally_call appends first and only then tests the size gate, so `kept` always
+# holds at least the line this call just wrote.)
 : > "$(gh_tally_file)"
-GH_TALLY_MAX_BYTES=0 GH_TALLY_KEEP_LINES=50 gh_tally_call api "repos/o/r/issues/1/comments"
-: > "$(gh_tally_file)"
-GH_TALLY_MAX_BYTES=0 GH_TALLY_KEEP_LINES=50 gh_tally_call api "repos/o/r/issues/2/comments"
+GH_TALLY_MAX_BYTES=0 GH_TALLY_KEEP_LINES=0 gh_tally_call api "repos/o/r/issues/1/comments"
+# Guarded, the write is skipped and the file keeps the line just appended;
+# unguarded, printf overwrites it with a lone newline. The discriminator is what
+# gh_top_callers RENDERS — and the pattern must catch a blank entry wherever it
+# sorts, since awk emits ", " before every entry after the first, so a
+# start-anchored match misses one landing second or third.
 TOP27=$(gh_top_callers 3)
+printf '%s' "$TOP27" | grep -qE '(^|, )=' \
+    && fail "scenario 27: an empty compaction re-seeded the tally with a blank line, rendering as a bare '=N' token in the quota line and the 403 diagnostic: [$TOP27]"
 case "$TOP27" in
-    *"=1"*) case "$TOP27" in ' =1'*|'=1'*) fail "scenario 27: a blank tally line rendered as the bare token '=1' in operator-facing attribution" ;; esac ;;
+    *"repos/*/*/issues/*/comments=1"*) ;;
+    *) fail "scenario 27: the compaction lost the line it should have kept: [$TOP27]" ;;
 esac
-: > "$(gh_tally_file)"
 : > "$(gh_tally_file)"
 
 echo "  scenario 28: review-loop.sh loads the token before it can report quota..."
