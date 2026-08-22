@@ -27,7 +27,7 @@ TMPDIR=$(mktemp -d -t kid-refresh-smoke-XXXXXX)
 trap 'rm -rf "$TMPDIR"' EXIT
 
 export STATE_DIR="$TMPDIR/state"
-export LOG="$STATE_DIR/plow-kid-refresh.log"
+export LOG_FILE="$STATE_DIR/plow-kid-refresh.log"
 export LOCK="$TMPDIR/lock"
 mkdir -p "$STATE_DIR"
 
@@ -78,11 +78,15 @@ chmod +x "$HOME/.local/bin/git"
 export REVIEWER_LIB_DIR="$TMPDIR/lib"
 mkdir -p "$REVIEWER_LIB_DIR"
 cp "$PROJECT_ROOT/lib/tracked-repos.sh" "$REVIEWER_LIB_DIR/tracked-repos.sh"
+# plow-kid-refresh.sh uses state-io's log() now, instead of the non-teeing
+# one-liner it used to define — that shadow hid this unit's whole hourly run from
+# journalctl despite StandardOutput=journal.
+cp "$PROJECT_ROOT/lib/state-io.sh" "$REVIEWER_LIB_DIR/state-io.sh"
 
 run_refresh() {
     : > "$STUB_KID_LOG"
     : > "$STUB_GIT_LOG"
-    : > "$LOG"
+    : > "$LOG_FILE"
     rm -f "$LOCK"
     bash "$PROJECT_ROOT/plow-kid-refresh.sh" >/dev/null 2>&1 || true
 }
@@ -108,7 +112,7 @@ CONF
 run_refresh
 n=$(count_kid)
 [ "$n" -eq 0 ] || { echo "FAIL scenario 2: expected 0 kid calls (missing checkout), got $n"; cat "$STUB_KID_LOG"; exit 1; }
-grep -q 'checkout missing or not a git repo' "$LOG" || { echo "FAIL scenario 2: expected 'checkout missing' log line"; cat "$LOG"; exit 1; }
+grep -q 'checkout missing or not a git repo' "$LOG_FILE" || { echo "FAIL scenario 2: expected 'checkout missing' log line"; cat "$LOG_FILE"; exit 1; }
 
 # Scenario 3: .git but no .keepitdry → bootstrap kid index.
 echo "  scenario 3: bootstrap (no .keepitdry yet) — initial kid index call..."

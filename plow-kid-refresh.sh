@@ -13,7 +13,7 @@ set -u
 # trailing). See review.sh for the writable-PATH security context.
 
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
-LOG="${LOG:-$STATE_DIR/plow-kid-refresh.log}"
+LOG_FILE="${LOG_FILE:-$STATE_DIR/plow-kid-refresh.log}"
 LOCK="${LOCK:-/tmp/plow-kid-refresh.lock}"
 
 # Tracked-repo manifest — same KID_PATHS this script's siblings use.
@@ -22,8 +22,12 @@ LOCK="${LOCK:-/tmp/plow-kid-refresh.lock}"
 # a repo here is a one-line edit in repos.conf.
 REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$STATE_DIR/lib}"
 . "$REVIEWER_LIB_DIR/tracked-repos.sh"
-
-log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG"; }
+# state-io's log() writes "[timestamp] $*" to LOG_FILE and TEES it to stdout. The
+# non-teeing one-liner this replaces hid every line of this run — the lock skip,
+# the per-project index results, the fetch/pull failures below — from
+# `journalctl -u pr-reviewer-kid-refresh`, though the unit is
+# StandardOutput=journal and it runs hourly.
+. "$REVIEWER_LIB_DIR/state-io.sh"
 
 if [ -e "$LOCK" ]; then
     log "refresh already running (lock $LOCK present) — skipping"
@@ -46,7 +50,7 @@ for NAME in "${!KID_PATHS[@]}"; do
     # now against whatever's checked out; don't bother pulling this tick.
     if [ ! -d "$PROJECT/.keepitdry" ]; then
         log "$NAME: no index present, bootstrapping initial index (may take a while)..."
-        if kid index "$PROJECT" >> "$LOG" 2>&1; then
+        if kid index "$PROJECT" >> "$LOG_FILE" 2>&1; then
             log "$NAME: initial index complete at $(git rev-parse --short HEAD 2>/dev/null)"
         else
             log "$NAME: initial index failed"
@@ -54,7 +58,7 @@ for NAME in "${!KID_PATHS[@]}"; do
         continue
     fi
 
-    if ! git fetch origin main --quiet 2>>"$LOG"; then
+    if ! git fetch origin main --quiet 2>>"$LOG_FILE"; then
         log "$NAME: git fetch failed — skipping"
         continue
     fi
@@ -67,13 +71,13 @@ for NAME in "${!KID_PATHS[@]}"; do
     fi
 
     log "$NAME: new commits ${LOCAL:0:7} → ${REMOTE:0:7}, pulling and re-indexing"
-    if ! git pull --ff-only --quiet 2>>"$LOG"; then
+    if ! git pull --ff-only --quiet 2>>"$LOG_FILE"; then
         log "$NAME: git pull --ff-only failed — skipping index"
         continue
     fi
 
     # kid index is incremental — only changed files are re-embedded.
-    if kid index "$PROJECT" >> "$LOG" 2>&1; then
+    if kid index "$PROJECT" >> "$LOG_FILE" 2>&1; then
         log "$NAME: index complete at $(git rev-parse --short HEAD)"
     else
         log "$NAME: kid index failed"

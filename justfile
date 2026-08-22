@@ -42,12 +42,12 @@ test:
     # Scrubbed HERE, once, rather than per-suite: twelve smokes source the
     # manifest loader and a thirteenth would silently reopen the hole. Kept as a
     # plain list rather than a test-enforced coupling to x-reviewer-env: at one
-    # operator and six path-shaped vars, a var added without a scrub entry is
+    # operator and seven path-shaped vars, a var added without a scrub entry is
     # cheap to notice and fix when observed. Not scrubbed: DOCKER_HOST
     # (render-compose-smoke needs a live daemon) and STATE_DIR/REPOS_DIR/
     # WORKDIRS_DIR (each smoke exports its own sandboxed value). Per-command
     # overrides in a scenario are unaffected; this only clears the environment.
-    unset REPOS_CONF_FILE CONFIG_ENV_FILE REPO_ENV_DIR KWR_CONFIG_DIR LOCAL_STATE_DIR KWR_CLONE_ROOT
+    unset REPOS_CONF_FILE CONFIG_ENV_FILE REPO_ENV_DIR KWR_CONFIG_DIR LOCAL_STATE_DIR KWR_CLONE_ROOT LOG_FILE
 
     # macOS /bin/bash is frozen at 3.2 (no associative arrays). The
     # smokes use declare -A in 12 files, so bash 4+ is required. On

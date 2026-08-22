@@ -671,6 +671,19 @@ TOP_AFTER_CAP=$(gh_top_callers 3)
 : > "$(gh_tally_file)"
 : > "$(gh_tally_file)"
 
+echo "  scenario 27a: no host entrypoint shadows state-io's log()..."
+# The invariant the last five rounds circled without naming. bakeoff, org-sync and
+# kid-refresh each carried a strictly-lossy copy — same "[timestamp] $*" to the
+# same file, minus the tee — so every line those units emitted was invisible in
+# journalctl despite all three being StandardOutput=journal, and it was the sole
+# reason "may the call sit above or below?" had two answers. Over ALL six host
+# entrypoints, not just the gh-spending ones, because that is what the sentence
+# claims: kid-refresh spends no gh but lost its whole run the same way.
+for _entry in review-loop.sh poll-pr-actions.sh learn-from-replies.sh org-sync.sh specialist-bakeoff.sh plow-kid-refresh.sh; do
+    grep -qE '^[[:space:]]*log\(\)[[:space:]]*\{' "$PROJECT_ROOT/$_entry" \
+        && fail "scenario 27a: $_entry shadows log() — state-io's already writes to LOG_FILE and TEES to stdout, so a local copy silently drops this unit's whole run out of journalctl"
+done
+
 echo "  scenario 27b: every gh-spending entrypoint drains the shared tally..."
 # The tally is shared with the host timers (one PAT), so if a half stops calling
 # gh_quota_report the writer-side cap silently becomes that half's ONLY reaper —
@@ -684,14 +697,6 @@ for _entry in review-loop.sh poll-pr-actions.sh learn-from-replies.sh org-sync.s
     _entry_src=$(sed -e 's/#.*//' "$PROJECT_ROOT/$_entry")
     grep -qE '^[[:space:]]*gh_quota_report([[:space:]]|$)' <<<"$_entry_src" \
         || fail "scenario 27b: $_entry spends the shared PAT but never CALLS gh_quota_report — the cap becomes its only reaper and a crossing blanks the next 403's attribution"
-    # The invariant that actually matters, learned the long way: no entrypoint
-    # may shadow log(). bakeoff and org-sync both used to, with a strictly-lossy
-    # copy — same "[timestamp] \$*" to the same file, minus state-io's tee —
-    # which hid every line of those runs from journalctl despite both units being
-    # StandardOutput=journal, and which was the sole reason "may the call sit
-    # above or below?" had two answers at all. Assert the absence, not a position.
-    grep -qE '^[[:space:]]*log\(\)[[:space:]]*\{' "$PROJECT_ROOT/$_entry" \
-        && fail "scenario 27b: $_entry shadows log() — state-io's already writes to LOG_FILE and TEES to stdout, so a local copy silently drops this unit's whole run out of journalctl and re-opens an ordering ambiguity that cost five commits"
     # With no shadows left, every entrypoint's sink is a LOG_FILE= line and the
     # ordering rule is one shape. head -1 enforces prologue-level, so a later
     # reassignment inside a function cannot win. || true because this suite runs
