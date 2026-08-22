@@ -677,8 +677,23 @@ echo "  scenario 27b: every gh-spending entrypoint drains the shared tally..."
 # and a crossing then blanks the attribution on its next 403. Derived from the
 # units that actually run, not a hand-list.
 for _entry in review-loop.sh poll-pr-actions.sh learn-from-replies.sh org-sync.sh specialist-bakeoff.sh; do
-    grep -q 'gh_quota_report' "$PROJECT_ROOT/$_entry" \
-        || fail "scenario 27b: $_entry spends the shared PAT but never calls gh_quota_report — the cap becomes its only reaper and a crossing blanks the next 403's attribution"
+    # Strip comments and anchor to a CALL SITE. A bare string grep matches the
+    # prose — review-loop.sh names gh_quota_report in a comment — so deleting the
+    # real call left this green, which is the inert-guard class this suite keeps
+    # re-learning. Same idiom as the seam fence below.
+    _entry_src=$(sed -e 's/#.*//' "$PROJECT_ROOT/$_entry")
+    grep -qE '^[[:space:]]*gh_quota_report([[:space:]]|$)' <<<"$_entry_src" \
+        || fail "scenario 27b: $_entry spends the shared PAT but never CALLS gh_quota_report — the cap becomes its only reaper and a crossing blanks the next 403's attribution"
+    # And it must come after LOG_FILE, or the report and its headroom WARNING go
+    # to stdout only and never reach the file the operator tails.
+    # `|| true` on both: this suite runs `set -e` with pipefail, and an entrypoint
+    # that legitimately has no LOG_FILE= line (review-loop.sh sets it downstream)
+    # makes grep exit 1, which kills the whole script silently.
+    _log_ln=$(grep -nE '^[[:space:]]*LOG_FILE=' "$PROJECT_ROOT/$_entry" | head -1 | cut -d: -f1) || true
+    _call_ln=$(grep -nE '^[[:space:]]*gh_quota_report([[:space:]]|$)' "$PROJECT_ROOT/$_entry" | head -1 | cut -d: -f1) || true
+    if [ -n "$_log_ln" ] && [ -n "$_call_ln" ] && [ "$_call_ln" -lt "$_log_ln" ]; then
+        fail "scenario 27b: $_entry calls gh_quota_report (line $_call_ln) before setting LOG_FILE (line $_log_ln) — log() only tees when LOG_FILE is set, so the report never reaches the operator's log"
+    fi
 done
 
 echo "  scenario 28: review-loop.sh loads the token before it can report quota..."
@@ -691,7 +706,7 @@ echo "  scenario 28: review-loop.sh loads the token before it can report quota..
 LOOP_SRC=$(sed -e 's/#.*//' "$PROJECT_ROOT/review-loop.sh")
 grep -qE '^[[:space:]]*(\.|source)[[:space:]].*tracked-repos\.sh' <<<"$LOOP_SRC" \
     || fail "scenario 28: review-loop.sh calls gh_quota_report without sourcing the config loader — the probe runs tokenless and the report is silent"
-grep -q 'gh_quota_report' "$PROJECT_ROOT/review-loop.sh" \
-    || fail "scenario 28: review-loop.sh no longer calls gh_quota_report — the periodic report is the only scheduled caller"
+grep -qE '^[[:space:]]*gh_quota_report([[:space:]]|$)' <<<"$LOOP_SRC" \
+    || fail "scenario 28: review-loop.sh no longer CALLS gh_quota_report — in a container the reporter is the only drain, so a crossing would blank the next 403's attribution"
 
 echo "PASS: gh-rate-limit-smoke"

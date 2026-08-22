@@ -36,10 +36,14 @@ REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 # reaper — without it a cap crossing zeroes the window and the next 403 logs its
 # diagnostic with no attribution at all. It also gives the host half quota
 # logging it otherwise never gets. /rate_limit spends no quota.
-gh_quota_report
 require_repos
 REPLIES_SEEN_FILE="${REPLIES_SEEN_FILE:-$STATE_DIR/replies-seen.json}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/learn.log}"
+# Placed AFTER LOG_FILE: log() only tees when LOG_FILE is non-empty, and the unit
+# sets only HOME/PATH — above this line the report and its headroom WARNING go to
+# stdout alone, so they reach the journal and never the log file the operator
+# tails. This timer fires every 2 min, so it is the host half's dominant reporter.
+gh_quota_report
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
 
 [ -f "$REPLIES_SEEN_FILE" ] || echo '{}' > "$REPLIES_SEEN_FILE"
