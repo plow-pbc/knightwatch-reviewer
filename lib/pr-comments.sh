@@ -157,6 +157,14 @@ fetch_pr_comments() {
     while IFS= read -r login; do
         [ -z "$login" ] && continue
         [ "$login" = "$operator" ] && continue
+        # Bots are answered locally, for free — lib/auth.sh owns the predicate and
+        # poll-pr-actions.sh calls it "a cheap pre-check before the trust API
+        # call". Without it every bot commenter costs one core-API call per
+        # review under the very quota pressure this PR relieves, AND returns rc=2
+        # during a pause — which now bypasses the sentinel, so a PR whose only
+        # non-operator comments are from a bot would produce a document
+        # announcing the thread is INCOMPLETE when nothing was ever withheld.
+        is_bot_account "$login" && continue
         # LIVE (#233): this is an ACTING gate, not an enumeration filter — it
         # decides whose verbatim prose is written into pr-comments.md, which
         # every specialist, the critic and the aggregator read on a codex run

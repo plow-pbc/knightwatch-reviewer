@@ -182,4 +182,20 @@ EMPTY_DOC=$(BOT_USER=srosro fetch_pr_comments "cncorp/plow" 1 2>/dev/null)
 [ "$EMPTY_DOC" = "(no PR comments)" ] || {
     echo "FAIL fixture 5: a genuinely empty thread is no longer the sentinel"; printf '%s\n' "$EMPTY_DOC"; exit 1; }
 
+# A bot commenter is answered locally and never counted as unverifiable, so a
+# thread whose only non-operator voice is a bot stays the sentinel rather than
+# announcing it withheld something.
+fetch_issue_comments() { printf '%s' '[{"user":{"login":"dependabot[bot]"},"created_at":"2026-05-01T09:00:00Z","body":"bumped a dep"}]'; }
+is_trusted_repo_author_live() { return 2; }
+BOT_DOC=$(BOT_USER=srosro fetch_pr_comments "cncorp/plow" 1 2>/dev/null)
+[ "$BOT_DOC" = "(no PR comments)" ] || {
+    echo "FAIL fixture 5: a bot-only thread was reported as INCOMPLETE — nothing was withheld, and the bot cost an API call"; printf '%s\n' "$BOT_DOC"; exit 1; }
+
+# Restore the world. These stubs are file-scope, so leaving them set means any
+# fixture appended below silently runs against "no comments" and "trusts
+# everyone" — passing while testing nothing. This file has grown by an appended
+# fixture three commits running, so the cleanup is the load-bearing part.
+unset -f fetch_issue_comments is_trusted_repo_author_live
+unset LOG_FILE
+
 echo "  PASS"
