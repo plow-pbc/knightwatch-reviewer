@@ -132,4 +132,30 @@ echo "$OUT" | grep -qF "<!-- decline:class=session-scoping -->" || { echo "FAIL:
 # ...and NO operator-marker section is emitted (the channel was deleted).
 echo "$OUT" | grep -qF "Operator decline markers" && { echo "FAIL: deleted marker section re-emitted"; echo "$OUT"; exit 1; } || true
 
+# --- fixture 5: an unverifiable commenter makes the thread say so ---
+# rc=2 is not "untrusted". During an active rate-limit pause gh_retry
+# short-circuits with an EMPTY errfile, so the 404 marker cannot match and EVERY
+# commenter probe returns 2 — the thread would collapse to the operator alone
+# while still asserting it carries every trusted comment, and the pipeline would
+# re-raise probes the participants already answered. Absence must not read as
+# silence, so the document has to admit it is partial.
+echo "  fixture 5: an unverifiable commenter marks the thread INCOMPLETE..."
+PARTIAL=$(_pr_comments_from_json "$SAMPLE" "srosro" 2)
+echo "$PARTIAL" | grep -qF "INCOMPLETE" || {
+    echo "FAIL fixture 5: a thread missing 2 unverifiable commenters did not say it was incomplete"
+    echo "got: $PARTIAL"
+    exit 1
+}
+echo "$PARTIAL" | grep -qF "does NOT mean nobody answered" || {
+    echo "FAIL fixture 5: the notice does not tell the consuming stages how to weigh the gap"
+    echo "got: $PARTIAL"
+    exit 1
+}
+# ...and a complete thread must NOT carry the warning, or it is noise.
+COMPLETE=$(_pr_comments_from_json "$SAMPLE" "srosro" 0)
+echo "$COMPLETE" | grep -qF "INCOMPLETE" && {
+    echo "FAIL fixture 5: a complete thread claimed to be incomplete"
+    exit 1
+}
+
 echo "  PASS"
