@@ -230,13 +230,33 @@ MOCK_PERM_MODE=404 is_trusted_repo_author "cncorp/plow" "revoked" \
     || { echo "FAIL scenario 13: the cached wrapper made an extra API call"; exit 1; }
 
 reset_gh_pause; reset_trust_cache
-echo "  scenario 14: the cache is keyed per (repo,user) — no cross-talk..."
+echo "  scenario 14: an EXPIRED entry re-probes — the TTL is the only bound on a revoked verdict..."
+# Every other scenario drives a FRESH entry, so deleting the age comparison
+# outright left all of them green — and an unbounded cache is a permanent
+# trusted verdict, not a degraded one. Seed a stale entry directly (it is a bare
+# timestamp in a store the suite already owns) rather than reintroducing a knob.
+: > "$GH_API_LOG"
+seen_set_value "$(trust_cache_file)" "cncorp/plow|stale" "$(( $(date +%s) - 1000 ))"
+MOCK_PERM_MODE=404 is_trusted_repo_author "cncorp/plow" "stale" \
+    && { echo "FAIL scenario 14: a 1000s-old entry was served — the TTL bound is gone, so a revoked verdict never expires"; exit 1; } || true
+[ "$(grep -c '^API' "$GH_API_LOG")" = "1" ] \
+    || { echo "FAIL scenario 14: an expired entry did not re-probe, got $(grep -c '^API' "$GH_API_LOG") API call(s)"; exit 1; }
+# ...and a fresh entry still serves, so the volume fix is intact.
+: > "$GH_API_LOG"
+seen_set_value "$(trust_cache_file)" "cncorp/plow|fresh" "$(date +%s)"
+MOCK_PERM_MODE=404 is_trusted_repo_author "cncorp/plow" "fresh" \
+    || { echo "FAIL scenario 14: a fresh entry was not served — the per-tick storm returns"; exit 1; }
+[ "$(grep -c '^API' "$GH_API_LOG")" = "0" ] \
+    || { echo "FAIL scenario 14: a fresh entry still hit the API"; exit 1; }
+
+reset_gh_pause; reset_trust_cache
+echo "  scenario 15: the cache is keyed per (repo,user) — no cross-talk..."
 : > "$GH_API_LOG"
 MOCK_PERM_MODE=role MOCK_PERM_ROLE=write is_trusted_repo_author "cncorp/plow" "alice" \
-    || { echo "FAIL scenario 14: alice should be trusted"; exit 1; }
+    || { echo "FAIL scenario 15: alice should be trusted"; exit 1; }
 MOCK_PERM_MODE=role MOCK_PERM_ROLE=none is_trusted_repo_author "cncorp/plow" "mallory" \
-    && { echo "FAIL scenario 14: mallory must NOT inherit alice's cached verdict"; exit 1; } || true
+    && { echo "FAIL scenario 15: mallory must NOT inherit alice's cached verdict"; exit 1; } || true
 MOCK_PERM_MODE=role MOCK_PERM_ROLE=none is_trusted_repo_author "othercorp/plow" "alice" \
-    && { echo "FAIL scenario 14: alice's verdict must not cross repos"; exit 1; } || true
+    && { echo "FAIL scenario 15: alice's verdict must not cross repos"; exit 1; } || true
 
-echo "  PASS (14 scenarios: trust-tristate-matrix[9 rows: 3×trusted/2×untrusted/404/403/5xx/empty], indeterminate-defers-not-trusted, trust-empty, approval-self-skipped, approval-success, approval-failure-fail-loud, just-test run/untrusted-skip/no-justfile, trust-cache hit/indeterminate-never-cached/untrusted-never-cached/live-bypasses-cache/keyed-per-repo-user)"
+echo "  PASS (15 scenarios: trust-tristate-matrix[9 rows: 3×trusted/2×untrusted/404/403/5xx/empty], indeterminate-defers-not-trusted, trust-empty, approval-self-skipped, approval-success, approval-failure-fail-loud, just-test run/untrusted-skip/no-justfile, trust-cache hit/indeterminate-never-cached/untrusted-never-cached/live-bypasses-cache/expired-re-probes/keyed-per-repo-user)"

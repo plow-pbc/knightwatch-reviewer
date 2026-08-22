@@ -132,7 +132,10 @@ for REPO in "${REPOS[@]}"; do
                 # the rule list. Drive-by commenters can post
                 # /srosro-memorize all they want; we ignore them. Logged
                 # at info so misuse is visible.
-                if ! is_trusted_repo_author "$REPO" "$USER"; then
+                # LIVE (#233): /memorize mutates the shared rule corpus and
+                # pushes it, so it shapes every future review. Memorize
+                # comments are rare — no volume argument for a cached verdict.
+                if ! is_trusted_repo_author_live "$REPO" "$USER"; then
                     log "${REPO}#${PR_NUM}: /${BOT_CMD_PREFIX}-memorize from @${USER} ignored (no push access)"
                     continue
                 fi

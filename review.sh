@@ -309,7 +309,12 @@ refresh_queue() {
                     # has push access. Otherwise drive-by commenters could
                     # shape intent inference + aggregator on the
                     # auto-approve path.
-                    is_trusted_repo_author "$REPO" "$TRIGGER_USER"; TRIGGER_TRUST_RC=$?
+                    # LIVE (#233): this is lib/auth.sh's trust gate #2 — it
+                    # stages the trigger comment's prose into the review, on a
+                    # pipeline that ends in `gh pr review --approve`, and the
+                    # worker re-verifies REQUESTER_LOGIN but never TRIGGER_USER.
+                    # Trigger comments are body-filtered and rare.
+                    is_trusted_repo_author_live "$REPO" "$TRIGGER_USER"; TRIGGER_TRUST_RC=$?
                     if [ "$TRIGGER_TRUST_RC" -eq 2 ]; then
                         # Indeterminate → defer this PR: don't run without the
                         # trusted trigger prose and advance the cutoff past it
