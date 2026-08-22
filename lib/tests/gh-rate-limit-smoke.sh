@@ -651,6 +651,18 @@ done
 INO_AFTER=$(stat -c %i "$(gh_tally_file)" 2>/dev/null || stat -f %i "$(gh_tally_file)")
 [ "$INO_BEFORE" = "$INO_AFTER" ] \
     || fail "scenario 27: compaction replaced the tally's inode ($INO_BEFORE -> $INO_AFTER) — under the file bind that strands every container on the orphaned inode"
+# A compaction that lands on an already-truncated file must leave it EMPTY, not
+# re-seed a lone newline: `[ -s ]` would pass, and awk renders the blank line as
+# the token "=1" in the very lines the attribution exists to fill.
+: > "$(gh_tally_file)"
+GH_TALLY_MAX_BYTES=0 GH_TALLY_KEEP_LINES=50 gh_tally_call api "repos/o/r/issues/1/comments"
+: > "$(gh_tally_file)"
+GH_TALLY_MAX_BYTES=0 GH_TALLY_KEEP_LINES=50 gh_tally_call api "repos/o/r/issues/2/comments"
+TOP27=$(gh_top_callers 3)
+case "$TOP27" in
+    *"=1"*) case "$TOP27" in ' =1'*|'=1'*) fail "scenario 27: a blank tally line rendered as the bare token '=1' in operator-facing attribution" ;; esac ;;
+esac
+: > "$(gh_tally_file)"
 : > "$(gh_tally_file)"
 
 echo "  scenario 28: review-loop.sh loads the token before it can report quota..."

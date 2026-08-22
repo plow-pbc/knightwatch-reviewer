@@ -103,8 +103,15 @@ GH_PAUSE_REF='${HOME}/.pr-reviewer/gh-rate-limited-until'
 # pinned — which is why the compaction in lib/state-io.sh truncates IN PLACE
 # rather than temp+rename.
 GH_TALLY_REF='${HOME}/.pr-reviewer/gh-call-tally'
-[ -f "$GH_TALLY_SRC" ] \
-    || die "$GH_TALLY_SRC not found (or not a regular file) — it is the single gh call tally the host timers and the containers share, and docker would auto-create it as a DIRECTORY, which silently drops every host-side sample. Create it as the operator: install -m 0666 /dev/null $GH_TALLY_SRC"
+# CREATE it rather than die. This runs as ExecStartPre, so a die here stops the
+# whole fleet on the documented `git pull && systemctl restart` path and it does
+# not come back until a human hand-creates a file. The pause file earns its
+# refusal — an absent one may mean a live pause was lost — but an empty tally IS
+# its correct initial state, so refusing buys no safety and costs an outage. Only
+# a non-regular path is fatal, which is the case that really is docker's doing.
+[ ! -e "$GH_TALLY_SRC" ] || [ -f "$GH_TALLY_SRC" ] \
+    || die "$GH_TALLY_SRC exists but is not a regular file — docker auto-created the bind source as a DIRECTORY, which silently drops every host-side sample. Remove it and re-render: rmdir '$GH_TALLY_SRC'"
+[ -f "$GH_TALLY_SRC" ] || install -m 0666 /dev/null "$GH_TALLY_SRC"
 [ -f "$GH_PAUSE_SRC" ] \
     || die "$GH_PAUSE_SRC not found (or not a regular file) — it is the single rate-limit pause the host timers and the containers share, and docker would auto-create it as a DIRECTORY, which reads as never-paused. Create it as the operator: install -m 0666 /dev/null $GH_PAUSE_SRC"
 # Worse for the mount sources the loader sources: docker auto-creates a missing

@@ -221,8 +221,15 @@ gh_tally_call() {
         # inode — a rename would strand every container appending to the orphan
         # while the host wrote the new one, silently restoring the very split
         # this bind exists to close. Same rule the pause file publishes under.
-        kept=$(tail -n "${GH_TALLY_KEEP_LINES:-2000}" "$f" 2>/dev/null) \
-            && printf '%s\n' "$kept" > "$f" 2>/dev/null || true
+        # Guard on non-empty: eleven producers share this inode now and every
+        # reader truncates it with `: >`, so a compactor that clears the size
+        # gate and then runs `tail` after someone else truncated gets nothing —
+        # and printf would re-seed the file with a lone newline. That passes
+        # gh_top_callers' `[ -s ]` guard, and awk renders the blank line as the
+        # token `=1`, so the quota report and the 403 diagnostic would print
+        # "top callers: =1" during the incident they exist to explain.
+        kept=$(tail -n "${GH_TALLY_KEEP_LINES:-2000}" "$f" 2>/dev/null)
+        [ -n "$kept" ] && printf '%s\n' "$kept" > "$f" 2>/dev/null || true
     fi
     return 0
 }
