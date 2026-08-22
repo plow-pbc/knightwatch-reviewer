@@ -58,9 +58,12 @@ require_repos
 # reaper — without it a cap crossing zeroes the window and the next 403 logs its
 # diagnostic with no attribution at all. It also gives the host half quota
 # logging it otherwise never gets. /rate_limit spends no quota.
-gh_quota_report
-
 log() { echo "[$(date -u +%FT%TZ)] $*" >> "$LOG_FILE"; }
+
+# BELOW the log() override, like the other host entrypoints: above it the report
+# and its headroom WARNING bind to state-io's log(), which with LOG_FILE unset in
+# this shell writes to stdout only — journal, never this script's own log.
+gh_quota_report
 
 store_init "$DB_FILE"
 

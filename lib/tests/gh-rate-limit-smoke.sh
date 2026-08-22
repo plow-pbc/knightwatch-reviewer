@@ -686,13 +686,27 @@ for _entry in review-loop.sh poll-pr-actions.sh learn-from-replies.sh org-sync.s
         || fail "scenario 27b: $_entry spends the shared PAT but never CALLS gh_quota_report — the cap becomes its only reaper and a crossing blanks the next 403's attribution"
     # And it must come after LOG_FILE, or the report and its headroom WARNING go
     # to stdout only and never reach the file the operator tails.
-    # `|| true` on both: this suite runs `set -e` with pipefail, and an entrypoint
-    # that legitimately has no LOG_FILE= line (review-loop.sh sets it downstream)
-    # makes grep exit 1, which kills the whole script silently.
-    _log_ln=$(grep -nE '^[[:space:]]*LOG_FILE=' "$PROJECT_ROOT/$_entry" | head -1 | cut -d: -f1) || true
+    # Match the sink forms actually in use, not just LOG_FILE=: org-sync.sh names
+    # its sink LOG= and defines its own log() override, so a LOG_FILE-only match
+    # SKIPPED the one entrypoint carrying the identical bug — its call works only
+    # because the override is defined above it. A skip that reads as a pass is
+    # the same inert-guard shape this scenario exists to retire.
+    # `|| true`: this suite runs `set -e` with pipefail, so a grep miss would
+    # otherwise kill the script silently.
+    # LAST sink line, not the first: org-sync sets LOG= early but defines its own
+    # log() override later, and the override is the point after which logging is
+    # actually established — anchoring to the first match would let a call sit
+    # between them and still pass.
+    _log_ln=$(grep -nE '^[[:space:]]*(LOG_FILE=|LOG=|log\(\)[[:space:]]*\{)' "$PROJECT_ROOT/$_entry" | tail -1 | cut -d: -f1) || true
+    # review-loop.sh is the ONE entrypoint whose sink is legitimately stdout (the
+    # container stream); any other with no sink line means the match drifted, and
+    # that must fail rather than quietly skip the ordering check.
+    if [ -z "$_log_ln" ] && [ "$_entry" != review-loop.sh ]; then
+        fail "scenario 27b: found no log sink in $_entry — the sink match has drifted, so its ordering check is silently skipped"
+    fi
     _call_ln=$(grep -nE '^[[:space:]]*gh_quota_report([[:space:]]|$)' "$PROJECT_ROOT/$_entry" | head -1 | cut -d: -f1) || true
     if [ -n "$_log_ln" ] && [ -n "$_call_ln" ] && [ "$_call_ln" -lt "$_log_ln" ]; then
-        fail "scenario 27b: $_entry calls gh_quota_report (line $_call_ln) before setting LOG_FILE (line $_log_ln) — log() only tees when LOG_FILE is set, so the report never reaches the operator's log"
+        fail "scenario 27b: $_entry calls gh_quota_report (line $_call_ln) before its log sink is established (line $_log_ln) — the report and its headroom WARNING then go to stdout only and never reach the operator's log"
     fi
 done
 
