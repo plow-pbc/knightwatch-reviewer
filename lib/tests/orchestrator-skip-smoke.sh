@@ -1666,6 +1666,11 @@ grep -qE 'is_trusted_repo_author_live "\$REPO" "\$TRIGGER_USER"' "$PROJECT_ROOT/
     || { echo "FAIL RT8: the trigger-prose gate is not the LIVE check — a cached verdict is the only thing behind prose staged into a pipeline ending in an approve"; exit 1; }
 grep -qE 'is_trusted_repo_author_live "\$REPO" "\$USER"' "$PROJECT_ROOT/learn-from-replies.sh" \
     || { echo "FAIL RT8: the /memorize gate is not the LIVE check — a revoked collaborator could still inject a rule that shapes every future review"; exit 1; }
+grep -qE 'is_trusted_repo_author_live "\$repo" "\$login"' "$PROJECT_ROOT/lib/pr-comments.sh" \
+    || { echo "FAIL RT8: the commenter gate is not the LIVE check — it decides whose verbatim prose reaches codex run with --dangerously-bypass-approvals-and-sandbox, runs inside the worker, and nothing downstream re-checks it"; exit 1; }
+# lib/auth.sh's header now points HERE as the enumerable source of truth instead
+# of listing call sites in prose (three rounds found that list stale). If a gate
+# is added, it gets a line above — that is the contract the header defers to.
 
 # --- RT5: the execution gates must NEVER move to requester trust. A vouch says
 # "this diff is worth reading", not "run this author's code". Structural,

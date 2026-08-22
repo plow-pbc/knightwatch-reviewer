@@ -141,7 +141,16 @@ fetch_pr_comments() {
     while IFS= read -r login; do
         [ -z "$login" ] && continue
         [ "$login" = "$operator" ] && continue
-        if is_trusted_repo_author "$repo" "$login"; then
+        # LIVE (#233): this is an ACTING gate, not an enumeration filter — it
+        # decides whose verbatim prose is written into pr-comments.md, which
+        # every specialist, the critic and the aggregator read on a codex run
+        # started with --dangerously-bypass-approvals-and-sandbox. The comment
+        # at the top of this file names the same threat model as
+        # trigger-comment.md, and that gate is live. It also runs INSIDE the
+        # worker with nothing downstream to re-check it, so a cached verdict
+        # would be the one place the dispatcher/worker skew actually bites.
+        # Logins are `unique`-deduped and few, so there is no volume argument.
+        if is_trusted_repo_author_live "$repo" "$login"; then
             trusted="$trusted"$'\n'"$login"
         fi
     done < <(printf '%s' "$issue_comments" | jq -r '[.[].user.login] | unique | .[]' 2>/dev/null)

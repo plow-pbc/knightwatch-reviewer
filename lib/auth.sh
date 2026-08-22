@@ -1,30 +1,27 @@
 #!/usr/bin/env bash
 # Author-trust gating. Trust is "has push access" — `admin`, `write`, or
 # `maintain` from the collaborators API. Two entry points, split by what the
-# caller does with the answer.
+# caller does with the answer:
 #
-# ACTING gates call `is_trusted_repo_author_live REPO USER` — never the cache.
-# Each is about to take an irreversible action on the strength of the verdict,
-# and each can fire long after a dispatcher warmed a cached one:
+#   is_trusted_repo_author_live — ACTING gates. The caller is about to take an
+#     irreversible action on the strength of the verdict: mirror canonical
+#     `.env*` into a workdir that then runs PR-supplied `just test`; stage a
+#     comment's verbatim prose for the codex pipeline (started with
+#     --dangerously-bypass-approvals-and-sandbox); submit a GitHub approval;
+#     apply a rule to the shared corpus. These fire long after the dispatcher
+#     ran, so a cached verdict answers "did they have access THEN", not "may
+#     this happen NOW".
 #
-#   1. lib/review-one-pr.sh mirrors canonical's gitignored `.env*` files into
-#      the per-PR workdir before `just test` runs. Untrusted PR authors can
-#      otherwise modify a `just test` recipe to read those live API keys.
-#   2. review.sh stages the latest matching comment as
-#      `.codex-scratch/trigger-comment.md`. Intent inference and the aggregator
-#      weight that prose heavily on a pipeline that ends in
-#      `gh pr review --approve`, so untrusted commenters can otherwise shape
-#      the review.
-#   3. poll-pr-actions.sh submits `/<prefix>-approve` as a real GitHub approval,
-#      and marks a rejection PERMANENTLY seen.
-#   4. learn-from-replies.sh applies `/<prefix>-memorize` to the shared rule
-#      corpus and pushes it, shaping every future review.
+#   is_trusted_repo_author — ENUMERATION only. The caller is deciding whether a
+#     PR is worth looking at, and the acting gate behind it re-checks live. One
+#     uncached call per PR per tick per container is what tripped GitHub's
+#     secondary limit (#233) — the whole reason the cache exists.
 #
-# ENUMERATION callers use the cached `is_trusted_repo_author` — they only decide
-# "is this PR worth looking at", and every action behind them re-checks live:
-# review.sh's per-tick author check (the one whose uncached cost tripped
-# GitHub's secondary limit, #233), review.sh's vouch candidate, and
-# lib/pr-comments.sh's per-commenter filter.
+# Deliberately NOT a list of call sites. Three consecutive review rounds found
+# this header's hand-maintained enumerations stale — the enumeration was the
+# defect, not any one instance of it. RT8 in
+# lib/tests/orchestrator-skip-smoke.sh is the enumerable source of truth: it is
+# executable and fails when a gate moves.
 #
 # TRI-STATE by exit code (the 2>/dev/null swallow used to make a 403
 # rate-limit indistinguishable from "untrusted", silently skipping a
@@ -34,12 +31,12 @@
 #                        404 non-collaborator (also: empty user)
 #   2 — indeterminate  : couldn't verify — 403/5xx/network, or any non-zero
 #                        gh exit that isn't a clean "not a collaborator"
-# Callers that only branch trusted/untrusted (`if is_trusted_repo_author`)
-# treat 2 as falsy → fail closed. Two callers branch on 2 explicitly, in
-# opposite directions, and both are deliberate: review.sh DEFERS (an
-# unverifiable lookup must not drop a trusted author's PR), while
-# review-one-pr.sh's execution gate fails CLOSED (it only grants capability,
-# and the read is already authorized by the requester gate upstream).
+# Callers that only branch trusted/untrusted treat 2 as falsy → fail closed.
+# rc=2 is never a verdict, so a caller that branches on it explicitly picks one
+# of three dispositions — DEFER (an unverifiable lookup must not drop a trusted
+# author's PR), fail CLOSED (an execution gate only grants capability), or leave
+# the item unseen to retry — and says which at its own call site. Not listed
+# here, for the reason given above.
 #
 # Reuses gh_api_retry: it bounded-retries 5xx/network but intentionally NOT
 # 403 — exactly the "transient couldn't-verify vs definitive" split here.
