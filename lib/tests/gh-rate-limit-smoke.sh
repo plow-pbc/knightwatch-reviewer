@@ -671,16 +671,27 @@ TOP_AFTER_CAP=$(gh_top_callers 3)
 : > "$(gh_tally_file)"
 : > "$(gh_tally_file)"
 
-echo "  scenario 27a: no host entrypoint shadows state-io's log()..."
-# The invariant the last five rounds circled without naming. bakeoff, org-sync and
-# kid-refresh each carried a strictly-lossy copy — same "[timestamp] $*" to the
-# same file, minus the tee — so every line those units emitted was invisible in
-# journalctl despite all three being StandardOutput=journal, and it was the sole
-# reason "may the call sit above or below?" had two answers. Over ALL six host
-# entrypoints, not just the gh-spending ones, because that is what the sentence
-# claims: kid-refresh spends no gh but lost its whole run the same way.
-for _entry in review-loop.sh poll-pr-actions.sh learn-from-replies.sh org-sync.sh specialist-bakeoff.sh plow-kid-refresh.sh; do
-    grep -qE '^[[:space:]]*log\(\)[[:space:]]*\{' "$PROJECT_ROOT/$_entry" \
+echo "  scenario 27a: no entrypoint shadows state-io's log()..."
+# The invariant the last several rounds circled without naming. bakeoff, org-sync
+# and kid-refresh each carried a strictly-lossy copy — same "[timestamp] $*" to
+# the same file, minus the tee — so every line those units emitted was invisible
+# in journalctl despite all three being StandardOutput=journal, and it was the
+# sole reason "may the call sit above or below?" had two answers.
+#
+# DERIVED from the units, not hand-listed: kid-refresh had a unit and a shadow
+# for the whole time an earlier hand-list claimed to cover it, and only a human
+# noticing closed the gap — which is the drift lib/systemd-units.sh exists to
+# prevent and that three call sites already use. render-compose.sh is correctly
+# excluded (it is ExecStartPre, not ExecStart); review-loop.sh is added by hand
+# because it is the CONTAINER entry and has no unit.
+. "$PROJECT_ROOT/lib/systemd-units.sh"
+ENTRYPOINTS=$(list_execstart_shell_scripts "$PROJECT_ROOT" "$PROJECT_ROOT"/systemd/*.service; echo review-loop.sh)
+[ "$(printf '%s\n' "$ENTRYPOINTS" | grep -c .)" -ge 6 ] \
+    || fail "scenario 27a: derived only $(printf '%s\n' "$ENTRYPOINTS" | grep -c .) entrypoints — the unit derivation broke, so this asserts nothing"
+for _entry in $ENTRYPOINTS; do
+    # Spelling-independent enough to cover `log ()  {` and `function log {`,
+    # which the previous exact-match form let straight through.
+    grep -qE '^[[:space:]]*(function[[:space:]]+)?log[[:space:]]*\(?\)?[[:space:]]*\{' "$PROJECT_ROOT/$_entry" \
         && fail "scenario 27a: $_entry shadows log() — state-io's already writes to LOG_FILE and TEES to stdout, so a local copy silently drops this unit's whole run out of journalctl"
 done
 

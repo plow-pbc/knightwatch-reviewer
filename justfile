@@ -30,6 +30,16 @@ test:
     # the LIVE file instead and fails pointing at whatever subsystem owns that
     # file, not at the env bleed.
     #
+    # LOG_FILE is the one entry NOT from x-reviewer-env — lib/review-one-pr.sh
+    # sets it (:99, :303), and every host entrypoint now resolves it as
+    # ${LOG_FILE:-<its own default>} since the non-teeing log() shadows were
+    # deleted. Its trigger is also different from the six below: an operator
+    # shell with LOG_FILE already set running the gate directly. The host/systemd
+    # branch strips it (lib/run-dir.sh's `env -u LOG_FILE`) and a docker exec
+    # shell inherits the compose env, which lacks it — so neither path below
+    # delivers this one. Listed here so the reconciliation rule stays checkable
+    # and the next reader doesn't prune it as a stray with no x-reviewer-env source.
+    #
     # Where that actually bites: the HOST/systemd review branch, which runs the
     # PR's gate with `env -u LOG_FILE just … test` and so inherits the operator
     # environment (lib/run-dir.sh), and any manual `docker exec` shell, which
@@ -42,7 +52,8 @@ test:
     # Scrubbed HERE, once, rather than per-suite: twelve smokes source the
     # manifest loader and a thirteenth would silently reopen the hole. Kept as a
     # plain list rather than a test-enforced coupling to x-reviewer-env: at one
-    # operator and seven path-shaped vars, a var added without a scrub entry is
+    # operator and six x-reviewer-env vars plus LOG_FILE, a var added without a
+    # scrub entry is
     # cheap to notice and fix when observed. Not scrubbed: DOCKER_HOST
     # (render-compose-smoke needs a live daemon) and STATE_DIR/REPOS_DIR/
     # WORKDIRS_DIR (each smoke exports its own sandboxed value). Per-command

@@ -28,6 +28,7 @@ trap 'rm -rf "$TMPDIR"' EXIT
 
 export STATE_DIR="$TMPDIR/state"
 export LOG_FILE="$STATE_DIR/plow-kid-refresh.log"
+STDOUT_CAP="$STATE_DIR/stdout-capture.log"
 export LOCK="$TMPDIR/lock"
 mkdir -p "$STATE_DIR"
 
@@ -88,7 +89,13 @@ run_refresh() {
     : > "$STUB_GIT_LOG"
     : > "$LOG_FILE"
     rm -f "$LOCK"
-    bash "$PROJECT_ROOT/plow-kid-refresh.sh" >/dev/null 2>&1 || true
+    # Capture stdout instead of discarding it: state-io's log() TEES to both, and
+    # the tee is the property three commits exist to establish — a non-teeing
+    # shadow writes $LOG_FILE identically, so every assertion that reads only the
+    # file passes with the shadow reintroduced. Asserting on both pins the
+    # behaviour rather than a regex over how the shadow happens to be spelled.
+    : > "$STDOUT_CAP"
+    bash "$PROJECT_ROOT/plow-kid-refresh.sh" >"$STDOUT_CAP" 2>&1 || true
 }
 
 count_kid() { grep -c '^KID ' "$STUB_KID_LOG" 2>/dev/null || true; }
@@ -113,6 +120,11 @@ run_refresh
 n=$(count_kid)
 [ "$n" -eq 0 ] || { echo "FAIL scenario 2: expected 0 kid calls (missing checkout), got $n"; cat "$STUB_KID_LOG"; exit 1; }
 grep -q 'checkout missing or not a git repo' "$LOG_FILE" || { echo "FAIL scenario 2: expected 'checkout missing' log line"; cat "$LOG_FILE"; exit 1; }
+# ...and on STDOUT too. The unit is StandardOutput=journal, so this is what an
+# operator running `journalctl -u pr-reviewer-kid-refresh` actually sees; a
+# non-teeing log() would satisfy the file assertion above and fail this one.
+grep -q 'checkout missing or not a git repo' "$STDOUT_CAP" \
+    || { echo "FAIL scenario 2: the log line never reached stdout — this unit is StandardOutput=journal, so a non-teeing log() makes its whole run invisible to journalctl"; cat "$STDOUT_CAP"; exit 1; }
 
 # Scenario 3: .git but no .keepitdry → bootstrap kid index.
 echo "  scenario 3: bootstrap (no .keepitdry yet) — initial kid index call..."
