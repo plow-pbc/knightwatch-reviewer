@@ -1657,6 +1657,15 @@ grep -qF 'requester_trusted:' "$PROJECT_ROOT/review.sh" \
     && { echo "FAIL RT8: review.sh serializes requester_trusted again — admission must re-verify the requester's login, since reading is the boundary"; exit 1; }
 grep -qE 'is_trusted_repo_author_live "\$REPO" "\$REQUESTER_LOGIN"' "$w7" \
     || { echo "FAIL RT8: the worker no longer re-verifies the requester at admission — a revoked voucher would still admit content to sandbox-bypassed codex"; exit 1; }
+# Same fence for the other two ACTING gates. Both were converted for exactly the
+# reasoning above, and neither was pinned: swapping either back to the cached
+# wrapper left the whole suite green, because run_orchestrator clears the cache
+# unless KEEP_TRUST_CACHE=1 and every trigger row drives a verdict that is never
+# cached anyway (rc=1 / rc=2), so cached and live are indistinguishable there.
+grep -qE 'is_trusted_repo_author_live "\$REPO" "\$TRIGGER_USER"' "$PROJECT_ROOT/review.sh" \
+    || { echo "FAIL RT8: the trigger-prose gate is not the LIVE check — a cached verdict is the only thing behind prose staged into a pipeline ending in an approve"; exit 1; }
+grep -qE 'is_trusted_repo_author_live "\$REPO" "\$USER"' "$PROJECT_ROOT/learn-from-replies.sh" \
+    || { echo "FAIL RT8: the /memorize gate is not the LIVE check — a revoked collaborator could still inject a rule that shapes every future review"; exit 1; }
 
 # --- RT5: the execution gates must NEVER move to requester trust. A vouch says
 # "this diff is worth reading", not "run this author's code". Structural,

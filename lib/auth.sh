@@ -1,19 +1,30 @@
 #!/usr/bin/env bash
-# Author-trust gating. Two callers in this codebase grant trust to GitHub
-# usernames who can ride into the review pipeline:
+# Author-trust gating. Trust is "has push access" — `admin`, `write`, or
+# `maintain` from the collaborators API. Two entry points, split by what the
+# caller does with the answer.
 #
-#   1. lib/review-one-pr.sh mirrors canonical's gitignored `.env*` files
-#      into the per-PR workdir before `just test` runs. Untrusted PR
-#      authors can otherwise modify a `just test` recipe to read those
-#      live API keys.
+# ACTING gates call `is_trusted_repo_author_live REPO USER` — never the cache.
+# Each is about to take an irreversible action on the strength of the verdict,
+# and each can fire long after a dispatcher warmed a cached one:
+#
+#   1. lib/review-one-pr.sh mirrors canonical's gitignored `.env*` files into
+#      the per-PR workdir before `just test` runs. Untrusted PR authors can
+#      otherwise modify a `just test` recipe to read those live API keys.
 #   2. review.sh stages the latest matching comment as
-#      `.codex-scratch/trigger-comment.md`. Intent inference and the
-#      aggregator weight that prose heavily on a pipeline that ends in
-#      `gh pr review --approve`, so untrusted commenters can otherwise
-#      shape the review.
+#      `.codex-scratch/trigger-comment.md`. Intent inference and the aggregator
+#      weight that prose heavily on a pipeline that ends in
+#      `gh pr review --approve`, so untrusted commenters can otherwise shape
+#      the review.
+#   3. poll-pr-actions.sh submits `/<prefix>-approve` as a real GitHub approval,
+#      and marks a rejection PERMANENTLY seen.
+#   4. learn-from-replies.sh applies `/<prefix>-memorize` to the shared rule
+#      corpus and pushes it, shaping every future review.
 #
-# Both gates call `is_trusted_repo_author REPO USER`. Trust is "has push
-# access" — `admin`, `write`, or `maintain` from the collaborators API.
+# ENUMERATION callers use the cached `is_trusted_repo_author` — they only decide
+# "is this PR worth looking at", and every action behind them re-checks live:
+# review.sh's per-tick author check (the one whose uncached cost tripped
+# GitHub's secondary limit, #233), review.sh's vouch candidate, and
+# lib/pr-comments.sh's per-commenter filter.
 #
 # TRI-STATE by exit code (the 2>/dev/null swallow used to make a 403
 # rate-limit indistinguishable from "untrusted", silently skipping a
