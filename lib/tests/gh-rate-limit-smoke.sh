@@ -689,9 +689,13 @@ ENTRYPOINTS=$(list_execstart_shell_scripts "$PROJECT_ROOT" "$PROJECT_ROOT"/syste
 [ "$(printf '%s\n' "$ENTRYPOINTS" | grep -c .)" -ge 6 ] \
     || fail "scenario 27a: derived only $(printf '%s\n' "$ENTRYPOINTS" | grep -c .) entrypoints — the unit derivation broke, so this asserts nothing"
 for _entry in $ENTRYPOINTS; do
-    # Spelling-independent enough to cover `log ()  {` and `function log {`,
-    # which the previous exact-match form let straight through.
-    grep -qE '^[[:space:]]*(function[[:space:]]+)?log[[:space:]]*\(?\)?[[:space:]]*\{' "$PROJECT_ROOT/$_entry" \
+    # Comment-stripped and FLATTENED before matching, so the brace may sit on the
+    # next line: `log()\n{` is ordinary bash and the single-line form let it
+    # straight through on every entrypoint that had no behaviour pin. One line
+    # covers all six; the per-entrypoint stdout captures in the org-sync and
+    # kid-refresh smokes stay as the behaviour backstop.
+    sed -e 's/#.*//' "$PROJECT_ROOT/$_entry" | tr '\n' ' ' \
+        | grep -qE '(^|[;&| ])(function[[:space:]]+)?log[[:space:]]*\(?\)?[[:space:]]*\{' \
         && fail "scenario 27a: $_entry shadows log() — state-io's already writes to LOG_FILE and TEES to stdout, so a local copy silently drops this unit's whole run out of journalctl"
 done
 
