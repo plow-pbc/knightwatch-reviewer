@@ -35,15 +35,12 @@ grep -q 'acquire_just_test_lock "\$STATE_DIR"' "$HERE/review-one-pr.sh" \
   || fail "just-test semaphore not on the shared STATE_DIR (global cap would break across containers)"
 grep -q 'CANONICAL_LOCK_DIR="\$LOCAL_STATE_DIR/canonical-locks"' "$HERE/review-one-pr.sh" \
   || fail "canonical lock not pointed at LOCAL_STATE_DIR (per-container)"
-# The author-trust verdict cache is the highest-value item in this split: a
-# trusted verdict mirrors canonical .env* into the workdir and lets `just test`
-# execute PR code, and the containers running that code mount the shared volume.
-# A shared store would let one compromised run plant a verdict and hold
-# fleet-wide push-access trust for a whole TTL, so the per-container property is
-# load-bearing security, not a preference — and without this it could be reverted
-# to $STATE_DIR with the entire suite still green.
+# The author-trust verdict cache holds ENUMERATION verdicts; every acting gate
+# re-checks live (lib/auth.sh), so this is dispatch isolation rather than an
+# authorization boundary. Per-container still keeps one compromised `just test`
+# run from steering its siblings' enumeration, and costs nothing.
 grep -q 'trust_cache_file() {.*LOCAL_STATE_DIR' "$HERE/state-io.sh" \
-  || fail "trust verdict cache not per-container — a shared store lets one compromised run grant fleet-wide push-access trust"
+  || fail "trust verdict cache not per-container — a shared store lets one compromised run steer every sibling container's enumeration"
 
 # The compose-render contract (external `claims` volume, KWR_CONFIG_DIR,
 # REPO_ENV_DIR, the per-unit mounts) lives in render-compose-smoke.sh, which

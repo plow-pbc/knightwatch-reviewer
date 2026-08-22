@@ -525,7 +525,7 @@ gh_tally_call api repos/o/r/collaborators/u2/permission --jq .permission
 rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log21"
 LOG_FILE="$TMP/log21" GH_QUOTA_REPORT_SECS=300 \
     GH_SHIM_BUCKETS="4977	$((NOW + 1200))	4775	$((NOW + 1200))	5000	5000" gh_quota_report
-grep -q '\[gh-quota\] core=4977/5000 (99%) graphql=4775/5000 (95%)' "$TMP/log21" \
+grep -q '\[gh-quota\] core=4977/5000 (99%, resets in 20m) graphql=4775/5000 (95%, resets in 20m)' "$TMP/log21" \
     || fail "scenario 21: no per-bucket headroom line — operators cannot see the budget: $(cat "$TMP/log21")"
 grep -q 'top callers: repos/\*/\*/collaborators/\*/permission=2' "$TMP/log21" \
     || fail "scenario 21: headroom without attribution is the whack-a-mole this replaces: $(cat "$TMP/log21")"
@@ -560,6 +560,18 @@ for row in "${WARN_MATRIX[@]}"; do
             || fail "scenario 22 [$label]: expected '$want' in: $(cat "$TMP/log-warn")"
     fi
 done
+# Each bucket carries ITS OWN reset. One countdown sourced from core used to be
+# printed after both, so a graphql-low warning handed the operator core's
+# recovery time — the wrong number for the depleted bucket. Distinct resets here
+# (core +600s, graphql +3000s) make a shared countdown visible.
+rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log-reset"
+LOG_FILE="$TMP/log-reset" GH_QUOTA_REPORT_SECS=0 GH_QUOTA_WARN_PCT=20 \
+    GH_SHIM_BUCKETS="4977	$((NOW + 600))	100	$((NOW + 3000))	5000	5000" gh_quota_report
+grep -q 'core=4977/5000 (99%, resets in 10m)' "$TMP/log-reset" \
+    || fail "scenario 22: core did not carry its own reset: $(cat "$TMP/log-reset")"
+grep -q 'graphql=100/5000 (2%, resets in 50m)' "$TMP/log-reset" \
+    || fail "scenario 22: the depleted graphql bucket did not carry ITS OWN reset — the operator gets the wrong recovery time: $(cat "$TMP/log-reset")"
+
 # A failed probe earns no line at all, but must still stamp — otherwise a
 # flapping API turns the report into a per-tick storm of its own.
 rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log-warn2"

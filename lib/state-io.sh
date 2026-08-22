@@ -161,18 +161,16 @@ mark_auth_offline() {
 # rather than guarded.
 gh_pause_file() { printf '%s' "${STATE_DIR:-$HOME/.pr-reviewer}/gh-rate-limited-until"; }
 
-# Author-trust verdict cache. PER-CONTAINER (LOCAL_STATE_DIR), deliberately not
-# the shared volume: this is authorization state — a trusted verdict is what
-# mirrors canonical .env* into the workdir and lets `just test` execute PR code.
-# The containers ARE the untrusted-input boundary (they run repo-supplied
-# scripts) and they mount /shared, so a shared store would let one compromised
-# run plant `{"org/repo|attacker": "<now>:0"}` and hold fleet-wide push-access
-# trust for the whole TTL — the same reasoning that makes gh_pause_file a
-# host-owned file bind, applied to a strictly higher-value store. Per-container
-# still collapses ~480 lookups/hour/PR to ~24 fleet-wide, which is far below
-# what tripped the limit; the extra reduction is not worth the escalation.
-# Falls back to STATE_DIR the same way lib/review-one-pr.sh does, so the host
-# timers and the smokes keep a working path.
+# Author-trust verdict cache. PER-CONTAINER (LOCAL_STATE_DIR), and the reason is
+# dispatch isolation, NOT an authorization boundary — this store no longer is
+# one. It holds enumeration verdicts only ("is this PR worth looking at"); every
+# acting gate re-checks live (lib/auth.sh), so a planted entry buys a wasted
+# dispatch that the worker's live check then rejects, not the ability to run
+# code. Keeping it off the shared volume still means one compromised `just test`
+# run cannot steer the other containers' enumeration, which is worth the zero
+# extra lines it costs — but it is not what stops a revoked collaborator, and
+# describing it that way would leave a false boundary standing as reviewed
+# policy. Falls back to STATE_DIR the same way lib/review-one-pr.sh does.
 trust_cache_file() { printf '%s' "${LOCAL_STATE_DIR:-${STATE_DIR:-$HOME/.pr-reviewer}}/trust-cache.json"; }
 
 # --- GitHub quota telemetry -------------------------------------------------
@@ -294,7 +292,10 @@ gh_quota_report() {
     top=$(gh_top_callers 3)
     core_pct=$(( GH_BUCKET_CORE_REM * 100 / GH_BUCKET_CORE_LIM ))
     gql_pct=$(( GH_BUCKET_GQL_REM * 100 / GH_BUCKET_GQL_LIM ))
-    log "[gh-quota] core=${GH_BUCKET_CORE_REM}/${GH_BUCKET_CORE_LIM} (${core_pct}%) graphql=${GH_BUCKET_GQL_REM}/${GH_BUCKET_GQL_LIM} (${gql_pct}%) reset in $(( (GH_BUCKET_CORE_RESET - now + 59) / 60 ))m${top:+ — top callers: $top}"
+    # Each bucket carries ITS OWN reset. A single countdown sourced from core was
+    # printed after both, so a graphql-low warning handed the operator core's
+    # recovery time — the wrong number for the bucket that is actually depleted.
+    log "[gh-quota] core=${GH_BUCKET_CORE_REM}/${GH_BUCKET_CORE_LIM} (${core_pct}%, resets in $(( (GH_BUCKET_CORE_RESET - now + 59) / 60 ))m) graphql=${GH_BUCKET_GQL_REM}/${GH_BUCKET_GQL_LIM} (${gql_pct}%, resets in $(( (GH_BUCKET_GQL_RESET - now + 59) / 60 ))m)${top:+ — top callers: $top}"
     # Warn on EITHER bucket: GraphQL is the loaded one here (gh pr view per
     # worker, gh pr list per repo — lib/gh-retry.sh), so a core-only gate could
     # watch it drain in silence. Headroom cannot predict a SECONDARY limit —

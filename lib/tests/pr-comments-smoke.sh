@@ -132,41 +132,14 @@ echo "$OUT" | grep -qF "<!-- decline:class=session-scoping -->" || { echo "FAIL:
 # ...and NO operator-marker section is emitted (the channel was deleted).
 echo "$OUT" | grep -qF "Operator decline markers" && { echo "FAIL: deleted marker section re-emitted"; echo "$OUT"; exit 1; } || true
 
-# --- fixture 5: an unverifiable commenter makes the thread say so ---
-# rc=2 is not "untrusted". During an active rate-limit pause gh_retry
-# short-circuits with an EMPTY errfile, so the 404 marker cannot match and EVERY
-# commenter probe returns 2 — the thread would collapse to the operator alone
-# while still asserting it carries every trusted comment, and the pipeline would
-# re-raise probes the participants already answered. Absence must not read as
-# silence, so the document has to admit it is partial.
-echo "  fixture 5: an unverifiable commenter marks the thread INCOMPLETE..."
-PARTIAL=$(_pr_comments_from_json "$SAMPLE" "srosro" 2)
-echo "$PARTIAL" | grep -qF "INCOMPLETE" || {
-    echo "FAIL fixture 5: a thread missing 2 unverifiable commenters did not say it was incomplete"
-    echo "got: $PARTIAL"
-    exit 1
-}
-echo "$PARTIAL" | grep -qF "does NOT mean nobody answered" || {
-    echo "FAIL fixture 5: the notice does not tell the consuming stages how to weigh the gap"
-    echo "got: $PARTIAL"
-    exit 1
-}
-# ...and a complete thread must NOT carry the warning, or it is noise.
-COMPLETE=$(_pr_comments_from_json "$SAMPLE" "srosro" 0)
-echo "$COMPLETE" | grep -qF "INCOMPLETE" && {
-    echo "FAIL fixture 5: a complete thread claimed to be incomplete"
-    exit 1
-}
-
-# --- fixture 6: the rc=2 diagnostic must never reach the DOCUMENT ---
+# --- fixture 5: unverifiable participants, end to end through the real wrapper ---
 # fetch_pr_comments' stdout IS pr-comments.md, and log() tees to stdout, so a
-# bare log call prepends a raw timestamped line ahead of `# PR comments` — one
-# per participant under the very pause that guarantees rc=2 — and turns the
-# empty-thread output into something that is no longer the sentinel the
-# prompt-input contract depends on. Drive the real wrapper with stubs.
-echo "  fixture 6: an unverifiable commenter's diagnostic goes to stderr, not into the document..."
-# Its own fixture, not whichever $SAMPLE an earlier block last assigned — this
-# needs a non-operator commenter to probe, or nothing is unverifiable.
+# bare log call would prepend a raw timestamped line ahead of `# PR comments` —
+# one per participant under the very pause that guarantees rc=2. And a thread
+# emptied by unverifiable commenters must NOT collapse to the sentinel: that
+# would tell the next review nobody replied, which is the failure the notice
+# exists to prevent.
+echo "  fixture 5: unverifiable commenters — diagnostic to stderr, thread marked INCOMPLETE, never the sentinel..."
 PARTIAL_JSON='[{"user":{"login":"srosro"},"created_at":"2026-05-01T07:00:00Z","body":"operator note"},{"user":{"login":"pr-author"},"created_at":"2026-05-01T08:00:00Z","body":"Re Probe 2: fixed in abc123."}]'
 fetch_issue_comments() { printf '%s' "$PARTIAL_JSON"; }
 is_trusted_repo_author_live() { return 2; }   # every probe unverifiable, as an active pause guarantees
@@ -174,20 +147,39 @@ LOG_FILE=""; export LOG_FILE
 DOC=$(BOT_USER=srosro fetch_pr_comments "cncorp/plow" 1 2>/dev/null)
 case "$DOC" in
     "# PR comments"*) ;;
-    *) echo "FAIL fixture 6: the document does not start with its heading — a diagnostic leaked into stdout"; printf '%s
-' "$DOC" | head -3; exit 1 ;;
+    *) echo "FAIL fixture 5: the document does not start with its heading — a diagnostic leaked into stdout"; printf '%s\n' "$DOC" | head -3; exit 1 ;;
 esac
-# Match the LOG line's own shape, not the phrase — the incomplete notice
-# legitimately contains "could not be trust-verified" too.
+# Match the LOG line's own shape, not the phrase — the notice legitimately
+# contains "could not be trust-verified" too.
 printf '%s' "$DOC" | grep -q 'pr-comments: @' && {
-    echo "FAIL fixture 6: the rc=2 diagnostic was written into the staged document"; exit 1; }
+    echo "FAIL fixture 5: the rc=2 diagnostic was written into the staged document"; exit 1; }
 printf '%s' "$DOC" | grep -qF 'INCOMPLETE' || {
-    echo "FAIL fixture 6: the document did not carry the incomplete notice"; exit 1; }
-# ...and the empty-thread path must still be exactly the sentinel.
+    echo "FAIL fixture 5: the document did not carry the incomplete notice"; exit 1; }
+printf '%s' "$DOC" | grep -qF 'does NOT mean nobody answered' || {
+    echo "FAIL fixture 5: the notice lost the guidance telling stages how to weigh the gap"; exit 1; }
+
+# The bug this fixture exists for: with the SOLE participant unverifiable and no
+# operator comment, the thread filters to empty — and the sentinel would report
+# that as "nobody commented".
+SOLE_JSON='[{"user":{"login":"pr-author"},"created_at":"2026-05-01T08:00:00Z","body":"Re Probe 2: already fixed, please re-check."}]'
+fetch_issue_comments() { printf '%s' "$SOLE_JSON"; }
+SOLE_DOC=$(BOT_USER=srosro fetch_pr_comments "cncorp/plow" 1 2>/dev/null)
+[ "$SOLE_DOC" = "(no PR comments)" ] && {
+    echo "FAIL fixture 5: a thread emptied by an UNVERIFIABLE participant reported as 'no comments' — the next review reads an existing reply as silence"; exit 1; }
+printf '%s' "$SOLE_DOC" | grep -qF 'INCOMPLETE' || {
+    echo "FAIL fixture 5: the emptied thread did not say it was incomplete"; printf '%s\n' "$SOLE_DOC"; exit 1; }
+
+# A COMPLETE thread must stay quiet, or the notice is noise.
+fetch_issue_comments() { printf '%s' "$PARTIAL_JSON"; }
+is_trusted_repo_author_live() { return 0; }
+COMPLETE_DOC=$(BOT_USER=srosro fetch_pr_comments "cncorp/plow" 1 2>/dev/null)
+printf '%s' "$COMPLETE_DOC" | grep -qF 'INCOMPLETE' && {
+    echo "FAIL fixture 5: a complete thread claimed to be incomplete"; exit 1; }
+
+# ...and a genuinely empty thread is still exactly the sentinel.
 fetch_issue_comments() { printf '%s' '[]'; }
 EMPTY_DOC=$(BOT_USER=srosro fetch_pr_comments "cncorp/plow" 1 2>/dev/null)
 [ "$EMPTY_DOC" = "(no PR comments)" ] || {
-    echo "FAIL fixture 6: the empty-thread output is no longer the sentinel"; printf '%s
-' "$EMPTY_DOC"; exit 1; }
+    echo "FAIL fixture 5: a genuinely empty thread is no longer the sentinel"; printf '%s\n' "$EMPTY_DOC"; exit 1; }
 
 echo "  PASS"

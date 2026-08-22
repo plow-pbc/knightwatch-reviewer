@@ -183,34 +183,35 @@ MOCK_PERM_MODE=role MOCK_PERM_ROLE=write is_trusted_repo_author "cncorp/plow" "c
     || { echo "FAIL scenario 10: expected 1 API call across 2 lookups, got $(grep -c '^API' "$GH_API_LOG")"; exit 1; }
 
 reset_gh_pause; reset_trust_cache
-echo "  scenario 11: an INDETERMINATE (403) verdict is never cached..."
-: > "$GH_API_LOG"
-set +e
-GH_API_RETRY_MAX=1 MOCK_PERM_MODE=403 is_trusted_repo_author "cncorp/plow" "flaky"
-got=$?
-set -e
-[ "$got" = 2 ] || { echo "FAIL scenario 11: expected rc=2, got $got"; exit 1; }
-reset_gh_pause
-MOCK_PERM_MODE=role MOCK_PERM_ROLE=write is_trusted_repo_author "cncorp/plow" "flaky" \
-    || { echo "FAIL scenario 11: a cached indeterminate froze the verdict — must re-probe"; exit 1; }
-[ "$(grep -c '^API' "$GH_API_LOG")" = "2" ] \
-    || { echo "FAIL scenario 11: expected 2 API calls (403 then re-probe), got $(grep -c '^API' "$GH_API_LOG")"; exit 1; }
+echo "  scenario 11: a NON-trusted verdict is never cached — one table, both kinds..."
+# Only rc=0 is stored. rc=2 is not a verdict at all (freezing "the API did not
+# answer" would make a throttled lookup read as settled), and a cached rc=1 is
+# worse than no cache: poll-pr-actions.sh marks a rejected /approve PERMANENTLY
+# seen, so one negative lookup would drop a promoted collaborator's approvals
+# forever. Both rows: probe, then re-probe as trusted and require it to take.
+# Columns: label|MOCK_PERM_MODE|MOCK_PERM_ROLE|expected rc|login
+UNCACHED_MATRIX=(
+    "indeterminate-403|403||2|flaky"
+    "untrusted|role|none|1|promoted"
+)
+for row in "${UNCACHED_MATRIX[@]}"; do
+    IFS='|' read -r label mode role want user <<<"$row"
+    reset_gh_pause; reset_trust_cache; : > "$GH_API_LOG"
+    set +e
+    GH_API_RETRY_MAX=1 MOCK_PERM_MODE="$mode" MOCK_PERM_ROLE="$role" \
+        is_trusted_repo_author "cncorp/plow" "$user"
+    got=$?
+    set -e
+    [ "$got" = "$want" ] || { echo "FAIL scenario 11 [$label]: expected rc=$want, got rc=$got"; exit 1; }
+    reset_gh_pause
+    MOCK_PERM_MODE=role MOCK_PERM_ROLE=write is_trusted_repo_author "cncorp/plow" "$user" \
+        || { echo "FAIL scenario 11 [$label]: the non-trusted verdict was cached and survived a re-probe"; exit 1; }
+    [ "$(grep -c '^API' "$GH_API_LOG")" = "2" ] \
+        || { echo "FAIL scenario 11 [$label]: expected 2 API calls (nothing cached), got $(grep -c '^API' "$GH_API_LOG")"; exit 1; }
+done
 
 reset_gh_pause; reset_trust_cache
-echo "  scenario 12: an UNTRUSTED verdict is never cached — a promotion must take effect..."
-# A cached rc=1 is worse than no cache: poll-pr-actions.sh marks a rejected
-# /approve PERMANENTLY seen, so a collaborator promoted after one negative
-# lookup would have their approvals silently dropped forever.
-: > "$GH_API_LOG"
-MOCK_PERM_MODE=role MOCK_PERM_ROLE=none is_trusted_repo_author "cncorp/plow" "promoted" \
-    && { echo "FAIL scenario 12: expected untrusted"; exit 1; } || true
-MOCK_PERM_MODE=role MOCK_PERM_ROLE=write is_trusted_repo_author "cncorp/plow" "promoted" \
-    || { echo "FAIL scenario 12: a cached untrusted verdict survived a promotion"; exit 1; }
-[ "$(grep -c '^API' "$GH_API_LOG")" = "2" ] \
-    || { echo "FAIL scenario 12: expected 2 API calls (untrusted is not cached), got $(grep -c '^API' "$GH_API_LOG")"; exit 1; }
-
-reset_gh_pause; reset_trust_cache
-echo "  scenario 13: the LIVE admission check never reads the cache..."
+echo "  scenario 12: the LIVE admission check never reads the cache..."
 # The worker mirrors credentials and executes PR code up to ~40 min after the
 # dispatcher warmed the cache. Serving that gate from cache would let a
 # collaborator revoked inside the window still run code, so the live entry point
@@ -218,19 +219,19 @@ echo "  scenario 13: the LIVE admission check never reads the cache..."
 # API say otherwise and requiring the live call to see it.
 : > "$GH_API_LOG"
 MOCK_PERM_MODE=role MOCK_PERM_ROLE=write is_trusted_repo_author "cncorp/plow" "revoked" \
-    || { echo "FAIL scenario 13: expected the warm-up lookup to be trusted"; exit 1; }
+    || { echo "FAIL scenario 12: expected the warm-up lookup to be trusted"; exit 1; }
 MOCK_PERM_MODE=404 is_trusted_repo_author_live "cncorp/plow" "revoked" \
-    && { echo "FAIL scenario 13: the live check served a cached verdict — a revoked collaborator would still execute code"; exit 1; } || true
+    && { echo "FAIL scenario 12: the live check served a cached verdict — a revoked collaborator would still execute code"; exit 1; } || true
 [ "$(grep -c '^API' "$GH_API_LOG")" = "2" ] \
-    || { echo "FAIL scenario 13: the live check did not hit the API, got $(grep -c '^API' "$GH_API_LOG") call(s)"; exit 1; }
+    || { echo "FAIL scenario 12: the live check did not hit the API, got $(grep -c '^API' "$GH_API_LOG") call(s)"; exit 1; }
 # ...and the cached wrapper still answers from cache, so the volume fix stands.
 MOCK_PERM_MODE=404 is_trusted_repo_author "cncorp/plow" "revoked" \
-    || { echo "FAIL scenario 13: the cached wrapper stopped caching — the per-tick storm returns"; exit 1; }
+    || { echo "FAIL scenario 12: the cached wrapper stopped caching — the per-tick storm returns"; exit 1; }
 [ "$(grep -c '^API' "$GH_API_LOG")" = "2" ] \
-    || { echo "FAIL scenario 13: the cached wrapper made an extra API call"; exit 1; }
+    || { echo "FAIL scenario 12: the cached wrapper made an extra API call"; exit 1; }
 
 reset_gh_pause; reset_trust_cache
-echo "  scenario 14: an EXPIRED entry re-probes — the TTL is the only bound on a revoked verdict..."
+echo "  scenario 13: an EXPIRED entry re-probes — the TTL is the only bound on a revoked verdict..."
 # Every other scenario drives a FRESH entry, so deleting the age comparison
 # outright left all of them green — and an unbounded cache is a permanent
 # trusted verdict, not a degraded one. Seed a stale entry directly (it is a bare
@@ -238,25 +239,25 @@ echo "  scenario 14: an EXPIRED entry re-probes — the TTL is the only bound on
 : > "$GH_API_LOG"
 seen_set_value "$(trust_cache_file)" "cncorp/plow|stale" "$(( $(date +%s) - 1000 ))"
 MOCK_PERM_MODE=404 is_trusted_repo_author "cncorp/plow" "stale" \
-    && { echo "FAIL scenario 14: a 1000s-old entry was served — the TTL bound is gone, so a revoked verdict never expires"; exit 1; } || true
+    && { echo "FAIL scenario 13: a 1000s-old entry was served — the TTL bound is gone, so a revoked verdict never expires"; exit 1; } || true
 [ "$(grep -c '^API' "$GH_API_LOG")" = "1" ] \
-    || { echo "FAIL scenario 14: an expired entry did not re-probe, got $(grep -c '^API' "$GH_API_LOG") API call(s)"; exit 1; }
+    || { echo "FAIL scenario 13: an expired entry did not re-probe, got $(grep -c '^API' "$GH_API_LOG") API call(s)"; exit 1; }
 # ...and a fresh entry still serves, so the volume fix is intact.
 : > "$GH_API_LOG"
 seen_set_value "$(trust_cache_file)" "cncorp/plow|fresh" "$(date +%s)"
 MOCK_PERM_MODE=404 is_trusted_repo_author "cncorp/plow" "fresh" \
-    || { echo "FAIL scenario 14: a fresh entry was not served — the per-tick storm returns"; exit 1; }
+    || { echo "FAIL scenario 13: a fresh entry was not served — the per-tick storm returns"; exit 1; }
 [ "$(grep -c '^API' "$GH_API_LOG")" = "0" ] \
-    || { echo "FAIL scenario 14: a fresh entry still hit the API"; exit 1; }
+    || { echo "FAIL scenario 13: a fresh entry still hit the API"; exit 1; }
 
 reset_gh_pause; reset_trust_cache
-echo "  scenario 15: the cache is keyed per (repo,user) — no cross-talk..."
+echo "  scenario 14: the cache is keyed per (repo,user) — no cross-talk..."
 : > "$GH_API_LOG"
 MOCK_PERM_MODE=role MOCK_PERM_ROLE=write is_trusted_repo_author "cncorp/plow" "alice" \
-    || { echo "FAIL scenario 15: alice should be trusted"; exit 1; }
+    || { echo "FAIL scenario 14: alice should be trusted"; exit 1; }
 MOCK_PERM_MODE=role MOCK_PERM_ROLE=none is_trusted_repo_author "cncorp/plow" "mallory" \
-    && { echo "FAIL scenario 15: mallory must NOT inherit alice's cached verdict"; exit 1; } || true
+    && { echo "FAIL scenario 14: mallory must NOT inherit alice's cached verdict"; exit 1; } || true
 MOCK_PERM_MODE=role MOCK_PERM_ROLE=none is_trusted_repo_author "othercorp/plow" "alice" \
-    && { echo "FAIL scenario 15: alice's verdict must not cross repos"; exit 1; } || true
+    && { echo "FAIL scenario 14: alice's verdict must not cross repos"; exit 1; } || true
 
-echo "  PASS (15 scenarios: trust-tristate-matrix[9 rows: 3×trusted/2×untrusted/404/403/5xx/empty], indeterminate-defers-not-trusted, trust-empty, approval-self-skipped, approval-success, approval-failure-fail-loud, just-test run/untrusted-skip/no-justfile, trust-cache hit/indeterminate-never-cached/untrusted-never-cached/live-bypasses-cache/expired-re-probes/keyed-per-repo-user)"
+echo "  PASS (14 scenarios: trust-tristate-matrix[9 rows: 3×trusted/2×untrusted/404/403/5xx/empty], indeterminate-defers-not-trusted, trust-empty, approval-self-skipped, approval-success, approval-failure-fail-loud, just-test run/untrusted-skip/no-justfile, trust-cache hit/non-trusted-never-cached[403+untrusted]/live-bypasses-cache/expired-re-probes/keyed-per-repo-user)"
