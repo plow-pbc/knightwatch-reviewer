@@ -686,18 +686,19 @@ for _entry in review-loop.sh poll-pr-actions.sh learn-from-replies.sh org-sync.s
         || fail "scenario 27b: $_entry spends the shared PAT but never CALLS gh_quota_report — the cap becomes its only reaper and a crossing blanks the next 403's attribution"
     # And it must come after LOG_FILE, or the report and its headroom WARNING go
     # to stdout only and never reach the file the operator tails.
-    # Match the sink forms actually in use, not just LOG_FILE=: org-sync.sh names
-    # its sink LOG= and defines its own log() override, so a LOG_FILE-only match
-    # SKIPPED the one entrypoint carrying the identical bug — its call works only
-    # because the override is defined above it. A skip that reads as a pass is
-    # the same inert-guard shape this scenario exists to retire.
+    # Where logging becomes usable differs by entrypoint, so match that, not one
+    # spelling. A script that sets LOG_FILE= binds state-io's log(), which TEES to
+    # the file and stdout from that line on — its own later log() override is not
+    # a boundary (moving the call under bakeoff's override would drop the line out
+    # of journalctl, which is that unit's only visible quota signal). A script that
+    # names its sink otherwise — org-sync's LOG= — leaves LOG_FILE unset, so
+    # state-io's log() is stdout-only until that script's own override is defined,
+    # and the override IS the boundary there.
     # `|| true`: this suite runs `set -e` with pipefail, so a grep miss would
     # otherwise kill the script silently.
-    # LAST sink line, not the first: org-sync sets LOG= early but defines its own
-    # log() override later, and the override is the point after which logging is
-    # actually established — anchoring to the first match would let a call sit
-    # between them and still pass.
-    _log_ln=$(grep -nE '^[[:space:]]*(LOG_FILE=|LOG=|log\(\)[[:space:]]*\{)' "$PROJECT_ROOT/$_entry" | tail -1 | cut -d: -f1) || true
+    _log_ln=$(grep -nE '^[[:space:]]*LOG_FILE=' "$PROJECT_ROOT/$_entry" | head -1 | cut -d: -f1) || true
+    [ -n "$_log_ln" ] \
+        || _log_ln=$(grep -nE '^[[:space:]]*log\(\)[[:space:]]*\{' "$PROJECT_ROOT/$_entry" | tail -1 | cut -d: -f1) || true
     # review-loop.sh is the ONE entrypoint whose sink is legitimately stdout (the
     # container stream); any other with no sink line means the match drifted, and
     # that must fail rather than quietly skip the ordering check.

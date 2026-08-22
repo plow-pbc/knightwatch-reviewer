@@ -51,19 +51,15 @@ require_repos
 # scan below anchors on. Same definition the trigger/vouch/staging selectors use.
 . "$REVIEWER_LIB_DIR/gh-comments.sh"
 
-# Quota headroom + attribution, self-throttled to one emission per
-# GH_QUOTA_REPORT_SECS. Here as well as in the containers because these timers
-# spend the SAME PAT (#233): draining the shared tally on the host's happy path
-# is what keeps the writer-side cap an unreachable backstop rather than the only
-# reaper — without it a cap crossing zeroes the window and the next 403 logs its
-# diagnostic with no attribution at all. It also gives the host half quota
-# logging it otherwise never gets. /rate_limit spends no quota.
-log() { echo "[$(date -u +%FT%TZ)] $*" >> "$LOG_FILE"; }
-
-# BELOW the log() override, like the other host entrypoints: above it the report
-# and its headroom WARNING bind to state-io's log(), which with LOG_FILE unset in
-# this shell writes to stdout only — journal, never this script's own log.
+# ABOVE this file's log() override, and that is correct here: LOG_FILE is set at
+# the top of this script, so the report binds to state-io's log(), which tees to
+# bakeoff.log AND stdout. The override below writes to the file without a tee, so
+# moving the call under it would silently drop the [gh-quota] line and its
+# headroom WARNING out of `journalctl -u pr-reviewer-bakeoff` — this unit fires
+# twice a night, and that journal line is its only visible quota signal.
 gh_quota_report
+
+log() { echo "[$(date -u +%FT%TZ)] $*" >> "$LOG_FILE"; }
 
 store_init "$DB_FILE"
 

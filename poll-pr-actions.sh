@@ -22,19 +22,19 @@ REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 . "$REVIEWER_LIB_DIR/bootstrap.sh"
 . "$REVIEWER_LIB_DIR/pr-enumerate.sh"
 
+require_tracked_targets
+LOG_FILE="${LOG_FILE:-$STATE_DIR/poll.log}"
 # Quota headroom + attribution, self-throttled to one emission per
 # GH_QUOTA_REPORT_SECS. Here as well as in the containers because these timers
 # spend the SAME PAT (#233): draining the shared tally on the host's happy path
-# is what keeps the writer-side cap an unreachable backstop rather than the only
-# reaper — without it a cap crossing zeroes the window and the next 403 logs its
-# diagnostic with no attribution at all. It also gives the host half quota
-# logging it otherwise never gets. /rate_limit spends no quota.
-require_tracked_targets
-LOG_FILE="${LOG_FILE:-$STATE_DIR/poll.log}"
-# Placed AFTER LOG_FILE: log() only tees when LOG_FILE is non-empty, and the unit
-# sets only HOME/PATH — above this line the report and its headroom WARNING go to
-# stdout alone, so they reach the journal and never the log file the operator
-# tails. This timer fires every 2 min, so it is the host half's dominant reporter.
+# keeps the writer-side cap an unreachable backstop rather than the only reaper —
+# without it a crossing zeroes the window and the next 403 logs with no
+# attribution. /rate_limit spends no quota.
+#
+# AFTER LOG_FILE, deliberately: state-io's log() only tees to a file when
+# LOG_FILE is set, and these units set only HOME/PATH, so above that line the
+# report and its headroom WARNING would go to stdout alone — journal, never the
+# log the operator tails.
 gh_quota_report
 APPROVES_SEEN_FILE="${APPROVES_SEEN_FILE:-$STATE_DIR/approves-seen.json}"
 RR_SEEN_FILE="${RR_SEEN_FILE:-$STATE_DIR/re-request-seen.json}"

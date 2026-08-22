@@ -29,20 +29,20 @@ set -o pipefail
 REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 . "$REVIEWER_LIB_DIR/bootstrap.sh"
 
-# Quota headroom + attribution, self-throttled to one emission per
-# GH_QUOTA_REPORT_SECS. Here as well as in the containers because these timers
-# spend the SAME PAT (#233): draining the shared tally on the host's happy path
-# is what keeps the writer-side cap an unreachable backstop rather than the only
-# reaper — without it a cap crossing zeroes the window and the next 403 logs its
-# diagnostic with no attribution at all. It also gives the host half quota
-# logging it otherwise never gets. /rate_limit spends no quota.
 require_repos
 REPLIES_SEEN_FILE="${REPLIES_SEEN_FILE:-$STATE_DIR/replies-seen.json}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/learn.log}"
-# Placed AFTER LOG_FILE: log() only tees when LOG_FILE is non-empty, and the unit
-# sets only HOME/PATH — above this line the report and its headroom WARNING go to
-# stdout alone, so they reach the journal and never the log file the operator
-# tails. This timer fires every 2 min, so it is the host half's dominant reporter.
+# Quota headroom + attribution, self-throttled to one emission per
+# GH_QUOTA_REPORT_SECS. Here as well as in the containers because these timers
+# spend the SAME PAT (#233): draining the shared tally on the host's happy path
+# keeps the writer-side cap an unreachable backstop rather than the only reaper —
+# without it a crossing zeroes the window and the next 403 logs with no
+# attribution. /rate_limit spends no quota.
+#
+# AFTER LOG_FILE, deliberately: state-io's log() only tees to a file when
+# LOG_FILE is set, and these units set only HOME/PATH, so above that line the
+# report and its headroom WARNING would go to stdout alone — journal, never the
+# log the operator tails.
 gh_quota_report
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
 
