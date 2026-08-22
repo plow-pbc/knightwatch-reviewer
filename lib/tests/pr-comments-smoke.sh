@@ -195,7 +195,13 @@ BOT_DOC=$(BOT_USER=srosro fetch_pr_comments "cncorp/plow" 1 2>/dev/null)
 # fixture appended below silently runs against "no comments" and "trusts
 # everyone" — passing while testing nothing. This file has grown by an appended
 # fixture three commits running, so the cleanup is the load-bearing part.
-unset -f fetch_issue_comments is_trusted_repo_author_live
+# Re-source, don't `unset -f`: bash definitions don't stack, so unsetting DELETES
+# the real functions rather than restoring them. A later fixture that stubs
+# fetch_issue_comments and leans on the real trust gate would then get rc=127 —
+# neither 0 nor 2 — so the login is dropped with unverified still 0, the thread
+# collapses to the sentinel, and an "untrusted commenter excluded" assertion
+# passes vacuously. Same class, different door.
+. "$PROJECT_ROOT/lib/pr-comments.sh"
 unset LOG_FILE
 
 echo "  PASS"

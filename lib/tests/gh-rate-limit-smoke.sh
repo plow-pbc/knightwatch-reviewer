@@ -659,7 +659,27 @@ BYTES=$(wc -c < "$(gh_tally_file)")
 # is deterministic — it IS the stranded writer.
 grep -q 'STRANDED_WRITER_PROBE' "$(gh_tally_file)" \
     || fail "scenario 27: a writer holding the tally open before the trim lost its append — the trim replaced the file, which under the bind strands every running container on the orphaned inode"
+# A crossing must not leave the incident log with NO attribution. The cap is a
+# backstop — both halves drain the window on their happy path — but when it does
+# fire, the calls after it still have to render: blank attribution on a 403 is a
+# worse operator outcome than a duplicated stale sample.
+gh_tally_call api "repos/o/r/collaborators/u/permission" --jq .permission
+gh_tally_call api "repos/o/r/collaborators/u2/permission" --jq .permission
+TOP_AFTER_CAP=$(gh_top_callers 3)
+[ -n "$TOP_AFTER_CAP" ] \
+    || fail "scenario 27: after a cap crossing the attribution rendered EMPTY — a 403 would log its diagnostic with no top callers at all"
 : > "$(gh_tally_file)"
+: > "$(gh_tally_file)"
+
+echo "  scenario 27b: every gh-spending entrypoint drains the shared tally..."
+# The tally is shared with the host timers (one PAT), so if a half stops calling
+# gh_quota_report the writer-side cap silently becomes that half's ONLY reaper —
+# and a crossing then blanks the attribution on its next 403. Derived from the
+# units that actually run, not a hand-list.
+for _entry in review-loop.sh poll-pr-actions.sh learn-from-replies.sh org-sync.sh specialist-bakeoff.sh; do
+    grep -q 'gh_quota_report' "$PROJECT_ROOT/$_entry" \
+        || fail "scenario 27b: $_entry spends the shared PAT but never calls gh_quota_report — the cap becomes its only reaper and a crossing blanks the next 403's attribution"
+done
 
 echo "  scenario 28: review-loop.sh loads the token before it can report quota..."
 # gh_quota_report runs `gh api rate_limit` in review-loop.sh's OWN shell, but

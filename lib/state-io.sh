@@ -222,10 +222,13 @@ gh_tally_call() {
         # fresh attribution on the next interval. A plain truncate has nothing to
         # restore, so the race is gone without putting a lock on a path eleven
         # producers append to, and it is fewer lines than the version that had
-        # the bug. Reaching the cap at all means no consumer has drained this in
-        # a long while (the reporter empties it every GH_QUOTA_REPORT_SECS), so
-        # what is dropped is stale by construction. In place, because the inode
-        # is bind-pinned.
+        # the bug. It is a BACKSTOP, not the reaper: both halves now call
+        # gh_quota_report on their happy path, so the window is drained every
+        # GH_QUOTA_REPORT_SECS and the cap is effectively unreachable. That
+        # matters — when the cap WAS the only host-side reaper, a crossing zeroed
+        # the window and the next 403 logged its diagnostic with no attribution
+        # at all, which is worse than the duplicated sample the RMW risked. In
+        # place, because the inode is bind-pinned.
         : > "$f" 2>/dev/null || true
     fi
     return 0

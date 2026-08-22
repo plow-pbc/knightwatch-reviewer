@@ -275,7 +275,7 @@ EOF
       - $SECRETS_REF/$acct:/root/.codex          # writable: codex refreshes its OAuth token in-home
       - $SECRETS_REF/manifest:/shared/manifest:ro
       - $GH_PAUSE_REF:/shared/gh-rate-limited-until   # the ONE pause both halves write; a FILE bind, so the inode is pinned (lib/state-io.sh)
-      - $GH_TALLY_REF:/shared/gh-call-tally           # the ONE call tally both halves append to; a FILE bind, so the inode is pinned (lib/state-io.sh)
+      - $GH_TALLY_REF:/shared/gh-call-tally           # the ONE call tally both halves append to; a FILE bind, inode pinned. UNLIKE the pause above: lossy telemetry, appended unlocked and truncated in place (lib/state-io.sh)
       - $SECRETS_REF/config.env:/root/.kwr/config.env:ro
       - $SECRETS_REF/repo-env:/root/.kwr/repo-env:ro
       - $SECRETS_REF/claude-standards:/root/.claude:ro

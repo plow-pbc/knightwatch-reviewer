@@ -51,6 +51,15 @@ require_repos
 # scan below anchors on. Same definition the trigger/vouch/staging selectors use.
 . "$REVIEWER_LIB_DIR/gh-comments.sh"
 
+# Quota headroom + attribution, self-throttled to one emission per
+# GH_QUOTA_REPORT_SECS. Here as well as in the containers because these timers
+# spend the SAME PAT (#233): draining the shared tally on the host's happy path
+# is what keeps the writer-side cap an unreachable backstop rather than the only
+# reaper — without it a cap crossing zeroes the window and the next 403 logs its
+# diagnostic with no attribution at all. It also gives the host half quota
+# logging it otherwise never gets. /rate_limit spends no quota.
+gh_quota_report
+
 log() { echo "[$(date -u +%FT%TZ)] $*" >> "$LOG_FILE"; }
 
 store_init "$DB_FILE"

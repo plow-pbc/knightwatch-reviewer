@@ -21,6 +21,15 @@ set -o pipefail
 REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 . "$REVIEWER_LIB_DIR/bootstrap.sh"
 . "$REVIEWER_LIB_DIR/pr-enumerate.sh"
+
+# Quota headroom + attribution, self-throttled to one emission per
+# GH_QUOTA_REPORT_SECS. Here as well as in the containers because these timers
+# spend the SAME PAT (#233): draining the shared tally on the host's happy path
+# is what keeps the writer-side cap an unreachable backstop rather than the only
+# reaper — without it a cap crossing zeroes the window and the next 403 logs its
+# diagnostic with no attribution at all. It also gives the host half quota
+# logging it otherwise never gets. /rate_limit spends no quota.
+gh_quota_report
 require_tracked_targets
 LOG_FILE="${LOG_FILE:-$STATE_DIR/poll.log}"
 APPROVES_SEEN_FILE="${APPROVES_SEEN_FILE:-$STATE_DIR/approves-seen.json}"
