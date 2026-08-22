@@ -694,8 +694,18 @@ for _entry in $ENTRYPOINTS; do
     # straight through on every entrypoint that had no behaviour pin. One line
     # covers all six; the per-entrypoint stdout captures in the org-sync and
     # kid-refresh smokes stay as the behaviour backstop.
-    sed -e 's/#.*//' "$PROJECT_ROOT/$_entry" | tr '\n' ' ' \
-        | grep -qE '(^|[;&| ])(function[[:space:]]+)?log[[:space:]]*\(?\)?[[:space:]]*\{' \
+    # Herestring, not `sed … | grep -q` — this file bans that shape at the seam
+    # fence below, recording it as a ~1-in-12 flake: grep -q exits on first match,
+    # sed takes SIGPIPE, and under pipefail the PIPELINE reports failure. Here the
+    # consequence is worse than there — a 141 short-circuits the `&&`, so a real
+    # shadow is reported as CLEAN, on the one check whose whole point is not being
+    # inert. (It happens not to fire today only because `tr` leaves the stream
+    # newline-free, so grep cannot complete a line before EOF. Accidental.)
+    _flat_src=$(sed -e 's/#.*//' "$PROJECT_ROOT/$_entry" | tr '\n' ' ')
+    # Non-word boundary rather than an enumerated punctuation set: `[;&| ]` took a
+    # space but not a TAB or a `(`, so a tab-indented or subshell-nested
+    # definition would have walked past — the same evasion class, respelled.
+    grep -qE '(^|[^A-Za-z0-9_])(function[[:space:]]+)?log[[:space:]]*\(?\)?[[:space:]]*\{' <<<"$_flat_src" \
         && fail "scenario 27a: $_entry shadows log() — state-io's already writes to LOG_FILE and TEES to stdout, so a local copy silently drops this unit's whole run out of journalctl"
 done
 
