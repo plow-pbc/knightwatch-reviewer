@@ -158,4 +158,36 @@ echo "$COMPLETE" | grep -qF "INCOMPLETE" && {
     exit 1
 }
 
+# --- fixture 6: the rc=2 diagnostic must never reach the DOCUMENT ---
+# fetch_pr_comments' stdout IS pr-comments.md, and log() tees to stdout, so a
+# bare log call prepends a raw timestamped line ahead of `# PR comments` — one
+# per participant under the very pause that guarantees rc=2 — and turns the
+# empty-thread output into something that is no longer the sentinel the
+# prompt-input contract depends on. Drive the real wrapper with stubs.
+echo "  fixture 6: an unverifiable commenter's diagnostic goes to stderr, not into the document..."
+# Its own fixture, not whichever $SAMPLE an earlier block last assigned — this
+# needs a non-operator commenter to probe, or nothing is unverifiable.
+PARTIAL_JSON='[{"user":{"login":"srosro"},"created_at":"2026-05-01T07:00:00Z","body":"operator note"},{"user":{"login":"pr-author"},"created_at":"2026-05-01T08:00:00Z","body":"Re Probe 2: fixed in abc123."}]'
+fetch_issue_comments() { printf '%s' "$PARTIAL_JSON"; }
+is_trusted_repo_author_live() { return 2; }   # every probe unverifiable, as an active pause guarantees
+LOG_FILE=""; export LOG_FILE
+DOC=$(BOT_USER=srosro fetch_pr_comments "cncorp/plow" 1 2>/dev/null)
+case "$DOC" in
+    "# PR comments"*) ;;
+    *) echo "FAIL fixture 6: the document does not start with its heading — a diagnostic leaked into stdout"; printf '%s
+' "$DOC" | head -3; exit 1 ;;
+esac
+# Match the LOG line's own shape, not the phrase — the incomplete notice
+# legitimately contains "could not be trust-verified" too.
+printf '%s' "$DOC" | grep -q 'pr-comments: @' && {
+    echo "FAIL fixture 6: the rc=2 diagnostic was written into the staged document"; exit 1; }
+printf '%s' "$DOC" | grep -qF 'INCOMPLETE' || {
+    echo "FAIL fixture 6: the document did not carry the incomplete notice"; exit 1; }
+# ...and the empty-thread path must still be exactly the sentinel.
+fetch_issue_comments() { printf '%s' '[]'; }
+EMPTY_DOC=$(BOT_USER=srosro fetch_pr_comments "cncorp/plow" 1 2>/dev/null)
+[ "$EMPTY_DOC" = "(no PR comments)" ] || {
+    echo "FAIL fixture 6: the empty-thread output is no longer the sentinel"; printf '%s
+' "$EMPTY_DOC"; exit 1; }
+
 echo "  PASS"

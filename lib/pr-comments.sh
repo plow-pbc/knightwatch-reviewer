@@ -170,7 +170,15 @@ fetch_pr_comments() {
             # failure this module exists to prevent, under exactly the condition
             # #233 manages. Say it out loud, both in the log and in the document.
             unverified=$(( unverified + 1 ))
-            log "pr-comments: @$login could not be trust-verified (API error or rate-limit pause) — excluded; this thread is INCOMPLETE"
+            # >&2, NOT bare log: this function's stdout IS the staged document
+            # (PR_COMMENTS=$(fetch_pr_comments …) -> pr-comments.md), and log()
+            # tees to stdout — so a bare call prepends a raw timestamped line
+            # ahead of `# PR comments`, one per participant under the very pause
+            # that guarantees rc=2, and turns the empty-thread output into
+            # something that is no longer the sentinel the prompt-input contract
+            # depends on. lib/gh-comments.sh routes its error text the same way
+            # for the same reason.
+            log "pr-comments: @$login could not be trust-verified (API error or rate-limit pause) — excluded; this thread is INCOMPLETE" >&2
         fi
     done < <(printf '%s' "$issue_comments" | jq -r '[.[].user.login] | unique | .[]' 2>/dev/null)
     _pr_comments_from_json "$issue_comments" "$trusted" "$unverified"
