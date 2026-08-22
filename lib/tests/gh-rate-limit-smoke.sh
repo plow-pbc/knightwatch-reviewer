@@ -700,7 +700,14 @@ echo "  scenario 27b: every gh-spending entrypoint drains the shared tally..."
 # gh_quota_report the writer-side cap silently becomes that half's ONLY reaper —
 # and a crossing then blanks the attribution on its next 403. Derived from the
 # units that actually run, not a hand-list.
-for _entry in review-loop.sh poll-pr-actions.sh learn-from-replies.sh org-sync.sh specialist-bakeoff.sh; do
+# Filtered from the SAME derivation 27a uses, not restated: a seventh unit that
+# spends the shared PAT would otherwise be picked up there and stay invisible
+# here, so the cap silently becomes its only reaper — the drift that let
+# kid-refresh carry a unit under a sentence claiming to cover it.
+NON_GH_ENTRY=plow-kid-refresh.sh   # git only; spends no gh, so it owes no drain
+printf '%s\n' "$ENTRYPOINTS" | grep -qx "$NON_GH_ENTRY" \
+    || fail "scenario 27b: the skip-list names $NON_GH_ENTRY but the derivation no longer yields it — the filter is stale"
+for _entry in $(printf '%s\n' "$ENTRYPOINTS" | grep -vx "$NON_GH_ENTRY"); do
     # Strip comments and anchor to a CALL SITE. A bare string grep matches the
     # prose — review-loop.sh names gh_quota_report in a comment — so deleting the
     # real call left this green, which is the inert-guard class this suite keeps

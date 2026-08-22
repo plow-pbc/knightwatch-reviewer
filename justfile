@@ -52,9 +52,10 @@ test:
     # Scrubbed HERE, once, rather than per-suite: twelve smokes source the
     # manifest loader and a thirteenth would silently reopen the hole. Kept as a
     # plain list rather than a test-enforced coupling to x-reviewer-env: at one
-    # operator and six x-reviewer-env vars plus LOG_FILE, a var added without a
-    # scrub entry is
-    # cheap to notice and fix when observed. Not scrubbed: DOCKER_HOST
+    # operator and seven vars — five from x-reviewer-env, plus KWR_CLONE_ROOT
+    # (render-compose.sh emits it separately and only when KID_ROOT is set) and
+    # LOG_FILE (lib/review-one-pr.sh sets it; see below) — a var added without a
+    # scrub entry is cheap to notice and fix when observed. Not scrubbed: DOCKER_HOST
     # (render-compose-smoke needs a live daemon) and STATE_DIR/REPOS_DIR/
     # WORKDIRS_DIR (each smoke exports its own sandboxed value). Per-command
     # overrides in a scenario are unaffected; this only clears the environment.

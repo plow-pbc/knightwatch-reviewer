@@ -24,6 +24,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 export STATE_DIR="$TMPDIR/state"
 export LOG_FILE="$STATE_DIR/org-sync.log"
+STDOUT_CAP="$STATE_DIR/stdout-capture.log"
 # LOCK NOT overridden — production default $STATE_DIR/org-sync.lock
 # flows through (STATE_DIR is sandboxed), exercising the shared-lock
 # path systemd uses.
@@ -104,7 +105,13 @@ chmod +x "$HOME/.local/bin/gh"
 run_sync() {
     : > "$STUB_GH_LOG"
     # Do NOT rm the lock file — flock releases on FD close.
-    bash "$PROJECT_ROOT/org-sync.sh" >/dev/null 2>&1
+    # Capture stdout rather than discard it: state-io's log() TEES to both, and a
+    # non-teeing shadow writes $LOG_FILE identically — so every assertion reading
+    # only the file passes with the shadow back, however it is spelled. This unit
+    # is StandardOutput=journal and fires hourly, so the tee is what an operator
+    # running `journalctl -u pr-reviewer-org-sync` actually depends on.
+    : > "$STDOUT_CAP"
+    bash "$PROJECT_ROOT/org-sync.sh" >"$STDOUT_CAP" 2>&1
 }
 
 count_gh() { grep -c "^GH $1" "$STUB_GH_LOG" 2>/dev/null || true; }
@@ -234,6 +241,12 @@ if MOCK_GH_LIST_acme="evil" run_sync; then
 fi
 assert_auto_unchanged "$SHA"
 grep -q 'origin does not match github.com/acme/evil' "$LOG_FILE" || { echo "FAIL scenario 5: expected origin-mismatch log line"; cat "$LOG_FILE"; exit 1; }
+# ...and on STDOUT. This unit is StandardOutput=journal, so a non-teeing log()
+# shadow would satisfy the file assertion above while making the whole hourly run
+# invisible to `journalctl -u pr-reviewer-org-sync` — the defect that has now
+# recurred three times, pinned here by behaviour rather than by how it is spelled.
+grep -q 'origin does not match github.com/acme/evil' "$STDOUT_CAP" \
+    || { echo "FAIL scenario 5: the log line never reached stdout — a non-teeing log() makes this unit's whole run invisible to journalctl"; cat "$STDOUT_CAP"; exit 1; }
 if grep -q 'attacker/evil' "$LOG_FILE"; then
     echo "FAIL scenario 5: raw remote URL leaked into log — credential exposure risk"
     cat "$LOG_FILE"; exit 1
