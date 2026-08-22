@@ -214,10 +214,15 @@ gh_tally_call() {
     # make rare — so the five host units would append forever with no reaper. The
     # trigger is a byte size (fstat, O(1)); the trim is by LINES so a shape is
     # never cut in half, and only runs on the rare crossing.
-    local max="${GH_TALLY_MAX_BYTES:-131072}"
+    local max="${GH_TALLY_MAX_BYTES:-131072}" kept
     if [ "$(wc -c < "$f" 2>/dev/null || echo 0)" -gt "$max" ] 2>/dev/null; then
-        tail -n "${GH_TALLY_KEEP_LINES:-2000}" "$f" > "$f.trim" 2>/dev/null \
-            && mv -f "$f.trim" "$f" 2>/dev/null || rm -f "$f.trim" 2>/dev/null
+        # IN PLACE, never temp+rename. This file is a bind-mounted inode shared
+        # with the host timers, and docker pins a file bind-mount to its source
+        # inode — a rename would strand every container appending to the orphan
+        # while the host wrote the new one, silently restoring the very split
+        # this bind exists to close. Same rule the pause file publishes under.
+        kept=$(tail -n "${GH_TALLY_KEEP_LINES:-2000}" "$f" 2>/dev/null) \
+            && printf '%s\n' "$kept" > "$f" 2>/dev/null || true
     fi
     return 0
 }

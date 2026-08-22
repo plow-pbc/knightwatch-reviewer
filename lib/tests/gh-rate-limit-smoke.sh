@@ -639,6 +639,18 @@ BYTES=$(wc -c < "$(gh_tally_file)")
     || fail "scenario 27: tally grew to ${BYTES}B past a 2048B cap — a host unit that never trips would grow it forever"
 [ -s "$(gh_tally_file)" ] \
     || fail "scenario 27: the cap emptied the tally entirely — attribution would always be blank"
+# ...and compaction must keep the INODE. The tally is a file bind-mount shared
+# with the host timers, and docker pins a file bind to its source inode: a
+# temp+rename compaction would strand every container appending to the orphan
+# while the host wrote the new one, silently restoring the host/container split
+# the bind exists to close — and nothing else in the suite can see that.
+INO_BEFORE=$(stat -c %i "$(gh_tally_file)" 2>/dev/null || stat -f %i "$(gh_tally_file)")
+for _i in $(seq 1 400); do
+    GH_TALLY_MAX_BYTES=2048 GH_TALLY_KEEP_LINES=50 gh_tally_call api "repos/o/r/issues/$_i/comments"
+done
+INO_AFTER=$(stat -c %i "$(gh_tally_file)" 2>/dev/null || stat -f %i "$(gh_tally_file)")
+[ "$INO_BEFORE" = "$INO_AFTER" ] \
+    || fail "scenario 27: compaction replaced the tally's inode ($INO_BEFORE -> $INO_AFTER) — under the file bind that strands every container on the orphaned inode"
 : > "$(gh_tally_file)"
 
 echo "  scenario 28: review-loop.sh loads the token before it can report quota..."

@@ -154,6 +154,16 @@ chmod 0700 "$INSTALL_DIR"
 [ -f "$INSTALL_DIR/gh-rate-limited-until" ] \
   || install -m 0666 /dev/null "$INSTALL_DIR/gh-rate-limited-until"
 chmod 0666 "$INSTALL_DIR/gh-rate-limited-until"
+# The single gh call tally the host timers and the reviewer containers share,
+# bind-mounted at /shared/gh-call-tally. Same pre-create for the same reason: an
+# auto-created DIRECTORY would swallow every append silently, and the periodic
+# report would rank container traffic only — omitting poll/learn/org-sync during
+# exactly the rate-limit incident the attribution exists to diagnose.
+[ ! -e "$INSTALL_DIR/gh-call-tally" ] || [ -f "$INSTALL_DIR/gh-call-tally" ] \
+  || fail "$INSTALL_DIR/gh-call-tally exists but is not a regular file — docker auto-created the bind source. Remove it and re-run: rmdir '$INSTALL_DIR/gh-call-tally'"
+[ -f "$INSTALL_DIR/gh-call-tally" ] \
+  || install -m 0666 /dev/null "$INSTALL_DIR/gh-call-tally"
+chmod 0666 "$INSTALL_DIR/gh-call-tally"
 for script in "${SCRIPTS[@]}"; do
   src="$REPO_DIR/$script"
   [[ -f "$src" ]] || fail "missing repo script: $src"

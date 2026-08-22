@@ -28,6 +28,7 @@ mkdir -p "$SECRETS"/codex-account-{a,b,d} "$SECRETS/claude-standards"
 # the file — green on the author's box, red for reviewer-test in container mode.
 FAKE_HOME="$SANDBOX/fake-home"; mkdir -p "$FAKE_HOME/.pr-reviewer"
 PAUSE_SRC="$FAKE_HOME/.pr-reviewer/gh-rate-limited-until"; : > "$PAUSE_SRC"
+TALLY_SRC="$FAKE_HOME/.pr-reviewer/gh-call-tally"; : > "$TALLY_SRC"
 run_render() {  # the sandbox invocation, shared with the absent-fleet.conf case
     SECRETS_DIR="$SECRETS" FLEET_CONF="$SANDBOX/fleet.conf" \
         CONFIG_ENV="$SANDBOX/config.env" OUT="$SANDBOX/out.yml" \
@@ -68,6 +69,7 @@ for token in "  dind-1:" "  reviewer-1:" "  dind-4:" "  reviewer-4:" \
              "KWR_CONFIG_DIR: /root/.kwr-config" "REPO_ENV_DIR: /root/.kwr/repo-env" \
              "REPOS_CONF_FILE: /shared/manifest/repos.conf" \
              '${HOME}/.pr-reviewer/gh-rate-limited-until:/shared/gh-rate-limited-until' \
+             '${HOME}/.pr-reviewer/gh-call-tally:/shared/gh-call-tally' \
              "external: true" "name: kwr_claims" "GENERATED"; do
     grep -qF "$token" "$SANDBOX/out.yml" || fail "render is missing: $token"
 done
