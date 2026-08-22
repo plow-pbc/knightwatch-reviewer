@@ -584,21 +584,59 @@ N25=$(grep -cx 'repos/\*/\*/issues/\*/comments' "$(gh_tally_file)")
     || fail "scenario 25: expected 3 tally lines for 3 attempts, got $N25 — retries would be under-reported"
 reset_state; : > "$(gh_tally_file)"
 
-echo "  scenario 26: an absent graphql bucket reads as UNKNOWN, never as 0 — no permanent false alarm..."
-# @tsv renders a JSON null as an EMPTY field; `tr` + default IFS swallows it and
-# every later field shifts left. Read as 0 that would fire "graphql headroom
-# under 20%" on every report forever, with corrupted numbers printed beside it —
-# unfalsifiable from the log, and it would drown the warning that matters.
-rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log26"
-LOG_FILE="$TMP/log26" GH_QUOTA_REPORT_SECS=0 GH_QUOTA_WARN_PCT=20 \
-    GH_SHIM_BUCKETS="4977	$((NOW + 1200))	-1	-1	5000	-1" gh_quota_report
-grep -q 'graphql=unknown' "$TMP/log26" \
-    || fail "scenario 26: a missing graphql bucket was not reported as unknown: $(cat "$TMP/log26")"
-grep -q 'WARNING' "$TMP/log26" \
-    && fail "scenario 26: an absent graphql bucket raised a warning — a missing bucket is not an empty one: $(cat "$TMP/log26")"
-# core must still report normally alongside it.
-grep -q 'core=4977/5000 (99%)' "$TMP/log26" \
-    || fail "scenario 26: an unknown graphql bucket suppressed the core headroom line too"
+echo "  scenario 26: every bucket field nulled in turn — an unmeasured value is never rendered as a measurement..."
+# ONE assertion of the invariant, not a bespoke scenario per field. Four rounds
+# added a field at a time (26 -> 28 -> 28b -> 28c) and the next field was always
+# still open; worse, a *fabricated stand-in* passed all of them — clamping the
+# reset delta to `reset in 0m` renders "core resets right now" for a bucket that
+# was never read, which is the very confusion the `?` rendering exists to end.
+# So each row asserts both halves: no raw sentinel, and no invented value.
+#
+# Columns: <field to null>|<substring that must NOT appear>|<substring that must>
+FULL_BODY='{"resources":{"core":{"remaining":4977,"limit":5000,"reset":RESET},"graphql":{"remaining":4775,"limit":5000,"reset":RESET}}}'
+NULL_FIELD_MATRIX=(
+    "core.remaining|gh-quota|"
+    "core.limit|gh-quota|"
+    "core.reset|reset in|core=4977/5000"
+    "graphql.remaining|graphql=4775|graphql=unknown"
+    "graphql.limit|graphql=4775|graphql=unknown"
+    "graphql.reset|@NONE@|graphql=4775/5000"
+)
+for row in "${NULL_FIELD_MATRIX[@]}"; do
+    IFS='|' read -r nf must_not must <<<"$row"
+    body=$(printf '%s' "$FULL_BODY" | sed "s/RESET/$((NOW + 1200))/g" \
+        | jq -c --arg f "$nf" 'setpath(["resources"] + ($f | split(".")); null)')
+    rm -f "$(gh_quota_stamp_file)"; : > "$TMP/lognull"
+    LOG_FILE="$TMP/lognull" GH_QUOTA_REPORT_SECS=0 GH_QUOTA_WARN_PCT=20 \
+        GH_SHIM_JSON="$body" gh_quota_report
+    # Strip log()'s "[YYYY-MM-DD HH:MM:SS] " prefix: the timestamp itself carries
+    # "-1" on any day 10-19 or month 10-12, so a whole-line grep would go red on
+    # half the calendar regardless of the code.
+    msg=$(sed 's/^\[[0-9-]* [0-9:]*\] //' "$TMP/lognull")
+    if printf '%s' "$msg" | grep -q -- '-1'; then
+        fail "scenario 26 [$nf]: the -1 sentinel reached operator-facing text: $msg"
+    fi
+    if [ "$must_not" != "@NONE@" ] && printf '%s' "$msg" | grep -q -- "$must_not"; then
+        fail "scenario 26 [$nf]: '$must_not' appeared for an unmeasured field — a fabricated stand-in reads as a real measurement: $msg"
+    fi
+    if [ -n "$must" ] && ! printf '%s' "$msg" | grep -q -- "$must"; then
+        fail "scenario 26 [$nf]: expected '$must' in: $msg"
+    fi
+done
+
+echo "  scenario 26b: the OTHER emitter obeys the same rule — a failed probe renders '?', never -1..."
+# The trip diagnostic exists to separate "probe failed, classification guessed"
+# from "buckets healthy, genuinely secondary", and a failed probe is the LIKELY
+# path: it runs during a 403 cascade when GitHub is degraded, which is why it is
+# wrapped in timeout at all.
+reset_state; : > "$TMP/log26b"
+LOG_FILE="$TMP/log26b" GH_SHIM_BUCKETS="" GH_SHIM_ERR="$RATE_LIMIT_ERR" gh_note_rate_limit
+grep -q 'core=?/? graphql=?/? remaining' "$TMP/log26b" \
+    || fail "scenario 26b: an unmeasured bucket did not render as '?': $(cat "$TMP/log26b")"
+if sed 's/^\[[0-9-]* [0-9:]*\] //' "$TMP/log26b" | grep -q -- '-1'; then
+    fail "scenario 26b: the -1 sentinel leaked into the trip diagnostic: $(cat "$TMP/log26b")"
+fi
+reset_state
 
 echo "  scenario 27: the tally is capped where it is written (host units consume it on neither happy path)..."
 : > "$(gh_tally_file)"
@@ -613,50 +651,6 @@ BYTES=$(wc -c < "$(gh_tally_file)")
 [ -s "$(gh_tally_file)" ] \
     || fail "scenario 27: the cap emptied the tally entirely — attribution would always be blank"
 : > "$(gh_tally_file)"
-
-echo "  scenario 28: an INTERIOR null runs through real jq — the report must not render shifted fields..."
-# GH_SHIM_BUCKETS never executes --jq, so this drives a genuine /rate_limit body.
-# core.remaining is null with everything after it present: exactly the interior
-# case. Without the jq defaults @tsv emits an EMPTY field, `tr` collapses it, and
-# core.limit slides into core_rem — yielding a plausible-looking
-# `core=5000/<reset epoch> (0%)` line plus a permanent WARNING beside figures too
-# corrupted to notice it by. With them, core is UNKNOWN and the report says
-# nothing at all.
-rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log28"
-INTERIOR_NULL_JSON='{"resources":{"core":{"remaining":null,"limit":5000,"reset":'"$((NOW + 1200))"'},"graphql":{"remaining":4775,"limit":5000,"reset":'"$((NOW + 1200))"'}}}'
-LOG_FILE="$TMP/log28" GH_QUOTA_REPORT_SECS=0 GH_QUOTA_WARN_PCT=20 \
-    GH_SHIM_JSON="$INTERIOR_NULL_JSON" gh_quota_report
-grep -q 'gh-quota' "$TMP/log28" \
-    && fail "scenario 28: an unreadable core bucket still produced a report — the fields shifted: $(cat "$TMP/log28")"
-
-echo "  scenario 28c: a null core.reset must not render as negative minutes..."
-# Same rule as every other field, on the line that emits every 5 minutes rather
-# than only on a trip: an unmeasured value is never rendered as a measurement.
-rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log28c"
-NULL_RESET_JSON='{"resources":{"core":{"remaining":4977,"limit":5000,"reset":null},"graphql":{"remaining":4775,"limit":5000,"reset":null}}}'
-LOG_FILE="$TMP/log28c" GH_QUOTA_REPORT_SECS=0 GH_SHIM_JSON="$NULL_RESET_JSON" gh_quota_report
-grep -q 'core=4977/5000 (99%)' "$TMP/log28c" \
-    || fail "scenario 28c: a null core.reset suppressed the whole report: $(cat "$TMP/log28c")"
-grep -q 'reset in -' "$TMP/log28c" \
-    && fail "scenario 28c: an unmeasured reset rendered as negative minutes: $(cat "$TMP/log28c")"
-
-echo "  scenario 28b: a failed probe renders '?', never the -1 sentinel..."
-# The trip diagnostic exists to separate "probe failed, classification guessed"
-# from "buckets healthy, genuinely secondary" — and a failed probe is the LIKELY
-# path, since it runs during a 403 cascade when GitHub is degraded (which is why
-# it is wrapped in timeout at all). Printing -1 reads as a measurement.
-reset_state; : > "$TMP/log28b"
-LOG_FILE="$TMP/log28b" GH_SHIM_BUCKETS="" GH_SHIM_ERR="$RATE_LIMIT_ERR" gh_note_rate_limit
-grep -q 'core=?/? graphql=?/? remaining' "$TMP/log28b" \
-    || fail "scenario 28b: an unmeasured bucket did not render as '?' — an operator cannot tell it from a real reading: $(cat "$TMP/log28b")"
-# Strip log()'s "[YYYY-MM-DD HH:MM:SS] " prefix before looking for the sentinel:
-# the timestamp itself contains "-1" on any day 10-19 or month 10-12, so a
-# whole-line grep would fail on roughly half the calendar regardless of the code
-# — and a date-dependent gate in the push path is worse than no gate, because the
-# first spurious red teaches the reader to discount it.
-sed 's/^\[[0-9-]* [0-9:]*\] //' "$TMP/log28b" | grep -q -- '-1' \
-    && fail "scenario 28b: the -1 sentinel leaked into operator-facing text: $(cat "$TMP/log28b")"
-reset_state
 
 echo "  scenario 29: a null core.remaining must not misclassify a PRIMARY graphql exhaustion as secondary..."
 # The same shift in gh_note_rate_limit picks the pause WINDOW. With graphql truly
