@@ -51,20 +51,13 @@ require_repos
 # scan below anchors on. Same definition the trigger/vouch/staging selectors use.
 . "$REVIEWER_LIB_DIR/gh-comments.sh"
 
-# ABOVE this file's log() override, and that is correct here: LOG_FILE is set at
-# the top of this script, so the report binds to state-io's log(), which tees to
-# bakeoff.log AND stdout. The override below writes to the file without a tee, so
-# moving the call under it would silently drop the [gh-quota] line and its
-# headroom WARNING out of `journalctl -u pr-reviewer-bakeoff` — this unit fires
-# twice a night, and that journal line is its only visible quota signal.
+# Quota headroom + attribution, self-throttled to one emission per
+# GH_QUOTA_REPORT_SECS. Here as well as in the containers because these timers
+# spend the SAME PAT (#233): draining the shared tally on the host's happy path
+# keeps the writer-side cap an unreachable backstop rather than the only reaper.
+# /rate_limit spends no quota. LOG_FILE is set at the top of this script, so
+# state-io's log() tees the line to bakeoff.log AND the journal.
 gh_quota_report
-
-# No log() override here: state-io's already writes "[timestamp] $*" to LOG_FILE
-# (set above) and TEES it to stdout. The override this replaces differed only by
-# dropping that tee, which hid all of this script's output from
-# `journalctl -u pr-reviewer-bakeoff` despite the unit being StandardOutput=journal,
-# left bakeoff.log carrying two timestamp formats, and created the "which side of
-# the override?" question that cost three commits to keep answering.
 
 store_init "$DB_FILE"
 

@@ -684,35 +684,26 @@ for _entry in review-loop.sh poll-pr-actions.sh learn-from-replies.sh org-sync.s
     _entry_src=$(sed -e 's/#.*//' "$PROJECT_ROOT/$_entry")
     grep -qE '^[[:space:]]*gh_quota_report([[:space:]]|$)' <<<"$_entry_src" \
         || fail "scenario 27b: $_entry spends the shared PAT but never CALLS gh_quota_report — the cap becomes its only reaper and a crossing blanks the next 403's attribution"
-    # And it must come after LOG_FILE, or the report and its headroom WARNING go
-    # to stdout only and never reach the file the operator tails.
-    # Where logging becomes usable differs by entrypoint, so match that, not one
-    # spelling. A script that sets LOG_FILE= binds state-io's log(), which TEES to
-    # the file and stdout from that line on — its own later log() override is not
-    # a boundary (moving the call under bakeoff's override would drop the line out
-    # of journalctl, which is that unit's only visible quota signal). A script that
-    # names its sink otherwise — org-sync's LOG= — leaves LOG_FILE unset, so
-    # state-io's log() is stdout-only until that script's own override is defined,
-    # and the override IS the boundary there.
-    # `|| true`: this suite runs `set -e` with pipefail, so a grep miss would
-    # otherwise kill the script silently.
-    # `head -1` is what enforces "prologue-level" — a later reassignment inside a
-    # function or conditional can never win — so the leading [[:space:]]* is safe
-    # here and keeps the check working when an entrypoint's FIRST assignment is
-    # indented (e.g. inside an `if [ -z "${LOG_FILE:-}" ]`). Anchoring this one at
-    # column 0 traded that for a hazard head -1 had already closed.
+    # The invariant that actually matters, learned the long way: no entrypoint
+    # may shadow log(). bakeoff and org-sync both used to, with a strictly-lossy
+    # copy — same "[timestamp] \$*" to the same file, minus state-io's tee —
+    # which hid every line of those runs from journalctl despite both units being
+    # StandardOutput=journal, and which was the sole reason "may the call sit
+    # above or below?" had two answers at all. Assert the absence, not a position.
+    grep -qE '^[[:space:]]*log\(\)[[:space:]]*\{' "$PROJECT_ROOT/$_entry" \
+        && fail "scenario 27b: $_entry shadows log() — state-io's already writes to LOG_FILE and TEES to stdout, so a local copy silently drops this unit's whole run out of journalctl and re-opens an ordering ambiguity that cost five commits"
+    # With no shadows left, every entrypoint's sink is a LOG_FILE= line and the
+    # ordering rule is one shape. head -1 enforces prologue-level, so a later
+    # reassignment inside a function cannot win. || true because this suite runs
+    # set -e and review-loop.sh legitimately has none (its sink is the container
+    # stream); any OTHER entry without one means the match drifted.
     _log_ln=$(grep -nE '^[[:space:]]*LOG_FILE=' "$PROJECT_ROOT/$_entry" | head -1 | cut -d: -f1) || true
-    [ -n "$_log_ln" ] \
-        || _log_ln=$(grep -nE '^log\(\)[[:space:]]*\{' "$PROJECT_ROOT/$_entry" | head -1 | cut -d: -f1) || true
-    # review-loop.sh is the ONE entrypoint whose sink is legitimately stdout (the
-    # container stream); any other with no sink line means the match drifted, and
-    # that must fail rather than quietly skip the ordering check.
     if [ -z "$_log_ln" ] && [ "$_entry" != review-loop.sh ]; then
-        fail "scenario 27b: found no log sink in $_entry — the sink match has drifted, so its ordering check is silently skipped"
+        fail "scenario 27b: found no LOG_FILE= in $_entry — the sink match has drifted, so its ordering check is silently skipped"
     fi
     _call_ln=$(grep -nE '^[[:space:]]*gh_quota_report([[:space:]]|$)' "$PROJECT_ROOT/$_entry" | head -1 | cut -d: -f1) || true
     if [ -n "$_log_ln" ] && [ -n "$_call_ln" ] && [ "$_call_ln" -lt "$_log_ln" ]; then
-        fail "scenario 27b: $_entry calls gh_quota_report (line $_call_ln) before this script's logging is bound (line $_log_ln) — the [gh-quota] line and its headroom WARNING then go to stdout only and never reach the file the operator tails"
+        fail "scenario 27b: $_entry calls gh_quota_report (line $_call_ln) before LOG_FILE is set (line $_log_ln) — the [gh-quota] line and its headroom WARNING then go to stdout only and never reach the file the operator tails"
     fi
 done
 
