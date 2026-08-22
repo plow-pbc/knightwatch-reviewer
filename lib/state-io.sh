@@ -290,7 +290,7 @@ gh_bucket_txt() { [ "${1:--1}" -ge 0 ] 2>/dev/null && printf '%s' "$1" || printf
 # unlocked: two workers racing emit one duplicate line, which is cheaper than a
 # lock on a path every tick crosses.
 gh_quota_report() {
-    local now interval last core_rem core_lim core_reset gql_rem gql_lim top core_pct gql_pct gql_txt gql_short
+    local now interval last top core_pct gql_pct gql_txt gql_short reset_txt
     now=$(date +%s); interval="${GH_QUOTA_REPORT_SECS:-300}"
     last=$(head -n1 "$(gh_quota_stamp_file)" 2>/dev/null || echo 0)
     case "$last" in ''|*[!0-9]*) last=0 ;; esac
@@ -313,7 +313,14 @@ gh_quota_report() {
         gql_txt="${GH_BUCKET_GQL_REM}/${GH_BUCKET_GQL_LIM} (${gql_pct}%)"
         gql_short="${gql_pct}%"
     fi
-    log "[gh-quota] core=${GH_BUCKET_CORE_REM}/${GH_BUCKET_CORE_LIM} (${core_pct}%) graphql=${gql_txt} reset in $(( (GH_BUCKET_CORE_RESET - now + 59) / 60 ))m${top:+ — top callers: $top}"
+    # core.reset gets the same rule as every other field: an unmeasured value is
+    # never rendered as a measurement. Unguarded it printed "reset in -29789192m"
+    # — the exact failure gh_bucket_txt exists to prevent, and on the line that
+    # emits every 5 minutes rather than only on a trip.
+    reset_txt=""
+    [ "$GH_BUCKET_CORE_RESET" -ge 0 ] 2>/dev/null \
+        && reset_txt=" reset in $(( (GH_BUCKET_CORE_RESET - now + 59) / 60 ))m"
+    log "[gh-quota] core=${GH_BUCKET_CORE_REM}/${GH_BUCKET_CORE_LIM} (${core_pct}%) graphql=${gql_txt}${reset_txt}${top:+ — top callers: $top}"
     # Headroom cannot predict a SECONDARY limit — /rate_limit does not expose one
     # and the incident that motivated this had core at 4997/5000. That is what the
     # attribution above is for; this gate covers the primary buckets only.

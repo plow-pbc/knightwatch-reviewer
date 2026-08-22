@@ -629,6 +629,17 @@ LOG_FILE="$TMP/log28" GH_QUOTA_REPORT_SECS=0 GH_QUOTA_WARN_PCT=20 \
 grep -q 'gh-quota' "$TMP/log28" \
     && fail "scenario 28: an unreadable core bucket still produced a report — the fields shifted: $(cat "$TMP/log28")"
 
+echo "  scenario 28c: a null core.reset must not render as negative minutes..."
+# Same rule as every other field, on the line that emits every 5 minutes rather
+# than only on a trip: an unmeasured value is never rendered as a measurement.
+rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log28c"
+NULL_RESET_JSON='{"resources":{"core":{"remaining":4977,"limit":5000,"reset":null},"graphql":{"remaining":4775,"limit":5000,"reset":null}}}'
+LOG_FILE="$TMP/log28c" GH_QUOTA_REPORT_SECS=0 GH_SHIM_JSON="$NULL_RESET_JSON" gh_quota_report
+grep -q 'core=4977/5000 (99%)' "$TMP/log28c" \
+    || fail "scenario 28c: a null core.reset suppressed the whole report: $(cat "$TMP/log28c")"
+grep -q 'reset in -' "$TMP/log28c" \
+    && fail "scenario 28c: an unmeasured reset rendered as negative minutes: $(cat "$TMP/log28c")"
+
 echo "  scenario 28b: a failed probe renders '?', never the -1 sentinel..."
 # The trip diagnostic exists to separate "probe failed, classification guessed"
 # from "buckets healthy, genuinely secondary" — and a failed probe is the LIKELY
@@ -638,7 +649,12 @@ reset_state; : > "$TMP/log28b"
 LOG_FILE="$TMP/log28b" GH_SHIM_BUCKETS="" GH_SHIM_ERR="$RATE_LIMIT_ERR" gh_note_rate_limit
 grep -q 'core=?/? graphql=?/? remaining' "$TMP/log28b" \
     || fail "scenario 28b: an unmeasured bucket did not render as '?' — an operator cannot tell it from a real reading: $(cat "$TMP/log28b")"
-grep -q -- '-1' "$TMP/log28b" \
+# Strip log()'s "[YYYY-MM-DD HH:MM:SS] " prefix before looking for the sentinel:
+# the timestamp itself contains "-1" on any day 10-19 or month 10-12, so a
+# whole-line grep would fail on roughly half the calendar regardless of the code
+# — and a date-dependent gate in the push path is worse than no gate, because the
+# first spurious red teaches the reader to discount it.
+sed 's/^\[[0-9-]* [0-9:]*\] //' "$TMP/log28b" | grep -q -- '-1' \
     && fail "scenario 28b: the -1 sentinel leaked into operator-facing text: $(cat "$TMP/log28b")"
 reset_state
 
