@@ -696,12 +696,12 @@ for _entry in review-loop.sh poll-pr-actions.sh learn-from-replies.sh org-sync.s
     # and the override IS the boundary there.
     # `|| true`: this suite runs `set -e` with pipefail, so a grep miss would
     # otherwise kill the script silently.
-    # Anchored at COLUMN 0, so only prologue-level sink establishment counts.
-    # Indented reassignments are house style here (lib/review-one-pr.sh rebinds
-    # LOG_FILE mid-script in three places), and with a leading [[:space:]]* any
-    # later one inside a function or conditional would win — turning the suite red
-    # on a routine edit, with a message misdiagnosing it as an ordering bug.
-    _log_ln=$(grep -nE '^LOG_FILE=' "$PROJECT_ROOT/$_entry" | head -1 | cut -d: -f1) || true
+    # `head -1` is what enforces "prologue-level" — a later reassignment inside a
+    # function or conditional can never win — so the leading [[:space:]]* is safe
+    # here and keeps the check working when an entrypoint's FIRST assignment is
+    # indented (e.g. inside an `if [ -z "${LOG_FILE:-}" ]`). Anchoring this one at
+    # column 0 traded that for a hazard head -1 had already closed.
+    _log_ln=$(grep -nE '^[[:space:]]*LOG_FILE=' "$PROJECT_ROOT/$_entry" | head -1 | cut -d: -f1) || true
     [ -n "$_log_ln" ] \
         || _log_ln=$(grep -nE '^log\(\)[[:space:]]*\{' "$PROJECT_ROOT/$_entry" | head -1 | cut -d: -f1) || true
     # review-loop.sh is the ONE entrypoint whose sink is legitimately stdout (the
@@ -712,7 +712,7 @@ for _entry in review-loop.sh poll-pr-actions.sh learn-from-replies.sh org-sync.s
     fi
     _call_ln=$(grep -nE '^[[:space:]]*gh_quota_report([[:space:]]|$)' "$PROJECT_ROOT/$_entry" | head -1 | cut -d: -f1) || true
     if [ -n "$_log_ln" ] && [ -n "$_call_ln" ] && [ "$_call_ln" -lt "$_log_ln" ]; then
-        fail "scenario 27b: $_entry calls gh_quota_report (line $_call_ln) before its log() binding is established (line $_log_ln) — the report and its headroom WARNING then land in the wrong sink or format for this entrypoint (stdout-only where the script names its sink LOG=, or state-io's format where the script defines its own)"
+        fail "scenario 27b: $_entry calls gh_quota_report (line $_call_ln) before this script's logging is bound (line $_log_ln) — the [gh-quota] line and its headroom WARNING then go to stdout only and never reach the file the operator tails"
     fi
 done
 

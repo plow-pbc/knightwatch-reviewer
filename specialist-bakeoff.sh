@@ -59,7 +59,12 @@ require_repos
 # twice a night, and that journal line is its only visible quota signal.
 gh_quota_report
 
-log() { echo "[$(date -u +%FT%TZ)] $*" >> "$LOG_FILE"; }
+# No log() override here: state-io's already writes "[timestamp] $*" to LOG_FILE
+# (set above) and TEES it to stdout. The override this replaces differed only by
+# dropping that tee, which hid all of this script's output from
+# `journalctl -u pr-reviewer-bakeoff` despite the unit being StandardOutput=journal,
+# left bakeoff.log carrying two timestamp formats, and created the "which side of
+# the override?" question that cost three commits to keep answering.
 
 store_init "$DB_FILE"
 
