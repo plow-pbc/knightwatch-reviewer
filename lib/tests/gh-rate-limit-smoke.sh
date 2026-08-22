@@ -627,50 +627,38 @@ grep -q 'core=?/? graphql=?/? remaining' "$TMP/log26b" \
     || fail "scenario 26b: an unmeasured bucket did not render as '?': $(cat "$TMP/log26b")"
 reset_state
 
-echo "  scenario 27: the tally is capped where it is written (host units consume it on neither happy path)..."
+echo "  scenario 27: the tally is capped at the writer, in place, without a read-modify-write..."
+# The cap exists because on the host neither consumer runs on the happy path (the
+# periodic report is container-only, the trip diagnostic is rare by design), so
+# without it the timers would append forever with no reaper.
+#
+# It TRUNCATES rather than compacting. A tail-snapshot-then-write-back could have
+# gh_top_callers report AND truncate in between, then restore the snapshot —
+# resurrecting already-consumed samples as fresh attribution the next interval.
+# One act: the loop crosses the cap many times over.
 : > "$(gh_tally_file)"
-# Cap set locally so the scenario is self-contained rather than depending on the
-# production default holding at whatever value it drifts to.
+# A writer that opened the file BEFORE the trimming — exactly a running
+# container holding the bind open. Cap set locally so the scenario is
+# self-contained rather than depending on the production default.
+exec 9>>"$(gh_tally_file)"
 for _i in $(seq 1 400); do
-    GH_TALLY_MAX_BYTES=2048 GH_TALLY_KEEP_LINES=50 gh_tally_call api "repos/o/r/issues/$_i/comments"
+    GH_TALLY_MAX_BYTES=2048 gh_tally_call api "repos/o/r/issues/$_i/comments"
 done
+printf 'STRANDED_WRITER_PROBE\n' >&9
+exec 9>&-
 BYTES=$(wc -c < "$(gh_tally_file)")
 [ "$BYTES" -le 4096 ] \
     || fail "scenario 27: tally grew to ${BYTES}B past a 2048B cap — a host unit that never trips would grow it forever"
-[ -s "$(gh_tally_file)" ] \
-    || fail "scenario 27: the cap emptied the tally entirely — attribution would always be blank"
-# ...and compaction must keep the INODE. The tally is a file bind-mount shared
-# with the host timers, and docker pins a file bind to its source inode: a
-# temp+rename compaction would strand every container appending to the orphan
-# while the host wrote the new one, silently restoring the host/container split
-# the bind exists to close — and nothing else in the suite can see that.
-INO_BEFORE=$(stat -c %i "$(gh_tally_file)" 2>/dev/null || stat -f %i "$(gh_tally_file)")
-for _i in $(seq 1 400); do
-    GH_TALLY_MAX_BYTES=2048 GH_TALLY_KEEP_LINES=50 gh_tally_call api "repos/o/r/issues/$_i/comments"
-done
-INO_AFTER=$(stat -c %i "$(gh_tally_file)" 2>/dev/null || stat -f %i "$(gh_tally_file)")
-[ "$INO_BEFORE" = "$INO_AFTER" ] \
-    || fail "scenario 27: compaction replaced the tally's inode ($INO_BEFORE -> $INO_AFTER) — under the file bind that strands every container on the orphaned inode"
-# A compaction whose `tail` yields nothing must leave the file EMPTY, not re-seed
-# a lone newline. GH_TALLY_KEEP_LINES=0 drives that branch directly: `tail -n 0`
-# returns nothing, which is exactly the state a concurrent reader's `: >` produces
-# between the append and the tail. (Truncating *before* the call cannot reach it —
-# gh_tally_call appends first and only then tests the size gate, so `kept` always
-# holds at least the line this call just wrote.)
-: > "$(gh_tally_file)"
-GH_TALLY_MAX_BYTES=0 GH_TALLY_KEEP_LINES=0 gh_tally_call api "repos/o/r/issues/1/comments"
-# Guarded, the write is skipped and the file keeps the line just appended;
-# unguarded, printf overwrites it with a lone newline. The discriminator is what
-# gh_top_callers RENDERS — and the pattern must catch a blank entry wherever it
-# sorts, since awk emits ", " before every entry after the first, so a
-# start-anchored match misses one landing second or third.
-TOP27=$(gh_top_callers 3)
-printf '%s' "$TOP27" | grep -qE '(^|, )=' \
-    && fail "scenario 27: an empty compaction re-seeded the tally with a blank line, rendering as a bare '=N' token in the quota line and the 403 diagnostic: [$TOP27]"
-case "$TOP27" in
-    *"repos/*/*/issues/*/comments=1"*) ;;
-    *) fail "scenario 27: the compaction lost the line it should have kept: [$TOP27]" ;;
-esac
+# The load-bearing half, tested by its actual failure mode rather than by inode
+# NUMBER: this file is a bind-mount shared with the host timers, and docker pins
+# a file bind to its SOURCE inode, so a trim that REPLACES the file leaves every
+# already-running writer appending to the orphan while the host writes the new
+# one — silently restoring the split the bind exists to close. Comparing stat %i
+# does NOT catch it: the freed inode number is immediately reused by the next
+# temp file, so that check passes about as often as it fails. An open descriptor
+# is deterministic — it IS the stranded writer.
+grep -q 'STRANDED_WRITER_PROBE' "$(gh_tally_file)" \
+    || fail "scenario 27: a writer holding the tally open before the trim lost its append — the trim replaced the file, which under the bind strands every running container on the orphaned inode"
 : > "$(gh_tally_file)"
 
 echo "  scenario 28: review-loop.sh loads the token before it can report quota..."

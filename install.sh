@@ -138,32 +138,25 @@ CONFIG_FILES=(repos.conf)
 # around it is what keeps a third local user from pausing the fleet at will.
 mkdir -p -m 0700 "$INSTALL_DIR"
 chmod 0700 "$INSTALL_DIR"
-# The single rate-limit pause the host timers and the reviewer containers share,
-# bind-mounted into every reviewer at /shared/gh-rate-limited-until. Pre-created
-# because docker would otherwise auto-create the bind source as a DIRECTORY,
-# which every reader sees as "never paused" — silently. install -m only creates;
-# an existing file keeps its contents (a live pause survives a redeploy) and gets
-# its mode reasserted.
+# The two files the host timers and the reviewer containers share, bind-mounted
+# into every reviewer at /shared/. Pre-created because docker auto-creates a
+# missing bind source as a DIRECTORY — every reader then sees "never paused" for
+# the one, and silently drops every host-side call sample for the other.
+# `install -m` only creates; an existing file keeps its contents (a live pause
+# survives a redeploy) and gets its mode reasserted. 0666 because the timers
+# write as the operator and the containers as root; 0700 on the tree around them
+# is what keeps that off-limits to a third local user.
 # Fail loud on a non-regular path rather than papering over it: if docker has
-# already auto-created the bind source as a DIRECTORY (an operator `rm`, a
-# botched restore), `install` would cheerfully write gh-rate-limited-until/null
-# and chmod would strip +x off the directory — exit 0 having "created" a pause
-# file that is still a directory, which every reader sees as never-paused.
-[ ! -e "$INSTALL_DIR/gh-rate-limited-until" ] || [ -f "$INSTALL_DIR/gh-rate-limited-until" ] \
-  || fail "$INSTALL_DIR/gh-rate-limited-until exists but is not a regular file — docker auto-created the bind source. Remove it and re-run: rmdir '$INSTALL_DIR/gh-rate-limited-until'"
-[ -f "$INSTALL_DIR/gh-rate-limited-until" ] \
-  || install -m 0666 /dev/null "$INSTALL_DIR/gh-rate-limited-until"
-chmod 0666 "$INSTALL_DIR/gh-rate-limited-until"
-# The single gh call tally the host timers and the reviewer containers share,
-# bind-mounted at /shared/gh-call-tally. Same pre-create for the same reason: an
-# auto-created DIRECTORY would swallow every append silently, and the periodic
-# report would rank container traffic only — omitting poll/learn/org-sync during
-# exactly the rate-limit incident the attribution exists to diagnose.
-[ ! -e "$INSTALL_DIR/gh-call-tally" ] || [ -f "$INSTALL_DIR/gh-call-tally" ] \
-  || fail "$INSTALL_DIR/gh-call-tally exists but is not a regular file — docker auto-created the bind source. Remove it and re-run: rmdir '$INSTALL_DIR/gh-call-tally'"
-[ -f "$INSTALL_DIR/gh-call-tally" ] \
-  || install -m 0666 /dev/null "$INSTALL_DIR/gh-call-tally"
-chmod 0666 "$INSTALL_DIR/gh-call-tally"
+# already auto-created one as a DIRECTORY (an operator `rm`, a botched restore),
+# `install` would cheerfully write <name>/null and chmod would strip +x off the
+# directory — exiting 0 having "created" something that is still a directory.
+for _shared in gh-rate-limited-until gh-call-tally; do
+  _shared_path="$INSTALL_DIR/$_shared"
+  [ ! -e "$_shared_path" ] || [ -f "$_shared_path" ] \
+    || fail "$_shared_path exists but is not a regular file — docker auto-created the bind source. Remove it and re-run: rmdir '$_shared_path'"
+  [ -f "$_shared_path" ] || install -m 0666 /dev/null "$_shared_path"
+  chmod 0666 "$_shared_path"
+done
 for script in "${SCRIPTS[@]}"; do
   src="$REPO_DIR/$script"
   [[ -f "$src" ]] || fail "missing repo script: $src"

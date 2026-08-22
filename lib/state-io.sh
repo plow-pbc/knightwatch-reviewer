@@ -212,24 +212,21 @@ gh_tally_call() {
     # happy path — the periodic report is called only from review-loop.sh
     # (container-only) and the trip diagnostic only on a 403, which #233 exists to
     # make rare — so the five host units would append forever with no reaper. The
-    # trigger is a byte size (fstat, O(1)); the trim is by LINES so a shape is
-    # never cut in half, and only runs on the rare crossing.
-    local max="${GH_TALLY_MAX_BYTES:-131072}" kept
+    # trigger is a byte size (fstat, O(1)), and it only fires on the rare
+    # crossing.
+    local max="${GH_TALLY_MAX_BYTES:-131072}"
     if [ "$(wc -c < "$f" 2>/dev/null || echo 0)" -gt "$max" ] 2>/dev/null; then
-        # IN PLACE, never temp+rename. This file is a bind-mounted inode shared
-        # with the host timers, and docker pins a file bind-mount to its source
-        # inode — a rename would strand every container appending to the orphan
-        # while the host wrote the new one, silently restoring the very split
-        # this bind exists to close. Same rule the pause file publishes under.
-        # Guard on non-empty: eleven producers share this inode now and every
-        # reader truncates it with `: >`, so a compactor that clears the size
-        # gate and then runs `tail` after someone else truncated gets nothing —
-        # and printf would re-seed the file with a lone newline. That passes
-        # gh_top_callers' `[ -s ]` guard, and awk renders the blank line as the
-        # token `=1`, so the quota report and the 403 diagnostic would print
-        # "top callers: =1" during the incident they exist to explain.
-        kept=$(tail -n "${GH_TALLY_KEEP_LINES:-2000}" "$f" 2>/dev/null)
-        [ -n "$kept" ] && printf '%s\n' "$kept" > "$f" 2>/dev/null || true
+        # TRUNCATE, don't compact. The read-modify-write this replaces could
+        # snapshot the tail, have gh_top_callers report AND truncate in between,
+        # then write the snapshot back — resurrecting already-consumed samples as
+        # fresh attribution on the next interval. A plain truncate has nothing to
+        # restore, so the race is gone without putting a lock on a path eleven
+        # producers append to, and it is fewer lines than the version that had
+        # the bug. Reaching the cap at all means no consumer has drained this in
+        # a long while (the reporter empties it every GH_QUOTA_REPORT_SECS), so
+        # what is dropped is stale by construction. In place, because the inode
+        # is bind-pinned.
+        : > "$f" 2>/dev/null || true
     fi
     return 0
 }

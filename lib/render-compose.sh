@@ -94,7 +94,8 @@ GH_PAUSE_SRC="$HOME/.pr-reviewer/gh-rate-limited-until"
 GH_TALLY_SRC="$HOME/.pr-reviewer/gh-call-tally"
 # Left UNEXPANDED, same convention as the kwr-config mount: it resolves at
 # `compose up`, so the mount and the host units agree on one path instead of
-# baking the generating user's $HOME in at render time.
+# baking the generating user's $HOME in at render time. (This one is the pause
+# file; the call tally below rides the same mechanism.)
 GH_PAUSE_REF='${HOME}/.pr-reviewer/gh-rate-limited-until'
 # The call tally rides the same trick, and for the same reason: the host timers
 # and the containers spend one PAT, so an attribution report that can only see
