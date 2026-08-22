@@ -50,8 +50,13 @@ test:
     # STATE_DIR/REPOS_DIR/WORKDIRS_DIR (each smoke exports its own sandboxed
     # value). Per-command overrides in a scenario are unaffected; this only
     # clears the environment.
-    #        <----------------- x-reviewer-env ------------------>  <- compose, if KID_ROOT ->  <- review-one-pr ->
-    unset REPOS_CONF_FILE CONFIG_ENV_FILE REPO_ENV_DIR KWR_CONFIG_DIR LOCAL_STATE_DIR KWR_CLONE_ROOT LOG_FILE
+    # Split by source, one tag per line — a positional ruler over a single line
+    # cannot be enforced and silently re-lies the moment a name is renamed or
+    # reordered, which is how the previous form managed to mislabel the two vars
+    # this whole reconciliation problem was about.
+    unset REPOS_CONF_FILE CONFIG_ENV_FILE REPO_ENV_DIR KWR_CONFIG_DIR LOCAL_STATE_DIR  # x-reviewer-env
+    unset KWR_CLONE_ROOT   # lib/render-compose.sh, emitted only when KID_ROOT is set
+    unset LOG_FILE         # lib/review-one-pr.sh
 
     # macOS /bin/bash is frozen at 3.2 (no associative arrays). The
     # smokes use declare -A in 12 files, so bash 4+ is required. On
