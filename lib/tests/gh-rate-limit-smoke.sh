@@ -622,6 +622,15 @@ for row in "${NULL_FIELD_MATRIX[@]}"; do
     if [ -n "$must" ] && ! printf '%s' "$msg" | grep -q -- "$must"; then
         fail "scenario 26 [$nf]: expected '$must' in: $msg"
     fi
+    # No row has a legitimate reason to warn: core is 4977/5000 (99%) in every
+    # body that produces a line at all. Without this the gate — as opposed to the
+    # rendering — is unpinned: drop the `[ "$gql_pct" -ge 0 ]` guard and an
+    # unmeasured bucket tests -1 -lt 20 and warns on every report forever, while
+    # rendering the legible "graphql unknown" that satisfies all three checks
+    # above. That permanent false alarm is the bug this whole thread started from.
+    if printf '%s' "$msg" | grep -q 'WARNING'; then
+        fail "scenario 26 [$nf]: an unmeasured bucket raised a warning — absent is not empty, and this would fire every 5 minutes forever: $msg"
+    fi
 done
 
 echo "  scenario 26b: the OTHER emitter obeys the same rule — a failed probe renders '?', never -1..."
