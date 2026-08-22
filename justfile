@@ -24,15 +24,13 @@ test:
     export GIT_CONFIG_GLOBAL=/dev/null
 
     # Same class, different source: detach the suite from the DEPLOYMENT's env.
-    # Every var on the unset line is an ambient config path that some consumer
+    # Every var on the unset lines is an ambient config path that some consumer
     # resolves as ${VAR:-<sandbox default>} — so with one set, a smoke that writes
     # its fixture to the default path silently reads the LIVE file instead and
     # fails pointing at whatever subsystem owns that file, not at the env bleed.
     # That is the whole membership rule: if a new var is read that way, scrub it.
-    # Provenance is tagged per name on the unset line rather than restated here —
-    # five rounds of review went to keeping three prose paragraphs mutually
-    # consistent about which var comes from where, each round fixing one claim and
-    # leaving a sibling stale.
+    # Source is tagged on each unset line below; nothing restates it here, because
+    # a second copy is what kept drifting.
     #
     # Where it actually bites: an operator shell that already has one of these set
     # running the gate directly, and any manual `docker exec` shell, which gets
@@ -50,10 +48,6 @@ test:
     # STATE_DIR/REPOS_DIR/WORKDIRS_DIR (each smoke exports its own sandboxed
     # value). Per-command overrides in a scenario are unaffected; this only
     # clears the environment.
-    # Split by source, one tag per line — a positional ruler over a single line
-    # cannot be enforced and silently re-lies the moment a name is renamed or
-    # reordered, which is how the previous form managed to mislabel the two vars
-    # this whole reconciliation problem was about.
     unset REPOS_CONF_FILE CONFIG_ENV_FILE REPO_ENV_DIR KWR_CONFIG_DIR LOCAL_STATE_DIR  # x-reviewer-env
     unset KWR_CLONE_ROOT   # lib/render-compose.sh, emitted only when KID_ROOT is set
     unset LOG_FILE         # lib/review-one-pr.sh
