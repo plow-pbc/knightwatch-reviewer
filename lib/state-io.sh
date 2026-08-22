@@ -238,49 +238,39 @@ gh_top_callers() {
     printf '%s' "$out"
 }
 
-# ONE parser for /rate_limit. Two hand-rolled ones is what produced the SAME bug
-# twice — @tsv renders a JSON null as an EMPTY field, `tr` + default IFS swallows
-# it, and every later field shifts left. In the report that printed corrupted
-# figures beside a permanent false warning; in the classifier it put core's reset
-# epoch into core_rem, so a genuine PRIMARY exhaustion paused 60s instead of until
-# the real reset and the fleet re-tripped on the next window. One owner means the
-# next caller cannot re-grow it.
+# ONE parser for /rate_limit, with ONE schema gate. Two hand-rolled parsers is
+# what grew the same field-shift bug twice, so there is one owner; and GitHub's
+# documented response always carries complete numeric core and graphql tuples, so
+# a reply that is not six whole numbers is a FAILED probe, not a partial one.
+# All-or-nothing keeps sentinels out of the middle of the tuple without a
+# per-field coercion for a response shape this deployment has never seen.
 #
 # Field order is deliberate: the four CLASSIFICATION fields first, the two
-# display-only limits appended. A short or truncated read therefore still yields a
-# correct pause decision and only degrades the rendered numbers.
-#
-# `// -1` keeps the tuple positional. -1 carries a '-', so it fails a numeric gate
-# as UNKNOWN instead of reading as a real 0 — which would mean "exhausted", the
-# opposite of "unmeasured". Returns non-zero when the probe itself produced
-# nothing; sentinels are set either way, so a caller may ignore the status.
-_gh_num() { case "${1:-}" in ''|*[!0-9]*) printf '%s' -1 ;; *) printf '%s' "$1" ;; esac; }
-
+# display-only limits appended.
 gh_probe_buckets() {
     local raw
     GH_BUCKET_CORE_REM=-1; GH_BUCKET_CORE_RESET=-1; GH_BUCKET_GQL_REM=-1
     GH_BUCKET_GQL_RESET=-1; GH_BUCKET_CORE_LIM=-1; GH_BUCKET_GQL_LIM=-1
     raw=$(timeout "${GH_RATE_LIMIT_PROBE_SECS:-15}" gh api rate_limit \
-        --jq '[(.resources.core.remaining // -1), (.resources.core.reset // -1),
-               (.resources.graphql.remaining // -1), (.resources.graphql.reset // -1),
-               (.resources.core.limit // -1), (.resources.graphql.limit // -1)] | @tsv' \
+        --jq '[.resources.core.remaining, .resources.core.reset,
+               .resources.graphql.remaining, .resources.graphql.reset,
+               .resources.core.limit, .resources.graphql.limit] | @tsv' \
         2>/dev/null | tr '\t' ' ')
-    [ -n "$raw" ] || return 1
-    read -r GH_BUCKET_CORE_REM GH_BUCKET_CORE_RESET GH_BUCKET_GQL_REM \
-            GH_BUCKET_GQL_RESET GH_BUCKET_CORE_LIM GH_BUCKET_GQL_LIM <<<"$raw"
-    GH_BUCKET_CORE_REM=$(_gh_num "$GH_BUCKET_CORE_REM")
-    GH_BUCKET_CORE_RESET=$(_gh_num "$GH_BUCKET_CORE_RESET")
-    GH_BUCKET_GQL_REM=$(_gh_num "$GH_BUCKET_GQL_REM")
-    GH_BUCKET_GQL_RESET=$(_gh_num "$GH_BUCKET_GQL_RESET")
-    GH_BUCKET_CORE_LIM=$(_gh_num "$GH_BUCKET_CORE_LIM")
-    GH_BUCKET_GQL_LIM=$(_gh_num "$GH_BUCKET_GQL_LIM")
+    # @tsv renders a null as an EMPTY field and `tr` collapses it, so a malformed
+    # reply presents as a short count — it fails this gate instead of shifting a
+    # neighbour's value into a field that decides the pause window.
+    case "$raw" in ''|*[!0-9\ ]*) return 1 ;; esac
+    set -- $raw
+    [ "$#" -eq 6 ] || return 1
+    GH_BUCKET_CORE_REM=$1; GH_BUCKET_CORE_RESET=$2; GH_BUCKET_GQL_REM=$3
+    GH_BUCKET_GQL_RESET=$4; GH_BUCKET_CORE_LIM=$5; GH_BUCKET_GQL_LIM=$6
     return 0
 }
 
-# Render a bucket figure for a human: the sentinel prints as `?`, never as -1, so
-# an operator reading an incident log can tell "we could not measure the buckets"
-# from a real measurement. Distinguishing exactly those two is the whole point of
-# the trip diagnostic.
+# Render a bucket figure for a human: an unmeasured value prints as `?`, never
+# as -1, so an operator reading an incident log can tell "we could not measure
+# the buckets" from a real reading. Distinguishing exactly those two is the whole
+# point of the trip diagnostic, and a failed probe is its likely path.
 gh_bucket_txt() { [ "${1:--1}" -ge 0 ] 2>/dev/null && printf '%s' "$1" || printf '?'; }
 
 # Periodic headroom + attribution, and a WARNING while there is still budget to
@@ -290,7 +280,7 @@ gh_bucket_txt() { [ "${1:--1}" -ge 0 ] 2>/dev/null && printf '%s' "$1" || printf
 # unlocked: two workers racing emit one duplicate line, which is cheaper than a
 # lock on a path every tick crosses.
 gh_quota_report() {
-    local now interval last top core_pct gql_pct gql_txt gql_short reset_txt
+    local now interval last top core_pct gql_pct
     now=$(date +%s); interval="${GH_QUOTA_REPORT_SECS:-300}"
     last=$(head -n1 "$(gh_quota_stamp_file)" 2>/dev/null || echo 0)
     case "$last" in ''|*[!0-9]*) last=0 ;; esac
@@ -300,36 +290,20 @@ gh_quota_report() {
     # A failed probe earns no log line, but the stamp above already moved so a
     # flapping API cannot turn this into a per-tick storm of its own.
     gh_probe_buckets || return 0
-    [ "$GH_BUCKET_CORE_REM" -ge 0 ] && [ "$GH_BUCKET_CORE_LIM" -gt 0 ] || return 0
+    [ "$GH_BUCKET_CORE_LIM" -gt 0 ] && [ "$GH_BUCKET_GQL_LIM" -gt 0 ] || return 0
     top=$(gh_top_callers 3)
     core_pct=$(( GH_BUCKET_CORE_REM * 100 / GH_BUCKET_CORE_LIM ))
-    # GraphQL is the loaded bucket here (gh pr view per worker, gh pr list per
-    # repo — lib/gh-retry.sh), so a core-only gate could watch it drain in
-    # silence. Absent is UNKNOWN, never 0: a missing bucket reported as empty
-    # would fire the warning forever and drown the one that matters.
-    gql_txt="unknown"; gql_short="unknown"; gql_pct=-1
-    if [ "$GH_BUCKET_GQL_REM" -ge 0 ] && [ "$GH_BUCKET_GQL_LIM" -gt 0 ]; then
-        gql_pct=$(( GH_BUCKET_GQL_REM * 100 / GH_BUCKET_GQL_LIM ))
-        gql_txt="${GH_BUCKET_GQL_REM}/${GH_BUCKET_GQL_LIM} (${gql_pct}%)"
-        gql_short="${gql_pct}%"
+    gql_pct=$(( GH_BUCKET_GQL_REM * 100 / GH_BUCKET_GQL_LIM ))
+    log "[gh-quota] core=${GH_BUCKET_CORE_REM}/${GH_BUCKET_CORE_LIM} (${core_pct}%) graphql=${GH_BUCKET_GQL_REM}/${GH_BUCKET_GQL_LIM} (${gql_pct}%) reset in $(( (GH_BUCKET_CORE_RESET - now + 59) / 60 ))m${top:+ — top callers: $top}"
+    # Warn on EITHER bucket: GraphQL is the loaded one here (gh pr view per
+    # worker, gh pr list per repo — lib/gh-retry.sh), so a core-only gate could
+    # watch it drain in silence. Headroom cannot predict a SECONDARY limit —
+    # /rate_limit does not expose one, and the incident behind this had core at
+    # 4997/5000 — so that is what the attribution above is for, not this gate.
+    local w="${GH_QUOTA_WARN_PCT:-20}"
+    if [ "$core_pct" -lt "$w" ] || [ "$gql_pct" -lt "$w" ]; then
+        log "[gh-quota] WARNING — $([ "$core_pct" -le "$gql_pct" ] && echo core || echo graphql) headroom under ${w}% (core ${core_pct}%, graphql ${gql_pct}%); the fleet will start 403ing${top:+ — top callers: $top}"
     fi
-    # core.reset gets the same rule as every other field: an unmeasured value is
-    # never rendered as a measurement. Unguarded it printed "reset in -29789192m"
-    # — the exact failure gh_bucket_txt exists to prevent, and on the line that
-    # emits every 5 minutes rather than only on a trip.
-    reset_txt=""
-    [ "$GH_BUCKET_CORE_RESET" -ge 0 ] 2>/dev/null \
-        && reset_txt=" reset in $(( (GH_BUCKET_CORE_RESET - now + 59) / 60 ))m"
-    log "[gh-quota] core=${GH_BUCKET_CORE_REM}/${GH_BUCKET_CORE_LIM} (${core_pct}%) graphql=${gql_txt}${reset_txt}${top:+ — top callers: $top}"
-    # Headroom cannot predict a SECONDARY limit — /rate_limit does not expose one
-    # and the incident that motivated this had core at 4997/5000. That is what the
-    # attribution above is for; this gate covers the primary buckets only.
-    local w="${GH_QUOTA_WARN_PCT:-20}" which=""
-    [ "$core_pct" -lt "$w" ] && which="core"
-    [ "$gql_pct" -ge 0 ] && [ "$gql_pct" -lt "$w" ] \
-        && { [ -z "$which" ] && which="graphql" || which="core+graphql"; }
-    [ -n "$which" ] \
-        && log "[gh-quota] WARNING — $which headroom under ${w}% (core ${core_pct}%, graphql ${gql_short}); the fleet will start 403ing${top:+ — top callers: $top}"
     return 0
 }
 

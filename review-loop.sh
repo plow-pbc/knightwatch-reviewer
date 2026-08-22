@@ -22,6 +22,13 @@ export PROMPTS_DIR="$(pwd)/prompts"
 # review.sh sets it later — so log() falls back to stdout-only, which is what
 # the container stream wants anyway.
 source "$REVIEWER_LIB_DIR/state-io.sh"
+# Also the config loader, for GH_TOKEN. gh_quota_report runs `gh api rate_limit`
+# in THIS shell, but config.env is mounted root-only and was previously loaded
+# only by child processes (review.sh -> tracked-repos.sh) — so the probe ran
+# unauthenticated, failed, and the whole quota report was silent in production
+# while every test passed. Reusing the existing loader rather than re-reading
+# config.env here keeps one owner for CONFIG_ENV_FILE resolution.
+source "$REVIEWER_LIB_DIR/tracked-repos.sh"
 POLL_SECS="${POLL_SECS:-30}"
 # Time floor for refreshing the eligible-PR queue GLOBALLY: one container per
 # window runs the GraphQL enumerate (election-serialized) and writes queue.json;

@@ -217,7 +217,7 @@ fi
 # rc=1 (definitively no access) → skip, as if nobody had asked.
 # rc=2 (unverifiable)           → DEFER; this decision can drop a PR a
 #                                 maintainer legitimately requested.
-is_trusted_repo_author "$REPO" "$REQUESTER_LOGIN"; REQUESTER_RC=$?
+is_trusted_repo_author_live "$REPO" "$REQUESTER_LOGIN"; REQUESTER_RC=$?
 if [ "$REQUESTER_RC" -eq 2 ]; then
     log "$PR_ID: requester re-check deferred — API error (@$REQUESTER_LOGIN); retrying next tick"
     exit 1
@@ -248,10 +248,16 @@ fi
 # unconditionally by the dispatcher when the author is trusted. Two identical
 # `collaborators/<login>/permission` calls per review is precisely the per-tick
 # API cost this branch exists to remove, reintroduced one screen apart.
+#
+# Both worker checks are LIVE (#233): this is the admission gate that mirrors
+# credentials and runs PR code, and it fires up to ~40 min after the dispatcher
+# enqueued the PR. Serving it from the dispatcher's cache would let a
+# collaborator revoked inside that window still execute here. Twice per review
+# run is nothing — the per-tick dispatcher call is where the volume was.
 if [ "$REQUESTER_LOGIN" = "$PR_AUTHOR" ]; then
     AUTHOR_RC="$REQUESTER_RC"
 else
-    is_trusted_repo_author "$REPO" "$PR_AUTHOR"; AUTHOR_RC=$?
+    is_trusted_repo_author_live "$REPO" "$PR_AUTHOR"; AUTHOR_RC=$?
 fi
 IS_TRUSTED_AUTHOR=false; [ "$AUTHOR_RC" -eq 0 ] && IS_TRUSTED_AUTHOR=true
 # Gates on the REQUESTER, not the author: "did someone with push access ask for

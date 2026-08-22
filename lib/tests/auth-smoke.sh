@@ -197,21 +197,46 @@ MOCK_PERM_MODE=role MOCK_PERM_ROLE=write is_trusted_repo_author "cncorp/plow" "f
     || { echo "FAIL scenario 11: expected 2 API calls (403 then re-probe), got $(grep -c '^API' "$GH_API_LOG")"; exit 1; }
 
 reset_gh_pause; reset_trust_cache
-echo "  scenario 12: TTL=0 disables the cache entirely..."
+echo "  scenario 12: an UNTRUSTED verdict is never cached — a promotion must take effect..."
+# A cached rc=1 is worse than no cache: poll-pr-actions.sh marks a rejected
+# /approve PERMANENTLY seen, so a collaborator promoted after one negative
+# lookup would have their approvals silently dropped forever.
 : > "$GH_API_LOG"
-GH_TRUST_CACHE_TTL_SECS=0 MOCK_PERM_MODE=role MOCK_PERM_ROLE=write is_trusted_repo_author "cncorp/plow" "nocache"
-GH_TRUST_CACHE_TTL_SECS=0 MOCK_PERM_MODE=role MOCK_PERM_ROLE=write is_trusted_repo_author "cncorp/plow" "nocache"
+MOCK_PERM_MODE=role MOCK_PERM_ROLE=none is_trusted_repo_author "cncorp/plow" "promoted" \
+    && { echo "FAIL scenario 12: expected untrusted"; exit 1; } || true
+MOCK_PERM_MODE=role MOCK_PERM_ROLE=write is_trusted_repo_author "cncorp/plow" "promoted" \
+    || { echo "FAIL scenario 12: a cached untrusted verdict survived a promotion"; exit 1; }
 [ "$(grep -c '^API' "$GH_API_LOG")" = "2" ] \
-    || { echo "FAIL scenario 12: TTL=0 must not serve from cache"; exit 1; }
+    || { echo "FAIL scenario 12: expected 2 API calls (untrusted is not cached), got $(grep -c '^API' "$GH_API_LOG")"; exit 1; }
 
 reset_gh_pause; reset_trust_cache
-echo "  scenario 13: the cache is keyed per (repo,user) — no cross-talk..."
+echo "  scenario 13: the LIVE admission check never reads the cache..."
+# The worker mirrors credentials and executes PR code up to ~40 min after the
+# dispatcher warmed the cache. Serving that gate from cache would let a
+# collaborator revoked inside the window still run code, so the live entry point
+# must probe every time — proven by warming a trusted verdict, then making the
+# API say otherwise and requiring the live call to see it.
+: > "$GH_API_LOG"
+MOCK_PERM_MODE=role MOCK_PERM_ROLE=write is_trusted_repo_author "cncorp/plow" "revoked" \
+    || { echo "FAIL scenario 13: expected the warm-up lookup to be trusted"; exit 1; }
+MOCK_PERM_MODE=404 is_trusted_repo_author_live "cncorp/plow" "revoked" \
+    && { echo "FAIL scenario 13: the live check served a cached verdict — a revoked collaborator would still execute code"; exit 1; } || true
+[ "$(grep -c '^API' "$GH_API_LOG")" = "2" ] \
+    || { echo "FAIL scenario 13: the live check did not hit the API, got $(grep -c '^API' "$GH_API_LOG") call(s)"; exit 1; }
+# ...and the cached wrapper still answers from cache, so the volume fix stands.
+MOCK_PERM_MODE=404 is_trusted_repo_author "cncorp/plow" "revoked" \
+    || { echo "FAIL scenario 13: the cached wrapper stopped caching — the per-tick storm returns"; exit 1; }
+[ "$(grep -c '^API' "$GH_API_LOG")" = "2" ] \
+    || { echo "FAIL scenario 13: the cached wrapper made an extra API call"; exit 1; }
+
+reset_gh_pause; reset_trust_cache
+echo "  scenario 14: the cache is keyed per (repo,user) — no cross-talk..."
 : > "$GH_API_LOG"
 MOCK_PERM_MODE=role MOCK_PERM_ROLE=write is_trusted_repo_author "cncorp/plow" "alice" \
-    || { echo "FAIL scenario 13: alice should be trusted"; exit 1; }
+    || { echo "FAIL scenario 14: alice should be trusted"; exit 1; }
 MOCK_PERM_MODE=role MOCK_PERM_ROLE=none is_trusted_repo_author "cncorp/plow" "mallory" \
-    && { echo "FAIL scenario 13: mallory must NOT inherit alice's cached verdict"; exit 1; } || true
+    && { echo "FAIL scenario 14: mallory must NOT inherit alice's cached verdict"; exit 1; } || true
 MOCK_PERM_MODE=role MOCK_PERM_ROLE=none is_trusted_repo_author "othercorp/plow" "alice" \
-    && { echo "FAIL scenario 13: alice's verdict must not cross repos"; exit 1; } || true
+    && { echo "FAIL scenario 14: alice's verdict must not cross repos"; exit 1; } || true
 
-echo "  PASS (13 scenarios: trust-tristate-matrix[9 rows: 3×trusted/2×untrusted/404/403/5xx/empty], indeterminate-defers-not-trusted, trust-empty, approval-self-skipped, approval-success, approval-failure-fail-loud, just-test run/untrusted-skip/no-justfile, trust-cache hit/indeterminate-never-cached/ttl-0-disables/keyed-per-repo-user)"
+echo "  PASS (14 scenarios: trust-tristate-matrix[9 rows: 3×trusted/2×untrusted/404/403/5xx/empty], indeterminate-defers-not-trusted, trust-empty, approval-self-skipped, approval-success, approval-failure-fail-loud, just-test run/untrusted-skip/no-justfile, trust-cache hit/indeterminate-never-cached/untrusted-never-cached/live-bypasses-cache/keyed-per-repo-user)"

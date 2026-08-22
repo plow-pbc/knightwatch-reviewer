@@ -1637,9 +1637,15 @@ clear_seeded_runs
 # a serialized boolean would still say "trusted" and hand repo secrets plus
 # `just test` execution to a contributor who no longer has push access. The
 # dispatcher owns "should we review?"; the worker owns "may this code run?".
+#
+# The fence names the LIVE entry point, not merely "recomputes" (#233): once a
+# cached wrapper existed, recomputing through it re-opened this exact gap one
+# level down — the worker would re-ask and be answered from a verdict the
+# dispatcher warmed up to ~40 min earlier, which is the serialized boolean this
+# scenario was written to forbid, wearing a different name.
 echo "  scenario RT8: the worker recomputes author trust rather than inheriting it..."
 w7="$PROJECT_ROOT/lib/review-one-pr.sh"
-grep -qE 'is_trusted_repo_author "\$REPO" "\$PR_AUTHOR"' "$w7" \
+grep -qE 'is_trusted_repo_author_live "\$REPO" "\$PR_AUTHOR"' "$w7" \
     || { echo "FAIL RT8: the worker no longer recomputes author trust — a stale queued boolean would gate the .env mirror and just test"; exit 1; }
 grep -qE 'AUTHOR_TRUSTED_ARG' "$w7" \
     && { echo "FAIL RT8: the worker still reads a serialized author-trust arg — execution trust must come from the live author"; exit 1; }
@@ -1648,7 +1654,7 @@ grep -qF 'author_trusted:' "$PROJECT_ROOT/review.sh" \
     && { echo "FAIL RT8: review.sh serializes author_trusted again — the queue can wait, so that boolean goes stale before it gates execution"; exit 1; }
 grep -qF 'requester_trusted:' "$PROJECT_ROOT/review.sh" \
     && { echo "FAIL RT8: review.sh serializes requester_trusted again — admission must re-verify the requester's login, since reading is the boundary"; exit 1; }
-grep -qE 'is_trusted_repo_author "\$REPO" "\$REQUESTER_LOGIN"' "$w7" \
+grep -qE 'is_trusted_repo_author_live "\$REPO" "\$REQUESTER_LOGIN"' "$w7" \
     || { echo "FAIL RT8: the worker no longer re-verifies the requester at admission — a revoked voucher would still admit content to sandbox-bypassed codex"; exit 1; }
 
 # --- RT5: the execution gates must NEVER move to requester trust. A vouch says

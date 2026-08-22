@@ -77,7 +77,7 @@ reset_state() { rm -f "$(gh_pause_file)"; }
 # limits, so "403 with budget left" IS the secondary signal.
 echo "  scenario 1: rate-limit 403 with budget remaining → secondary, short pause..."
 reset_state
-GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))	5000	5000" \
 GH_SHIM_ERR="$RATE_LIMIT_ERR" \
 GH_SECONDARY_PAUSE_SECS=60 \
     gh api "user" >"$TMP/out1" 2>"$TMP/err1" || true
@@ -98,7 +98,7 @@ grep -q 'secondary' "$TMP/err1" \
 echo "  scenario 2: core remaining=0 → primary, pause until the real reset epoch..."
 reset_state
 CORE_RESET=$((NOW + 1800))
-GH_SHIM_BUCKETS="0	$CORE_RESET	4742	$((NOW + 3000))" \
+GH_SHIM_BUCKETS="0	$CORE_RESET	4742	$((NOW + 3000))	5000	5000" \
 GH_SHIM_ERR="$RATE_LIMIT_ERR" \
     gh api "user" >/dev/null 2>"$TMP/err2" || true
 [ "$(head -n1 "$(gh_pause_file)")" = "$CORE_RESET" ] \
@@ -112,7 +112,7 @@ grep -q 'primary/core' "$TMP/err2" \
 echo "  scenario 3: graphql remaining=0 → primary/graphql, graphql's reset..."
 reset_state
 GQL_RESET=$((NOW + 2400))
-GH_SHIM_BUCKETS="4920	$((NOW + 600))	0	$GQL_RESET" \
+GH_SHIM_BUCKETS="4920	$((NOW + 600))	0	$GQL_RESET	5000	5000" \
 GH_SHIM_ERR="$RATE_LIMIT_ERR" \
     gh api "graphql" >/dev/null 2>"$TMP/err3" || true
 [ "$(head -n1 "$(gh_pause_file)")" = "$GQL_RESET" ] \
@@ -129,7 +129,7 @@ GH_SHIM_ERR='gh: Not Found (HTTP 404)' \
 # --- 5. a stale reset epoch must not resume instantly ---
 echo "  scenario 5: already-passed reset epoch → floored to a real window..."
 reset_state
-GH_SHIM_BUCKETS="0	$((NOW - 500))	4742	$((NOW + 3000))" \
+GH_SHIM_BUCKETS="0	$((NOW - 500))	4742	$((NOW + 3000))	5000	5000" \
 GH_SHIM_ERR="$RATE_LIMIT_ERR" \
 GH_SECONDARY_PAUSE_SECS=60 \
     gh api "user" >/dev/null 2>&1 || true
@@ -194,7 +194,7 @@ echo "  scenario 9: already paused → probe short-circuits, window not extended
 reset_state
 export GH_SHIM_PROBE_LOG="$TMP/probes"; : > "$GH_SHIM_PROBE_LOG"
 for _ in 1 2 3; do
-    GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+    GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))	5000	5000" \
     GH_SHIM_ERR="$RATE_LIMIT_ERR" \
     GH_SECONDARY_PAUSE_SECS=60 \
         gh api "user" >/dev/null 2>&1 || true
@@ -213,7 +213,7 @@ GH_SHIM_CALL_LOG="$TMP/calls" GH_SHIM_ERR="$RATE_LIMIT_ERR" \
     || fail "scenario 9: gh_retry still called gh while the pause was active — it must short-circuit: $(cat "$TMP/calls")"
 FIRST_UNTIL=$(head -n1 "$(gh_pause_file)")
 sleep 1
-GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))	5000	5000" \
 GH_SHIM_ERR="$RATE_LIMIT_ERR" GH_SECONDARY_PAUSE_SECS=60 \
     gh api "user" >/dev/null 2>&1 || true
 [ "$(head -n1 "$(gh_pause_file)")" = "$FIRST_UNTIL" ] \
@@ -258,7 +258,7 @@ grep -q 'pr view 7' "$TMP/calls" \
     || fail "scenario 12: the seam did not pass argv through: $(cat "$TMP/calls")"
 # A plain `gh` call must stamp the pause like any other — that IS the point.
 : > "$TMP/calls"; reset_state
-GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))	5000	5000" \
 GH_SHIM_ERR="$RATE_LIMIT_ERR" gh pr comment 7 --repo o/r --body hi >/dev/null 2>&1 || true
 [ -f "$(gh_pause_file)" ] \
     || fail "scenario 12: a rate-limited plain `gh` call left no pause — the seam is not classifying"
@@ -352,7 +352,7 @@ echo "  scenario 13: concurrent classification — the primary pause survives...
 reset_state
 CORE_RESET=$((NOW + 1800))
 (
-    GH_SHIM_BUCKETS="0	$CORE_RESET	4742	$((NOW + 3000))" \
+    GH_SHIM_BUCKETS="0	$CORE_RESET	4742	$((NOW + 3000))	5000	5000" \
     GH_SHIM_ERR="$RATE_LIMIT_ERR" gh api user >/dev/null 2>&1 || true
 ) &
 (
@@ -398,7 +398,7 @@ reset_state
 env -u BASH_ENV bash -c '
     set -euo pipefail
     export STATE_DIR="'"$STATE_DIR"'" PATH="'"$TMP/bin"'":$PATH
-    export GH_SHIM_BUCKETS="4920	'"$((NOW + 3000))"'	4742	'"$((NOW + 3000))"'"
+    export GH_SHIM_BUCKETS="4920	'"$((NOW + 3000))"'	4742	'"$((NOW + 3000))"'	5000	5000"
     export GH_SECONDARY_PAUSE_SECS=60
     . "'"$PROJECT_ROOT"'/lib/gh-retry.sh"
     gh_note_rate_limit
@@ -419,7 +419,7 @@ echo "  scenario 16: publishing keeps the inode (a bind-mounted file stays bound
 reset_state
 printf '%s\n' "$(( NOW - 10 ))" > "$(gh_pause_file)"
 INO_BEFORE=$(stat -c '%i' "$(gh_pause_file)")
-GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))	5000	5000" \
 GH_SHIM_ERR="$RATE_LIMIT_ERR" GH_SECONDARY_PAUSE_SECS=60 \
     gh api "user" >/dev/null 2>&1 || true
 [ "$(stat -c '%i' "$(gh_pause_file)")" = "$INO_BEFORE" ] \
@@ -440,7 +440,7 @@ echo "  scenario 17: a throttled call names its endpoint..."
 reset_state
 : > "$TMP/log17"
 LOG_FILE="$TMP/log17" \
-GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))	5000	5000" \
 GH_SHIM_ERR="$RATE_LIMIT_ERR" \
     gh api "repos/acme/repo/issues/7/comments" >/dev/null 2>&1 || true
 grep -qF 'repos/acme/repo/issues/7/comments' "$TMP/log17" \
@@ -449,7 +449,7 @@ grep -qF 'repos/acme/repo/issues/7/comments' "$TMP/log17" \
 reset_state
 : > "$TMP/log17b"
 LOG_FILE="$TMP/log17b" \
-GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))	5000	5000" \
 GH_SHIM_ERR="$RATE_LIMIT_ERR" \
     gh pr comment 7 --repo o/r --body "SECRET-REVIEW-BODY" >/dev/null 2>&1 || true
 grep -q 'rate-limited on' "$TMP/log17b" \
@@ -475,7 +475,7 @@ flock -x "$holder_fd"
 LOCK_RC=0
 timeout 15 env -u BASH_ENV STATE_DIR="$STATE_DIR" PATH="$TMP/bin:$PATH" \
     LOG_FILE="$TMP/log18" GH_SECONDARY_PAUSE_SECS=60 GH_PAUSE_LOCK_WAIT_SECS=1 \
-    GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+    GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))	5000	5000" \
     GH_SHIM_ERR="$RATE_LIMIT_ERR" \
     bash -c '. "'"$PROJECT_ROOT"'/lib/gh-retry.sh"; gh api user' >/dev/null 2>&1 || LOCK_RC=$?
 exec {holder_fd}>&-
@@ -537,33 +537,35 @@ LOG_FILE="$TMP/log21" GH_QUOTA_REPORT_SECS=300 \
 [ "$(grep -c '\[gh-quota\] core=' "$TMP/log21")" = 1 ] \
     || fail "scenario 21: a second report inside the interval emitted anyway"
 
-echo "  scenario 22: low headroom WARNs while there is still budget to act on..."
-rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log22"
-LOG_FILE="$TMP/log22" GH_QUOTA_REPORT_SECS=0 GH_QUOTA_WARN_PCT=20 \
-    GH_SHIM_BUCKETS="100	$((NOW + 1200))	4775	$((NOW + 1200))	5000	5000" gh_quota_report
-grep -q '\[gh-quota\] WARNING' "$TMP/log22" \
-    || fail "scenario 22: 100/5000 raised no warning — the whole point is to see it coming: $(cat "$TMP/log22")"
-# And a healthy bucket must NOT warn, or the signal is noise.
-rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log22b"
-LOG_FILE="$TMP/log22b" GH_QUOTA_REPORT_SECS=0 GH_QUOTA_WARN_PCT=20 \
-    GH_SHIM_BUCKETS="4977	$((NOW + 1200))	4775	$((NOW + 1200))	5000	5000" gh_quota_report
-grep -q 'WARNING' "$TMP/log22b" && fail "scenario 22: warned at 99% headroom — the signal would be noise"
-# A failed probe earns no line, but must still stamp, so a flapping API cannot
-# become a per-tick storm of its own.
-rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log22c"
-LOG_FILE="$TMP/log22c" GH_QUOTA_REPORT_SECS=0 GH_SHIM_BUCKETS="" gh_quota_report
-grep -q 'gh-quota' "$TMP/log22c" && fail "scenario 22: a failed probe logged a bogus quota line"
+echo "  scenario 22: the warning fires on EITHER bucket, and stays quiet when both are healthy..."
+# One table: same setup, one bucket tuple per row. GraphQL is the loaded bucket
+# here (gh pr view per worker, gh pr list per repo), so a core-only gate would
+# watch it drain in silence; the healthy row keeps the signal from being noise.
+# Tuple order is gh_probe_buckets': core_rem core_reset gql_rem gql_reset core_lim gql_lim
+WARN_MATRIX=(
+    "core-low|100	$((NOW + 1200))	4775	$((NOW + 1200))	5000	5000|WARNING — core headroom under"
+    "graphql-low|4977	$((NOW + 1200))	100	$((NOW + 1200))	5000	5000|WARNING — graphql headroom under"
+    "healthy|4977	$((NOW + 1200))	4775	$((NOW + 1200))	5000	5000|@ABSENT@"
+)
+for row in "${WARN_MATRIX[@]}"; do
+    IFS='|' read -r label buckets want <<<"$row"
+    rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log-warn"
+    LOG_FILE="$TMP/log-warn" GH_QUOTA_REPORT_SECS=0 GH_QUOTA_WARN_PCT=20 \
+        GH_SHIM_BUCKETS="$buckets" gh_quota_report
+    if [ "$want" = "@ABSENT@" ]; then
+        grep -q 'WARNING' "$TMP/log-warn" \
+            && fail "scenario 22 [$label]: warned with both buckets healthy — the signal would be noise: $(cat "$TMP/log-warn")"
+    else
+        grep -q -- "$want" "$TMP/log-warn" \
+            || fail "scenario 22 [$label]: expected '$want' in: $(cat "$TMP/log-warn")"
+    fi
+done
+# A failed probe earns no line at all, but must still stamp — otherwise a
+# flapping API turns the report into a per-tick storm of its own.
+rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log-warn2"
+LOG_FILE="$TMP/log-warn2" GH_QUOTA_REPORT_SECS=0 GH_SHIM_BUCKETS="" gh_quota_report
+grep -q 'gh-quota' "$TMP/log-warn2" && fail "scenario 22: a failed probe logged a bogus quota line"
 [ -s "$(gh_quota_stamp_file)" ] || fail "scenario 22: a failed probe left no stamp — every tick would re-probe"
-reset_state
-
-echo "  scenario 23: GraphQL exhaustion warns too — a core-only gate watches the loaded bucket drain in silence..."
-# gh pr view (per worker) and gh pr list (per repo) are GraphQL, so GraphQL is
-# the bucket most likely to go first here. A core-only threshold cannot fire for it.
-rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log23"
-LOG_FILE="$TMP/log23" GH_QUOTA_REPORT_SECS=0 GH_QUOTA_WARN_PCT=20 \
-    GH_SHIM_BUCKETS="4977	$((NOW + 1200))	100	$((NOW + 1200))	5000	5000" gh_quota_report
-grep -q 'WARNING — graphql headroom under' "$TMP/log23" \
-    || fail "scenario 23: graphql at 100/5000 raised no warning — the loaded bucket is unmonitored: $(cat "$TMP/log23")"
 
 echo "  scenario 24: the SEAM is wired to the tally — a call through gh() is counted..."
 # Scenarios 19-22 exercise the helpers directly, so deleting `gh_tally_call` from
@@ -584,67 +586,33 @@ N25=$(grep -cx 'repos/\*/\*/issues/\*/comments' "$(gh_tally_file)")
     || fail "scenario 25: expected 3 tally lines for 3 attempts, got $N25 — retries would be under-reported"
 reset_state; : > "$(gh_tally_file)"
 
-echo "  scenario 26: every bucket field nulled in turn — an unmeasured value is never rendered as a measurement..."
-# ONE assertion of the invariant, not a bespoke scenario per field. Four rounds
-# added a field at a time (26 -> 28 -> 28b -> 28c) and the next field was always
-# still open; worse, a *fabricated stand-in* passed all of them — clamping the
-# reset delta to `reset in 0m` renders "core resets right now" for a bucket that
-# was never read, which is the very confusion the `?` rendering exists to end.
-# So each row asserts both halves: no raw sentinel, and no invented value.
-#
-# Columns: <field to null>|<substring that must NOT appear>|<substring that must>
-FULL_BODY='{"resources":{"core":{"remaining":4977,"limit":5000,"reset":RESET},"graphql":{"remaining":4775,"limit":5000,"reset":RESET}}}'
-NULL_FIELD_MATRIX=(
-    "core.remaining|gh-quota|"
-    "core.limit|gh-quota|"
-    "core.reset|reset in|core=4977/5000"
-    "graphql.remaining|graphql=4775|graphql=unknown"
-    "graphql.limit|graphql=4775|graphql=unknown"
-    "graphql.reset|@NONE@|graphql=4775/5000"
-)
-for row in "${NULL_FIELD_MATRIX[@]}"; do
-    IFS='|' read -r nf must_not must <<<"$row"
-    body=$(printf '%s' "$FULL_BODY" | sed "s/RESET/$((NOW + 1200))/g" \
-        | jq -c --arg f "$nf" 'setpath(["resources"] + ($f | split(".")); null)')
-    rm -f "$(gh_quota_stamp_file)"; : > "$TMP/lognull"
-    LOG_FILE="$TMP/lognull" GH_QUOTA_REPORT_SECS=0 GH_QUOTA_WARN_PCT=20 \
-        GH_SHIM_JSON="$body" gh_quota_report
-    # Strip log()'s "[YYYY-MM-DD HH:MM:SS] " prefix: the timestamp itself carries
-    # "-1" on any day 10-19 or month 10-12, so a whole-line grep would go red on
-    # half the calendar regardless of the code.
-    msg=$(sed 's/^\[[0-9-]* [0-9:]*\] //' "$TMP/lognull")
-    if printf '%s' "$msg" | grep -q -- '-1'; then
-        fail "scenario 26 [$nf]: the -1 sentinel reached operator-facing text: $msg"
-    fi
-    if [ "$must_not" != "@NONE@" ] && printf '%s' "$msg" | grep -q -- "$must_not"; then
-        fail "scenario 26 [$nf]: '$must_not' appeared for an unmeasured field — a fabricated stand-in reads as a real measurement: $msg"
-    fi
-    if [ -n "$must" ] && ! printf '%s' "$msg" | grep -q -- "$must"; then
-        fail "scenario 26 [$nf]: expected '$must' in: $msg"
-    fi
-    # No row has a legitimate reason to warn: core is 4977/5000 (99%) in every
-    # body that produces a line at all. Without this the gate — as opposed to the
-    # rendering — is unpinned: drop the `[ "$gql_pct" -ge 0 ]` guard and an
-    # unmeasured bucket tests -1 -lt 20 and warns on every report forever, while
-    # rendering the legible "graphql unknown" that satisfies all three checks
-    # above. That permanent false alarm is the bug this whole thread started from.
-    if printf '%s' "$msg" | grep -q 'WARNING'; then
-        fail "scenario 26 [$nf]: an unmeasured bucket raised a warning — absent is not empty, and this would fire every 5 minutes forever: $msg"
-    fi
-done
+echo "  scenario 26: a malformed /rate_limit reply is rejected WHOLESALE, never shifted..."
+# GitHub's documented response always carries complete numeric core and graphql
+# tuples, so gh_probe_buckets treats anything else as a failed probe rather than
+# coercing field by field. This pins that gate: a null field renders empty in
+# @tsv and collapses under `tr`, so it presents as a short count — and it must
+# fail the gate, not slide core.limit into core_rem where it would decide the
+# pause window. Real jq on a real body, since GH_SHIM_BUCKETS never runs --jq.
+reset_state; : > "$TMP/log26"
+NULL_CORE_JSON='{"resources":{"core":{"remaining":null,"limit":5000,"reset":'"$((NOW + 1200))"'},"graphql":{"remaining":4775,"limit":5000,"reset":'"$((NOW + 1200))"'}}}'
+LOG_FILE="$TMP/log26" GH_SHIM_JSON="$NULL_CORE_JSON" gh_note_rate_limit
+grep -q 'gh rate limit (secondary)' "$TMP/log26" \
+    || fail "scenario 26: a malformed reply did not fall through to the secondary window: $(cat "$TMP/log26")"
+grep -q 'core=?/? graphql=?/?' "$TMP/log26" \
+    || fail "scenario 26: a rejected probe rendered figures instead of '?': $(cat "$TMP/log26")"
+if sed 's/^\[[0-9-]* [0-9:]*\] //' "$TMP/log26" | grep -q -- '-1'; then
+    fail "scenario 26: the -1 sentinel reached operator-facing text: $(cat "$TMP/log26")"
+fi
+reset_state
 
-echo "  scenario 26b: the OTHER emitter obeys the same rule — a failed probe renders '?', never -1..."
+echo "  scenario 26b: a failed probe renders '?', never the -1 sentinel..."
 # The trip diagnostic exists to separate "probe failed, classification guessed"
 # from "buckets healthy, genuinely secondary", and a failed probe is the LIKELY
-# path: it runs during a 403 cascade when GitHub is degraded, which is why it is
-# wrapped in timeout at all.
+# path: it runs during a 403 cascade when GitHub is degraded.
 reset_state; : > "$TMP/log26b"
 LOG_FILE="$TMP/log26b" GH_SHIM_BUCKETS="" GH_SHIM_ERR="$RATE_LIMIT_ERR" gh_note_rate_limit
 grep -q 'core=?/? graphql=?/? remaining' "$TMP/log26b" \
     || fail "scenario 26b: an unmeasured bucket did not render as '?': $(cat "$TMP/log26b")"
-if sed 's/^\[[0-9-]* [0-9:]*\] //' "$TMP/log26b" | grep -q -- '-1'; then
-    fail "scenario 26b: the -1 sentinel leaked into the trip diagnostic: $(cat "$TMP/log26b")"
-fi
 reset_state
 
 echo "  scenario 27: the tally is capped where it is written (host units consume it on neither happy path)..."
@@ -661,20 +629,17 @@ BYTES=$(wc -c < "$(gh_tally_file)")
     || fail "scenario 27: the cap emptied the tally entirely — attribution would always be blank"
 : > "$(gh_tally_file)"
 
-echo "  scenario 29: a null core.remaining must not misclassify a PRIMARY graphql exhaustion as secondary..."
-# The same shift in gh_note_rate_limit picks the pause WINDOW. With graphql truly
-# exhausted, a left-shift makes neither bucket test as 0, so a primary exhaustion
-# pauses 60s instead of until the real reset — the fleet resumes into an empty
-# bucket and re-trips, the clustered re-trip this file's header describes.
-reset_state
-GQL_RESET=$((NOW + 2400))
-SHIFT_JSON='{"resources":{"core":{"remaining":null,"reset":'"$((NOW + 1200))"'},"graphql":{"remaining":0,"reset":'"$GQL_RESET"'}}}'
-: > "$TMP/log29"
-LOG_FILE="$TMP/log29" GH_SHIM_JSON="$SHIFT_JSON" gh_note_rate_limit
-grep -q 'primary/graphql' "$TMP/log29" \
-    || fail "scenario 29: a null core.remaining shifted the fields and hid a primary/graphql exhaustion: $(cat "$TMP/log29")"
-[ "$(head -n1 "$(gh_pause_file)")" = "$GQL_RESET" ] \
-    || fail "scenario 29: paused until $(head -n1 "$(gh_pause_file)") instead of graphql's real reset $GQL_RESET — the fleet would resume into an exhausted bucket"
-reset_state
+echo "  scenario 28: review-loop.sh loads the token before it can report quota..."
+# gh_quota_report runs `gh api rate_limit` in review-loop.sh's OWN shell, but
+# config.env (which exports GH_TOKEN) is mounted root-only and was loaded only by
+# child processes. The probe therefore ran unauthenticated, failed, and the entire
+# quota report was silent in production while every test passed — the feature
+# shipped inert. Source-grep, because the failure is a missing source line and
+# nothing else in the suite can see it.
+LOOP_SRC=$(sed -e 's/#.*//' "$PROJECT_ROOT/review-loop.sh")
+grep -qE '^[[:space:]]*(\.|source)[[:space:]].*tracked-repos\.sh' <<<"$LOOP_SRC" \
+    || fail "scenario 28: review-loop.sh calls gh_quota_report without sourcing the config loader — the probe runs tokenless and the report is silent"
+grep -q 'gh_quota_report' "$PROJECT_ROOT/review-loop.sh" \
+    || fail "scenario 28: review-loop.sh no longer calls gh_quota_report — the periodic report is the only scheduled caller"
 
 echo "PASS: gh-rate-limit-smoke"

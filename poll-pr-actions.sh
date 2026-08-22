@@ -84,7 +84,11 @@ approve_check() {
         # rc 2 = the permission fetch itself failed (transient API error) — leave
         # the comment UNSEEN so a legitimate request is retried next tick rather
         # than silently dropped; rc 1 = genuine non-push author, mark seen + skip.
-        is_trusted_repo_author "$REPO" "$USER"; trust_rc=$?
+        # LIVE (#233): this authorizes an APPROVE submission, and the branch
+        # below marks a rejection PERMANENTLY seen — a stale verdict either
+        # honours a revoked collaborator or drops a promoted one for good.
+        # Approve comments are rare, so there is no volume argument for caching.
+        is_trusted_repo_author_live "$REPO" "$USER"; trust_rc=$?
         if [ "$trust_rc" -eq 2 ]; then
             log "$APPROVE_KEY: permission check failed (API error) — leaving unseen to retry next tick"
             continue
