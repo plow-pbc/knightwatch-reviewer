@@ -694,11 +694,7 @@ for _entry in $ENTRYPOINTS; do
     # straight through on every entrypoint that had no behaviour pin. One line
     # covers all six; the per-entrypoint stdout captures in the org-sync and
     # kid-refresh smokes stay as the behaviour backstop.
-    # The flatten is load-bearing, not incidental: it is what lets the brace sit
-    # on the NEXT line (`log()\n{`), which 27a exists to catch and which no
-    # single-line pattern sees. Drop it and this check silently passes on all six.
-    # Herestring rather than a pipeline into `grep -q`, per the rule at scenario
-    # 12 above.
+    # Herestring rather than a pipeline into `grep -q`, per the rule at scenario 12.
     _flat_src=$(sed -e 's/#.*//' "$PROJECT_ROOT/$_entry" | tr '\n' ' ')
     grep -qE '(^|[^A-Za-z0-9_])(function[[:space:]]+)?log[[:space:]]*\(?\)?[[:space:]]*\{' <<<"$_flat_src" \
         && fail "scenario 27a: $_entry shadows log() — state-io's already writes to LOG_FILE and TEES to stdout, so a local copy silently drops this unit's whole run out of journalctl"
