@@ -32,6 +32,25 @@ GH_API_RATE_LIMIT_RE='rate limit exceeded|secondary rate limit'
 # that already has it is a no-op.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/state-io.sh"
 
+# Sanitize an inherited GH_DIAG_FD (allocated by lib/bootstrap.sh). The variable
+# is exported and so crosses EVERY process boundary; the descriptor only crosses
+# the ones that preserve it. lib/pipeline.py's `subprocess.Popen(...)` passes the
+# full environment with close_fds defaulting to True, so its child sees
+# GH_DIAG_FD=N with fd N already closed — and a FAILED redirection means bash
+# never runs the command at all, which would silently skip publishing the
+# fleet-wide pause (the exact "pause NOT published" class scenario 18 exists to
+# catch). Testing emptiness cannot see this; only writing to it can.
+#
+# Validated HERE rather than in bootstrap.sh because the seam is what every gh
+# caller sources — lib/review-one-pr.sh reaches gh() through auth.sh and never
+# sources bootstrap.sh, so a bootstrap-only guard would leave the fleet's
+# biggest gh caller trusting a stale fd. Falling back to 2 is why callers do not
+# need to inherit the descriptor for correctness, only for nicer diagnostics.
+if [ -n "${GH_DIAG_FD:-}" ] && ! { : >&"$GH_DIAG_FD"; } 2>/dev/null; then
+    GH_DIAG_FD=2
+    export GH_DIAG_FD
+fi
+
 # gh_retry takes a FULL gh argv (`pr view …`, `repo view …`, `api …`), not just
 # an api path. The rate-limit pause is only as good as its coverage, and the
 # hardcoded `gh api` left the highest-volume reads outside it: `gh pr view` runs

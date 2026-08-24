@@ -494,13 +494,58 @@ grep -q 'secondary' "$TMP/diag19" \
     || fail "scenario 19: the classifier line did not reach the saved diag fd: $(cat "$TMP/diag19")"
 # With no GH_DIAG_FD in scope it must still land on plain stderr — every script
 # that never sources bootstrap.sh (the container worker) depends on that.
+# `unset` in a subshell, not an assumption that the caller lacks it: the variable
+# is EXPORTED, and on the host review path this suite runs under
+# `env -u LOG_FILE just … test` (lib/run-dir.sh), which scrubs LOG_FILE only —
+# so it would inherit a live GH_DIAG_FD and this assertion would fail on correct
+# code. `env -u` cannot be used here because gh is a shell function.
 reset_state
 : > "$TMP/err19b"
-GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
-GH_SHIM_ERR="$RATE_LIMIT_ERR" GH_SECONDARY_PAUSE_SECS=60 \
-    gh api "user" >/dev/null 2>"$TMP/err19b" || true
+(
+    unset GH_DIAG_FD
+    GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+    GH_SHIM_ERR="$RATE_LIMIT_ERR" GH_SECONDARY_PAUSE_SECS=60 \
+        gh api "user" >/dev/null 2>"$TMP/err19b" || true
+)
 grep -q 'secondary' "$TMP/err19b" \
     || fail "scenario 19: without GH_DIAG_FD the diagnostic must fall back to fd 2 — got: $(cat "$TMP/err19b")"
+
+# A STALE inherited fd (exported variable, closed descriptor — what
+# lib/pipeline.py's close_fds=True Popen hands its child) must degrade to fd 2,
+# never abort the call: a failed redirection means bash does not run the command,
+# so the fleet-wide pause would silently never be published.
+# Reproduced as a CHILD PROCESS carrying the variable without the descriptor —
+# the faithful shape, and the only one that reproduces it. Closing an fd in the
+# same shell does NOT: bash still accepts `: >&N` on a descriptor it closed
+# itself, so a same-shell simulation passes against the unfixed code and proves
+# nothing. A fresh child whose fd N was never opened is what Popen hands over.
+reset_state
+: > "$TMP/err19c"
+env -u BASH_ENV GH_DIAG_FD=9 STATE_DIR="$STATE_DIR" PATH="$TMP/bin:$PATH" \
+    GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+    GH_SHIM_ERR="$RATE_LIMIT_ERR" GH_SECONDARY_PAUSE_SECS=60 \
+    bash -c '. "'"$PROJECT_ROOT"'/lib/gh-retry.sh"; gh api user' \
+    >/dev/null 2>"$TMP/err19c" || true
+[ -f "$(gh_pause_file)" ] \
+    || fail "scenario 19: a stale GH_DIAG_FD suppressed the pause entirely — the redirection failed, so gh_note_rate_limit never ran and the fleet never backs off"
+grep -q 'secondary' "$TMP/err19c" \
+    || fail "scenario 19: a stale GH_DIAG_FD lost the diagnostic instead of degrading to fd 2 — got: $(cat "$TMP/err19c")"
+
+# The BOOTSTRAP end of the contract. Without this, deleting bootstrap.sh's
+# `exec {GH_DIAG_FD}>&2` block leaves every scenario above green (they open the
+# fd themselves) while every diagnostic silently returns to fd 2 and back into
+# the callers' errfiles — the whole bug this change exists to fix. Same shape as
+# scenario 12's source-and-check. stderr is NOT redirected during the source,
+# because that is the descriptor bootstrap is supposed to capture.
+: > "$TMP/err19d"
+env -u BASH_ENV -u GH_DIAG_FD bash -c '
+    export REVIEWER_LIB_DIR="'"$PROJECT_ROOT"'/lib"
+    . "$REVIEWER_LIB_DIR/bootstrap.sh" >/dev/null || exit 3
+    [ -n "${GH_DIAG_FD:-}" ] || exit 4
+    echo BOOTSTRAP_DIAG_FD_OK >&"$GH_DIAG_FD"
+' 2>"$TMP/err19d" || true
+grep -q 'BOOTSTRAP_DIAG_FD_OK' "$TMP/err19d" \
+    || fail "scenario 19: sourcing bootstrap.sh did not leave a usable GH_DIAG_FD bound to the entrypoint's stderr — got: $(cat "$TMP/err19d")"
 reset_state
 
 echo "PASS: gh-rate-limit-smoke"
