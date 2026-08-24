@@ -78,9 +78,13 @@
 # per round and has produced 20-round PRs. Silently returning the last 100 would
 # reintroduce exactly what lib/gh-comments.sh exists to prevent — a trusted
 # /<prefix>-approve left UNSEEN by an rc-2 trust check is retried next tick, and
-# would be lost for good once the thread crossed the window. Reusing the
-# absence signal means no new consumer branch, and the REST fallback counter
-# reports it.
+# would be lost for good once the thread crossed the window. Reusing the absence
+# signal means no new consumer branch; the failover is SILENT by design, visible
+# only as that one PR taking the REST comment path. That is the accepted cost of
+# not giving truncation its own marker and tally — a persistent, slowly-changing
+# condition (threads only grow) reported per tick is noise, and the last thing
+# it should share is an alarm, which is how the previous round's
+# truncation-conflation finding arose.
 #
 # Bot logins are normalized to the REST spelling. GraphQL resolves an App author
 # through the Bot type, whose login OMITS the [bot] suffix (verified live:

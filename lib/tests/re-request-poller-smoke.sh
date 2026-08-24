@@ -281,8 +281,9 @@ n=$(count_comments)
 [ "$n" -eq 1 ] || { echo "FAIL scenario 8: expected 1 trigger from batched data, got $n"; cat "$STUB_COMMENT_LOG"; cat "$LOG_FILE"; exit 1; }
 grep -q '/timeline' "$STUB_API_LOG" && { echo "FAIL scenario 8: made a REST timeline call despite batched data — the fan-out this change removes is still happening"; cat "$STUB_API_LOG"; exit 1; }
 grep -q '/comments' "$STUB_API_LOG" && { echo "FAIL scenario 8: made a REST comments call despite batched data"; cat "$STUB_API_LOG"; exit 1; }
-# A fully-batched tick stays silent about fallbacks; a tick that quietly lost the
-# batched fields must SAY so rather than only showing up as a rate-limit pause.
+# The dropped-flag fence lives in the two call-absence asserts above plus the
+# trigger count: with the timeline stub armed to the FAIL sentinel, losing
+# --with-poller-inputs sends this scenario to 0 triggers. Verified by mutation.
 seen=$(jq -r '."test-org/probe-repo#1" // empty' "$SEEN_FILE")
 [ "$seen" = "2026-04-29T12:00:00Z" ] || { echo "FAIL scenario 8: seen watermark not advanced from batched event (got [$seen])"; cat "$SEEN_FILE"; exit 1; }
 # The APPROVE half of the batched path, end to end. Without this, swapping
