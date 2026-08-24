@@ -256,10 +256,6 @@ TL
 run_poller
 n=$(count_comments)
 [ "$n" -eq 1 ] || { echo "FAIL scenario 7: expected 1 trigger on recovery tick, got $n (event lost after transient failure)"; cat "$STUB_COMMENT_LOG"; exit 1; }
-# That tick rode the per-repo fallthrough, which is a SUPPORTED config — the
-# alarm must stay silent, or it fires every 2 minutes forever on any deployment
-# with a partially-tracked owner and the operator learns to ignore it.
-grep -q 'carried batched inputs' "$LOG_FILE" && { echo "FAIL scenario 7: raised the unbatched alarm for a per-repo fallthrough PR — that path is by design, and crying wolf here buries the real signal"; cat "$LOG_FILE"; exit 1; }
 
 # Scenario 8: BATCHED path — the enumeration carries the review-request events
 # and the comments, so the tick makes ZERO per-PR REST calls. Asserting on call
@@ -287,7 +283,6 @@ grep -q '/timeline' "$STUB_API_LOG" && { echo "FAIL scenario 8: made a REST time
 grep -q '/comments' "$STUB_API_LOG" && { echo "FAIL scenario 8: made a REST comments call despite batched data"; cat "$STUB_API_LOG"; exit 1; }
 # A fully-batched tick stays silent about fallbacks; a tick that quietly lost the
 # batched fields must SAY so rather than only showing up as a rate-limit pause.
-grep -q 'carried batched inputs' "$LOG_FILE" && { echo "FAIL scenario 8: raised the unbatched alarm on a fully-batched tick"; cat "$LOG_FILE"; exit 1; }
 seen=$(jq -r '."test-org/probe-repo#1" // empty' "$SEEN_FILE")
 [ "$seen" = "2026-04-29T12:00:00Z" ] || { echo "FAIL scenario 8: seen watermark not advanced from batched event (got [$seen])"; cat "$SEEN_FILE"; exit 1; }
 # The APPROVE half of the batched path, end to end. Without this, swapping

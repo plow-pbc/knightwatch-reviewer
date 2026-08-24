@@ -361,6 +361,14 @@ export MOCK_GRAPHQL_user_plow_pbc_is_pr_is_open_archived_false='{"data":{"search
   out=$(enumerate_open_prs --with-poller-inputs)
   assert_eq "scenario 8b query asks for the truncation signal" "true" \
     "$(grep -q 'hasPreviousPage' "$STUB_QUERY_LOG" && echo true || echo false)"
+  # The fixture hardcodes "__typename":"Bot", so without this the normalization
+  # assert below is mutation-vacuous: narrowing the query back to
+  # `author { login }` — a plausible "trim the unused field" edit, since
+  # __typename has no consumer outside one jq comparison — would leave
+  # .author.__typename null in real responses, the Bot branch would never fire,
+  # and the suite would stay green while bot-authored approves slip the fence.
+  assert_eq "scenario 8b query asks for the author type" "true" \
+    "$(grep -q '__typename' "$STUB_QUERY_LOG" && echo true || echo false)"
   assert_eq "scenario 8b Bot login gets the REST [bot] suffix" "vercel[bot]" \
     "$(echo "$out" | jq -r '.[] | select(.number==1) | .comments.nodes[0].author.login')"
   assert_eq "scenario 8b User login is left alone" "alice" \
