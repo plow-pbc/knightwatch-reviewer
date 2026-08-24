@@ -203,6 +203,15 @@ fi
 # 90s of every 120s and tripped GitHub's secondary (burst) limit hourly.
 ALL_PRS=$(enumerate_open_prs --with-poller-inputs) || { log "enumerate_open_prs failed — skipping this tick"; exit 0; }
 
+# Counts PRs that fell back to per-PR REST calls. At the current operating point
+# every tracked owner is in ORGS, so this should be 0 every tick — a non-zero
+# count means either real non-ORGS entries or, more likely, that the batched
+# fields stopped arriving (a dropped/renamed --with-poller-inputs). Without it
+# the fan-out's return is invisible until GitHub starts issuing secondary-limit
+# pauses, which is exactly how it went unnoticed before. Logged only when
+# non-zero, so a healthy tick stays silent.
+REST_FALLBACK=0
+
 while IFS= read -r PR_JSON; do
     # A wrapped call inside this tick may have just stamped the pause. The outer
     # gate only guards the NEXT tick, so without this the loop walks every
@@ -221,6 +230,11 @@ while IFS= read -r PR_JSON; do
     # batched" and does not silently fall back to a REST call.
     BATCHED_COMMENTS=$(echo "$PR_JSON" | jq -c '.comments.nodes // empty')
     BATCHED_RRS=$(echo "$PR_JSON" | jq -c '.reviewRequests.nodes // empty')
+    if [ -z "$BATCHED_COMMENTS" ]; then REST_FALLBACK=$(( REST_FALLBACK + 1 )); fi
     approve_check "$REPO" "$PR_NUM" "$PR_AUTHOR" "$BATCHED_COMMENTS"
     rerequest_check "$REPO" "$PR_NUM" "$BATCHED_RRS"
 done < <(echo "$ALL_PRS" | jq -c '.[]')
+
+if [ "$REST_FALLBACK" -gt 0 ]; then
+    log "$REST_FALLBACK PR(s) used the per-PR REST fallback this tick (no batched inputs from the enumeration)"
+fi

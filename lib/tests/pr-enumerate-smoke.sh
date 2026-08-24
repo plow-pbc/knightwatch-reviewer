@@ -337,4 +337,19 @@ export MOCK_PR_LIST_cncorp_plow='[{"number":642,"title":"x","headRefName":"feat/
   assert_eq "scenario 8 still enumerates normally" "2" "$(echo "$out" | jq 'length')"
 )
 
+# ---- scenario 9: an unrecognized argument fails LOUD rather than going lean.
+#      Silently falling back to the lean query would read to poll-pr-actions.sh
+#      as "every PR needs the REST helpers" — restoring the ~150-calls-per-tick
+#      fan-out with nothing in the log, detectable only via GitHub's
+#      secondary-limit pauses hours later. ----
+: > "$STUB_CALL_LOG"
+( REPOS=("plow-pbc/seed"); ORGS=("plow-pbc")
+  source "$PROJECT_ROOT/lib/pr-enumerate.sh"
+  if out=$(enumerate_open_prs --with-poller-input 2>/dev/null); then
+      echo "FAIL: scenario 9 a mistyped flag silently succeeded (went lean)"; exit 1
+  fi
+  assert_eq "scenario 9 no stdout on bad arg" "" "$out"
+  assert_eq "scenario 9 made no graphql call" 0 "$(grep -c '^graphql ' "$STUB_CALL_LOG")"
+)
+
 echo "ALL PASS: pr-enumerate-smoke.sh"

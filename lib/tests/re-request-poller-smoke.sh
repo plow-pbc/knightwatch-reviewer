@@ -245,6 +245,8 @@ TL
 run_poller
 n=$(count_comments)
 [ "$n" -eq 1 ] || { echo "FAIL scenario 7: expected 1 trigger on recovery tick, got $n (event lost after transient failure)"; cat "$STUB_COMMENT_LOG"; exit 1; }
+# That tick rode the per-repo fallthrough, so the fallback counter must name it.
+grep -q '1 PR(s) used the per-PR REST fallback' "$LOG_FILE" || { echo "FAIL scenario 7: a REST-fallback tick was not reported — a silently un-batched fleet would look identical to a healthy one"; cat "$LOG_FILE"; exit 1; }
 
 # Scenario 8: BATCHED path — the enumeration carries the review-request events
 # and the comments, so the tick makes ZERO per-PR REST calls. Asserting on call
@@ -270,6 +272,9 @@ n=$(count_comments)
 [ "$n" -eq 1 ] || { echo "FAIL scenario 8: expected 1 trigger from batched data, got $n"; cat "$STUB_COMMENT_LOG"; cat "$LOG_FILE"; exit 1; }
 grep -q '/timeline' "$STUB_API_LOG" && { echo "FAIL scenario 8: made a REST timeline call despite batched data — the fan-out this change removes is still happening"; cat "$STUB_API_LOG"; exit 1; }
 grep -q '/comments' "$STUB_API_LOG" && { echo "FAIL scenario 8: made a REST comments call despite batched data"; cat "$STUB_API_LOG"; exit 1; }
+# A fully-batched tick stays silent about fallbacks; a tick that quietly lost the
+# batched fields must SAY so rather than only showing up as a rate-limit pause.
+grep -q 'used the per-PR REST fallback' "$LOG_FILE" && { echo "FAIL scenario 8: logged a REST fallback on a fully-batched tick"; cat "$LOG_FILE"; exit 1; }
 seen=$(jq -r '."test-org/probe-repo#1" // empty' "$SEEN_FILE")
 [ "$seen" = "2026-04-29T12:00:00Z" ] || { echo "FAIL scenario 8: seen watermark not advanced from batched event (got [$seen])"; cat "$SEEN_FILE"; exit 1; }
 # And an already-seen batched event must not re-trigger (same dedup as REST).

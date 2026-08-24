@@ -134,6 +134,19 @@ enumerate_open_prs() {
     # gh-rate-limit-smoke.
     if [ "${1:-}" = "--with-poller-inputs" ]; then
         extra_fields="$_ENUMERATE_POLLER_FIELDS"
+    elif [ -n "${1:-}" ]; then
+        # Fail loud on anything else. Silently going lean would be the worst
+        # outcome available: the documented consumer contract is "field absence
+        # ⇒ REST fallback", so a renamed or mistyped flag reads to the poller as
+        # "every PR needs the REST helpers" and restores the ~150-calls-per-tick
+        # fan-out this branch exists to remove — indistinguishable in the log
+        # from normal operation, and detectable only via GitHub's secondary-limit
+        # pauses hours later. Same silent-drop reasoning as the timeline window.
+        # NOT this function's stdout — that is the JSON array its callers
+        # capture (`ALL_PRS=$(enumerate_open_prs …)`), and scenarios 5a/5b exist
+        # to keep diagnostics out of it. Same rule, and same fd, as gh-retry.sh.
+        log "enumerate_open_prs: unrecognized argument '$1' (expected --with-poller-inputs)" >&"${GH_DIAG_FD:-2}"
+        return 2
     fi
     query=$(_enumerate_graphql_query "$extra_fields")
 
