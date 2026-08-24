@@ -39,7 +39,7 @@
 #   SHAPE, not capability: `comments` and `reviewRequests` ARE valid
 #   `gh pr list --json` fields, but the wrong ones. Its `comments[].id` is the
 #   GraphQL node id, not the REST databaseId the approve seen-key is built from
-#   — adding the flag would silently key the seen-store on a different id space
+#   — carrying them on this path would silently key the seen-store on a different id space
 #   and re-approve everything once. And its `reviewRequests` is the CURRENT
 #   pending reviewer set with no createdAt, so it cannot drive a watermark that
 #   exists to tell a new request from an old one. Their absence is the
@@ -71,7 +71,7 @@
 # has an idle-skip whose whole purpose is to avoid per-PR comment fetches; making
 # this unconditional would hand that path a multi-MB response to hold in a shell
 # variable and re-pipe through jq. The GraphQL point cost is flat at 2 either
-# way, so the flag buys the payload back without costing quota.
+# way, so the second entry point buys the payload back without costing quota.
 #
 # A TRUNCATED comment thread drops .comments entirely, which routes that PR down
 # the existing field-absence path to fetch_issue_comments. 100 is GitHub's

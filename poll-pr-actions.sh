@@ -191,7 +191,7 @@ if gh_pause_active; then
     exit 0
 fi
 
-# The _with_poller_inputs entry point: the enumeration carries this tick's comments and
+# enumerate_open_prs_with_poller_inputs: the enumeration carries this tick's comments and
 # review-request events, so the two checks below make ZERO per-PR REST calls on
 # the ORGS path. They used to make two PAGINATED ones each — ~150 requests
 # across 75 open PRs, every 2 minutes, which kept this poller on the wire for
