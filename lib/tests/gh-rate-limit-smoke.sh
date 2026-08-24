@@ -514,6 +514,11 @@ grep -q 'secondary' "$TMP/err19b" \
 # lib/pipeline.py's close_fds=True Popen hands its child) must degrade to fd 2,
 # never abort the call: a failed redirection means bash does not run the command,
 # so the fleet-wide pause would silently never be published.
+# `9>&-` closes fd 9 for the child: `env` copies the ENVIRONMENT, it does not
+# close descriptors, so an fd 9 held by whatever launched `just test` would be
+# inherited straight through, the sanitizer would correctly keep GH_DIAG_FD=9,
+# and this scenario would fail blaming the code while writing into a file it does
+# not own. Same "establish the precondition" rule as the 19b subshell above.
 # Reproduced as a CHILD PROCESS carrying the variable without the descriptor —
 # the faithful shape, and the only one that reproduces it. Closing an fd in the
 # same shell does NOT: bash still accepts `: >&N` on a descriptor it closed
@@ -525,7 +530,7 @@ env -u BASH_ENV GH_DIAG_FD=9 STATE_DIR="$STATE_DIR" PATH="$TMP/bin:$PATH" \
     GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
     GH_SHIM_ERR="$RATE_LIMIT_ERR" GH_SECONDARY_PAUSE_SECS=60 \
     bash -c '. "'"$PROJECT_ROOT"'/lib/gh-retry.sh"; gh api user' \
-    >/dev/null 2>"$TMP/err19c" || true
+    >/dev/null 2>"$TMP/err19c" 9>&- || true
 [ -f "$(gh_pause_file)" ] \
     || fail "scenario 19: a stale GH_DIAG_FD suppressed the pause entirely — the redirection failed, so gh_note_rate_limit never ran and the fleet never backs off"
 grep -q 'secondary' "$TMP/err19c" \
@@ -538,14 +543,24 @@ grep -q 'secondary' "$TMP/err19c" \
 # scenario 12's source-and-check. stderr is NOT redirected during the source,
 # because that is the descriptor bootstrap is supposed to capture.
 : > "$TMP/err19d"
+# The assertion is IMMUNITY, not liveness: after sourcing, the child rebinds its
+# own fd 2 the way fetch_issue_comments does, and the marker must still reach the
+# ORIGINAL stderr. Asserting only "GH_DIAG_FD is set and writable" would stay
+# green against `GH_DIAG_FD=2; export GH_DIAG_FD` — a plausible next edit now
+# that gh-retry.sh documents 2 as an acceptable fallback — while every diagnostic
+# went straight back into the callers' truncated errfiles.
+: > "$TMP/swallowed19d"
 env -u BASH_ENV -u GH_DIAG_FD bash -c '
     export REVIEWER_LIB_DIR="'"$PROJECT_ROOT"'/lib"
     . "$REVIEWER_LIB_DIR/bootstrap.sh" >/dev/null || exit 3
     [ -n "${GH_DIAG_FD:-}" ] || exit 4
+    exec 2>"'"$TMP/swallowed19d"'"
     echo BOOTSTRAP_DIAG_FD_OK >&"$GH_DIAG_FD"
 ' 2>"$TMP/err19d" || true
 grep -q 'BOOTSTRAP_DIAG_FD_OK' "$TMP/err19d" \
-    || fail "scenario 19: sourcing bootstrap.sh did not leave a usable GH_DIAG_FD bound to the entrypoint's stderr — got: $(cat "$TMP/err19d")"
+    || fail "scenario 19: bootstrap's GH_DIAG_FD did not survive the caller rebinding fd 2 — it is not a saved duplicate of the entrypoint's stderr. err19d: $(cat "$TMP/err19d") swallowed: $(cat "$TMP/swallowed19d")"
+grep -q 'BOOTSTRAP_DIAG_FD_OK' "$TMP/swallowed19d" \
+    && fail "scenario 19: the diagnostic followed the caller's rebound fd 2 — exactly the swallowing this change exists to prevent"
 reset_state
 
 echo "PASS: gh-rate-limit-smoke"
