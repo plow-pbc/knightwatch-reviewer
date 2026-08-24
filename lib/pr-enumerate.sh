@@ -22,6 +22,14 @@
 #   {"repository":{"nameWithOwner":"owner/name"},
 #    "number":N, "title":"…", "headRefName":"…", "headRefOid":"…", "updatedAt":"…",
 #    "author":{"login":"…"}}
+#   The ORGS/graphql path additionally carries the poller's per-PR inputs:
+#    "comments":{"nodes":[{"databaseId":N,"createdAt":"…","body":"…",
+#                          "author":{"login":"…"}}]},
+#    "reviewRequests":{"nodes":[{"createdAt":"…","login":"…"}]}
+#   databaseId IS the REST comment id, so it drops straight into the seen-key
+#   the approve poller already uses. The per-repo `gh pr list` fallthrough
+#   CANNOT carry either field — their absence is the documented signal that
+#   sends poll-pr-actions.sh back to the REST helpers for that PR.
 # On any underlying gh failure: exits non-zero, prints nothing — mirrors
 # fetch_issue_comments' contract so callers stay on the existing
 # `|| { log; continue; }` short-circuit.
@@ -35,6 +43,23 @@
 # srosro repos into 1 call per owner (~3 pts each), keeping owners not in ORGS on
 # per-repo because those orgs are only partially tracked.
 
+# comments + timelineItems ride along because poll-pr-actions.sh needs exactly
+# these two things per open PR, and it used to buy them with two PAGINATED REST
+# calls per PR per tick: ~150 requests across 75 open PRs every 2 minutes, which
+# kept the poller making requests for 90s of every 120s. That sustained rate —
+# not any hourly volume — is what tripped GitHub's SECONDARY limit hourly (64 of
+# 65 pause events in a day, each logged with core showing 4975+/5000 remaining).
+# Measured against the live API, carrying them here costs 2 GraphQL points for
+# all 70 plow-pbc PRs, and the per-PR REST fan-out becomes zero.
+#
+# The two `last:` bounds are sized from the live org, not guessed, because both
+# replace an unbounded `--paginate` and a too-small window would drop a real
+# request silently. Measured across the 72 open PRs: the busiest thread carries
+# 67 comments (6 are over 30), and NO PR has more than ONE review-requested
+# event — Copilot is requested once per PR, not per push, so the bot-flood case
+# that would bury a srosro request never materializes. 100/5 clear those maxima
+# with headroom, and the query costs the same 2 points at 30, 60 or 100, so the
+# larger bound is free. Re-measure these if the operating point moves.
 _enumerate_graphql_query='query($q: String!, $after: String) {
   search(query: $q, type: ISSUE, first: 100, after: $after) {
     pageInfo { hasNextPage endCursor }
@@ -43,6 +68,13 @@ _enumerate_graphql_query='query($q: String!, $after: String) {
         number title headRefName headRefOid updatedAt
         author { login }
         repository { nameWithOwner }
+        comments(last: 100) {
+          nodes { databaseId createdAt body author { login } }
+        }
+        timelineItems(last: 5, itemTypes: [REVIEW_REQUESTED_EVENT]) {
+          nodes { ... on ReviewRequestedEvent {
+            createdAt requestedReviewer { ... on User { login } } } }
+        }
       }
     }
   }
@@ -92,7 +124,16 @@ enumerate_open_prs() {
                 raw=$(gh api graphql -F q="user:${owner} is:pr is:open archived:false" \
                         -f query="$_enumerate_graphql_query" 2>/dev/null) || return 1
             fi
-            nodes=$(printf '%s' "$raw" | jq -c '.data.search.nodes // []') || return 1
+            # Flatten timelineItems -> reviewRequests here so no consumer has to
+            # reach through the GraphQL union shape. A request targeting a TEAM
+            # (or any non-User reviewer) has no .login and is dropped rather than
+            # surfacing as a null-login entry that would never match BOT_USER but
+            # would still have to be filtered by every reader.
+            nodes=$(printf '%s' "$raw" | jq -c '[(.data.search.nodes // [])[]
+                | .reviewRequests = {nodes: [((.timelineItems.nodes // [])[]
+                    | select(.requestedReviewer.login != null)
+                    | {createdAt, login: .requestedReviewer.login})]}
+                | del(.timelineItems)]') || return 1
             pieces+=("$nodes")
             after=$(printf '%s' "$raw" | jq -r '.data.search.pageInfo // {} | if .hasNextPage then (.endCursor // empty) else empty end') || return 1
             [ -n "$after" ] || break
