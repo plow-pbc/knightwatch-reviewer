@@ -470,4 +470,37 @@ grep -q 'pause NOT published' "$TMP/log18" \
     || fail "scenario 18: a publish that could not lock said nothing — the fleet keeps calling with no diagnostic: $(cat "$TMP/log18")"
 reset_state
 
+# --- 19. the diagnostic survives a caller that captures gh's stderr ----------
+# The busiest callers run `gh … 2>"$errfile"` (fetch_issue_comments,
+# is_trusted_repo_author) and re-emit only the first 400 bytes. gh's own 403 text
+# is ~300 of them, so scenario 17's endpoint line and the classifier that follows
+# it were truncated off mid-timestamp: 1001 lines/day reached poll.log and ZERO
+# reached the journal, which is why "which limit is it" went unanswered for
+# hours. Writing to a saved fd instead of fd 2 makes the diagnostic independent
+# of whatever the caller does with its own stderr.
+echo "  scenario 19: a caller capturing stderr cannot swallow the diagnostic..."
+reset_state
+: > "$TMP/diag19"; : > "$TMP/callererr19"
+(
+    exec {GH_DIAG_FD}>"$TMP/diag19"
+    export GH_DIAG_FD
+    GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+    GH_SHIM_ERR="$RATE_LIMIT_ERR" GH_SECONDARY_PAUSE_SECS=60 \
+        gh api "repos/acme/repo/issues/7/comments" >/dev/null 2>"$TMP/callererr19" || true
+)
+grep -q 'rate-limited on' "$TMP/diag19" \
+    || fail "scenario 19: the endpoint line did not reach the saved diag fd — a caller's errfile still eats it: $(cat "$TMP/diag19")"
+grep -q 'secondary' "$TMP/diag19" \
+    || fail "scenario 19: the classifier line did not reach the saved diag fd: $(cat "$TMP/diag19")"
+# With no GH_DIAG_FD in scope it must still land on plain stderr — every script
+# that never sources bootstrap.sh (the container worker) depends on that.
+reset_state
+: > "$TMP/err19b"
+GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+GH_SHIM_ERR="$RATE_LIMIT_ERR" GH_SECONDARY_PAUSE_SECS=60 \
+    gh api "user" >/dev/null 2>"$TMP/err19b" || true
+grep -q 'secondary' "$TMP/err19b" \
+    || fail "scenario 19: without GH_DIAG_FD the diagnostic must fall back to fd 2 — got: $(cat "$TMP/err19b")"
+reset_state
+
 echo "PASS: gh-rate-limit-smoke"

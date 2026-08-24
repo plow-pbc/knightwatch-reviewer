@@ -78,11 +78,15 @@ gh_retry() {
             # command position on a path that inherits the caller's errexit
             # (lib/replay.sh runs set -euo pipefail); an unwritable LOG_FILE must
             # not abort before gh_note_rate_limit publishes the pause.
-            log "gh rate-limited on \`gh $1 ${2:-} ${3:-}\` — $(head -c 160 "$errfile" | tr '\n' ' ')" >&2 || true
-            # >&2 like the errfile spill above: this function's stdout is the
-            # API result its callers capture (`perm=$(gh_api_retry …)`), so the
-            # diagnostic must not land there. log()'s LOG_FILE tee is unaffected.
-            gh_note_rate_limit >&2
+            log "gh rate-limited on \`gh $1 ${2:-} ${3:-}\` — $(head -c 160 "$errfile" | tr '\n' ' ')" >&"${GH_DIAG_FD:-2}" || true
+            # NOT this function's stdout: that is the API result its callers
+            # capture (`perm=$(gh_api_retry …)`), so a diagnostic there would be
+            # read back as a permission string. And NOT bare fd 2 either — the
+            # busiest callers redirect their own fd 2 into an errfile and re-emit
+            # only its first 400 bytes, which truncated both these lines out of
+            # the journal (see lib/bootstrap.sh's GH_DIAG_FD). log()'s LOG_FILE
+            # tee is unaffected by either choice.
+            gh_note_rate_limit >&"${GH_DIAG_FD:-2}"
             rm -f "$errfile"
             return "$rc"
         fi
