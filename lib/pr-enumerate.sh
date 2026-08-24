@@ -22,13 +22,15 @@
 #   {"repository":{"nameWithOwner":"owner/name"},
 #    "number":N, "title":"…", "headRefName":"…", "headRefOid":"…", "updatedAt":"…",
 #    "author":{"login":"…"}}
-#   With --with-poller-inputs, the ORGS/graphql path additionally carries:
-#    "comments":{"nodes":[{"databaseId":N,"createdAt":"…","body":"…",
-#                          "author":{"login":"…"}}]},
+#   enumerate_open_prs_with_poller_inputs additionally carries, on the
+#   ORGS/graphql path only:
+#    "comments":{"nodes":[{"id":N,"body":"…","user":{"login":"…"}}]},
 #    "reviewRequests":{"nodes":[{"createdAt":"…","login":"…"}]}
-#   databaseId IS the REST comment id, so it drops straight into the seen-key
-#   the approve poller already uses, and a Bot author's login is normalized to
-#   the REST `<name>[bot]` spelling that is_bot_account matches.
+#   Comments are emitted in the REST shape the approve poller already reads —
+#   ONE schema, not a GraphQL one the consumer converts back. `id` is the REST
+#   databaseId (a node id would re-key the approve seen-store and re-approve
+#   everything once), and a Bot author's login carries the REST `<name>[bot]`
+#   spelling that is_bot_account matches.
 #   A thread longer than the 100-comment connection maximum drops .comments
 #   entirely rather than returning a silent tail — the PR then takes the same
 #   REST fallback as a fallthrough entry.
@@ -149,38 +151,19 @@ owner_in_orgs() {
     return 1
 }
 
-enumerate_open_prs() {
-    local pieces=() owner repo raw nodes
+# TWO ZERO-ARGUMENT ENTRY POINTS over one private core, not a flag. With no
+# argument surface there is nothing to mistype into a silent lean fallback: a
+# wrong name is "command not found", which is louder than any guard and costs
+# nothing. That deletes the arity gate, its diagnostic, and the three scenarios
+# that fenced inputs no caller could produce — the generalized API was serving
+# two fixed internal products.
+enumerate_open_prs() { _enumerate_open_prs ""; }
+enumerate_open_prs_with_poller_inputs() { _enumerate_open_prs "$_ENUMERATE_POLLER_FIELDS"; }
+
+_enumerate_open_prs() {
+    local extra_fields="$1"
+    local pieces=() owner repo raw nodes query
     declare -A _seen_owners=()
-    # --with-poller-inputs adds the two heavy per-PR fields (see the block above
-    # the query template for why they are opt-in rather than always-on).
-    local extra_fields="" query
-    # An `if`, not `[ … ] && extra_fields=…`: that form returns 1 on the common
-    # (lean) path, which aborts the whole function under a `set -e` caller —
-    # lib/replay.sh runs `set -euo pipefail`. Same class as scenario 15 in
-    # gh-rate-limit-smoke.
-    # Gated on ARITY, not on emptiness. `[ -n "$1" ]` caught only a single
-    # misspelled token: `enumerate_open_prs "" --with-poller-inputs` (an unset
-    # variable expanded ahead of the flag) left $1 empty and went lean, and
-    # `--with-poller-inputs --typo` silently discarded $2 — both restoring the
-    # per-PR fan-out this gate exists to make impossible. Lean is reachable only
-    # at exactly zero arguments; both call sites pass zero or one literal.
-    if [ "$#" -eq 1 ] && [ "$1" = "--with-poller-inputs" ]; then
-        extra_fields="$_ENUMERATE_POLLER_FIELDS"
-    elif [ "$#" -ne 0 ]; then
-        # Fail loud on anything else. Silently going lean would be the worst
-        # outcome available: the documented consumer contract is "field absence
-        # ⇒ REST fallback", so a renamed or mistyped flag reads to the poller as
-        # "every PR needs the REST helpers" and restores the ~150-calls-per-tick
-        # fan-out this branch exists to remove — indistinguishable in the log
-        # from normal operation, and detectable only via GitHub's secondary-limit
-        # pauses hours later. Same silent-drop reasoning as the timeline window.
-        # NOT this function's stdout — that is the JSON array its callers
-        # capture (`ALL_PRS=$(enumerate_open_prs …)`), and scenarios 5a/5b exist
-        # to keep diagnostics out of it. Same rule, and same fd, as gh-retry.sh.
-        log "enumerate_open_prs: unrecognized arguments ($# given: '$*'); expected exactly '--with-poller-inputs' or none" >&"${GH_DIAG_FD:-2}"
-        return 2
-    fi
     query=$(_enumerate_graphql_query "$extra_fields")
 
     # 1. ORGS-batched path: paginated graphql search per ORGS owner. ORGS are
@@ -225,10 +208,10 @@ enumerate_open_prs() {
                     | if (.comments.pageInfo.hasPreviousPage // false)
                       then del(.comments)
                       else .comments = {nodes: [((.comments.nodes // [])[]
-                          | {databaseId, createdAt, body,
-                             author: {login: (if .author.__typename == "Bot"
-                                              then .author.login + "[bot]"
-                                              else .author.login end)}})]}
+                          | {id: .databaseId, body,
+                             user: {login: (if .author.__typename == "Bot"
+                                            then .author.login + "[bot]"
+                                            else .author.login end)}})]}
                       end]') || return 1
             else
                 nodes=$(printf '%s' "$raw" | jq -c '.data.search.nodes // []') || return 1

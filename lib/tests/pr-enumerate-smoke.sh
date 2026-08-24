@@ -281,7 +281,7 @@ export STUB_QUERY_LOG="$WORKDIR/gh-queries.log"
 export MOCK_PR_LIST_cncorp_plow='[{"number":642,"title":"x","headRefName":"feat/x","headRefOid":"xxx","author":{"login":"srosro"}}]'
 ( REPOS=("plow-pbc/seed" "cncorp/plow"); ORGS=("plow-pbc")
   source "$PROJECT_ROOT/lib/pr-enumerate.sh"
-  out=$(enumerate_open_prs --with-poller-inputs)
+  out=$(enumerate_open_prs_with_poller_inputs)
   # The QUERY must actually ask for both fields. Without these two, the response
   # assertions below pass on fixture data alone and would not notice the query
   # losing the fields — which is the only way this change can regress.
@@ -289,12 +289,12 @@ export MOCK_PR_LIST_cncorp_plow='[{"number":642,"title":"x","headRefName":"feat/
     "$(grep -q 'comments(last:' "$STUB_QUERY_LOG" && echo true || echo false)"
   assert_eq "scenario 7 query requests review-request events" "true" \
     "$(grep -q 'REVIEW_REQUESTED_EVENT' "$STUB_QUERY_LOG" && echo true || echo false)"
-  assert_eq "scenario 7 comment databaseId carried" "9001" \
-    "$(echo "$out" | jq -r '.[] | select(.number==1) | .comments.nodes[0].databaseId')"
+  assert_eq "scenario 7 comment id carried (REST databaseId)" "9001" \
+    "$(echo "$out" | jq -r '.[] | select(.number==1) | .comments.nodes[0].id')"
   assert_eq "scenario 7 comment body carried" "/srosro-approve" \
     "$(echo "$out" | jq -r '.[] | select(.number==1) | .comments.nodes[0].body')"
-  assert_eq "scenario 7 comment author carried" "carol" \
-    "$(echo "$out" | jq -r '.[] | select(.number==1) | .comments.nodes[0].author.login')"
+  assert_eq "scenario 7 comment user carried" "carol" \
+    "$(echo "$out" | jq -r '.[] | select(.number==1) | .comments.nodes[0].user.login')"
   # timelineItems is flattened to reviewRequests so no consumer reaches through
   # the GraphQL union shape, and a non-User reviewer (a TEAM request has no
   # .login) is dropped rather than surfacing as a null-login entry.
@@ -358,7 +358,7 @@ export MOCK_GRAPHQL_user_plow_pbc_is_pr_is_open_archived_false='{"data":{"search
 ]}}}'
 ( REPOS=("plow-pbc/seed"); ORGS=("plow-pbc")
   source "$PROJECT_ROOT/lib/pr-enumerate.sh"
-  out=$(enumerate_open_prs --with-poller-inputs)
+  out=$(enumerate_open_prs_with_poller_inputs)
   assert_eq "scenario 8b query asks for the truncation signal" "true" \
     "$(grep -q 'hasPreviousPage' "$STUB_QUERY_LOG" && echo true || echo false)"
   # The fixture hardcodes "__typename":"Bot", so without this the normalization
@@ -370,9 +370,9 @@ export MOCK_GRAPHQL_user_plow_pbc_is_pr_is_open_archived_false='{"data":{"search
   assert_eq "scenario 8b query asks for the author type" "true" \
     "$(grep -q '__typename' "$STUB_QUERY_LOG" && echo true || echo false)"
   assert_eq "scenario 8b Bot login gets the REST [bot] suffix" "vercel[bot]" \
-    "$(echo "$out" | jq -r '.[] | select(.number==1) | .comments.nodes[0].author.login')"
+    "$(echo "$out" | jq -r '.[] | select(.number==1) | .comments.nodes[0].user.login')"
   assert_eq "scenario 8b User login is left alone" "alice" \
-    "$(echo "$out" | jq -r '.[] | select(.number==1) | .comments.nodes[1].author.login')"
+    "$(echo "$out" | jq -r '.[] | select(.number==1) | .comments.nodes[1].user.login')"
   # Truncated thread: .comments removed entirely, so the documented
   # field-absence contract sends that PR to fetch_issue_comments.
   assert_eq "scenario 8b truncated thread drops comments" "null" \
@@ -380,50 +380,6 @@ export MOCK_GRAPHQL_user_plow_pbc_is_pr_is_open_archived_false='{"data":{"search
   # …but only that PR — an untruncated sibling keeps its batched comments.
   assert_eq "scenario 8b untruncated sibling keeps comments" "2" \
     "$(echo "$out" | jq -r '.[] | select(.number==1) | .comments.nodes | length')"
-)
-
-# ---- scenario 9: an unrecognized argument fails LOUD rather than going lean.
-#      Silently falling back to the lean query would read to poll-pr-actions.sh
-#      as "every PR needs the REST helpers" — restoring the ~150-calls-per-tick
-#      fan-out with nothing in the log, detectable only via GitHub's
-#      secondary-limit pauses hours later. ----
-: > "$STUB_CALL_LOG"
-( REPOS=("plow-pbc/seed"); ORGS=("plow-pbc")
-  source "$PROJECT_ROOT/lib/pr-enumerate.sh"
-  rc=0
-  out=$(enumerate_open_prs --with-poller-input 2>"$WORKDIR/err9") || rc=$?
-  # Exit code 2 specifically, not just non-zero: poll-pr-actions.sh treats every
-  # non-zero the same ("enumerate_open_prs failed — skipping this tick"), so
-  # without the diagnostic a permanent misconfiguration is indistinguishable
-  # from a transient gh outage and the poller stops approving forever while the
-  # log reads as retryable. The LOUD half is the headline behavior here.
-  assert_eq "scenario 9 exit code is 2 (misconfig, not transient failure)" "2" "$rc"
-  assert_eq "scenario 9 no stdout on bad arg" "" "$out"
-  assert_eq "scenario 9 names the bad argument" "true" \
-    "$(grep -q "unrecognized arguments" "$WORKDIR/err9" && echo true || echo false)"
-  assert_eq "scenario 9 echoes the offending token" "true" \
-    "$(grep -q -- "--with-poller-input" "$WORKDIR/err9" && echo true || echo false)"
-  assert_eq "scenario 9 made no graphql call" 0 "$(grep -c '^graphql ' "$STUB_CALL_LOG")"
-)
-
-# 9b: arity, not emptiness — an empty arg ahead of the flag, and a trailing
-#     typo, both used to fall through to lean with exit 0.
-( REPOS=("plow-pbc/seed"); ORGS=("plow-pbc")
-  source "$PROJECT_ROOT/lib/pr-enumerate.sh"
-  rc=0; enumerate_open_prs "" --with-poller-inputs >/dev/null 2>&1 || rc=$?
-  assert_eq "scenario 9b empty arg ahead of the flag is rejected" "2" "$rc"
-  rc=0; enumerate_open_prs --with-poller-inputs --typo >/dev/null 2>&1 || rc=$?
-  assert_eq "scenario 9b trailing typo is rejected" "2" "$rc"
-)
-
-# 9c: the diagnostic honours the diag fd, like gh-rate-limit-smoke scenario 19.
-( REPOS=("plow-pbc/seed"); ORGS=("plow-pbc")
-  source "$PROJECT_ROOT/lib/pr-enumerate.sh"
-  exec {GH_DIAG_FD}>"$WORKDIR/diag9"
-  export GH_DIAG_FD
-  enumerate_open_prs --nope >/dev/null 2>"$WORKDIR/err9c" || true
-  assert_eq "scenario 9c diagnostic reaches the diag fd" "true" \
-    "$(grep -q "unrecognized arguments" "$WORKDIR/diag9" && echo true || echo false)"
 )
 
 echo "ALL PASS: pr-enumerate-smoke.sh"

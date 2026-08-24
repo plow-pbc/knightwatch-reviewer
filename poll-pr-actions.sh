@@ -54,15 +54,10 @@ approve_check() {
     local REPO="$1" PR_NUM="$2" PR_AUTHOR="$3" BATCHED="${4:-}"
     local COMMENTS COMMENT BODY ID USER APPROVE_KEY APPROVE_BODY
     if [ -n "$BATCHED" ]; then
-        # Already carried by the enumeration — normalize the GraphQL shape onto
-        # the REST field names the loop below reads. databaseId IS the REST id,
-        # so the seen-key keeps the same id space (a node id here would re-approve
-        # every PR once).
-        COMMENTS=$(printf '%s' "$BATCHED" |
-            jq -c '[.[] | {id: .databaseId, body, user: {login: .author.login}}]') || {
-            log "$REPO#$PR_NUM: batched comments unparseable — skipping approve check this tick"
-            return 0
-        }
+        # Straight through: the enumeration already emits the REST shape this
+        # loop reads, so there is one comment schema rather than a GraphQL one
+        # converted back here per PR per tick.
+        COMMENTS="$BATCHED"
     else
         # Fallthrough PRs only (the per-repo `gh pr list` path cannot carry the
         # batched fields — see lib/pr-enumerate.sh). On fetch failure, log loud +
@@ -196,12 +191,12 @@ if gh_pause_active; then
     exit 0
 fi
 
-# --with-poller-inputs: the enumeration carries this tick's comments and
+# The _with_poller_inputs entry point: the enumeration carries this tick's comments and
 # review-request events, so the two checks below make ZERO per-PR REST calls on
 # the ORGS path. They used to make two PAGINATED ones each — ~150 requests
 # across 75 open PRs, every 2 minutes, which kept this poller on the wire for
 # 90s of every 120s and tripped GitHub's secondary (burst) limit hourly.
-ALL_PRS=$(enumerate_open_prs --with-poller-inputs) || { log "enumerate_open_prs failed — skipping this tick"; exit 0; }
+ALL_PRS=$(enumerate_open_prs_with_poller_inputs) || { log "enumerate_open_prs_with_poller_inputs failed — skipping this tick"; exit 0; }
 
 while IFS= read -r PR_JSON; do
     # A wrapped call inside this tick may have just stamped the pause. The outer
