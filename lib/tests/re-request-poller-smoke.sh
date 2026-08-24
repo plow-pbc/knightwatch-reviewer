@@ -43,6 +43,8 @@ export PATH="$HOME/.local/bin:$PATH"
 export STUB_PR_LIST_LOG="$STATE_DIR/gh-pr-list.log"
 export STUB_COMMENT_LOG="$STATE_DIR/gh-pr-comment.log"
 export STUB_API_LOG="$STATE_DIR/gh-api.log"
+export STUB_APPROVE_LOG="$STATE_DIR/gh-approve.log"
+export APPROVES_SEEN_FILE="$STATE_DIR/approves-seen.json"
 export MOCK_TIMELINE_FILE="$TMPDIR/timeline.json"
 echo "[]" > "$MOCK_TIMELINE_FILE"
 
@@ -92,8 +94,16 @@ elif [ "$1" = "api" ] && [ "$2" = "graphql" ]; then
     fixture_var="MOCK_GRAPHQL_${q//[^A-Za-z0-9]/_}"
     eval "fixture=\${$fixture_var:-}"
     if [ -n "$fixture" ]; then echo "$fixture"; else echo '{"data":{"search":{"nodes":[]}}}'; fi
+elif [ "$1" = "pr" ] && [ "$2" = "review" ]; then
+    echo "APPROVE $*" >> "${STUB_APPROVE_LOG:-/dev/null}"
+    echo ok
 elif [ "$1" = "api" ]; then
     printf '%s\n' "$*" >> "${STUB_API_LOG:-/dev/null}"
+    # Trust check: answer push-access so the approve path runs to completion.
+    if printf '%s ' "$@" | grep -q '/permission'; then
+        echo "admin"
+        exit 0
+    fi
     # poll-pr-actions.sh also runs the approve check, which fetches issue
     # comments — return an empty list for those so the approve path no-ops;
     # serve the timeline fixture for the re-request path.
@@ -133,6 +143,7 @@ CONF
 export STUB_TRACKED_REPO="test-org/probe-repo"
 
 run_poller() {
+    : > "$STUB_APPROVE_LOG"
     : > "$STUB_PR_LIST_LOG"
     : > "$STUB_COMMENT_LOG"
     : > "$LOG_FILE"
@@ -261,7 +272,7 @@ printf 'REPOS=()\nORGS=("test-org")\n' > "$STATE_DIR/config.env"
 export MOCK_GRAPHQL_user_test_org_is_pr_is_open_archived_false='{"data":{"search":{"nodes":[
   {"number":1,"title":"t","headRefName":"f","headRefOid":"h","updatedAt":"2026-04-29T12:00:00Z",
    "author":{"login":"someone"},"repository":{"nameWithOwner":"test-org/probe-repo"},
-   "comments":{"nodes":[]},
+   "comments":{"nodes":[{"databaseId":770077,"createdAt":"2026-04-29T11:59:00Z","body":"/srosro-approve ship it","author":{"login":"carol"}}]},
    "timelineItems":{"nodes":[{"createdAt":"2026-04-29T12:00:00Z","requestedReviewer":{"login":"srosro"}}]}}
 ]}}}'
 echo '{}' > "$SEEN_FILE"
@@ -277,9 +288,16 @@ grep -q '/comments' "$STUB_API_LOG" && { echo "FAIL scenario 8: made a REST comm
 grep -q 'used the per-PR REST fallback' "$LOG_FILE" && { echo "FAIL scenario 8: logged a REST fallback on a fully-batched tick"; cat "$LOG_FILE"; exit 1; }
 seen=$(jq -r '."test-org/probe-repo#1" // empty' "$SEEN_FILE")
 [ "$seen" = "2026-04-29T12:00:00Z" ] || { echo "FAIL scenario 8: seen watermark not advanced from batched event (got [$seen])"; cat "$SEEN_FILE"; exit 1; }
+# The APPROVE half of the batched path, end to end. Without this, swapping
+# databaseId for the GraphQL node id — the exact mutation lib/pr-enumerate.sh
+# warns about — keeps the whole suite green while production re-approves every
+# open PR once, because the seen-key would move to a different id space.
+grep -q 'APPROVE' "$STUB_APPROVE_LOG" || { echo "FAIL scenario 8: a trusted batched /srosro-approve did not submit an approval"; cat "$STUB_APPROVE_LOG"; cat "$LOG_FILE"; exit 1; }
+jq -e '."test-org/probe-repo#1#770077"' "$APPROVES_SEEN_FILE" >/dev/null 2>&1 || { echo "FAIL scenario 8: approve seen-key is not keyed on the REST databaseId — a node id here would re-approve every PR once"; cat "$APPROVES_SEEN_FILE" 2>/dev/null; exit 1; }
 # And an already-seen batched event must not re-trigger (same dedup as REST).
 run_poller
 n=$(count_comments)
 [ "$n" -eq 0 ] || { echo "FAIL scenario 8: batched path re-triggered an already-seen event, got $n"; exit 1; }
+[ ! -s "$STUB_APPROVE_LOG" ] || { echo "FAIL scenario 8: re-approved an already-seen comment — the databaseId seen-key is not deduping"; cat "$STUB_APPROVE_LOG"; exit 1; }
 
 echo "  PASS (8 scenarios: empty-timeline-respects-override, new-event-triggers, already-seen-deduped, non-bot-ignored, post-failure-no-seen-advance, canonical-repos.conf-path, timeline-fetch-failure-retries, batched-inputs-no-rest-calls)"

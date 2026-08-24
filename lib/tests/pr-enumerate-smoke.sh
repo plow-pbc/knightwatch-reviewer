@@ -337,6 +337,43 @@ export MOCK_PR_LIST_cncorp_plow='[{"number":642,"title":"x","headRefName":"feat/
   assert_eq "scenario 8 still enumerates normally" "2" "$(echo "$out" | jq 'length')"
 )
 
+# ---- scenario 8b: a Bot comment author is normalized to the REST spelling, and
+#      a TRUNCATED thread drops .comments so the PR routes to the REST fallback.
+#      GraphQL resolves an App author through the Bot type, whose login omits the
+#      [bot] suffix (verified live: `vercel`, not `vercel[bot]`) while
+#      is_bot_account matches `*[bot]` — unnormalized, a bot-authored approve
+#      slips the bot fence. And 100 is GitHub's connection maximum, so a longer
+#      thread cannot be fetched by widening; it must fail over, not truncate. ----
+: > "$STUB_CALL_LOG"; : > "$STUB_QUERY_LOG"
+export MOCK_GRAPHQL_user_plow_pbc_is_pr_is_open_archived_false='{"data":{"search":{"nodes":[
+    {"number":1,"title":"a","headRefName":"f","headRefOid":"h","author":{"login":"alice"},"repository":{"nameWithOwner":"plow-pbc/seed"},
+     "comments":{"pageInfo":{"hasPreviousPage":false},"nodes":[
+        {"databaseId":11,"createdAt":"t","body":"b","author":{"__typename":"Bot","login":"vercel"}},
+        {"databaseId":12,"createdAt":"t","body":"b","author":{"__typename":"User","login":"alice"}}]},
+     "timelineItems":{"nodes":[]}},
+    {"number":2,"title":"b","headRefName":"f","headRefOid":"h","author":{"login":"bob"},"repository":{"nameWithOwner":"plow-pbc/seed-1password"},
+     "comments":{"pageInfo":{"hasPreviousPage":true},"nodes":[
+        {"databaseId":21,"createdAt":"t","body":"b","author":{"__typename":"User","login":"bob"}}]},
+     "timelineItems":{"nodes":[]}}
+]}}}'
+( REPOS=("plow-pbc/seed"); ORGS=("plow-pbc")
+  source "$PROJECT_ROOT/lib/pr-enumerate.sh"
+  out=$(enumerate_open_prs --with-poller-inputs)
+  assert_eq "scenario 8b query asks for the truncation signal" "true" \
+    "$(grep -q 'hasPreviousPage' "$STUB_QUERY_LOG" && echo true || echo false)"
+  assert_eq "scenario 8b Bot login gets the REST [bot] suffix" "vercel[bot]" \
+    "$(echo "$out" | jq -r '.[] | select(.number==1) | .comments.nodes[0].author.login')"
+  assert_eq "scenario 8b User login is left alone" "alice" \
+    "$(echo "$out" | jq -r '.[] | select(.number==1) | .comments.nodes[1].author.login')"
+  # Truncated thread: .comments removed entirely, so the documented
+  # field-absence contract sends that PR to fetch_issue_comments.
+  assert_eq "scenario 8b truncated thread drops comments" "null" \
+    "$(echo "$out" | jq -r '.[] | select(.number==2) | .comments // "null"')"
+  # …but only that PR — an untruncated sibling keeps its batched comments.
+  assert_eq "scenario 8b untruncated sibling keeps comments" "2" \
+    "$(echo "$out" | jq -r '.[] | select(.number==1) | .comments.nodes | length')"
+)
+
 # ---- scenario 9: an unrecognized argument fails LOUD rather than going lean.
 #      Silently falling back to the lean query would read to poll-pr-actions.sh
 #      as "every PR needs the REST helpers" — restoring the ~150-calls-per-tick

@@ -27,7 +27,11 @@
 #                          "author":{"login":"…"}}]},
 #    "reviewRequests":{"nodes":[{"createdAt":"…","login":"…"}]}
 #   databaseId IS the REST comment id, so it drops straight into the seen-key
-#   the approve poller already uses.
+#   the approve poller already uses, and a Bot author's login is normalized to
+#   the REST `<name>[bot]` spelling that is_bot_account matches.
+#   A thread longer than the 100-comment connection maximum drops .comments
+#   entirely rather than returning a silent tail — the PR then takes the same
+#   REST fallback as a fallthrough entry.
 #
 #   The per-repo `gh pr list` fallthrough never carries them, and the reason is
 #   SHAPE, not capability: `comments` and `reviewRequests` ARE valid
@@ -67,6 +71,24 @@
 # variable and re-pipe through jq. The GraphQL point cost is flat at 2 either
 # way, so the flag buys the payload back without costing quota.
 #
+# A TRUNCATED comment thread drops .comments entirely, which routes that PR down
+# the existing field-absence path to fetch_issue_comments. 100 is GitHub's
+# connection maximum, so unlike timelineItems the bound cannot be raised, and the
+# busiest thread already sits at 67 on a repo whose review loop posts a comment
+# per round and has produced 20-round PRs. Silently returning the last 100 would
+# reintroduce exactly what lib/gh-comments.sh exists to prevent — a trusted
+# /<prefix>-approve left UNSEEN by an rc-2 trust check is retried next tick, and
+# would be lost for good once the thread crossed the window. Reusing the
+# absence signal means no new consumer branch, and the REST fallback counter
+# reports it.
+#
+# Bot logins are normalized to the REST spelling. GraphQL resolves an App author
+# through the Bot type, whose login OMITS the [bot] suffix (verified live:
+# `vercel`, not `vercel[bot]`), while is_bot_account matches `*[bot]`. Left
+# unnormalized, a bot-authored /<prefix>-approve slips the bot fence, falls
+# through to a per-comment trust API call, and logs "no push access" instead of
+# "from bot". Same two-id-spaces-behind-one-field-name hazard as databaseId.
+#
 # Both `last:` bounds are 100 and sized from the live org rather than guessed,
 # because each replaces an unbounded --paginate and a short window drops a real
 # request SILENTLY. The busiest thread carries 67 comments. For timelineItems the
@@ -80,7 +102,8 @@
 # against a silent drop.
 _ENUMERATE_POLLER_FIELDS='
         comments(last: 100) {
-          nodes { databaseId createdAt body author { login } }
+          pageInfo { hasPreviousPage }
+          nodes { databaseId createdAt body author { __typename login } }
         }
         timelineItems(last: 100, itemTypes: [REVIEW_REQUESTED_EVENT]) {
           nodes { ... on ReviewRequestedEvent {
@@ -188,7 +211,15 @@ enumerate_open_prs() {
                     | .reviewRequests = {nodes: [((.timelineItems.nodes // [])[]
                         | select(.requestedReviewer.login != null)
                         | {createdAt, login: .requestedReviewer.login})]}
-                    | del(.timelineItems)]') || return 1
+                    | del(.timelineItems)
+                    | if (.comments.pageInfo.hasPreviousPage // false)
+                      then del(.comments)
+                      else .comments = {nodes: [((.comments.nodes // [])[]
+                          | {databaseId, createdAt, body,
+                             author: {login: (if .author.__typename == "Bot"
+                                              then .author.login + "[bot]"
+                                              else .author.login end)}})]}
+                      end]') || return 1
             else
                 nodes=$(printf '%s' "$raw" | jq -c '.data.search.nodes // []') || return 1
             fi
