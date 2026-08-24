@@ -281,7 +281,7 @@ export STUB_QUERY_LOG="$WORKDIR/gh-queries.log"
 export MOCK_PR_LIST_cncorp_plow='[{"number":642,"title":"x","headRefName":"feat/x","headRefOid":"xxx","author":{"login":"srosro"}}]'
 ( REPOS=("plow-pbc/seed" "cncorp/plow"); ORGS=("plow-pbc")
   source "$PROJECT_ROOT/lib/pr-enumerate.sh"
-  out=$(enumerate_open_prs)
+  out=$(enumerate_open_prs --with-poller-inputs)
   # The QUERY must actually ask for both fields. Without these two, the response
   # assertions below pass on fixture data alone and would not notice the query
   # losing the fields — which is the only way this change can regress.
@@ -312,6 +312,29 @@ export MOCK_PR_LIST_cncorp_plow='[{"number":642,"title":"x","headRefName":"feat/
     "$(echo "$out" | jq -r '.[] | select(.number==642) | .comments // "null"')"
   assert_eq "scenario 7 fallthrough has no batched reviewRequests" "null" \
     "$(echo "$out" | jq -r '.[] | select(.number==642) | .reviewRequests // "null"')"
+)
+
+# ---- scenario 8: the DEFAULT call stays lean. review.sh enumerates every 60s
+#      and reads none of the poller fields; measured against the live org the
+#      enriched response is 2.7 MB against 22 KB lean (the comment bodies are
+#      knightwatch's own multi-KB reviews), so making them unconditional would
+#      hand that path a multi-MB response to hold in a shell variable and re-pipe
+#      through jq. This is the fence that keeps them opt-in. ----
+: > "$STUB_CALL_LOG"; : > "$STUB_QUERY_LOG"
+( REPOS=("plow-pbc/seed" "cncorp/plow"); ORGS=("plow-pbc")
+  source "$PROJECT_ROOT/lib/pr-enumerate.sh"
+  out=$(enumerate_open_prs)
+  assert_eq "scenario 8 lean query omits comments" "false" \
+    "$(grep -q 'comments(last:' "$STUB_QUERY_LOG" && echo true || echo false)"
+  assert_eq "scenario 8 lean query omits review-request events" "false" \
+    "$(grep -q 'REVIEW_REQUESTED_EVENT' "$STUB_QUERY_LOG" && echo true || echo false)"
+  # And the lean path must NOT bolt an empty reviewRequests onto every PR —
+  # field ABSENCE is what tells poll-pr-actions.sh a PR needs the REST fallback,
+  # so an empty-but-present list would silently route every PR down the batched
+  # path with no data.
+  assert_eq "scenario 8 lean path adds no reviewRequests key" "null" \
+    "$(echo "$out" | jq -r '.[0].reviewRequests // "null"')"
+  assert_eq "scenario 8 still enumerates normally" "2" "$(echo "$out" | jq 'length')"
 )
 
 echo "ALL PASS: pr-enumerate-smoke.sh"
