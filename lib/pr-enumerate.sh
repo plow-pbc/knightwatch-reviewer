@@ -155,9 +155,15 @@ enumerate_open_prs() {
     # (lean) path, which aborts the whole function under a `set -e` caller —
     # lib/replay.sh runs `set -euo pipefail`. Same class as scenario 15 in
     # gh-rate-limit-smoke.
-    if [ "${1:-}" = "--with-poller-inputs" ]; then
+    # Gated on ARITY, not on emptiness. `[ -n "$1" ]` caught only a single
+    # misspelled token: `enumerate_open_prs "" --with-poller-inputs` (an unset
+    # variable expanded ahead of the flag) left $1 empty and went lean, and
+    # `--with-poller-inputs --typo` silently discarded $2 — both restoring the
+    # per-PR fan-out this gate exists to make impossible. Lean is reachable only
+    # at exactly zero arguments; both call sites pass zero or one literal.
+    if [ "$#" -eq 1 ] && [ "$1" = "--with-poller-inputs" ]; then
         extra_fields="$_ENUMERATE_POLLER_FIELDS"
-    elif [ -n "${1:-}" ]; then
+    elif [ "$#" -ne 0 ]; then
         # Fail loud on anything else. Silently going lean would be the worst
         # outcome available: the documented consumer contract is "field absence
         # ⇒ REST fallback", so a renamed or mistyped flag reads to the poller as
@@ -168,7 +174,7 @@ enumerate_open_prs() {
         # NOT this function's stdout — that is the JSON array its callers
         # capture (`ALL_PRS=$(enumerate_open_prs …)`), and scenarios 5a/5b exist
         # to keep diagnostics out of it. Same rule, and same fd, as gh-retry.sh.
-        log "enumerate_open_prs: unrecognized argument '$1' (expected --with-poller-inputs)" >&"${GH_DIAG_FD:-2}"
+        log "enumerate_open_prs: unrecognized arguments ($# given: '$*'); expected exactly '--with-poller-inputs' or none" >&"${GH_DIAG_FD:-2}"
         return 2
     fi
     query=$(_enumerate_graphql_query "$extra_fields")

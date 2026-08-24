@@ -382,11 +382,40 @@ export MOCK_GRAPHQL_user_plow_pbc_is_pr_is_open_archived_false='{"data":{"search
 : > "$STUB_CALL_LOG"
 ( REPOS=("plow-pbc/seed"); ORGS=("plow-pbc")
   source "$PROJECT_ROOT/lib/pr-enumerate.sh"
-  if out=$(enumerate_open_prs --with-poller-input 2>/dev/null); then
-      echo "FAIL: scenario 9 a mistyped flag silently succeeded (went lean)"; exit 1
-  fi
+  rc=0
+  out=$(enumerate_open_prs --with-poller-input 2>"$WORKDIR/err9") || rc=$?
+  # Exit code 2 specifically, not just non-zero: poll-pr-actions.sh treats every
+  # non-zero the same ("enumerate_open_prs failed — skipping this tick"), so
+  # without the diagnostic a permanent misconfiguration is indistinguishable
+  # from a transient gh outage and the poller stops approving forever while the
+  # log reads as retryable. The LOUD half is the headline behavior here.
+  assert_eq "scenario 9 exit code is 2 (misconfig, not transient failure)" "2" "$rc"
   assert_eq "scenario 9 no stdout on bad arg" "" "$out"
+  assert_eq "scenario 9 names the bad argument" "true" \
+    "$(grep -q "unrecognized arguments" "$WORKDIR/err9" && echo true || echo false)"
+  assert_eq "scenario 9 echoes the offending token" "true" \
+    "$(grep -q -- "--with-poller-input" "$WORKDIR/err9" && echo true || echo false)"
   assert_eq "scenario 9 made no graphql call" 0 "$(grep -c '^graphql ' "$STUB_CALL_LOG")"
+)
+
+# 9b: arity, not emptiness — an empty arg ahead of the flag, and a trailing
+#     typo, both used to fall through to lean with exit 0.
+( REPOS=("plow-pbc/seed"); ORGS=("plow-pbc")
+  source "$PROJECT_ROOT/lib/pr-enumerate.sh"
+  rc=0; enumerate_open_prs "" --with-poller-inputs >/dev/null 2>&1 || rc=$?
+  assert_eq "scenario 9b empty arg ahead of the flag is rejected" "2" "$rc"
+  rc=0; enumerate_open_prs --with-poller-inputs --typo >/dev/null 2>&1 || rc=$?
+  assert_eq "scenario 9b trailing typo is rejected" "2" "$rc"
+)
+
+# 9c: the diagnostic honours the diag fd, like gh-rate-limit-smoke scenario 19.
+( REPOS=("plow-pbc/seed"); ORGS=("plow-pbc")
+  source "$PROJECT_ROOT/lib/pr-enumerate.sh"
+  exec {GH_DIAG_FD}>"$WORKDIR/diag9"
+  export GH_DIAG_FD
+  enumerate_open_prs --nope >/dev/null 2>"$WORKDIR/err9c" || true
+  assert_eq "scenario 9c diagnostic reaches the diag fd" "true" \
+    "$(grep -q "unrecognized arguments" "$WORKDIR/diag9" && echo true || echo false)"
 )
 
 echo "ALL PASS: pr-enumerate-smoke.sh"

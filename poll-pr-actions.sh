@@ -203,14 +203,20 @@ fi
 # 90s of every 120s and tripped GitHub's secondary (burst) limit hourly.
 ALL_PRS=$(enumerate_open_prs --with-poller-inputs) || { log "enumerate_open_prs failed — skipping this tick"; exit 0; }
 
-# Counts PRs that fell back to per-PR REST calls. At the current operating point
-# every tracked owner is in ORGS, so this should be 0 every tick — a non-zero
-# count means either real non-ORGS entries or, more likely, that the batched
-# fields stopped arriving (a dropped/renamed --with-poller-inputs). Without it
-# the fan-out's return is invisible until GitHub starts issuing secondary-limit
-# pauses, which is exactly how it went unnoticed before. Logged only when
-# non-zero, so a healthy tick stays silent.
-REST_FALLBACK=0
+# Alarm for "the batched fields stopped arriving" — a dropped or renamed
+# --with-poller-inputs, which silently restores the per-PR fan-out and shows up
+# only as GitHub secondary-limit pauses hours later.
+#
+# Counted over ORGS-owned PRs ONLY, and keyed on .reviewRequests rather than on
+# .comments. Both exclusions are load-bearing: a per-repo fallthrough PR takes
+# the REST path BY DESIGN (a partially-tracked owner is a supported config), and
+# an ORGS PR whose thread exceeds the 100-comment window has .comments dropped
+# on purpose. Counting either would make this line fire every tick on a healthy
+# fleet, which trains the operator to ignore the one case that matters.
+# .reviewRequests is present on every batched PR regardless of thread length, so
+# its absence on an ORGS PR means exactly one thing.
+ORGS_PRS=0
+ORGS_PRS_UNBATCHED=0
 
 while IFS= read -r PR_JSON; do
     # A wrapped call inside this tick may have just stamped the pause. The outer
@@ -230,11 +236,16 @@ while IFS= read -r PR_JSON; do
     # batched" and does not silently fall back to a REST call.
     BATCHED_COMMENTS=$(echo "$PR_JSON" | jq -c '.comments.nodes // empty')
     BATCHED_RRS=$(echo "$PR_JSON" | jq -c '.reviewRequests.nodes // empty')
-    if [ -z "$BATCHED_COMMENTS" ]; then REST_FALLBACK=$(( REST_FALLBACK + 1 )); fi
+    if owner_in_orgs "${REPO%%/*}"; then
+        ORGS_PRS=$(( ORGS_PRS + 1 ))
+        if [ -z "$BATCHED_RRS" ]; then ORGS_PRS_UNBATCHED=$(( ORGS_PRS_UNBATCHED + 1 )); fi
+    fi
     approve_check "$REPO" "$PR_NUM" "$PR_AUTHOR" "$BATCHED_COMMENTS"
     rerequest_check "$REPO" "$PR_NUM" "$BATCHED_RRS"
 done < <(echo "$ALL_PRS" | jq -c '.[]')
 
-if [ "$REST_FALLBACK" -gt 0 ]; then
-    log "$REST_FALLBACK PR(s) used the per-PR REST fallback this tick (no batched inputs from the enumeration)"
+# "walked" rather than "open": the rate-limit gate above can break mid-list, so
+# this is a tally over what this tick actually reached, not over every open PR.
+if [ "$ORGS_PRS" -gt 0 ] && [ "$ORGS_PRS_UNBATCHED" -eq "$ORGS_PRS" ]; then
+    log "none of the $ORGS_PRS ORGS-owned PR(s) walked this tick carried batched inputs — every one fell back to per-PR REST calls (is --with-poller-inputs still being passed?)"
 fi
