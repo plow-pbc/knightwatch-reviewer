@@ -51,14 +51,29 @@ is_approve_request() {
 
 # Submit gh pr review --approve for any new trusted /<prefix>-approve on the PR.
 approve_check() {
-    local REPO="$1" PR_NUM="$2" PR_AUTHOR="$3" COMMENTS COMMENT BODY ID USER APPROVE_KEY APPROVE_BODY
-    # On fetch failure, log loud + skip this PR for this tick rather than silently
-    # treating "API broken" as "no comments". Pagination correctness lives in
-    # lib/gh-comments.sh (shared) so callers can't reinvent the bug.
-    COMMENTS=$(fetch_issue_comments "$REPO" "$PR_NUM") || {
-        log "$REPO#$PR_NUM: comments fetch failed — skipping approve check this tick"
-        return 0
-    }
+    local REPO="$1" PR_NUM="$2" PR_AUTHOR="$3" BATCHED="${4:-}"
+    local COMMENTS COMMENT BODY ID USER APPROVE_KEY APPROVE_BODY
+    if [ -n "$BATCHED" ]; then
+        # Already carried by the enumeration — normalize the GraphQL shape onto
+        # the REST field names the loop below reads. databaseId IS the REST id,
+        # so the seen-key keeps the same id space (a node id here would re-approve
+        # every PR once).
+        COMMENTS=$(printf '%s' "$BATCHED" |
+            jq -c '[.[] | {id: .databaseId, body, user: {login: .author.login}}]') || {
+            log "$REPO#$PR_NUM: batched comments unparseable — skipping approve check this tick"
+            return 0
+        }
+    else
+        # Fallthrough PRs only (the per-repo `gh pr list` path cannot carry the
+        # batched fields — see lib/pr-enumerate.sh). On fetch failure, log loud +
+        # skip this PR for this tick rather than silently treating "API broken"
+        # as "no comments". Pagination correctness lives in lib/gh-comments.sh
+        # (shared) so callers can't reinvent the bug.
+        COMMENTS=$(fetch_issue_comments "$REPO" "$PR_NUM") || {
+            log "$REPO#$PR_NUM: comments fetch failed — skipping approve check this tick"
+            return 0
+        }
+    fi
     while IFS= read -r COMMENT; do
         BODY=$(echo "$COMMENT" | jq -r '.body')
         # No body-wide auto-post-marker filter here. Every bot producer puts the
@@ -121,18 +136,28 @@ Approved on @${USER}'s /${BOT_CMD_PREFIX}-approve request."
 
 # Translate a new GitHub "Re-request review" event into a /<prefix>-review trigger.
 rerequest_check() {
-    local REPO="$1" PR_NUM="$2" PR_KEY="$1#$2" TIMELINE LATEST LAST_SEEN
-    # Fetch + detect failure explicitly (same shape as the comment fetch) so a
-    # transient API error is logged + skipped, not silently read as "no event".
-    TIMELINE=$(gh api "repos/$REPO/issues/$PR_NUM/timeline" --paginate 2>/dev/null) || {
-        log "$PR_KEY: timeline fetch failed — skipping re-request check this tick"
-        return 0
-    }
-    # Latest review_requested event targeting our bot user, if any. --paginate
-    # emits one JSON array per page, so slurp (-s) + `add` merges them before
-    # selecting — otherwise a newer event on page 2 is missed.
-    LATEST=$(printf '%s' "$TIMELINE" | jq -s -r --arg u "$BOT_USER" \
-        'add | [.[] | select(.event == "review_requested" and .requested_reviewer.login == $u)] | last | .created_at // empty')
+    local REPO="$1" PR_NUM="$2" BATCHED="${3:-}" PR_KEY="$1#$2" TIMELINE LATEST LAST_SEEN
+    if [ -n "$BATCHED" ]; then
+        # Already carried by the enumeration, pre-flattened to {createdAt, login}
+        # and pre-filtered to User reviewers (lib/pr-enumerate.sh).
+        LATEST=$(printf '%s' "$BATCHED" | jq -r --arg u "$BOT_USER" \
+            '[.[] | select(.login == $u)] | last | .createdAt // empty') || {
+            log "$PR_KEY: batched review requests unparseable — skipping re-request check this tick"
+            return 0
+        }
+    else
+        # Fetch + detect failure explicitly (same shape as the comment fetch) so a
+        # transient API error is logged + skipped, not silently read as "no event".
+        TIMELINE=$(gh api "repos/$REPO/issues/$PR_NUM/timeline" --paginate 2>/dev/null) || {
+            log "$PR_KEY: timeline fetch failed — skipping re-request check this tick"
+            return 0
+        }
+        # Latest review_requested event targeting our bot user, if any. --paginate
+        # emits one JSON array per page, so slurp (-s) + `add` merges them before
+        # selecting — otherwise a newer event on page 2 is missed.
+        LATEST=$(printf '%s' "$TIMELINE" | jq -s -r --arg u "$BOT_USER" \
+            'add | [.[] | select(.event == "review_requested" and .requested_reviewer.login == $u)] | last | .created_at // empty')
+    fi
     [ -z "$LATEST" ] && return 0
     LAST_SEEN=$(seen_get "$RR_SEEN_FILE" "$PR_KEY")
     # ISO-8601 timestamps compare lexically.
@@ -171,7 +196,12 @@ if gh_pause_active; then
     exit 0
 fi
 
-ALL_PRS=$(enumerate_open_prs) || { log "enumerate_open_prs failed — skipping this tick"; exit 0; }
+# --with-poller-inputs: the enumeration carries this tick's comments and
+# review-request events, so the two checks below make ZERO per-PR REST calls on
+# the ORGS path. They used to make two PAGINATED ones each — ~150 requests
+# across 75 open PRs, every 2 minutes, which kept this poller on the wire for
+# 90s of every 120s and tripped GitHub's secondary (burst) limit hourly.
+ALL_PRS=$(enumerate_open_prs --with-poller-inputs) || { log "enumerate_open_prs failed — skipping this tick"; exit 0; }
 
 while IFS= read -r PR_JSON; do
     # A wrapped call inside this tick may have just stamped the pause. The outer
@@ -184,6 +214,13 @@ while IFS= read -r PR_JSON; do
     REPO=$(echo "$PR_JSON" | jq -r '.repository.nameWithOwner')
     PR_NUM=$(echo "$PR_JSON" | jq -r '.number')
     PR_AUTHOR=$(echo "$PR_JSON" | jq -r '.author.login // ""')
-    approve_check "$REPO" "$PR_NUM" "$PR_AUTHOR"
-    rerequest_check "$REPO" "$PR_NUM"
+    # `// empty` yields "" for a PR that came via the per-repo `gh pr list`
+    # fallthrough, which cannot carry these fields — that empty string is what
+    # selects the REST path inside each check. A PR with a genuinely empty list
+    # still serializes as "[]", so "no comments" stays distinct from "not
+    # batched" and does not silently fall back to a REST call.
+    BATCHED_COMMENTS=$(echo "$PR_JSON" | jq -c '.comments.nodes // empty')
+    BATCHED_RRS=$(echo "$PR_JSON" | jq -c '.reviewRequests.nodes // empty')
+    approve_check "$REPO" "$PR_NUM" "$PR_AUTHOR" "$BATCHED_COMMENTS"
+    rerequest_check "$REPO" "$PR_NUM" "$BATCHED_RRS"
 done < <(echo "$ALL_PRS" | jq -c '.[]')

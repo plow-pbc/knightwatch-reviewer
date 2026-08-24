@@ -42,6 +42,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 export STUB_PR_LIST_LOG="$STATE_DIR/gh-pr-list.log"
 export STUB_COMMENT_LOG="$STATE_DIR/gh-pr-comment.log"
+export STUB_API_LOG="$STATE_DIR/gh-api.log"
 export MOCK_TIMELINE_FILE="$TMPDIR/timeline.json"
 echo "[]" > "$MOCK_TIMELINE_FILE"
 
@@ -78,7 +79,21 @@ elif [ "$1" = "pr" ] && [ "$2" = "comment" ]; then
     echo "COMMENT repo=$repo body=$body" >> "${STUB_COMMENT_LOG:-/dev/null}"
     [ -n "${MOCK_PR_COMMENT_FAIL:-}" ] && exit 1
     echo "https://github.com/$repo/issues/1#issuecomment-fake"
+elif [ "$1" = "api" ] && [ "$2" = "graphql" ]; then
+    # The ORGS/batched enumeration path. Logged separately from REST so the
+    # batched scenario can assert that NO per-PR REST call was made while the
+    # graphql enumeration itself obviously still happens.
+    q=""
+    for ((i=1; i<=$#; i++)); do
+        if [ "${!i}" = "-F" ]; then
+            j=$((i+1)); case "${!j}" in q=*) q="${!j#q=}" ;; esac
+        fi
+    done
+    fixture_var="MOCK_GRAPHQL_${q//[^A-Za-z0-9]/_}"
+    eval "fixture=\${$fixture_var:-}"
+    if [ -n "$fixture" ]; then echo "$fixture"; else echo '{"data":{"search":{"nodes":[]}}}'; fi
 elif [ "$1" = "api" ]; then
+    printf '%s\n' "$*" >> "${STUB_API_LOG:-/dev/null}"
     # poll-pr-actions.sh also runs the approve check, which fetches issue
     # comments — return an empty list for those so the approve path no-ops;
     # serve the timeline fixture for the re-request path.
@@ -231,4 +246,35 @@ run_poller
 n=$(count_comments)
 [ "$n" -eq 1 ] || { echo "FAIL scenario 7: expected 1 trigger on recovery tick, got $n (event lost after transient failure)"; cat "$STUB_COMMENT_LOG"; exit 1; }
 
-echo "  PASS (7 scenarios: empty-timeline-respects-override, new-event-triggers, already-seen-deduped, non-bot-ignored, post-failure-no-seen-advance, canonical-repos.conf-path, timeline-fetch-failure-retries)"
+# Scenario 8: BATCHED path — the enumeration carries the review-request events
+# and the comments, so the tick makes ZERO per-PR REST calls. Asserting on call
+# ABSENCE is the whole point of the change: the trigger still posts, but nothing
+# hits /timeline or /comments. All seven scenarios above ride the per-repo
+# `gh pr list` fallthrough (test-org is not an ORG), which is the REST path —
+# so they cover the fallback and this covers the batched one.
+echo "  scenario 8: batched inputs — trigger posted with no per-PR REST call..."
+rm -f "$STATE_DIR/repos.conf"
+# ORGS makes enumerate take the graphql branch; the stub serves the fixture.
+printf 'REPOS=()\nORGS=("test-org")\n' > "$STATE_DIR/config.env"
+export MOCK_GRAPHQL_user_test_org_is_pr_is_open_archived_false='{"data":{"search":{"nodes":[
+  {"number":1,"title":"t","headRefName":"f","headRefOid":"h","updatedAt":"2026-04-29T12:00:00Z",
+   "author":{"login":"someone"},"repository":{"nameWithOwner":"test-org/probe-repo"},
+   "comments":{"nodes":[]},
+   "timelineItems":{"nodes":[{"createdAt":"2026-04-29T12:00:00Z","requestedReviewer":{"login":"srosro"}}]}}
+]}}}'
+echo '{}' > "$SEEN_FILE"
+echo "FAIL" > "$MOCK_TIMELINE_FILE"   # any REST timeline fetch would now error out loud
+: > "$STUB_API_LOG"
+run_poller
+n=$(count_comments)
+[ "$n" -eq 1 ] || { echo "FAIL scenario 8: expected 1 trigger from batched data, got $n"; cat "$STUB_COMMENT_LOG"; cat "$LOG_FILE"; exit 1; }
+grep -q '/timeline' "$STUB_API_LOG" && { echo "FAIL scenario 8: made a REST timeline call despite batched data — the fan-out this change removes is still happening"; cat "$STUB_API_LOG"; exit 1; }
+grep -q '/comments' "$STUB_API_LOG" && { echo "FAIL scenario 8: made a REST comments call despite batched data"; cat "$STUB_API_LOG"; exit 1; }
+seen=$(jq -r '."test-org/probe-repo#1" // empty' "$SEEN_FILE")
+[ "$seen" = "2026-04-29T12:00:00Z" ] || { echo "FAIL scenario 8: seen watermark not advanced from batched event (got [$seen])"; cat "$SEEN_FILE"; exit 1; }
+# And an already-seen batched event must not re-trigger (same dedup as REST).
+run_poller
+n=$(count_comments)
+[ "$n" -eq 0 ] || { echo "FAIL scenario 8: batched path re-triggered an already-seen event, got $n"; exit 1; }
+
+echo "  PASS (8 scenarios: empty-timeline-respects-override, new-event-triggers, already-seen-deduped, non-bot-ignored, post-failure-no-seen-advance, canonical-repos.conf-path, timeline-fetch-failure-retries, batched-inputs-no-rest-calls)"
