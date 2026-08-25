@@ -42,20 +42,6 @@ BOT_AUTO_TRIGGER_MARKER="${BOT_AUTO_TRIGGER_MARKER:-<!-- knightwatch-reviewer:au
 # skip path from re-posting the same decline every tick.
 BOT_DECLINE_MARKER="${BOT_DECLINE_MARKER:-<!-- knightwatch-reviewer:already-reviewed -->}"
 
-# The entrypoint's REAL stderr, saved once. The rate-limit diagnostics write
-# here instead of fd 2 because the busiest gh callers — fetch_issue_comments and
-# is_trusted_repo_author — run `gh … 2>"$errfile"` and then re-emit only the
-# first 400 bytes of it. gh's own 403 text is ~300 of those, so the endpoint line
-# and the primary/secondary classifier that follow were truncated off
-# mid-timestamp: 1001 lines/day reached poll.log and ZERO reached the journal.
-# A caller's `2>` rebinds fd 2 for its own subprocess only; this fd is immune.
-# Consumers redirect with ${GH_DIAG_FD:-2}, so a script that never sources this
-# file (the container worker reaches gh() via auth.sh) degrades to plain stderr.
-if [ -z "${GH_DIAG_FD:-}" ]; then
-    exec {GH_DIAG_FD}>&2
-    export GH_DIAG_FD
-fi
-
 . "$REVIEWER_LIB_DIR/tracked-repos.sh"
 . "$REVIEWER_LIB_DIR/auth.sh"
 . "$REVIEWER_LIB_DIR/state-io.sh"

@@ -49,12 +49,23 @@ exit 1
 SHIM
 chmod +x "$TMP/bin/gh"
 
+# Source the seam with stderr pointed at a capture file, because sourcing is
+# when it dups the entrypoint's stderr. This models production exactly: the unit
+# starts, the seam saves ITS stderr (the journal), and the per-call `2>errfile`
+# redirects that fetch_issue_comments/is_trusted_repo_author do later cannot
+# reach it. Scenarios below therefore assert diagnostics in $DIAG_LOG, not in
+# the failing call's own errfile — that separation IS the property under test.
+DIAG_LOG="$TMP/diag.log"
+: > "$DIAG_LOG"
+exec 3>&2                                  # keep the real stderr for fail()
+exec 2>"$DIAG_LOG"
 . "$PROJECT_ROOT/lib/gh-retry.sh"   # sources state-io.sh itself
+exec 2>&3                                  # restore; GH_DIAG_FD still points at $DIAG_LOG
 
 RATE_LIMIT_ERR='gh: API rate limit exceeded for user ID 95421. (HTTP 403)'
 NOW=$(date +%s)
 
-reset_state() { rm -f "$(gh_pause_file)"; }
+reset_state() { rm -f "$(gh_pause_file)"; : > "$DIAG_LOG"; }
 
 # --- 1. secondary: budget remains, yet a rate-limit 403 → short fixed pause ---
 # This is the case that actually fired in production: core 4920/5000 and graphql
@@ -76,8 +87,12 @@ UNTIL=$(head -n1 "$(gh_pause_file)")
 DELTA=$(( UNTIL - NOW ))
 [ "$DELTA" -ge 55 ] && [ "$DELTA" -le 75 ] \
     || fail "scenario 1: expected a ~60s secondary window, got ${DELTA}s (until=$UNTIL now=$NOW)"
+grep -q 'secondary' "$DIAG_LOG" \
+    || fail "scenario 1: diagnostic did not classify the limit as secondary — diag: $(cat "$DIAG_LOG")"
+# …and it did NOT land in the caller's own errfile, which is where the 400-byte
+# truncation used to eat it.
 grep -q 'secondary' "$TMP/err1" \
-    || fail "scenario 1: diagnostic did not classify the limit as secondary — output: $(cat "$TMP/err1")"
+    && fail "scenario 1: the diagnostic followed the caller's redirected stderr — it must go to the saved descriptor instead"
 
 # --- 2. primary/core exhausted → pause until the bucket's OWN reset ---
 echo "  scenario 2: core remaining=0 → primary, pause until the real reset epoch..."
@@ -88,8 +103,8 @@ GH_SHIM_ERR="$RATE_LIMIT_ERR" \
     gh api "user" >/dev/null 2>"$TMP/err2" || true
 [ "$(head -n1 "$(gh_pause_file)")" = "$CORE_RESET" ] \
     || fail "scenario 2: expected pause until core reset $CORE_RESET, got $(head -n1 "$(gh_pause_file)")"
-grep -q 'primary/core' "$TMP/err2" \
-    || fail "scenario 2: diagnostic did not classify as primary/core — output: $(cat "$TMP/err2")"
+grep -q 'primary/core' "$DIAG_LOG" \
+    || fail "scenario 2: diagnostic did not classify as primary/core — diag: $(cat "$DIAG_LOG")"
 
 # --- 3. graphql is the exhausted bucket → its reset wins ---
 # GraphQL is the loaded bucket in this deployment (~30 pts/min vs core ~0), so
@@ -514,34 +529,12 @@ grep -q 'secondary' "$TMP/err19b" \
 # lib/pipeline.py's close_fds=True Popen hands its child) must degrade to fd 2,
 # never abort the call: a failed redirection means bash does not run the command,
 # so the fleet-wide pause would silently never be published.
-# `9>&-` closes fd 9 for the child: `env` copies the ENVIRONMENT, it does not
-# close descriptors, so an fd 9 held by whatever launched `just test` would be
-# inherited straight through, the sanitizer would correctly keep GH_DIAG_FD=9,
-# and this scenario would fail blaming the code while writing into a file it does
-# not own. Same "establish the precondition" rule as the 19b subshell above.
-# Reproduced as a CHILD PROCESS carrying the variable without the descriptor —
-# the faithful shape, and the only one that reproduces it. Closing an fd in the
-# same shell does NOT: bash still accepts `: >&N` on a descriptor it closed
-# itself, so a same-shell simulation passes against the unfixed code and proves
-# nothing. A fresh child whose fd N was never opened is what Popen hands over.
-reset_state
-: > "$TMP/err19c"
-env -u BASH_ENV GH_DIAG_FD=9 STATE_DIR="$STATE_DIR" PATH="$TMP/bin:$PATH" \
-    GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
-    GH_SHIM_ERR="$RATE_LIMIT_ERR" GH_SECONDARY_PAUSE_SECS=60 \
-    bash -c '. "'"$PROJECT_ROOT"'/lib/gh-retry.sh"; gh api user' \
-    >/dev/null 2>"$TMP/err19c" 9>&- || true
-[ -f "$(gh_pause_file)" ] \
-    || fail "scenario 19: a stale GH_DIAG_FD suppressed the pause entirely — the redirection failed, so gh_note_rate_limit never ran and the fleet never backs off"
-grep -q 'secondary' "$TMP/err19c" \
-    || fail "scenario 19: a stale GH_DIAG_FD lost the diagnostic instead of degrading to fd 2 — got: $(cat "$TMP/err19c")"
-
-# The BOOTSTRAP end of the contract. Without this, deleting bootstrap.sh's
-# `exec {GH_DIAG_FD}>&2` block leaves every scenario above green (they open the
-# fd themselves) while every diagnostic silently returns to fd 2 and back into
-# the callers' errfiles — the whole bug this change exists to fix. Same shape as
-# scenario 12's source-and-check. stderr is NOT redirected during the source,
-# because that is the descriptor bootstrap is supposed to capture.
+# The ALLOCATION end of the contract, at the seam that owns it. Without this,
+# deleting gh-retry.sh's `exec {GH_DIAG_FD}>&2` block leaves every scenario above
+# green (they open the fd themselves) while every diagnostic silently returns to
+# fd 2 and back into the callers' errfiles — the whole bug this change exists to
+# fix. Same shape as scenario 12's source-and-check. stderr is NOT redirected
+# during the source, because that is the descriptor the seam must capture.
 : > "$TMP/err19d"
 # The assertion is IMMUNITY, not liveness: after sourcing, the child rebinds its
 # own fd 2 the way fetch_issue_comments does, and the marker must still reach the
@@ -551,15 +544,14 @@ grep -q 'secondary' "$TMP/err19c" \
 # went straight back into the callers' truncated errfiles.
 : > "$TMP/swallowed19d"
 env -u BASH_ENV -u GH_DIAG_FD bash -c '
-    export REVIEWER_LIB_DIR="'"$PROJECT_ROOT"'/lib"
-    . "$REVIEWER_LIB_DIR/bootstrap.sh" >/dev/null || exit 3
+    . "'"$PROJECT_ROOT"'/lib/gh-retry.sh" >/dev/null || exit 3
     [ -n "${GH_DIAG_FD:-}" ] || exit 4
     exec 2>"'"$TMP/swallowed19d"'"
-    echo BOOTSTRAP_DIAG_FD_OK >&"$GH_DIAG_FD"
+    echo SEAM_DIAG_FD_OK >&"$GH_DIAG_FD"
 ' 2>"$TMP/err19d" || true
-grep -q 'BOOTSTRAP_DIAG_FD_OK' "$TMP/err19d" \
-    || fail "scenario 19: bootstrap's GH_DIAG_FD did not survive the caller rebinding fd 2 — it is not a saved duplicate of the entrypoint's stderr. err19d: $(cat "$TMP/err19d") swallowed: $(cat "$TMP/swallowed19d")"
-grep -q 'BOOTSTRAP_DIAG_FD_OK' "$TMP/swallowed19d" \
+grep -q 'SEAM_DIAG_FD_OK' "$TMP/err19d" \
+    || fail "scenario 19: the seam's GH_DIAG_FD did not survive the caller rebinding fd 2 — it is not a saved duplicate of the entrypoint's stderr. err19d: $(cat "$TMP/err19d") swallowed: $(cat "$TMP/swallowed19d")"
+grep -q 'SEAM_DIAG_FD_OK' "$TMP/swallowed19d" \
     && fail "scenario 19: the diagnostic followed the caller's rebound fd 2 — exactly the swallowing this change exists to prevent"
 reset_state
 

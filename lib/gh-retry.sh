@@ -32,23 +32,25 @@ GH_API_RATE_LIMIT_RE='rate limit exceeded|secondary rate limit'
 # that already has it is a no-op.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/state-io.sh"
 
-# Sanitize an inherited GH_DIAG_FD (allocated by lib/bootstrap.sh). The variable
-# is exported and so crosses EVERY process boundary; the descriptor only crosses
-# the ones that preserve it. lib/pipeline.py's `subprocess.Popen(...)` passes the
-# full environment with close_fds defaulting to True, so its child sees
-# GH_DIAG_FD=N with fd N already closed — and a FAILED redirection means bash
-# never runs the command at all, which would silently skip publishing the
-# fleet-wide pause (the exact "pause NOT published" class scenario 18 exists to
-# catch). Testing emptiness cannot see this; only writing to it can.
+# The entrypoint's real stderr, saved once, at THE SEAM every gh caller already
+# sources. Rate-limit diagnostics write here instead of fd 2 because the busiest
+# callers run `gh … 2>"$errfile"` and re-emit only the first 400 bytes — gh's 403
+# text is ~300 of those, so the endpoint line and the primary/secondary
+# classifier were truncated off mid-timestamp: 1001 lines/day reached poll.log
+# and ZERO reached the journal. A caller's `2>` rebinds fd 2 for its own
+# subprocess only; this fd is immune.
 #
-# Validated HERE rather than in bootstrap.sh because the seam is what every gh
-# caller sources — lib/review-one-pr.sh reaches gh() through auth.sh and never
-# sources bootstrap.sh, so a bootstrap-only guard would leave the fleet's
-# biggest gh caller trusting a stale fd. Falling back to 2 is why callers do not
-# need to inherit the descriptor for correctness, only for nicer diagnostics.
-if [ -n "${GH_DIAG_FD:-}" ] && ! { : >&"$GH_DIAG_FD"; } 2>/dev/null; then
-    GH_DIAG_FD=2
-    export GH_DIAG_FD
+# NOT exported, and that is what keeps it correct rather than guarded. An
+# exported descriptor crosses every process boundary while the descriptor itself
+# only crosses the ones that preserve it — lib/pipeline.py's subprocess.Popen
+# passes the full environment with close_fds defaulting to True, so its child
+# would see GH_DIAG_FD=N with fd N closed, and a FAILED redirection means bash
+# never runs the command, silently skipping the fleet-wide pause. Process-local,
+# that state cannot exist: every process that sources this file dups its OWN
+# stderr, and one that doesn't never reads the variable. Consumers still spell it
+# ${GH_DIAG_FD:-2} so an explicit unset degrades rather than breaks.
+if [ -z "${GH_DIAG_FD:-}" ]; then
+    exec {GH_DIAG_FD}>&2
 fi
 
 # gh_retry takes a FULL gh argv (`pr view …`, `repo view …`, `api …`), not just
@@ -103,7 +105,7 @@ gh_retry() {
             # read back as a permission string. And NOT bare fd 2 either — the
             # busiest callers redirect their own fd 2 into an errfile and re-emit
             # only its first 400 bytes, which truncated both these lines out of
-            # the journal (see lib/bootstrap.sh's GH_DIAG_FD). log()'s LOG_FILE
+            # the journal (see the GH_DIAG_FD block above). log()'s LOG_FILE
             # tee is unaffected by either choice.
             gh_note_rate_limit >&"${GH_DIAG_FD:-2}"
             rm -f "$errfile"
