@@ -48,7 +48,12 @@ GH_API_RATE_LIMIT_RE='rate limit exceeded|secondary rate limit'
 # never runs the command, silently skipping the fleet-wide pause. Process-local,
 # that state cannot exist: every process that sources this file dups its OWN
 # stderr, and one that doesn't never reads the variable. Consumers still spell it
-# ${GH_DIAG_FD:-2} so an explicit unset degrades rather than breaks.
+# ${GH_DIAG_FD:-2} — kept, unlike the sanitizer branch this replaces, because
+# the two are not the same thing. The sanitizer was a BRANCH defending a state
+# an outside process could create (an exported stale fd); this is a four-char
+# default on a variable this file guarantees, costing no structure, on the one
+# path where being wrong is silent: a failed redirection means bash never runs
+# gh_note_rate_limit, so the fleet-wide pause is never published.
 if [ -z "${GH_DIAG_FD:-}" ]; then
     exec {GH_DIAG_FD}>&2
 fi

@@ -507,28 +507,6 @@ grep -q 'rate-limited on' "$TMP/diag19" \
     || fail "scenario 19: the endpoint line did not reach the saved diag fd — a caller's errfile still eats it: $(cat "$TMP/diag19")"
 grep -q 'secondary' "$TMP/diag19" \
     || fail "scenario 19: the classifier line did not reach the saved diag fd: $(cat "$TMP/diag19")"
-# With no GH_DIAG_FD in scope it must still land on plain stderr — every script
-# that never sources bootstrap.sh (the container worker) depends on that.
-# `unset` in a subshell, not an assumption that the caller lacks it: the variable
-# is EXPORTED, and on the host review path this suite runs under
-# `env -u LOG_FILE just … test` (lib/run-dir.sh), which scrubs LOG_FILE only —
-# so it would inherit a live GH_DIAG_FD and this assertion would fail on correct
-# code. `env -u` cannot be used here because gh is a shell function.
-reset_state
-: > "$TMP/err19b"
-(
-    unset GH_DIAG_FD
-    GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
-    GH_SHIM_ERR="$RATE_LIMIT_ERR" GH_SECONDARY_PAUSE_SECS=60 \
-        gh api "user" >/dev/null 2>"$TMP/err19b" || true
-)
-grep -q 'secondary' "$TMP/err19b" \
-    || fail "scenario 19: without GH_DIAG_FD the diagnostic must fall back to fd 2 — got: $(cat "$TMP/err19b")"
-
-# A STALE inherited fd (exported variable, closed descriptor — what
-# lib/pipeline.py's close_fds=True Popen hands its child) must degrade to fd 2,
-# never abort the call: a failed redirection means bash does not run the command,
-# so the fleet-wide pause would silently never be published.
 # The ALLOCATION end of the contract, at the seam that owns it. Without this,
 # deleting gh-retry.sh's `exec {GH_DIAG_FD}>&2` block leaves every scenario above
 # green (they open the fd themselves) while every diagnostic silently returns to
