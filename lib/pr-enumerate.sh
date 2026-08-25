@@ -82,11 +82,9 @@
 # /<prefix>-approve left UNSEEN by an rc-2 trust check is retried next tick, and
 # would be lost for good once the thread crossed the window. Reusing the absence
 # signal means no new consumer branch; the failover is SILENT by design, visible
-# only as that one PR taking the REST comment path. That is the accepted cost of
-# not giving truncation its own marker and tally — a persistent, slowly-changing
-# condition (threads only grow) reported per tick is noise, and the last thing
-# it should share is an alarm, which is how the previous round's
-# truncation-conflation finding arose.
+# only as that one PR taking the REST comment path. Do not give it a per-tick log
+# line: threads only grow, so the condition is persistent and reporting it every
+# two minutes is noise.
 #
 # Bot logins are normalized to the REST spelling. GraphQL resolves an App author
 # through the Bot type, whose login OMITS the [bot] suffix (verified live:
