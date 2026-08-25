@@ -43,6 +43,18 @@ if [ "$1" = "api" ] && [ "$2" = "graphql" ]; then
         fi
     done
     echo "graphql q=$q after=$after" >> "$STUB_CALL_LOG"
+    # Record the GraphQL DOCUMENT too, not just the search string. Fixtures are
+    # echoed verbatim, so an assertion on the RESPONSE proves nothing about what
+    # was REQUESTED — drop a field from the query and production loses it while
+    # the fixture keeps the test green. Scenario 7 asserts against this file.
+    if [ -n "${STUB_QUERY_LOG:-}" ]; then
+        for ((i=1; i<=$#; i++)); do
+            if [ "${!i}" = "-f" ]; then
+                j=$((i+1))
+                case "${!j}" in query=*) printf '%s\n' "${!j#query=}" >> "$STUB_QUERY_LOG" ;; esac
+            fi
+        done
+    fi
     [ -n "${MOCK_GRAPHQL_FAIL:-}" ] && exit 1
     # Pagination: a follow-up call (after set) serves MOCK_GRAPHQL_AFTER (page 2).
     if [ -n "$after" ] && [ -n "${MOCK_GRAPHQL_AFTER:-}" ]; then
@@ -173,6 +185,12 @@ export MOCK_PR_LIST_FAIL=1
   fi
   assert_eq "scenario 5b no stdout on fail" "" "$out"
 )
+# Unset like its MOCK_GRAPHQL_FAIL sibling above. Exported and left set, it made
+# `gh pr list` fail for the REST of the file — invisible only because no later
+# scenario used the fallthrough path until one did, and it then failed with no
+# assertion message (the subshell dies on `set -e` inside the command
+# substitution, before any assert runs).
+unset MOCK_PR_LIST_FAIL
 
 # ---- scenario 6: repos_with_bot_activity_since (batched bake-off discovery) ----
 # 6a: single ORG, search returns active repos (with a dup) → deduped, tracked-only.
@@ -239,6 +257,129 @@ unset MOCK_GRAPHQL_AFTER
   else
       echo "FAIL: 6e empty discovery exited non-zero under pipefail"; exit 1
   fi
+)
+
+# ---- scenario 7: the GraphQL path carries the poller's inputs; the per-repo
+#      fallthrough does not (that is how poll-pr-actions.sh picks its path).
+#      Why these fields live here: the poller was fetching issues/N/comments +
+#      issues/N/timeline per PR per tick — ~150 REST calls across 75 open PRs,
+#      every 2 minutes, 90s of continuous request rate out of every 120s, which
+#      is what tripped GitHub's SECONDARY (burst) limit hourly. One batched
+#      search already walks every PR; carrying the two fields on it drops that
+#      fan-out to zero. ----
+: > "$STUB_CALL_LOG"
+export MOCK_GRAPHQL_user_plow_pbc_is_pr_is_open_archived_false='{"data":{"search":{"nodes":[
+    {"number":1,"title":"a","headRefName":"feat/a","headRefOid":"aaa","author":{"login":"alice"},"repository":{"nameWithOwner":"plow-pbc/seed"},
+     "comments":{"nodes":[{"databaseId":9001,"createdAt":"2026-08-24T16:40:40Z","body":"/srosro-approve","author":{"login":"carol"}}]},
+     "timelineItems":{"nodes":[
+        {"createdAt":"2026-08-24T16:39:02Z","requestedReviewer":{"login":"srosro"}},
+        {"createdAt":"2026-08-24T16:41:00Z","requestedReviewer":{}}
+     ]}}
+]}}}'
+export STUB_QUERY_LOG="$WORKDIR/gh-queries.log"
+: > "$STUB_QUERY_LOG"
+export MOCK_PR_LIST_cncorp_plow='[{"number":642,"title":"x","headRefName":"feat/x","headRefOid":"xxx","author":{"login":"srosro"}}]'
+( REPOS=("plow-pbc/seed" "cncorp/plow"); ORGS=("plow-pbc")
+  source "$PROJECT_ROOT/lib/pr-enumerate.sh"
+  out=$(enumerate_open_prs_with_poller_inputs)
+  # The QUERY must actually ask for both fields. Without these two, the response
+  # assertions below pass on fixture data alone and would not notice the query
+  # losing the fields — which is the only way this change can regress.
+  assert_eq "scenario 7 query requests comments" "true" \
+    "$(grep -q 'comments(last:' "$STUB_QUERY_LOG" && echo true || echo false)"
+  assert_eq "scenario 7 query requests review-request events" "true" \
+    "$(grep -q 'REVIEW_REQUESTED_EVENT' "$STUB_QUERY_LOG" && echo true || echo false)"
+  assert_eq "scenario 7 comment id carried (REST databaseId)" "9001" \
+    "$(echo "$out" | jq -r '.[] | select(.number==1) | .comments.nodes[0].id')"
+  assert_eq "scenario 7 comment body carried" "/srosro-approve" \
+    "$(echo "$out" | jq -r '.[] | select(.number==1) | .comments.nodes[0].body')"
+  assert_eq "scenario 7 comment user carried" "carol" \
+    "$(echo "$out" | jq -r '.[] | select(.number==1) | .comments.nodes[0].user.login')"
+  # timelineItems is flattened to reviewRequests so no consumer reaches through
+  # the GraphQL union shape, and a non-User reviewer (a TEAM request has no
+  # .login) is dropped rather than surfacing as a null-login entry.
+  assert_eq "scenario 7 review request flattened to one User entry" "1" \
+    "$(echo "$out" | jq -r '.[] | select(.number==1) | .reviewRequests.nodes | length')"
+  assert_eq "scenario 7 review request login" "srosro" \
+    "$(echo "$out" | jq -r '.[] | select(.number==1) | .reviewRequests.nodes[0].login')"
+  assert_eq "scenario 7 review request createdAt" "2026-08-24T16:39:02Z" \
+    "$(echo "$out" | jq -r '.[] | select(.number==1) | .reviewRequests.nodes[0].createdAt')"
+  assert_eq "scenario 7 raw timelineItems removed" "null" \
+    "$(echo "$out" | jq -r '.[] | select(.number==1) | .timelineItems // "null"')"
+  # The fallthrough PR must carry NEITHER field — its absence is the signal that
+  # sends poll-pr-actions.sh back to the REST helpers for that PR.
+  assert_eq "scenario 7 fallthrough has no batched comments" "null" \
+    "$(echo "$out" | jq -r '.[] | select(.number==642) | .comments // "null"')"
+  assert_eq "scenario 7 fallthrough has no batched reviewRequests" "null" \
+    "$(echo "$out" | jq -r '.[] | select(.number==642) | .reviewRequests // "null"')"
+)
+
+# ---- scenario 8: the DEFAULT call stays lean. review.sh enumerates every 60s
+#      and reads none of the poller fields; measured against the live org the
+#      enriched response is 2.7 MB against 22 KB lean (the comment bodies are
+#      knightwatch's own multi-KB reviews), so making them unconditional would
+#      hand that path a multi-MB response to hold in a shell variable and re-pipe
+#      through jq. This is the fence that keeps them opt-in. ----
+: > "$STUB_CALL_LOG"; : > "$STUB_QUERY_LOG"
+( REPOS=("plow-pbc/seed" "cncorp/plow"); ORGS=("plow-pbc")
+  source "$PROJECT_ROOT/lib/pr-enumerate.sh"
+  out=$(enumerate_open_prs)
+  assert_eq "scenario 8 lean query omits comments" "false" \
+    "$(grep -q 'comments(last:' "$STUB_QUERY_LOG" && echo true || echo false)"
+  assert_eq "scenario 8 lean query omits review-request events" "false" \
+    "$(grep -q 'REVIEW_REQUESTED_EVENT' "$STUB_QUERY_LOG" && echo true || echo false)"
+  # And the lean path must NOT bolt an empty reviewRequests onto every PR —
+  # field ABSENCE is what tells poll-pr-actions.sh a PR needs the REST fallback,
+  # so an empty-but-present list would silently route every PR down the batched
+  # path with no data.
+  assert_eq "scenario 8 lean path adds no reviewRequests key" "null" \
+    "$(echo "$out" | jq -r '.[0].reviewRequests // "null"')"
+  assert_eq "scenario 8 still enumerates normally" "2" "$(echo "$out" | jq 'length')"
+)
+
+# ---- scenario 8b: a Bot comment author is normalized to the REST spelling, and
+#      a TRUNCATED thread drops .comments so the PR routes to the REST fallback.
+#      GraphQL resolves an App author through the Bot type, whose login omits the
+#      [bot] suffix (verified live: `vercel`, not `vercel[bot]`) while
+#      is_bot_account matches `*[bot]` — unnormalized, a bot-authored approve
+#      slips the bot fence. And 100 is GitHub's connection maximum, so a longer
+#      thread cannot be fetched by widening; it must fail over, not truncate. ----
+: > "$STUB_CALL_LOG"; : > "$STUB_QUERY_LOG"
+export MOCK_GRAPHQL_user_plow_pbc_is_pr_is_open_archived_false='{"data":{"search":{"nodes":[
+    {"number":1,"title":"a","headRefName":"f","headRefOid":"h","author":{"login":"alice"},"repository":{"nameWithOwner":"plow-pbc/seed"},
+     "comments":{"pageInfo":{"hasPreviousPage":false},"nodes":[
+        {"databaseId":11,"createdAt":"t","body":"b","author":{"__typename":"Bot","login":"vercel"}},
+        {"databaseId":12,"createdAt":"t","body":"b","author":{"__typename":"User","login":"alice"}}]},
+     "timelineItems":{"nodes":[]}},
+    {"number":2,"title":"b","headRefName":"f","headRefOid":"h","author":{"login":"bob"},"repository":{"nameWithOwner":"plow-pbc/seed-1password"},
+     "comments":{"pageInfo":{"hasPreviousPage":true},"nodes":[
+        {"databaseId":21,"createdAt":"t","body":"b","author":{"__typename":"User","login":"bob"}}]},
+     "timelineItems":{"nodes":[]}}
+]}}}'
+( REPOS=("plow-pbc/seed"); ORGS=("plow-pbc")
+  source "$PROJECT_ROOT/lib/pr-enumerate.sh"
+  out=$(enumerate_open_prs_with_poller_inputs)
+  assert_eq "scenario 8b query asks for the truncation signal" "true" \
+    "$(grep -q 'hasPreviousPage' "$STUB_QUERY_LOG" && echo true || echo false)"
+  # The fixture hardcodes "__typename":"Bot", so without this the normalization
+  # assert below is mutation-vacuous: narrowing the query back to
+  # `author { login }` — a plausible "trim the unused field" edit, since
+  # __typename has no consumer outside one jq comparison — would leave
+  # .author.__typename null in real responses, the Bot branch would never fire,
+  # and the suite would stay green while bot-authored approves slip the fence.
+  assert_eq "scenario 8b query asks for the author type" "true" \
+    "$(grep -q '__typename' "$STUB_QUERY_LOG" && echo true || echo false)"
+  assert_eq "scenario 8b Bot login gets the REST [bot] suffix" "vercel[bot]" \
+    "$(echo "$out" | jq -r '.[] | select(.number==1) | .comments.nodes[0].user.login')"
+  assert_eq "scenario 8b User login is left alone" "alice" \
+    "$(echo "$out" | jq -r '.[] | select(.number==1) | .comments.nodes[1].user.login')"
+  # Truncated thread: .comments removed entirely, so the documented
+  # field-absence contract sends that PR to fetch_issue_comments.
+  assert_eq "scenario 8b truncated thread drops comments" "null" \
+    "$(echo "$out" | jq -r '.[] | select(.number==2) | .comments // "null"')"
+  # …but only that PR — an untruncated sibling keeps its batched comments.
+  assert_eq "scenario 8b untruncated sibling keeps comments" "2" \
+    "$(echo "$out" | jq -r '.[] | select(.number==1) | .comments.nodes | length')"
 )
 
 echo "ALL PASS: pr-enumerate-smoke.sh"

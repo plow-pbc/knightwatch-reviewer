@@ -32,6 +32,28 @@ GH_API_RATE_LIMIT_RE='rate limit exceeded|secondary rate limit'
 # that already has it is a no-op.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/state-io.sh"
 
+# The entrypoint's real stderr, saved once, at THE SEAM every gh caller already
+# sources. Rate-limit diagnostics write here instead of fd 2 because the busiest
+# callers run `gh … 2>"$errfile"` and re-emit only the first 400 bytes — gh's 403
+# text is ~300 of those, so the endpoint line and the primary/secondary
+# classifier were truncated off mid-timestamp: 1001 lines/day reached poll.log
+# and ZERO reached the journal. A caller's `2>` rebinds fd 2 for its own
+# subprocess only; this fd is immune.
+#
+# NOT exported, and that is what keeps it correct rather than guarded. An
+# exported descriptor crosses every process boundary while the descriptor itself
+# only crosses the ones that preserve it — lib/pipeline.py's subprocess.Popen
+# passes the full environment with close_fds defaulting to True, so its child
+# would see GH_DIAG_FD=N with fd N closed, and a FAILED redirection means bash
+# never runs the command, silently skipping the fleet-wide pause. Process-local,
+# that state cannot exist: every process that sources this file dups its OWN
+# stderr, and one that doesn't never reads the variable. Consumers still spell it
+# ${GH_DIAG_FD:-2}: a failed redirection means bash never runs the command, so
+# an unset variable here would silently skip publishing the fleet-wide pause.
+if [ -z "${GH_DIAG_FD:-}" ]; then
+    exec {GH_DIAG_FD}>&2
+fi
+
 # gh_retry takes a FULL gh argv (`pr view …`, `repo view …`, `api …`), not just
 # an api path. The rate-limit pause is only as good as its coverage, and the
 # hardcoded `gh api` left the highest-volume reads outside it: `gh pr view` runs
@@ -78,11 +100,15 @@ gh_retry() {
             # command position on a path that inherits the caller's errexit
             # (lib/replay.sh runs set -euo pipefail); an unwritable LOG_FILE must
             # not abort before gh_note_rate_limit publishes the pause.
-            log "gh rate-limited on \`gh $1 ${2:-} ${3:-}\` — $(head -c 160 "$errfile" | tr '\n' ' ')" >&2 || true
-            # >&2 like the errfile spill above: this function's stdout is the
-            # API result its callers capture (`perm=$(gh_api_retry …)`), so the
-            # diagnostic must not land there. log()'s LOG_FILE tee is unaffected.
-            gh_note_rate_limit >&2
+            log "gh rate-limited on \`gh $1 ${2:-} ${3:-}\` — $(head -c 160 "$errfile" | tr '\n' ' ')" >&"${GH_DIAG_FD:-2}" || true
+            # NOT this function's stdout: that is the API result its callers
+            # capture (`perm=$(gh_api_retry …)`), so a diagnostic there would be
+            # read back as a permission string. And NOT bare fd 2 either — the
+            # busiest callers redirect their own fd 2 into an errfile and re-emit
+            # only its first 400 bytes, which truncated both these lines out of
+            # the journal (see the GH_DIAG_FD block above). log()'s LOG_FILE
+            # tee is unaffected by either choice.
+            gh_note_rate_limit >&"${GH_DIAG_FD:-2}"
             rm -f "$errfile"
             return "$rc"
         fi

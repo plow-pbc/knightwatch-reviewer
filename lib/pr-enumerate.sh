@@ -22,6 +22,28 @@
 #   {"repository":{"nameWithOwner":"owner/name"},
 #    "number":N, "title":"…", "headRefName":"…", "headRefOid":"…", "updatedAt":"…",
 #    "author":{"login":"…"}}
+#   enumerate_open_prs_with_poller_inputs additionally carries, on the
+#   ORGS/graphql path only:
+#    "comments":{"nodes":[{"id":N,"body":"…","user":{"login":"…"}}]},
+#    "reviewRequests":{"nodes":[{"createdAt":"…","login":"…"}]}
+#   Comments are emitted in the REST shape the approve poller already reads —
+#   ONE schema, not a GraphQL one the consumer converts back. `id` is the REST
+#   databaseId (a node id would re-key the approve seen-store and re-approve
+#   everything once), and a Bot author's login carries the REST `<name>[bot]`
+#   spelling that is_bot_account matches.
+#   A thread longer than the 100-comment connection maximum drops .comments
+#   entirely rather than returning a silent tail — the PR then takes the same
+#   REST fallback as a fallthrough entry.
+#
+#   The per-repo `gh pr list` fallthrough never carries them, and the reason is
+#   SHAPE, not capability: `comments` and `reviewRequests` ARE valid
+#   `gh pr list --json` fields, but the wrong ones. Its `comments[].id` is the
+#   GraphQL node id, not the REST databaseId the approve seen-key is built from
+#   — carrying them on this path would silently key the seen-store on a different id space
+#   and re-approve everything once. And its `reviewRequests` is the CURRENT
+#   pending reviewer set with no createdAt, so it cannot drive a watermark that
+#   exists to tell a new request from an old one. Their absence is the
+#   documented signal that sends poll-pr-actions.sh back to the REST helpers.
 # On any underlying gh failure: exits non-zero, prints nothing — mirrors
 # fetch_issue_comments' contract so callers stay on the existing
 # `|| { log; continue; }` short-circuit.
@@ -35,18 +57,81 @@
 # srosro repos into 1 call per owner (~3 pts each), keeping owners not in ORGS on
 # per-repo because those orgs are only partially tracked.
 
-_enumerate_graphql_query='query($q: String!, $after: String) {
-  search(query: $q, type: ISSUE, first: 100, after: $after) {
+# The poller's two per-PR inputs ride along ONLY when asked for. They replace
+# two PAGINATED REST calls per PR per tick in poll-pr-actions.sh — ~150 requests
+# across 75 open PRs every 2 minutes, which kept that poller on the wire for 90s
+# of every 120s. That sustained rate, not any hourly volume, is what tripped
+# GitHub's SECONDARY limit hourly (64 of 65 pause events in one day classified
+# `secondary`, each logged with core showing 4975+/5000 remaining).
+#
+# OPT-IN, because the payload is not free even though the points are. Measured
+# against the live org: the lean response is 22 KB, the enriched one 2.7 MB — a
+# 123x difference, since the comment bodies are knightwatch's own multi-KB
+# reviews. review.sh enumerates every 60s and reads NONE of it, and it already
+# has an idle-skip whose whole purpose is to avoid per-PR comment fetches; making
+# this unconditional would hand that path a multi-MB response to hold in a shell
+# variable and re-pipe through jq. The GraphQL point cost is flat at 2 either
+# way, so the second entry point buys the payload back without costing quota.
+#
+# A TRUNCATED comment thread drops .comments entirely, which routes that PR down
+# the existing field-absence path to fetch_issue_comments. 100 is GitHub's
+# connection maximum, so unlike timelineItems the bound cannot be raised, and the
+# busiest thread already sits at 67 on a repo whose review loop posts a comment
+# per round and has produced 20-round PRs. Silently returning the last 100 would
+# reintroduce exactly what lib/gh-comments.sh exists to prevent — a trusted
+# /<prefix>-approve left UNSEEN by an rc-2 trust check is retried next tick, and
+# would be lost for good once the thread crossed the window. Reusing the absence
+# signal means no new consumer branch; the failover is SILENT by design, visible
+# only as that one PR taking the REST comment path. Do not give it a per-tick log
+# line: threads only grow, so the condition is persistent and reporting it every
+# two minutes is noise.
+#
+# Bot logins are normalized to the REST spelling. GraphQL resolves an App author
+# through the Bot type, whose login OMITS the [bot] suffix (verified live:
+# `vercel`, not `vercel[bot]`), while is_bot_account matches `*[bot]`. Left
+# unnormalized, a bot-authored /<prefix>-approve slips the bot fence, falls
+# through to a per-comment trust API call, and logs "no push access" instead of
+# "from bot". Same two-id-spaces-behind-one-field-name hazard as databaseId.
+#
+# Both `last:` bounds are 100 and sized from the live org rather than guessed,
+# because each replaces an unbounded --paginate and a short window drops a real
+# request SILENTLY. The busiest thread carries 67 comments. For timelineItems the
+# bound matters more than the measured max of 1 event/PR suggests: it applies to
+# ALL review-requested events and the non-User filter runs afterwards in jq, so
+# Copilot/team/CODEOWNERS requests occupy slots and could evict the BOT_USER
+# request before the filter ever sees it — the consumer would then read an empty
+# list and never post the trigger, with nothing in the log to distinguish that
+# from "no request". Connection cost is per parent node, not per page size (the
+# query costs 2 points at 30, 60 or 100), so the wide window is free insurance
+# against a silent drop.
+_ENUMERATE_POLLER_FIELDS='
+        comments(last: 100) {
+          pageInfo { hasPreviousPage }
+          nodes { databaseId createdAt body author { __typename login } }
+        }
+        timelineItems(last: 100, itemTypes: [REVIEW_REQUESTED_EVENT]) {
+          nodes { ... on ReviewRequestedEvent {
+            createdAt requestedReviewer { ... on User { login } } } }
+        }'
+
+# _enumerate_graphql_query [EXTRA_PR_FIELDS] — one template, so the lean and
+# enriched forms cannot drift apart the way two copies would.
+_enumerate_graphql_query() {
+    cat <<GQL
+query(\$q: String!, \$after: String) {
+  search(query: \$q, type: ISSUE, first: 100, after: \$after) {
     pageInfo { hasNextPage endCursor }
     nodes {
       ... on PullRequest {
         number title headRefName headRefOid updatedAt
         author { login }
-        repository { nameWithOwner }
+        repository { nameWithOwner }${1:-}
       }
     }
   }
-}'
+}
+GQL
+}
 
 # The rate-limit seam (defines gh()). It was once sourced inside
 # repos_with_bot_activity_since alone so enumerate_open_prs stayed unburdened;
@@ -64,9 +149,20 @@ owner_in_orgs() {
     return 1
 }
 
-enumerate_open_prs() {
-    local pieces=() owner repo raw nodes
+# TWO ZERO-ARGUMENT ENTRY POINTS over one private core, not a flag. With no
+# argument surface there is nothing to mistype into a silent lean fallback: a
+# wrong name is "command not found", which is louder than any guard and costs
+# nothing. That deletes the arity gate, its diagnostic, and the three scenarios
+# that fenced inputs no caller could produce — the generalized API was serving
+# two fixed internal products.
+enumerate_open_prs() { _enumerate_open_prs ""; }
+enumerate_open_prs_with_poller_inputs() { _enumerate_open_prs "$_ENUMERATE_POLLER_FIELDS"; }
+
+_enumerate_open_prs() {
+    local extra_fields="$1"
+    local pieces=() owner repo raw nodes query
     declare -A _seen_owners=()
+    query=$(_enumerate_graphql_query "$extra_fields")
 
     # 1. ORGS-batched path: paginated graphql search per ORGS owner. ORGS are
     #    reviewed in FULL, so one batched search per owner per tick covers the
@@ -87,12 +183,37 @@ enumerate_open_prs() {
         while :; do
             if [ -n "$after" ]; then
                 raw=$(gh api graphql -F q="user:${owner} is:pr is:open archived:false" \
-                        -F after="$after" -f query="$_enumerate_graphql_query" 2>/dev/null) || return 1
+                        -F after="$after" -f query="$query" 2>/dev/null) || return 1
             else
                 raw=$(gh api graphql -F q="user:${owner} is:pr is:open archived:false" \
-                        -f query="$_enumerate_graphql_query" 2>/dev/null) || return 1
+                        -f query="$query" 2>/dev/null) || return 1
             fi
-            nodes=$(printf '%s' "$raw" | jq -c '.data.search.nodes // []') || return 1
+            if [ -n "$extra_fields" ]; then
+                # Flatten timelineItems -> reviewRequests so no consumer has to
+                # reach through the GraphQL union shape. A request targeting a
+                # TEAM (or any non-User reviewer) has no .login and is dropped
+                # rather than surfacing as a null-login entry that would never
+                # match BOT_USER but would still burden every reader.
+                # Only on the enriched path: on the lean one it would bolt an
+                # empty reviewRequests onto every PR, erasing the very
+                # field-absence that tells poll-pr-actions.sh which PRs need the
+                # REST fallback.
+                nodes=$(printf '%s' "$raw" | jq -c '[(.data.search.nodes // [])[]
+                    | .reviewRequests = {nodes: [((.timelineItems.nodes // [])[]
+                        | select(.requestedReviewer.login != null)
+                        | {createdAt, login: .requestedReviewer.login})]}
+                    | del(.timelineItems)
+                    | if (.comments.pageInfo.hasPreviousPage // false)
+                      then del(.comments)
+                      else .comments = {nodes: [((.comments.nodes // [])[]
+                          | {id: .databaseId, body,
+                             user: {login: (if .author.__typename == "Bot"
+                                            then .author.login + "[bot]"
+                                            else .author.login end)}})]}
+                      end]') || return 1
+            else
+                nodes=$(printf '%s' "$raw" | jq -c '.data.search.nodes // []') || return 1
+            fi
             pieces+=("$nodes")
             after=$(printf '%s' "$raw" | jq -r '.data.search.pageInfo // {} | if .hasNextPage then (.endCursor // empty) else empty end') || return 1
             [ -n "$after" ] || break
