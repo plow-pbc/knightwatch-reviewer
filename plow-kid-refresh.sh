@@ -32,12 +32,13 @@ fi
 touch "$LOCK"
 trap 'rm -f "$LOCK"' EXIT
 
-UNWRITABLE=0
 # A repo this host DOES hold but could not (re)index — fetch, pull, index
 # failure, or an unreadable checkout — degrades every review on it with no
 # other visible symptom, so those causes reach the exit status. A repo with no
 # checkout at all is org-sync's condition, not this unit's; see the skip below.
-DEGRADED=0
+# Every one of them already logs its own repo, cause and remedy, so one counter
+# and one summary line carry as much as a per-cause split would.
+FAILED=0
 for NAME in "${!KID_PATHS[@]}"; do
     PROJECT="${KID_PATHS[$NAME]}"
 
@@ -54,7 +55,7 @@ for NAME in "${!KID_PATHS[@]}"; do
         continue
     fi
 
-    cd "$PROJECT" || { log "$NAME: cd $PROJECT failed"; DEGRADED=$((DEGRADED + 1)); continue; }
+    cd "$PROJECT" || { log "$NAME: cd $PROJECT failed"; FAILED=$((FAILED + 1)); continue; }
 
     # kid writes its index to $PROJECT/.keepitdry, but this unit runs under
     # ProtectHome=read-only with a per-repo ReadWritePaths allowlist that
@@ -67,7 +68,7 @@ for NAME in "${!KID_PATHS[@]}"; do
     # bootstrap burned from the sweep's 20min budget every hour.
     if [ ! -w "$PROJECT" ]; then
         log "$NAME: $PROJECT not writable under this unit's sandbox — outside ReadWritePaths; re-run install.sh to widen it, then this repo will index"
-        UNWRITABLE=$((UNWRITABLE + 1))
+        FAILED=$((FAILED + 1))
         continue
     fi
 
@@ -79,49 +80,50 @@ for NAME in "${!KID_PATHS[@]}"; do
             log "$NAME: initial index complete at $(git rev-parse --short HEAD 2>/dev/null)"
         else
             log "$NAME: initial index failed"
-            DEGRADED=$((DEGRADED + 1))
+            FAILED=$((FAILED + 1))
         fi
         continue
     fi
 
     if ! git fetch origin main --quiet 2>>"$LOG"; then
         log "$NAME: git fetch failed — skipping"
-        DEGRADED=$((DEGRADED + 1))
+        FAILED=$((FAILED + 1))
         continue
     fi
 
     LOCAL=$(git rev-parse HEAD 2>/dev/null)
     REMOTE=$(git rev-parse origin/main 2>/dev/null)
 
-    if [ "$LOCAL" = "$REMOTE" ]; then
-        continue
+    # Only the PULL is gated on new commits.
+    if [ "$LOCAL" != "$REMOTE" ]; then
+        log "$NAME: new commits ${LOCAL:0:7} → ${REMOTE:0:7}, pulling and re-indexing"
+        if ! git pull --ff-only --quiet 2>>"$LOG"; then
+            log "$NAME: git pull --ff-only failed — skipping index"
+            FAILED=$((FAILED + 1))
+            continue
+        fi
     fi
 
-    log "$NAME: new commits ${LOCAL:0:7} → ${REMOTE:0:7}, pulling and re-indexing"
-    if ! git pull --ff-only --quiet 2>>"$LOG"; then
-        log "$NAME: git pull --ff-only failed — skipping index"
-        DEGRADED=$((DEGRADED + 1))
-        continue
-    fi
-
-    # kid index is incremental — only changed files are re-embedded.
+    # The index is NOT gated on new commits. A failed index leaves HEAD already
+    # advanced by the pull, so gating here would strand that repo stale until
+    # some unrelated commit lands — reporting success every tick in between.
+    # kid index is incremental and costs ~0.4s when nothing changed (measured,
+    # flat from 36 to 1120 files), so retrying every tick is cheaper than
+    # tracking which SHA last indexed cleanly.
     if kid index "$PROJECT" >> "$LOG" 2>&1; then
-        log "$NAME: index complete at $(git rev-parse --short HEAD)"
+        # Announce only on a tick that pulled — the every-tick retry would
+        # otherwise log a line per repo per hour and drown the ones that moved.
+        [ "$LOCAL" != "$REMOTE" ] && log "$NAME: index complete at $(git rev-parse --short HEAD)"
     else
         log "$NAME: kid index failed"
-        DEGRADED=$((DEGRADED + 1))
+        FAILED=$((FAILED + 1))
     fi
 done
 
 # Fail loudly: a sandbox that has drifted from the tracked-repo set degrades
 # every review on those repos (no semantic search context) with no other
 # visible symptom, so surface it as a failed unit rather than a log line.
-if [ "$UNWRITABLE" -gt 0 ]; then
-    log "FAILED: $UNWRITABLE repo(s) outside this unit's ReadWritePaths — re-run install.sh to re-render the sandbox from repos.conf"
-fi
-if [ "$DEGRADED" -gt 0 ]; then
-    log "FAILED: $DEGRADED repo(s) left without a fresh index — see the per-repo lines above"
-fi
-if [ $((UNWRITABLE + DEGRADED)) -gt 0 ]; then
+if [ "$FAILED" -gt 0 ]; then
+    log "FAILED: $FAILED repo(s) left without a fresh index — see the per-repo remedies above"
     exit 1
 fi

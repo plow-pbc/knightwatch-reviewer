@@ -370,49 +370,6 @@ assert_auto_excludes "acme/moved" "acme/good-one" "acme/good-two"
 grep -q 'skipping this repo' "$LOG" || { echo "FAIL scenario 10b: expected a per-repo skip line"; cat "$LOG"; exit 1; }
 grep -q 'FAILED: 1 repo(s) skipped' "$LOG" || { echo "FAIL scenario 10b: expected the end-of-sweep skip summary"; cat "$LOG"; exit 1; }
 
-# --- Scenario 10c: a skip must never SHRINK existing coverage ----------------
-# The erase-on-failure pin. Same invariant the kwr_config_valid and
-# `gh repo list` guards protect: a FAILURE must never be published as
-# "this repo is gone". A repo already in the manifest that later fails
-# vouching keeps its entry — exactly as the old whole-sweep abort left it.
-echo "  scenario 10c: already-tracked repo starts failing — entry carried forward, not erased..."
-write_baseline_conf '"acme"'
-rm -f "$AUTO_CONF"
-rm -rf "$HOME/services/kwr-repos/tracked"
-# Tick 1: clean discovery puts acme/tracked in the manifest.
-MOCK_GH_LIST_acme="tracked" run_sync || { echo "FAIL scenario 10c: setup tick exited non-zero"; cat "$LOG"; exit 1; }
-grep -q '"acme/tracked"' "$AUTO_CONF" || { echo "FAIL scenario 10c: setup tick did not publish acme/tracked"; cat "$AUTO_CONF"; exit 1; }
-# Tick 2: its mirror goes bad (transfer leaves a stale origin).
-git -C "$HOME/services/kwr-repos/tracked" remote set-url origin "git@github.com:oldorg/tracked.git"
-if MOCK_GH_LIST_acme="tracked" run_sync; then
-    echo "FAIL scenario 10c: org-sync returned 0 despite a skipped repo"; cat "$LOG"; exit 1
-fi
-grep -q '"acme/tracked"' "$AUTO_CONF" || { echo "FAIL scenario 10c: a failing mirror ERASED its manifest entry — coverage lost on failure"; cat "$AUTO_CONF"; exit 1; }
-grep -q 'keeping its existing manifest entry' "$LOG" || { echo "FAIL scenario 10c: expected the carry-forward log line"; cat "$LOG"; exit 1; }
-
-# --- Scenario 10d: a MULTI-repo all-skip sweep leaves the manifest intact -----
-# The header-only-wipe pin. Distinct from 10c: the baseline is captured after a
-# clean sweep of TWO repos, and both mirrors are then broken, so this exercises
-# the multi-repo all-skip path (KEPT rebuilt entirely from carry-forward) that
-# a single-repo scenario cannot reach.
-echo "  scenario 10d: every repo in a multi-repo sweep skips — manifest byte-identical..."
-write_baseline_conf '"acme"'
-rm -f "$AUTO_CONF"
-rm -rf "$HOME/services/kwr-repos/twin-a" "$HOME/services/kwr-repos/twin-b"
-MOCK_GH_LIST_acme=$'twin-a\ntwin-b' run_sync || { echo "FAIL scenario 10d: setup sweep exited non-zero"; cat "$LOG"; exit 1; }
-grep -q '"acme/twin-a"' "$AUTO_CONF" && grep -q '"acme/twin-b"' "$AUTO_CONF" || { echo "FAIL scenario 10d: setup sweep did not publish both repos"; cat "$AUTO_CONF"; exit 1; }
-# Baseline is the LAST GOOD sweep — captured before anything breaks.
-SHA_BEFORE=$(auto_sha)
-git -C "$HOME/services/kwr-repos/twin-a" remote set-url origin "git@github.com:oldorg/twin-a.git"
-git -C "$HOME/services/kwr-repos/twin-b" remote set-url origin "git@github.com:oldorg/twin-b.git"
-if MOCK_GH_LIST_acme=$'twin-a\ntwin-b' run_sync; then
-    echo "FAIL scenario 10d: org-sync returned 0 with every repo skipped"; cat "$LOG"; exit 1
-fi
-# Byte-identical to the last good sweep already implies both entries survived
-# and the file exists, so a further assert_auto_excludes here could not fail.
-assert_auto_unchanged "$SHA_BEFORE"
-grep -q 'FAILED: 2 repo(s) skipped' "$LOG" || { echo "FAIL scenario 10d: expected both repos in the skip summary"; cat "$LOG"; exit 1; }
-
 # --- Scenario 11: lock contention — concurrent run defers ------------------
 # When the systemd timer fires while an operator's shell-launched run
 # is mid-clone (or vice-versa), the second invocation must skip cleanly
@@ -560,4 +517,4 @@ n=$(count_gh "repo clone")
 grep -q 'github rate-limited — skipping org sync' "$LOG" || { echo "FAIL scenario 15: expected the rate-limit skip log line"; cat "$LOG"; exit 1; }
 
 
-echo "  PASS (18 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, clone-failure-no-mutation, one-bad-mirror-does-not-strand-sweep, skip-carries-coverage-forward, all-skip-leaves-manifest-intact, lock-held-defers, kwr-config-overlay, broken-config-fail-loud, repos-conf-file-override, rate-limit-skips-tick)"
+echo "  PASS (16 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, clone-failure-no-mutation, one-bad-mirror-does-not-strand-sweep, lock-held-defers, kwr-config-overlay, broken-config-fail-loud, repos-conf-file-override, rate-limit-skips-tick)"

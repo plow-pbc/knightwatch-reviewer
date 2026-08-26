@@ -156,37 +156,18 @@ mkdir -p "$KWR_CLONE_ROOT"
 # and keeps sweeping — a single bad mirror must not strand the other 90.
 # The refusals themselves are unchanged; only their blast radius is.
 #
-# A skip must never SHRINK coverage — same invariant the kwr_config_valid
-# and `gh repo list` guards above protect ("would erase auto coverage").
-# So a skipped repo that is already in the manifest is carried forward
-# verbatim, exactly as the previous whole-sweep abort left it; only a repo
-# we have never vouched for is withheld. That also makes a header-only
-# manifest unreachable: if every repo skips, every one carries forward and
-# the file is byte-identical to the last good sweep.
-declare -A PREV=()
-if [ -f "$AUTO_CONF" ]; then
-    while IFS= read -r line; do
-        case "$line" in
-            'REPOS+=("'*'")')
-                entry="${line#REPOS+=(\"}"
-                PREV["${entry%\")}"]=1
-                ;;
-        esac
-    done < "$AUTO_CONF"
-fi
-
+# A skipped repo is simply not published. This manifest feeds host-side kid
+# prior-art clones, NOT review coverage (that comes from ORGS — see
+# README.md § Review coverage), so dropping a repo whose mirror we just
+# refused to trust stops indexing an untrusted checkout rather than losing
+# any review. The sweep exits non-zero until the mirror is fixed, so the
+# omission is loud, and the next clean sweep restores the entry.
 NEW_CLONES=0
 SKIPPED=0
 KEPT=()
 
-# Skip this repo, preserving existing coverage. $1 = org/name, $2 = reason.
-skip_repo() {
-    if [ -n "${PREV[$1]:-}" ]; then
-        log "WARN: $2 — skipping this repo (keeping its existing manifest entry)"
-        KEPT+=("$1")
-    else
-        log "WARN: $2 — skipping this repo (never vouched for; not published)"
-    fi
+skip_repo() {   # $1 = reason
+    log "WARN: $1 — skipping this repo (not published)"
     SKIPPED=$((SKIPPED + 1))
 }
 for full in "${AUTO[@]}"; do
@@ -194,7 +175,7 @@ for full in "${AUTO[@]}"; do
     dest="$KWR_CLONE_ROOT/$name"
     if [ -d "$dest/.git" ]; then
         if ! url=$(git -C "$dest" remote get-url origin 2>/dev/null); then
-            skip_repo "$full" "$dest has no origin remote configured"
+            skip_repo "$dest has no origin remote configured"
             continue
         fi
         # Exact canonical forms only. A leading `*` would let
@@ -207,12 +188,12 @@ for full in "${AUTO[@]}"; do
                 # Usually a transferred/renamed repo whose mirror still holds
                 # the pre-transfer URL: `git -C "$dest" remote set-url origin
                 # https://github.com/$full.git` after confirming the move.
-                skip_repo "$full" "$dest origin does not match github.com/$full — refusing to overwrite"
+                skip_repo "$dest origin does not match github.com/$full — refusing to overwrite"
                 continue
                 ;;
         esac
     elif [ -e "$dest" ]; then
-        skip_repo "$full" "$dest exists but is not a git checkout — refusing to clobber"
+        skip_repo "$dest exists but is not a git checkout — refusing to clobber"
         continue
     else
         log "cloning $full → $dest"
@@ -221,7 +202,7 @@ for full in "${AUTO[@]}"; do
             # next tick's matching-origin branch would treat it as a
             # complete clone and publish an empty checkout. Clean up.
             rm -rf "$dest"
-            skip_repo "$full" "gh repo clone $full failed (cleaned up partial $dest)"
+            skip_repo "gh repo clone $full failed (cleaned up partial $dest)"
             continue
         fi
         NEW_CLONES=$((NEW_CLONES + 1))

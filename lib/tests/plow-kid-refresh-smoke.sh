@@ -133,7 +133,11 @@ n=$(count_kid)
 grep -q "KID index $PROJ" "$STUB_KID_LOG" || { echo "FAIL scenario 3: kid index call shape wrong"; cat "$STUB_KID_LOG"; exit 1; }
 
 # Scenario 4: .git + .keepitdry, no new commits (LOCAL == REMOTE) → no-op.
-echo "  scenario 4: no new commits — no-op tick, no kid call..."
+# The index is deliberately NOT gated on new commits: a failed index leaves HEAD
+# already advanced by the pull, so gating it would strand that repo stale until
+# some unrelated commit landed, reporting success every tick in between. So an
+# unchanged tick still re-indexes (kid is incremental) but must not re-pull.
+echo "  scenario 4: no new commits — no pull, but the index still retries..."
 PROJ="$TMPDIR/proj-current"
 mkdir -p "$PROJ/.git" "$PROJ/.keepitdry"
 cat > "$STATE_DIR/repos.conf" <<CONF
@@ -142,7 +146,27 @@ declare -A KID_PATHS=([acme/current]="$PROJ")
 CONF
 MOCK_GIT_LOCAL_SHA=samesame MOCK_GIT_REMOTE_SHA=samesame run_refresh
 n=$(count_kid)
-[ "$n" -eq 0 ] || { echo "FAIL scenario 4: expected 0 kid calls (no new commits), got $n"; cat "$STUB_KID_LOG"; exit 1; }
+[ "$n" -eq 1 ] || { echo "FAIL scenario 4: expected 1 kid call (index retries on an unchanged tick), got $n"; cat "$STUB_KID_LOG"; exit 1; }
+grep -q '^GIT pull' "$STUB_GIT_LOG" && { echo "FAIL scenario 4: pulled with no new commits"; cat "$STUB_GIT_LOG"; exit 1; }
+[ "$REFRESH_RC" -eq 0 ] || { echo "FAIL scenario 4: healthy unchanged tick reported failure"; cat "$LOG"; exit 1; }
+
+# Scenario 4b: the stale-index seam itself — an index that failed on the tick
+# that pulled must retry on the NEXT tick, when LOCAL == REMOTE again.
+echo "  scenario 4b: index failed after a pull — retries next tick, not stranded..."
+PROJ="$TMPDIR/proj-retry"
+mkdir -p "$PROJ/.git" "$PROJ/.keepitdry"
+cat > "$STATE_DIR/repos.conf" <<CONF
+REPOS=("acme/retry")
+declare -A KID_PATHS=([acme/retry]="$PROJ")
+CONF
+# Tick 1: new commits, pull succeeds, index FAILS → unit must report failure.
+MOCK_GIT_LOCAL_SHA=oldsha MOCK_GIT_REMOTE_SHA=newsha MOCK_KID_EXIT=1 run_refresh
+[ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 4b: index failure on the pulling tick reported success"; cat "$LOG"; exit 1; }
+# Tick 2: HEAD already advanced, so LOCAL == REMOTE — the index must still run.
+MOCK_GIT_LOCAL_SHA=newsha MOCK_GIT_REMOTE_SHA=newsha run_refresh
+n=$(count_kid)
+[ "$n" -eq 1 ] || { echo "FAIL scenario 4b: index not retried after the advanced HEAD made LOCAL == REMOTE — stale forever"; cat "$STUB_KID_LOG"; exit 1; }
+[ "$REFRESH_RC" -eq 0 ] || { echo "FAIL scenario 4b: recovery tick still reported failure"; cat "$LOG"; exit 1; }
 
 # Scenario 5: .git + .keepitdry, new commits (LOCAL != REMOTE) → pull + index.
 echo "  scenario 5: new commits — pull + kid index..."
@@ -198,4 +222,4 @@ MOCK_KID_EXIT=1 run_refresh
 grep -q 'initial index failed' "$LOG" || { echo "FAIL scenario 7: expected the index-failure log line"; cat "$LOG"; exit 1; }
 [ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 7: refresh exited 0 with a repo left un-indexed"; cat "$LOG"; exit 1; }
 
-echo "  PASS (7 scenarios: empty-noop, missing-checkout-tolerated-not-alarmed, bootstrap-on-no-.keepitdry, no-new-commits-noop, new-commits-pull-then-index, unwritable-project-skipped-loudly, index-failure-is-not-success)"
+echo "  PASS (8 scenarios: empty-noop, missing-checkout-tolerated-not-alarmed, bootstrap-on-no-.keepitdry, unchanged-tick-retries-index, failed-index-retries-next-tick, new-commits-pull-then-index, unwritable-project-skipped-loudly, index-failure-is-not-success)"
