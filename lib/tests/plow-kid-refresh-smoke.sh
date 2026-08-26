@@ -176,7 +176,17 @@ MOCK_GIT_LOCAL_SHA=oldsha MOCK_GIT_REMOTE_SHA=newsha MOCK_KID_EXIT=1 run_refresh
 # On failure the chatter IS the diagnostic — scenario 6 exists because a bare
 # chromadb traceback under "initial index failed" was the missing one.
 grep -q 'KID_CHATTER' "$LOG" || { echo "FAIL scenario 4b: kid output dropped on a FAILED index — the diagnostic is gone"; cat "$LOG"; exit 1; }
-# Tick 2: HEAD already advanced, so LOCAL == REMOTE — the index must still run.
+# Tick 2: still failing, but HEAD has already advanced so LOCAL == REMOTE. This
+# is the STEADY STATE the retry seam creates — a repo whose index keeps failing
+# re-runs every hour with no pull — so the failure branch has to keep kid's
+# output here, where the pull branch can't be what's producing it. Without this
+# tick, gating the copy on the pull alone would leave every scenario green
+# while the traceback vanished after the first failure.
+MOCK_GIT_LOCAL_SHA=newsha MOCK_GIT_REMOTE_SHA=newsha MOCK_KID_EXIT=1 run_refresh
+[ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 4b: repeat failure on an unchanged tick reported success"; cat "$LOG"; exit 1; }
+grep -q 'KID_CHATTER' "$LOG" || { echo "FAIL scenario 4b: kid output dropped on an UNCHANGED failing tick — the diagnostic is gone on every tick after the first"; cat "$LOG"; exit 1; }
+
+# Tick 3: kid recovers — index runs and the unit goes green again.
 MOCK_GIT_LOCAL_SHA=newsha MOCK_GIT_REMOTE_SHA=newsha run_refresh
 n=$(count_kid)
 [ "$n" -eq 1 ] || { echo "FAIL scenario 4b: index not retried after the advanced HEAD made LOCAL == REMOTE — stale forever"; cat "$STUB_KID_LOG"; exit 1; }
@@ -195,6 +205,11 @@ n=$(count_kid)
 [ "$n" -eq 1 ] || { echo "FAIL scenario 5: expected 1 kid call (incremental), got $n"; cat "$STUB_KID_LOG"; exit 1; }
 grep -q '^GIT pull --ff-only' "$STUB_GIT_LOG" || { echo "FAIL scenario 5: expected 'git pull' before index"; cat "$STUB_GIT_LOG"; exit 1; }
 grep -q "KID index $PROJ" "$STUB_KID_LOG" || { echo "FAIL scenario 5: kid index call shape wrong"; cat "$STUB_KID_LOG"; exit 1; }
+# Fourth and last cell of the output-routing matrix (scenario 4 pins
+# unchanged+success=drop, 4b pins both failing ticks=keep): a tick that pulled
+# keeps kid's "Indexed N files" line, which is the per-re-index detail #227's
+# budget work reads.
+grep -q 'KID_CHATTER' "$LOG" || { echo "FAIL scenario 5: kid output dropped on a tick that pulled"; cat "$LOG"; exit 1; }
 
 # Scenario 6: project dir not writable → skipped with an actionable line, kid
 # never invoked, unit exits non-zero.
