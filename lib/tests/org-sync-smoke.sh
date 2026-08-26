@@ -390,16 +390,27 @@ fi
 grep -q '"acme/tracked"' "$AUTO_CONF" || { echo "FAIL scenario 10c: a failing mirror ERASED its manifest entry — coverage lost on failure"; cat "$AUTO_CONF"; exit 1; }
 grep -q 'keeping its existing manifest entry' "$LOG" || { echo "FAIL scenario 10c: expected the carry-forward log line"; cat "$LOG"; exit 1; }
 
-# --- Scenario 10d: every repo skipping leaves the manifest byte-identical -----
-# The header-only-wipe pin: if the whole sweep skips, carry-forward makes the
-# rewrite a no-op rather than publishing an empty coverage set.
-echo "  scenario 10d: all repos skip — manifest unchanged, not wiped to a header..."
+# --- Scenario 10d: a MULTI-repo all-skip sweep leaves the manifest intact -----
+# The header-only-wipe pin. Distinct from 10c: the baseline is captured after a
+# clean sweep of TWO repos, and both mirrors are then broken, so this exercises
+# the multi-repo all-skip path (KEPT rebuilt entirely from carry-forward) that
+# a single-repo scenario cannot reach.
+echo "  scenario 10d: every repo in a multi-repo sweep skips — manifest byte-identical..."
+write_baseline_conf '"acme"'
+rm -f "$AUTO_CONF"
+rm -rf "$HOME/services/kwr-repos/twin-a" "$HOME/services/kwr-repos/twin-b"
+MOCK_GH_LIST_acme=$'twin-a\ntwin-b' run_sync || { echo "FAIL scenario 10d: setup sweep exited non-zero"; cat "$LOG"; exit 1; }
+grep -q '"acme/twin-a"' "$AUTO_CONF" && grep -q '"acme/twin-b"' "$AUTO_CONF" || { echo "FAIL scenario 10d: setup sweep did not publish both repos"; cat "$AUTO_CONF"; exit 1; }
+# Baseline is the LAST GOOD sweep — captured before anything breaks.
 SHA_BEFORE=$(auto_sha)
-if MOCK_GH_LIST_acme="tracked" run_sync; then
-    echo "FAIL scenario 10d: org-sync returned 0 despite a skipped repo"; cat "$LOG"; exit 1
+git -C "$HOME/services/kwr-repos/twin-a" remote set-url origin "git@github.com:oldorg/twin-a.git"
+git -C "$HOME/services/kwr-repos/twin-b" remote set-url origin "git@github.com:oldorg/twin-b.git"
+if MOCK_GH_LIST_acme=$'twin-a\ntwin-b' run_sync; then
+    echo "FAIL scenario 10d: org-sync returned 0 with every repo skipped"; cat "$LOG"; exit 1
 fi
 assert_auto_unchanged "$SHA_BEFORE"
-grep -q '"acme/tracked"' "$AUTO_CONF" || { echo "FAIL scenario 10d: manifest wiped to header-only"; cat "$AUTO_CONF"; exit 1; }
+assert_auto_excludes "acme/never-vouched" "acme/twin-a" "acme/twin-b"
+grep -q 'FAILED: 2 repo(s) skipped' "$LOG" || { echo "FAIL scenario 10d: expected both repos in the skip summary"; cat "$LOG"; exit 1; }
 
 # --- Scenario 11: lock contention — concurrent run defers ------------------
 # When the systemd timer fires while an operator's shell-launched run

@@ -40,12 +40,16 @@ DEGRADED=0
 for NAME in "${!KID_PATHS[@]}"; do
     PROJECT="${KID_PATHS[$NAME]}"
 
+    # Reachable in normal operation: org-sync carries a repo's manifest entry
+    # forward when its re-clone fails, so KID_PATHS can name a dir with no
+    # .git until the next sweep succeeds. Un-indexed either way — tally it.
     if [ ! -d "$PROJECT/.git" ]; then
         log "$NAME: checkout missing or not a git repo ($PROJECT) — skipping"
+        DEGRADED=$((DEGRADED + 1))
         continue
     fi
 
-    cd "$PROJECT" || { log "$NAME: cd $PROJECT failed"; continue; }
+    cd "$PROJECT" || { log "$NAME: cd $PROJECT failed"; DEGRADED=$((DEGRADED + 1)); continue; }
 
     # kid writes its index to $PROJECT/.keepitdry, but this unit runs under
     # ProtectHome=read-only with a per-repo ReadWritePaths allowlist that
