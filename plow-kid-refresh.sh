@@ -1,8 +1,8 @@
 #!/bin/bash
 # Refresh kid indexes for all tracked review repos. Runs hourly via the
-# pr-reviewer-kid-refresh.timer systemd unit. The PULL is gated on new commits;
-# the index re-runs every tick so a failed one retries (see the seam below). If
-# a project has never been indexed, this does a bootstrap index on first run.
+# pr-reviewer-kid-refresh.timer systemd unit. A repo is indexed iff its index
+# is not already built from the checked-out commit — so a never-indexed repo
+# bootstraps, a moved repo re-indexes, and a FAILED index retries next tick.
 #
 # Naming note: this file is still called plow-kid-refresh.sh for historical
 # reasons (it predates multi-repo support). It now refreshes every kid index
@@ -15,6 +15,10 @@ set -u
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 LOG="${LOG:-$STATE_DIR/plow-kid-refresh.log}"
 LOCK="${LOCK:-/tmp/plow-kid-refresh.lock}"
+# Bound each repo's index so one that cannot finish can't consume the unit's
+# whole TimeoutStartSec and strand every repo after it — the failure isolation
+# this script exists to provide. A repo that trips this lands in FAILED.
+KID_INDEX_TIMEOUT="${KID_INDEX_TIMEOUT:-300}"
 
 # Tracked-repo manifest — same KID_PATHS this script's siblings use.
 # The refresh iterates every entry; a repo that hasn't been indexed
@@ -72,19 +76,6 @@ for NAME in "${!KID_PATHS[@]}"; do
         continue
     fi
 
-    # Bootstrap: no .keepitdry yet → first-time indexing. Do a full index
-    # now against whatever's checked out; don't bother pulling this tick.
-    if [ ! -d "$PROJECT/.keepitdry" ]; then
-        log "$NAME: no index present, bootstrapping initial index (may take a while)..."
-        if kid index "$PROJECT" >> "$LOG" 2>&1; then
-            log "$NAME: initial index complete at $(git rev-parse --short HEAD 2>/dev/null)"
-        else
-            log "$NAME: initial index failed"
-            FAILED=$((FAILED + 1))
-        fi
-        continue
-    fi
-
     if ! git fetch origin main --quiet 2>>"$LOG"; then
         log "$NAME: git fetch failed — skipping"
         FAILED=$((FAILED + 1))
@@ -94,9 +85,8 @@ for NAME in "${!KID_PATHS[@]}"; do
     LOCAL=$(git rev-parse HEAD 2>/dev/null)
     REMOTE=$(git rev-parse origin/main 2>/dev/null)
 
-    # Only the PULL is gated on new commits.
     if [ "$LOCAL" != "$REMOTE" ]; then
-        log "$NAME: new commits ${LOCAL:0:7} → ${REMOTE:0:7}, pulling and re-indexing"
+        log "$NAME: new commits ${LOCAL:0:7} → ${REMOTE:0:7}, pulling"
         if ! git pull --ff-only --quiet 2>>"$LOG"; then
             log "$NAME: git pull --ff-only failed — skipping index"
             FAILED=$((FAILED + 1))
@@ -104,31 +94,23 @@ for NAME in "${!KID_PATHS[@]}"; do
         fi
     fi
 
-    # The index is NOT gated on new commits. A failed index leaves HEAD already
-    # advanced by the pull, so gating here would strand that repo stale until
-    # some unrelated commit lands — reporting success every tick in between.
-    # kid index is incremental: measured in this unit's own environment, a
-    # fully-indexed repo re-runs in ~0.7s, flat from 7 to 153 files (~1min
-    # across the tracked set), so retrying is cheaper than tracking which SHA
-    # last indexed cleanly.
-    #
-    # kid's own chatter goes to a temp file, not straight to $LOG: on an
-    # unchanged tick it prints a "Skipped N unchanged files" line, and at one
-    # per repo per tick that would bury the per-repo remedies the final summary
-    # points at — in a log nothing rotates. Keep it only when it says something
-    # ($LOG-worthy): a failure, or a tick that actually pulled.
-    KID_OUT=$(mktemp)
-    if kid index "$PROJECT" > "$KID_OUT" 2>&1; then
-        if [ "$LOCAL" != "$REMOTE" ]; then
-            cat "$KID_OUT" >> "$LOG"
-            log "$NAME: index complete at $(git rev-parse --short HEAD)"
-        fi
+    # Index iff the index is not already built from this exact commit.
+    # Comparing against the INDEX's recorded SHA rather than the CHECKOUT's is
+    # the whole fix: a failed index leaves the pull's HEAD already advanced, so
+    # a checkout-SHA gate saw "nothing to do" forever after and served stale
+    # prior art while exiting 0. An absent marker means never indexed, so this
+    # one comparison also covers the bootstrap case.
+    HEAD_SHA=$(git rev-parse HEAD 2>/dev/null)
+    SHA_FILE="$PROJECT/.keepitdry/.indexed-sha"
+    [ "$(cat "$SHA_FILE" 2>/dev/null)" = "$HEAD_SHA" ] && continue
+
+    if timeout "$KID_INDEX_TIMEOUT" kid index "$PROJECT" >> "$LOG" 2>&1; then
+        echo "$HEAD_SHA" > "$SHA_FILE"
+        log "$NAME: index complete at ${HEAD_SHA:0:7}"
     else
-        cat "$KID_OUT" >> "$LOG"
-        log "$NAME: kid index failed"
+        log "$NAME: kid index failed (or exceeded ${KID_INDEX_TIMEOUT}s)"
         FAILED=$((FAILED + 1))
     fi
-    rm -f "$KID_OUT"
 done
 
 if [ "$FAILED" -gt 0 ]; then

@@ -13,11 +13,11 @@
 #      log line, no `kid index` call.
 #   3. KID_PATHS entry pointing to a .git dir with NO .keepitdry → bootstrap
 #      `kid index` call (initial-index path).
-#   4. KID_PATHS entry pointing to .git + .keepitdry, no new commits
-#      (LOCAL == REMOTE) → no `git pull`, but the index still re-runs.
-#   4b. Index fails on the tick that pulled → retries on the next tick, when
-#      the already-advanced HEAD makes LOCAL == REMOTE again (the stale-index
-#      seam: gating the index on new commits stranded it silently).
+#   4. Index already recorded as built from HEAD → no `kid index` call.
+#   4b. Index fails → the SHA marker is NOT advanced, so the next tick retries
+#      even though LOCAL == REMOTE (the stale-index seam: gating on the
+#      CHECKOUT's SHA stranded a failed index silently, because the pull had
+#      already advanced HEAD).
 #   5. KID_PATHS entry pointing to .git + .keepitdry, new commits
 #      (LOCAL != REMOTE) → `git pull` then `kid index` call.
 
@@ -43,14 +43,10 @@ export PATH="$HOME/.local/bin:$PATH"
 export STUB_KID_LOG="$STATE_DIR/kid-calls.log"
 export STUB_GIT_LOG="$STATE_DIR/git-calls.log"
 
-# Stub `kid` — log every invocation, and emit chatter on stdout the way real
-# kid does ("Indexed 0 files ... Skipped N unchanged files" even on a no-op
-# run). The chatter is what lets the scenarios below pin WHERE that output
-# lands: dropped on an unchanged successful tick, kept on a pull or a failure.
+# Stub `kid` — log every invocation.
 cat > "$HOME/.local/bin/kid" <<'STUB'
 #!/bin/bash
 echo "KID $*" >> "${STUB_KID_LOG:-/dev/null}"
-echo "KID_CHATTER for $*"
 exit "${MOCK_KID_EXIT:-0}"
 STUB
 chmod +x "$HOME/.local/bin/kid"
@@ -140,57 +136,46 @@ n=$(count_kid)
 grep -q "KID index $PROJ" "$STUB_KID_LOG" || { echo "FAIL scenario 3: kid index call shape wrong"; cat "$STUB_KID_LOG"; exit 1; }
 
 # Scenario 4: .git + .keepitdry, no new commits (LOCAL == REMOTE) → no-op.
-# The index is deliberately NOT gated on new commits: a failed index leaves HEAD
-# already advanced by the pull, so gating it would strand that repo stale until
-# some unrelated commit landed, reporting success every tick in between. So an
-# unchanged tick still re-indexes (kid is incremental) but must not re-pull.
-echo "  scenario 4: no new commits — no pull, but the index still retries..."
+# Scenario 4: the index is already recorded as built from HEAD → nothing to do.
+echo "  scenario 4: index already current for HEAD — no kid call..."
 PROJ="$TMPDIR/proj-current"
 mkdir -p "$PROJ/.git" "$PROJ/.keepitdry"
+echo "samesame" > "$PROJ/.keepitdry/.indexed-sha"
 cat > "$STATE_DIR/repos.conf" <<CONF
 REPOS=("acme/current")
 declare -A KID_PATHS=([acme/current]="$PROJ")
 CONF
 MOCK_GIT_LOCAL_SHA=samesame MOCK_GIT_REMOTE_SHA=samesame run_refresh
 n=$(count_kid)
-[ "$n" -eq 1 ] || { echo "FAIL scenario 4: expected 1 kid call (index retries on an unchanged tick), got $n"; cat "$STUB_KID_LOG"; exit 1; }
-grep -q '^GIT pull' "$STUB_GIT_LOG" && { echo "FAIL scenario 4: pulled with no new commits"; cat "$STUB_GIT_LOG"; exit 1; }
-[ "$REFRESH_RC" -eq 0 ] || { echo "FAIL scenario 4: healthy unchanged tick reported failure"; cat "$LOG"; exit 1; }
-# kid's own chatter is dropped on a quiet successful tick — at one line per repo
-# per hour into an unrotated log it would bury the per-repo remedies the final
-# summary points at.
-grep -q 'KID_CHATTER' "$LOG" && { echo "FAIL scenario 4: kid chatter reached \$LOG on an unchanged successful tick"; cat "$LOG"; exit 1; }
+[ "$n" -eq 0 ] || { echo "FAIL scenario 4: expected 0 kid calls (index already at HEAD), got $n"; cat "$STUB_KID_LOG"; exit 1; }
+[ "$REFRESH_RC" -eq 0 ] || { echo "FAIL scenario 4: healthy no-op tick reported failure"; cat "$LOG"; exit 1; }
 
-# Scenario 4b: the stale-index seam itself — an index that failed on the tick
-# that pulled must retry on the NEXT tick, when LOCAL == REMOTE again.
-echo "  scenario 4b: index failed after a pull — retries next tick, not stranded..."
+# Scenario 4b: the stale-index seam. A failed index must not advance the marker,
+# so the NEXT tick retries even though the pull already made LOCAL == REMOTE.
+# Gating on the checkout's SHA (what this replaced) stranded such a repo stale
+# forever while the unit exited 0.
+echo "  scenario 4b: failed index doesn't advance the marker — retries next tick..."
 PROJ="$TMPDIR/proj-retry"
 mkdir -p "$PROJ/.git" "$PROJ/.keepitdry"
 cat > "$STATE_DIR/repos.conf" <<CONF
 REPOS=("acme/retry")
 declare -A KID_PATHS=([acme/retry]="$PROJ")
 CONF
-# Tick 1: new commits, pull succeeds, index FAILS → unit must report failure.
+# Tick 1: new commits, pull succeeds (advancing HEAD), index FAILS.
 MOCK_GIT_LOCAL_SHA=oldsha MOCK_GIT_REMOTE_SHA=newsha MOCK_KID_EXIT=1 run_refresh
-[ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 4b: index failure on the pulling tick reported success"; cat "$LOG"; exit 1; }
-# On failure the chatter IS the diagnostic — scenario 6 exists because a bare
-# chromadb traceback under "initial index failed" was the missing one.
-grep -q 'KID_CHATTER' "$LOG" || { echo "FAIL scenario 4b: kid output dropped on a FAILED index — the diagnostic is gone"; cat "$LOG"; exit 1; }
-# Tick 2: still failing, but HEAD has already advanced so LOCAL == REMOTE. This
-# is the STEADY STATE the retry seam creates — a repo whose index keeps failing
-# re-runs every hour with no pull — so the failure branch has to keep kid's
-# output here, where the pull branch can't be what's producing it. Without this
-# tick, gating the copy on the pull alone would leave every scenario green
-# while the traceback vanished after the first failure.
-MOCK_GIT_LOCAL_SHA=newsha MOCK_GIT_REMOTE_SHA=newsha MOCK_KID_EXIT=1 run_refresh
-[ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 4b: repeat failure on an unchanged tick reported success"; cat "$LOG"; exit 1; }
-grep -q 'KID_CHATTER' "$LOG" || { echo "FAIL scenario 4b: kid output dropped on an UNCHANGED failing tick — the diagnostic is gone on every tick after the first"; cat "$LOG"; exit 1; }
-
-# Tick 3: kid recovers — index runs and the unit goes green again.
+[ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 4b: failed index reported success"; cat "$LOG"; exit 1; }
+[ ! -f "$PROJ/.keepitdry/.indexed-sha" ] || { echo "FAIL scenario 4b: marker advanced despite a FAILED index — the retry is lost"; exit 1; }
+# Tick 2: HEAD has advanced, so LOCAL == REMOTE and the old checkout-SHA gate
+# would skip — but the marker is still absent, so this must retry.
 MOCK_GIT_LOCAL_SHA=newsha MOCK_GIT_REMOTE_SHA=newsha run_refresh
 n=$(count_kid)
-[ "$n" -eq 1 ] || { echo "FAIL scenario 4b: index not retried after the advanced HEAD made LOCAL == REMOTE — stale forever"; cat "$STUB_KID_LOG"; exit 1; }
+[ "$n" -eq 1 ] || { echo "FAIL scenario 4b: index not retried on an unchanged tick — stranded stale forever"; cat "$STUB_KID_LOG"; exit 1; }
 [ "$REFRESH_RC" -eq 0 ] || { echo "FAIL scenario 4b: recovery tick still reported failure"; cat "$LOG"; exit 1; }
+[ "$(cat "$PROJ/.keepitdry/.indexed-sha")" = "newsha" ] || { echo "FAIL scenario 4b: marker not written after a successful index"; exit 1; }
+# Tick 3: marker now matches HEAD → quiet.
+MOCK_GIT_LOCAL_SHA=newsha MOCK_GIT_REMOTE_SHA=newsha run_refresh
+n=$(count_kid)
+[ "$n" -eq 0 ] || { echo "FAIL scenario 4b: re-indexed a repo whose marker already matches HEAD, got $n calls"; cat "$STUB_KID_LOG"; exit 1; }
 
 # Scenario 5: .git + .keepitdry, new commits (LOCAL != REMOTE) → pull + index.
 echo "  scenario 5: new commits — pull + kid index..."
@@ -205,11 +190,6 @@ n=$(count_kid)
 [ "$n" -eq 1 ] || { echo "FAIL scenario 5: expected 1 kid call (incremental), got $n"; cat "$STUB_KID_LOG"; exit 1; }
 grep -q '^GIT pull --ff-only' "$STUB_GIT_LOG" || { echo "FAIL scenario 5: expected 'git pull' before index"; cat "$STUB_GIT_LOG"; exit 1; }
 grep -q "KID index $PROJ" "$STUB_KID_LOG" || { echo "FAIL scenario 5: kid index call shape wrong"; cat "$STUB_KID_LOG"; exit 1; }
-# Fourth and last cell of the output-routing matrix (scenario 4 pins
-# unchanged+success=drop, 4b pins both failing ticks=keep): a tick that pulled
-# keeps kid's "Indexed N files" line, which is the per-re-index detail #227's
-# budget work reads.
-grep -q 'KID_CHATTER' "$LOG" || { echo "FAIL scenario 5: kid output dropped on a tick that pulled"; cat "$LOG"; exit 1; }
 
 # Scenario 6: project dir not writable → skipped with an actionable line, kid
 # never invoked, unit exits non-zero.
@@ -218,7 +198,7 @@ grep -q 'KID_CHATTER' "$LOG" || { echo "FAIL scenario 5: kid output dropped on a
 # INSTALL time, while org-sync grows the tracked set hourly. A repo discovered
 # since the last install is outside the sandbox, so kid's chromadb bootstrap
 # died with a bare "Read-only file system (os error 30)" traceback under a log
-# line that only said "initial index failed" — 43 of 79 PRs reviewed in 24h
+# line that only said the index failed — 43 of 79 PRs reviewed in 24h
 # had no semantic index and nothing said so.
 echo "  scenario 6: project outside the sandbox — skipped loudly, no kid call, non-zero exit..."
 PROJ="$TMPDIR/proj-readonly"
@@ -248,7 +228,7 @@ REPOS=("acme/kidfail")
 declare -A KID_PATHS=([acme/kidfail]="$PROJ")
 CONF
 MOCK_KID_EXIT=1 run_refresh
-grep -q 'initial index failed' "$LOG" || { echo "FAIL scenario 7: expected the index-failure log line"; cat "$LOG"; exit 1; }
+grep -q 'kid index failed' "$LOG" || { echo "FAIL scenario 7: expected the index-failure log line"; cat "$LOG"; exit 1; }
 [ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 7: refresh exited 0 with a repo left un-indexed"; cat "$LOG"; exit 1; }
 
-echo "  PASS (8 scenarios: empty-noop, missing-checkout-tolerated-not-alarmed, bootstrap-on-no-.keepitdry, unchanged-tick-retries-index, failed-index-retries-next-tick, new-commits-pull-then-index, unwritable-project-skipped-loudly, index-failure-is-not-success)"
+echo "  PASS (8 scenarios: empty-noop, missing-checkout-tolerated-not-alarmed, bootstrap-on-no-.keepitdry, index-current-is-a-noop, failed-index-retries-next-tick, new-commits-pull-then-index, unwritable-project-skipped-loudly, index-failure-is-not-success)"
