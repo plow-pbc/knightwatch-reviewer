@@ -74,23 +74,8 @@ gh_retry() {
     local errfile out rc
     errfile=$(mktemp)
     while :; do
-        # Tally every ATTEMPT — a retry is another real request against the same
-        # budget, so counting calls instead would under-report the hot paths.
-        gh_tally_call "$@"
         if out=$(command gh "$@" 2>"$errfile"); then
             cat "$errfile" >&2          # preserve any success-time gh warnings
-            # Drain the window HERE, for the same reason it is filled here: every
-            # gh call in the repo routes through this function, so one call site
-            # covers every producer — container and host — by construction. The
-            # five entrypoint calls this replaces had to be held in sync by a
-            # source-shape test, which was the tell that the ownership sat in the
-            # wrong place. Self-throttled by its own stamp file, so the hot path
-            # pays a stat and an integer compare, not a probe.
-            # NOT stdout — that is the API result the caller captures — and not
-            # bare fd 2 either, for the errfile-truncation reason above. `|| true`
-            # because callers run set -e and a headroom line is never worth
-            # aborting a call that succeeded.
-            gh_quota_report >&"${GH_DIAG_FD:-2}" || true
             printf '%s' "$out"
             rm -f "$errfile"
             return 0

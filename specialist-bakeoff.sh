@@ -51,6 +51,8 @@ require_repos
 # scan below anchors on. Same definition the trigger/vouch/staging selectors use.
 . "$REVIEWER_LIB_DIR/gh-comments.sh"
 
+log() { echo "[$(date -u +%FT%TZ)] $*" >> "$LOG_FILE"; }
+
 store_init "$DB_FILE"
 
 SUBSTANTIVE_REVIEW_JQ='.user.login == $bot_user

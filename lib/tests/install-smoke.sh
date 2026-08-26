@@ -183,29 +183,18 @@ done
 # A DIRECTORY at that path is docker's auto-create outcome, and install must
 # refuse it rather than write gh-rate-limited-until/null and exit 0 having
 # "created" a pause file that is still a directory.
-# Both shared host files, one body: the tally rides the same bind trick for the
-# same reason (the two halves spend one PAT), so an auto-created DIRECTORY at
-# either path silently drops what the bind exists to share — a pause for one, and
-# every host-side call sample for the other.
-for _shared in gh-rate-limited-until gh-call-tally; do
-    # Existence FIRST: without it a missing file makes the `mv` below abort the
-    # suite on a raw "cannot stat", which is a real failure reported as a mystery.
-    [ -f "$INSTALL_DIR/$_shared" ] \
-        || { echo "FAIL scenario 1: install.sh did not create $INSTALL_DIR/$_shared — docker would auto-create the bind source as a DIRECTORY and silently drop everything written through it"; exit 1; }
-    mv "$INSTALL_DIR/$_shared" "$INSTALL_DIR/.shared-bak"
-    mkdir "$INSTALL_DIR/$_shared"
-    run_install "$SHARED_OVERLAY/install.sh" \
-        && { echo "FAIL scenario 1: install.sh accepted a DIRECTORY at $_shared — docker's auto-create outcome, which silently drops everything written through it"; exit 1; }
-    rmdir "$INSTALL_DIR/$_shared"
-    mv "$INSTALL_DIR/.shared-bak" "$INSTALL_DIR/$_shared"
+mv "$INSTALL_DIR/gh-rate-limited-until" "$INSTALL_DIR/.pause-bak"
+mkdir "$INSTALL_DIR/gh-rate-limited-until"
+run_install "$SHARED_OVERLAY/install.sh" \
+    && { echo "FAIL scenario 1: install.sh accepted a DIRECTORY at the pause path — every reader would see never-paused forever"; exit 1; }
+rmdir "$INSTALL_DIR/gh-rate-limited-until"
+mv "$INSTALL_DIR/.pause-bak" "$INSTALL_DIR/gh-rate-limited-until"
 
-    [ -f "$INSTALL_DIR/$_shared" ] \
-        || { echo "FAIL scenario 1: $INSTALL_DIR/$_shared missing — docker would bind a DIRECTORY over it"; exit 1; }
-    _mode=$(stat -c '%a' "$INSTALL_DIR/$_shared" 2>/dev/null || echo missing)
-    [ "$_mode" = "666" ] \
-        || { echo "FAIL scenario 1: $_shared is mode $_mode, not 666 — one of the two UIDs that share it cannot write it"; exit 1; }
-done
-
+[ -f "$INSTALL_DIR/gh-rate-limited-until" ] \
+    || { echo "FAIL scenario 1: $INSTALL_DIR/gh-rate-limited-until missing — docker would bind a DIRECTORY over it and the fleet would never see a pause"; exit 1; }
+PAUSE_MODE=$(stat -c '%a' "$INSTALL_DIR/gh-rate-limited-until" 2>/dev/null || echo missing)
+[ "$PAUSE_MODE" = "666" ] \
+    || { echo "FAIL scenario 1: pause file is mode $PAUSE_MODE, not 666 — one of the two UIDs that share it cannot write it"; exit 1; }
 DIR_MODE=$(stat -c '%a' "$INSTALL_DIR" 2>/dev/null || echo missing)
 [ "$DIR_MODE" = "700" ] \
     || { echo "FAIL scenario 1: $INSTALL_DIR is mode $DIR_MODE, not 700 — the 0666 pause file inside it becomes writable by any local user"; exit 1; }
