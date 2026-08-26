@@ -35,10 +35,15 @@ source "$REVIEWER_LIB_DIR/state-io.sh"
 # would redirect lib and prompt resolution and every gh_*_file() in this loop.
 # Same re-pin the MAX_CONCURRENT/WAIT_FOR_WORKERS lines below already do, and
 # the same hazard REVIEWER_CONTAINER_MODE exists for.
-_KWR_STATE_DIR="${STATE_DIR:-}"
+# STATE_DIR is pinned UNCONDITIONALLY, and fails loud when absent. A conditional
+# restore re-asserts nothing when it arrives unset — and compose also sets
+# CONFIG_ENV_FILE and REPOS_CONF_FILE, so the loader never dereferences
+# ${STATE_DIR} and `set -u` would not catch it either; a config.env STATE_DIR
+# would then silently win and point gh_pause_file() at a private path, leaving
+# this loop blind to the fleet-wide pause it gates every tick on.
+_KWR_STATE_DIR="${STATE_DIR:?review-loop.sh requires STATE_DIR from the compose environment}"
 source "$REVIEWER_LIB_DIR/tracked-repos.sh"
-export REVIEWER_LIB_DIR="$(pwd)/lib" PROMPTS_DIR="$(pwd)/prompts"
-[ -n "$_KWR_STATE_DIR" ] && export STATE_DIR="$_KWR_STATE_DIR"
+export REVIEWER_LIB_DIR="$(pwd)/lib" PROMPTS_DIR="$(pwd)/prompts" STATE_DIR="$_KWR_STATE_DIR"
 unset _KWR_STATE_DIR
 POLL_SECS="${POLL_SECS:-30}"
 # Time floor for refreshing the eligible-PR queue GLOBALLY: one container per

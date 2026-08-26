@@ -788,10 +788,19 @@ grep -qE '^[[:space:]]*(\.|source)[[:space:]].*tracked-repos\.sh' <<<"$LOOP_SRC"
 # the entrypoint-owned paths have to be re-asserted AFTER it or a stray
 # REVIEWER_LIB_DIR there redirects lib resolution and every gh_*_file() here.
 # Line order IS the contract, so that is what this asserts.
-_src_ln=$(grep -nE '^[[:space:]]*(\.|source)[[:space:]].*tracked-repos\.sh' "$PROJECT_ROOT/review-loop.sh" | head -1 | cut -d: -f1)
-_pin_ln=$(grep -nE '^[[:space:]]*export REVIEWER_LIB_DIR=' "$PROJECT_ROOT/review-loop.sh" | tail -1 | cut -d: -f1)
-[ -n "$_src_ln" ] && [ -n "$_pin_ln" ] && [ "$_pin_ln" -gt "$_src_ln" ] \
-    || fail "scenario 29: review-loop.sh sources config.env (line ${_src_ln:-?}) without re-asserting REVIEWER_LIB_DIR after it (last pin at line ${_pin_ln:-none}) — an operator config.env then redirects lib/prompt resolution and every gh_*_file() in the loop shell"
+# `|| true` on both binds below: under `set -euo pipefail` a no-match grep makes
+# the pipeline non-zero and the assignment would abort the suite SILENTLY, before
+# fail() can name what broke.
+_src_ln=$(grep -nE '^[[:space:]]*(\.|source)[[:space:]].*tracked-repos\.sh' "$PROJECT_ROOT/review-loop.sh" | head -1 | cut -d: -f1) || true
+# All three names, not just the first: deleting only the STATE_DIR re-assert is
+# the highest-consequence of the three (it points gh_pause_file() at a private
+# path, so the loop stops seeing the fleet-wide pause) and would otherwise leave
+# the suite green.
+for _pinned in REVIEWER_LIB_DIR PROMPTS_DIR STATE_DIR; do
+    _pin_ln=$(grep -nE "^[[:space:]]*export .*\b${_pinned}=" "$PROJECT_ROOT/review-loop.sh" | tail -1 | cut -d: -f1) || true
+    [ -n "$_src_ln" ] && [ -n "$_pin_ln" ] && [ "$_pin_ln" -gt "$_src_ln" ] \
+        || fail "scenario 29: review-loop.sh sources config.env (line ${_src_ln:-?}) without re-asserting $_pinned after it (last pin at line ${_pin_ln:-none}) — an operator config.env then redirects lib/prompt resolution and every gh_*_file() in the loop shell"
+done
 grep -qE '^[[:space:]]*gh_quota_report([[:space:]]|$)' <<<"$LOOP_SRC" \
     || fail "scenario 29: review-loop.sh no longer CALLS gh_quota_report — the seam only reports on a SUCCESSFUL call, and while the fleet is paused gh_retry short-circuits before making one, so this tick is the only thing that reports headroom during the incident"
 
