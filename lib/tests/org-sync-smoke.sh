@@ -408,8 +408,9 @@ git -C "$HOME/services/kwr-repos/twin-b" remote set-url origin "git@github.com:o
 if MOCK_GH_LIST_acme=$'twin-a\ntwin-b' run_sync; then
     echo "FAIL scenario 10d: org-sync returned 0 with every repo skipped"; cat "$LOG"; exit 1
 fi
+# Byte-identical to the last good sweep already implies both entries survived
+# and the file exists, so a further assert_auto_excludes here could not fail.
 assert_auto_unchanged "$SHA_BEFORE"
-assert_auto_excludes "acme/never-vouched" "acme/twin-a" "acme/twin-b"
 grep -q 'FAILED: 2 repo(s) skipped' "$LOG" || { echo "FAIL scenario 10d: expected both repos in the skip summary"; cat "$LOG"; exit 1; }
 
 # --- Scenario 11: lock contention — concurrent run defers ------------------

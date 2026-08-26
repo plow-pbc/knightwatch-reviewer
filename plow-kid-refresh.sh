@@ -40,12 +40,16 @@ DEGRADED=0
 for NAME in "${!KID_PATHS[@]}"; do
     PROJECT="${KID_PATHS[$NAME]}"
 
-    # Reachable in normal operation: org-sync carries a repo's manifest entry
-    # forward when its re-clone fails, so KID_PATHS can name a dir with no
-    # .git until the next sweep succeeds. Un-indexed either way — tally it.
+    # Deliberately NOT tallied. A missing checkout is a documented, tolerated
+    # state (see install.sh's note on the `-` prefix): a partial-org repo or a
+    # kwr-config .repos[] entry is tracked for review but never cloned here, so
+    # tallying it would leave the unit permanently red and bury the repo that
+    # actually just went stale. And the one transient shape — org-sync carrying
+    # an entry forward past a failed re-clone — is already owned there: that
+    # sweep exits non-zero for the same repo until the clone succeeds. One
+    # owner per condition; org-sync owns "no mirror", this unit owns "no index".
     if [ ! -d "$PROJECT/.git" ]; then
         log "$NAME: checkout missing or not a git repo ($PROJECT) — skipping"
-        DEGRADED=$((DEGRADED + 1))
         continue
     fi
 

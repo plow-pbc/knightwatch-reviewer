@@ -112,10 +112,12 @@ run_refresh
 n=$(count_kid)
 [ "$n" -eq 0 ] || { echo "FAIL scenario 2: expected 0 kid calls (missing checkout), got $n"; cat "$STUB_KID_LOG"; exit 1; }
 grep -q 'checkout missing or not a git repo' "$LOG" || { echo "FAIL scenario 2: expected 'checkout missing' log line"; cat "$LOG"; exit 1; }
-# Reachable in normal operation: org-sync carries a repo's entry forward when
-# its re-clone fails, so this path names a real un-indexed repo, not just a
-# malformed config. It must not report success.
-[ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 2: refresh exited 0 with a repo that has no checkout to index"; cat "$LOG"; exit 1; }
+# Tolerated on purpose: a partial-org repo or a kwr-config .repos[] entry is
+# tracked for review but never cloned on this host, so a missing checkout must
+# NOT redden the unit — a permanent alarm would bury the repos that actually
+# went stale, which is the signal this unit exists to carry. org-sync owns the
+# "no mirror" condition and alarms there.
+[ "$REFRESH_RC" -eq 0 ] || { echo "FAIL scenario 2: a missing checkout reddened the unit — permanent alarm buries real staleness"; cat "$LOG"; exit 1; }
 
 # Scenario 3: .git but no .keepitdry → bootstrap kid index.
 echo "  scenario 3: bootstrap (no .keepitdry yet) — initial kid index call..."
@@ -196,4 +198,4 @@ MOCK_KID_EXIT=1 run_refresh
 grep -q 'initial index failed' "$LOG" || { echo "FAIL scenario 7: expected the index-failure log line"; cat "$LOG"; exit 1; }
 [ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 7: refresh exited 0 with a repo left un-indexed"; cat "$LOG"; exit 1; }
 
-echo "  PASS (7 scenarios: empty-noop, missing-checkout-is-not-success, bootstrap-on-no-.keepitdry, no-new-commits-noop, new-commits-pull-then-index, unwritable-project-skipped-loudly, index-failure-is-not-success)"
+echo "  PASS (7 scenarios: empty-noop, missing-checkout-tolerated-not-alarmed, bootstrap-on-no-.keepitdry, no-new-commits-noop, new-commits-pull-then-index, unwritable-project-skipped-loudly, index-failure-is-not-success)"
