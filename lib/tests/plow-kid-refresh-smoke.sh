@@ -47,6 +47,9 @@ export STUB_GIT_LOG="$STATE_DIR/git-calls.log"
 cat > "$HOME/.local/bin/kid" <<'STUB'
 #!/bin/bash
 echo "KID $*" >> "${STUB_KID_LOG:-/dev/null}"
+# MOCK_KID_SLEEP simulates an index that cannot finish inside its budget, so
+# the timeout scenarios exercise a real SIGTERM rather than a fast exit code.
+[ -n "${MOCK_KID_SLEEP:-}" ] && sleep "$MOCK_KID_SLEEP"
 exit "${MOCK_KID_EXIT:-0}"
 STUB
 chmod +x "$HOME/.local/bin/kid"
@@ -231,4 +234,37 @@ MOCK_KID_EXIT=1 run_refresh
 grep -q 'kid index failed' "$LOG" || { echo "FAIL scenario 7: expected the index-failure log line"; cat "$LOG"; exit 1; }
 [ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 7: refresh exited 0 with a repo left un-indexed"; cat "$LOG"; exit 1; }
 
-echo "  PASS (8 scenarios: empty-noop, missing-checkout-tolerated-not-alarmed, bootstrap-on-no-.keepitdry, index-current-is-a-noop, failed-index-retries-next-tick, new-commits-pull-then-index, unwritable-project-skipped-loudly, index-failure-is-not-success)"
+# Scenario 8: a repo whose index cannot finish must not strand the ones after
+# it — the failure isolation this script exists to provide. Both repos hang so
+# the assertion is independent of KID_PATHS' (hash-ordered) iteration: seeing
+# TWO kid calls proves the loop continued past the first SIGTERM.
+echo "  scenario 8: index exceeds its budget — loop continues to the next repo..."
+PROJ_A="$TMPDIR/proj-hang-a"; PROJ_B="$TMPDIR/proj-hang-b"
+mkdir -p "$PROJ_A/.git" "$PROJ_A/.keepitdry" "$PROJ_B/.git" "$PROJ_B/.keepitdry"
+cat > "$STATE_DIR/repos.conf" <<CONF
+REPOS=("acme/hang-a" "acme/hang-b")
+declare -A KID_PATHS=([acme/hang-a]="$PROJ_A" [acme/hang-b]="$PROJ_B")
+CONF
+KID_INDEX_TIMEOUT=1 MOCK_KID_SLEEP=5 run_refresh
+n=$(count_kid)
+[ "$n" -eq 2 ] || { echo "FAIL scenario 8: expected both repos attempted (loop continued past the timeout), got $n"; cat "$STUB_KID_LOG"; exit 1; }
+[ ! -f "$PROJ_A/.keepitdry/.indexed-sha" ] && [ ! -f "$PROJ_B/.keepitdry/.indexed-sha" ] || { echo "FAIL scenario 8: a timed-out index advanced its marker — the retry is lost"; exit 1; }
+[ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 8: timed-out indexes reported success"; cat "$LOG"; exit 1; }
+
+# Scenario 9: the SWEEP budget, not just the per-repo one. Without it, enough
+# unfinishable repos still consume the unit's TimeoutStartSec and systemd kills
+# the script before it can report anything at all.
+echo "  scenario 9: sweep budget exhausted — remaining repos deferred, not silently dropped..."
+PROJ="$TMPDIR/proj-deferred"
+mkdir -p "$PROJ/.git" "$PROJ/.keepitdry"
+cat > "$STATE_DIR/repos.conf" <<CONF
+REPOS=("acme/deferred")
+declare -A KID_PATHS=([acme/deferred]="$PROJ")
+CONF
+KID_SWEEP_BUDGET=0 run_refresh
+n=$(count_kid)
+[ "$n" -eq 0 ] || { echo "FAIL scenario 9: started an index with no sweep budget left, got $n calls"; cat "$STUB_KID_LOG"; exit 1; }
+grep -q 'sweep budget exhausted' "$LOG" || { echo "FAIL scenario 9: deferred repo produced no log line — the truncation is silent"; cat "$LOG"; exit 1; }
+[ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 9: deferred repos left the unit reporting success"; cat "$LOG"; exit 1; }
+
+echo "  PASS (10 scenarios: empty-noop, missing-checkout-tolerated-not-alarmed, bootstrap-on-no-.keepitdry, index-current-is-a-noop, failed-index-retries-next-tick, new-commits-pull-then-index, unwritable-project-skipped-loudly, index-failure-is-not-success, per-repo-timeout-does-not-strand-the-sweep, sweep-budget-defers-loudly)"

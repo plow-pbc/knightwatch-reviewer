@@ -15,10 +15,14 @@ set -u
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 LOG="${LOG:-$STATE_DIR/plow-kid-refresh.log}"
 LOCK="${LOCK:-/tmp/plow-kid-refresh.lock}"
-# Bound each repo's index so one that cannot finish can't consume the unit's
-# whole TimeoutStartSec and strand every repo after it — the failure isolation
-# this script exists to provide. A repo that trips this lands in FAILED.
+# Two budgets, because a per-repo bound alone doesn't bound the SWEEP: at 300s
+# each, four unfinishable repos still eat the unit's whole TimeoutStartSec and
+# strand every repo after them — and when systemd's SIGTERM lands there is no
+# log line and no tally at all, because the summary below is never reached.
+# So cap each repo AND the sweep, keeping the sweep cap under TimeoutStartSec
+# so the script always reaches its own summary and says what it skipped.
 KID_INDEX_TIMEOUT="${KID_INDEX_TIMEOUT:-300}"
+KID_SWEEP_BUDGET="${KID_SWEEP_BUDGET:-900}"   # TimeoutStartSec is 20min
 
 # Tracked-repo manifest — same KID_PATHS this script's siblings use.
 # The refresh iterates every entry; a repo that hasn't been indexed
@@ -104,11 +108,24 @@ for NAME in "${!KID_PATHS[@]}"; do
     SHA_FILE="$PROJECT/.keepitdry/.indexed-sha"
     [ "$(cat "$SHA_FILE" 2>/dev/null)" = "$HEAD_SHA" ] && continue
 
-    if timeout "$KID_INDEX_TIMEOUT" kid index "$PROJECT" >> "$LOG" 2>&1; then
+    # Never start an index the sweep budget can't cover, and never let the last
+    # one overrun it. A deferred repo is tallied like any other left without a
+    # fresh index — that is what the counter means — so budget exhaustion is
+    # visible rather than silently truncating the sweep.
+    REMAINING=$((KID_SWEEP_BUDGET - SECONDS))
+    if [ "$REMAINING" -lt 30 ]; then
+        log "$NAME: sweep budget exhausted — deferred to next tick"
+        FAILED=$((FAILED + 1))
+        continue
+    fi
+    BUDGET="$KID_INDEX_TIMEOUT"
+    [ "$REMAINING" -lt "$BUDGET" ] && BUDGET="$REMAINING"
+
+    if timeout "$BUDGET" kid index "$PROJECT" >> "$LOG" 2>&1; then
         echo "$HEAD_SHA" > "$SHA_FILE"
         log "$NAME: index complete at ${HEAD_SHA:0:7}"
     else
-        log "$NAME: kid index failed (or exceeded ${KID_INDEX_TIMEOUT}s)"
+        log "$NAME: kid index failed (or exceeded ${BUDGET}s)"
         FAILED=$((FAILED + 1))
     fi
 done
