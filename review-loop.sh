@@ -28,7 +28,18 @@ source "$REVIEWER_LIB_DIR/state-io.sh"
 # unauthenticated, failed, and the whole quota report was silent in production
 # while every test passed. Reusing the existing loader rather than re-reading
 # config.env here keeps one owner for CONFIG_ENV_FILE resolution.
+#
+# Which is exactly why the paths above are re-asserted below it: the loader
+# sources an operator-editable config.env into THIS shell now, not just into
+# review.sh's child, so a stray STATE_DIR/REVIEWER_LIB_DIR/PROMPTS_DIR there
+# would redirect lib and prompt resolution and every gh_*_file() in this loop.
+# Same re-pin the MAX_CONCURRENT/WAIT_FOR_WORKERS lines below already do, and
+# the same hazard REVIEWER_CONTAINER_MODE exists for.
+_KWR_STATE_DIR="${STATE_DIR:-}"
 source "$REVIEWER_LIB_DIR/tracked-repos.sh"
+export REVIEWER_LIB_DIR="$(pwd)/lib" PROMPTS_DIR="$(pwd)/prompts"
+[ -n "$_KWR_STATE_DIR" ] && export STATE_DIR="$_KWR_STATE_DIR"
+unset _KWR_STATE_DIR
 POLL_SECS="${POLL_SECS:-30}"
 # Time floor for refreshing the eligible-PR queue GLOBALLY: one container per
 # window runs the GraphQL enumerate (election-serialized) and writes queue.json;

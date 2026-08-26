@@ -180,8 +180,16 @@ gh_endpoint_shape() {
     shift
     for a in "$@"; do
         case "$a" in -*) continue ;; esac
+        # The hex rule runs BEFORE the numeric one, which would otherwise eat a
+        # SHA's leading digit and leave the rest un-collapsed. It is not
+        # cosmetic: specialist-bakeoff fetches
+        # `repos/<o>/<r>/commits/<sha>` in a per-commit loop across ~17 repos,
+        # so without it the single busiest known consumer scatters into hundreds
+        # of one-count buckets, can never reach the top 3, and a low-volume
+        # endpoint outranks the one actually spending the budget.
         printf '%s' "$a" | sed -e 's#^repos/[^/]*/[^/]*#repos/*/*#' \
                                -e 's#^orgs/[^/]*#orgs/*#' \
+                               -e 's#/[0-9a-f]\{7,40\}\(/\|$\)#/*\1#g' \
                                -e 's#/[0-9][0-9]*#/*#g' \
                                -e 's#collaborators/[^/]*#collaborators/*#'
         return 0
@@ -269,9 +277,15 @@ gh_bucket_txt() { [ "${1:--1}" -ge 0 ] 2>/dev/null && printf '%s' "$1" || printf
 # Periodic headroom + attribution, and a WARNING while there is still budget to
 # act on. /rate_limit does not consume quota, so the probe is free; `timeout … gh`
 # execs the binary so this can neither recurse into the seam nor tally itself.
-# Throttled fleet-wide by a stamp file. The check-then-write is deliberately
-# unlocked: two workers racing emit one duplicate line, which is cheaper than a
-# lock on a path every tick crosses.
+# Throttled by a stamp file. Per-HALF, not fleet-wide: the stamp lives under
+# STATE_DIR, which is /shared for the containers and ~/.pr-reviewer for the host
+# timers, while the tally underneath them is one bind-shared file. No sample is
+# lost — whichever half drains gets everyone's — but the two cycles run
+# independently, so a report landing shortly after the other half's drain shows a
+# short window and an unrepresentative ranking. Closing that needs a third shared
+# bind or an epoch folded into the tally; tracked separately rather than grown
+# here. The check-then-write is deliberately unlocked: two workers racing emit one
+# duplicate line, which is cheaper than a lock on a path every tick crosses.
 gh_quota_report() {
     local now interval last top core_pct gql_pct
     now=$(date +%s); interval="${GH_QUOTA_REPORT_SECS:-300}"

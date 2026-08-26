@@ -177,9 +177,9 @@ done
 # The shared rate-limit pause. It must exist as a regular FILE before any
 # `compose up`: docker auto-creates a missing bind source as a DIRECTORY, and
 # every reader then sees "never paused" — silently, which is the failure the
-# whole protocol exists to remove. 0666 because the host timers write it as the
-# operator and the containers write it as root; 0700 on the tree around it is
-# what keeps that from being reachable by a third local user.
+# whole protocol exists to remove. 0644 owned by the operator covers both
+# writers — the host timers run as that operator, the containers as root — and
+# 0700 on the tree around it keeps a third local user out.
 # A DIRECTORY at that path is docker's auto-create outcome, and install must
 # refuse it rather than write gh-rate-limited-until/null and exit 0 having
 # "created" a pause file that is still a directory.
@@ -202,13 +202,17 @@ for _shared in gh-rate-limited-until gh-call-tally; do
     [ -f "$INSTALL_DIR/$_shared" ] \
         || { echo "FAIL scenario 1: $INSTALL_DIR/$_shared missing — docker would bind a DIRECTORY over it"; exit 1; }
     _mode=$(stat -c '%a' "$INSTALL_DIR/$_shared" 2>/dev/null || echo missing)
-    [ "$_mode" = "666" ] \
-        || { echo "FAIL scenario 1: $_shared is mode $_mode, not 666 — one of the two UIDs that share it cannot write it"; exit 1; }
+    # 644, not 666: the two intended writers are the owning operator and
+    # container root, and world-writable would additionally reach the
+    # PR-controlled `just test` user through the bind — who could blank the
+    # fleet pause or forge attribution into the operator's incident log.
+    [ "$_mode" = "644" ] \
+        || { echo "FAIL scenario 1: $_shared is mode $_mode, not 644 — 666 hands the PR-controlled test user a write handle through the bind"; exit 1; }
 done
 
 DIR_MODE=$(stat -c '%a' "$INSTALL_DIR" 2>/dev/null || echo missing)
 [ "$DIR_MODE" = "700" ] \
-    || { echo "FAIL scenario 1: $INSTALL_DIR is mode $DIR_MODE, not 700 — the 0666 pause file inside it becomes writable by any local user"; exit 1; }
+    || { echo "FAIL scenario 1: $INSTALL_DIR is mode $DIR_MODE, not 700 — the shared files inside it become reachable by any local user"; exit 1; }
 
 # Render the same @KID_RW_PATHS@ / @KWR_CLONE_ROOT@
 # values install.sh derives from the overlay's repos.conf, so the cmp

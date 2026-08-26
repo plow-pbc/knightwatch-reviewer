@@ -565,6 +565,8 @@ echo "  scenario 20: gh_endpoint_shape collapses owner/repo/number/user to a sta
     = "repos/*/*/collaborators/*/permission" ] || fail "scenario 20: permission shape"
 [ "$(gh_endpoint_shape api --paginate repos/plow-pbc/plow/issues/1348/comments)" \
     = "repos/*/*/issues/*/comments" ] || fail "scenario 20: paginated comments shape (path is not \$2)"
+[ "$(gh_endpoint_shape api repos/plow-pbc/plow/commits/9f3a1c2b4d5e6f708192a3b4c5d6e7f8091a2b3c)" \
+    = "repos/*/*/commits/*" ] || fail "scenario 20: commit-SHA shape (bakeoff's per-commit loop is the busiest known consumer; unshaped it scatters into hundreds of one-count buckets and never reaches the top 3)"
 [ "$(gh_endpoint_shape pr view 1348 --repo x/y)" = "pr view" ] \
     || fail "scenario 20: non-api argv should collapse to '<verb> <sub>'"
 
@@ -782,6 +784,14 @@ echo "  scenario 29: review-loop.sh loads the token before it can report quota..
 LOOP_SRC=$(sed -e 's/#.*//' "$PROJECT_ROOT/review-loop.sh")
 grep -qE '^[[:space:]]*(\.|source)[[:space:]].*tracked-repos\.sh' <<<"$LOOP_SRC" \
     || fail "scenario 29: review-loop.sh calls gh_quota_report without sourcing the config loader — the probe runs tokenless and the report is silent"
+# The loader brings an operator-editable config.env into the loop's OWN shell, so
+# the entrypoint-owned paths have to be re-asserted AFTER it or a stray
+# REVIEWER_LIB_DIR there redirects lib resolution and every gh_*_file() here.
+# Line order IS the contract, so that is what this asserts.
+_src_ln=$(grep -nE '^[[:space:]]*(\.|source)[[:space:]].*tracked-repos\.sh' "$PROJECT_ROOT/review-loop.sh" | head -1 | cut -d: -f1)
+_pin_ln=$(grep -nE '^[[:space:]]*export REVIEWER_LIB_DIR=' "$PROJECT_ROOT/review-loop.sh" | tail -1 | cut -d: -f1)
+[ -n "$_src_ln" ] && [ -n "$_pin_ln" ] && [ "$_pin_ln" -gt "$_src_ln" ] \
+    || fail "scenario 29: review-loop.sh sources config.env (line ${_src_ln:-?}) without re-asserting REVIEWER_LIB_DIR after it (last pin at line ${_pin_ln:-none}) — an operator config.env then redirects lib/prompt resolution and every gh_*_file() in the loop shell"
 grep -qE '^[[:space:]]*gh_quota_report([[:space:]]|$)' <<<"$LOOP_SRC" \
     || fail "scenario 29: review-loop.sh no longer CALLS gh_quota_report — the seam only reports on a SUCCESSFUL call, and while the fleet is paused gh_retry short-circuits before making one, so this tick is the only thing that reports headroom during the incident"
 

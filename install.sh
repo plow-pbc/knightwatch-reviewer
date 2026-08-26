@@ -133,9 +133,10 @@ mapfile -t SCRIPTS < <(list_execstart_shell_scripts "$REPO_DIR" "${service_units
 DIRS=(lib docs prompts)
 CONFIG_FILES=(repos.conf)
 
-# 0700, healed on every run. The pause file below must be 0666 — the host timers
-# write it as the operator and the containers write it as root — so the tree
-# around it is what keeps a third local user from pausing the fleet at will.
+# 0700, healed on every run. The shared files below are 0644 owned by the
+# operator, which already covers both writers (the host timers run as that
+# operator, the containers as root); the tree around them is what keeps a third
+# local user out.
 mkdir -p -m 0700 "$INSTALL_DIR"
 chmod 0700 "$INSTALL_DIR"
 # The two files the host timers and the reviewer containers share, bind-mounted
@@ -143,9 +144,13 @@ chmod 0700 "$INSTALL_DIR"
 # missing bind source as a DIRECTORY — every reader then sees "never paused" for
 # the one, and silently drops every host-side call sample for the other.
 # `install -m` only creates; an existing file keeps its contents (a live pause
-# survives a redeploy) and gets its mode reasserted. 0666 because the timers
-# write as the operator and the containers as root; 0700 on the tree around them
-# is what keeps that off-limits to a third local user.
+# survives a redeploy) and gets its mode reasserted. 0644 owned by the operator,
+# NOT 0666: both intended writers are already covered — the host timers run as
+# the owning operator (User=odio) and the containers as root, which ignores the
+# mode bits — while world-writable additionally hands the PR-controlled
+# `just test` user a handle on both files through the bind. That user could
+# otherwise blank the fleet pause, or forge the `top callers` attribution into
+# the operator's log during exactly the incident it exists to explain.
 # Fail loud on a non-regular path rather than papering over it: if docker has
 # already auto-created one as a DIRECTORY (an operator `rm`, a botched restore),
 # `install` would cheerfully write <name>/null and chmod would strip +x off the
@@ -154,8 +159,8 @@ for _shared in gh-rate-limited-until gh-call-tally; do
   _shared_path="$INSTALL_DIR/$_shared"
   [ ! -e "$_shared_path" ] || [ -f "$_shared_path" ] \
     || fail "$_shared_path exists but is not a regular file — docker auto-created the bind source. Remove it and re-run: rmdir '$_shared_path'"
-  [ -f "$_shared_path" ] || install -m 0666 /dev/null "$_shared_path"
-  chmod 0666 "$_shared_path"
+  [ -f "$_shared_path" ] || install -m 0644 /dev/null "$_shared_path"
+  chmod 0644 "$_shared_path"
 done
 for script in "${SCRIPTS[@]}"; do
   src="$REPO_DIR/$script"

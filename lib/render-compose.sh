@@ -112,9 +112,9 @@ GH_TALLY_REF='${HOME}/.pr-reviewer/gh-call-tally'
 # a non-regular path is fatal, which is the case that really is docker's doing.
 [ ! -e "$GH_TALLY_SRC" ] || [ -f "$GH_TALLY_SRC" ] \
     || die "$GH_TALLY_SRC exists but is not a regular file — docker auto-created the bind source as a DIRECTORY, which silently drops every host-side sample. Remove it and re-render: rmdir '$GH_TALLY_SRC'"
-[ -f "$GH_TALLY_SRC" ] || install -m 0666 /dev/null "$GH_TALLY_SRC"
+[ -f "$GH_TALLY_SRC" ] || install -m 0644 /dev/null "$GH_TALLY_SRC"
 [ -f "$GH_PAUSE_SRC" ] \
-    || die "$GH_PAUSE_SRC not found (or not a regular file) — it is the single rate-limit pause the host timers and the containers share, and docker would auto-create it as a DIRECTORY, which reads as never-paused. Create it as the operator: install -m 0666 /dev/null $GH_PAUSE_SRC"
+    || die "$GH_PAUSE_SRC not found (or not a regular file) — it is the single rate-limit pause the host timers and the containers share, and docker would auto-create it as a DIRECTORY, which reads as never-paused. Create it as the operator: install -m 0644 /dev/null $GH_PAUSE_SRC"
 # Worse for the mount sources the loader sources: docker auto-creates a missing
 # one as a DIRECTORY, and the consumer loads it with `[ -f … ] && . …`
 # (lib/tracked-repos.sh) — the -f test fails against that dir and the source is
