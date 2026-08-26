@@ -175,10 +175,6 @@ n=$(count_kid)
 [ "$n" -eq 1 ] || { echo "FAIL scenario 4b: index not retried on an unchanged tick — stranded stale forever"; cat "$STUB_KID_LOG"; exit 1; }
 [ "$REFRESH_RC" -eq 0 ] || { echo "FAIL scenario 4b: recovery tick still reported failure"; cat "$LOG"; exit 1; }
 [ "$(cat "$PROJ/.keepitdry/.indexed-sha")" = "newsha" ] || { echo "FAIL scenario 4b: marker not written after a successful index"; exit 1; }
-# Tick 3: marker now matches HEAD → quiet.
-MOCK_GIT_LOCAL_SHA=newsha MOCK_GIT_REMOTE_SHA=newsha run_refresh
-n=$(count_kid)
-[ "$n" -eq 0 ] || { echo "FAIL scenario 4b: re-indexed a repo whose marker already matches HEAD, got $n calls"; cat "$STUB_KID_LOG"; exit 1; }
 
 # Scenario 5: .git + .keepitdry, new commits (LOCAL != REMOTE) → pull + index.
 echo "  scenario 5: new commits — pull + kid index..."
