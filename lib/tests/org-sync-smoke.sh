@@ -356,6 +356,7 @@ grep -q '"acme/cant-clone"' "$AUTO_CONF" || { echo "FAIL scenario 10 recovery: a
 echo "  scenario 10b: one wrong-origin mirror among good repos — good ones still published..."
 write_baseline_conf '"acme"'
 rm -f "$AUTO_CONF"
+: > "$LOG"   # same scoping — 10's skip lines would otherwise satisfy these greps
 make_checkout moved "git@github.com:oldorg/moved.git"   # transferred; mirror stale
 rm -rf "$HOME/services/kwr-repos/good-one" "$HOME/services/kwr-repos/good-two"
 if MOCK_GH_LIST_acme=$'good-one\nmoved\ngood-two' run_sync; then
@@ -381,6 +382,7 @@ grep -q 'FAILED: 1 repo(s) skipped' "$LOG" || { echo "FAIL scenario 10b: expecte
 echo "  scenario 10c: already-published repo whose mirror goes bad — dropped, not carried forward..."
 write_baseline_conf '"acme"'
 rm -f "$AUTO_CONF"
+: > "$LOG"   # $LOG accumulates across scenarios; scope the greps below to this one
 rm -rf "$HOME/services/kwr-repos/tracked"
 MOCK_GH_LIST_acme="tracked" run_sync || { echo "FAIL scenario 10c: setup tick exited non-zero"; cat "$LOG"; exit 1; }
 grep -q '"acme/tracked"' "$AUTO_CONF" || { echo "FAIL scenario 10c: setup tick did not publish acme/tracked"; cat "$AUTO_CONF"; exit 1; }

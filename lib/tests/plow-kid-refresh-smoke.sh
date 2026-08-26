@@ -43,10 +43,14 @@ export PATH="$HOME/.local/bin:$PATH"
 export STUB_KID_LOG="$STATE_DIR/kid-calls.log"
 export STUB_GIT_LOG="$STATE_DIR/git-calls.log"
 
-# Stub `kid` — log every invocation.
+# Stub `kid` — log every invocation, and emit chatter on stdout the way real
+# kid does ("Indexed 0 files ... Skipped N unchanged files" even on a no-op
+# run). The chatter is what lets the scenarios below pin WHERE that output
+# lands: dropped on an unchanged successful tick, kept on a pull or a failure.
 cat > "$HOME/.local/bin/kid" <<'STUB'
 #!/bin/bash
 echo "KID $*" >> "${STUB_KID_LOG:-/dev/null}"
+echo "KID_CHATTER for $*"
 exit "${MOCK_KID_EXIT:-0}"
 STUB
 chmod +x "$HOME/.local/bin/kid"
@@ -152,6 +156,10 @@ n=$(count_kid)
 [ "$n" -eq 1 ] || { echo "FAIL scenario 4: expected 1 kid call (index retries on an unchanged tick), got $n"; cat "$STUB_KID_LOG"; exit 1; }
 grep -q '^GIT pull' "$STUB_GIT_LOG" && { echo "FAIL scenario 4: pulled with no new commits"; cat "$STUB_GIT_LOG"; exit 1; }
 [ "$REFRESH_RC" -eq 0 ] || { echo "FAIL scenario 4: healthy unchanged tick reported failure"; cat "$LOG"; exit 1; }
+# kid's own chatter is dropped on a quiet successful tick — at one line per repo
+# per hour into an unrotated log it would bury the per-repo remedies the final
+# summary points at.
+grep -q 'KID_CHATTER' "$LOG" && { echo "FAIL scenario 4: kid chatter reached \$LOG on an unchanged successful tick"; cat "$LOG"; exit 1; }
 
 # Scenario 4b: the stale-index seam itself — an index that failed on the tick
 # that pulled must retry on the NEXT tick, when LOCAL == REMOTE again.
@@ -165,6 +173,9 @@ CONF
 # Tick 1: new commits, pull succeeds, index FAILS → unit must report failure.
 MOCK_GIT_LOCAL_SHA=oldsha MOCK_GIT_REMOTE_SHA=newsha MOCK_KID_EXIT=1 run_refresh
 [ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 4b: index failure on the pulling tick reported success"; cat "$LOG"; exit 1; }
+# On failure the chatter IS the diagnostic — scenario 6 exists because a bare
+# chromadb traceback under "initial index failed" was the missing one.
+grep -q 'KID_CHATTER' "$LOG" || { echo "FAIL scenario 4b: kid output dropped on a FAILED index — the diagnostic is gone"; cat "$LOG"; exit 1; }
 # Tick 2: HEAD already advanced, so LOCAL == REMOTE — the index must still run.
 MOCK_GIT_LOCAL_SHA=newsha MOCK_GIT_REMOTE_SHA=newsha run_refresh
 n=$(count_kid)
