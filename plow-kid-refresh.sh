@@ -15,14 +15,13 @@ set -u
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 LOG="${LOG:-$STATE_DIR/plow-kid-refresh.log}"
 LOCK="${LOCK:-/tmp/plow-kid-refresh.lock}"
-# Two budgets, because a per-repo bound alone doesn't bound the SWEEP: at 300s
-# each, four unfinishable repos still eat the unit's whole TimeoutStartSec and
-# strand every repo after them — and when systemd's SIGTERM lands there is no
-# log line and no tally at all, because the summary below is never reached.
-# So cap each repo AND the sweep, keeping the sweep cap under TimeoutStartSec
-# so the script always reaches its own summary and says what it skipped.
+# Bound each repo's index so one that cannot finish doesn't take the whole
+# sweep down with it. Deliberately just this — the unit already owns the sweep
+# deadline (TimeoutStartSec), and hardening the rest of that path (reporting
+# when systemd rather than this script calls time, and rotating the iteration
+# order so a truncated sweep doesn't starve the same tail every tick) belongs
+# with the unfinishable-index problem in #227, not here.
 KID_INDEX_TIMEOUT="${KID_INDEX_TIMEOUT:-300}"
-KID_SWEEP_BUDGET="${KID_SWEEP_BUDGET:-900}"   # TimeoutStartSec is 20min
 
 # Tracked-repo manifest — same KID_PATHS this script's siblings use.
 # The refresh iterates every entry; a repo that hasn't been indexed
@@ -40,6 +39,7 @@ fi
 touch "$LOCK"
 trap 'rm -f "$LOCK"' EXIT
 
+
 # A repo this host DOES hold but could not (re)index — fetch, pull, index
 # failure, or an unreadable checkout — degrades every review on it with no
 # other visible symptom, so those causes reach the exit status. A repo with no
@@ -47,6 +47,7 @@ trap 'rm -f "$LOCK"' EXIT
 # Every one of them already logs its own repo, cause and remedy, so one counter
 # and one summary line carry as much as a per-cause split would.
 FAILED=0
+
 for NAME in "${!KID_PATHS[@]}"; do
     PROJECT="${KID_PATHS[$NAME]}"
 
@@ -108,24 +109,11 @@ for NAME in "${!KID_PATHS[@]}"; do
     SHA_FILE="$PROJECT/.keepitdry/.indexed-sha"
     [ "$(cat "$SHA_FILE" 2>/dev/null)" = "$HEAD_SHA" ] && continue
 
-    # Never start an index the sweep budget can't cover, and never let the last
-    # one overrun it. A deferred repo is tallied like any other left without a
-    # fresh index — that is what the counter means — so budget exhaustion is
-    # visible rather than silently truncating the sweep.
-    REMAINING=$((KID_SWEEP_BUDGET - SECONDS))
-    if [ "$REMAINING" -lt 30 ]; then
-        log "$NAME: sweep budget exhausted — deferred to next tick"
-        FAILED=$((FAILED + 1))
-        continue
-    fi
-    BUDGET="$KID_INDEX_TIMEOUT"
-    [ "$REMAINING" -lt "$BUDGET" ] && BUDGET="$REMAINING"
-
-    if timeout "$BUDGET" kid index "$PROJECT" >> "$LOG" 2>&1; then
+    if timeout "$KID_INDEX_TIMEOUT" kid index "$PROJECT" >> "$LOG" 2>&1; then
         echo "$HEAD_SHA" > "$SHA_FILE"
         log "$NAME: index complete at ${HEAD_SHA:0:7}"
     else
-        log "$NAME: kid index failed (or exceeded ${BUDGET}s)"
+        log "$NAME: kid index failed (or exceeded ${KID_INDEX_TIMEOUT}s)"
         FAILED=$((FAILED + 1))
     fi
 done

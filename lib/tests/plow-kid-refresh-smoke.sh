@@ -251,20 +251,4 @@ n=$(count_kid)
 [ ! -f "$PROJ_A/.keepitdry/.indexed-sha" ] && [ ! -f "$PROJ_B/.keepitdry/.indexed-sha" ] || { echo "FAIL scenario 8: a timed-out index advanced its marker — the retry is lost"; exit 1; }
 [ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 8: timed-out indexes reported success"; cat "$LOG"; exit 1; }
 
-# Scenario 9: the SWEEP budget, not just the per-repo one. Without it, enough
-# unfinishable repos still consume the unit's TimeoutStartSec and systemd kills
-# the script before it can report anything at all.
-echo "  scenario 9: sweep budget exhausted — remaining repos deferred, not silently dropped..."
-PROJ="$TMPDIR/proj-deferred"
-mkdir -p "$PROJ/.git" "$PROJ/.keepitdry"
-cat > "$STATE_DIR/repos.conf" <<CONF
-REPOS=("acme/deferred")
-declare -A KID_PATHS=([acme/deferred]="$PROJ")
-CONF
-KID_SWEEP_BUDGET=0 run_refresh
-n=$(count_kid)
-[ "$n" -eq 0 ] || { echo "FAIL scenario 9: started an index with no sweep budget left, got $n calls"; cat "$STUB_KID_LOG"; exit 1; }
-grep -q 'sweep budget exhausted' "$LOG" || { echo "FAIL scenario 9: deferred repo produced no log line — the truncation is silent"; cat "$LOG"; exit 1; }
-[ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 9: deferred repos left the unit reporting success"; cat "$LOG"; exit 1; }
-
-echo "  PASS (10 scenarios: empty-noop, missing-checkout-tolerated-not-alarmed, bootstrap-on-no-.keepitdry, index-current-is-a-noop, failed-index-retries-next-tick, new-commits-pull-then-index, unwritable-project-skipped-loudly, index-failure-is-not-success, per-repo-timeout-does-not-strand-the-sweep, sweep-budget-defers-loudly)"
+echo "  PASS (9 scenarios: empty-noop, missing-checkout-tolerated-not-alarmed, bootstrap-on-no-.keepitdry, index-current-is-a-noop, failed-index-retries-next-tick, new-commits-pull-then-index, unwritable-project-skipped-loudly, index-failure-is-not-success, per-repo-timeout-does-not-strand-the-sweep)"
