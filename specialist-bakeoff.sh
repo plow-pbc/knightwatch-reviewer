@@ -51,14 +51,6 @@ require_repos
 # scan below anchors on. Same definition the trigger/vouch/staging selectors use.
 . "$REVIEWER_LIB_DIR/gh-comments.sh"
 
-# Quota headroom + attribution, self-throttled to one emission per
-# GH_QUOTA_REPORT_SECS. Here as well as in the containers because these timers
-# spend the SAME PAT (#233): draining the shared tally on the host's happy path
-# keeps the writer-side cap an unreachable backstop rather than the only reaper.
-# /rate_limit spends no quota. LOG_FILE is set at the top of this script, so
-# state-io's log() tees the line to bakeoff.log AND the journal.
-gh_quota_report
-
 store_init "$DB_FILE"
 
 SUBSTANTIVE_REVIEW_JQ='.user.login == $bot_user

@@ -28,22 +28,9 @@ set -o pipefail
 # (tracked-repos, auth, state-io, gh-comments).
 REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 . "$REVIEWER_LIB_DIR/bootstrap.sh"
-
 require_repos
 REPLIES_SEEN_FILE="${REPLIES_SEEN_FILE:-$STATE_DIR/replies-seen.json}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/learn.log}"
-# Quota headroom + attribution, self-throttled to one emission per
-# GH_QUOTA_REPORT_SECS. Here as well as in the containers because these timers
-# spend the SAME PAT (#233): draining the shared tally on the host's happy path
-# keeps the writer-side cap an unreachable backstop rather than the only reaper —
-# without it a crossing zeroes the window and the next 403 logs with no
-# attribution. /rate_limit spends no quota.
-#
-# AFTER LOG_FILE, deliberately: state-io's log() only tees to a file when
-# LOG_FILE is set, and these units set only HOME/PATH, so above that line the
-# report and its headroom WARNING would go to stdout alone — journal, never the
-# log the operator tails.
-gh_quota_report
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
 
 [ -f "$REPLIES_SEEN_FILE" ] || echo '{}' > "$REPLIES_SEEN_FILE"

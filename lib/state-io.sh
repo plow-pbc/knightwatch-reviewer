@@ -207,13 +207,13 @@ gh_endpoint_shape() {
 # path would cost real latency on every call the fleet makes.
 gh_tally_call() {
     local f; f=$(gh_tally_file)
-    printf '%s\n' "$(gh_endpoint_shape "$@")" >> "$f" 2>/dev/null || true
-    # Cap it HERE, not at the readers. On the host neither consumer runs on the
-    # happy path — the periodic report is called only from review-loop.sh
-    # (container-only) and the trip diagnostic only on a 403, which #233 exists to
-    # make rare — so the five host units would append forever with no reaper. The
-    # trigger is a byte size (fstat, O(1)), and it only fires on the rare
-    # crossing.
+    # Cap BEFORE this attempt's append, not after it. Truncating after meant the
+    # crossing attempt erased its own sample, so if THAT attempt drew the 403 the
+    # incident diagnostic rendered no `top callers` at all — blank attribution on
+    # the one call this telemetry exists to explain. Checking first leaves the
+    # crossing attempt in the window, so a trip always names at least the call
+    # that tripped. It is a BACKSTOP either way: gh_retry drains the window on
+    # every successful call, so the cap is effectively unreachable.
     local max="${GH_TALLY_MAX_BYTES:-131072}"
     if [ "$(wc -c < "$f" 2>/dev/null || echo 0)" -gt "$max" ] 2>/dev/null; then
         # TRUNCATE, don't compact. The read-modify-write this replaces could
@@ -222,15 +222,10 @@ gh_tally_call() {
         # fresh attribution on the next interval. A plain truncate has nothing to
         # restore, so the race is gone without putting a lock on a path eleven
         # producers append to, and it is fewer lines than the version that had
-        # the bug. It is a BACKSTOP, not the reaper: both halves now call
-        # gh_quota_report on their happy path, so the window is drained every
-        # GH_QUOTA_REPORT_SECS and the cap is effectively unreachable. That
-        # matters — when the cap WAS the only host-side reaper, a crossing zeroed
-        # the window and the next 403 logged its diagnostic with no attribution
-        # at all, which is worse than the duplicated sample the RMW risked. In
-        # place, because the inode is bind-pinned.
+        # the bug. In place, because the inode is bind-pinned.
         : > "$f" 2>/dev/null || true
     fi
+    printf '%s\n' "$(gh_endpoint_shape "$@")" >> "$f" 2>/dev/null || true
     return 0
 }
 

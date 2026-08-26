@@ -59,6 +59,10 @@ for a in "$@"; do
         exit 0
     fi
 done
+# GH_SHIM_OK: a non-rate_limit call that SUCCEEDS. gh_retry's success path is
+# where the quota drain lives, and without this the shim could only ever
+# exercise its failure branches.
+[ -n "${GH_SHIM_OK:-}" ] && exit 0
 printf '%s\n' "${GH_SHIM_ERR:-gh: some other failure (HTTP 404)}" >&2
 exit 1
 SHIM
@@ -674,16 +678,16 @@ BYTES=$(wc -c < "$(gh_tally_file)")
 # is deterministic — it IS the stranded writer.
 grep -q 'STRANDED_WRITER_PROBE' "$(gh_tally_file)" \
     || fail "scenario 27: a writer holding the tally open before the trim lost its append — the trim replaced the file, which under the bind strands every running container on the orphaned inode"
-# A crossing must not leave the incident log with NO attribution. The cap is a
-# backstop — both halves drain the window on their happy path — but when it does
-# fire, the calls after it still have to render: blank attribution on a 403 is a
-# worse operator outcome than a duplicated stale sample.
-gh_tally_call api "repos/o/r/collaborators/u/permission" --jq .permission
-gh_tally_call api "repos/o/r/collaborators/u2/permission" --jq .permission
-TOP_AFTER_CAP=$(gh_top_callers 3)
-[ -n "$TOP_AFTER_CAP" ] \
-    || fail "scenario 27: after a cap crossing the attribution rendered EMPTY — a 403 would log its diagnostic with no top callers at all"
+# The crossing attempt must survive in its OWN attribution. Truncating after the
+# append erased it, so a 403 on exactly that attempt logged its diagnostic with
+# no top callers at all — blank attribution on the one call the telemetry exists
+# to explain. Capping first leaves it in the window. Seeded past the cap rather
+# than relying on the loop above, so "this call is the crossing one" is exact.
 : > "$(gh_tally_file)"
+for _i in $(seq 1 200); do printf 'repos/*/*/issues/*/comments\n'; done >> "$(gh_tally_file)"
+GH_TALLY_MAX_BYTES=2048 gh_tally_call api "repos/o/r/collaborators/u/permission" --jq .permission
+[ "$(cat "$(gh_tally_file)")" = 'repos/*/*/collaborators/*/permission' ] \
+    || fail "scenario 27: the attempt that crossed the cap is missing from its own attribution — a 403 on that call would log with no top callers: $(cat "$(gh_tally_file)")"
 : > "$(gh_tally_file)"
 
 echo "  scenario 27a: no entrypoint shadows state-io's log()..."
@@ -715,40 +719,23 @@ for _entry in $ENTRYPOINTS; do
         && fail "scenario 27a: $_entry shadows log() — state-io's already writes to LOG_FILE and TEES to stdout, so a local copy silently drops this unit's whole run out of journalctl"
 done
 
-echo "  scenario 27b: every gh-spending entrypoint drains the shared tally..."
-# The tally is shared with the host timers (one PAT), so if a half stops calling
-# gh_quota_report the writer-side cap silently becomes that half's ONLY reaper —
-# and a crossing then blanks the attribution on its next 403. Derived from the
-# units that actually run, not a hand-list.
-# Filtered from the SAME derivation 27a uses, not restated: a seventh unit that
-# spends the shared PAT would otherwise be picked up there and stay invisible
-# here, so the cap silently becomes its only reaper — the drift that let
-# kid-refresh carry a unit under a sentence claiming to cover it.
-NON_GH_ENTRY=plow-kid-refresh.sh   # git only; spends no gh, so it owes no drain
-printf '%s\n' "$ENTRYPOINTS" | grep -qx "$NON_GH_ENTRY" \
-    || fail "scenario 27b: the skip-list names $NON_GH_ENTRY but the derivation no longer yields it — the filter is stale"
-for _entry in $(printf '%s\n' "$ENTRYPOINTS" | grep -vx "$NON_GH_ENTRY"); do
-    # Strip comments and anchor to a CALL SITE. A bare string grep matches the
-    # prose — review-loop.sh names gh_quota_report in a comment — so deleting the
-    # real call left this green, which is the inert-guard class this suite keeps
-    # re-learning. Same idiom as the seam fence below.
-    _entry_src=$(sed -e 's/#.*//' "$PROJECT_ROOT/$_entry")
-    grep -qE '^[[:space:]]*gh_quota_report([[:space:]]|$)' <<<"$_entry_src" \
-        || fail "scenario 27b: $_entry spends the shared PAT but never CALLS gh_quota_report — the cap becomes its only reaper and a crossing blanks the next 403's attribution"
-    # With no shadows left, every entrypoint's sink is a LOG_FILE= line and the
-    # ordering rule is one shape. head -1 enforces prologue-level, so a later
-    # reassignment inside a function cannot win. || true because this suite runs
-    # set -e and review-loop.sh legitimately has none (its sink is the container
-    # stream); any OTHER entry without one means the match drifted.
-    _log_ln=$(grep -nE '^[[:space:]]*LOG_FILE=' "$PROJECT_ROOT/$_entry" | head -1 | cut -d: -f1) || true
-    if [ -z "$_log_ln" ] && [ "$_entry" != review-loop.sh ]; then
-        fail "scenario 27b: found no LOG_FILE= in $_entry — the sink match has drifted, so its ordering check is silently skipped"
-    fi
-    _call_ln=$(grep -nE '^[[:space:]]*gh_quota_report([[:space:]]|$)' "$PROJECT_ROOT/$_entry" | head -1 | cut -d: -f1) || true
-    if [ -n "$_log_ln" ] && [ -n "$_call_ln" ] && [ "$_call_ln" -lt "$_log_ln" ]; then
-        fail "scenario 27b: $_entry calls gh_quota_report (line $_call_ln) before LOG_FILE is set (line $_log_ln) — the [gh-quota] line and its headroom WARNING then go to stdout only and never reach the file the operator tails"
-    fi
-done
+echo "  scenario 27b: the SEAM drains the tally on a successful call..."
+# Scenarios 21-22 drive gh_quota_report directly, so deleting its call from
+# gh_retry would leave every one of them green while nothing drains the window on
+# the happy path — the inert-guard class scenario 24 fences for the tally's write
+# half. One call site at the seam is what replaced five entrypoint calls and the
+# 36-line source parser that had to hold them in sync: gh() routes every call in
+# the repo, so coverage is by construction rather than by grep.
+reset_state; : > "$(gh_tally_file)"; rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log27b"
+gh_tally_call api "repos/o/r/collaborators/u/permission" --jq .permission
+LOG_FILE="$TMP/log27b" GH_QUOTA_REPORT_SECS=0 GH_SHIM_OK=1 \
+    GH_SHIM_BUCKETS="4977	$((NOW + 1200))	4775	$((NOW + 1200))	5000	5000" \
+    gh api "repos/o/r/pulls/7" >/dev/null 2>&1
+grep -q 'repos/\*/\*/collaborators/\*/permission=1' "$TMP/log27b" \
+    || fail "scenario 27b: a successful call through the seam did not report the window — with the entrypoint calls gone the writer-side cap would be the only reaper: $(cat "$TMP/log27b")"
+[ ! -s "$(gh_tally_file)" ] \
+    || fail "scenario 27b: the seam reported but did not CONSUME the window — attribution would accumulate across reports"
+reset_state; : > "$(gh_tally_file)"
 
 echo "  scenario 28: review-loop.sh loads the token before it can report quota..."
 # gh_quota_report runs `gh api rate_limit` in review-loop.sh's OWN shell, but
@@ -761,7 +748,7 @@ LOOP_SRC=$(sed -e 's/#.*//' "$PROJECT_ROOT/review-loop.sh")
 grep -qE '^[[:space:]]*(\.|source)[[:space:]].*tracked-repos\.sh' <<<"$LOOP_SRC" \
     || fail "scenario 28: review-loop.sh calls gh_quota_report without sourcing the config loader — the probe runs tokenless and the report is silent"
 grep -qE '^[[:space:]]*gh_quota_report([[:space:]]|$)' <<<"$LOOP_SRC" \
-    || fail "scenario 28: review-loop.sh no longer CALLS gh_quota_report — in a container the reporter is the only drain, so a crossing would blank the next 403's attribution"
+    || fail "scenario 28: review-loop.sh no longer CALLS gh_quota_report — the seam only reports on a SUCCESSFUL call, and while the fleet is paused gh_retry short-circuits before making one, so this tick is the only thing that reports headroom during the incident"
 
 # --- 29. the diagnostic survives a caller that captures gh's stderr ----------
 # The busiest callers run `gh … 2>"$errfile"` (fetch_issue_comments,
