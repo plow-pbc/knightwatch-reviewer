@@ -730,7 +730,16 @@ reset_state; : > "$(gh_tally_file)"; rm -f "$(gh_quota_stamp_file)"; : > "$TMP/l
 gh_tally_call api "repos/o/r/collaborators/u/permission" --jq .permission
 LOG_FILE="$TMP/log27b" GH_QUOTA_REPORT_SECS=0 GH_SHIM_OK=1 \
     GH_SHIM_BUCKETS="4977	$((NOW + 1200))	4775	$((NOW + 1200))	5000	5000" \
-    gh api "repos/o/r/pulls/7" >/dev/null 2>&1
+    gh api "repos/o/r/pulls/7" >"$TMP/out27b" 2>&1
+# gh_retry's stdout IS the API result its callers capture, so only the
+# >&GH_DIAG_FD redirect keeps the report out of that value — and log()'s own
+# `tee -a "$LOG_FILE"` fills the file below whether or not the redirect is there.
+# Assert the emptiness too, or dropping the redirect prepends a timestamped log
+# line to every successful call's JSON with the whole suite still green. Scenario
+# 1 fences the same hazard for the failure-path diagnostic; this path runs on
+# EVERY call. Exact, because GH_SHIM_OK emits nothing of its own.
+[ ! -s "$TMP/out27b" ] \
+    || fail "scenario 27b: the quota report leaked into gh's stdout — callers capture that as the API result: $(cat "$TMP/out27b")"
 grep -q 'repos/\*/\*/collaborators/\*/permission=1' "$TMP/log27b" \
     || fail "scenario 27b: a successful call through the seam did not report the window — with the entrypoint calls gone the writer-side cap would be the only reaper: $(cat "$TMP/log27b")"
 [ ! -s "$(gh_tally_file)" ] \
