@@ -33,9 +33,10 @@ touch "$LOCK"
 trap 'rm -f "$LOCK"' EXIT
 
 UNWRITABLE=0
-# Any repo whose index is missing or stale degrades every review on it with no
-# other visible symptom, so all causes — not just the sandbox one — have to
-# reach the exit status.
+# A repo this host DOES hold but could not (re)index — fetch, pull, index
+# failure, or an unreadable checkout — degrades every review on it with no
+# other visible symptom, so those causes reach the exit status. A repo with no
+# checkout at all is org-sync's condition, not this unit's; see the skip below.
 DEGRADED=0
 for NAME in "${!KID_PATHS[@]}"; do
     PROJECT="${KID_PATHS[$NAME]}"
