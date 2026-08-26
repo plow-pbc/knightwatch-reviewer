@@ -128,14 +128,27 @@ make_checkout() {
     git -C "$dest" init -q
     git -C "$dest" remote add origin "$2"
 }
+# The sweep now completes and republishes the manifest, so the pin is "the
+# skipped repo is not in it" rather than "the file never moved". Absence alone
+# is too weak — it also passes on a WIPED manifest, which is the erase-on-
+# failure regression these scenarios most need to catch. So: assert the file
+# exists, assert the skipped repo is gone, and assert every repo named as a
+# survivor is still there.
+#   assert_auto_excludes <skipped-repo> [surviving-repo...]
 assert_auto_excludes() {
-    # The sweep now completes and republishes the manifest, so the pin is
-    # "the skipped repo is not in it" rather than "the file never moved".
-    local repo="$1"
-    if grep -q "\"$repo\"" "$AUTO_CONF" 2>/dev/null; then
+    local repo="$1"; shift
+    [ -f "$AUTO_CONF" ] || { echo "FAIL: repos.conf.auto missing entirely — coverage erased, not pruned"; exit 1; }
+    if grep -q "\"$repo\"" "$AUTO_CONF"; then
         echo "FAIL: skipped repo $repo was published to repos.conf.auto"
         cat "$AUTO_CONF"; exit 1
     fi
+    local kept
+    for kept in "$@"; do
+        grep -q "\"$kept\"" "$AUTO_CONF" || {
+            echo "FAIL: surviving repo $kept was dropped from repos.conf.auto — a skip shrank coverage"
+            cat "$AUTO_CONF"; exit 1
+        }
+    done
 }
 assert_auto_unchanged() {
     local before="$1" after
@@ -353,9 +366,40 @@ for r in good-one good-two; do
     [ -d "$HOME/services/kwr-repos/$r/.git" ] || { echo "FAIL scenario 10b: $r was not cloned — one bad mirror stranded the sweep"; cat "$LOG"; exit 1; }
     grep -q "\"acme/$r\"" "$AUTO_CONF" || { echo "FAIL scenario 10b: $r missing from repos.conf.auto"; cat "$AUTO_CONF"; exit 1; }
 done
-assert_auto_excludes "acme/moved"
+assert_auto_excludes "acme/moved" "acme/good-one" "acme/good-two"
 grep -q 'skipping this repo' "$LOG" || { echo "FAIL scenario 10b: expected a per-repo skip line"; cat "$LOG"; exit 1; }
 grep -q 'FAILED: 1 repo(s) skipped' "$LOG" || { echo "FAIL scenario 10b: expected the end-of-sweep skip summary"; cat "$LOG"; exit 1; }
+
+# --- Scenario 10c: a skip must never SHRINK existing coverage ----------------
+# The erase-on-failure pin. Same invariant the kwr_config_valid and
+# `gh repo list` guards protect: a FAILURE must never be published as
+# "this repo is gone". A repo already in the manifest that later fails
+# vouching keeps its entry — exactly as the old whole-sweep abort left it.
+echo "  scenario 10c: already-tracked repo starts failing — entry carried forward, not erased..."
+write_baseline_conf '"acme"'
+rm -f "$AUTO_CONF"
+rm -rf "$HOME/services/kwr-repos/tracked"
+# Tick 1: clean discovery puts acme/tracked in the manifest.
+MOCK_GH_LIST_acme="tracked" run_sync || { echo "FAIL scenario 10c: setup tick exited non-zero"; cat "$LOG"; exit 1; }
+grep -q '"acme/tracked"' "$AUTO_CONF" || { echo "FAIL scenario 10c: setup tick did not publish acme/tracked"; cat "$AUTO_CONF"; exit 1; }
+# Tick 2: its mirror goes bad (transfer leaves a stale origin).
+git -C "$HOME/services/kwr-repos/tracked" remote set-url origin "git@github.com:oldorg/tracked.git"
+if MOCK_GH_LIST_acme="tracked" run_sync; then
+    echo "FAIL scenario 10c: org-sync returned 0 despite a skipped repo"; cat "$LOG"; exit 1
+fi
+grep -q '"acme/tracked"' "$AUTO_CONF" || { echo "FAIL scenario 10c: a failing mirror ERASED its manifest entry — coverage lost on failure"; cat "$AUTO_CONF"; exit 1; }
+grep -q 'keeping its existing manifest entry' "$LOG" || { echo "FAIL scenario 10c: expected the carry-forward log line"; cat "$LOG"; exit 1; }
+
+# --- Scenario 10d: every repo skipping leaves the manifest byte-identical -----
+# The header-only-wipe pin: if the whole sweep skips, carry-forward makes the
+# rewrite a no-op rather than publishing an empty coverage set.
+echo "  scenario 10d: all repos skip — manifest unchanged, not wiped to a header..."
+SHA_BEFORE=$(auto_sha)
+if MOCK_GH_LIST_acme="tracked" run_sync; then
+    echo "FAIL scenario 10d: org-sync returned 0 despite a skipped repo"; cat "$LOG"; exit 1
+fi
+assert_auto_unchanged "$SHA_BEFORE"
+grep -q '"acme/tracked"' "$AUTO_CONF" || { echo "FAIL scenario 10d: manifest wiped to header-only"; cat "$AUTO_CONF"; exit 1; }
 
 # --- Scenario 11: lock contention — concurrent run defers ------------------
 # When the systemd timer fires while an operator's shell-launched run
@@ -504,4 +548,4 @@ n=$(count_gh "repo clone")
 grep -q 'github rate-limited — skipping org sync' "$LOG" || { echo "FAIL scenario 15: expected the rate-limit skip log line"; cat "$LOG"; exit 1; }
 
 
-echo "  PASS (16 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, clone-failure-no-mutation, one-bad-mirror-does-not-strand-sweep, lock-held-defers, kwr-config-overlay, broken-config-fail-loud, repos-conf-file-override, rate-limit-skips-tick)"
+echo "  PASS (18 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, clone-failure-no-mutation, one-bad-mirror-does-not-strand-sweep, skip-carries-coverage-forward, all-skip-leaves-manifest-intact, lock-held-defers, kwr-config-overlay, broken-config-fail-loud, repos-conf-file-override, rate-limit-skips-tick)"

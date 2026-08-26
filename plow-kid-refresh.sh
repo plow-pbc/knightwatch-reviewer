@@ -33,6 +33,10 @@ touch "$LOCK"
 trap 'rm -f "$LOCK"' EXIT
 
 UNWRITABLE=0
+# Any repo whose index is missing or stale degrades every review on it with no
+# other visible symptom, so all causes — not just the sandbox one — have to
+# reach the exit status.
+DEGRADED=0
 for NAME in "${!KID_PATHS[@]}"; do
     PROJECT="${KID_PATHS[$NAME]}"
 
@@ -66,12 +70,14 @@ for NAME in "${!KID_PATHS[@]}"; do
             log "$NAME: initial index complete at $(git rev-parse --short HEAD 2>/dev/null)"
         else
             log "$NAME: initial index failed"
+            DEGRADED=$((DEGRADED + 1))
         fi
         continue
     fi
 
     if ! git fetch origin main --quiet 2>>"$LOG"; then
         log "$NAME: git fetch failed — skipping"
+        DEGRADED=$((DEGRADED + 1))
         continue
     fi
 
@@ -85,6 +91,7 @@ for NAME in "${!KID_PATHS[@]}"; do
     log "$NAME: new commits ${LOCAL:0:7} → ${REMOTE:0:7}, pulling and re-indexing"
     if ! git pull --ff-only --quiet 2>>"$LOG"; then
         log "$NAME: git pull --ff-only failed — skipping index"
+        DEGRADED=$((DEGRADED + 1))
         continue
     fi
 
@@ -93,6 +100,7 @@ for NAME in "${!KID_PATHS[@]}"; do
         log "$NAME: index complete at $(git rev-parse --short HEAD)"
     else
         log "$NAME: kid index failed"
+        DEGRADED=$((DEGRADED + 1))
     fi
 done
 
@@ -101,5 +109,10 @@ done
 # visible symptom, so surface it as a failed unit rather than a log line.
 if [ "$UNWRITABLE" -gt 0 ]; then
     log "FAILED: $UNWRITABLE repo(s) outside this unit's ReadWritePaths — re-run install.sh to re-render the sandbox from repos.conf"
+fi
+if [ "$DEGRADED" -gt 0 ]; then
+    log "FAILED: $DEGRADED repo(s) left without a fresh index — see the per-repo lines above"
+fi
+if [ $((UNWRITABLE + DEGRADED)) -gt 0 ]; then
     exit 1
 fi

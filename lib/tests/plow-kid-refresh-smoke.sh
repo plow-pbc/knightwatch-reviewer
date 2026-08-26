@@ -44,7 +44,7 @@ export STUB_GIT_LOG="$STATE_DIR/git-calls.log"
 cat > "$HOME/.local/bin/kid" <<'STUB'
 #!/bin/bash
 echo "KID $*" >> "${STUB_KID_LOG:-/dev/null}"
-exit 0
+exit "${MOCK_KID_EXIT:-0}"
 STUB
 chmod +x "$HOME/.local/bin/kid"
 
@@ -177,4 +177,19 @@ grep -q 'not writable under this unit.s sandbox' "$LOG" || { echo "FAIL scenario
 grep -q 'install.sh' "$LOG" || { echo "FAIL scenario 6: log line must name the remedy (re-run install.sh)"; cat "$LOG"; exit 1; }
 [ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 6: refresh exited 0 despite a repo it could never index"; cat "$LOG"; exit 1; }
 
-echo "  PASS (6 scenarios: empty-noop, missing-checkout-skip, bootstrap-on-no-.keepitdry, no-new-commits-noop, new-commits-pull-then-index, unwritable-project-skipped-loudly)"
+# Scenario 7: kid itself fails → the repo has no fresh index, so the unit must
+# not report success. A missing index is invisible at review time (reviews just
+# silently lose semantic context), which is the whole failure mode being fixed —
+# the read-only sandbox was only one cause of it.
+echo "  scenario 7: kid index fails — counted as degraded, non-zero exit..."
+PROJ="$TMPDIR/proj-kidfail"
+mkdir -p "$PROJ/.git"
+cat > "$STATE_DIR/repos.conf" <<CONF
+REPOS=("acme/kidfail")
+declare -A KID_PATHS=([acme/kidfail]="$PROJ")
+CONF
+MOCK_KID_EXIT=1 run_refresh
+grep -q 'initial index failed' "$LOG" || { echo "FAIL scenario 7: expected the index-failure log line"; cat "$LOG"; exit 1; }
+[ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 7: refresh exited 0 with a repo left un-indexed"; cat "$LOG"; exit 1; }
+
+echo "  PASS (7 scenarios: empty-noop, missing-checkout-skip, bootstrap-on-no-.keepitdry, no-new-commits-noop, new-commits-pull-then-index, unwritable-project-skipped-loudly, index-failure-is-not-success)"
