@@ -16,35 +16,34 @@ cd "$(dirname "$0")"
 # the container has one contract regardless of any inherited env. The worker
 # otherwise defaults both to $HOME/.pr-reviewer/{lib,prompts}, which doesn't
 # exist in the image (reviews abort at `probe-schema.md missing`).
-export REVIEWER_LIB_DIR="$(pwd)/lib"
-export PROMPTS_DIR="$(pwd)/prompts"
+#
+# GH_TOKEN first, because gh_quota_report runs `gh api rate_limit` in THIS
+# shell: config.env is mounted root-only and used to be read only by child
+# processes (review.sh -> tracked-repos.sh), so the probe ran unauthenticated,
+# failed, and the whole quota report was silent in production while every test
+# passed. Read the file directly rather than through the manifest loader — that
+# loader also brings repo enumeration, manifest overlays and kwr-config
+# validation, none of which this loop touches.
+#
+# The re-pin below the source is load-bearing, and self-enforcing rather than
+# fenced: config.env is operator-editable, so a stray REVIEWER_LIB_DIR /
+# PROMPTS_DIR / STATE_DIR there would redirect lib and prompt resolution and
+# every gh_*_file() in this shell. Because state-io.sh is then sourced THROUGH
+# the re-pinned REVIEWER_LIB_DIR, deleting the re-pin breaks the container
+# loudly at startup instead of quietly at runtime — the shape holds itself, so
+# no source-order test has to hold it. STATE_DIR fails loud when absent for the
+# same reason a conditional restore would not: compose also sets
+# CONFIG_ENV_FILE, so nothing else would dereference it and `set -u` would not
+# catch a config.env value winning.
+_KWR_STATE_DIR="${STATE_DIR:?review-loop.sh requires STATE_DIR from the compose environment}"
+source "${CONFIG_ENV_FILE:?review-loop.sh requires CONFIG_ENV_FILE from the compose environment}" \
+    || { echo "review-loop.sh: cannot read $CONFIG_ENV_FILE — GH_TOKEN unavailable, so the quota probe would run unauthenticated and report nothing" >&2; exit 1; }
+export REVIEWER_LIB_DIR="$(pwd)/lib" PROMPTS_DIR="$(pwd)/prompts" STATE_DIR="$_KWR_STATE_DIR"
+unset _KWR_STATE_DIR
 # Shared logger (timestamp + [w<WORKER_ID>] tag). LOG_FILE is unset here —
 # review.sh sets it later — so log() falls back to stdout-only, which is what
 # the container stream wants anyway.
 source "$REVIEWER_LIB_DIR/state-io.sh"
-# Also the config loader, for GH_TOKEN. gh_quota_report runs `gh api rate_limit`
-# in THIS shell, but config.env is mounted root-only and was previously loaded
-# only by child processes (review.sh -> tracked-repos.sh) — so the probe ran
-# unauthenticated, failed, and the whole quota report was silent in production
-# while every test passed. Reusing the existing loader rather than re-reading
-# config.env here keeps one owner for CONFIG_ENV_FILE resolution.
-#
-# Which is exactly why the paths above are re-asserted below it: the loader
-# sources an operator-editable config.env into THIS shell now, not just into
-# review.sh's child, so a stray STATE_DIR/REVIEWER_LIB_DIR/PROMPTS_DIR there
-# would redirect lib and prompt resolution and every gh_*_file() in this loop.
-# Same re-pin the MAX_CONCURRENT/WAIT_FOR_WORKERS lines below already do, and
-# the same hazard REVIEWER_CONTAINER_MODE exists for.
-# STATE_DIR is pinned UNCONDITIONALLY, and fails loud when absent. A conditional
-# restore re-asserts nothing when it arrives unset — and compose also sets
-# CONFIG_ENV_FILE and REPOS_CONF_FILE, so the loader never dereferences
-# ${STATE_DIR} and `set -u` would not catch it either; a config.env STATE_DIR
-# would then silently win and point gh_pause_file() at a private path, leaving
-# this loop blind to the fleet-wide pause it gates every tick on.
-_KWR_STATE_DIR="${STATE_DIR:?review-loop.sh requires STATE_DIR from the compose environment}"
-source "$REVIEWER_LIB_DIR/tracked-repos.sh"
-export REVIEWER_LIB_DIR="$(pwd)/lib" PROMPTS_DIR="$(pwd)/prompts" STATE_DIR="$_KWR_STATE_DIR"
-unset _KWR_STATE_DIR
 POLL_SECS="${POLL_SECS:-30}"
 # Time floor for refreshing the eligible-PR queue GLOBALLY: one container per
 # window runs the GraphQL enumerate (election-serialized) and writes queue.json;

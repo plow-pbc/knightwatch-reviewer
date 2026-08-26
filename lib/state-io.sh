@@ -51,12 +51,6 @@ seen_get() {
 # (seen_set_value). The two public writers are thin wrappers over this.
 _seen_write() {
     local file="$1" key="$2" value_expr="$3" value="${4:-}"
-    # Provision the store's directory. Every prior caller happened to write into
-    # a STATE_DIR that bootstrap had already made, so a missing parent surfaced
-    # as three cryptic redirect errors and an "unbound variable" from the lock
-    # subshell rather than as anything nameable. Owning it here fixes that for
-    # every caller instead of pushing an mkdir into each one.
-    mkdir -p "$(dirname "$file")" 2>/dev/null || true
     [ -f "$file" ] || echo '{}' > "$file"
     local lockfile="${file}.lock"
     if ! (
@@ -198,31 +192,18 @@ gh_endpoint_shape() {
 }
 
 # One O_APPEND line per attempted call. Short appends are atomic, so this needs
-# no lock, and a report truncating concurrently can only drop a sample — this is
+# no lock, and a reader truncating concurrently can only drop a sample — this is
 # telemetry, not state, so a lost line costs nothing while a lock on the hot
 # path would cost real latency on every call the fleet makes.
+#
+# No writer-side cap, deliberately. Every producer drains: gh_retry reports at
+# the seam before each call it makes, so the window is emptied every
+# GH_QUOTA_REPORT_SECS by whichever half calls first, and there is no path that
+# appends without also draining. A cap would be a second unlocked truncation
+# owner, plus a byte-size contract on the fleet's hottest path, guarding a
+# failure this shape cannot reach.
 gh_tally_call() {
-    local f; f=$(gh_tally_file)
-    # Cap BEFORE this attempt's append, not after it. Truncating after meant the
-    # crossing attempt erased its own sample, so if THAT attempt drew the 403 the
-    # incident diagnostic rendered no `top callers` at all — blank attribution on
-    # the one call this telemetry exists to explain. Checking first leaves the
-    # crossing attempt in the window, so a trip always names at least the call
-    # that tripped. It is a BACKSTOP either way: gh_retry drains the window on
-    # every successful call, so the cap is effectively unreachable.
-    local max="${GH_TALLY_MAX_BYTES:-131072}"
-    if [ "$(wc -c < "$f" 2>/dev/null || echo 0)" -gt "$max" ] 2>/dev/null; then
-        # TRUNCATE, don't compact. The read-modify-write this replaces could
-        # snapshot the tail, have gh_top_callers report AND truncate in between,
-        # then write the snapshot back — resurrecting already-consumed samples as
-        # fresh attribution on the next interval. A plain truncate has nothing to
-        # restore, so the race is gone without putting a lock on a path eleven
-        # producers append to, and it is fewer lines than the version that had
-        # the bug. In place, because the inode is bind-pinned.
-        : > "$f" 2>/dev/null || true
-    fi
-    printf '%s\n' "$(gh_endpoint_shape "$@")" >> "$f" 2>/dev/null || true
-    return 0
+    printf '%s\n' "$(gh_endpoint_shape "$@")" >> "$(gh_tally_file)" 2>/dev/null || true
 }
 
 # Top N endpoint shapes SINCE THE LAST LOOK, comma-joined. Reading consumes the

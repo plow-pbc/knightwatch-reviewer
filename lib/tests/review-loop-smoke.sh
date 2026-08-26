@@ -26,6 +26,10 @@ make_sandbox() {
     # startup auth guard reads the sandbox, never the operator's real ~/.codex
     # (which would make these cases pass or fail on the host's login state).
     mkdir -p "$d/codex"; echo '{}' > "$d/codex/auth.json"   # non-empty: the guard tests -s
+    # review-loop.sh reads GH_TOKEN straight out of config.env — the quota probe
+    # runs in ITS shell, and reading the file only in child processes is what
+    # shipped that report inert. Compose always mounts one, so the sandbox does too.
+    printf 'export GH_TOKEN=ghp_fake_for_smoke\n' > "$d/config.env"
     echo "$d"
 }
 
@@ -33,7 +37,7 @@ make_sandbox() {
 d=$(make_sandbox)
 printf '#!/bin/bash\nexit 1\n' > "$d/bin/docker"; chmod +x "$d/bin/docker"    # `docker info` always fails
 printf '#!/bin/bash\nexit 0\n' > "$d/review.sh"; chmod +x "$d/review.sh"
-if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" ./review-loop.sh ) >/dev/null 2>&1; then
+if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" CONFIG_ENV_FILE="$d/config.env" ./review-loop.sh ) >/dev/null 2>&1; then
     fail "review-loop exited 0 when the dind daemon never came up (should fail loud)"
 fi
 rm -rf "$d"
@@ -54,7 +58,7 @@ chmod +x "$d/review.sh"
 # (the contract that broke in the bot's worker, which exports REVIEWER_LIB_DIR):
 # review-loop must override them to the in-image paths, not honor the caller.
 if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" \
-        CODEX_HOME="$d/codex" \
+        CODEX_HOME="$d/codex" CONFIG_ENV_FILE="$d/config.env" \
         REVIEWER_LIB_DIR=/bogus/inherited/lib PROMPTS_DIR=/bogus/inherited/prompts \
         ./review-loop.sh ) >/dev/null 2>&1; then
     fail "review-loop exited 0 on a fatal (non-zero) review.sh tick (should exit for restart)"
@@ -63,6 +67,21 @@ grep -q "REVIEWER_LIB_DIR=$d/lib" "$d/env.seen"     || fail "REVIEWER_LIB_DIR no
 grep -q "PROMPTS_DIR=$d/prompts" "$d/env.seen"      || fail "PROMPTS_DIR not forced to \$repo/prompts (caller env leaked through)"
 grep -q "MAX_CONCURRENT=1" "$d/env.seen"            || fail "MAX_CONCURRENT not pinned to 1"
 grep -q "WAIT_FOR_WORKERS=1" "$d/env.seen"          || fail "WAIT_FOR_WORKERS not set (one-review-per-account cap)"
+rm -rf "$d"
+
+# 2b. No readable config.env → fail loud, don't tick. GH_TOKEN lives there and
+# the quota probe runs in THIS shell; loading it only in child processes is
+# exactly how that report shipped inert, so a guarded source that quietly
+# continues would restore the silence rather than the token.
+d=$(make_sandbox)
+printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"; chmod +x "$d/bin/docker"
+printf '#!/bin/bash\ntouch called\nexit 0\n' > "$d/review.sh"; chmod +x "$d/review.sh"
+rm -f "$d/config.env"
+if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" \
+        CODEX_HOME="$d/codex" CONFIG_ENV_FILE="$d/config.env" ./review-loop.sh ) >/dev/null 2>&1; then
+    fail "review-loop exited 0 with an unreadable config.env — the quota probe would run unauthenticated and report nothing"
+fi
+[ ! -e "$d/called" ] || fail "review-loop ticked review.sh with no readable config.env (should refuse before the loop)"
 rm -rf "$d"
 
 # 4. Quota backoff: a FUTURE paused-until epoch → review-loop never calls review.sh; PAST → resumes.
@@ -74,11 +93,11 @@ printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$d/state/pool/solo/quota-paused-unt
 # Backdate AFTER the file write (creating a file bumps the dir mtime): the
 # loop's registration touch is then the only thing that can freshen it — the pin.
 touch -d '3 hours ago' "$d/state/pool/solo"
-( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" ./review-loop.sh ) >/dev/null 2>&1 || true
+( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" CONFIG_ENV_FILE="$d/config.env" ./review-loop.sh ) >/dev/null 2>&1 || true
 [ ! -e "$d/called" ] || fail "review-loop ran review.sh while quota-paused (should skip the tick)"
 [ "$(stat -c %Y "$d/state/pool/solo")" -gt $(( $(date +%s) - 3600 )) ] || fail "loop tick did not touch the account dir (liveness registration unpinned)"
 printf '%s\n' "$(( $(date +%s) - 10 ))" > "$d/state/pool/solo/quota-paused-until"
-( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" ./review-loop.sh ) >/dev/null 2>&1 || true
+( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" CONFIG_ENV_FILE="$d/config.env" ./review-loop.sh ) >/dev/null 2>&1 || true
 [ -e "$d/called" ] || fail "review-loop skipped the tick with a PAST quota epoch (should resume)"
 rm -rf "$d"
 
@@ -95,11 +114,11 @@ printf '#!/bin/bash\ntouch "%s/called"\nexit 1\n' "$d" > "$d/review.sh"; chmod +
 mkdir -p "$d/state/pool/solo"   # review-loop's registration, done test-side
 ( cd "$d" && STATE_DIR="$d/state" CODEX_HOME="$d/codex" bash -c '. lib/state-io.sh && mark_auth_offline' )
 [ -s "$d/state/pool/solo/auth-offline" ] || fail "mark_auth_offline did not write the auth-offline marker"
-( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" ./review-loop.sh ) >/dev/null 2>&1 || true
+( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" CONFIG_ENV_FILE="$d/config.env" ./review-loop.sh ) >/dev/null 2>&1 || true
 [ ! -e "$d/called" ] || fail "review-loop ran review.sh while auth-offline (should skip until re-login)"
 # Simulate operator re-login: bump auth.json mtime past the marker.
 touch -d "+1 hour" "$d/codex/auth.json"
-( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" ./review-loop.sh ) >/dev/null 2>&1 || true
+( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" CONFIG_ENV_FILE="$d/config.env" ./review-loop.sh ) >/dev/null 2>&1 || true
 [ -e "$d/called" ] || fail "review-loop stayed offline after re-login (newer auth.json mtime should resume)"
 [ ! -e "$d/state/pool/solo/auth-offline" ] || fail "review-loop did not clear the auth-offline marker after re-login"
 rm -rf "$d"
@@ -112,7 +131,7 @@ d=$(make_sandbox)
 printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"; chmod +x "$d/bin/docker"   # dind ready
 printf '#!/bin/bash\ntouch "%s/called"\nexit 0\n' "$d" > "$d/review.sh"; chmod +x "$d/review.sh"
 rm -f "$d/codex/auth.json"
-if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" ./review-loop.sh ) >/dev/null 2>&1; then
+if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" CONFIG_ENV_FILE="$d/config.env" ./review-loop.sh ) >/dev/null 2>&1; then
     fail "review-loop exited 0 with no codex auth.json (unprovisioned account should fail loud)"
 fi
 [ ! -e "$d/called" ] || fail "review-loop claimed a review with no codex auth.json (should never reach review.sh)"

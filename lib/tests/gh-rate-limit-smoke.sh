@@ -696,48 +696,24 @@ grep -q 'core=?/? graphql=?/? remaining' "$TMP/log27b" \
     || fail "scenario 27b: an unmeasured bucket did not render as '?': $(cat "$TMP/log27b")"
 reset_state
 
-echo "  scenario 28: the tally is capped at the writer, in place, without a read-modify-write..."
-# The cap exists because on the host neither consumer runs on the happy path (the
-# periodic report is container-only, the trip diagnostic is rare by design), so
-# without it the timers would append forever with no reaper.
+echo "  scenario 28: the drain truncates IN PLACE, keeping the inode..."
+# The tally is a bind-mounted FILE, and docker pins a file bind to its SOURCE
+# inode — so a drain that REPLACES the file leaves every already-running
+# container appending to the orphan while the host writes the new one, silently
+# restoring the split the bind exists to close.
 #
-# It TRUNCATES rather than compacting. A tail-snapshot-then-write-back could have
-# gh_top_callers report AND truncate in between, then restore the snapshot —
-# resurrecting already-consumed samples as fresh attribution the next interval.
-# One act: the loop crosses the cap many times over.
+# Tested by its actual failure mode rather than by inode NUMBER: a freed inode
+# number is immediately reused by the next temp file, so comparing `stat %i`
+# passes about as often as it fails. An open descriptor is deterministic — it IS
+# the stranded writer.
 : > "$(gh_tally_file)"
-# A writer that opened the file BEFORE the trimming — exactly a running
-# container holding the bind open. Cap set locally so the scenario is
-# self-contained rather than depending on the production default.
 exec 9>>"$(gh_tally_file)"
-for _i in $(seq 1 400); do
-    GH_TALLY_MAX_BYTES=2048 gh_tally_call api "repos/o/r/issues/$_i/comments"
-done
+gh_tally_call api "repos/o/r/collaborators/u/permission" --jq .permission
+gh_top_callers 3 >/dev/null
 printf 'STRANDED_WRITER_PROBE\n' >&9
 exec 9>&-
-BYTES=$(wc -c < "$(gh_tally_file)")
-[ "$BYTES" -le 4096 ] \
-    || fail "scenario 28: tally grew to ${BYTES}B past a 2048B cap — a host unit that never trips would grow it forever"
-# The load-bearing half, tested by its actual failure mode rather than by inode
-# NUMBER: this file is a bind-mount shared with the host timers, and docker pins
-# a file bind to its SOURCE inode, so a trim that REPLACES the file leaves every
-# already-running writer appending to the orphan while the host writes the new
-# one — silently restoring the split the bind exists to close. Comparing stat %i
-# does NOT catch it: the freed inode number is immediately reused by the next
-# temp file, so that check passes about as often as it fails. An open descriptor
-# is deterministic — it IS the stranded writer.
 grep -q 'STRANDED_WRITER_PROBE' "$(gh_tally_file)" \
-    || fail "scenario 28: a writer holding the tally open before the trim lost its append — the trim replaced the file, which under the bind strands every running container on the orphaned inode"
-# The crossing attempt must survive in its OWN attribution. Truncating after the
-# append erased it, so a 403 on exactly that attempt logged its diagnostic with
-# no top callers at all — blank attribution on the one call the telemetry exists
-# to explain. Capping first leaves it in the window. Seeded past the cap rather
-# than relying on the loop above, so "this call is the crossing one" is exact.
-: > "$(gh_tally_file)"
-for _i in $(seq 1 200); do printf 'repos/*/*/issues/*/comments\n'; done >> "$(gh_tally_file)"
-GH_TALLY_MAX_BYTES=2048 gh_tally_call api "repos/o/r/collaborators/u/permission" --jq .permission
-[ "$(cat "$(gh_tally_file)")" = 'repos/*/*/collaborators/*/permission' ] \
-    || fail "scenario 28: the attempt that crossed the cap is missing from its own attribution — a 403 on that call would log with no top callers: $(cat "$(gh_tally_file)")"
+    || fail "scenario 28: a writer holding the tally open across the drain lost its append — the drain replaced the file, which under the bind strands every running container on the orphaned inode"
 : > "$(gh_tally_file)"
 
 echo "  scenario 28b: the SEAM reports BEFORE the call, never after a side effect..."
@@ -761,7 +737,7 @@ LOG_FILE="$TMP/log28b" GH_QUOTA_REPORT_SECS=0 \
     GH_SHIM_BUCKETS="4977	$((NOW + 1200))	4775	$((NOW + 1200))	5000	5000" \
     gh api "repos/o/r/pulls/7" >/dev/null 2>/dev/null || true
 grep -q 'repos/\*/\*/collaborators/\*/permission=1' "$TMP/log28b" \
-    || fail "scenario 28b: a call through the seam did not report the window — with the entrypoint calls gone the writer-side cap would be the only reaper, and reporting only after a SUCCESS puts the probe between a side effect and its bookkeeping: $(cat "$TMP/log28b")"
+    || fail "scenario 28b: a call through the seam did not report the window — with the entrypoint calls gone nothing else reaps the window, and reporting only after a SUCCESS puts the probe between a side effect and its bookkeeping: $(cat "$TMP/log28b")"
 # The line has to land on the saved descriptor too, not only in LOG_FILE, which
 # log()'s `tee -a` fills wherever stdout points.
 grep -qa '\[gh-quota\] core=4977/5000' "$DIAG_LOG" \
@@ -783,32 +759,17 @@ reset_state; : > "$(gh_tally_file)"
 
 echo "  scenario 29: review-loop.sh loads the token before it can report quota..."
 # gh_quota_report runs `gh api rate_limit` in review-loop.sh's OWN shell, but
-# config.env (which exports GH_TOKEN) is mounted root-only and was loaded only by
-# child processes. The probe therefore ran unauthenticated, failed, and the entire
-# quota report was silent in production while every test passed — the feature
-# shipped inert. Source-grep, because the failure is a missing source line and
-# nothing else in the suite can see it.
+# config.env is mounted root-only and was loaded only by child processes. The
+# probe therefore ran unauthenticated, failed, and the entire quota report was
+# silent in production while every test passed — the feature shipped inert.
+# Source-grep, because the failure is a missing source line and nothing else in
+# the suite can see it. No order fence: state-io.sh is sourced through the
+# re-pinned REVIEWER_LIB_DIR, so a deleted re-pin breaks the container at startup
+# rather than needing a test to notice.
 LOOP_SRC=$(sed -e 's/#.*//' "$PROJECT_ROOT/review-loop.sh")
-grep -qE '^[[:space:]]*(\.|source)[[:space:]].*tracked-repos\.sh' <<<"$LOOP_SRC" \
-    || fail "scenario 29: review-loop.sh calls gh_quota_report without sourcing the config loader — the probe runs tokenless and the report is silent"
-# The loader brings an operator-editable config.env into the loop's OWN shell, so
-# the entrypoint-owned paths have to be re-asserted AFTER it or a stray
-# REVIEWER_LIB_DIR there redirects lib resolution and every gh_*_file() here.
-# Line order IS the contract, so that is what this asserts.
-# `|| true` on both binds below: under `set -euo pipefail` a no-match grep makes
-# the pipeline non-zero and the assignment would abort the suite SILENTLY, before
-# fail() can name what broke.
-_src_ln=$(grep -nE '^[[:space:]]*(\.|source)[[:space:]].*tracked-repos\.sh' "$PROJECT_ROOT/review-loop.sh" | head -1 | cut -d: -f1) || true
-# All three names, not just the first: deleting only the STATE_DIR re-assert is
-# the highest-consequence of the three (it points gh_pause_file() at a private
-# path, so the loop stops seeing the fleet-wide pause) and would otherwise leave
-# the suite green.
-for _pinned in REVIEWER_LIB_DIR PROMPTS_DIR STATE_DIR; do
-    _pin_ln=$(grep -nE "^[[:space:]]*export .*\b${_pinned}=" "$PROJECT_ROOT/review-loop.sh" | tail -1 | cut -d: -f1) || true
-    [ -n "$_src_ln" ] && [ -n "$_pin_ln" ] && [ "$_pin_ln" -gt "$_src_ln" ] \
-        || fail "scenario 29: review-loop.sh sources config.env (line ${_src_ln:-?}) without re-asserting $_pinned after it (last pin at line ${_pin_ln:-none}) — an operator config.env then redirects lib/prompt resolution and every gh_*_file() in the loop shell"
-done
+grep -qE '^[[:space:]]*(\.|source)[[:space:]].*CONFIG_ENV_FILE' <<<"$LOOP_SRC" \
+    || fail "scenario 29: review-loop.sh calls gh_quota_report without loading config.env — the probe runs tokenless and the report is silent"
 grep -qE '^[[:space:]]*gh_quota_report([[:space:]]|$)' <<<"$LOOP_SRC" \
-    || fail "scenario 29: review-loop.sh no longer CALLS gh_quota_report — the seam only reports on a SUCCESSFUL call, and while the fleet is paused gh_retry short-circuits before making one, so this tick is the only thing that reports headroom during the incident"
+    || fail "scenario 29: review-loop.sh no longer CALLS gh_quota_report — the seam only reports on a call it makes, and while the fleet is paused gh_retry short-circuits before making one, so this tick is the only thing reporting headroom during the incident"
 
 echo "PASS: gh-rate-limit-smoke"
