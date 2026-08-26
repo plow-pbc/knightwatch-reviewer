@@ -91,10 +91,28 @@ done < "$FLEET_CONF"
 # bind source as a DIRECTORY, and every `head` on it then returns empty — read as
 # NOT paused, so the fleet would never back off and the failure would be silent.
 GH_PAUSE_SRC="$HOME/.pr-reviewer/gh-rate-limited-until"
+GH_TALLY_SRC="$HOME/.pr-reviewer/gh-call-tally"
 # Left UNEXPANDED, same convention as the kwr-config mount: it resolves at
 # `compose up`, so the mount and the host units agree on one path instead of
-# baking the generating user's $HOME in at render time.
+# baking the generating user's $HOME in at render time. (This one is the pause
+# file; the call tally below rides the same mechanism.)
 GH_PAUSE_REF='${HOME}/.pr-reviewer/gh-rate-limited-until'
+# The call tally rides the same trick, and for the same reason: the host timers
+# and the containers spend one PAT, so an attribution report that can only see
+# container traffic ranks half the spend and omits poll/learn/org-sync during
+# exactly the incident it exists to diagnose. A FILE bind, so the inode is
+# pinned — which is why the compaction in lib/state-io.sh truncates IN PLACE
+# rather than temp+rename.
+GH_TALLY_REF='${HOME}/.pr-reviewer/gh-call-tally'
+# CREATE it rather than die. This runs as ExecStartPre, so a die here stops the
+# whole fleet on the documented `git pull && systemctl restart` path and it does
+# not come back until a human hand-creates a file. The pause file earns its
+# refusal — an absent one may mean a live pause was lost — but an empty tally IS
+# its correct initial state, so refusing buys no safety and costs an outage. Only
+# a non-regular path is fatal, which is the case that really is docker's doing.
+[ ! -e "$GH_TALLY_SRC" ] || [ -f "$GH_TALLY_SRC" ] \
+    || die "$GH_TALLY_SRC exists but is not a regular file — docker auto-created the bind source as a DIRECTORY, which silently drops every host-side sample. Remove it and re-render: rmdir '$GH_TALLY_SRC'"
+[ -f "$GH_TALLY_SRC" ] || install -m 0666 /dev/null "$GH_TALLY_SRC"
 [ -f "$GH_PAUSE_SRC" ] \
     || die "$GH_PAUSE_SRC not found (or not a regular file) — it is the single rate-limit pause the host timers and the containers share, and docker would auto-create it as a DIRECTORY, which reads as never-paused. Create it as the operator: install -m 0666 /dev/null $GH_PAUSE_SRC"
 # Worse for the mount sources the loader sources: docker auto-creates a missing
@@ -257,6 +275,7 @@ EOF
       - $SECRETS_REF/$acct:/root/.codex          # writable: codex refreshes its OAuth token in-home
       - $SECRETS_REF/manifest:/shared/manifest:ro
       - $GH_PAUSE_REF:/shared/gh-rate-limited-until   # the ONE pause both halves write; a FILE bind, so the inode is pinned (lib/state-io.sh)
+      - $GH_TALLY_REF:/shared/gh-call-tally           # the ONE call tally both halves append to; a FILE bind, inode pinned. UNLIKE the pause above: lossy telemetry, appended unlocked and truncated in place (lib/state-io.sh)
       - $SECRETS_REF/config.env:/root/.kwr/config.env:ro
       - $SECRETS_REF/repo-env:/root/.kwr/repo-env:ro
       - $SECRETS_REF/claude-standards:/root/.claude:ro

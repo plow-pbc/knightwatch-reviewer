@@ -22,6 +22,13 @@ export PROMPTS_DIR="$(pwd)/prompts"
 # review.sh sets it later — so log() falls back to stdout-only, which is what
 # the container stream wants anyway.
 source "$REVIEWER_LIB_DIR/state-io.sh"
+# Also the config loader, for GH_TOKEN. gh_quota_report runs `gh api rate_limit`
+# in THIS shell, but config.env is mounted root-only and was previously loaded
+# only by child processes (review.sh -> tracked-repos.sh) — so the probe ran
+# unauthenticated, failed, and the whole quota report was silent in production
+# while every test passed. Reusing the existing loader rather than re-reading
+# config.env here keeps one owner for CONFIG_ENV_FILE resolution.
+source "$REVIEWER_LIB_DIR/tracked-repos.sh"
 POLL_SECS="${POLL_SECS:-30}"
 # Time floor for refreshing the eligible-PR queue GLOBALLY: one container per
 # window runs the GraphQL enumerate (election-serialized) and writes queue.json;
@@ -78,6 +85,13 @@ while true; do
     # worker, hence pool_status's 2h threshold); stop-state writers rely on it,
     # their redirects silently fail to stick without it (unreachable here).
     mkdir -p "$(pool_state_dir)" && touch "$(pool_state_dir)"
+    # GitHub quota headroom + top callers, self-throttled to one emission per
+    # GH_QUOTA_REPORT_SECS across the fleet. Deliberately ABOVE the auth/quota/
+    # rate-limit gates below: a paused fleet is exactly when an operator needs to
+    # see the budget and who spent it, and gating the report behind the pause
+    # would blind the logs during the only interesting window. /rate_limit costs
+    # no quota, so this is free even while throttled.
+    gh_quota_report
     # Fatal auth (invalidated token) → offline until operator re-login, NOT a
     # timed pause. Checked before quota: a 401-on-refresh never yields a usage
     # cap, so without this it would fall through and spin-abort every PR.
