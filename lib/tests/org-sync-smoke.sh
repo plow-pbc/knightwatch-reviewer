@@ -370,6 +370,27 @@ assert_auto_excludes "acme/moved" "acme/good-one" "acme/good-two"
 grep -q 'skipping this repo' "$LOG" || { echo "FAIL scenario 10b: expected a per-repo skip line"; cat "$LOG"; exit 1; }
 grep -q 'FAILED: 1 repo(s) skipped' "$LOG" || { echo "FAIL scenario 10b: expected the end-of-sweep skip summary"; cat "$LOG"; exit 1; }
 
+# --- Scenario 10c: a skipped repo is DROPPED from the manifest, not kept -----
+# Pins the polarity deliberately chosen here, so it can't silently regress: an
+# earlier round of this branch shipped the opposite (carry the entry forward),
+# and every other skip scenario starts from an absent manifest, where "dropped"
+# and "carried forward" look identical. This manifest feeds host-side kid
+# prior-art clones, not review coverage (README.md § Review coverage), so a
+# repo whose mirror we refused to trust must stop being indexed rather than
+# keep pointing kid at an untrusted checkout.
+echo "  scenario 10c: already-published repo whose mirror goes bad — dropped, not carried forward..."
+write_baseline_conf '"acme"'
+rm -f "$AUTO_CONF"
+rm -rf "$HOME/services/kwr-repos/tracked"
+MOCK_GH_LIST_acme="tracked" run_sync || { echo "FAIL scenario 10c: setup tick exited non-zero"; cat "$LOG"; exit 1; }
+grep -q '"acme/tracked"' "$AUTO_CONF" || { echo "FAIL scenario 10c: setup tick did not publish acme/tracked"; cat "$AUTO_CONF"; exit 1; }
+git -C "$HOME/services/kwr-repos/tracked" remote set-url origin "git@github.com:oldorg/tracked.git"
+if MOCK_GH_LIST_acme="tracked" run_sync; then
+    echo "FAIL scenario 10c: org-sync returned 0 despite a skipped repo"; cat "$LOG"; exit 1
+fi
+assert_auto_excludes "acme/tracked"
+grep -q 'not published' "$LOG" || { echo "FAIL scenario 10c: expected the not-published skip line"; cat "$LOG"; exit 1; }
+
 # --- Scenario 11: lock contention — concurrent run defers ------------------
 # When the systemd timer fires while an operator's shell-launched run
 # is mid-clone (or vice-versa), the second invocation must skip cleanly
@@ -517,4 +538,4 @@ n=$(count_gh "repo clone")
 grep -q 'github rate-limited — skipping org sync' "$LOG" || { echo "FAIL scenario 15: expected the rate-limit skip log line"; cat "$LOG"; exit 1; }
 
 
-echo "  PASS (16 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, clone-failure-no-mutation, one-bad-mirror-does-not-strand-sweep, lock-held-defers, kwr-config-overlay, broken-config-fail-loud, repos-conf-file-override, rate-limit-skips-tick)"
+echo "  PASS (17 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, clone-failure-no-mutation, one-bad-mirror-does-not-strand-sweep, skipped-repo-dropped-not-carried-forward, lock-held-defers, kwr-config-overlay, broken-config-fail-loud, repos-conf-file-override, rate-limit-skips-tick)"

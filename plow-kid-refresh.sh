@@ -1,8 +1,8 @@
 #!/bin/bash
 # Refresh kid indexes for all tracked review repos. Runs hourly via the
-# pr-reviewer-kid-refresh.timer systemd unit. No-op per-project when
-# origin/main has no new commits. If a project has never been indexed,
-# this does a bootstrap index on first run.
+# pr-reviewer-kid-refresh.timer systemd unit. The PULL is gated on new commits;
+# the index re-runs every tick so a failed one retries (see the seam below). If
+# a project has never been indexed, this does a bootstrap index on first run.
 #
 # Naming note: this file is still called plow-kid-refresh.sh for historical
 # reasons (it predates multi-repo support). It now refreshes every kid index
@@ -46,9 +46,9 @@ for NAME in "${!KID_PATHS[@]}"; do
     # state (see install.sh's note on the `-` prefix): a partial-org repo or a
     # kwr-config .repos[] entry is tracked for review but never cloned here, so
     # tallying it would leave the unit permanently red and bury the repo that
-    # actually just went stale. And the one transient shape — org-sync carrying
-    # an entry forward past a failed re-clone — is already owned there: that
-    # sweep exits non-zero for the same repo until the clone succeeds. One
+    # actually just went stale. A repo whose mirror fails vouching doesn't reach
+    # here at all — org-sync withholds it from the manifest, so it never enters
+    # KID_PATHS, and that sweep exits non-zero until the mirror is fixed. One
     # owner per condition; org-sync owns "no mirror", this unit owns "no index".
     if [ ! -d "$PROJECT/.git" ]; then
         log "$NAME: checkout missing or not a git repo ($PROJECT) — skipping"
@@ -107,22 +107,30 @@ for NAME in "${!KID_PATHS[@]}"; do
     # The index is NOT gated on new commits. A failed index leaves HEAD already
     # advanced by the pull, so gating here would strand that repo stale until
     # some unrelated commit lands — reporting success every tick in between.
-    # kid index is incremental and costs ~0.4s when nothing changed (measured,
-    # flat from 36 to 1120 files), so retrying every tick is cheaper than
-    # tracking which SHA last indexed cleanly.
-    if kid index "$PROJECT" >> "$LOG" 2>&1; then
-        # Announce only on a tick that pulled — the every-tick retry would
-        # otherwise log a line per repo per hour and drown the ones that moved.
-        [ "$LOCAL" != "$REMOTE" ] && log "$NAME: index complete at $(git rev-parse --short HEAD)"
+    # kid index is incremental: measured in this unit's own environment, a
+    # fully-indexed repo re-runs in ~0.7s, flat from 7 to 153 files (~1min
+    # across the tracked set), so retrying is cheaper than tracking which SHA
+    # last indexed cleanly.
+    #
+    # kid's own chatter goes to a temp file, not straight to $LOG: on an
+    # unchanged tick it prints a "Skipped N unchanged files" line, and at one
+    # per repo per tick that would bury the per-repo remedies the final summary
+    # points at — in a log nothing rotates. Keep it only when it says something
+    # ($LOG-worthy): a failure, or a tick that actually pulled.
+    KID_OUT=$(mktemp)
+    if kid index "$PROJECT" > "$KID_OUT" 2>&1; then
+        if [ "$LOCAL" != "$REMOTE" ]; then
+            cat "$KID_OUT" >> "$LOG"
+            log "$NAME: index complete at $(git rev-parse --short HEAD)"
+        fi
     else
+        cat "$KID_OUT" >> "$LOG"
         log "$NAME: kid index failed"
         FAILED=$((FAILED + 1))
     fi
+    rm -f "$KID_OUT"
 done
 
-# Fail loudly: a sandbox that has drifted from the tracked-repo set degrades
-# every review on those repos (no semantic search context) with no other
-# visible symptom, so surface it as a failed unit rather than a log line.
 if [ "$FAILED" -gt 0 ]; then
     log "FAILED: $FAILED repo(s) left without a fresh index — see the per-repo remedies above"
     exit 1

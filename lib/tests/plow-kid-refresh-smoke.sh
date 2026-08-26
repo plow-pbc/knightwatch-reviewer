@@ -14,7 +14,10 @@
 #   3. KID_PATHS entry pointing to a .git dir with NO .keepitdry → bootstrap
 #      `kid index` call (initial-index path).
 #   4. KID_PATHS entry pointing to .git + .keepitdry, no new commits
-#      (LOCAL == REMOTE) → no `kid index` call (no-op tick).
+#      (LOCAL == REMOTE) → no `git pull`, but the index still re-runs.
+#   4b. Index fails on the tick that pulled → retries on the next tick, when
+#      the already-advanced HEAD makes LOCAL == REMOTE again (the stale-index
+#      seam: gating the index on new commits stranded it silently).
 #   5. KID_PATHS entry pointing to .git + .keepitdry, new commits
 #      (LOCAL != REMOTE) → `git pull` then `kid index` call.
 
