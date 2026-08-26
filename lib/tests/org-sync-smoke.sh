@@ -23,7 +23,8 @@ mkdir -p "$HOME/.local/bin"
 export PATH="$HOME/.local/bin:$PATH"
 
 export STATE_DIR="$TMPDIR/state"
-export LOG="$STATE_DIR/org-sync.log"
+export LOG_FILE="$STATE_DIR/org-sync.log"
+STDOUT_CAP="$STATE_DIR/stdout-capture.log"
 # LOCK NOT overridden — production default $STATE_DIR/org-sync.lock
 # flows through (STATE_DIR is sandboxed), exercising the shared-lock
 # path systemd uses.
@@ -104,7 +105,13 @@ chmod +x "$HOME/.local/bin/gh"
 run_sync() {
     : > "$STUB_GH_LOG"
     # Do NOT rm the lock file — flock releases on FD close.
-    bash "$PROJECT_ROOT/org-sync.sh" >/dev/null 2>&1
+    # Capture stdout rather than discard it: state-io's log() TEES to both, and a
+    # non-teeing shadow writes $LOG_FILE identically — so every assertion reading
+    # only the file passes with the shadow back, however it is spelled. This unit
+    # is StandardOutput=journal and fires hourly, so the tee is what an operator
+    # running `journalctl -u pr-reviewer-org-sync` actually depends on.
+    : > "$STDOUT_CAP"
+    bash "$PROJECT_ROOT/org-sync.sh" >"$STDOUT_CAP" 2>&1
 }
 
 count_gh() { grep -c "^GH $1" "$STUB_GH_LOG" 2>/dev/null || true; }
@@ -185,7 +192,7 @@ echo "  scenario 1: empty ORGS — no gh calls + stale auto file truncated..."
 # ORGS should drop that coverage on the next tick.
 echo 'REPOS+=("stale/auto")' > "$AUTO_CONF"
 write_baseline_conf
-run_sync || { echo "FAIL scenario 1: org-sync exited non-zero"; cat "$LOG"; exit 1; }
+run_sync || { echo "FAIL scenario 1: org-sync exited non-zero"; cat "$LOG_FILE"; exit 1; }
 [ ! -f "$AUTO_CONF" ] || { echo "FAIL scenario 1: stale auto file not removed"; cat "$AUTO_CONF"; exit 1; }
 n=$(count_gh "repo list")
 [ "$n" -eq 0 ] || { echo "FAIL scenario 1: expected 0 gh repo list calls, got $n"; cat "$STUB_GH_LOG"; exit 1; }
@@ -193,7 +200,7 @@ n=$(count_gh "repo list")
 # --- Scenario 2: discover + clone ---------------------------------------------
 echo "  scenario 2: new repo discovered → cloned, auto file populated, manual preserved..."
 write_baseline_conf '"acme"'
-MOCK_GH_LIST_acme=$'foo\nbar' run_sync || { echo "FAIL scenario 2: org-sync exited non-zero"; cat "$LOG"; exit 1; }
+MOCK_GH_LIST_acme=$'foo\nbar' run_sync || { echo "FAIL scenario 2: org-sync exited non-zero"; cat "$LOG_FILE"; exit 1; }
 n=$(count_gh "repo clone")
 [ "$n" -eq 2 ] || { echo "FAIL scenario 2: expected 2 clone calls, got $n"; cat "$STUB_GH_LOG"; exit 1; }
 [ -d "$HOME/services/kwr-repos/foo/.git" ] || { echo "FAIL scenario 2: $HOME/services/kwr-repos/foo not cloned"; exit 1; }
@@ -230,7 +237,7 @@ got=$(
 # --- Scenario 3: idempotent re-run --------------------------------------------
 echo "  scenario 3: rerun with same gh state — cmp-skip, no rewrite, no new clones..."
 SHA=$(auto_sha)
-MOCK_GH_LIST_acme=$'foo\nbar' run_sync || { echo "FAIL scenario 3: org-sync exited non-zero"; cat "$LOG"; exit 1; }
+MOCK_GH_LIST_acme=$'foo\nbar' run_sync || { echo "FAIL scenario 3: org-sync exited non-zero"; cat "$LOG_FILE"; exit 1; }
 assert_auto_unchanged "$SHA"
 n=$(count_gh "repo clone")
 [ "$n" -eq 0 ] || { echo "FAIL scenario 3: expected 0 clones on rerun, got $n"; cat "$STUB_GH_LOG"; exit 1; }
@@ -240,7 +247,7 @@ echo "  scenario 4: existing checkout with matching origin — reused, no clone.
 write_baseline_conf '"acme"'
 rm -f "$AUTO_CONF"
 make_checkout baz "git@github.com:acme/baz.git"
-MOCK_GH_LIST_acme="baz" run_sync || { echo "FAIL scenario 4: org-sync exited non-zero"; cat "$LOG"; exit 1; }
+MOCK_GH_LIST_acme="baz" run_sync || { echo "FAIL scenario 4: org-sync exited non-zero"; cat "$LOG_FILE"; exit 1; }
 n=$(count_gh "repo clone")
 [ "$n" -eq 0 ] || { echo "FAIL scenario 4: expected 0 clones (existing checkout), got $n"; cat "$STUB_GH_LOG"; exit 1; }
 grep -q '"acme/baz"' "$AUTO_CONF" || { echo "FAIL scenario 4: acme/baz not in $AUTO_CONF"; cat "$AUTO_CONF"; exit 1; }
@@ -251,13 +258,19 @@ write_baseline_conf '"acme"'
 rm -f "$AUTO_CONF"
 make_checkout evil "git@github.com:attacker/evil.git"
 if MOCK_GH_LIST_acme="evil" run_sync; then
-    echo "FAIL scenario 5: org-sync returned 0 on wrong-origin checkout"; cat "$LOG"; exit 1
+    echo "FAIL scenario 5: org-sync returned 0 on wrong-origin checkout"; cat "$LOG_FILE"; exit 1
 fi
 assert_auto_excludes "acme/evil"
-grep -q 'origin does not match github.com/acme/evil' "$LOG" || { echo "FAIL scenario 5: expected origin-mismatch log line"; cat "$LOG"; exit 1; }
-if grep -q 'attacker/evil' "$LOG"; then
+grep -q 'origin does not match github.com/acme/evil' "$LOG_FILE" || { echo "FAIL scenario 5: expected origin-mismatch log line"; cat "$LOG_FILE"; exit 1; }
+# ...and on STDOUT. This unit is StandardOutput=journal, so a non-teeing log()
+# shadow would satisfy the file assertion above while making the whole hourly run
+# invisible to `journalctl -u pr-reviewer-org-sync` — the defect that has now
+# recurred three times, pinned here by behaviour rather than by how it is spelled.
+grep -q 'origin does not match github.com/acme/evil' "$STDOUT_CAP" \
+    || { echo "FAIL scenario 5: the log line never reached stdout — a non-teeing log() makes this unit's whole run invisible to journalctl"; cat "$STDOUT_CAP"; exit 1; }
+if grep -q 'attacker/evil' "$LOG_FILE"; then
     echo "FAIL scenario 5: raw remote URL leaked into log — credential exposure risk"
-    cat "$LOG"; exit 1
+    cat "$LOG_FILE"; exit 1
 fi
 
 # --- Scenario 6: spoof-host origin (substring vs exact) -----------------------
@@ -266,7 +279,7 @@ write_baseline_conf '"acme"'
 rm -f "$AUTO_CONF"
 make_checkout spoof "git@evilgithub.com:acme/spoof.git"
 if MOCK_GH_LIST_acme="spoof" run_sync; then
-    echo "FAIL scenario 6: org-sync accepted evilgithub.com spoof"; cat "$LOG"; exit 1
+    echo "FAIL scenario 6: org-sync accepted evilgithub.com spoof"; cat "$LOG_FILE"; exit 1
 fi
 assert_auto_excludes "acme/spoof"
 
@@ -276,7 +289,7 @@ write_baseline_conf '"flakyorg"'
 echo 'REPOS+=("prior/auto")' > "$AUTO_CONF"  # pre-stage a known auto file
 SHA=$(auto_sha)
 if MOCK_GH_LIST_EXIT_flakyorg=1 run_sync; then
-    echo "FAIL scenario 7: org-sync returned 0 on gh repo list failure"; cat "$LOG"; exit 1
+    echo "FAIL scenario 7: org-sync returned 0 on gh repo list failure"; cat "$LOG_FILE"; exit 1
 fi
 assert_auto_unchanged "$SHA"
 n=$(count_gh "repo clone")
@@ -286,11 +299,11 @@ n=$(count_gh "repo clone")
 echo "  scenario 8: repo disappears from gh — auto file regenerated WITHOUT it..."
 write_baseline_conf '"acme"'
 rm -f "$AUTO_CONF"
-MOCK_GH_LIST_acme=$'alpha\nbeta' run_sync || { echo "FAIL scenario 8 setup: org-sync exited non-zero"; cat "$LOG"; exit 1; }
+MOCK_GH_LIST_acme=$'alpha\nbeta' run_sync || { echo "FAIL scenario 8 setup: org-sync exited non-zero"; cat "$LOG_FILE"; exit 1; }
 expected=$'acme/alpha\nacme/beta\nmanual/keep'
 got=$(resolved_repos)
 [ "$got" = "$expected" ] || { echo "FAIL scenario 8 setup: seed REPOS mismatch — got $got"; exit 1; }
-MOCK_GH_LIST_acme="alpha" run_sync || { echo "FAIL scenario 8: org-sync exited non-zero on prune tick"; cat "$LOG"; exit 1; }
+MOCK_GH_LIST_acme="alpha" run_sync || { echo "FAIL scenario 8: org-sync exited non-zero on prune tick"; cat "$LOG_FILE"; exit 1; }
 expected=$'acme/alpha\nmanual/keep'
 got=$(resolved_repos)
 [ "$got" = "$expected" ] || { echo "FAIL scenario 8: auto-prune failed — got $got"; exit 1; }
@@ -309,7 +322,7 @@ declare -A SOURCE_PATHS=(["acme/special"]="/var/operator/custom-special")
 ORGS=("acme")
 CONF
 rm -f "$AUTO_CONF"
-MOCK_GH_LIST_acme=$'special\nother' run_sync || { echo "FAIL scenario 9: org-sync exited non-zero"; cat "$LOG"; exit 1; }
+MOCK_GH_LIST_acme=$'special\nother' run_sync || { echo "FAIL scenario 9: org-sync exited non-zero"; cat "$LOG_FILE"; exit 1; }
 got=$(resolved_kid_path "acme/special")
 [ "$got" = "/var/operator/custom-special" ] || { echo "FAIL scenario 9: KID_PATHS[acme/special] = '$got'"; exit 1; }
 got=$(resolved_kid_path "acme/other")
@@ -335,16 +348,16 @@ rm -rf "$HOME/services/kwr-repos/cant-clone"
 # branches would treat the partial as a complete clone and silently
 # publish an empty checkout into the auto manifest.
 if MOCK_GH_LIST_acme="cant-clone" MOCK_GH_CLONE_EXIT=1 run_sync; then
-    echo "FAIL scenario 10: org-sync returned 0 on clone failure"; cat "$LOG"; exit 1
+    echo "FAIL scenario 10: org-sync returned 0 on clone failure"; cat "$LOG_FILE"; exit 1
 fi
 assert_auto_excludes "acme/cant-clone"
-grep -q 'gh repo clone acme/cant-clone failed' "$LOG" || { echo "FAIL scenario 10: expected clone-failure log line"; cat "$LOG"; exit 1; }
+grep -q 'gh repo clone acme/cant-clone failed' "$LOG_FILE" || { echo "FAIL scenario 10: expected clone-failure log line"; cat "$LOG_FILE"; exit 1; }
 # Partial-clone cleanup pin: $dest MUST be gone after failure.
 [ ! -e "$HOME/services/kwr-repos/cant-clone" ] || { echo "FAIL scenario 10: partial clone left behind at $HOME/services/kwr-repos/cant-clone"; ls -la "$HOME/services/kwr-repos/cant-clone"; exit 1; }
 # Recovery tick: with MOCK_GH_CLONE_EXIT unset, clone succeeds; auto
 # file gains the new entry. The dest is fresh — no smuggled state
 # from the prior failed attempt.
-MOCK_GH_LIST_acme="cant-clone" run_sync || { echo "FAIL scenario 10 recovery: org-sync exited non-zero"; cat "$LOG"; exit 1; }
+MOCK_GH_LIST_acme="cant-clone" run_sync || { echo "FAIL scenario 10 recovery: org-sync exited non-zero"; cat "$LOG_FILE"; exit 1; }
 [ -d "$HOME/services/kwr-repos/cant-clone/.git" ] || { echo "FAIL scenario 10 recovery: clone didn't happen on recovery tick"; exit 1; }
 grep -q '"acme/cant-clone"' "$AUTO_CONF" || { echo "FAIL scenario 10 recovery: auto file missing recovered repo"; cat "$AUTO_CONF"; exit 1; }
 
@@ -356,20 +369,20 @@ grep -q '"acme/cant-clone"' "$AUTO_CONF" || { echo "FAIL scenario 10 recovery: a
 echo "  scenario 10b: one wrong-origin mirror among good repos — good ones still published..."
 write_baseline_conf '"acme"'
 rm -f "$AUTO_CONF"
-: > "$LOG"   # same scoping — 10's skip lines would otherwise satisfy these greps
+: > "$LOG_FILE"   # same scoping — 10's skip lines would otherwise satisfy these greps
 make_checkout moved "git@github.com:oldorg/moved.git"   # transferred; mirror stale
 rm -rf "$HOME/services/kwr-repos/good-one" "$HOME/services/kwr-repos/good-two"
 if MOCK_GH_LIST_acme=$'good-one\nmoved\ngood-two' run_sync; then
-    echo "FAIL scenario 10b: org-sync returned 0 despite a skipped repo"; cat "$LOG"; exit 1
+    echo "FAIL scenario 10b: org-sync returned 0 despite a skipped repo"; cat "$LOG_FILE"; exit 1
 fi
 # The whole sweep still ran: both good repos cloned AND published.
 for r in good-one good-two; do
-    [ -d "$HOME/services/kwr-repos/$r/.git" ] || { echo "FAIL scenario 10b: $r was not cloned — one bad mirror stranded the sweep"; cat "$LOG"; exit 1; }
+    [ -d "$HOME/services/kwr-repos/$r/.git" ] || { echo "FAIL scenario 10b: $r was not cloned — one bad mirror stranded the sweep"; cat "$LOG_FILE"; exit 1; }
     grep -q "\"acme/$r\"" "$AUTO_CONF" || { echo "FAIL scenario 10b: $r missing from repos.conf.auto"; cat "$AUTO_CONF"; exit 1; }
 done
 assert_auto_excludes "acme/moved" "acme/good-one" "acme/good-two"
-grep -q 'skipping this repo' "$LOG" || { echo "FAIL scenario 10b: expected a per-repo skip line"; cat "$LOG"; exit 1; }
-grep -q 'FAILED: 1 repo(s) skipped' "$LOG" || { echo "FAIL scenario 10b: expected the end-of-sweep skip summary"; cat "$LOG"; exit 1; }
+grep -q 'skipping this repo' "$LOG_FILE" || { echo "FAIL scenario 10b: expected a per-repo skip line"; cat "$LOG_FILE"; exit 1; }
+grep -q 'FAILED: 1 repo(s) skipped' "$LOG_FILE" || { echo "FAIL scenario 10b: expected the end-of-sweep skip summary"; cat "$LOG_FILE"; exit 1; }
 
 # --- Scenario 10c: a skipped repo is DROPPED from the manifest, not kept -----
 # Pins the polarity deliberately chosen here, so it can't silently regress: an
@@ -382,16 +395,16 @@ grep -q 'FAILED: 1 repo(s) skipped' "$LOG" || { echo "FAIL scenario 10b: expecte
 echo "  scenario 10c: already-published repo whose mirror goes bad — dropped, not carried forward..."
 write_baseline_conf '"acme"'
 rm -f "$AUTO_CONF"
-: > "$LOG"   # $LOG accumulates across scenarios; scope the greps below to this one
+: > "$LOG_FILE"   # $LOG_FILE accumulates across scenarios; scope the greps below to this one
 rm -rf "$HOME/services/kwr-repos/tracked"
-MOCK_GH_LIST_acme="tracked" run_sync || { echo "FAIL scenario 10c: setup tick exited non-zero"; cat "$LOG"; exit 1; }
+MOCK_GH_LIST_acme="tracked" run_sync || { echo "FAIL scenario 10c: setup tick exited non-zero"; cat "$LOG_FILE"; exit 1; }
 grep -q '"acme/tracked"' "$AUTO_CONF" || { echo "FAIL scenario 10c: setup tick did not publish acme/tracked"; cat "$AUTO_CONF"; exit 1; }
 git -C "$HOME/services/kwr-repos/tracked" remote set-url origin "git@github.com:oldorg/tracked.git"
 if MOCK_GH_LIST_acme="tracked" run_sync; then
-    echo "FAIL scenario 10c: org-sync returned 0 despite a skipped repo"; cat "$LOG"; exit 1
+    echo "FAIL scenario 10c: org-sync returned 0 despite a skipped repo"; cat "$LOG_FILE"; exit 1
 fi
 assert_auto_excludes "acme/tracked"
-grep -q 'not published' "$LOG" || { echo "FAIL scenario 10c: expected the not-published skip line"; cat "$LOG"; exit 1; }
+grep -q 'not published' "$LOG_FILE" || { echo "FAIL scenario 10c: expected the not-published skip line"; cat "$LOG_FILE"; exit 1; }
 
 # --- Scenario 11: lock contention — concurrent run defers ------------------
 # When the systemd timer fires while an operator's shell-launched run
@@ -407,11 +420,11 @@ exec 8>"$STATE_DIR/org-sync.lock"
 flock -n 8 || { echo "FAIL scenario 11 setup: could not acquire lock pre-test"; exit 1; }
 SHA=$(auto_sha)
 # Foreground sync should detect the held lock and exit 0.
-MOCK_GH_LIST_acme="held" run_sync || { echo "FAIL scenario 11: sync exited non-zero despite lock-held"; cat "$LOG"; exit 1; }
+MOCK_GH_LIST_acme="held" run_sync || { echo "FAIL scenario 11: sync exited non-zero despite lock-held"; cat "$LOG_FILE"; exit 1; }
 n=$(count_gh "repo list")
 [ "$n" -eq 0 ] || { echo "FAIL scenario 11: sync made $n gh repo list calls while lock held"; cat "$STUB_GH_LOG"; exit 1; }
 assert_auto_unchanged "$SHA"
-grep -q 'sync already running' "$LOG" || { echo "FAIL scenario 11: expected 'sync already running' log line"; cat "$LOG"; exit 1; }
+grep -q 'sync already running' "$LOG_FILE" || { echo "FAIL scenario 11: expected 'sync already running' log line"; cat "$LOG_FILE"; exit 1; }
 exec 8>&-  # Release the background lock.
 
 # ---- scenario 12: kwr-config overlay — cache pulled + config.json org enumerated
@@ -434,8 +447,8 @@ export KWR_CONFIG_DIR="$KCFG_CACHE"
 ENV
 write_baseline_conf "baseorg"
 export MOCK_GH_LIST_baseorg="baseorg/a" MOCK_GH_LIST_overlayorg="overlayorg/b"
-run_sync || { echo "FAIL scenario 12: sync exited non-zero"; cat "$LOG"; exit 1; }
-[ -f "$KCFG_CACHE/config.json" ] || { echo "FAIL scenario 12: kwr-config cache not cloned"; cat "$LOG"; exit 1; }
+run_sync || { echo "FAIL scenario 12: sync exited non-zero"; cat "$LOG_FILE"; exit 1; }
+[ -f "$KCFG_CACHE/config.json" ] || { echo "FAIL scenario 12: kwr-config cache not cloned"; cat "$LOG_FILE"; exit 1; }
 grep -q "^GH repo list overlayorg" "$STUB_GH_LOG" || { echo "FAIL scenario 12: config.json overlay org not enumerated"; cat "$STUB_GH_LOG"; exit 1; }
 grep -q "^GH repo list baseorg"   "$STUB_GH_LOG" || { echo "FAIL scenario 12: repos.conf base org not enumerated"; exit 1; }
 grep -q 'overlayorg/b' "$AUTO_CONF" || { echo "FAIL scenario 12: overlay repo not written to auto file"; cat "$AUTO_CONF"; exit 1; }
@@ -448,7 +461,7 @@ grep -q 'overlayorg/b' "$AUTO_CONF" || { echo "FAIL scenario 12: overlay repo no
     git add config.json; git commit -qm "add overlay2"; git push -q origin main
 )
 export MOCK_GH_LIST_overlay2="overlay2/c"
-run_sync || { echo "FAIL scenario 12b: re-sync exited non-zero"; cat "$LOG"; exit 1; }
+run_sync || { echo "FAIL scenario 12b: re-sync exited non-zero"; cat "$LOG_FILE"; exit 1; }
 grep -q '"overlay2"' "$KCFG_CACHE/config.json" || { echo "FAIL scenario 12b: cache not refreshed by ff-only pull"; cat "$KCFG_CACHE/config.json"; exit 1; }
 grep -q "^GH repo list overlay2" "$STUB_GH_LOG" || { echo "FAIL scenario 12b: steady-state pull did not enumerate the newly-added org"; cat "$STUB_GH_LOG"; exit 1; }
 
@@ -458,8 +471,8 @@ grep -q "^GH repo list overlay2" "$STUB_GH_LOG" || { echo "FAIL scenario 12b: st
 echo "  scenario 12c: pull failure → WARN, last-good cache reused (zero exit, overlay still enumerated)..."
 rm -rf "$KCFG_BARE"
 export MOCK_GH_LIST_baseorg="baseorg/a" MOCK_GH_LIST_overlayorg="overlayorg/b" MOCK_GH_LIST_overlay2="overlay2/c"
-run_sync || { echo "FAIL scenario 12c: sync must exit 0 on transient pull failure (last-good cache)"; cat "$LOG"; exit 1; }
-grep -q 'kwr-config sync failed' "$LOG" || { echo "FAIL scenario 12c: expected WARN log on pull failure"; cat "$LOG"; exit 1; }
+run_sync || { echo "FAIL scenario 12c: sync must exit 0 on transient pull failure (last-good cache)"; cat "$LOG_FILE"; exit 1; }
+grep -q 'kwr-config sync failed' "$LOG_FILE" || { echo "FAIL scenario 12c: expected WARN log on pull failure"; cat "$LOG_FILE"; exit 1; }
 grep -q "^GH repo list overlay2" "$STUB_GH_LOG" || { echo "FAIL scenario 12c: last-good cached overlay org not enumerated after pull failure"; cat "$STUB_GH_LOG"; exit 1; }
 unset MOCK_GH_LIST_overlayorg MOCK_GH_LIST_overlay2
 
@@ -479,9 +492,9 @@ export KWR_CONFIG_DIR="$TMPDIR/kwr-bad-cache"
 ENV
 SHA_BEFORE=$(auto_sha)
 if MOCK_GH_LIST_baseorg="baseorg/a" run_sync; then
-    echo "FAIL scenario 13: sync should have failed loud on malformed config.json"; cat "$LOG"; exit 1
+    echo "FAIL scenario 13: sync should have failed loud on malformed config.json"; cat "$LOG_FILE"; exit 1
 fi
-grep -q 'FATAL: KWR_CONFIG_REPO set but' "$LOG" || { echo "FAIL scenario 13: expected FATAL log line"; cat "$LOG"; exit 1; }
+grep -q 'FATAL: KWR_CONFIG_REPO set but' "$LOG_FILE" || { echo "FAIL scenario 13: expected FATAL log line"; cat "$LOG_FILE"; exit 1; }
 [ "$(auto_sha)" = "$SHA_BEFORE" ] || { echo "FAIL scenario 13: auto file mutated despite fail-loud abort"; exit 1; }
 rm -f "$STATE_DIR/config.env"
 
@@ -513,7 +526,7 @@ cat > "$STATE_DIR/config.env" <<ENV
 export REPOS_CONF_FILE="$MANIFEST_DIR/repos.conf"
 ENV
 MOCK_GH_LIST_acme="pinned" run_sync \
-    || { echo "FAIL scenario 14: org-sync exited non-zero"; cat "$LOG"; exit 1; }
+    || { echo "FAIL scenario 14: org-sync exited non-zero"; cat "$LOG_FILE"; exit 1; }
 if grep -q '"acme/pinned"' "$AUTO_CONF" 2>/dev/null; then
     echo "FAIL scenario 14: acme/pinned landed in the auto file — org-sync read the stale default manifest, not REPOS_CONF_FILE"
     cat "$AUTO_CONF"; exit 1
@@ -530,14 +543,14 @@ echo "  scenario 15: github rate-limited — tick skipped, auto file untouched, 
 write_baseline_conf '"acme"'
 echo 'REPOS+=("prior/auto")' > "$AUTO_CONF"
 SHA_BEFORE=$(auto_sha)
-: > "$LOG"
+: > "$LOG_FILE"
 printf '%s\n' "$(( $(date +%s) + 300 ))" > "$STATE_DIR/gh-rate-limited-until"
-MOCK_GH_LIST_acme=$'alpha\nbeta' run_sync || { echo "FAIL scenario 15: org-sync must exit 0 on a paused tick (a back-off is not a failure)"; cat "$LOG"; exit 1; }
+MOCK_GH_LIST_acme=$'alpha\nbeta' run_sync || { echo "FAIL scenario 15: org-sync must exit 0 on a paused tick (a back-off is not a failure)"; cat "$LOG_FILE"; exit 1; }
 rm -f "$STATE_DIR/gh-rate-limited-until"
 assert_auto_unchanged "$SHA_BEFORE"
 n=$(count_gh "repo clone")
 [ "$n" -eq 0 ] || { echo "FAIL scenario 15: expected 0 clones while rate-limited, got $n"; exit 1; }
-grep -q 'github rate-limited — skipping org sync' "$LOG" || { echo "FAIL scenario 15: expected the rate-limit skip log line"; cat "$LOG"; exit 1; }
+grep -q 'github rate-limited — skipping org sync' "$LOG_FILE" || { echo "FAIL scenario 15: expected the rate-limit skip log line"; cat "$LOG_FILE"; exit 1; }
 
 
 echo "  PASS (17 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, clone-failure-no-mutation, one-bad-mirror-does-not-strand-sweep, skipped-repo-dropped-not-carried-forward, lock-held-defers, kwr-config-overlay, broken-config-fail-loud, repos-conf-file-override, rate-limit-skips-tick)"
