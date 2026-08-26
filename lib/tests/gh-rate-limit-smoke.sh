@@ -740,6 +740,13 @@ LOG_FILE="$TMP/log27b" GH_QUOTA_REPORT_SECS=0 GH_SHIM_OK=1 \
 # EVERY call. Exact, because GH_SHIM_OK emits nothing of its own.
 [ ! -s "$TMP/out27b" ] \
     || fail "scenario 27b: the quota report leaked into gh's stdout — callers capture that as the API result: $(cat "$TMP/out27b")"
+# The positive half of the same pair scenario 1 carries. The two assertions below
+# are destination-blind — log()'s tee fills LOG_FILE wherever stdout points — so
+# without this, redirecting the report to /dev/null (or any non-journal sink)
+# stays green while the fleet-wide quota line vanishes from journalctl on every
+# successful call: the exact failure the GH_DIAG_FD block was written for.
+grep -qa '\[gh-quota\] core=4977/5000' "$DIAG_LOG" \
+    || fail "scenario 27b: the report never reached the saved descriptor — it has to land in the journal, not only in LOG_FILE: $(cat "$DIAG_LOG")"
 grep -q 'repos/\*/\*/collaborators/\*/permission=1' "$TMP/log27b" \
     || fail "scenario 27b: a successful call through the seam did not report the window — with the entrypoint calls gone the writer-side cap would be the only reaper: $(cat "$TMP/log27b")"
 [ ! -s "$(gh_tally_file)" ] \
