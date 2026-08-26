@@ -777,7 +777,7 @@ reset_state
 (
     exec {GH_DIAG_FD}>"$TMP/diag29"
     export GH_DIAG_FD
-    GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+    GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))	5000	5000" \
     GH_SHIM_ERR="$RATE_LIMIT_ERR" GH_SECONDARY_PAUSE_SECS=60 \
         gh api "repos/acme/repo/issues/7/comments" >/dev/null 2>"$TMP/callererr29" || true
 )
@@ -785,6 +785,14 @@ grep -q 'rate-limited on' "$TMP/diag29" \
     || fail "scenario 29: the endpoint line did not reach the saved diag fd — a caller's errfile still eats it: $(cat "$TMP/diag29")"
 grep -q 'secondary' "$TMP/diag29" \
     || fail "scenario 29: the classifier line did not reach the saved diag fd: $(cat "$TMP/diag29")"
+# ...and the probe must actually have ANSWERED. This scenario's premise is
+# "budget remains, therefore secondary", but a FAILED probe reaches the same
+# window through the fallback (scenario 26b's path), so both greps above stay
+# green on a stale bucket tuple — the shape that arrived with this file's merge,
+# where a four-field literal met a six-field gh_probe_buckets. The measured
+# figures are the one thing only a successful probe can render.
+grep -q 'core=4920/5000 graphql=4742/5000' "$TMP/diag29" \
+    || fail "scenario 29: the probe did not answer — this is the failed-probe fallback, not the budget-remains path the scenario describes: $(cat "$TMP/diag29")"
 # The ALLOCATION end of the contract, at the seam that owns it. Without this,
 # deleting gh-retry.sh's `exec {GH_DIAG_FD}>&2` block leaves every scenario above
 # green (they open the fd themselves) while every diagnostic silently returns to
