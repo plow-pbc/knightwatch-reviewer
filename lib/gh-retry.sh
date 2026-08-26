@@ -70,6 +70,28 @@ gh_retry() {
     # gh_note_rate_limit's own `gh api rate_limit` probe is a bare gh call, so it
     # is unaffected and classification still works.
     gh_pause_active && return 1
+    # Drain the window HERE, for the same reason it is filled here: every gh call
+    # in the repo routes through this function, so one call site covers every
+    # producer — container and host — by construction. The five entrypoint calls
+    # this replaces had to be held in sync by a source-shape test, which was the
+    # tell that the ownership sat in the wrong place. Self-throttled by its own
+    # stamp file, so the hot path pays a stat and an integer compare, not a probe.
+    #
+    # BEFORE the attempt, not after a successful one, and that ordering is
+    # load-bearing rather than stylistic. The probe is bounded at 15s
+    # (GH_RATE_LIMIT_PROBE_SECS), so on the success path it sat between a
+    # GitHub-side side effect and the caller's record of it: a worker timeout
+    # landing in that window leaves `gh pr comment` posted but GH_POSTED false,
+    # so the run reads as never-author-visible and the next tick reviews and
+    # posts it AGAIN. Same shape for the poller's seen-state after a successful
+    # trigger creation. Cancellation now precedes the side effect instead of
+    # splitting it from its bookkeeping, and the attempt is still attributable
+    # because gh_tally_call appends below.
+    #
+    # NOT stdout — that is the API result the caller captures — and not bare fd 2
+    # either, for the errfile-truncation reason above. `|| true` because callers
+    # run set -e and a headroom line is never worth aborting a call over.
+    gh_quota_report >&"${GH_DIAG_FD:-2}" || true
     local attempt=1 max="${GH_API_RETRY_MAX:-3}" base="${GH_API_RETRY_DELAY:-2}"
     local errfile out rc
     errfile=$(mktemp)
@@ -79,18 +101,6 @@ gh_retry() {
         gh_tally_call "$@"
         if out=$(command gh "$@" 2>"$errfile"); then
             cat "$errfile" >&2          # preserve any success-time gh warnings
-            # Drain the window HERE, for the same reason it is filled here: every
-            # gh call in the repo routes through this function, so one call site
-            # covers every producer — container and host — by construction. The
-            # five entrypoint calls this replaces had to be held in sync by a
-            # source-shape test, which was the tell that the ownership sat in the
-            # wrong place. Self-throttled by its own stamp file, so the hot path
-            # pays a stat and an integer compare, not a probe.
-            # NOT stdout — that is the API result the caller captures — and not
-            # bare fd 2 either, for the errfile-truncation reason above. `|| true`
-            # because callers run set -e and a headroom line is never worth
-            # aborting a call that succeeded.
-            gh_quota_report >&"${GH_DIAG_FD:-2}" || true
             printf '%s' "$out"
             rm -f "$errfile"
             return 0

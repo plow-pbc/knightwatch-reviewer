@@ -740,38 +740,45 @@ GH_TALLY_MAX_BYTES=2048 gh_tally_call api "repos/o/r/collaborators/u/permission"
     || fail "scenario 28: the attempt that crossed the cap is missing from its own attribution — a 403 on that call would log with no top callers: $(cat "$(gh_tally_file)")"
 : > "$(gh_tally_file)"
 
-echo "  scenario 28b: the SEAM drains the tally on a successful call..."
+echo "  scenario 28b: the SEAM reports BEFORE the call, never after a side effect..."
 # Scenarios 22-23 drive gh_quota_report directly, so deleting its call from
 # gh_retry would leave every one of them green while nothing drains the window on
 # the happy path — the inert-guard class scenario 25 fences for the tally's write
 # half. One call site at the seam is what replaced five entrypoint calls and the
-# 36-line source parser that had to hold them in sync: gh() routes every call in
-# the repo, so coverage is by construction rather than by grep.
+# source parser that had to hold them in sync: gh() routes every call in the repo,
+# so coverage is by construction rather than by grep.
+#
+# Driven first through a call that FAILS, which is the exact discriminator for
+# the ORDERING. The probe is bounded at 15s, so reporting after a successful call
+# put a blocking window between a GitHub-side side effect and the caller's record
+# of it: a worker timeout landing there leaves `gh pr comment` posted with
+# GH_POSTED still false, the run reads as never-author-visible, and the next tick
+# posts the review again. Only the pre-attempt placement reports on a call that
+# never succeeded.
 reset_state; : > "$(gh_tally_file)"; rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log28b"
 gh_tally_call api "repos/o/r/collaborators/u/permission" --jq .permission
-LOG_FILE="$TMP/log28b" GH_QUOTA_REPORT_SECS=0 GH_SHIM_OK=1 \
+LOG_FILE="$TMP/log28b" GH_QUOTA_REPORT_SECS=0 \
     GH_SHIM_BUCKETS="4977	$((NOW + 1200))	4775	$((NOW + 1200))	5000	5000" \
-    gh api "repos/o/r/pulls/7" >"$TMP/out28b" 2>&1
-# gh_retry's stdout IS the API result its callers capture, so only the
-# >&GH_DIAG_FD redirect keeps the report out of that value — and log()'s own
-# `tee -a "$LOG_FILE"` fills the file below whether or not the redirect is there.
-# Assert the emptiness too, or dropping the redirect prepends a timestamped log
-# line to every successful call's JSON with the whole suite still green. Scenario
-# 1 fences the same hazard for the failure-path diagnostic; this path runs on
-# EVERY call. Exact, because GH_SHIM_OK emits nothing of its own.
-[ ! -s "$TMP/out28b" ] \
-    || fail "scenario 28b: the quota report leaked into gh's stdout — callers capture that as the API result: $(cat "$TMP/out28b")"
-# The positive half of the same pair scenario 1 carries. The two assertions below
-# are destination-blind — log()'s tee fills LOG_FILE wherever stdout points — so
-# without this, redirecting the report to /dev/null (or any non-journal sink)
-# stays green while the fleet-wide quota line vanishes from journalctl on every
-# successful call: the exact failure the GH_DIAG_FD block was written for.
+    gh api "repos/o/r/pulls/7" >/dev/null 2>/dev/null || true
+grep -q 'repos/\*/\*/collaborators/\*/permission=1' "$TMP/log28b" \
+    || fail "scenario 28b: a call through the seam did not report the window — with the entrypoint calls gone the writer-side cap would be the only reaper, and reporting only after a SUCCESS puts the probe between a side effect and its bookkeeping: $(cat "$TMP/log28b")"
+# The line has to land on the saved descriptor too, not only in LOG_FILE, which
+# log()'s `tee -a` fills wherever stdout points.
 grep -qa '\[gh-quota\] core=4977/5000' "$DIAG_LOG" \
     || fail "scenario 28b: the report never reached the saved descriptor — it has to land in the journal, not only in LOG_FILE: $(cat "$DIAG_LOG")"
-grep -q 'repos/\*/\*/collaborators/\*/permission=1' "$TMP/log28b" \
-    || fail "scenario 28b: a successful call through the seam did not report the window — with the entrypoint calls gone the writer-side cap would be the only reaper: $(cat "$TMP/log28b")"
-[ ! -s "$(gh_tally_file)" ] \
-    || fail "scenario 28b: the seam reported but did not CONSUME the window — attribution would accumulate across reports"
+# Drained, and this attempt tallied in its place: the seeded sample is gone and
+# only the call just made remains.
+[ "$(cat "$(gh_tally_file)")" = 'repos/*/*/pulls/*' ] \
+    || fail "scenario 28b: the window was not consumed-then-refilled by this attempt — got: $(cat "$(gh_tally_file)")"
+# And on the SUCCESS path it must stay out of gh's stdout, which IS the API result
+# every caller captures (`perm=$(gh_api_retry …)`). Only the >&GH_DIAG_FD redirect
+# keeps it there, and the LOG_FILE assertion above cannot see the difference.
+rm -f "$(gh_quota_stamp_file)"; : > "$TMP/out28b"
+LOG_FILE="$TMP/log28b" GH_QUOTA_REPORT_SECS=0 GH_SHIM_OK=1 \
+    GH_SHIM_BUCKETS="4977	$((NOW + 1200))	4775	$((NOW + 1200))	5000	5000" \
+    gh api "repos/o/r/pulls/8" >"$TMP/out28b" 2>/dev/null
+[ ! -s "$TMP/out28b" ] \
+    || fail "scenario 28b: the quota report leaked into gh's stdout — callers capture that as the API result: $(cat "$TMP/out28b")"
 reset_state; : > "$(gh_tally_file)"
 
 echo "  scenario 29: review-loop.sh loads the token before it can report quota..."
