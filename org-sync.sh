@@ -162,14 +162,31 @@ fi
 
 mkdir -p "$KWR_CLONE_ROOT"
 
+# Every condition below is a property of ONE mirror, so it skips that repo
+# and keeps sweeping — a single bad mirror must not strand the other 90.
+# The refusals themselves are unchanged; only their blast radius is.
+#
+# A skipped repo is simply not published. This manifest feeds host-side kid
+# prior-art clones, NOT review coverage (that comes from ORGS — see
+# README.md § Review coverage), so dropping a repo whose mirror we just
+# refused to trust stops indexing an untrusted checkout rather than losing
+# any review. The sweep exits non-zero until the mirror is fixed, so the
+# omission is loud, and the next clean sweep restores the entry.
 NEW_CLONES=0
+SKIPPED=0
+KEPT=()
+
+skip_repo() {   # $1 = reason
+    log "WARN: $1 — skipping this repo (not published)"
+    SKIPPED=$((SKIPPED + 1))
+}
 for full in "${AUTO[@]}"; do
     name="${full#*/}"
     dest="$KWR_CLONE_ROOT/$name"
     if [ -d "$dest/.git" ]; then
         if ! url=$(git -C "$dest" remote get-url origin 2>/dev/null); then
-            log "FATAL: $dest has no origin remote configured"
-            exit 1
+            skip_repo "$dest has no origin remote configured"
+            continue
         fi
         # Exact canonical forms only. A leading `*` would let
         # `git@evilgithub.com:$full.git` pass (substring spoof); and
@@ -178,13 +195,16 @@ for full in "${AUTO[@]}"; do
         case "$url" in
             "git@github.com:${full}.git"|"git@github.com:${full}"|"https://github.com/${full}.git"|"https://github.com/${full}") ;;
             *)
-                log "FATAL: $dest origin does not match github.com/$full — refusing to overwrite"
-                exit 1
+                # Usually a transferred/renamed repo whose mirror still holds
+                # the pre-transfer URL: `git -C "$dest" remote set-url origin
+                # https://github.com/$full.git` after confirming the move.
+                skip_repo "$dest origin does not match github.com/$full — refusing to overwrite"
+                continue
                 ;;
         esac
     elif [ -e "$dest" ]; then
-        log "FATAL: $dest exists but is not a git checkout — refusing to clobber"
-        exit 1
+        skip_repo "$dest exists but is not a git checkout — refusing to clobber"
+        continue
     else
         log "cloning $full → $dest"
         if ! gh repo clone "$full" "$dest" >>"$LOG_FILE" 2>&1; then
@@ -192,11 +212,12 @@ for full in "${AUTO[@]}"; do
             # next tick's matching-origin branch would treat it as a
             # complete clone and publish an empty checkout. Clean up.
             rm -rf "$dest"
-            log "FATAL: gh repo clone $full failed (cleaned up partial $dest)"
-            exit 1
+            skip_repo "gh repo clone $full failed (cleaned up partial $dest)"
+            continue
         fi
         NEW_CLONES=$((NEW_CLONES + 1))
     fi
+    KEPT+=("$full")
 done
 
 TMP_NEW=$(mktemp)
@@ -210,14 +231,22 @@ trap 'rm -f "$TMP_NEW"' EXIT
     echo "# \$KWR_CLONE_ROOT after sourcing this file, so the manifest"
     echo "# never stores stale path strings. SOURCE_PATHS is intentionally"
     echo "# not emitted either — cross-repo grep stays opt-in."
-    for full in "${AUTO[@]}"; do
+    for full in "${KEPT[@]}"; do
         echo "REPOS+=(\"$full\")"
     done
 } > "$TMP_NEW"
 
 if [ -f "$AUTO_CONF" ] && cmp -s "$TMP_NEW" "$AUTO_CONF"; then
-    log "no changes (${#AUTO[@]} auto-tracked, ${#MANUAL[@]} manual)"
+    log "no changes (${#KEPT[@]} auto-tracked, ${#MANUAL[@]} manual)"
 else
     mv "$TMP_NEW" "$AUTO_CONF"
-    log "rewrote $AUTO_CONF: ${#AUTO[@]} auto-tracked, $NEW_CLONES newly cloned"
+    log "rewrote $AUTO_CONF: ${#KEPT[@]} auto-tracked, $NEW_CLONES newly cloned"
+fi
+
+# Exit non-zero AFTER the rewrite: the repos we could sync are already
+# published, and systemd still surfaces the skips as a failed unit rather
+# than burying them in a log nobody reads.
+if [ "$SKIPPED" -gt 0 ]; then
+    log "FAILED: $SKIPPED repo(s) skipped this sweep — see the WARN lines above"
+    exit 1
 fi

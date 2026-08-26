@@ -64,12 +64,23 @@ exit 1
 SHIM
 chmod +x "$TMP/bin/gh"
 
+# Source the seam with stderr pointed at a capture file, because sourcing is
+# when it dups the entrypoint's stderr. This models production exactly: the unit
+# starts, the seam saves ITS stderr (the journal), and the per-call `2>errfile`
+# redirects that fetch_issue_comments/is_trusted_repo_author do later cannot
+# reach it. Scenarios below therefore assert diagnostics in $DIAG_LOG, not in
+# the failing call's own errfile — that separation IS the property under test.
+DIAG_LOG="$TMP/diag.log"
+: > "$DIAG_LOG"
+exec 3>&2                                  # keep the real stderr for fail()
+exec 2>"$DIAG_LOG"
 . "$PROJECT_ROOT/lib/gh-retry.sh"   # sources state-io.sh itself
+exec 2>&3                                  # restore; GH_DIAG_FD still points at $DIAG_LOG
 
 RATE_LIMIT_ERR='gh: API rate limit exceeded for user ID 95421. (HTTP 403)'
 NOW=$(date +%s)
 
-reset_state() { rm -f "$(gh_pause_file)"; }
+reset_state() { rm -f "$(gh_pause_file)"; : > "$DIAG_LOG"; }
 
 # --- 1. secondary: budget remains, yet a rate-limit 403 → short fixed pause ---
 # This is the case that actually fired in production: core 4920/5000 and graphql
@@ -91,8 +102,12 @@ UNTIL=$(head -n1 "$(gh_pause_file)")
 DELTA=$(( UNTIL - NOW ))
 [ "$DELTA" -ge 55 ] && [ "$DELTA" -le 75 ] \
     || fail "scenario 1: expected a ~60s secondary window, got ${DELTA}s (until=$UNTIL now=$NOW)"
+grep -q 'secondary' "$DIAG_LOG" \
+    || fail "scenario 1: diagnostic did not classify the limit as secondary — diag: $(cat "$DIAG_LOG")"
+# …and it did NOT land in the caller's own errfile, which is where the 400-byte
+# truncation used to eat it.
 grep -q 'secondary' "$TMP/err1" \
-    || fail "scenario 1: diagnostic did not classify the limit as secondary — output: $(cat "$TMP/err1")"
+    && fail "scenario 1: the diagnostic followed the caller's redirected stderr — it must go to the saved descriptor instead"
 
 # --- 2. primary/core exhausted → pause until the bucket's OWN reset ---
 echo "  scenario 2: core remaining=0 → primary, pause until the real reset epoch..."
@@ -103,8 +118,8 @@ GH_SHIM_ERR="$RATE_LIMIT_ERR" \
     gh api "user" >/dev/null 2>"$TMP/err2" || true
 [ "$(head -n1 "$(gh_pause_file)")" = "$CORE_RESET" ] \
     || fail "scenario 2: expected pause until core reset $CORE_RESET, got $(head -n1 "$(gh_pause_file)")"
-grep -q 'primary/core' "$TMP/err2" \
-    || fail "scenario 2: diagnostic did not classify as primary/core — output: $(cat "$TMP/err2")"
+grep -q 'primary/core' "$DIAG_LOG" \
+    || fail "scenario 2: diagnostic did not classify as primary/core — diag: $(cat "$DIAG_LOG")"
 
 # --- 3. graphql is the exhausted bucket → its reset wins ---
 # GraphQL is the loaded bucket in this deployment (~30 pts/min vs core ~0), so
@@ -485,7 +500,7 @@ grep -q 'pause NOT published' "$TMP/log18" \
     || fail "scenario 18: a publish that could not lock said nothing — the fleet keeps calling with no diagnostic: $(cat "$TMP/log18")"
 reset_state
 
-# --- 19-22. Quota telemetry (#233) -----------------------------------------
+# --- 19-28. Quota telemetry (#233) -----------------------------------------
 # The fleet kept tripping limits and every incident restarted the same dig:
 # correlate six containers' logs by timestamp to guess the top consumer. These
 # fence the surface that makes consumption legible BEFORE a limit trips.
@@ -747,5 +762,53 @@ grep -qE '^[[:space:]]*(\.|source)[[:space:]].*tracked-repos\.sh' <<<"$LOOP_SRC"
     || fail "scenario 28: review-loop.sh calls gh_quota_report without sourcing the config loader — the probe runs tokenless and the report is silent"
 grep -qE '^[[:space:]]*gh_quota_report([[:space:]]|$)' <<<"$LOOP_SRC" \
     || fail "scenario 28: review-loop.sh no longer CALLS gh_quota_report — in a container the reporter is the only drain, so a crossing would blank the next 403's attribution"
+
+# --- 29. the diagnostic survives a caller that captures gh's stderr ----------
+# The busiest callers run `gh … 2>"$errfile"` (fetch_issue_comments,
+# is_trusted_repo_author) and re-emit only the first 400 bytes. gh's own 403 text
+# is ~300 of them, so scenario 17's endpoint line and the classifier that follows
+# it were truncated off mid-timestamp: 1001 lines/day reached poll.log and ZERO
+# reached the journal, which is why "which limit is it" went unanswered for
+# hours. Writing to a saved fd instead of fd 2 makes the diagnostic independent
+# of whatever the caller does with its own stderr.
+echo "  scenario 29: a caller capturing stderr cannot swallow the diagnostic..."
+reset_state
+: > "$TMP/diag29"; : > "$TMP/callererr29"
+(
+    exec {GH_DIAG_FD}>"$TMP/diag29"
+    export GH_DIAG_FD
+    GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+    GH_SHIM_ERR="$RATE_LIMIT_ERR" GH_SECONDARY_PAUSE_SECS=60 \
+        gh api "repos/acme/repo/issues/7/comments" >/dev/null 2>"$TMP/callererr29" || true
+)
+grep -q 'rate-limited on' "$TMP/diag29" \
+    || fail "scenario 29: the endpoint line did not reach the saved diag fd — a caller's errfile still eats it: $(cat "$TMP/diag29")"
+grep -q 'secondary' "$TMP/diag29" \
+    || fail "scenario 29: the classifier line did not reach the saved diag fd: $(cat "$TMP/diag29")"
+# The ALLOCATION end of the contract, at the seam that owns it. Without this,
+# deleting gh-retry.sh's `exec {GH_DIAG_FD}>&2` block leaves every scenario above
+# green (they open the fd themselves) while every diagnostic silently returns to
+# fd 2 and back into the callers' errfiles — the whole bug this change exists to
+# fix. Same shape as scenario 12's source-and-check. stderr is NOT redirected
+# during the source, because that is the descriptor the seam must capture.
+: > "$TMP/err29d"
+# The assertion is IMMUNITY, not liveness: after sourcing, the child rebinds its
+# own fd 2 the way fetch_issue_comments does, and the marker must still reach the
+# ORIGINAL stderr. Asserting only "GH_DIAG_FD is set and writable" would stay
+# green against `GH_DIAG_FD=2; export GH_DIAG_FD` — a plausible next edit now
+# that gh-retry.sh documents 2 as an acceptable fallback — while every diagnostic
+# went straight back into the callers' truncated errfiles.
+: > "$TMP/swallowed29d"
+env -u BASH_ENV -u GH_DIAG_FD bash -c '
+    . "'"$PROJECT_ROOT"'/lib/gh-retry.sh" >/dev/null || exit 3
+    [ -n "${GH_DIAG_FD:-}" ] || exit 4
+    exec 2>"'"$TMP/swallowed29d"'"
+    echo SEAM_DIAG_FD_OK >&"$GH_DIAG_FD"
+' 2>"$TMP/err29d" || true
+grep -q 'SEAM_DIAG_FD_OK' "$TMP/err29d" \
+    || fail "scenario 29: the seam's GH_DIAG_FD did not survive the caller rebinding fd 2 — it is not a saved duplicate of the entrypoint's stderr. err29d: $(cat "$TMP/err29d") swallowed: $(cat "$TMP/swallowed29d")"
+grep -q 'SEAM_DIAG_FD_OK' "$TMP/swallowed29d" \
+    && fail "scenario 29: the diagnostic followed the caller's rebound fd 2 — exactly the swallowing this change exists to prevent"
+reset_state
 
 echo "PASS: gh-rate-limit-smoke"
