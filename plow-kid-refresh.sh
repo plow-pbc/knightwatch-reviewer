@@ -32,6 +32,7 @@ fi
 touch "$LOCK"
 trap 'rm -f "$LOCK"' EXIT
 
+UNWRITABLE=0
 for NAME in "${!KID_PATHS[@]}"; do
     PROJECT="${KID_PATHS[$NAME]}"
 
@@ -41,6 +42,21 @@ for NAME in "${!KID_PATHS[@]}"; do
     fi
 
     cd "$PROJECT" || { log "$NAME: cd $PROJECT failed"; continue; }
+
+    # kid writes its index to $PROJECT/.keepitdry, but this unit runs under
+    # ProtectHome=read-only with a per-repo ReadWritePaths allowlist that
+    # install.sh renders from repos.conf AT INSTALL TIME. org-sync grows the
+    # tracked set hourly, so a repo discovered since the last install is
+    # outside the sandbox and can never be indexed. Probe for that here:
+    # otherwise chromadb dies deep in a bootstrap with a bare
+    # "Read-only file system (os error 30)" traceback and the only log line
+    # is "initial index failed" — the true cause invisible, and a doomed
+    # bootstrap burned from the sweep's 20min budget every hour.
+    if [ ! -w "$PROJECT" ]; then
+        log "$NAME: $PROJECT not writable under this unit's sandbox — outside ReadWritePaths; re-run install.sh to widen it, then this repo will index"
+        UNWRITABLE=$((UNWRITABLE + 1))
+        continue
+    fi
 
     # Bootstrap: no .keepitdry yet → first-time indexing. Do a full index
     # now against whatever's checked out; don't bother pulling this tick.
@@ -79,3 +95,11 @@ for NAME in "${!KID_PATHS[@]}"; do
         log "$NAME: kid index failed"
     fi
 done
+
+# Fail loudly: a sandbox that has drifted from the tracked-repo set degrades
+# every review on those repos (no semantic search context) with no other
+# visible symptom, so surface it as a failed unit rather than a log line.
+if [ "$UNWRITABLE" -gt 0 ]; then
+    log "FAILED: $UNWRITABLE repo(s) outside this unit's ReadWritePaths — re-run install.sh to re-render the sandbox from repos.conf"
+    exit 1
+fi

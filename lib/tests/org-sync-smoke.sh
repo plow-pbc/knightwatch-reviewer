@@ -128,6 +128,15 @@ make_checkout() {
     git -C "$dest" init -q
     git -C "$dest" remote add origin "$2"
 }
+assert_auto_excludes() {
+    # The sweep now completes and republishes the manifest, so the pin is
+    # "the skipped repo is not in it" rather than "the file never moved".
+    local repo="$1"
+    if grep -q "\"$repo\"" "$AUTO_CONF" 2>/dev/null; then
+        echo "FAIL: skipped repo $repo was published to repos.conf.auto"
+        cat "$AUTO_CONF"; exit 1
+    fi
+}
 assert_auto_unchanged() {
     local before="$1" after
     after=$(auto_sha)
@@ -224,15 +233,14 @@ n=$(count_gh "repo clone")
 grep -q '"acme/baz"' "$AUTO_CONF" || { echo "FAIL scenario 4: acme/baz not in $AUTO_CONF"; cat "$AUTO_CONF"; exit 1; }
 
 # --- Scenario 5: wrong-origin checkout fails loud + no credential leak --------
-echo "  scenario 5: existing checkout with WRONG origin — fail loud, auto unchanged, no log leak..."
+echo "  scenario 5: existing checkout with WRONG origin — fail loud, repo not published, no log leak..."
 write_baseline_conf '"acme"'
 rm -f "$AUTO_CONF"
-SHA=$(auto_sha)
 make_checkout evil "git@github.com:attacker/evil.git"
 if MOCK_GH_LIST_acme="evil" run_sync; then
     echo "FAIL scenario 5: org-sync returned 0 on wrong-origin checkout"; cat "$LOG"; exit 1
 fi
-assert_auto_unchanged "$SHA"
+assert_auto_excludes "acme/evil"
 grep -q 'origin does not match github.com/acme/evil' "$LOG" || { echo "FAIL scenario 5: expected origin-mismatch log line"; cat "$LOG"; exit 1; }
 if grep -q 'attacker/evil' "$LOG"; then
     echo "FAIL scenario 5: raw remote URL leaked into log — credential exposure risk"
@@ -240,15 +248,14 @@ if grep -q 'attacker/evil' "$LOG"; then
 fi
 
 # --- Scenario 6: spoof-host origin (substring vs exact) -----------------------
-echo "  scenario 6: spoof-host origin (evilgithub.com) — fail loud, auto unchanged..."
+echo "  scenario 6: spoof-host origin (evilgithub.com) — fail loud, repo not published..."
 write_baseline_conf '"acme"'
 rm -f "$AUTO_CONF"
-SHA=$(auto_sha)
 make_checkout spoof "git@evilgithub.com:acme/spoof.git"
 if MOCK_GH_LIST_acme="spoof" run_sync; then
     echo "FAIL scenario 6: org-sync accepted evilgithub.com spoof"; cat "$LOG"; exit 1
 fi
-assert_auto_unchanged "$SHA"
+assert_auto_excludes "acme/spoof"
 
 # --- Scenario 7: gh list failure aborts cleanly -------------------------------
 echo "  scenario 7: gh repo list failure — fail loud, no rewrite, no clone..."
@@ -308,7 +315,6 @@ fi
 echo "  scenario 10: gh repo clone failure — fail loud + no partial left + recovery on next tick..."
 write_baseline_conf '"acme"'
 rm -f "$AUTO_CONF"
-SHA=$(auto_sha)
 rm -rf "$HOME/services/kwr-repos/cant-clone"
 # The smoke `gh` stub creates $dest with .git + origin BEFORE honoring
 # MOCK_GH_CLONE_EXIT, faithfully simulating production gh's failure
@@ -318,7 +324,7 @@ rm -rf "$HOME/services/kwr-repos/cant-clone"
 if MOCK_GH_LIST_acme="cant-clone" MOCK_GH_CLONE_EXIT=1 run_sync; then
     echo "FAIL scenario 10: org-sync returned 0 on clone failure"; cat "$LOG"; exit 1
 fi
-assert_auto_unchanged "$SHA"
+assert_auto_excludes "acme/cant-clone"
 grep -q 'gh repo clone acme/cant-clone failed' "$LOG" || { echo "FAIL scenario 10: expected clone-failure log line"; cat "$LOG"; exit 1; }
 # Partial-clone cleanup pin: $dest MUST be gone after failure.
 [ ! -e "$HOME/services/kwr-repos/cant-clone" ] || { echo "FAIL scenario 10: partial clone left behind at $HOME/services/kwr-repos/cant-clone"; ls -la "$HOME/services/kwr-repos/cant-clone"; exit 1; }
@@ -328,6 +334,28 @@ grep -q 'gh repo clone acme/cant-clone failed' "$LOG" || { echo "FAIL scenario 1
 MOCK_GH_LIST_acme="cant-clone" run_sync || { echo "FAIL scenario 10 recovery: org-sync exited non-zero"; cat "$LOG"; exit 1; }
 [ -d "$HOME/services/kwr-repos/cant-clone/.git" ] || { echo "FAIL scenario 10 recovery: clone didn't happen on recovery tick"; exit 1; }
 grep -q '"acme/cant-clone"' "$AUTO_CONF" || { echo "FAIL scenario 10 recovery: auto file missing recovered repo"; cat "$AUTO_CONF"; exit 1; }
+
+# --- Scenario 10b: one bad mirror does not strand the good repos -------------
+# The regression this pins: a repo transferred between orgs left its mirror on
+# the pre-transfer origin URL, the anti-clobber guard hit `exit 1`, and NO repo
+# synced for hours — one bad mirror blocking 91 good ones. The guard must still
+# refuse that mirror, but scoped to that repo.
+echo "  scenario 10b: one wrong-origin mirror among good repos — good ones still published..."
+write_baseline_conf '"acme"'
+rm -f "$AUTO_CONF"
+make_checkout moved "git@github.com:oldorg/moved.git"   # transferred; mirror stale
+rm -rf "$HOME/services/kwr-repos/good-one" "$HOME/services/kwr-repos/good-two"
+if MOCK_GH_LIST_acme=$'good-one\nmoved\ngood-two' run_sync; then
+    echo "FAIL scenario 10b: org-sync returned 0 despite a skipped repo"; cat "$LOG"; exit 1
+fi
+# The whole sweep still ran: both good repos cloned AND published.
+for r in good-one good-two; do
+    [ -d "$HOME/services/kwr-repos/$r/.git" ] || { echo "FAIL scenario 10b: $r was not cloned — one bad mirror stranded the sweep"; cat "$LOG"; exit 1; }
+    grep -q "\"acme/$r\"" "$AUTO_CONF" || { echo "FAIL scenario 10b: $r missing from repos.conf.auto"; cat "$AUTO_CONF"; exit 1; }
+done
+assert_auto_excludes "acme/moved"
+grep -q 'skipping this repo' "$LOG" || { echo "FAIL scenario 10b: expected a per-repo skip line"; cat "$LOG"; exit 1; }
+grep -q 'FAILED: 1 repo(s) skipped' "$LOG" || { echo "FAIL scenario 10b: expected the end-of-sweep skip summary"; cat "$LOG"; exit 1; }
 
 # --- Scenario 11: lock contention — concurrent run defers ------------------
 # When the systemd timer fires while an operator's shell-launched run
@@ -476,4 +504,4 @@ n=$(count_gh "repo clone")
 grep -q 'github rate-limited — skipping org sync' "$LOG" || { echo "FAIL scenario 15: expected the rate-limit skip log line"; cat "$LOG"; exit 1; }
 
 
-echo "  PASS (15 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, clone-failure-no-mutation, lock-held-defers, kwr-config-overlay, broken-config-fail-loud, repos-conf-file-override, rate-limit-skips-tick)"
+echo "  PASS (16 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, clone-failure-no-mutation, one-bad-mirror-does-not-strand-sweep, lock-held-defers, kwr-config-overlay, broken-config-fail-loud, repos-conf-file-override, rate-limit-skips-tick)"

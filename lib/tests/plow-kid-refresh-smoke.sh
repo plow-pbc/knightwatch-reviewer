@@ -84,7 +84,10 @@ run_refresh() {
     : > "$STUB_GIT_LOG"
     : > "$LOG"
     rm -f "$LOCK"
-    bash "$PROJECT_ROOT/plow-kid-refresh.sh" >/dev/null 2>&1 || true
+    # Capture rather than swallow: scenarios assert on the exit status, and
+    # a bare non-zero would trip the suite's `set -e`.
+    REFRESH_RC=0
+    bash "$PROJECT_ROOT/plow-kid-refresh.sh" >/dev/null 2>&1 || REFRESH_RC=$?
 }
 
 count_kid() { grep -c '^KID ' "$STUB_KID_LOG" 2>/dev/null || true; }
@@ -149,4 +152,29 @@ n=$(count_kid)
 grep -q '^GIT pull --ff-only' "$STUB_GIT_LOG" || { echo "FAIL scenario 5: expected 'git pull' before index"; cat "$STUB_GIT_LOG"; exit 1; }
 grep -q "KID index $PROJ" "$STUB_KID_LOG" || { echo "FAIL scenario 5: kid index call shape wrong"; cat "$STUB_KID_LOG"; exit 1; }
 
-echo "  PASS (5 scenarios: empty-noop, missing-checkout-skip, bootstrap-on-no-.keepitdry, no-new-commits-noop, new-commits-pull-then-index)"
+# Scenario 6: project dir not writable → skipped with an actionable line, kid
+# never invoked, unit exits non-zero.
+# The regression this pins: this unit runs under ProtectHome=read-only with a
+# per-repo ReadWritePaths allowlist that install.sh renders from repos.conf at
+# INSTALL time, while org-sync grows the tracked set hourly. A repo discovered
+# since the last install is outside the sandbox, so kid's chromadb bootstrap
+# died with a bare "Read-only file system (os error 30)" traceback under a log
+# line that only said "initial index failed" — 43 of 79 PRs reviewed in 24h
+# had no semantic index and nothing said so.
+echo "  scenario 6: project outside the sandbox — skipped loudly, no kid call, non-zero exit..."
+PROJ="$TMPDIR/proj-readonly"
+mkdir -p "$PROJ/.git"
+cat > "$STATE_DIR/repos.conf" <<CONF
+REPOS=("acme/readonly")
+declare -A KID_PATHS=([acme/readonly]="$PROJ")
+CONF
+chmod a-w "$PROJ"
+run_refresh
+chmod -R u+w "$PROJ"   # restore before the trap cleans up
+n=$(count_kid)
+[ "$n" -eq 0 ] || { echo "FAIL scenario 6: kid was invoked on an unwritable project ($n calls) — the doomed bootstrap wasn't skipped"; cat "$STUB_KID_LOG"; exit 1; }
+grep -q 'not writable under this unit.s sandbox' "$LOG" || { echo "FAIL scenario 6: expected the sandbox-drift log line"; cat "$LOG"; exit 1; }
+grep -q 'install.sh' "$LOG" || { echo "FAIL scenario 6: log line must name the remedy (re-run install.sh)"; cat "$LOG"; exit 1; }
+[ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 6: refresh exited 0 despite a repo it could never index"; cat "$LOG"; exit 1; }
+
+echo "  PASS (6 scenarios: empty-noop, missing-checkout-skip, bootstrap-on-no-.keepitdry, no-new-commits-noop, new-commits-pull-then-index, unwritable-project-skipped-loudly)"
