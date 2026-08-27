@@ -39,6 +39,10 @@ cat > "$TMP/bin/gh" <<'SHIM'
 for a in "$@"; do
     if [ "$a" = "rate_limit" ]; then
         [ -n "${GH_SHIM_PROBE_LOG:-}" ] && echo probe >> "$GH_SHIM_PROBE_LOG"
+        # GH_SHIM_PAUSE_ON_PROBE: publish a fleet pause while this probe is being
+        # served — a sibling worker tripping the limit inside the window between
+        # gh_retry's pause check and the wire.
+        [ -n "${GH_SHIM_PAUSE_ON_PROBE:-}" ] && printf '%s\n' "$(( $(date +%s) + 300 ))" > "$GH_SHIM_PAUSE_ON_PROBE"
         # GH_SHIM_JSON: a real /rate_limit body run through real jq, so the --jq
         # expression under test actually EXECUTES. GH_SHIM_BUCKETS alone prints a
         # canned TSV and never runs jq, which left the `// -1` defaults — the fix
@@ -779,5 +783,22 @@ grep -qE '^[[:space:]]*(\.|source)[[:space:]].*CONFIG_ENV_FILE' <<<"$LOOP_SRC" \
     || fail "scenario 29: review-loop.sh calls gh_quota_report without loading config.env — the probe runs tokenless and the report is silent"
 grep -qE '^[[:space:]]*gh_quota_report([[:space:]]|$)' <<<"$LOOP_SRC" \
     || fail "scenario 29: review-loop.sh no longer CALLS gh_quota_report — the seam only reports on a call it makes, and while the fleet is paused gh_retry short-circuits before making one, so this tick is the only thing reporting headroom during the incident"
+
+echo "  scenario 30: a pause published mid-window stops the call before the wire..."
+# gh_retry checks the pause once, then reports — a probe bounded at 15s — and only
+# then goes to the wire; each retry's backoff sleep is a second such window. A
+# sibling publishing in either one has to stop this call too, or the very tick
+# that tripped the limit keeps feeding it.
+reset_state; : > "$(gh_tally_file)"; rm -f "$(gh_quota_stamp_file)"
+: > "$TMP/calls30"
+GH_SHIM_CALL_LOG="$TMP/calls30" GH_QUOTA_REPORT_SECS=0 GH_SHIM_OK=1 \
+    GH_SHIM_PAUSE_ON_PROBE="$(gh_pause_file)" \
+    GH_SHIM_BUCKETS="4977	$((NOW + 1200))	4775	$((NOW + 1200))	5000	5000" \
+    gh api "repos/o/r/pulls/9" >/dev/null 2>&1 || true
+grep -q 'pulls/9' "$TMP/calls30" \
+    && fail "scenario 30: the call reached the wire after a sibling published a pause mid-window — the tick that tripped the limit keeps feeding it: $(cat "$TMP/calls30")"
+grep -q 'rate_limit' "$TMP/calls30" \
+    || fail "scenario 30: the probe never ran, so this scenario never opened the window it is testing: $(cat "$TMP/calls30")"
+reset_state
 
 echo "PASS: gh-rate-limit-smoke"

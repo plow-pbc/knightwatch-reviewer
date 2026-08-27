@@ -96,6 +96,13 @@ gh_retry() {
     local errfile out rc
     errfile=$(mktemp)
     while :; do
+        # Re-check INSIDE the loop. The pause is fleet-wide, and two windows open
+        # between the check above and the wire: the quota report's probe, bounded
+        # at 15s, and each retry's backoff sleep. A sibling publishing in either
+        # one has to stop this call too — otherwise the very tick that tripped the
+        # limit keeps feeding it, which is what the seam-level refusal exists to
+        # prevent.
+        gh_pause_active && { rm -f "$errfile"; return 1; }
         # Tally every ATTEMPT — a retry is another real request against the same
         # budget, so counting calls instead would under-report the hot paths.
         gh_tally_call "$@"

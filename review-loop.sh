@@ -36,26 +36,15 @@ cd "$(dirname "$0")"
 # CONFIG_ENV_FILE, so nothing else would dereference it and `set -u` would not
 # catch a config.env value winning.
 _KWR_STATE_DIR="${STATE_DIR:?review-loop.sh requires STATE_DIR from the compose environment}"
-# The POSTCONDITION is the guard, not a file-shape test. Three rounds went into
-# preconditions — readable, then source's exit status, then regular-file — and
-# each one still let a case through: an empty config.env (the very file an
-# operator creates to stop docker auto-creating a directory there), a syntax
-# error that aborts the source above the GH_TOKEN line, a renamed or
-# commented-out variable. `source`'s own stderr names which shape failed; this
-# says whether the shell ended up with the one thing the loop needs. Under
-# `set -u` it exits loud, and it is shorter than any of the tests it replaces.
-# It EXPORTS as well as asserts, because every consumer is a separate process —
-# the probe's `gh api`, the `gh auth git-credential` helper the image wires for
-# private clones, and the dispatched review.sh. A bare `GH_TOKEN=…` without
-# `export` is an ordinary operator edit (the secrets README has to tell them to
-# export it), and it would satisfy a shell-variable assertion while leaving every
-# one of those unauthenticated.
-#
-# Scoped to THIS entrypoint on purpose. config.env is sourced at three sites —
-# here, org-sync.sh and install.sh, the last two ahead of the manifest loader and
-# with a private-repo `git` pull in between — and repairing one of them is how you
-# get a contract that holds on the container surface and not the host. That
-# consolidation is #245, not a line in this file.
+# The POSTCONDITION is the guard, not a file-shape test: whatever went wrong —
+# absent, a directory, empty, a syntax error above the export, a renamed or
+# unexported variable — the question is whether this shell ended up with the one
+# thing the loop needs, and `source`'s own stderr names which shape failed.
+# EXPORTS as well as asserts, because every consumer is a separate process: the
+# probe's `gh api`, the `gh auth git-credential` helper the image wires for
+# private clones, and the dispatched review.sh. Scoped to THIS entrypoint on
+# purpose — config.env is sourced at three sites, and repairing one is how you get
+# a contract that holds on the container surface and not the host (#245).
 source "${CONFIG_ENV_FILE:?review-loop.sh requires CONFIG_ENV_FILE from the compose environment}"
 export GH_TOKEN="${GH_TOKEN:?review-loop.sh: no GH_TOKEN after sourcing $CONFIG_ENV_FILE — the quota probe would run unauthenticated and report nothing}"
 export REVIEWER_LIB_DIR="$(pwd)/lib" PROMPTS_DIR="$(pwd)/prompts" STATE_DIR="$_KWR_STATE_DIR"

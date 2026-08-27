@@ -103,34 +103,16 @@ grep -q "MAX_CONCURRENT=1" "$d/env.seen"            || fail "MAX_CONCURRENT not 
 grep -q "WAIT_FOR_WORKERS=1" "$d/env.seen"          || fail "WAIT_FOR_WORKERS not set (one-review-per-account cap)"
 rm -rf "$d"
 
-# 2b. No readable config.env → fail loud, don't tick. GH_TOKEN lives there and
-# the quota probe runs in THIS shell; loading it only in child processes is
-# exactly how that report shipped inert, so a guarded source that quietly
-# continues would restore the silence rather than the token.
+# 2b. A config.env that is readable, regular and valid but carries no GH_TOKEN →
+# fail loud, don't tick. Deliberately the ONLY negative case: the guard is one
+# postcondition, so absent/directory/empty/malformed all reach it by the same
+# path, and a case per file shape would be the same question with the fixture
+# swapped. This is the shape render-compose.sh's own [ -f ] check cannot catch,
+# because it is a perfectly good file.
 d=$(make_sandbox)
 printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"; chmod +x "$d/bin/docker"
 printf '#!/bin/bash\ntouch called\nexit 0\n' > "$d/review.sh"; chmod +x "$d/review.sh"
-rm -f "$d/config.env"
-if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" \
-        CODEX_HOME="$d/codex" CONFIG_ENV_FILE="$d/config.env" ./review-loop.sh ) >/dev/null 2>&1; then
-    fail "review-loop exited 0 with an unreadable config.env — the quota probe would run unauthenticated and report nothing"
-fi
-[ ! -e "$d/called" ] || fail "review-loop ticked review.sh with no readable config.env (should refuse before the loop)"
-# A DIRECTORY at that path is docker's auto-create outcome when the bind source
-# is missing, and it passes -r — so a readability-only guard lets `source` fail
-# with "is a directory", go unchecked, and leave GH_TOKEN unset: the silent
-# inert report the guard exists to prevent.
-mkdir -p "$d/config.env"
-if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" \
-        CODEX_HOME="$d/codex" CONFIG_ENV_FILE="$d/config.env" ./review-loop.sh ) >/dev/null 2>&1; then
-    fail "review-loop exited 0 with a DIRECTORY at config.env — docker's auto-create outcome passes -r, and GH_TOKEN would be silently unset"
-fi
-[ ! -e "$d/called" ] || fail "review-loop ticked review.sh with a directory at config.env (GH_TOKEN unset, the quota probe would report nothing)"
-# The case no file-shape test can reach: a perfectly valid, readable, regular
-# config.env that simply has no GH_TOKEN in it — an empty file, a syntax error
-# above the export, a renamed variable. This is why the guard asserts the
-# postcondition rather than another precondition.
-rm -rf "$d/config.env"; printf 'export BOT_CMD_PREFIX=srosro\n' > "$d/config.env"
+printf 'export BOT_CMD_PREFIX=srosro\n' > "$d/config.env"
 if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" \
         CODEX_HOME="$d/codex" CONFIG_ENV_FILE="$d/config.env" ./review-loop.sh ) >/dev/null 2>&1; then
     fail "review-loop exited 0 with a readable config.env carrying no GH_TOKEN — the quota probe would run unauthenticated and report nothing"
