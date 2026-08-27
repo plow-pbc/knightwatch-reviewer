@@ -55,6 +55,15 @@ CONFIG_ENV_FILE="${CONFIG_ENV_FILE:-${STATE_DIR}/config.env}"
 # (unchanged for the host/systemd path).
 REPOS_CONF_FILE="${REPOS_CONF_FILE:-${STATE_DIR}/repos.conf}"
 if [ -f "$CONFIG_ENV_FILE" ];             then . "$CONFIG_ENV_FILE"; fi
+# Every consumer of the token is a separate process — `gh` itself, and the
+# workers this loader's callers dispatch — so a bare `GH_TOKEN=…` in the
+# operator-written config.env would leave all of them unauthenticated: 60 req/hr,
+# timeline fetches failing into their swallows, approvals never submitted, and
+# the units still exiting 0. Established HERE because this is where both surfaces
+# converge (the host timers via bootstrap.sh, the container's review.sh), rather
+# than at either one. No `:?` — the smokes source this loader with no token at
+# all, and `export` on an unset name is a safe no-op.
+export GH_TOKEN
 if [ -f "$REPOS_CONF_FILE" ];             then . "$REPOS_CONF_FILE"; fi
 
 # Snapshot operator-set KID_PATHS keys BEFORE sourcing the auto

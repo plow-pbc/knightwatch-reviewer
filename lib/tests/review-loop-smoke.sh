@@ -7,6 +7,14 @@
 # instead of looping forever, (4) a FUTURE quota-paused-until epoch makes the
 # loop skip ticks (never claim) and a PAST one resumes.
 set -euo pipefail
+# The host `just test` path deliberately does NOT scrub the environment
+# (run-just-test-isolation-smoke pins that), so a host-surface review of a KWR PR
+# runs this suite with the operator's real GH_TOKEN exported. Inherited, it
+# defeats both directions of the token fence below: the export mutation stops
+# failing because bash keeps the export attribute across config.env's bare
+# re-assignment, and the no-token case starts passing ${GH_TOKEN:?} from the
+# ambient value — so a CORRECT entrypoint fails that one.
+unset GH_TOKEN
 export WORKER_ID="solo"   # the modeled account; pool-state contract requires it
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/review-loop.sh"
 [ -f "$SRC" ] || { echo "FAIL: review-loop.sh not found at $SRC" >&2; exit 1; }
