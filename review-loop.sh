@@ -50,6 +50,12 @@ _KWR_STATE_DIR="${STATE_DIR:?review-loop.sh requires STATE_DIR from the compose 
 # `export` is an ordinary operator edit (the secrets README has to tell them to
 # export it), and it would satisfy a shell-variable assertion while leaving every
 # one of those unauthenticated.
+#
+# Scoped to THIS entrypoint on purpose. config.env is sourced at three sites —
+# here, org-sync.sh and install.sh, the last two ahead of the manifest loader and
+# with a private-repo `git` pull in between — and repairing one of them is how you
+# get a contract that holds on the container surface and not the host. That
+# consolidation is #245, not a line in this file.
 source "${CONFIG_ENV_FILE:?review-loop.sh requires CONFIG_ENV_FILE from the compose environment}"
 export GH_TOKEN="${GH_TOKEN:?review-loop.sh: no GH_TOKEN after sourcing $CONFIG_ENV_FILE — the quota probe would run unauthenticated and report nothing}"
 export REVIEWER_LIB_DIR="$(pwd)/lib" PROMPTS_DIR="$(pwd)/prompts" STATE_DIR="$_KWR_STATE_DIR"
