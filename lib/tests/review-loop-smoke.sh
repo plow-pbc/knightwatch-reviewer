@@ -113,6 +113,16 @@ if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR
     fail "review-loop exited 0 with a DIRECTORY at config.env — docker's auto-create outcome passes -r, and GH_TOKEN would be silently unset"
 fi
 [ ! -e "$d/called" ] || fail "review-loop ticked review.sh with a directory at config.env (GH_TOKEN unset, the quota probe would report nothing)"
+# The case no file-shape test can reach: a perfectly valid, readable, regular
+# config.env that simply has no GH_TOKEN in it — an empty file, a syntax error
+# above the export, a renamed variable. This is why the guard asserts the
+# postcondition rather than another precondition.
+rm -rf "$d/config.env"; printf 'export BOT_CMD_PREFIX=srosro\n' > "$d/config.env"
+if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" \
+        CODEX_HOME="$d/codex" CONFIG_ENV_FILE="$d/config.env" ./review-loop.sh ) >/dev/null 2>&1; then
+    fail "review-loop exited 0 with a readable config.env carrying no GH_TOKEN — the quota probe would run unauthenticated and report nothing"
+fi
+[ ! -e "$d/called" ] || fail "review-loop ticked review.sh with no GH_TOKEN in scope"
 rm -rf "$d"
 
 # 4. Quota backoff: a FUTURE paused-until epoch → review-loop never calls review.sh; PAST → resumes.

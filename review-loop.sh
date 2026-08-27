@@ -36,19 +36,16 @@ cd "$(dirname "$0")"
 # CONFIG_ENV_FILE, so nothing else would dereference it and `set -u` would not
 # catch a config.env value winning.
 _KWR_STATE_DIR="${STATE_DIR:?review-loop.sh requires STATE_DIR from the compose environment}"
-# Readability is checked separately from the source, because `source`'s status is
-# the status of the LAST COMMAND IN THE FILE, not of opening it. config.env is
-# operator-edited (BOT_CMD_PREFIX, KWR_CONFIG_REPO, KID_ROOT, KID_EXTRA_MOUNTS),
-# so a perfectly valid trailing conditional that happens to evaluate false would
-# otherwise hard-exit the entrypoint and restart-loop the whole fleet under a
-# message blaming an unreadable file.
-# `-f` as well as `-r`, because `-r` is TRUE for a directory — and a directory is
-# what docker auto-creates when a bind's host path is missing, so `source` would
-# fail with "is a directory", go unchecked (no errexit here), and leave GH_TOKEN
-# unset: the silent inert report all over again.
-{ [ -f "${CONFIG_ENV_FILE:?review-loop.sh requires CONFIG_ENV_FILE from the compose environment}" ] && [ -r "$CONFIG_ENV_FILE" ]; } \
-    || { echo "review-loop.sh: cannot read $CONFIG_ENV_FILE — GH_TOKEN unavailable, so the quota probe would run unauthenticated and report nothing" >&2; exit 1; }
-source "$CONFIG_ENV_FILE"
+# The POSTCONDITION is the guard, not a file-shape test. Three rounds went into
+# preconditions — readable, then source's exit status, then regular-file — and
+# each one still let a case through: an empty config.env (the very file an
+# operator creates to stop docker auto-creating a directory there), a syntax
+# error that aborts the source above the GH_TOKEN line, a renamed or
+# commented-out variable. `source`'s own stderr names which shape failed; this
+# says whether the shell ended up with the one thing the loop needs. Under
+# `set -u` it exits loud, and it is shorter than any of the tests it replaces.
+source "${CONFIG_ENV_FILE:?review-loop.sh requires CONFIG_ENV_FILE from the compose environment}"
+: "${GH_TOKEN:?review-loop.sh: no GH_TOKEN after sourcing $CONFIG_ENV_FILE — the quota probe would run unauthenticated and report nothing}"
 export REVIEWER_LIB_DIR="$(pwd)/lib" PROMPTS_DIR="$(pwd)/prompts" STATE_DIR="$_KWR_STATE_DIR"
 unset _KWR_STATE_DIR
 # Shared logger (timestamp + [w<WORKER_ID>] tag). LOG_FILE is unset here —
