@@ -177,27 +177,42 @@ done
 # The shared rate-limit pause. It must exist as a regular FILE before any
 # `compose up`: docker auto-creates a missing bind source as a DIRECTORY, and
 # every reader then sees "never paused" — silently, which is the failure the
-# whole protocol exists to remove. 0666 because the host timers write it as the
-# operator and the containers write it as root; 0700 on the tree around it is
-# what keeps that from being reachable by a third local user.
+# whole protocol exists to remove. 0644 owned by the operator covers both
+# writers — the host timers run as that operator, the containers as root — and
+# 0700 on the tree around it keeps a third local user out.
 # A DIRECTORY at that path is docker's auto-create outcome, and install must
 # refuse it rather than write gh-rate-limited-until/null and exit 0 having
 # "created" a pause file that is still a directory.
-mv "$INSTALL_DIR/gh-rate-limited-until" "$INSTALL_DIR/.pause-bak"
-mkdir "$INSTALL_DIR/gh-rate-limited-until"
-run_install "$SHARED_OVERLAY/install.sh" \
-    && { echo "FAIL scenario 1: install.sh accepted a DIRECTORY at the pause path — every reader would see never-paused forever"; exit 1; }
-rmdir "$INSTALL_DIR/gh-rate-limited-until"
-mv "$INSTALL_DIR/.pause-bak" "$INSTALL_DIR/gh-rate-limited-until"
+# Both shared host files, one body: the tally rides the same bind trick for the
+# same reason (the two halves spend one PAT), so an auto-created DIRECTORY at
+# either path silently drops what the bind exists to share — a pause for one, and
+# every host-side call sample for the other.
+for _shared in gh-rate-limited-until gh-call-tally; do
+    # Existence FIRST: without it a missing file makes the `mv` below abort the
+    # suite on a raw "cannot stat", which is a real failure reported as a mystery.
+    [ -f "$INSTALL_DIR/$_shared" ] \
+        || { echo "FAIL scenario 1: install.sh did not create $INSTALL_DIR/$_shared — docker would auto-create the bind source as a DIRECTORY and silently drop everything written through it"; exit 1; }
+    mv "$INSTALL_DIR/$_shared" "$INSTALL_DIR/.shared-bak"
+    mkdir "$INSTALL_DIR/$_shared"
+    run_install "$SHARED_OVERLAY/install.sh" \
+        && { echo "FAIL scenario 1: install.sh accepted a DIRECTORY at $_shared — docker's auto-create outcome, which silently drops everything written through it"; exit 1; }
+    rmdir "$INSTALL_DIR/$_shared"
+    mv "$INSTALL_DIR/.shared-bak" "$INSTALL_DIR/$_shared"
 
-[ -f "$INSTALL_DIR/gh-rate-limited-until" ] \
-    || { echo "FAIL scenario 1: $INSTALL_DIR/gh-rate-limited-until missing — docker would bind a DIRECTORY over it and the fleet would never see a pause"; exit 1; }
-PAUSE_MODE=$(stat -c '%a' "$INSTALL_DIR/gh-rate-limited-until" 2>/dev/null || echo missing)
-[ "$PAUSE_MODE" = "666" ] \
-    || { echo "FAIL scenario 1: pause file is mode $PAUSE_MODE, not 666 — one of the two UIDs that share it cannot write it"; exit 1; }
+    [ -f "$INSTALL_DIR/$_shared" ] \
+        || { echo "FAIL scenario 1: $INSTALL_DIR/$_shared missing — docker would bind a DIRECTORY over it"; exit 1; }
+    _mode=$(stat -c '%a' "$INSTALL_DIR/$_shared" 2>/dev/null || echo missing)
+    # 644, not 666: the two intended writers are the owning operator and
+    # container root, and world-writable would additionally reach the
+    # PR-controlled `just test` user through the bind — who could blank the
+    # fleet pause or forge attribution into the operator's incident log.
+    [ "$_mode" = "644" ] \
+        || { echo "FAIL scenario 1: $_shared is mode $_mode, not 644 — 666 hands the PR-controlled test user a write handle through the bind"; exit 1; }
+done
+
 DIR_MODE=$(stat -c '%a' "$INSTALL_DIR" 2>/dev/null || echo missing)
 [ "$DIR_MODE" = "700" ] \
-    || { echo "FAIL scenario 1: $INSTALL_DIR is mode $DIR_MODE, not 700 — the 0666 pause file inside it becomes writable by any local user"; exit 1; }
+    || { echo "FAIL scenario 1: $INSTALL_DIR is mode $DIR_MODE, not 700 — the shared files inside it become reachable by any local user"; exit 1; }
 
 # Render the same @KID_RW_PATHS@ / @KWR_CLONE_ROOT@
 # values install.sh derives from the overlay's repos.conf, so the cmp

@@ -30,7 +30,8 @@ TMPDIR=$(mktemp -d -t kid-refresh-smoke-XXXXXX)
 trap 'rm -rf "$TMPDIR"' EXIT
 
 export STATE_DIR="$TMPDIR/state"
-export LOG="$STATE_DIR/plow-kid-refresh.log"
+export LOG_FILE="$STATE_DIR/plow-kid-refresh.log"
+STDOUT_CAP="$STATE_DIR/stdout-capture.log"
 export LOCK="$TMPDIR/lock"
 mkdir -p "$STATE_DIR"
 
@@ -84,16 +85,27 @@ chmod +x "$HOME/.local/bin/git"
 export REVIEWER_LIB_DIR="$TMPDIR/lib"
 mkdir -p "$REVIEWER_LIB_DIR"
 cp "$PROJECT_ROOT/lib/tracked-repos.sh" "$REVIEWER_LIB_DIR/tracked-repos.sh"
+# plow-kid-refresh.sh uses state-io's log() now, instead of the non-teeing
+# one-liner it used to define — that shadow hid this unit's whole hourly run from
+# journalctl despite StandardOutput=journal.
+cp "$PROJECT_ROOT/lib/state-io.sh" "$REVIEWER_LIB_DIR/state-io.sh"
 
 run_refresh() {
     : > "$STUB_KID_LOG"
     : > "$STUB_GIT_LOG"
-    : > "$LOG"
+    : > "$LOG_FILE"
     rm -f "$LOCK"
-    # Capture rather than swallow: scenarios assert on the exit status, and
-    # a bare non-zero would trip the suite's `set -e`.
+    # Capture stdout instead of discarding it: state-io's log() TEES to both, and
+    # the tee is the property three commits exist to establish — a non-teeing
+    # shadow writes $LOG_FILE identically, so every assertion that reads only the
+    # file passes with the shadow reintroduced. Asserting on both pins the
+    # behaviour rather than a regex over how the shadow happens to be spelled.
+    # The exit status is captured rather than swallowed for the same reason the
+    # output is: scenarios assert on it, and a bare non-zero would trip the
+    # suite's `set -e`.
+    : > "$STDOUT_CAP"
     REFRESH_RC=0
-    bash "$PROJECT_ROOT/plow-kid-refresh.sh" >/dev/null 2>&1 || REFRESH_RC=$?
+    bash "$PROJECT_ROOT/plow-kid-refresh.sh" >"$STDOUT_CAP" 2>&1 || REFRESH_RC=$?
 }
 
 count_kid() { grep -c '^KID ' "$STUB_KID_LOG" 2>/dev/null || true; }
@@ -117,13 +129,18 @@ CONF
 run_refresh
 n=$(count_kid)
 [ "$n" -eq 0 ] || { echo "FAIL scenario 2: expected 0 kid calls (missing checkout), got $n"; cat "$STUB_KID_LOG"; exit 1; }
-grep -q 'checkout missing or not a git repo' "$LOG" || { echo "FAIL scenario 2: expected 'checkout missing' log line"; cat "$LOG"; exit 1; }
+grep -q 'checkout missing or not a git repo' "$LOG_FILE" || { echo "FAIL scenario 2: expected 'checkout missing' log line"; cat "$LOG_FILE"; exit 1; }
+# ...and on STDOUT too. The unit is StandardOutput=journal, so this is what an
+# operator running `journalctl -u pr-reviewer-kid-refresh` actually sees; a
+# non-teeing log() would satisfy the file assertion above and fail this one.
+grep -q 'checkout missing or not a git repo' "$STDOUT_CAP" \
+    || { echo "FAIL scenario 2: the log line never reached stdout — this unit is StandardOutput=journal, so a non-teeing log() makes its whole run invisible to journalctl"; cat "$STDOUT_CAP"; exit 1; }
 # Tolerated on purpose: a partial-org repo or a kwr-config .repos[] entry is
 # tracked for review but never cloned on this host, so a missing checkout must
 # NOT redden the unit — a permanent alarm would bury the repos that actually
 # went stale, which is the signal this unit exists to carry. org-sync owns the
 # "no mirror" condition and alarms there.
-[ "$REFRESH_RC" -eq 0 ] || { echo "FAIL scenario 2: a missing checkout reddened the unit — permanent alarm buries real staleness"; cat "$LOG"; exit 1; }
+[ "$REFRESH_RC" -eq 0 ] || { echo "FAIL scenario 2: a missing checkout reddened the unit — permanent alarm buries real staleness"; cat "$LOG_FILE"; exit 1; }
 
 # Scenario 3: .git but no .keepitdry → bootstrap kid index.
 echo "  scenario 3: bootstrap (no .keepitdry yet) — initial kid index call..."
@@ -151,7 +168,7 @@ CONF
 MOCK_GIT_LOCAL_SHA=samesame MOCK_GIT_REMOTE_SHA=samesame run_refresh
 n=$(count_kid)
 [ "$n" -eq 0 ] || { echo "FAIL scenario 4: expected 0 kid calls (index already at HEAD), got $n"; cat "$STUB_KID_LOG"; exit 1; }
-[ "$REFRESH_RC" -eq 0 ] || { echo "FAIL scenario 4: healthy no-op tick reported failure"; cat "$LOG"; exit 1; }
+[ "$REFRESH_RC" -eq 0 ] || { echo "FAIL scenario 4: healthy no-op tick reported failure"; cat "$LOG_FILE"; exit 1; }
 
 # Scenario 4b: the stale-index seam. A failed index must not advance the marker,
 # so the NEXT tick retries even though the pull already made LOCAL == REMOTE.
@@ -166,14 +183,14 @@ declare -A KID_PATHS=([acme/retry]="$PROJ")
 CONF
 # Tick 1: new commits, pull succeeds (advancing HEAD), index FAILS.
 MOCK_GIT_LOCAL_SHA=oldsha MOCK_GIT_REMOTE_SHA=newsha MOCK_KID_EXIT=1 run_refresh
-[ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 4b: failed index reported success"; cat "$LOG"; exit 1; }
+[ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 4b: failed index reported success"; cat "$LOG_FILE"; exit 1; }
 [ ! -f "$PROJ/.keepitdry/.indexed-sha" ] || { echo "FAIL scenario 4b: marker advanced despite a FAILED index — the retry is lost"; exit 1; }
 # Tick 2: HEAD has advanced, so LOCAL == REMOTE and the old checkout-SHA gate
 # would skip — but the marker is still absent, so this must retry.
 MOCK_GIT_LOCAL_SHA=newsha MOCK_GIT_REMOTE_SHA=newsha run_refresh
 n=$(count_kid)
 [ "$n" -eq 1 ] || { echo "FAIL scenario 4b: index not retried on an unchanged tick — stranded stale forever"; cat "$STUB_KID_LOG"; exit 1; }
-[ "$REFRESH_RC" -eq 0 ] || { echo "FAIL scenario 4b: recovery tick still reported failure"; cat "$LOG"; exit 1; }
+[ "$REFRESH_RC" -eq 0 ] || { echo "FAIL scenario 4b: recovery tick still reported failure"; cat "$LOG_FILE"; exit 1; }
 [ "$(cat "$PROJ/.keepitdry/.indexed-sha")" = "newsha" ] || { echo "FAIL scenario 4b: marker not written after a successful index"; exit 1; }
 
 # Scenario 5: .git + .keepitdry, new commits (LOCAL != REMOTE) → pull + index.
@@ -211,9 +228,9 @@ run_refresh
 chmod -R u+w "$PROJ"   # restore before the trap cleans up
 n=$(count_kid)
 [ "$n" -eq 0 ] || { echo "FAIL scenario 6: kid was invoked on an unwritable project ($n calls) — the doomed bootstrap wasn't skipped"; cat "$STUB_KID_LOG"; exit 1; }
-grep -q 'not writable under this unit.s sandbox' "$LOG" || { echo "FAIL scenario 6: expected the sandbox-drift log line"; cat "$LOG"; exit 1; }
-grep -q 'install.sh' "$LOG" || { echo "FAIL scenario 6: log line must name the remedy (re-run install.sh)"; cat "$LOG"; exit 1; }
-[ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 6: refresh exited 0 despite a repo it could never index"; cat "$LOG"; exit 1; }
+grep -q 'not writable under this unit.s sandbox' "$LOG_FILE" || { echo "FAIL scenario 6: expected the sandbox-drift log line"; cat "$LOG_FILE"; exit 1; }
+grep -q 'install.sh' "$LOG_FILE" || { echo "FAIL scenario 6: log line must name the remedy (re-run install.sh)"; cat "$LOG_FILE"; exit 1; }
+[ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 6: refresh exited 0 despite a repo it could never index"; cat "$LOG_FILE"; exit 1; }
 
 # Scenario 7: kid itself fails → the repo has no fresh index, so the unit must
 # not report success. A missing index is invisible at review time (reviews just
@@ -227,8 +244,8 @@ REPOS=("acme/kidfail")
 declare -A KID_PATHS=([acme/kidfail]="$PROJ")
 CONF
 MOCK_KID_EXIT=1 run_refresh
-grep -q 'kid index failed' "$LOG" || { echo "FAIL scenario 7: expected the index-failure log line"; cat "$LOG"; exit 1; }
-[ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 7: refresh exited 0 with a repo left un-indexed"; cat "$LOG"; exit 1; }
+grep -q 'kid index failed' "$LOG_FILE" || { echo "FAIL scenario 7: expected the index-failure log line"; cat "$LOG_FILE"; exit 1; }
+[ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 7: refresh exited 0 with a repo left un-indexed"; cat "$LOG_FILE"; exit 1; }
 
 # Scenario 8: a repo whose index cannot finish must not strand the ones after
 # it — the failure isolation this script exists to provide. Both repos hang so
@@ -245,6 +262,6 @@ KID_INDEX_TIMEOUT=1 MOCK_KID_SLEEP=5 run_refresh
 n=$(count_kid)
 [ "$n" -eq 2 ] || { echo "FAIL scenario 8: expected both repos attempted (loop continued past the timeout), got $n"; cat "$STUB_KID_LOG"; exit 1; }
 [ ! -f "$PROJ_A/.keepitdry/.indexed-sha" ] && [ ! -f "$PROJ_B/.keepitdry/.indexed-sha" ] || { echo "FAIL scenario 8: a timed-out index advanced its marker — the retry is lost"; exit 1; }
-[ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 8: timed-out indexes reported success"; cat "$LOG"; exit 1; }
+[ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 8: timed-out indexes reported success"; cat "$LOG_FILE"; exit 1; }
 
 echo "  PASS (9 scenarios: empty-noop, missing-checkout-tolerated-not-alarmed, bootstrap-on-no-.keepitdry, index-current-is-a-noop, failed-index-retries-next-tick, new-commits-pull-then-index, unwritable-project-skipped-loudly, index-failure-is-not-success, per-repo-timeout-does-not-strand-the-sweep)"

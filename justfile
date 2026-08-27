@@ -24,30 +24,33 @@ test:
     export GIT_CONFIG_GLOBAL=/dev/null
 
     # Same class, different source: detach the suite from the DEPLOYMENT's env.
-    # lib/render-compose.sh's x-reviewer-env exports these operator-config paths,
-    # and every consumer resolves them as ${VAR:-<sandbox default>} — so with one
-    # ambient, a smoke that writes its fixture to the default path silently reads
-    # the LIVE file instead and fails pointing at whatever subsystem owns that
-    # file, not at the env bleed.
+    # Every var on the unset lines is an ambient config path that some consumer
+    # resolves as ${VAR:-<sandbox default>} — so with one set, a smoke that writes
+    # its fixture to the default path silently reads the LIVE file instead and
+    # fails pointing at whatever subsystem owns that file, not at the env bleed.
+    # That is the whole membership rule: if a new var is read that way, scrub it.
+    # Source is tagged on each unset line below; nothing restates it here, because
+    # a second copy is what kept drifting.
     #
-    # Where that actually bites: the HOST/systemd review branch, which runs the
-    # PR's gate with `env -u LOG_FILE just … test` and so inherits the operator
-    # environment (lib/run-dir.sh), and any manual `docker exec` shell, which
-    # gets the full compose env. The CONTAINER review path is NOT a trigger —
-    # run_just_test launches the gate under `env -i` with a fixed allowlist
-    # (PATH/HOME/DOCKER_HOST/XDG_CACHE_HOME/UV_CACHE_DIR/PIP_CACHE_DIR), so none
-    # of these reach it. Do not weaken that allowlist on the strength of this
-    # scrub: it is a token-exposure boundary first and a hermeticity one second.
+    # Where it actually bites: an operator shell that already has one of these set
+    # running the gate directly, and any manual `docker exec` shell, which gets
+    # the full compose env. The HOST/systemd review branch inherits the operator
+    # environment too (lib/run-dir.sh), though it strips LOG_FILE itself. The
+    # CONTAINER review path is NOT a trigger — run_just_test launches the gate
+    # under `env -i` with a fixed allowlist (PATH/HOME/DOCKER_HOST/XDG_CACHE_HOME/
+    # UV_CACHE_DIR/PIP_CACHE_DIR), so none of these reach it. Do not weaken that
+    # allowlist on the strength of this scrub: it is a token-exposure boundary
+    # first and a hermeticity one second.
     #
     # Scrubbed HERE, once, rather than per-suite: twelve smokes source the
-    # manifest loader and a thirteenth would silently reopen the hole. Kept as a
-    # plain list rather than a test-enforced coupling to x-reviewer-env: at one
-    # operator and six path-shaped vars, a var added without a scrub entry is
-    # cheap to notice and fix when observed. Not scrubbed: DOCKER_HOST
-    # (render-compose-smoke needs a live daemon) and STATE_DIR/REPOS_DIR/
-    # WORKDIRS_DIR (each smoke exports its own sandboxed value). Per-command
-    # overrides in a scenario are unaffected; this only clears the environment.
-    unset REPOS_CONF_FILE CONFIG_ENV_FILE REPO_ENV_DIR KWR_CONFIG_DIR LOCAL_STATE_DIR KWR_CLONE_ROOT
+    # manifest loader and a thirteenth would silently reopen the hole. Not
+    # scrubbed: DOCKER_HOST (render-compose-smoke needs a live daemon) and
+    # STATE_DIR/REPOS_DIR/WORKDIRS_DIR (each smoke exports its own sandboxed
+    # value). Per-command overrides in a scenario are unaffected; this only
+    # clears the environment.
+    unset REPOS_CONF_FILE CONFIG_ENV_FILE REPO_ENV_DIR KWR_CONFIG_DIR LOCAL_STATE_DIR  # x-reviewer-env
+    unset KWR_CLONE_ROOT   # lib/render-compose.sh, emitted only when KID_ROOT is set
+    unset LOG_FILE         # lib/review-one-pr.sh
 
     # macOS /bin/bash is frozen at 3.2 (no associative arrays). The
     # smokes use declare -A in 12 files, so bash 4+ is required. On

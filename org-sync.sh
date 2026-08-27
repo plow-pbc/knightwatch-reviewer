@@ -25,7 +25,7 @@
 set -euo pipefail
 
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
-LOG="${LOG:-$STATE_DIR/org-sync.log}"
+LOG_FILE="${LOG_FILE:-$STATE_DIR/org-sync.log}"
 # Lock under $STATE_DIR, not /tmp: systemd's PrivateTmp=yes would
 # otherwise split the timer run's lock from an operator shell run's.
 LOCK="${LOCK:-$STATE_DIR/org-sync.lock}"
@@ -34,13 +34,14 @@ AUTO_CONF="${AUTO_CONF:-$STATE_DIR/repos.conf.auto}"
 CONFIG_ENV_FILE="${CONFIG_ENV_FILE:-$STATE_DIR/config.env}"
 
 # gh_retry + the fleet pause: org-sync is a timer entrypoint spending the same
-# shared PAT, so its listings/clones must stamp the pause and honor it. Sourced
-# BEFORE this script's own log() below — gh-retry.sh pulls in state-io.sh, whose
-# log() writes to $LOG_FILE, and org-sync writes to $LOG. Sourcing after would
-# silently redirect every line of this script's output away from its own log.
+# shared PAT, so its listings/clones must stamp the pause and honor it. It also
+# brings in state-io's log(), which this script now uses directly — the override
+# that used to sit here was a strictly-lossy shadow (same "[timestamp] $*" to the
+# same file, minus the tee), so every line org-sync emitted was invisible in
+# `journalctl -u pr-reviewer-org-sync` despite the unit being
+# StandardOutput=journal. Naming the sink LOG_FILE is what lets state-io's own
+# log() write it.
 . "$REVIEWER_LIB_DIR/gh-retry.sh"
-
-log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG"; }
 mkdir -p "$STATE_DIR"
 
 # Acquire the sync lock BEFORE pulling kwr-config: the cache clone/pull and the
@@ -61,7 +62,7 @@ if [ -f "$CONFIG_ENV_FILE" ]; then . "$CONFIG_ENV_FILE"; fi
 . "$REVIEWER_LIB_DIR/conventions.sh"
 if [ -n "${KWR_CONFIG_REPO:-}" ]; then
     # ff-only sync keeps the last-good cache on a transient pull failure.
-    if sync_kwr_config >>"$LOG" 2>&1; then
+    if sync_kwr_config >>"$LOG_FILE" 2>&1; then
         log "synced kwr-config"
     else
         log "WARN: kwr-config sync failed — using last-good cache (if any)"
@@ -131,7 +132,7 @@ fi
 
 for org in "${ORGS[@]}"; do
     log "discovering org=$org"
-    if ! out=$(gh repo list "$org" --source --no-archived --limit 1000 --json name --jq '.[].name' 2>>"$LOG"); then
+    if ! out=$(gh repo list "$org" --source --no-archived --limit 1000 --json name --jq '.[].name' 2>>"$LOG_FILE"); then
         log "FATAL: gh repo list $org failed"
         exit 1
     fi
@@ -197,7 +198,7 @@ for full in "${AUTO[@]}"; do
         continue
     else
         log "cloning $full → $dest"
-        if ! gh repo clone "$full" "$dest" >>"$LOG" 2>&1; then
+        if ! gh repo clone "$full" "$dest" >>"$LOG_FILE" 2>&1; then
             # gh can leave $dest with partial .git + origin on failure;
             # next tick's matching-origin branch would treat it as a
             # complete clone and publish an empty checkout. Clean up.
