@@ -172,6 +172,7 @@ gh_pause_file() { printf '%s' "${STATE_DIR:-$HOME/.pr-reviewer}/gh-rate-limited-
 # describing it that way would leave a false boundary standing as reviewed
 # policy. Falls back to STATE_DIR the same way lib/review-one-pr.sh does.
 trust_cache_file() { printf '%s' "${LOCAL_STATE_DIR:-${STATE_DIR:-$HOME/.pr-reviewer}}/trust-cache.json"; }
+
 # --- GitHub quota telemetry -------------------------------------------------
 # The fleet kept hitting limits and each incident restarted the same forensic
 # dig: correlate six containers' logs by timestamp to guess the top consumer.
@@ -322,6 +323,7 @@ gh_quota_report() {
     fi
     return 0
 }
+
 # True while the pause window is still in the future. Missing file reads as
 # epoch 0 (not paused) — mirrors quota_active. Unlike quota_active this coerces
 # an EMPTY read to 0 as well: quota_active's file has one owner, but this one is
