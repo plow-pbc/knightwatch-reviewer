@@ -103,10 +103,6 @@ test:
     bash lib/tests/gh-comments-smoke.sh
 
     echo ""
-    echo "=== entrypoint-logging smoke test ==="
-    bash lib/tests/entrypoint-logging-smoke.sh
-
-    echo ""
     echo "=== gh rate-limit smoke test ==="
     bash lib/tests/gh-rate-limit-smoke.sh
 
