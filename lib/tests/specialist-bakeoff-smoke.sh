@@ -266,8 +266,16 @@ cat > "$STATE_DIR/repos.conf" <<'CONF'
 REPOS=("test-org/bakeoff-probe")
 CONF
 
+# Capture stdout rather than discard it: bakeoff runs as a StandardOutput=journal
+# unit, and state-io's log() TEES to LOG_FILE and stdout. It used to define its
+# own non-teeing log(), which wrote LOG_FILE identically — so every assertion
+# reading only the file passed while the unit's whole hourly run was invisible in
+# `journalctl -u pr-reviewer-bakeoff`. Asserting on the capture pins the tee by
+# behaviour, which is what lets the source-shape scanner go.
+STDOUT_CAP="$TMPDIR_SMOKE/bakeoff-stdout.log"
 run_driver() {
-    bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null 2>&1
+    : > "$STDOUT_CAP"
+    bash "$REPO_ROOT/specialist-bakeoff.sh" >"$STDOUT_CAP" 2>&1
 }
 
 # ISO8601 timestamp N hours ago. All fixture timestamps in this file derive
@@ -329,6 +337,15 @@ setup_edited_after_one_commit() {
 echo "    scenario 1: no comments → placeholder text, no data rows..."
 rm -f "$DB_FILE"
 run_driver
+# The journal half of the logging contract, asserted once on a known-good run:
+# this unit is StandardOutput=journal, so a non-teeing log() — which is what it
+# used to define — leaves the whole hourly run invisible to journalctl while
+# writing bakeoff.log identically.
+if ! grep -q 'walked .* bot reviews' "$STDOUT_CAP"; then
+    echo "FAIL scenario 1: bakeoff's summary line never reached stdout — this unit is StandardOutput=journal, so a non-teeing log() makes its entire run invisible to journalctl"
+    cat "$STDOUT_CAP"
+    exit 1
+fi
 if grep -qE '^\| [a-z]' "$OUT_FILE"; then
     echo "FAIL scenario 1: expected no data rows, got rows in $OUT_FILE"
     cat "$OUT_FILE"

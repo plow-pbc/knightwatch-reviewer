@@ -13,7 +13,7 @@ set -u
 # trailing). See review.sh for the writable-PATH security context.
 
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
-LOG="${LOG:-$STATE_DIR/plow-kid-refresh.log}"
+LOG_FILE="${LOG_FILE:-$STATE_DIR/plow-kid-refresh.log}"
 LOCK="${LOCK:-/tmp/plow-kid-refresh.lock}"
 # Bound each repo's index so one that cannot finish doesn't take the whole
 # sweep down with it. Deliberately just this — the unit already owns the sweep
@@ -29,8 +29,12 @@ KID_INDEX_TIMEOUT="${KID_INDEX_TIMEOUT:-300}"
 # a repo here is a one-line edit in repos.conf.
 REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$STATE_DIR/lib}"
 . "$REVIEWER_LIB_DIR/tracked-repos.sh"
-
-log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG"; }
+# state-io's log() writes "[timestamp] $*" to LOG_FILE and TEES it to stdout. The
+# non-teeing one-liner this replaces hid every line of this run — the lock skip,
+# the per-project index results, the fetch/pull failures below — from
+# `journalctl -u pr-reviewer-kid-refresh`, though the unit is
+# StandardOutput=journal and it runs hourly.
+. "$REVIEWER_LIB_DIR/state-io.sh"
 
 if [ -e "$LOCK" ]; then
     log "refresh already running (lock $LOCK present) — skipping"
@@ -81,7 +85,7 @@ for NAME in "${!KID_PATHS[@]}"; do
         continue
     fi
 
-    if ! git fetch origin main --quiet 2>>"$LOG"; then
+    if ! git fetch origin main --quiet 2>>"$LOG_FILE"; then
         log "$NAME: git fetch failed — skipping"
         FAILED=$((FAILED + 1))
         continue
@@ -92,7 +96,7 @@ for NAME in "${!KID_PATHS[@]}"; do
 
     if [ "$LOCAL" != "$REMOTE" ]; then
         log "$NAME: new commits ${LOCAL:0:7} → ${REMOTE:0:7}, pulling"
-        if ! git pull --ff-only --quiet 2>>"$LOG"; then
+        if ! git pull --ff-only --quiet 2>>"$LOG_FILE"; then
             log "$NAME: git pull --ff-only failed — skipping index"
             FAILED=$((FAILED + 1))
             continue
@@ -109,7 +113,7 @@ for NAME in "${!KID_PATHS[@]}"; do
     SHA_FILE="$PROJECT/.keepitdry/.indexed-sha"
     [ "$(cat "$SHA_FILE" 2>/dev/null)" = "$HEAD_SHA" ] && continue
 
-    if timeout "$KID_INDEX_TIMEOUT" kid index "$PROJECT" >> "$LOG" 2>&1; then
+    if timeout "$KID_INDEX_TIMEOUT" kid index "$PROJECT" >> "$LOG_FILE" 2>&1; then
         echo "$HEAD_SHA" > "$SHA_FILE"
         log "$NAME: index complete at ${HEAD_SHA:0:7}"
     else
