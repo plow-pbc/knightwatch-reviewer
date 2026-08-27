@@ -29,7 +29,10 @@ make_sandbox() {
     # review-loop.sh reads GH_TOKEN straight out of config.env — the quota probe
     # runs in ITS shell, and reading the file only in child processes is what
     # shipped that report inert. Compose always mounts one, so the sandbox does too.
-    printf 'export GH_TOKEN=ghp_fake_for_smoke\n' > "$d/config.env"
+    # Deliberately NOT exported: a bare assignment is an ordinary operator edit,
+    # and the entrypoint has to turn it into environment or the probe, the git
+    # credential helper and the worker all run unauthenticated.
+    printf 'GH_TOKEN=ghp_fake_for_smoke\n' > "$d/config.env"
     echo "$d"
 }
 
@@ -50,6 +53,7 @@ cat > "$d/review.sh" <<'STUB'
 { echo "REVIEWER_LIB_DIR=$REVIEWER_LIB_DIR"
   echo "PROMPTS_DIR=$PROMPTS_DIR"
   echo "STATE_DIR=$STATE_DIR"
+  echo "GH_TOKEN=$GH_TOKEN"
   echo "MAX_CONCURRENT=$MAX_CONCURRENT"
   echo "WAIT_FOR_WORKERS=$WAIT_FOR_WORKERS"; } > env.seen
 exit 1   # fatal tick: review-loop must exit (not loop) — also breaks the test loop
@@ -85,6 +89,7 @@ if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR
 fi
 grep -q "REVIEWER_LIB_DIR=$d/lib" "$d/env.seen"     || fail "REVIEWER_LIB_DIR not forced to \$repo/lib (caller env leaked through)"
 grep -q "PROMPTS_DIR=$d/prompts" "$d/env.seen"      || fail "PROMPTS_DIR not forced to \$repo/prompts (caller env leaked through)"
+grep -q "GH_TOKEN=ghp_fake_for_smoke" "$d/env.seen"  || fail "GH_TOKEN did not reach the worker's ENVIRONMENT — a bare assignment in config.env leaves the probe, the git credential helper and review.sh all unauthenticated"
 grep -q "STATE_DIR=$d/state" "$d/env.seen"          || fail "STATE_DIR not re-pinned after config.env — gh_pause_file() then points at a private path and the loop goes blind to the fleet-wide pause"
 grep -q "MAX_CONCURRENT=1" "$d/env.seen"            || fail "MAX_CONCURRENT not pinned to 1"
 grep -q "WAIT_FOR_WORKERS=1" "$d/env.seen"          || fail "WAIT_FOR_WORKERS not set (one-review-per-account cap)"

@@ -44,8 +44,14 @@ _KWR_STATE_DIR="${STATE_DIR:?review-loop.sh requires STATE_DIR from the compose 
 # commented-out variable. `source`'s own stderr names which shape failed; this
 # says whether the shell ended up with the one thing the loop needs. Under
 # `set -u` it exits loud, and it is shorter than any of the tests it replaces.
+# It EXPORTS as well as asserts, because every consumer is a separate process —
+# the probe's `gh api`, the `gh auth git-credential` helper the image wires for
+# private clones, and the dispatched review.sh. A bare `GH_TOKEN=…` without
+# `export` is an ordinary operator edit (the secrets README has to tell them to
+# export it), and it would satisfy a shell-variable assertion while leaving every
+# one of those unauthenticated.
 source "${CONFIG_ENV_FILE:?review-loop.sh requires CONFIG_ENV_FILE from the compose environment}"
-: "${GH_TOKEN:?review-loop.sh: no GH_TOKEN after sourcing $CONFIG_ENV_FILE — the quota probe would run unauthenticated and report nothing}"
+export GH_TOKEN="${GH_TOKEN:?review-loop.sh: no GH_TOKEN after sourcing $CONFIG_ENV_FILE — the quota probe would run unauthenticated and report nothing}"
 export REVIEWER_LIB_DIR="$(pwd)/lib" PROMPTS_DIR="$(pwd)/prompts" STATE_DIR="$_KWR_STATE_DIR"
 unset _KWR_STATE_DIR
 # Shared logger (timestamp + [w<WORKER_ID>] tag). LOG_FILE is unset here —
