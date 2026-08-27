@@ -370,6 +370,12 @@ run_orchestrator() {
     # stamps the shared pause, which would then make every later scenario's
     # dispatcher stop claiming before reaching the gate under test.
     rm -f "$(gh_pause_file)"
+    # The author-trust verdict cache (#233) is stop-state for the same reason: a
+    # warm entry answers WITHOUT probing, so a scenario asserting a probe branch
+    # (untrusted, 404, indeterminate) would silently exercise the cache instead
+    # and pass vacuously. Scenarios that deliberately test cache behaviour across
+    # ticks set KEEP_TRUST_CACHE=1.
+    [ -n "${KEEP_TRUST_CACHE:-}" ] || rm -f "$(trust_cache_file)" "$(trust_cache_file).lock"
     # Fail loud on a malformed comments fixture. An unparseable one makes
     # fetch_issue_comments fail, so the PR is dropped BEFORE any gate under
     # test — every assertion then passes vacuously. The trap is one printf
@@ -636,6 +642,33 @@ if ! grep -q "trust check deferred" "$LOG_FILE"; then
 fi
 if [ -f "$STATE_DIR/seen-updated/cncorp_plow__1" ]; then
     echo "FAIL scenario 6b: idle watermark written on a deferred trigger — must stay unconsumed for next-tick retry"
+    exit 1
+fi
+
+# Scenario 6c (warm-author-verdict-spares-the-probe): the enumeration path is
+# what tripped the secondary limit — one uncached author lookup per PR per tick
+# per container, re-fired forever because a throttled rc=2 never wrote the
+# watermark. With the verdict cached, a throttled tick makes NO author probe at
+# all. Drives no trigger comment on purpose: the TRIGGER gate is deliberately
+# uncached (it stages prose into a pipeline ending in `gh pr review --approve`,
+# and the worker re-verifies REQUESTER_LOGIN but never TRIGGER_USER), so scenario
+# 6b owns that defer contract and this one isolates the author path.
+echo "  scenario 6c: a warm AUTHOR verdict spares the per-tick probe under a throttle..."
+rm -f "$STATE_DIR/seen-updated/cncorp_plow__1"
+rm -f "$(trust_cache_file)" "$(trust_cache_file).lock"
+printf '[]\n' > "$MOCK_COMMENTS_FILE"
+KEEP_TRUST_CACHE=1 run_orchestrator          # tick 1: clean 200 warms the cache
+rm -f "$STATE_DIR/seen-updated/cncorp_plow__1"
+KEEP_TRUST_CACHE=1 MOCK_PERMISSION_RC=1 MOCK_PERMISSION_ERR="gh: HTTP 418: unverifiable (simulated)" run_orchestrator
+pc6c=$( { grep -c 'PERM' "$PERMISSION_CALL_LOG" 2>/dev/null || true; } | head -1); pc6c=${pc6c:-0}
+if [ "$pc6c" -ne 0 ]; then
+    echo "FAIL scenario 6c: the throttled tick made $pc6c author permission call(s) — the cache was not consulted, so the per-tick storm returns"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+if grep -q "trust check deferred" "$LOG_FILE"; then
+    echo "FAIL scenario 6c: the author gate deferred despite a warm cache"
+    echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
 
@@ -1605,9 +1638,15 @@ clear_seeded_runs
 # a serialized boolean would still say "trusted" and hand repo secrets plus
 # `just test` execution to a contributor who no longer has push access. The
 # dispatcher owns "should we review?"; the worker owns "may this code run?".
+#
+# The fence names the LIVE entry point, not merely "recomputes" (#233): once a
+# cached wrapper existed, recomputing through it re-opened this exact gap one
+# level down — the worker would re-ask and be answered from a verdict the
+# dispatcher warmed up to ~40 min earlier, which is the serialized boolean this
+# scenario was written to forbid, wearing a different name.
 echo "  scenario RT8: the worker recomputes author trust rather than inheriting it..."
 w7="$PROJECT_ROOT/lib/review-one-pr.sh"
-grep -qE 'is_trusted_repo_author "\$REPO" "\$PR_AUTHOR"' "$w7" \
+grep -qE 'is_trusted_repo_author_live "\$REPO" "\$PR_AUTHOR"' "$w7" \
     || { echo "FAIL RT8: the worker no longer recomputes author trust — a stale queued boolean would gate the .env mirror and just test"; exit 1; }
 grep -qE 'AUTHOR_TRUSTED_ARG' "$w7" \
     && { echo "FAIL RT8: the worker still reads a serialized author-trust arg — execution trust must come from the live author"; exit 1; }
@@ -1616,8 +1655,24 @@ grep -qF 'author_trusted:' "$PROJECT_ROOT/review.sh" \
     && { echo "FAIL RT8: review.sh serializes author_trusted again — the queue can wait, so that boolean goes stale before it gates execution"; exit 1; }
 grep -qF 'requester_trusted:' "$PROJECT_ROOT/review.sh" \
     && { echo "FAIL RT8: review.sh serializes requester_trusted again — admission must re-verify the requester's login, since reading is the boundary"; exit 1; }
-grep -qE 'is_trusted_repo_author "\$REPO" "\$REQUESTER_LOGIN"' "$w7" \
+grep -qE 'is_trusted_repo_author_live "\$REPO" "\$REQUESTER_LOGIN"' "$w7" \
     || { echo "FAIL RT8: the worker no longer re-verifies the requester at admission — a revoked voucher would still admit content to sandbox-bypassed codex"; exit 1; }
+# Same fence for the other two ACTING gates. Both were converted for exactly the
+# reasoning above, and neither was pinned: swapping either back to the cached
+# wrapper left the whole suite green, because run_orchestrator clears the cache
+# unless KEEP_TRUST_CACHE=1 and every trigger row drives a verdict that is never
+# cached anyway (rc=1 / rc=2), so cached and live are indistinguishable there.
+grep -qE 'is_trusted_repo_author_live "\$REPO" "\$TRIGGER_USER"' "$PROJECT_ROOT/review.sh" \
+    || { echo "FAIL RT8: the trigger-prose gate is not the LIVE check — a cached verdict is the only thing behind prose staged into a pipeline ending in an approve"; exit 1; }
+grep -qE 'is_trusted_repo_author_live "\$REPO" "\$USER"' "$PROJECT_ROOT/learn-from-replies.sh" \
+    || { echo "FAIL RT8: the /memorize gate is not the LIVE check — a revoked collaborator could still inject a rule that shapes every future review"; exit 1; }
+grep -qE 'is_trusted_repo_author_live "\$repo" "\$login"' "$PROJECT_ROOT/lib/pr-comments.sh" \
+    || { echo "FAIL RT8: the commenter gate is not the LIVE check — it decides whose verbatim prose reaches codex run with --dangerously-bypass-approvals-and-sandbox, runs inside the worker, and nothing downstream re-checks it"; exit 1; }
+grep -qE 'is_trusted_repo_author_live "\$REPO" "\$USER"' "$PROJECT_ROOT/poll-pr-actions.sh" \
+    || { echo "FAIL RT8: the /approve gate is not the LIVE check — it authorizes a real GitHub approval and marks a rejection permanently seen, so a stale verdict either honours a revoked collaborator or drops a promoted one forever"; exit 1; }
+# lib/auth.sh's header now points HERE as the enumerable source of truth instead
+# of listing call sites in prose (three rounds found that list stale). If a gate
+# is added, it gets a line above — that is the contract the header defers to.
 
 # --- RT5: the execution gates must NEVER move to requester trust. A vouch says
 # "this diff is worth reading", not "run this author's code". Structural,
@@ -1640,4 +1695,4 @@ grep -qE 'just_test_skip_reason "\$JUST_FILE" "\$IS_TRUSTED_AUTHOR"' "$w" \
 # that scenario to describe. Deleted rather than left dormant: it can no longer
 # reach a branch that exists.
 
-echo "  PASS (27 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, failed-decline-watermarked-no-retry-storm, stale-enumerated-head-dispatches, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated)"
+echo "  PASS (28 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, warm-author-verdict-spares-the-probe, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, failed-decline-watermarked-no-retry-storm, stale-enumerated-head-dispatches, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated)"

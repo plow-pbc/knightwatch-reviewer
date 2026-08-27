@@ -51,6 +51,12 @@ seen_get() {
 # (seen_set_value). The two public writers are thin wrappers over this.
 _seen_write() {
     local file="$1" key="$2" value_expr="$3" value="${4:-}"
+    # Provision the store's directory. Every prior caller happened to write into
+    # a STATE_DIR that bootstrap had already made, so a missing parent surfaced
+    # as three cryptic redirect errors and an "unbound variable" from the lock
+    # subshell rather than as anything nameable. Owning it here fixes that for
+    # every caller instead of pushing an mkdir into each one.
+    mkdir -p "$(dirname "$file")" 2>/dev/null || true
     [ -f "$file" ] || echo '{}' > "$file"
     local lockfile="${file}.lock"
     if ! (
@@ -154,6 +160,18 @@ mark_auth_offline() {
 # pinned, there are no siblings to create, and the whole plant class is absent
 # rather than guarded.
 gh_pause_file() { printf '%s' "${STATE_DIR:-$HOME/.pr-reviewer}/gh-rate-limited-until"; }
+
+# Author-trust verdict cache. PER-CONTAINER (LOCAL_STATE_DIR), and the reason is
+# dispatch isolation, NOT an authorization boundary — this store no longer is
+# one. It holds enumeration verdicts only ("is this PR worth looking at"); every
+# acting gate re-checks live (lib/auth.sh), so a planted entry buys a wasted
+# dispatch that the worker's live check then rejects, not the ability to run
+# code. Keeping it off the shared volume still means one compromised `just test`
+# run cannot steer the other containers' enumeration, which is worth the zero
+# extra lines it costs — but it is not what stops a revoked collaborator, and
+# describing it that way would leave a false boundary standing as reviewed
+# policy. Falls back to STATE_DIR the same way lib/review-one-pr.sh does.
+trust_cache_file() { printf '%s' "${LOCAL_STATE_DIR:-${STATE_DIR:-$HOME/.pr-reviewer}}/trust-cache.json"; }
 
 # --- GitHub quota telemetry -------------------------------------------------
 # The fleet kept hitting limits and each incident restarted the same forensic

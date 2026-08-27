@@ -132,4 +132,76 @@ echo "$OUT" | grep -qF "<!-- decline:class=session-scoping -->" || { echo "FAIL:
 # ...and NO operator-marker section is emitted (the channel was deleted).
 echo "$OUT" | grep -qF "Operator decline markers" && { echo "FAIL: deleted marker section re-emitted"; echo "$OUT"; exit 1; } || true
 
+# --- fixture 5: unverifiable participants, end to end through the real wrapper ---
+# fetch_pr_comments' stdout IS pr-comments.md, and log() tees to stdout, so a
+# bare log call would prepend a raw timestamped line ahead of `# PR comments` —
+# one per participant under the very pause that guarantees rc=2. And a thread
+# emptied by unverifiable commenters must NOT collapse to the sentinel: that
+# would tell the next review nobody replied, which is the failure the notice
+# exists to prevent.
+echo "  fixture 5: unverifiable commenters — diagnostic to stderr, thread marked INCOMPLETE, never the sentinel..."
+PARTIAL_JSON='[{"user":{"login":"srosro"},"created_at":"2026-05-01T07:00:00Z","body":"operator note"},{"user":{"login":"pr-author"},"created_at":"2026-05-01T08:00:00Z","body":"Re Probe 2: fixed in abc123."}]'
+fetch_issue_comments() { printf '%s' "$PARTIAL_JSON"; }
+is_trusted_repo_author_live() { return 2; }   # every probe unverifiable, as an active pause guarantees
+LOG_FILE=""; export LOG_FILE
+DOC=$(BOT_USER=srosro fetch_pr_comments "cncorp/plow" 1 2>/dev/null)
+case "$DOC" in
+    "# PR comments"*) ;;
+    *) echo "FAIL fixture 5: the document does not start with its heading — a diagnostic leaked into stdout"; printf '%s\n' "$DOC" | head -3; exit 1 ;;
+esac
+# Match the LOG line's own shape, not the phrase — the notice legitimately
+# contains "could not be trust-verified" too.
+printf '%s' "$DOC" | grep -q 'pr-comments: @' && {
+    echo "FAIL fixture 5: the rc=2 diagnostic was written into the staged document"; exit 1; }
+printf '%s' "$DOC" | grep -qF 'INCOMPLETE' || {
+    echo "FAIL fixture 5: the document did not carry the incomplete notice"; exit 1; }
+printf '%s' "$DOC" | grep -qF 'does NOT mean nobody answered' || {
+    echo "FAIL fixture 5: the notice lost the guidance telling stages how to weigh the gap"; exit 1; }
+
+# The bug this fixture exists for: with the SOLE participant unverifiable and no
+# operator comment, the thread filters to empty — and the sentinel would report
+# that as "nobody commented".
+SOLE_JSON='[{"user":{"login":"pr-author"},"created_at":"2026-05-01T08:00:00Z","body":"Re Probe 2: already fixed, please re-check."}]'
+fetch_issue_comments() { printf '%s' "$SOLE_JSON"; }
+SOLE_DOC=$(BOT_USER=srosro fetch_pr_comments "cncorp/plow" 1 2>/dev/null)
+[ "$SOLE_DOC" = "(no PR comments)" ] && {
+    echo "FAIL fixture 5: a thread emptied by an UNVERIFIABLE participant reported as 'no comments' — the next review reads an existing reply as silence"; exit 1; }
+printf '%s' "$SOLE_DOC" | grep -qF 'INCOMPLETE' || {
+    echo "FAIL fixture 5: the emptied thread did not say it was incomplete"; printf '%s\n' "$SOLE_DOC"; exit 1; }
+
+# A COMPLETE thread must stay quiet, or the notice is noise.
+fetch_issue_comments() { printf '%s' "$PARTIAL_JSON"; }
+is_trusted_repo_author_live() { return 0; }
+COMPLETE_DOC=$(BOT_USER=srosro fetch_pr_comments "cncorp/plow" 1 2>/dev/null)
+printf '%s' "$COMPLETE_DOC" | grep -qF 'INCOMPLETE' && {
+    echo "FAIL fixture 5: a complete thread claimed to be incomplete"; exit 1; }
+
+# ...and a genuinely empty thread is still exactly the sentinel.
+fetch_issue_comments() { printf '%s' '[]'; }
+EMPTY_DOC=$(BOT_USER=srosro fetch_pr_comments "cncorp/plow" 1 2>/dev/null)
+[ "$EMPTY_DOC" = "(no PR comments)" ] || {
+    echo "FAIL fixture 5: a genuinely empty thread is no longer the sentinel"; printf '%s\n' "$EMPTY_DOC"; exit 1; }
+
+# A bot commenter is answered locally and never counted as unverifiable, so a
+# thread whose only non-operator voice is a bot stays the sentinel rather than
+# announcing it withheld something.
+fetch_issue_comments() { printf '%s' '[{"user":{"login":"dependabot[bot]"},"created_at":"2026-05-01T09:00:00Z","body":"bumped a dep"}]'; }
+is_trusted_repo_author_live() { return 2; }
+BOT_DOC=$(BOT_USER=srosro fetch_pr_comments "cncorp/plow" 1 2>/dev/null)
+[ "$BOT_DOC" = "(no PR comments)" ] || {
+    echo "FAIL fixture 5: a bot-only thread was reported as INCOMPLETE — nothing was withheld, and the bot cost an API call"; printf '%s\n' "$BOT_DOC"; exit 1; }
+
+# Restore the world. These stubs are file-scope, so leaving them set means any
+# fixture appended below silently runs against "no comments" and "trusts
+# everyone" — passing while testing nothing. This file has grown by an appended
+# fixture three commits running, so the cleanup is the load-bearing part.
+# Re-source, don't `unset -f`: bash definitions don't stack, so unsetting DELETES
+# the real functions rather than restoring them. A later fixture that stubs
+# fetch_issue_comments and leans on the real trust gate would then get rc=127 —
+# neither 0 nor 2 — so the login is dropped with unverified still 0, the thread
+# collapses to the sentinel, and an "untrusted commenter excluded" assertion
+# passes vacuously. Same class, different door.
+. "$PROJECT_ROOT/lib/pr-comments.sh"
+unset LOG_FILE
+
 echo "  PASS"

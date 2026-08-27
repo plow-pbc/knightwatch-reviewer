@@ -1,19 +1,27 @@
 #!/usr/bin/env bash
-# Author-trust gating. Two callers in this codebase grant trust to GitHub
-# usernames who can ride into the review pipeline:
+# Author-trust gating. Trust is "has push access" — `admin`, `write`, or
+# `maintain` from the collaborators API. Two entry points, split by what the
+# caller does with the answer:
 #
-#   1. lib/review-one-pr.sh mirrors canonical's gitignored `.env*` files
-#      into the per-PR workdir before `just test` runs. Untrusted PR
-#      authors can otherwise modify a `just test` recipe to read those
-#      live API keys.
-#   2. review.sh stages the latest matching comment as
-#      `.codex-scratch/trigger-comment.md`. Intent inference and the
-#      aggregator weight that prose heavily on a pipeline that ends in
-#      `gh pr review --approve`, so untrusted commenters can otherwise
-#      shape the review.
+#   is_trusted_repo_author_live — ACTING gates. The caller is about to take an
+#     irreversible action on the strength of the verdict: mirror canonical
+#     `.env*` into a workdir that then runs PR-supplied `just test`; stage a
+#     comment's verbatim prose for the codex pipeline (started with
+#     --dangerously-bypass-approvals-and-sandbox); submit a GitHub approval;
+#     apply a rule to the shared corpus. These fire long after the dispatcher
+#     ran, so a cached verdict answers "did they have access THEN", not "may
+#     this happen NOW".
 #
-# Both gates call `is_trusted_repo_author REPO USER`. Trust is "has push
-# access" — `admin`, `write`, or `maintain` from the collaborators API.
+#   is_trusted_repo_author — ENUMERATION only. The caller is deciding whether a
+#     PR is worth looking at, and the acting gate behind it re-checks live. One
+#     uncached call per PR per tick per container is what tripped GitHub's
+#     secondary limit (#233) — the whole reason the cache exists.
+#
+# Deliberately NOT a list of call sites. Three consecutive review rounds found
+# this header's hand-maintained enumerations stale — the enumeration was the
+# defect, not any one instance of it. RT8 in
+# lib/tests/orchestrator-skip-smoke.sh is the enumerable source of truth: it is
+# executable and fails when a gate moves.
 #
 # TRI-STATE by exit code (the 2>/dev/null swallow used to make a 403
 # rate-limit indistinguishable from "untrusted", silently skipping a
@@ -23,12 +31,12 @@
 #                        404 non-collaborator (also: empty user)
 #   2 — indeterminate  : couldn't verify — 403/5xx/network, or any non-zero
 #                        gh exit that isn't a clean "not a collaborator"
-# Callers that only branch trusted/untrusted (`if is_trusted_repo_author`)
-# treat 2 as falsy → fail closed. Two callers branch on 2 explicitly, in
-# opposite directions, and both are deliberate: review.sh DEFERS (an
-# unverifiable lookup must not drop a trusted author's PR), while
-# review-one-pr.sh's execution gate fails CLOSED (it only grants capability,
-# and the read is already authorized by the requester gate upstream).
+# Callers that only branch trusted/untrusted treat 2 as falsy → fail closed.
+# rc=2 is never a verdict, so a caller that branches on it explicitly picks one
+# of three dispositions — DEFER (an unverifiable lookup must not drop a trusted
+# author's PR), fail CLOSED (an execution gate only grants capability), or leave
+# the item unseen to retry — and says which at its own call site. Not listed
+# here, for the reason given above.
 #
 # Reuses gh_api_retry: it bounded-retries 5xx/network but intentionally NOT
 # 403 — exactly the "transient couldn't-verify vs definitive" split here.
@@ -48,9 +56,14 @@ is_bot_account() {
     esac
 }
 
-is_trusted_repo_author() {
+# The LIVE admission check — one API call, never cached. Every caller about to
+# ACT on trust uses this: mirroring canonical .env* into a workdir, executing
+# PR-supplied `just test`, submitting an approval. The worker runs up to ~40 min
+# behind the dispatcher that warmed the cache (reviews serialize on a per-repo
+# test lock), so a collaborator revoked inside that window would otherwise still
+# clear the gate that runs their code. One owner for the tri-state contract.
+is_trusted_repo_author_live() {
     local repo="$1" user="$2"
-    [ -z "$user" ] && return 1
     local perm err rc errfile
     # Capture stdout (role), stderr (gh's error text), and the real exit code
     # separately — no 2>/dev/null, so a 403/5xx is a non-zero rc we can read,
@@ -73,6 +86,39 @@ is_trusted_repo_author() {
         admin|write|maintain) return 0 ;;
         *) return 1 ;;
     esac
+}
+
+# Cached wrapper for the ENUMERATION path only. One uncached call per PR per
+# tick per container is what tripped GitHub's secondary limit (#233); this
+# decides "enqueue this PR", never "run this code" — every acting caller goes
+# through is_trusted_repo_author_live above, so a stale verdict here costs at
+# most one wasted dispatch that the worker's live check then rejects.
+#
+# Caches rc=0 ONLY. A cached rc=1 is worse than no cache: poll-pr-actions.sh
+# marks a rejected /approve PERMANENTLY seen, so a collaborator promoted after
+# one negative lookup would have their approvals silently dropped forever. And
+# rc=2 is not a verdict at all — freezing "the API did not answer" would make a
+# throttled lookup read as settled, the exact failure this cache exists to end.
+# Storing just the timestamp follows: a present, fresh entry means trusted.
+is_trusted_repo_author() {
+    local repo="$1" user="$2"
+    [ -z "$user" ] && return 1
+    # 15 minutes, fixed — not an operator knob. It bounds how long a REVOKED
+    # collaborator keeps a cached trusted verdict on the enumeration path, and a
+    # configurable version would carry a mode (0) that restores the very hot
+    # lookup this cache exists to remove.
+    local ttl=900 file key now entry rc
+    file=$(trust_cache_file); key="$repo|$user"; now=$(date +%s)
+    entry=$(seen_get "$file" "$key" 2>/dev/null || true)
+    # A malformed entry (torn write, format change) falls through to a live
+    # probe rather than aborting on arithmetic against a non-number.
+    case "$entry" in
+        ''|*[!0-9]*) ;;
+        *) [ "$(( now - entry ))" -lt "$ttl" ] && return 0 ;;
+    esac
+    is_trusted_repo_author_live "$repo" "$user"; rc=$?
+    [ "$rc" -eq 0 ] && seen_set_value "$file" "$key" "$now"
+    return "$rc"
 }
 
 # just_test_skip_reason JUST_FILE IS_TRUSTED → echoes why `just test` must NOT
