@@ -70,6 +70,12 @@ cat >> "$d/config.env" <<'CFG'
 export REVIEWER_LIB_DIR=/bogus/from/config
 export PROMPTS_DIR=/bogus/from/config
 export STATE_DIR=/bogus/from/config
+# Ends in a valid conditional that evaluates FALSE, which is the shape an
+# operator's own config.env has (`[ -d …plow-kid ] && KID_EXTRA_MOUNTS=…` on a
+# host without that path). `source`'s status is the status of the LAST command in
+# the file, so gating the entrypoint on it hard-exits here and restart-loops the
+# whole fleet — env.seen never gets written and the assertions below fail by name.
+[ -d /nonexistent/kid ] && export KID_EXTRA_MOUNTS=/nonexistent/kid
 CFG
 if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" \
         CODEX_HOME="$d/codex" CONFIG_ENV_FILE="$d/config.env" \
@@ -97,6 +103,16 @@ if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR
     fail "review-loop exited 0 with an unreadable config.env — the quota probe would run unauthenticated and report nothing"
 fi
 [ ! -e "$d/called" ] || fail "review-loop ticked review.sh with no readable config.env (should refuse before the loop)"
+# A DIRECTORY at that path is docker's auto-create outcome when the bind source
+# is missing, and it passes -r — so a readability-only guard lets `source` fail
+# with "is a directory", go unchecked, and leave GH_TOKEN unset: the silent
+# inert report the guard exists to prevent.
+mkdir -p "$d/config.env"
+if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" \
+        CODEX_HOME="$d/codex" CONFIG_ENV_FILE="$d/config.env" ./review-loop.sh ) >/dev/null 2>&1; then
+    fail "review-loop exited 0 with a DIRECTORY at config.env — docker's auto-create outcome passes -r, and GH_TOKEN would be silently unset"
+fi
+[ ! -e "$d/called" ] || fail "review-loop ticked review.sh with a directory at config.env (GH_TOKEN unset, the quota probe would report nothing)"
 rm -rf "$d"
 
 # 4. Quota backoff: a FUTURE paused-until epoch → review-loop never calls review.sh; PAST → resumes.

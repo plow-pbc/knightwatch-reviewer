@@ -42,7 +42,11 @@ _KWR_STATE_DIR="${STATE_DIR:?review-loop.sh requires STATE_DIR from the compose 
 # so a perfectly valid trailing conditional that happens to evaluate false would
 # otherwise hard-exit the entrypoint and restart-loop the whole fleet under a
 # message blaming an unreadable file.
-[ -r "${CONFIG_ENV_FILE:?review-loop.sh requires CONFIG_ENV_FILE from the compose environment}" ] \
+# `-f` as well as `-r`, because `-r` is TRUE for a directory — and a directory is
+# what docker auto-creates when a bind's host path is missing, so `source` would
+# fail with "is a directory", go unchecked (no errexit here), and leave GH_TOKEN
+# unset: the silent inert report all over again.
+{ [ -f "${CONFIG_ENV_FILE:?review-loop.sh requires CONFIG_ENV_FILE from the compose environment}" ] && [ -r "$CONFIG_ENV_FILE" ]; } \
     || { echo "review-loop.sh: cannot read $CONFIG_ENV_FILE — GH_TOKEN unavailable, so the quota probe would run unauthenticated and report nothing" >&2; exit 1; }
 source "$CONFIG_ENV_FILE"
 export REVIEWER_LIB_DIR="$(pwd)/lib" PROMPTS_DIR="$(pwd)/prompts" STATE_DIR="$_KWR_STATE_DIR"
