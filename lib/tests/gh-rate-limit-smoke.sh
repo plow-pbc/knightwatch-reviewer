@@ -644,9 +644,17 @@ grep -q 'graphql=100/5000 (2%, resets in 50m)' "$TMP/log-reset" \
 # A failed probe earns no line at all, but must still stamp — otherwise a
 # flapping API turns the report into a per-tick storm of its own.
 rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log-warn2"
+gh_tally_call api "repos/o/r/collaborators/u/permission" --jq .permission
 LOG_FILE="$TMP/log-warn2" GH_QUOTA_REPORT_SECS=0 GH_SHIM_BUCKETS="" gh_quota_report
 grep -q 'gh-quota' "$TMP/log-warn2" && fail "scenario 23: a failed probe logged a bogus quota line"
 [ -s "$(gh_quota_stamp_file)" ] || fail "scenario 23: a failed probe left no stamp — every tick would re-probe"
+# ...and it must still DRAIN. The stamp has already moved, so returning without
+# consuming suppresses the next attempt while leaving the window unreaped — and
+# with no writer-side cap that is unbounded growth on a file the whole fleet
+# appends to. The reachable window is an expired token (every call 401s, so the
+# trip diagnostic's drain never fires either), a 5xx spell, or a partition.
+[ ! -s "$(gh_tally_file)" ] \
+    || fail "scenario 23: a failed probe stamped but did not consume the window — the tally then grows with no reaper at all: $(cat "$(gh_tally_file)")"
 
 echo "  scenario 25: the SEAM is wired to the tally — a call through gh() is counted..."
 # Scenarios 20-23 exercise the helpers directly, so deleting `gh_tally_call` from

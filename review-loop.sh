@@ -36,8 +36,15 @@ cd "$(dirname "$0")"
 # CONFIG_ENV_FILE, so nothing else would dereference it and `set -u` would not
 # catch a config.env value winning.
 _KWR_STATE_DIR="${STATE_DIR:?review-loop.sh requires STATE_DIR from the compose environment}"
-source "${CONFIG_ENV_FILE:?review-loop.sh requires CONFIG_ENV_FILE from the compose environment}" \
+# Readability is checked separately from the source, because `source`'s status is
+# the status of the LAST COMMAND IN THE FILE, not of opening it. config.env is
+# operator-edited (BOT_CMD_PREFIX, KWR_CONFIG_REPO, KID_ROOT, KID_EXTRA_MOUNTS),
+# so a perfectly valid trailing conditional that happens to evaluate false would
+# otherwise hard-exit the entrypoint and restart-loop the whole fleet under a
+# message blaming an unreadable file.
+[ -r "${CONFIG_ENV_FILE:?review-loop.sh requires CONFIG_ENV_FILE from the compose environment}" ] \
     || { echo "review-loop.sh: cannot read $CONFIG_ENV_FILE — GH_TOKEN unavailable, so the quota probe would run unauthenticated and report nothing" >&2; exit 1; }
+source "$CONFIG_ENV_FILE"
 export REVIEWER_LIB_DIR="$(pwd)/lib" PROMPTS_DIR="$(pwd)/prompts" STATE_DIR="$_KWR_STATE_DIR"
 unset _KWR_STATE_DIR
 # Shared logger (timestamp + [w<WORKER_ID>] tag). LOG_FILE is unset here —

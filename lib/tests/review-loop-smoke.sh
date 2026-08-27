@@ -49,6 +49,7 @@ cat > "$d/review.sh" <<'STUB'
 #!/bin/bash
 { echo "REVIEWER_LIB_DIR=$REVIEWER_LIB_DIR"
   echo "PROMPTS_DIR=$PROMPTS_DIR"
+  echo "STATE_DIR=$STATE_DIR"
   echo "MAX_CONCURRENT=$MAX_CONCURRENT"
   echo "WAIT_FOR_WORKERS=$WAIT_FOR_WORKERS"; } > env.seen
 exit 1   # fatal tick: review-loop must exit (not loop) — also breaks the test loop
@@ -57,6 +58,19 @@ chmod +x "$d/review.sh"
 # Inherit bogus REVIEWER_LIB_DIR/PROMPTS_DIR to prove the entrypoint OWNS these
 # (the contract that broke in the bot's worker, which exports REVIEWER_LIB_DIR):
 # review-loop must override them to the in-image paths, not honor the caller.
+#
+# And the same three from CONFIG_ENV.ENV, which is the newer and nastier source:
+# the loop reads config.env into its OWN shell now, and config.env is
+# operator-edited. STATE_DIR is the one that fails quietly — the container still
+# starts, but gh_pause_file() points at a private path and the tick's fleet-pause
+# gate goes blind. Asserted behaviourally rather than by parsing source order,
+# so it covers all three names and survives any rearrangement that keeps the
+# contract.
+cat >> "$d/config.env" <<'CFG'
+export REVIEWER_LIB_DIR=/bogus/from/config
+export PROMPTS_DIR=/bogus/from/config
+export STATE_DIR=/bogus/from/config
+CFG
 if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" \
         CODEX_HOME="$d/codex" CONFIG_ENV_FILE="$d/config.env" \
         REVIEWER_LIB_DIR=/bogus/inherited/lib PROMPTS_DIR=/bogus/inherited/prompts \
@@ -65,6 +79,7 @@ if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR
 fi
 grep -q "REVIEWER_LIB_DIR=$d/lib" "$d/env.seen"     || fail "REVIEWER_LIB_DIR not forced to \$repo/lib (caller env leaked through)"
 grep -q "PROMPTS_DIR=$d/prompts" "$d/env.seen"      || fail "PROMPTS_DIR not forced to \$repo/prompts (caller env leaked through)"
+grep -q "STATE_DIR=$d/state" "$d/env.seen"          || fail "STATE_DIR not re-pinned after config.env — gh_pause_file() then points at a private path and the loop goes blind to the fleet-wide pause"
 grep -q "MAX_CONCURRENT=1" "$d/env.seen"            || fail "MAX_CONCURRENT not pinned to 1"
 grep -q "WAIT_FOR_WORKERS=1" "$d/env.seen"          || fail "WAIT_FOR_WORKERS not set (one-review-per-account cap)"
 rm -rf "$d"

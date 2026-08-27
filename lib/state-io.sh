@@ -275,11 +275,19 @@ gh_quota_report() {
     [ "$(( now - last ))" -ge "$interval" ] || return 0
     mkdir -p "$(dirname "$(gh_quota_stamp_file)")" 2>/dev/null || true
     printf '%s\n' "$now" > "$(gh_quota_stamp_file)" 2>/dev/null || true
+    # Drain FIRST, above the probe's early returns. The stamp has already moved,
+    # so an interval that returns without draining suppresses the next attempt
+    # while leaving the window unreaped — and with no writer-side cap that is
+    # unbounded growth on a bind-mounted file the whole fleet appends to. The
+    # reachable window is the one that matters: an expired token (every call
+    # 401s, so gh_note_rate_limit's drain never fires either), a 5xx spell, a
+    # partition. Costs only attribution on an interval whose report was going to
+    # be silent anyway.
+    top=$(gh_top_callers 3)
     # A failed probe earns no log line, but the stamp above already moved so a
     # flapping API cannot turn this into a per-tick storm of its own.
     gh_probe_buckets || return 0
     [ "$GH_BUCKET_CORE_LIM" -gt 0 ] && [ "$GH_BUCKET_GQL_LIM" -gt 0 ] || return 0
-    top=$(gh_top_callers 3)
     core_pct=$(( GH_BUCKET_CORE_REM * 100 / GH_BUCKET_CORE_LIM ))
     gql_pct=$(( GH_BUCKET_GQL_REM * 100 / GH_BUCKET_GQL_LIM ))
     # Each bucket carries ITS OWN reset. A single countdown sourced from core was
