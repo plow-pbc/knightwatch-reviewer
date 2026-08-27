@@ -39,11 +39,34 @@ cat > "$TMP/bin/gh" <<'SHIM'
 for a in "$@"; do
     if [ "$a" = "rate_limit" ]; then
         [ -n "${GH_SHIM_PROBE_LOG:-}" ] && echo probe >> "$GH_SHIM_PROBE_LOG"
+        # GH_SHIM_PAUSE_ON_PROBE: publish a fleet pause while this probe is being
+        # served — a sibling worker tripping the limit inside the window between
+        # gh_retry's pause check and the wire.
+        [ -n "${GH_SHIM_PAUSE_ON_PROBE:-}" ] && printf '%s\n' "$(( $(date +%s) + 300 ))" > "$GH_SHIM_PAUSE_ON_PROBE"
+        # GH_SHIM_JSON: a real /rate_limit body run through real jq, so the --jq
+        # expression under test actually EXECUTES. GH_SHIM_BUCKETS alone prints a
+        # canned TSV and never runs jq, which left the `// -1` defaults — the fix
+        # for an interior null shifting every later field — unreachable from the
+        # suite, and deletable while every scenario stayed green.
+        if [ -n "${GH_SHIM_JSON:-}" ]; then
+            jq_expr=""; take_next=0
+            for a in "$@"; do
+                [ "$take_next" = 1 ] && { jq_expr="$a"; break; }
+                [ "$a" = "--jq" ] && take_next=1
+            done
+            [ -n "$jq_expr" ] || exit 1
+            printf '%s' "$GH_SHIM_JSON" | jq -r "$jq_expr"
+            exit 0
+        fi
         [ -n "${GH_SHIM_BUCKETS:-}" ] || exit 1
         printf '%s\n' "$GH_SHIM_BUCKETS"
         exit 0
     fi
 done
+# GH_SHIM_OK: a non-rate_limit call that SUCCEEDS. gh_retry's success path is
+# where the quota drain lives, and without this the shim could only ever
+# exercise its failure branches.
+[ -n "${GH_SHIM_OK:-}" ] && exit 0
 printf '%s\n' "${GH_SHIM_ERR:-gh: some other failure (HTTP 404)}" >&2
 exit 1
 SHIM
@@ -73,7 +96,7 @@ reset_state() { rm -f "$(gh_pause_file)"; : > "$DIAG_LOG"; }
 # limits, so "403 with budget left" IS the secondary signal.
 echo "  scenario 1: rate-limit 403 with budget remaining → secondary, short pause..."
 reset_state
-GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))	5000	5000" \
 GH_SHIM_ERR="$RATE_LIMIT_ERR" \
 GH_SECONDARY_PAUSE_SECS=60 \
     gh api "user" >"$TMP/out1" 2>"$TMP/err1" || true
@@ -98,7 +121,7 @@ grep -q 'secondary' "$TMP/err1" \
 echo "  scenario 2: core remaining=0 → primary, pause until the real reset epoch..."
 reset_state
 CORE_RESET=$((NOW + 1800))
-GH_SHIM_BUCKETS="0	$CORE_RESET	4742	$((NOW + 3000))" \
+GH_SHIM_BUCKETS="0	$CORE_RESET	4742	$((NOW + 3000))	5000	5000" \
 GH_SHIM_ERR="$RATE_LIMIT_ERR" \
     gh api "user" >/dev/null 2>"$TMP/err2" || true
 [ "$(head -n1 "$(gh_pause_file)")" = "$CORE_RESET" ] \
@@ -112,7 +135,7 @@ grep -q 'primary/core' "$DIAG_LOG" \
 echo "  scenario 3: graphql remaining=0 → primary/graphql, graphql's reset..."
 reset_state
 GQL_RESET=$((NOW + 2400))
-GH_SHIM_BUCKETS="4920	$((NOW + 600))	0	$GQL_RESET" \
+GH_SHIM_BUCKETS="4920	$((NOW + 600))	0	$GQL_RESET	5000	5000" \
 GH_SHIM_ERR="$RATE_LIMIT_ERR" \
     gh api "graphql" >/dev/null 2>"$TMP/err3" || true
 [ "$(head -n1 "$(gh_pause_file)")" = "$GQL_RESET" ] \
@@ -129,7 +152,7 @@ GH_SHIM_ERR='gh: Not Found (HTTP 404)' \
 # --- 5. a stale reset epoch must not resume instantly ---
 echo "  scenario 5: already-passed reset epoch → floored to a real window..."
 reset_state
-GH_SHIM_BUCKETS="0	$((NOW - 500))	4742	$((NOW + 3000))" \
+GH_SHIM_BUCKETS="0	$((NOW - 500))	4742	$((NOW + 3000))	5000	5000" \
 GH_SHIM_ERR="$RATE_LIMIT_ERR" \
 GH_SECONDARY_PAUSE_SECS=60 \
     gh api "user" >/dev/null 2>&1 || true
@@ -194,7 +217,7 @@ echo "  scenario 9: already paused → probe short-circuits, window not extended
 reset_state
 export GH_SHIM_PROBE_LOG="$TMP/probes"; : > "$GH_SHIM_PROBE_LOG"
 for _ in 1 2 3; do
-    GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+    GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))	5000	5000" \
     GH_SHIM_ERR="$RATE_LIMIT_ERR" \
     GH_SECONDARY_PAUSE_SECS=60 \
         gh api "user" >/dev/null 2>&1 || true
@@ -213,7 +236,7 @@ GH_SHIM_CALL_LOG="$TMP/calls" GH_SHIM_ERR="$RATE_LIMIT_ERR" \
     || fail "scenario 9: gh_retry still called gh while the pause was active — it must short-circuit: $(cat "$TMP/calls")"
 FIRST_UNTIL=$(head -n1 "$(gh_pause_file)")
 sleep 1
-GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))	5000	5000" \
 GH_SHIM_ERR="$RATE_LIMIT_ERR" GH_SECONDARY_PAUSE_SECS=60 \
     gh api "user" >/dev/null 2>&1 || true
 [ "$(head -n1 "$(gh_pause_file)")" = "$FIRST_UNTIL" ] \
@@ -258,7 +281,7 @@ grep -q 'pr view 7' "$TMP/calls" \
     || fail "scenario 12: the seam did not pass argv through: $(cat "$TMP/calls")"
 # A plain `gh` call must stamp the pause like any other — that IS the point.
 : > "$TMP/calls"; reset_state
-GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))	5000	5000" \
 GH_SHIM_ERR="$RATE_LIMIT_ERR" gh pr comment 7 --repo o/r --body hi >/dev/null 2>&1 || true
 [ -f "$(gh_pause_file)" ] \
     || fail "scenario 12: a rate-limited plain `gh` call left no pause — the seam is not classifying"
@@ -352,7 +375,7 @@ echo "  scenario 13: concurrent classification — the primary pause survives...
 reset_state
 CORE_RESET=$((NOW + 1800))
 (
-    GH_SHIM_BUCKETS="0	$CORE_RESET	4742	$((NOW + 3000))" \
+    GH_SHIM_BUCKETS="0	$CORE_RESET	4742	$((NOW + 3000))	5000	5000" \
     GH_SHIM_ERR="$RATE_LIMIT_ERR" gh api user >/dev/null 2>&1 || true
 ) &
 (
@@ -398,7 +421,7 @@ reset_state
 env -u BASH_ENV bash -c '
     set -euo pipefail
     export STATE_DIR="'"$STATE_DIR"'" PATH="'"$TMP/bin"'":$PATH
-    export GH_SHIM_BUCKETS="4920	'"$((NOW + 3000))"'	4742	'"$((NOW + 3000))"'"
+    export GH_SHIM_BUCKETS="4920	'"$((NOW + 3000))"'	4742	'"$((NOW + 3000))"'	5000	5000"
     export GH_SECONDARY_PAUSE_SECS=60
     . "'"$PROJECT_ROOT"'/lib/gh-retry.sh"
     gh_note_rate_limit
@@ -419,7 +442,7 @@ echo "  scenario 16: publishing keeps the inode (a bind-mounted file stays bound
 reset_state
 printf '%s\n' "$(( NOW - 10 ))" > "$(gh_pause_file)"
 INO_BEFORE=$(stat -c '%i' "$(gh_pause_file)")
-GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))	5000	5000" \
 GH_SHIM_ERR="$RATE_LIMIT_ERR" GH_SECONDARY_PAUSE_SECS=60 \
     gh api "user" >/dev/null 2>&1 || true
 [ "$(stat -c '%i' "$(gh_pause_file)")" = "$INO_BEFORE" ] \
@@ -440,7 +463,7 @@ echo "  scenario 17: a throttled call names its endpoint..."
 reset_state
 : > "$TMP/log17"
 LOG_FILE="$TMP/log17" \
-GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))	5000	5000" \
 GH_SHIM_ERR="$RATE_LIMIT_ERR" \
     gh api "repos/acme/repo/issues/7/comments" >/dev/null 2>&1 || true
 grep -qF 'repos/acme/repo/issues/7/comments' "$TMP/log17" \
@@ -449,7 +472,7 @@ grep -qF 'repos/acme/repo/issues/7/comments' "$TMP/log17" \
 reset_state
 : > "$TMP/log17b"
 LOG_FILE="$TMP/log17b" \
-GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))	5000	5000" \
 GH_SHIM_ERR="$RATE_LIMIT_ERR" \
     gh pr comment 7 --repo o/r --body "SECRET-REVIEW-BODY" >/dev/null 2>&1 || true
 grep -q 'rate-limited on' "$TMP/log17b" \
@@ -475,7 +498,7 @@ flock -x "$holder_fd"
 LOCK_RC=0
 timeout 15 env -u BASH_ENV STATE_DIR="$STATE_DIR" PATH="$TMP/bin:$PATH" \
     LOG_FILE="$TMP/log18" GH_SECONDARY_PAUSE_SECS=60 GH_PAUSE_LOCK_WAIT_SECS=1 \
-    GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))" \
+    GH_SHIM_BUCKETS="4920	$((NOW + 3000))	4742	$((NOW + 3000))	5000	5000" \
     GH_SHIM_ERR="$RATE_LIMIT_ERR" \
     bash -c '. "'"$PROJECT_ROOT"'/lib/gh-retry.sh"; gh api user' >/dev/null 2>&1 || LOCK_RC=$?
 exec {holder_fd}>&-
@@ -531,6 +554,251 @@ grep -q 'SEAM_DIAG_FD_OK' "$TMP/err19d" \
     || fail "scenario 19: the seam's GH_DIAG_FD did not survive the caller rebinding fd 2 — it is not a saved duplicate of the entrypoint's stderr. err19d: $(cat "$TMP/err19d") swallowed: $(cat "$TMP/swallowed19d")"
 grep -q 'SEAM_DIAG_FD_OK' "$TMP/swallowed19d" \
     && fail "scenario 19: the diagnostic followed the caller's rebound fd 2 — exactly the swallowing this change exists to prevent"
+reset_state
+
+# --- 20-29. Quota telemetry (#233) -----------------------------------------
+# The fleet kept tripping limits and every incident restarted the same dig:
+# correlate six containers' logs by timestamp to guess the top consumer. These
+# fence the surface that makes consumption legible BEFORE a limit trips.
+reset_state
+echo "  scenario 20: gh_endpoint_shape collapses owner/repo/number/user to a stable shape..."
+# Without a shape the tally scatters one bucket per repo/PR/user and the
+# top-consumer answer — the whole point — is unreadable. The api path sits at $2
+# for `gh api <path> --jq` but at $3 for `gh api --paginate <path>`.
+[ "$(gh_endpoint_shape api repos/plow-pbc/plow/collaborators/srosro/permission --jq .permission)" \
+    = "repos/*/*/collaborators/*/permission" ] || fail "scenario 20: permission shape"
+[ "$(gh_endpoint_shape api --paginate repos/plow-pbc/plow/issues/1348/comments)" \
+    = "repos/*/*/issues/*/comments" ] || fail "scenario 20: paginated comments shape (path is not \$2)"
+[ "$(gh_endpoint_shape api repos/plow-pbc/plow/commits/9f3a1c2b4d5e6f708192a3b4c5d6e7f8091a2b3c)" \
+    = "repos/*/*/commits/*" ] || fail "scenario 20: commit-SHA shape (bakeoff's per-commit loop is the busiest known consumer; unshaped it scatters into hundreds of one-count buckets and never reaches the top 3)"
+[ "$(gh_endpoint_shape pr view 1348 --repo x/y)" = "pr view" ] \
+    || fail "scenario 20: non-api argv should collapse to '<verb> <sub>'"
+
+echo "  scenario 21: the tally aggregates by shape..."
+: > "$(gh_tally_file)"
+gh_tally_call api repos/o/r/collaborators/u/permission --jq .permission
+gh_tally_call api repos/o/r/collaborators/u2/permission --jq .permission
+gh_tally_call api --paginate repos/o/r/issues/7/comments
+TOP=$(gh_top_callers 3)
+case "$TOP" in
+    "repos/*/*/collaborators/*/permission=2"*) ;;
+    *) fail "scenario 21: two different users must fold into ONE permission bucket, ranked first — got '$TOP'" ;;
+esac
+# Reading CONSUMES the window. Without this every consumer attributes over all
+# history — on a host unit that only ever trips, that is months of traffic, the
+# trip diagnostic names the wrong endpoint, and the file never stops growing
+# (only the container loop calls the periodic report).
+[ ! -s "$(gh_tally_file)" ] \
+    || fail "scenario 21: gh_top_callers did not consume the window — attribution would drift to all-time and the tally would grow unbounded"
+
+echo "  scenario 22: report emits per-bucket headroom + top callers, consumes the tally, then throttles..."
+# Scenario 21 consumed the window, so repopulate before reporting.
+gh_tally_call api repos/o/r/collaborators/u/permission --jq .permission
+gh_tally_call api repos/o/r/collaborators/u2/permission --jq .permission
+rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log22"
+LOG_FILE="$TMP/log22" GH_QUOTA_REPORT_SECS=300 \
+    GH_SHIM_BUCKETS="4977	$((NOW + 1200))	4775	$((NOW + 1200))	5000	5000" gh_quota_report
+grep -q '\[gh-quota\] core=4977/5000 (99%, resets in 20m) graphql=4775/5000 (95%, resets in 20m)' "$TMP/log22" \
+    || fail "scenario 22: no per-bucket headroom line — operators cannot see the budget: $(cat "$TMP/log22")"
+grep -q 'top callers: repos/\*/\*/collaborators/\*/permission=2' "$TMP/log22" \
+    || fail "scenario 22: headroom without attribution is the whack-a-mole this replaces: $(cat "$TMP/log22")"
+[ ! -s "$(gh_tally_file)" ] || fail "scenario 22: tally not consumed — counts would accumulate across reports"
+# Second call inside the interval must stay silent, or six containers ticking
+# every 30s would each emit and drown the log they exist to clarify.
+LOG_FILE="$TMP/log22" GH_QUOTA_REPORT_SECS=300 \
+    GH_SHIM_BUCKETS="4977	$((NOW + 1200))	4775	$((NOW + 1200))	5000	5000" gh_quota_report
+[ "$(grep -c '\[gh-quota\] core=' "$TMP/log22")" = 1 ] \
+    || fail "scenario 22: a second report inside the interval emitted anyway"
+
+echo "  scenario 23: the warning fires on EITHER bucket, and stays quiet when both are healthy..."
+# One table: same setup, one bucket tuple per row. GraphQL is the loaded bucket
+# here (gh pr view per worker, gh pr list per repo), so a core-only gate would
+# watch it drain in silence; the healthy row keeps the signal from being noise.
+# Tuple order is gh_probe_buckets': core_rem core_reset gql_rem gql_reset core_lim gql_lim
+WARN_MATRIX=(
+    "core-low|100	$((NOW + 1200))	4775	$((NOW + 1200))	5000	5000|WARNING — core headroom under"
+    "graphql-low|4977	$((NOW + 1200))	100	$((NOW + 1200))	5000	5000|WARNING — graphql headroom under"
+    "healthy|4977	$((NOW + 1200))	4775	$((NOW + 1200))	5000	5000|@ABSENT@"
+)
+for row in "${WARN_MATRIX[@]}"; do
+    IFS='|' read -r label buckets want <<<"$row"
+    rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log-warn"
+    LOG_FILE="$TMP/log-warn" GH_QUOTA_REPORT_SECS=0 GH_QUOTA_WARN_PCT=20 \
+        GH_SHIM_BUCKETS="$buckets" gh_quota_report
+    if [ "$want" = "@ABSENT@" ]; then
+        grep -q 'WARNING' "$TMP/log-warn" \
+            && fail "scenario 23 [$label]: warned with both buckets healthy — the signal would be noise: $(cat "$TMP/log-warn")"
+    else
+        grep -q -- "$want" "$TMP/log-warn" \
+            || fail "scenario 23 [$label]: expected '$want' in: $(cat "$TMP/log-warn")"
+    fi
+done
+# Each bucket carries ITS OWN reset. One countdown sourced from core used to be
+# printed after both, so a graphql-low warning handed the operator core's
+# recovery time — the wrong number for the depleted bucket. Distinct resets here
+# (core +600s, graphql +3000s) make a shared countdown visible.
+rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log-reset"
+LOG_FILE="$TMP/log-reset" GH_QUOTA_REPORT_SECS=0 GH_QUOTA_WARN_PCT=20 \
+    GH_SHIM_BUCKETS="4977	$((NOW + 600))	100	$((NOW + 3000))	5000	5000" gh_quota_report
+grep -q 'core=4977/5000 (99%, resets in 10m)' "$TMP/log-reset" \
+    || fail "scenario 23: core did not carry its own reset: $(cat "$TMP/log-reset")"
+grep -q 'graphql=100/5000 (2%, resets in 50m)' "$TMP/log-reset" \
+    || fail "scenario 23: the depleted graphql bucket did not carry ITS OWN reset — the operator gets the wrong recovery time: $(cat "$TMP/log-reset")"
+
+# A failed probe earns no line at all, but must still stamp — otherwise a
+# flapping API turns the report into a per-tick storm of its own.
+rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log-warn2"
+gh_tally_call api "repos/o/r/collaborators/u/permission" --jq .permission
+LOG_FILE="$TMP/log-warn2" GH_QUOTA_REPORT_SECS=0 GH_SHIM_BUCKETS="" gh_quota_report
+grep -q 'gh-quota' "$TMP/log-warn2" && fail "scenario 23: a failed probe logged a bogus quota line"
+[ -s "$(gh_quota_stamp_file)" ] || fail "scenario 23: a failed probe left no stamp — every tick would re-probe"
+# ...and it must still DRAIN. The stamp has already moved, so returning without
+# consuming suppresses the next attempt while leaving the window unreaped — and
+# with no writer-side cap that is unbounded growth on a file the whole fleet
+# appends to. The reachable window is an expired token (every call 401s, so the
+# trip diagnostic's drain never fires either), a 5xx spell, or a partition.
+[ ! -s "$(gh_tally_file)" ] \
+    || fail "scenario 23: a failed probe stamped but did not consume the window — the tally then grows with no reaper at all: $(cat "$(gh_tally_file)")"
+
+echo "  scenario 25: the SEAM is wired to the tally — a call through gh() is counted..."
+# Scenarios 20-23 exercise the helpers directly, so deleting `gh_tally_call` from
+# gh_retry would leave every one of them green while the feature is inert. This
+# asserts the single line that wires it, through the real seam.
+reset_state; : > "$(gh_tally_file)"
+GH_SHIM_ERR='gh: Not Found (HTTP 404)' \
+    gh api repos/o/r/collaborators/someuser/permission --jq .permission >/dev/null 2>&1 || true
+grep -qx 'repos/\*/\*/collaborators/\*/permission' "$(gh_tally_file)" \
+    || fail "scenario 25: a call through the seam produced no tally line — gh_tally_call is not wired into gh_retry: $(cat "$(gh_tally_file)")"
+
+echo "  scenario 26: every ATTEMPT is tallied, not every call — a retry spends real budget..."
+reset_state; : > "$(gh_tally_file)"
+GH_SHIM_ERR='gh: HTTP 502: Bad Gateway' GH_API_RETRY_MAX=3 GH_API_RETRY_DELAY=0 \
+    gh api repos/o/r/issues/7/comments >/dev/null 2>&1 || true
+N26=$(grep -cx 'repos/\*/\*/issues/\*/comments' "$(gh_tally_file)")
+[ "$N26" = 3 ] \
+    || fail "scenario 26: expected 3 tally lines for 3 attempts, got $N26 — retries would be under-reported"
+reset_state; : > "$(gh_tally_file)"
+
+echo "  scenario 27: a malformed /rate_limit reply is rejected WHOLESALE, never shifted..."
+# GitHub's documented response always carries complete numeric core and graphql
+# tuples, so gh_probe_buckets treats anything else as a failed probe rather than
+# coercing field by field. This pins that gate: a null field renders empty in
+# @tsv and collapses under `tr`, so it presents as a short count — and it must
+# fail the gate, not slide core.limit into core_rem where it would decide the
+# pause window. Real jq on a real body, since GH_SHIM_BUCKETS never runs --jq.
+reset_state; : > "$TMP/log27"
+NULL_CORE_JSON='{"resources":{"core":{"remaining":null,"limit":5000,"reset":'"$((NOW + 1200))"'},"graphql":{"remaining":4775,"limit":5000,"reset":'"$((NOW + 1200))"'}}}'
+LOG_FILE="$TMP/log27" GH_SHIM_JSON="$NULL_CORE_JSON" gh_note_rate_limit
+grep -q 'gh rate limit (secondary)' "$TMP/log27" \
+    || fail "scenario 27: a malformed reply did not fall through to the secondary window: $(cat "$TMP/log27")"
+grep -q 'core=?/? graphql=?/?' "$TMP/log27" \
+    || fail "scenario 27: a rejected probe rendered figures instead of '?': $(cat "$TMP/log27")"
+if sed 's/^\[[0-9-]* [0-9:]*\] //' "$TMP/log27" | grep -q -- '-1'; then
+    fail "scenario 27: the -1 sentinel reached operator-facing text: $(cat "$TMP/log27")"
+fi
+reset_state
+
+echo "  scenario 27b: a failed probe renders '?', never the -1 sentinel..."
+# The trip diagnostic exists to separate "probe failed, classification guessed"
+# from "buckets healthy, genuinely secondary", and a failed probe is the LIKELY
+# path: it runs during a 403 cascade when GitHub is degraded.
+reset_state; : > "$TMP/log27b"
+LOG_FILE="$TMP/log27b" GH_SHIM_BUCKETS="" GH_SHIM_ERR="$RATE_LIMIT_ERR" gh_note_rate_limit
+grep -q 'core=?/? graphql=?/? remaining' "$TMP/log27b" \
+    || fail "scenario 27b: an unmeasured bucket did not render as '?': $(cat "$TMP/log27b")"
+reset_state
+
+echo "  scenario 28: the drain truncates IN PLACE, keeping the inode..."
+# The tally is a bind-mounted FILE, and docker pins a file bind to its SOURCE
+# inode — so a drain that REPLACES the file leaves every already-running
+# container appending to the orphan while the host writes the new one, silently
+# restoring the split the bind exists to close.
+#
+# Tested by its actual failure mode rather than by inode NUMBER: a freed inode
+# number is immediately reused by the next temp file, so comparing `stat %i`
+# passes about as often as it fails. An open descriptor is deterministic — it IS
+# the stranded writer.
+: > "$(gh_tally_file)"
+exec 9>>"$(gh_tally_file)"
+gh_tally_call api "repos/o/r/collaborators/u/permission" --jq .permission
+gh_top_callers 3 >/dev/null
+printf 'STRANDED_WRITER_PROBE\n' >&9
+exec 9>&-
+grep -q 'STRANDED_WRITER_PROBE' "$(gh_tally_file)" \
+    || fail "scenario 28: a writer holding the tally open across the drain lost its append — the drain replaced the file, which under the bind strands every running container on the orphaned inode"
+: > "$(gh_tally_file)"
+
+echo "  scenario 28b: the SEAM reports BEFORE the call, never after a side effect..."
+# Scenarios 22-23 drive gh_quota_report directly, so deleting its call from
+# gh_retry would leave every one of them green while nothing drains the window on
+# the happy path — the inert-guard class scenario 25 fences for the tally's write
+# half. One call site at the seam is what replaced five entrypoint calls and the
+# source parser that had to hold them in sync: gh() routes every call in the repo,
+# so coverage is by construction rather than by grep.
+#
+# Driven first through a call that FAILS, which is the exact discriminator for
+# the ORDERING. The probe is bounded at 15s, so reporting after a successful call
+# put a blocking window between a GitHub-side side effect and the caller's record
+# of it: a worker timeout landing there leaves `gh pr comment` posted with
+# GH_POSTED still false, the run reads as never-author-visible, and the next tick
+# posts the review again. Only the pre-attempt placement reports on a call that
+# never succeeded.
+reset_state; : > "$(gh_tally_file)"; rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log28b"
+gh_tally_call api "repos/o/r/collaborators/u/permission" --jq .permission
+LOG_FILE="$TMP/log28b" GH_QUOTA_REPORT_SECS=0 \
+    GH_SHIM_BUCKETS="4977	$((NOW + 1200))	4775	$((NOW + 1200))	5000	5000" \
+    gh api "repos/o/r/pulls/7" >/dev/null 2>/dev/null || true
+grep -q 'repos/\*/\*/collaborators/\*/permission=1' "$TMP/log28b" \
+    || fail "scenario 28b: a call through the seam did not report the window — with the entrypoint calls gone nothing else reaps the window, and reporting only after a SUCCESS puts the probe between a side effect and its bookkeeping: $(cat "$TMP/log28b")"
+# The line has to land on the saved descriptor too, not only in LOG_FILE, which
+# log()'s `tee -a` fills wherever stdout points.
+grep -qa '\[gh-quota\] core=4977/5000' "$DIAG_LOG" \
+    || fail "scenario 28b: the report never reached the saved descriptor — it has to land in the journal, not only in LOG_FILE: $(cat "$DIAG_LOG")"
+# Drained, and this attempt tallied in its place: the seeded sample is gone and
+# only the call just made remains.
+[ "$(cat "$(gh_tally_file)")" = 'repos/*/*/pulls/*' ] \
+    || fail "scenario 28b: the window was not consumed-then-refilled by this attempt — got: $(cat "$(gh_tally_file)")"
+# And on the SUCCESS path it must stay out of gh's stdout, which IS the API result
+# every caller captures (`perm=$(gh_api_retry …)`). Only the >&GH_DIAG_FD redirect
+# keeps it there, and the LOG_FILE assertion above cannot see the difference.
+rm -f "$(gh_quota_stamp_file)"; : > "$TMP/out28b"
+LOG_FILE="$TMP/log28b" GH_QUOTA_REPORT_SECS=0 GH_SHIM_OK=1 \
+    GH_SHIM_BUCKETS="4977	$((NOW + 1200))	4775	$((NOW + 1200))	5000	5000" \
+    gh api "repos/o/r/pulls/8" >"$TMP/out28b" 2>/dev/null
+[ ! -s "$TMP/out28b" ] \
+    || fail "scenario 28b: the quota report leaked into gh's stdout — callers capture that as the API result: $(cat "$TMP/out28b")"
+reset_state; : > "$(gh_tally_file)"
+
+echo "  scenario 29: review-loop.sh loads the token before it can report quota..."
+# gh_quota_report runs `gh api rate_limit` in review-loop.sh's OWN shell, but
+# config.env is mounted root-only and was loaded only by child processes. The
+# probe therefore ran unauthenticated, failed, and the entire quota report was
+# silent in production while every test passed — the feature shipped inert.
+# Source-grep, because the failure is a missing source line and nothing else in
+# the suite can see it. No order fence: state-io.sh is sourced through the
+# re-pinned REVIEWER_LIB_DIR, so a deleted re-pin breaks the container at startup
+# rather than needing a test to notice.
+LOOP_SRC=$(sed -e 's/#.*//' "$PROJECT_ROOT/review-loop.sh")
+grep -qE '^[[:space:]]*(\.|source)[[:space:]].*CONFIG_ENV_FILE' <<<"$LOOP_SRC" \
+    || fail "scenario 29: review-loop.sh calls gh_quota_report without loading config.env — the probe runs tokenless and the report is silent"
+grep -qE '^[[:space:]]*gh_quota_report([[:space:]]|$)' <<<"$LOOP_SRC" \
+    || fail "scenario 29: review-loop.sh no longer CALLS gh_quota_report — the seam only reports on a call it makes, and while the fleet is paused gh_retry short-circuits before making one, so this tick is the only thing reporting headroom during the incident"
+
+echo "  scenario 30: a pause published mid-window stops the call before the wire..."
+# gh_retry checks the pause once, then reports — a probe bounded at 15s — and only
+# then goes to the wire; each retry's backoff sleep is a second such window. A
+# sibling publishing in either one has to stop this call too, or the very tick
+# that tripped the limit keeps feeding it.
+reset_state; : > "$(gh_tally_file)"; rm -f "$(gh_quota_stamp_file)"
+: > "$TMP/calls30"
+GH_SHIM_CALL_LOG="$TMP/calls30" GH_QUOTA_REPORT_SECS=0 GH_SHIM_OK=1 \
+    GH_SHIM_PAUSE_ON_PROBE="$(gh_pause_file)" \
+    GH_SHIM_BUCKETS="4977	$((NOW + 1200))	4775	$((NOW + 1200))	5000	5000" \
+    gh api "repos/o/r/pulls/9" >/dev/null 2>&1 || true
+grep -q 'pulls/9' "$TMP/calls30" \
+    && fail "scenario 30: the call reached the wire after a sibling published a pause mid-window — the tick that tripped the limit keeps feeding it: $(cat "$TMP/calls30")"
+grep -q 'rate_limit' "$TMP/calls30" \
+    || fail "scenario 30: the probe never ran, so this scenario never opened the window it is testing: $(cat "$TMP/calls30")"
 reset_state
 
 echo "PASS: gh-rate-limit-smoke"

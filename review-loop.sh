@@ -16,8 +16,39 @@ cd "$(dirname "$0")"
 # the container has one contract regardless of any inherited env. The worker
 # otherwise defaults both to $HOME/.pr-reviewer/{lib,prompts}, which doesn't
 # exist in the image (reviews abort at `probe-schema.md missing`).
-export REVIEWER_LIB_DIR="$(pwd)/lib"
-export PROMPTS_DIR="$(pwd)/prompts"
+#
+# GH_TOKEN first, because gh_quota_report runs `gh api rate_limit` in THIS
+# shell: config.env is mounted root-only and used to be read only by child
+# processes (review.sh -> tracked-repos.sh), so the probe ran unauthenticated,
+# failed, and the whole quota report was silent in production while every test
+# passed. Read the file directly rather than through the manifest loader — that
+# loader also brings repo enumeration, manifest overlays and kwr-config
+# validation, none of which this loop touches.
+#
+# The re-pin below the source is load-bearing, and self-enforcing rather than
+# fenced: config.env is operator-editable, so a stray REVIEWER_LIB_DIR /
+# PROMPTS_DIR / STATE_DIR there would redirect lib and prompt resolution and
+# every gh_*_file() in this shell. Because state-io.sh is then sourced THROUGH
+# the re-pinned REVIEWER_LIB_DIR, deleting the re-pin breaks the container
+# loudly at startup instead of quietly at runtime — the shape holds itself, so
+# no source-order test has to hold it. STATE_DIR fails loud when absent for the
+# same reason a conditional restore would not: compose also sets
+# CONFIG_ENV_FILE, so nothing else would dereference it and `set -u` would not
+# catch a config.env value winning.
+_KWR_STATE_DIR="${STATE_DIR:?review-loop.sh requires STATE_DIR from the compose environment}"
+# The POSTCONDITION is the guard, not a file-shape test: whatever went wrong —
+# absent, a directory, empty, a syntax error above the export, a renamed or
+# unexported variable — the question is whether this shell ended up with the one
+# thing the loop needs, and `source`'s own stderr names which shape failed.
+# EXPORTS as well as asserts, because every consumer is a separate process: the
+# probe's `gh api`, the `gh auth git-credential` helper the image wires for
+# private clones, and the dispatched review.sh. Scoped to THIS entrypoint on
+# purpose — config.env is sourced at three sites, and repairing one is how you get
+# a contract that holds on the container surface and not the host (#245).
+source "${CONFIG_ENV_FILE:?review-loop.sh requires CONFIG_ENV_FILE from the compose environment}"
+export GH_TOKEN="${GH_TOKEN:?review-loop.sh: no GH_TOKEN after sourcing $CONFIG_ENV_FILE — the quota probe would run unauthenticated and report nothing}"
+export REVIEWER_LIB_DIR="$(pwd)/lib" PROMPTS_DIR="$(pwd)/prompts" STATE_DIR="$_KWR_STATE_DIR"
+unset _KWR_STATE_DIR
 # Shared logger (timestamp + [w<WORKER_ID>] tag). LOG_FILE is unset here —
 # review.sh sets it later — so log() falls back to stdout-only, which is what
 # the container stream wants anyway.
@@ -78,6 +109,13 @@ while true; do
     # worker, hence pool_status's 2h threshold); stop-state writers rely on it,
     # their redirects silently fail to stick without it (unreachable here).
     mkdir -p "$(pool_state_dir)" && touch "$(pool_state_dir)"
+    # GitHub quota headroom + top callers, self-throttled to one emission per
+    # GH_QUOTA_REPORT_SECS across the fleet. Deliberately ABOVE the auth/quota/
+    # rate-limit gates below: a paused fleet is exactly when an operator needs to
+    # see the budget and who spent it, and gating the report behind the pause
+    # would blind the logs during the only interesting window. /rate_limit costs
+    # no quota, so this is free even while throttled.
+    gh_quota_report
     # Fatal auth (invalidated token) → offline until operator re-login, NOT a
     # timed pause. Checked before quota: a 401-on-refresh never yields a usage
     # cap, so without this it would fall through and spin-abort every PR.
