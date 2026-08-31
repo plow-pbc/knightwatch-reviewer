@@ -82,6 +82,10 @@ seen_set() { _seen_write "$1" "$2" 'true'; }
 # re-request last-handled event time). seen_get returns the stored string.
 seen_set_value() { _seen_write "$1" "$2" '$v' "$3"; }
 
+# Structured value store: key → caller-supplied JSON. Keeps small cross-tick
+# records on the same flock + atomic-rename seam as the seen stores.
+seen_set_json_value() { _seen_write "$1" "$2" '($v | fromjson)' "$3"; }
+
 # Codex quota-pause protocol. When an account hits its codex usage limit the
 # worker (review-one-pr.sh) writes the reset epoch to its pool file; the
 # orchestrator (review.sh) and its loop (review-loop.sh) read it to stop

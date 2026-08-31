@@ -477,17 +477,14 @@ assert_grep 'fleet unit must render the compose file before up (it is generated,
 assert_grep 'fleet unit must set PartOf=docker.service so a docker daemon restart re-runs its lifecycle' \
     'PartOf=docker.service' systemd/knightwatch-reviewer.service
 
-# The learn-service guidance auto-commit is a two-file path contract: the
-# script's commit target and the unit's ReadWritePaths grant must name the same
-# live repo. A stale path here took the learner down for days — the unit aborted
-# at namespace setup on the since-renamed vibe-engineering checkout, before the
-# script ran. Pin both to the live claude-config path and fence the dead repo so
-# the dead-path class can't return without a red test.
-echo "  asserting learn-service guidance path contract (script target == unit grant, no dead vibe-engineering)..."
-assert_grep 'learn-from-replies.sh must commit guidance to $HOME/services/claude-config' \
-    'CLAUDE_CONFIG_REPO="$HOME/services/claude-config"' learn-from-replies.sh
-assert_grep 'pr-reviewer-learn.service must grant write access to /home/odio/services/claude-config' \
-    '/home/odio/services/claude-config' systemd/pr-reviewer-learn.service
+# The behavioral learner smoke owns the script-side checkout contract. This
+# source assertion remains only for the service aperture: an extra nonexistent
+# ReadWritePaths entry prevents systemd from starting before the script can run.
+echo "  asserting learn-service guidance path contract (live unit grant, no dead repo names)..."
+assert_grep 'pr-reviewer-learn.service must grant write access to /home/odio/services/code-config' \
+    '/home/odio/services/code-config' systemd/pr-reviewer-learn.service
+assert_no_grep 'pr-reviewer-learn.service must not reference the renamed-away claude-config repo' \
+    'services/claude-config' systemd/pr-reviewer-learn.service
 assert_no_grep 'learn-from-replies.sh must not reference the renamed-away vibe-engineering repo' \
     'Hacking/vibe-engineering' learn-from-replies.sh
 assert_no_grep 'pr-reviewer-learn.service must not reference the renamed-away vibe-engineering repo' \
