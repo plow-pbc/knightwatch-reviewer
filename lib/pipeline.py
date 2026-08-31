@@ -158,6 +158,7 @@ _CODEX_CAPACITY_RE = re.compile(
     r"^ERROR: Selected model is at capacity\b",
     re.IGNORECASE,
 )
+_CODEX_TOKEN_COUNT_RE = re.compile(r"^(?:[0-9]+|[1-9][0-9]{0,2}(?:,[0-9]{3})+)$")
 # OpenAI's cyber-safety filter refuses the request when it reads a prompt as
 # offensive-security tasking and the account isn't in the Trusted Access for
 # Cyber program — codex exits non-zero. The security specialist's vocabulary
@@ -404,11 +405,20 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
         # placeholder. Stdout (model reasoning) is excluded so PR-
         # controlled output can't spoof a public quota placeholder.
         err_text = err_file.read_text(errors="replace")
-        # codex's terminal diagnostic is its last non-empty stderr line; the
-        # capacity check matches only there so reflected mid-stream output can't
-        # spoof a real failure into the soft-degrade path (see _CODEX_CAPACITY_RE).
+        # Codex normally leaves its terminal diagnostic as the last non-empty
+        # stderr line. Current builds may append an exact two-line accounting
+        # footer ("tokens used" + an integer) after a capacity diagnostic, so
+        # peel only that known suffix. Do not scan the whole stream: reflected
+        # PR content must not spoof an unrelated failure into soft-degrade.
         err_lines = [ln for ln in err_text.splitlines() if ln.strip()]
         last_err_line = err_lines[-1] if err_lines else ""
+        capacity_err_line = last_err_line
+        if (
+            len(err_lines) >= 3
+            and err_lines[-2] == "tokens used"
+            and _CODEX_TOKEN_COUNT_RE.fullmatch(err_lines[-1])
+        ):
+            capacity_err_line = err_lines[-3]
         m = _CODEX_QUOTA_RE.search(err_text)
         if m:
             sentinel = agent.parent.parent / "_codex_quota.txt"
@@ -425,7 +435,7 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
             # re-saturate the account. review-one-pr.sh turns this into a short
             # quota-pause.
             (agent.parent.parent / "_codex_rate_limit.txt").write_text("codex 429 rate limit\n")
-        elif _CODEX_CAPACITY_RE.search(last_err_line):
+        elif _CODEX_CAPACITY_RE.search(capacity_err_line):
             # Per-call capacity bounce: degrade THIS angle only and let Wave B
             # complete the review without it — never abort the run or pause the
             # account (capacity is per-call, not account-wide, so no sentinel).
