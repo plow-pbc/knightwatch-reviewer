@@ -32,6 +32,68 @@ require_repos
 REPLIES_SEEN_FILE="${REPLIES_SEEN_FILE:-$STATE_DIR/replies-seen.json}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/learn.log}"
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
+CODE_CONFIG_REPO="$HOME/services/code-config"
+GUIDANCE_PATH="claude/COMMENT_REVIEW_MISTAKES.md"
+GUIDANCE_PUSH_STATE="$STATE_DIR/code-config-guidance-push.json"
+
+push_recorded_guidance() {
+    local pending pending_sha pending_remote pending_ref
+    pending=$(seen_get "$GUIDANCE_PUSH_STATE" pending)
+    pending_sha=$(jq -r '.sha' <<< "$pending")
+    pending_remote=$(jq -r '.remote' <<< "$pending")
+    pending_ref=$(jq -r '.ref' <<< "$pending")
+    if git -C "$CODE_CONFIG_REPO" push -- "$pending_remote" \
+        "$pending_sha:$pending_ref" >> "$LOG_FILE" 2>&1; then
+        seen_set_json_value "$GUIDANCE_PUSH_STATE" pending null
+        log "code-config: pushed recorded learner commit $pending_sha"
+        return 0
+    fi
+    log "code-config: learner push pending; will retry next tick (check log)"
+    return 1
+}
+
+persist_guidance() {
+    [ -d "$CODE_CONFIG_REPO/.git" ] || return 0
+
+    [ -z "$(seen_get "$GUIDANCE_PUSH_STATE" pending)" ] || push_recorded_guidance || return 0
+
+    if ! git -C "$CODE_CONFIG_REPO" diff --quiet HEAD -- "$GUIDANCE_PATH" 2>/dev/null; then
+        local branch remote merge_ref head_sha upstream_sha pending_sha pending
+        branch=$(git -C "$CODE_CONFIG_REPO" symbolic-ref --quiet --short HEAD 2>/dev/null) || {
+            log "code-config: detached HEAD; refusing to commit learned guidance"
+            return 0
+        }
+        remote=$(git -C "$CODE_CONFIG_REPO" config --get "branch.$branch.remote")
+        merge_ref=$(git -C "$CODE_CONFIG_REPO" config --get "branch.$branch.merge")
+        head_sha=$(git -C "$CODE_CONFIG_REPO" rev-parse HEAD 2>/dev/null)
+        upstream_sha=$(git -C "$CODE_CONFIG_REPO" rev-parse '@{upstream}' 2>/dev/null) || {
+            log "code-config: no upstream configured; refusing to commit learned guidance"
+            return 0
+        }
+        if [ -z "$remote" ] || [ -z "$merge_ref" ] || [ "$head_sha" != "$upstream_sha" ]; then
+            log "code-config: checkout is not exactly at its upstream; refusing to commit or publish learned guidance"
+            return 0
+        fi
+        if git -C "$CODE_CONFIG_REPO" -c user.email=eng@plow.co -c user.name=odio \
+            commit --only -m "auto: tune review-mistakes list from /${BOT_CMD_PREFIX}-memorize requests" \
+            -- "$GUIDANCE_PATH" >> "$LOG_FILE" 2>&1; then
+            pending_sha=$(git -C "$CODE_CONFIG_REPO" rev-parse HEAD)
+            pending=$(jq -cn --arg sha "$pending_sha" --arg remote "$remote" --arg ref "$merge_ref" \
+                '{sha: $sha, remote: $remote, ref: $ref}')
+            seen_set_json_value "$GUIDANCE_PUSH_STATE" pending "$pending" || return 0
+            log "code-config: committed auto-tune $pending_sha"
+        else
+            log "code-config: guidance commit failed (check log)"
+            return 0
+        fi
+    fi
+
+    if [ -n "$(seen_get "$GUIDANCE_PUSH_STATE" pending)" ]; then
+        push_recorded_guidance || true
+    else
+        log "code-config: no changes to commit or push"
+    fi
+}
 
 [ -f "$REPLIES_SEEN_FILE" ] || echo '{}' > "$REPLIES_SEEN_FILE"
 
@@ -153,6 +215,9 @@ for REPO in "${REPOS[@]}"; do
 done
 
 if [ -z "$REPLIES" ]; then
+    # A previous tick may have committed successfully while its push failed.
+    # Retry that remote half even when there is no new feedback to process.
+    persist_guidance
     log "no new /${BOT_CMD_PREFIX}-memorize requests"
     exit 0
 fi
@@ -332,24 +397,6 @@ while IFS= read -r META; do
 done < "$REPLIES_META_FILE"
 
 
-# Auto-commit + push guidance change to claude-config (the repo formerly
-# known as vibe-engineering).
-CLAUDE_CONFIG_REPO="$HOME/services/claude-config"
-if [ -d "$CLAUDE_CONFIG_REPO/.git" ]; then
-    if git -C "$CLAUDE_CONFIG_REPO" diff --quiet claude-config/ 2>/dev/null; then
-        log "claude-config: no changes to commit"
-    else
-        git -C "$CLAUDE_CONFIG_REPO" add claude-config/ 2>>"$LOG_FILE"
-        if git -C "$CLAUDE_CONFIG_REPO" -c user.email=eng@plow.co -c user.name=odio \
-            commit -m "auto: tune review-mistakes list from /${BOT_CMD_PREFIX}-memorize requests" \
-            >> "$LOG_FILE" 2>&1; then
-            if git -C "$CLAUDE_CONFIG_REPO" push >> "$LOG_FILE" 2>&1; then
-                log "claude-config: committed + pushed auto-tune"
-            else
-                log "claude-config: committed locally; push failed (check log)"
-            fi
-        else
-            log "claude-config: commit failed (check log)"
-        fi
-    fi
-fi
+# Commit only the learner-owned file and synchronize any locally pending commit.
+# Unrelated operator changes elsewhere in code-config retain their index state.
+persist_guidance

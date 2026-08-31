@@ -138,6 +138,13 @@ def _codex_capacity_line() -> str:
     return "ERROR: Selected model is at capacity. Please try a different model.\n"
 
 
+def _codex_capacity_with_usage_footer() -> str:
+    """Current Codex capacity stderr: the first-party diagnostic followed by
+    its accounting footer. The footer is terminal even though the capacity
+    diagnostic remains the reason for the non-zero exit."""
+    return _codex_capacity_line() * 2 + "tokens used\n16,593\n"
+
+
 def _codex_cyber_refusal_lines() -> str:
     """Shape of codex's terminal stderr when OpenAI's cyber-safety filter
     refuses the request (offensive-security read on a non-Trusted-Access
@@ -1645,11 +1652,13 @@ class TestRunPipeline(unittest.TestCase):
         def inject_capacity(name, out_path):
             if name == "critic-shape":
                 out_path.parent.mkdir(parents=True, exist_ok=True)
-                # Realistic err.txt: codex streams reasoning/tool activity first,
-                # then its terminal capacity error. Detection keys off the LAST
-                # non-empty line, so it must still fire despite preceding content.
+                # Realistic err.txt from the production incident: codex streams
+                # reasoning/tool activity, emits the capacity diagnostic twice,
+                # then appends its terminal token-usage footer. The diagnostic is
+                # still the reason for the non-zero exit.
                 (out_path.parent / "err.txt").write_text(
-                    "tool: inspecting the diff...\n" + _codex_capacity_line()
+                    "tool: inspecting the diff...\n"
+                    + _codex_capacity_with_usage_footer()
                 )
         mock_popen.side_effect = _make_codex_stub(
             plan={
@@ -1714,7 +1723,7 @@ class TestRunPipeline(unittest.TestCase):
         Parametrized over both phrases so each regex's spoof resistance is
         demonstrated, not inferred from the shared last-line mechanism."""
         for label, reflected in (
-            ("capacity", _codex_capacity_line()),
+            ("capacity", _codex_capacity_with_usage_footer()),
             ("cyber-refusal", _codex_cyber_refusal_lines()),
         ):
             with self.subTest(phrase=label):

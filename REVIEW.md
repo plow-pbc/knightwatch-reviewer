@@ -8,9 +8,11 @@ decline rules, review-loop rules — is not here; knightwatch prepends it from
 This repo implements the knightwatch half of that staging — `resolve_review_md`
 in `lib/knightwatch-config.sh` reads this file from the base branch. roborev
 cannot open files a config merely points at, so its copy is inlined into
-`.roborev.toml`'s `review_guidelines` by `just sync-review-config`, a recipe in
-the `claude-config` repo. **An edit here does not reach roborev until that sync
-is re-run from there.**
+`.roborev.toml`'s `review_guidelines` by
+`~/.config/roborev/sync-review-config.sh`, installed by
+`plow-pbc/seed-auto-roborev`. **An edit here does not reach roborev until that
+sync is re-run.** Learned agent guidance is separately owned by
+`code-config/claude/COMMENT_REVIEW_MISTAKES.md`.
 
 ## Product context
 
