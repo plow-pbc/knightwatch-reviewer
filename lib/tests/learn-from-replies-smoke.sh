@@ -309,11 +309,18 @@ MOCK_TRUSTED_USERS="trusteduser" MOCK_CODEX_ACKS="$ACKS_TWO" run_learn
     || { echo "FAIL scenario 7: learner swept or unstaged the operator's unrelated edit"; git -C "$CODE_CONFIG_FIXTURE" status --short; exit 1; }
 [ "$(git -C "$CODE_CONFIG_FIXTURE" rev-list --count '@{upstream}'..HEAD)" -eq 1 ] \
     || { echo "FAIL scenario 7: failed push did not leave exactly one pending guidance commit"; git -C "$CODE_CONFIG_FIXTURE" log --oneline --decorate -3; exit 1; }
+LEARNER_SHA=$(git -C "$CODE_CONFIG_FIXTURE" rev-parse HEAD)
 
 echo "  scenario 8: a no-request tick retries the pending code-config push..."
 mv "$CODE_CONFIG_REMOTE.offline" "$CODE_CONFIG_REMOTE"
+# An operator commit lands locally after the learner commit but before its
+# retry. The retry must publish the recorded learner SHA, never generic HEAD.
+git -C "$CODE_CONFIG_FIXTURE" -c user.email=operator@example.com -c user.name=operator \
+    commit -qm "local operator change"
 run_learn
-[ "$(git -C "$CODE_CONFIG_FIXTURE" rev-parse HEAD)" = "$(git --git-dir="$CODE_CONFIG_REMOTE" rev-parse refs/heads/main)" ] \
-    || { echo "FAIL scenario 8: no-request tick did not retry the pending guidance push"; git -C "$CODE_CONFIG_FIXTURE" status --short --branch; exit 1; }
+[ "$LEARNER_SHA" = "$(git --git-dir="$CODE_CONFIG_REMOTE" rev-parse refs/heads/main)" ] \
+    || { echo "FAIL scenario 8: retry published generic HEAD instead of the recorded learner commit"; git -C "$CODE_CONFIG_FIXTURE" log --oneline --decorate -4; exit 1; }
+[ "$(git -C "$CODE_CONFIG_FIXTURE" rev-parse HEAD)" != "$(git --git-dir="$CODE_CONFIG_REMOTE" rev-parse refs/heads/main)" ] \
+    || { echo "FAIL scenario 8: operator's later local commit was published by the learner"; git -C "$CODE_CONFIG_FIXTURE" log --oneline --decorate -4; exit 1; }
 
 echo "  PASS (8 scenarios: REPOS-override-observed, untrusted-memorize-ignored, page-2-paginated, gh-api-failure-fail-loud, acks-throttled-then-recovered-and-seen, pause-mid-batch-per-key-retention, code-config-guidance-committed, pending-push-retried)"
