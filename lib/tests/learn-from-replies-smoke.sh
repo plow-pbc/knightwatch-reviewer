@@ -279,4 +279,20 @@ posted=$(grep -c '^ACK_POSTED' "$STUB_ACK_LOG" 2>/dev/null || true); posted="${p
     || { echo "FAIL scenario 6: the un-posted key was marked seen — that memorize request is silently dropped"; cat "$REPLIES_SEEN_FILE"; exit 1; }
 rm -f "$STATE_DIR/gh-rate-limited-until"
 
-echo "  PASS (6 scenarios: REPOS-override-observed, untrusted-memorize-ignored, page-2-paginated, gh-api-failure-fail-loud, acks-throttled-then-recovered-and-seen, pause-mid-batch-per-key-retention)"
+echo "  scenario 7: updated guidance is committed from the live code-config checkout..."
+CODE_CONFIG_FIXTURE="$HOME/services/code-config"
+mkdir -p "$CODE_CONFIG_FIXTURE/claude"
+git -C "$CODE_CONFIG_FIXTURE" init -q
+printf 'initial mistakes\n' > "$CODE_CONFIG_FIXTURE/claude/COMMENT_REVIEW_MISTAKES.md"
+git -C "$CODE_CONFIG_FIXTURE" add claude/COMMENT_REVIEW_MISTAKES.md
+git -C "$CODE_CONFIG_FIXTURE" -c user.email=test@example.com -c user.name=test \
+    commit -qm "seed guidance"
+seed_two_requests
+CLAUDE_DIR="$CODE_CONFIG_FIXTURE/claude" \
+MOCK_TRUSTED_USERS="trusteduser" MOCK_CODEX_ACKS="$ACKS_TWO" run_learn
+[ "$(git -C "$CODE_CONFIG_FIXTURE" rev-list --count HEAD)" -eq 2 ] \
+    || { echo "FAIL scenario 7: learner did not commit the updated guidance in code-config"; git -C "$CODE_CONFIG_FIXTURE" status --short; cat "$LOG_FILE"; exit 1; }
+[ "$(git -C "$CODE_CONFIG_FIXTURE" show --pretty= --name-only HEAD)" = "claude/COMMENT_REVIEW_MISTAKES.md" ] \
+    || { echo "FAIL scenario 7: learner committed the wrong code-config path"; git -C "$CODE_CONFIG_FIXTURE" show --stat --oneline HEAD; exit 1; }
+
+echo "  PASS (7 scenarios: REPOS-override-observed, untrusted-memorize-ignored, page-2-paginated, gh-api-failure-fail-loud, acks-throttled-then-recovered-and-seen, pause-mid-batch-per-key-retention, code-config-guidance-committed)"

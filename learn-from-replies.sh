@@ -332,24 +332,23 @@ while IFS= read -r META; do
 done < "$REPLIES_META_FILE"
 
 
-# Auto-commit + push guidance change to claude-config (the repo formerly
-# known as vibe-engineering).
-CLAUDE_CONFIG_REPO="$HOME/services/claude-config"
-if [ -d "$CLAUDE_CONFIG_REPO/.git" ]; then
-    if git -C "$CLAUDE_CONFIG_REPO" diff --quiet claude-config/ 2>/dev/null; then
-        log "claude-config: no changes to commit"
+# Auto-commit + push the guidance change from its code-config owner.
+CODE_CONFIG_REPO="$HOME/services/code-config"
+if [ -d "$CODE_CONFIG_REPO/.git" ]; then
+    if git -C "$CODE_CONFIG_REPO" diff --quiet claude/ 2>/dev/null; then
+        log "code-config: no changes to commit"
     else
-        git -C "$CLAUDE_CONFIG_REPO" add claude-config/ 2>>"$LOG_FILE"
-        if git -C "$CLAUDE_CONFIG_REPO" -c user.email=eng@plow.co -c user.name=odio \
+        git -C "$CODE_CONFIG_REPO" add claude/ 2>>"$LOG_FILE"
+        if git -C "$CODE_CONFIG_REPO" -c user.email=eng@plow.co -c user.name=odio \
             commit -m "auto: tune review-mistakes list from /${BOT_CMD_PREFIX}-memorize requests" \
             >> "$LOG_FILE" 2>&1; then
-            if git -C "$CLAUDE_CONFIG_REPO" push >> "$LOG_FILE" 2>&1; then
-                log "claude-config: committed + pushed auto-tune"
+            if git -C "$CODE_CONFIG_REPO" push >> "$LOG_FILE" 2>&1; then
+                log "code-config: committed + pushed auto-tune"
             else
-                log "claude-config: committed locally; push failed (check log)"
+                log "code-config: committed locally; push failed (check log)"
             fi
         else
-            log "claude-config: commit failed (check log)"
+            log "code-config: commit failed (check log)"
         fi
     fi
 fi
