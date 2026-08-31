@@ -34,14 +34,17 @@ LOG_FILE="${LOG_FILE:-$STATE_DIR/learn.log}"
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
 CODE_CONFIG_REPO="$HOME/services/code-config"
 GUIDANCE_PATH="claude/COMMENT_REVIEW_MISTAKES.md"
-GUIDANCE_PUSH_STATE="$STATE_DIR/code-config-guidance-push.pending"
+GUIDANCE_PUSH_STATE="$STATE_DIR/code-config-guidance-push.json"
 
 push_recorded_guidance() {
-    local pending_sha pending_remote pending_ref
-    IFS=$'\t' read -r pending_sha pending_remote pending_ref < "$GUIDANCE_PUSH_STATE"
+    local pending pending_sha pending_remote pending_ref
+    pending=$(seen_get "$GUIDANCE_PUSH_STATE" pending)
+    pending_sha=$(jq -r '.sha' <<< "$pending")
+    pending_remote=$(jq -r '.remote' <<< "$pending")
+    pending_ref=$(jq -r '.ref' <<< "$pending")
     if git -C "$CODE_CONFIG_REPO" push -- "$pending_remote" \
         "$pending_sha:$pending_ref" >> "$LOG_FILE" 2>&1; then
-        rm -f "$GUIDANCE_PUSH_STATE"
+        seen_set_json_value "$GUIDANCE_PUSH_STATE" pending null
         log "code-config: pushed recorded learner commit $pending_sha"
         return 0
     fi
@@ -52,10 +55,10 @@ push_recorded_guidance() {
 persist_guidance() {
     [ -d "$CODE_CONFIG_REPO/.git" ] || return 0
 
-    [ ! -s "$GUIDANCE_PUSH_STATE" ] || push_recorded_guidance || return 0
+    [ -z "$(seen_get "$GUIDANCE_PUSH_STATE" pending)" ] || push_recorded_guidance || return 0
 
     if ! git -C "$CODE_CONFIG_REPO" diff --quiet HEAD -- "$GUIDANCE_PATH" 2>/dev/null; then
-        local branch remote merge_ref head_sha upstream_sha pending_sha
+        local branch remote merge_ref head_sha upstream_sha pending_sha pending
         branch=$(git -C "$CODE_CONFIG_REPO" symbolic-ref --quiet --short HEAD 2>/dev/null) || {
             log "code-config: detached HEAD; refusing to commit learned guidance"
             return 0
@@ -75,8 +78,9 @@ persist_guidance() {
             commit --only -m "auto: tune review-mistakes list from /${BOT_CMD_PREFIX}-memorize requests" \
             -- "$GUIDANCE_PATH" >> "$LOG_FILE" 2>&1; then
             pending_sha=$(git -C "$CODE_CONFIG_REPO" rev-parse HEAD)
-            printf '%s\t%s\t%s\n' "$pending_sha" "$remote" "$merge_ref" \
-                > "$GUIDANCE_PUSH_STATE.tmp" && mv -f "$GUIDANCE_PUSH_STATE.tmp" "$GUIDANCE_PUSH_STATE"
+            pending=$(jq -cn --arg sha "$pending_sha" --arg remote "$remote" --arg ref "$merge_ref" \
+                '{sha: $sha, remote: $remote, ref: $ref}')
+            seen_set_json_value "$GUIDANCE_PUSH_STATE" pending "$pending" || return 0
             log "code-config: committed auto-tune $pending_sha"
         else
             log "code-config: guidance commit failed (check log)"
@@ -84,7 +88,7 @@ persist_guidance() {
         fi
     fi
 
-    if [ -s "$GUIDANCE_PUSH_STATE" ]; then
+    if [ -n "$(seen_get "$GUIDANCE_PUSH_STATE" pending)" ]; then
         push_recorded_guidance || true
     else
         log "code-config: no changes to commit or push"

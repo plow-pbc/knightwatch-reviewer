@@ -310,6 +310,10 @@ MOCK_TRUSTED_USERS="trusteduser" MOCK_CODEX_ACKS="$ACKS_TWO" run_learn
 [ "$(git -C "$CODE_CONFIG_FIXTURE" rev-list --count '@{upstream}'..HEAD)" -eq 1 ] \
     || { echo "FAIL scenario 7: failed push did not leave exactly one pending guidance commit"; git -C "$CODE_CONFIG_FIXTURE" log --oneline --decorate -3; exit 1; }
 LEARNER_SHA=$(git -C "$CODE_CONFIG_FIXTURE" rev-parse HEAD)
+jq -e --arg sha "$LEARNER_SHA" \
+    '.pending == {sha: $sha, remote: "origin", ref: "refs/heads/main"}' \
+    "$STATE_DIR/code-config-guidance-push.json" >/dev/null \
+    || { echo "FAIL scenario 7: pending push was not stored through the JSON state seam"; cat "$STATE_DIR/code-config-guidance-push.json" 2>/dev/null || true; exit 1; }
 
 echo "  scenario 8: a no-request tick retries the pending code-config push..."
 mv "$CODE_CONFIG_REMOTE.offline" "$CODE_CONFIG_REMOTE"
