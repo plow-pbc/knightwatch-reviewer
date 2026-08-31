@@ -281,12 +281,23 @@ rm -f "$STATE_DIR/gh-rate-limited-until"
 
 echo "  scenario 7: updated guidance is committed from the live code-config checkout..."
 CODE_CONFIG_FIXTURE="$HOME/services/code-config"
+CODE_CONFIG_REMOTE="$TMPDIR/code-config-remote.git"
 mkdir -p "$CODE_CONFIG_FIXTURE/claude"
+git init --bare -q "$CODE_CONFIG_REMOTE"
 git -C "$CODE_CONFIG_FIXTURE" init -q
 printf 'initial mistakes\n' > "$CODE_CONFIG_FIXTURE/claude/COMMENT_REVIEW_MISTAKES.md"
-git -C "$CODE_CONFIG_FIXTURE" add claude/COMMENT_REVIEW_MISTAKES.md
+printf 'operator-owned setting\n' > "$CODE_CONFIG_FIXTURE/claude/OPERATOR.md"
+git -C "$CODE_CONFIG_FIXTURE" add claude/COMMENT_REVIEW_MISTAKES.md claude/OPERATOR.md
 git -C "$CODE_CONFIG_FIXTURE" -c user.email=test@example.com -c user.name=test \
     commit -qm "seed guidance"
+git -C "$CODE_CONFIG_FIXTURE" branch -M main
+git -C "$CODE_CONFIG_FIXTURE" remote add origin "$CODE_CONFIG_REMOTE"
+git -C "$CODE_CONFIG_FIXTURE" push -qu origin main
+printf 'operator edit that must remain staged\n' > "$CODE_CONFIG_FIXTURE/claude/OPERATOR.md"
+git -C "$CODE_CONFIG_FIXTURE" add claude/OPERATOR.md
+# Take the remote offline for the update tick. The learner must commit only its
+# target and leave the failed push pending for a later no-request tick.
+mv "$CODE_CONFIG_REMOTE" "$CODE_CONFIG_REMOTE.offline"
 seed_two_requests
 CLAUDE_DIR="$CODE_CONFIG_FIXTURE/claude" \
 MOCK_TRUSTED_USERS="trusteduser" MOCK_CODEX_ACKS="$ACKS_TWO" run_learn
@@ -294,5 +305,15 @@ MOCK_TRUSTED_USERS="trusteduser" MOCK_CODEX_ACKS="$ACKS_TWO" run_learn
     || { echo "FAIL scenario 7: learner did not commit the updated guidance in code-config"; git -C "$CODE_CONFIG_FIXTURE" status --short; cat "$LOG_FILE"; exit 1; }
 [ "$(git -C "$CODE_CONFIG_FIXTURE" show --pretty= --name-only HEAD)" = "claude/COMMENT_REVIEW_MISTAKES.md" ] \
     || { echo "FAIL scenario 7: learner committed the wrong code-config path"; git -C "$CODE_CONFIG_FIXTURE" show --stat --oneline HEAD; exit 1; }
+[ "$(git -C "$CODE_CONFIG_FIXTURE" diff --cached --name-only)" = "claude/OPERATOR.md" ] \
+    || { echo "FAIL scenario 7: learner swept or unstaged the operator's unrelated edit"; git -C "$CODE_CONFIG_FIXTURE" status --short; exit 1; }
+[ "$(git -C "$CODE_CONFIG_FIXTURE" rev-list --count '@{upstream}'..HEAD)" -eq 1 ] \
+    || { echo "FAIL scenario 7: failed push did not leave exactly one pending guidance commit"; git -C "$CODE_CONFIG_FIXTURE" log --oneline --decorate -3; exit 1; }
 
-echo "  PASS (7 scenarios: REPOS-override-observed, untrusted-memorize-ignored, page-2-paginated, gh-api-failure-fail-loud, acks-throttled-then-recovered-and-seen, pause-mid-batch-per-key-retention, code-config-guidance-committed)"
+echo "  scenario 8: a no-request tick retries the pending code-config push..."
+mv "$CODE_CONFIG_REMOTE.offline" "$CODE_CONFIG_REMOTE"
+run_learn
+[ "$(git -C "$CODE_CONFIG_FIXTURE" rev-parse HEAD)" = "$(git --git-dir="$CODE_CONFIG_REMOTE" rev-parse refs/heads/main)" ] \
+    || { echo "FAIL scenario 8: no-request tick did not retry the pending guidance push"; git -C "$CODE_CONFIG_FIXTURE" status --short --branch; exit 1; }
+
+echo "  PASS (8 scenarios: REPOS-override-observed, untrusted-memorize-ignored, page-2-paginated, gh-api-failure-fail-loud, acks-throttled-then-recovered-and-seen, pause-mid-batch-per-key-retention, code-config-guidance-committed, pending-push-retried)"

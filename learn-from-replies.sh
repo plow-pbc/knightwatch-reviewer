@@ -32,6 +32,39 @@ require_repos
 REPLIES_SEEN_FILE="${REPLIES_SEEN_FILE:-$STATE_DIR/replies-seen.json}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/learn.log}"
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
+CODE_CONFIG_REPO="$HOME/services/code-config"
+GUIDANCE_PATH="claude/COMMENT_REVIEW_MISTAKES.md"
+
+persist_guidance() {
+    [ -d "$CODE_CONFIG_REPO/.git" ] || return 0
+
+    if ! git -C "$CODE_CONFIG_REPO" diff --quiet HEAD -- "$GUIDANCE_PATH" 2>/dev/null; then
+        if git -C "$CODE_CONFIG_REPO" -c user.email=eng@plow.co -c user.name=odio \
+            commit --only -m "auto: tune review-mistakes list from /${BOT_CMD_PREFIX}-memorize requests" \
+            -- "$GUIDANCE_PATH" >> "$LOG_FILE" 2>&1; then
+            log "code-config: committed auto-tune"
+        else
+            log "code-config: guidance commit failed (check log)"
+            return 0
+        fi
+    fi
+
+    local upstream pending
+    upstream=$(git -C "$CODE_CONFIG_REPO" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null) || {
+        log "code-config: no upstream configured; cannot push auto-tune"
+        return 0
+    }
+    pending=$(git -C "$CODE_CONFIG_REPO" rev-list --count "$upstream"..HEAD 2>/dev/null || echo 0)
+    if [ "$pending" -gt 0 ]; then
+        if git -C "$CODE_CONFIG_REPO" push >> "$LOG_FILE" 2>&1; then
+            log "code-config: pushed pending commit(s)"
+        else
+            log "code-config: push pending; will retry next tick (check log)"
+        fi
+    else
+        log "code-config: no changes to commit or push"
+    fi
+}
 
 [ -f "$REPLIES_SEEN_FILE" ] || echo '{}' > "$REPLIES_SEEN_FILE"
 
@@ -153,6 +186,9 @@ for REPO in "${REPOS[@]}"; do
 done
 
 if [ -z "$REPLIES" ]; then
+    # A previous tick may have committed successfully while its push failed.
+    # Retry that remote half even when there is no new feedback to process.
+    persist_guidance
     log "no new /${BOT_CMD_PREFIX}-memorize requests"
     exit 0
 fi
@@ -332,23 +368,6 @@ while IFS= read -r META; do
 done < "$REPLIES_META_FILE"
 
 
-# Auto-commit + push the guidance change from its code-config owner.
-CODE_CONFIG_REPO="$HOME/services/code-config"
-if [ -d "$CODE_CONFIG_REPO/.git" ]; then
-    if git -C "$CODE_CONFIG_REPO" diff --quiet claude/ 2>/dev/null; then
-        log "code-config: no changes to commit"
-    else
-        git -C "$CODE_CONFIG_REPO" add claude/ 2>>"$LOG_FILE"
-        if git -C "$CODE_CONFIG_REPO" -c user.email=eng@plow.co -c user.name=odio \
-            commit -m "auto: tune review-mistakes list from /${BOT_CMD_PREFIX}-memorize requests" \
-            >> "$LOG_FILE" 2>&1; then
-            if git -C "$CODE_CONFIG_REPO" push >> "$LOG_FILE" 2>&1; then
-                log "code-config: committed + pushed auto-tune"
-            else
-                log "code-config: committed locally; push failed (check log)"
-            fi
-        else
-            log "code-config: commit failed (check log)"
-        fi
-    fi
-fi
+# Commit only the learner-owned file and synchronize any locally pending commit.
+# Unrelated operator changes elsewhere in code-config retain their index state.
+persist_guidance
