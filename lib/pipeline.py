@@ -8,6 +8,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -184,11 +185,14 @@ _CODEX_CYBER_REFUSAL_RE = re.compile(
     r"chatgpt\.com/cyber\b",
     re.IGNORECASE,
 )
-# Cap on simultaneous Wave-B codex calls per review. Firing all 7+ specialists
-# at once put ~8 concurrent calls on a single account and tripped 429s (the
-# 2026-06-03 storm); bounding peak concurrency spreads them out (the executor
-# queues the rest).
-WAVE_B_MAX_CONCURRENCY = 4
+# Cap on simultaneous codex calls per review — every agent kind, not only the
+# specialists. Firing ~8 at once on one account tripped 429s (the 2026-06-03
+# storm), and 13 genuine throttle/capacity bounces landed in the last 200 runs
+# at 4, so 4 is the ceiling. run_pipeline rebuilds the semaphore from this
+# constant (a patched value takes effect); the import-time instance covers
+# direct run_codex callers.
+CODEX_MAX_CONCURRENCY = 4
+_codex_slots = threading.BoundedSemaphore(CODEX_MAX_CONCURRENCY)
 
 
 def _ts() -> str:
@@ -358,42 +362,43 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
     # reaps the descendants too — bare `subprocess.run(timeout=)` kills
     # only the direct child and leaves tool processes orphaned to PID 1
     # with reviewer credentials (sandbox disabled by `pr-reviewer.service`).
-    for attempt in (1, 2):
-        if attempt == 2:
-            # Archive attempt-1 artifacts + drop any half-written output.md so the
-            # post-loop validation only sees attempt 2's artifact (codex's -o
-            # write should be atomic, but the contract is "this attempt's
-            # output.md belongs to this attempt" — don't lean on codex behaviour).
-            log_file.rename(agent / "log.attempt1.txt")
-            if err_file.exists():
-                err_file.rename(agent / "err.attempt1.txt")
-            out_file.unlink(missing_ok=True)
-            with log_file.open("a") as lf:
-                lf.write(f"[{_ts()}] agent={name} attempt 2 (first hung; see log.attempt1.txt)\n")
-        with log_file.open("a") as lf, err_file.open("a") as ef:
-            proc = subprocess.Popen(argv, stdout=lf, stderr=ef, start_new_session=True)
-        exit_code, kill_reason, retryable = _wait_with_watchdog(proc, log_file, err_file)
-        # We retry at most once (attempt 1 → attempt 2); a retryable kill on
-        # the final attempt still ends the loop, so gate both the surfaced
-        # "(retrying)" suffix and the break on will_retry, not raw retryable —
-        # otherwise the final review-costing kill is mislabeled "(retrying)"
-        # and the `grep -c` rate this surfacing exists for double-counts it.
-        will_retry = retryable and attempt == 1
-        if kill_reason is not None:
-            with log_file.open("a") as lf:
-                lf.write(f"[{_ts()}] agent={name} killed: {kill_reason}\n")
-            # Also surface on stdout/$LOG_FILE. The per-agent log.txt lives
-            # inside the run dir — invisible to `docker compose logs`, the
-            # stream /babysit-pr tails, and the only place the codex
-            # parallel-tool-call deadlock rate (openai/codex#21937) is
-            # countable in aggregate. Without this the rate is silent: a
-            # `grep -c "codex watchdog kill"` over the reviewer logs is the
-            # whole point. "(retrying)" separates rescued hangs from the ones
-            # that actually cost a review angle.
-            log(f"{name}: codex watchdog kill — {kill_reason}"
-                + (" (retrying)" if will_retry else ""))
-        if not will_retry:
-            break
+    with _codex_slots:
+        for attempt in (1, 2):
+            if attempt == 2:
+                # Archive attempt-1 artifacts + drop any half-written output.md so the
+                # post-loop validation only sees attempt 2's artifact (codex's -o
+                # write should be atomic, but the contract is "this attempt's
+                # output.md belongs to this attempt" — don't lean on codex behaviour).
+                log_file.rename(agent / "log.attempt1.txt")
+                if err_file.exists():
+                    err_file.rename(agent / "err.attempt1.txt")
+                out_file.unlink(missing_ok=True)
+                with log_file.open("a") as lf:
+                    lf.write(f"[{_ts()}] agent={name} attempt 2 (first hung; see log.attempt1.txt)\n")
+            with log_file.open("a") as lf, err_file.open("a") as ef:
+                proc = subprocess.Popen(argv, stdout=lf, stderr=ef, start_new_session=True)
+            exit_code, kill_reason, retryable = _wait_with_watchdog(proc, log_file, err_file)
+            # We retry at most once (attempt 1 → attempt 2); a retryable kill on
+            # the final attempt still ends the loop, so gate both the surfaced
+            # "(retrying)" suffix and the break on will_retry, not raw retryable —
+            # otherwise the final review-costing kill is mislabeled "(retrying)"
+            # and the `grep -c` rate this surfacing exists for double-counts it.
+            will_retry = retryable and attempt == 1
+            if kill_reason is not None:
+                with log_file.open("a") as lf:
+                    lf.write(f"[{_ts()}] agent={name} killed: {kill_reason}\n")
+                # Also surface on stdout/$LOG_FILE. The per-agent log.txt lives
+                # inside the run dir — invisible to `docker compose logs`, the
+                # stream /babysit-pr tails, and the only place the codex
+                # parallel-tool-call deadlock rate (openai/codex#21937) is
+                # countable in aggregate. Without this the rate is silent: a
+                # `grep -c "codex watchdog kill"` over the reviewer logs is the
+                # whole point. "(retrying)" separates rescued hangs from the ones
+                # that actually cost a review angle.
+                log(f"{name}: codex watchdog kill — {kill_reason}"
+                    + (" (retrying)" if will_retry else ""))
+            if not will_retry:
+                break
 
     with log_file.open("a") as lf:
         lf.write(f"[{_ts()}] agent={name} exit={exit_code}\n")
@@ -802,6 +807,9 @@ def run_pipeline(
     """Run the full LLM review pipeline. Returns 0 on success, non-zero on
     any-stage failure. Aggregator output lands at
     <run_dir>/agents/aggregator/output.md."""
+    global _codex_slots
+    _codex_slots = threading.BoundedSemaphore(CODEX_MAX_CONCURRENCY)
+
     repo = Path(repo_dir)
     run = Path(run_dir)
     scratch = repo / ".codex-scratch"
@@ -868,7 +876,7 @@ def run_pipeline(
     # block's __exit__ to call ex.shutdown(wait=True) on a hung future and
     # the pipeline blocked indefinitely (see SPECIALIST_TIMEOUT_SEC docstring).
     # With run_codex's 45m subprocess timeout, every future now resolves.
-    with ThreadPoolExecutor(max_workers=min(WAVE_B_MAX_CONCURRENCY, len(SPECIALISTS) + 1)) as ex:
+    with ThreadPoolExecutor(max_workers=len(SPECIALISTS) + 1) as ex:
         futures = {
             ex.submit(run_specialist, specialist=s, **common_kwargs): s
             for s in SPECIALISTS

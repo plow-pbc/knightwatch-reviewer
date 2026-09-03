@@ -1511,26 +1511,26 @@ class TestRunPipeline(unittest.TestCase):
         self.assertEqual(rc, 0)
 
     @patch("pipeline.subprocess.Popen")
-    def test_wave_b_concurrency_is_capped(self, mock_popen):
-        """Wave B caps simultaneous specialist codex calls at
-        WAVE_B_MAX_CONCURRENCY so a review can't fire all 7 at once and trip
-        429s (the 2026-06-03 storm). With the cap at 2, peak concurrent
-        specialists must not exceed 2 — and the review still completes."""
+    def test_codex_concurrency_is_capped_across_all_agents(self, mock_popen):
+        """CODEX_MAX_CONCURRENCY bounds simultaneous codex calls of EVERY kind
+        (intent, dead-code, specialists, critics, momentum, aggregator), so a
+        review can't fire all its agents at once and trip 429s (the 2026-06-03
+        storm). With the cap at 2, peak concurrent codex calls must not exceed
+        2 — and the review still completes."""
         lock = threading.Lock()
         state = {"cur": 0, "peak": 0}
-        def track(name, _out_path):
-            if name in pipeline.SPECIALISTS:
-                with lock:
-                    state["cur"] += 1
-                    state["peak"] = max(state["peak"], state["cur"])
-                time.sleep(0.05)
-                with lock:
-                    state["cur"] -= 1
-        with patch.object(pipeline, "WAVE_B_MAX_CONCURRENCY", 2):
+        def track(_name, _out_path):
+            with lock:
+                state["cur"] += 1
+                state["peak"] = max(state["peak"], state["cur"])
+            time.sleep(0.05)
+            with lock:
+                state["cur"] -= 1
+        with patch.object(pipeline, "CODEX_MAX_CONCURRENCY", 2):
             mock_popen.side_effect = _make_codex_stub(before_write=track)
             rc = self._run()
         self.assertEqual(rc, 0)
-        self.assertGreaterEqual(state["peak"], 1)   # specialists actually ran
+        self.assertGreaterEqual(state["peak"], 2)   # agents actually overlapped
         self.assertLessEqual(state["peak"], 2)      # never exceeded the cap
 
     @patch("pipeline.subprocess.Popen")
