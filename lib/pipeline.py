@@ -195,6 +195,9 @@ _CODEX_CYBER_REFUSAL_RE = re.compile(
 CODEX_MAX_CONCURRENCY = 4
 _codex_slots = threading.BoundedSemaphore(CODEX_MAX_CONCURRENCY)
 
+# How often the test-gate node re-checks for the worker's `test-done` sentinel.
+TEST_GATE_POLL_SEC = 5.0
+
 
 def _ts() -> str:
     return time.strftime("%H:%M:%S")
@@ -796,6 +799,27 @@ def _run_standalone(
     return run_codex(name, repo_dir, prompt, str(agent_dir), effort=effort)
 
 
+def _test_gate(run: Path, scratch: Path, pr_id: str) -> int:
+    """Wait for review-one-pr.sh's background `just test` job — it writes
+    <run>/test-results.md and then touches <run>/test-done — and stage the
+    results for the `tests` specialist + aggregator (the only readers; see
+    prompts/common-header.md). Always 0: past the worker deadline it stages a
+    'not run' body, the shape a skipped test already has, so both readers
+    always find the file. The job's own EXIT trap writes the sentinel on every
+    path, so the deadline branch is fail-loud hygiene, not an expected path."""
+    done = run / "test-done"
+    deadline_raw = os.environ.get("WORKER_DEADLINE_EPOCH")
+    while not done.exists():
+        if deadline_raw and time.time() >= float(deadline_raw):
+            log(f"{pr_id}: test-gate: no test-done sentinel by the worker deadline — staging 'not run'")
+            _stage_scratch(scratch / "test-results.md",
+                           b"**Result:** not run (worker timeout budget exhausted)\n")
+            return 0
+        time.sleep(TEST_GATE_POLL_SEC)
+    _stage_scratch(scratch / "test-results.md", (run / "test-results.md").read_bytes())
+    return 0
+
+
 def _after(deps: list, fn) -> int:
     """DAG edge: run `fn` once every dependency future returned 0; otherwise
     propagate the first non-zero code without running (the caller reports the
@@ -876,7 +900,8 @@ def run_pipeline(
     with ThreadPoolExecutor(max_workers=len(SPECIALISTS) + 4) as ex:
         intent_f = ex.submit(intent_node)
         dc_f = ex.submit(dead_code_node)
-        deps = {"consumers": [intent_f, dc_f]}
+        test_f = ex.submit(_test_gate, run, scratch, pr_id)
+        deps = {"consumers": [intent_f, dc_f], "tests": [intent_f, test_f]}
         angles = {
             ex.submit(_after, deps.get(s, [intent_f]),
                       partial(run_specialist, specialist=s, **common_kwargs)): s
@@ -886,6 +911,7 @@ def run_pipeline(
             angles[ex.submit(_after, [intent_f],
                              partial(_run_standalone, "momentum", **common_kwargs))] = "momentum"
         intent_rc, dc_rc = intent_f.result(), dc_f.result()
+        test_f.result()
         outcomes = []
         for fut in as_completed(angles):
             try:

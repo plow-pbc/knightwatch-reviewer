@@ -150,10 +150,13 @@ mkdir -p "$REPO_DIR/.codex-scratch"
 write_scratch "$REPO_DIR" "diff.patch" "$(cat "$OUT/diff.patch")"
 for f in pr-comments.md loc-trend.md \
          prior-art.md dead-code-static.md \
-         file-history.md commits.md search-roots.md \
-         test-results.md; do
+         file-history.md commits.md search-roots.md; do
     write_scratch "$REPO_DIR" "$f" "(replay: not staged — upstream pipeline stage skipped)"
 done
+# pipeline.py's test-gate stages test-results.md itself from the run dir; a
+# replay has no test job, so hand it the placeholder + sentinel up front.
+printf '%s\n' "(replay: not staged — upstream pipeline stage skipped)" > "$RUN_DIR/test-results.md"
+touch "$RUN_DIR/test-done"
 # author-intent.md is NOT an upstream-pipeline artifact — it is public PR
 # metadata replay can fetch itself, and intent.md now requires it. Staging the
 # sentinel here would silently strip the author's rationale from every replay,
@@ -221,7 +224,7 @@ write_scratch "$REPO_DIR" "review.md" "$REVIEW_MD"
 # branch returns 1 and would trip errexit). Covered by replay-staging-smoke.
 if _conv_note=$(stage_convention_run "$REPO_DIR" "$REPO" "origin/$BASE_REF"); then
     if [ -n "$_conv_note" ]; then
-        write_scratch "$REPO_DIR" "test-results.md" "**Result:** $_conv_note"
+        printf '**Result:** %s\n' "$_conv_note" > "$RUN_DIR/test-results.md"
     fi
 else
     _conv_rc=$?

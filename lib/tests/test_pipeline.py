@@ -1313,6 +1313,11 @@ class TestRunPipeline(unittest.TestCase):
         self.run_dir = Path(self.tmp.name) / "run"
         (self.run_dir / "agents").mkdir(parents=True)
         (self.run_dir / "inputs").mkdir(parents=True)
+        # The worker's background test job writes these before the pipeline
+        # needs them; the fixture stands in for it. Tests that exercise the
+        # wait itself delete them first.
+        (self.run_dir / "test-results.md").write_text("**Result:** PASSED\n")
+        (self.run_dir / "test-done").touch()
 
         self.prompts = Path(self.tmp.name) / "prompts"
         self.prompts.mkdir()
@@ -1325,6 +1330,7 @@ class TestRunPipeline(unittest.TestCase):
             patch.object(pipeline, "STALENESS_THRESHOLD_SEC", 0.1),
             patch.object(pipeline, "WATCHDOG_POLL_SEC", 0.05),
             patch.object(pipeline, "SPECIALIST_TIMEOUT_SEC", 5.0),
+            patch.object(pipeline, "TEST_GATE_POLL_SEC", 0.05),
         ):
             p.start()
             self.addCleanup(p.stop)
@@ -1603,6 +1609,48 @@ class TestRunPipeline(unittest.TestCase):
             if name == "consumers":
                 self.assertIn("dead-code.md", staged,
                               "consumers started before dead-code-search staged dead-code.md")
+
+    @patch("pipeline.subprocess.Popen")
+    def test_tests_specialist_waits_for_test_results_and_others_do_not(self, mock_popen):
+        """`just test` runs in the background. Every specialist except `tests`
+        starts without it; `tests` starts only after the worker's sentinel
+        lands, and then sees the staged results. Security's stub plays the
+        worker: it asserts `tests` hasn't started, then writes the results and
+        the sentinel."""
+        (self.run_dir / "test-done").unlink()
+        (self.run_dir / "test-results.md").unlink()
+        started: list[str] = []
+        seen: dict[str, str] = {}
+        lock = threading.Lock()
+        scratch = self.repo_dir / ".codex-scratch" / "test-results.md"
+        def worker_stub(name, _out_path):
+            with lock:
+                started.append(name)
+            if name == "security":
+                (self.run_dir / "test-results.md").write_text("**Result:** from-security\n")
+                (self.run_dir / "test-done").touch()
+            if name == "tests":
+                seen["tests"] = scratch.read_text() if scratch.exists() else "<absent>"
+        mock_popen.side_effect = _make_codex_stub(before_write=worker_stub)
+        rc = self._run()
+        self.assertEqual(rc, 0)
+        self.assertLess(started.index("security"), started.index("tests"))
+        self.assertEqual(seen["tests"], "**Result:** from-security\n")
+
+    @patch("pipeline.subprocess.Popen")
+    def test_test_gate_stages_not_run_past_the_worker_deadline(self, mock_popen):
+        """No sentinel by WORKER_DEADLINE_EPOCH → the gate stages a 'not run'
+        body (the shape a skipped test already has) and the review completes."""
+        (self.run_dir / "test-done").unlink()
+        (self.run_dir / "test-results.md").unlink()
+        mock_popen.side_effect = _make_codex_stub()
+        with patch.dict(os.environ, {"WORKER_DEADLINE_EPOCH": str(time.time() - 1)}):
+            rc = self._run()
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            (self.repo_dir / ".codex-scratch" / "test-results.md").read_text(),
+            "**Result:** not run (worker timeout budget exhausted)\n",
+        )
 
     @patch("pipeline.subprocess.Popen")
     def test_specialist_timeout_completes_review_with_sentinel(self, mock_popen):
@@ -2023,6 +2071,11 @@ class TestPipelineCLI(unittest.TestCase):
         self.run_dir = root / "run"
         (self.run_dir / "agents").mkdir(parents=True)
         (self.run_dir / "inputs").mkdir(parents=True)
+        # The worker's background test job writes these before the pipeline
+        # needs them; the fixture stands in for it (no patch — this class
+        # runs a subprocess).
+        (self.run_dir / "test-results.md").write_text("**Result:** PASSED\n")
+        (self.run_dir / "test-done").touch()
 
         self.prompts = root / "prompts"
         self.prompts.mkdir()
