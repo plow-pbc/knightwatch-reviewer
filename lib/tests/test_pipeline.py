@@ -1548,15 +1548,33 @@ class TestRunPipeline(unittest.TestCase):
         self.assertLessEqual(state["peak"], 2)      # never exceeded the cap
 
     @patch("pipeline.subprocess.Popen")
-    def test_wave_b_starts_after_wave_a_artifacts_staged(self, mock_popen):
-        """Every DAG edge is a hard barrier on staged scratch: each specialist
-        (and momentum on re-review) must see `.codex-scratch/inferred-intent.md`
-        as a REGULAR file at the moment it starts, and `consumers` — the one
-        angle that reads it — must also see `.codex-scratch/dead-code.md`."""
+    def test_each_angle_starts_after_its_own_dependencies_staged(self, mock_popen):
+        """Each angle starts only once ITS OWN dependencies staged their scratch:
+        every specialist (and momentum on re-review) must see
+        `.codex-scratch/inferred-intent.md` as a REGULAR file at the moment it
+        starts, and `consumers` — the one angle that reads it — must also see
+        `.codex-scratch/dead-code.md`.
+
+        The dead-code half needs a gate to be falsifiable. The fake codex is
+        instantaneous and `consumers` is the LAST specialist submitted, so
+        dead-code-search would stage its file first by scheduling alone — the
+        assertion would hold with the `consumers` → dead-code-search edge
+        deleted. So hold dead-code-search inside its own codex call until
+        `consumers` starts. With the edge intact `consumers` cannot start, the
+        wait expires, and only the edge can have ordered them; delete `dc_f`
+        from `deps["consumers"]` and `consumers` runs immediately, snapshots a
+        scratch dir with no `dead-code.md` (dead-code-search is still parked
+        pre-write), and this fails. Gating on `consumers` itself rather than on
+        the other specialists is what makes that deterministic: absent the edge
+        `consumers` is one of eight equal competitors and may legitimately start
+        LAST, after any "the others have started" release already let
+        dead-code-search through. The wait can only expire on the passing path,
+        so it can never fail spuriously."""
         (self.run_dir / "inputs" / "previous-review.md").write_text("prior\n")
         scratch = self.repo_dir / ".codex-scratch"
         seen: list[tuple[str, set[str]]] = []
         lock = threading.Lock()
+        consumers_started = threading.Event()
         def capture_scratch_files(name, _out_path):
             if name in pipeline.SPECIALISTS or name == "momentum":
                 with lock:
@@ -1565,6 +1583,16 @@ class TestRunPipeline(unittest.TestCase):
                         {p.name for p in scratch.iterdir()
                          if p.is_file() and not p.is_symlink()},
                     ))
+                # Snapshot first, THEN release: dead-code-search must still be
+                # parked (nothing staged) at the instant `consumers` looks.
+                if name == "consumers":
+                    consumers_started.set()
+            elif name == "dead-code-search":
+                # Only elapses on the passing path, where it is the whole point:
+                # `consumers` is blocked on this very call, so nothing will set
+                # the event. Generous enough that a loaded box still lets an
+                # unblocked `consumers` start inside it.
+                consumers_started.wait(timeout=0.5)
         mock_popen.side_effect = _make_codex_stub(before_write=capture_scratch_files)
         rc = self._run()
         self.assertEqual(rc, 0)
