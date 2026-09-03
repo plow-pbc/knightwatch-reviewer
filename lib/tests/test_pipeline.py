@@ -1497,6 +1497,20 @@ class TestRunPipeline(unittest.TestCase):
         self.assertEqual(rc, 0)
 
     @patch("pipeline.subprocess.Popen")
+    def test_specialists_start_before_dead_code_search_finishes(self, mock_popen):
+        """Only `consumers` reads dead-code.md, so the other specialists must not
+        wait for dead-code-search. Gate dead-code-search and security on one
+        Barrier(2): if security could not start until dead-code-search finished,
+        dead-code-search blocks alone → BrokenBarrierError → run fails."""
+        barrier = threading.Barrier(2, timeout=5)
+        def hit_barrier(name, _out_path):
+            if name in ("dead-code-search", "security"):
+                barrier.wait()
+        mock_popen.side_effect = _make_codex_stub(before_write=hit_barrier)
+        rc = self._run()
+        self.assertEqual(rc, 0)
+
+    @patch("pipeline.subprocess.Popen")
     def test_wave_b_runs_specialists_concurrently(self, mock_popen):
         """Wave B's specialist fan-out must run concurrently. Pick two
         deterministic specialists (security, shape) and gate them
@@ -1535,10 +1549,10 @@ class TestRunPipeline(unittest.TestCase):
 
     @patch("pipeline.subprocess.Popen")
     def test_wave_b_starts_after_wave_a_artifacts_staged(self, mock_popen):
-        """Wave A → Wave B is a hard barrier: every specialist (and momentum
-        on re-review) must see `.codex-scratch/inferred-intent.md` and
-        `.codex-scratch/dead-code.md` staged as REGULAR files at the moment
-        they start."""
+        """Every DAG edge is a hard barrier on staged scratch: each specialist
+        (and momentum on re-review) must see `.codex-scratch/inferred-intent.md`
+        as a REGULAR file at the moment it starts, and `consumers` — the one
+        angle that reads it — must also see `.codex-scratch/dead-code.md`."""
         (self.run_dir / "inputs" / "previous-review.md").write_text("prior\n")
         scratch = self.repo_dir / ".codex-scratch"
         seen: list[tuple[str, set[str]]] = []
@@ -1557,9 +1571,10 @@ class TestRunPipeline(unittest.TestCase):
         self.assertEqual(len(seen), len(pipeline.SPECIALISTS) + 1)  # +momentum
         for name, staged in seen:
             self.assertIn("inferred-intent.md", staged,
-                          f"{name} started before Wave A staged inferred-intent.md as a real file")
-            self.assertIn("dead-code.md", staged,
-                          f"{name} started before Wave A staged dead-code.md as a real file")
+                          f"{name} started before intent staged inferred-intent.md as a real file")
+            if name == "consumers":
+                self.assertIn("dead-code.md", staged,
+                              "consumers started before dead-code-search staged dead-code.md")
 
     @patch("pipeline.subprocess.Popen")
     def test_specialist_timeout_completes_review_with_sentinel(self, mock_popen):

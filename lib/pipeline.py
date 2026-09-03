@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import partial
 from pathlib import Path
 
 SPECIALISTS = (
@@ -795,6 +796,17 @@ def _run_standalone(
     return run_codex(name, repo_dir, prompt, str(agent_dir), effort=effort)
 
 
+def _after(deps: list, fn) -> int:
+    """DAG edge: run `fn` once every dependency future returned 0; otherwise
+    propagate the first non-zero code without running (the caller reports the
+    dependency's own failure, never this node's)."""
+    for dep in deps:
+        rc = dep.result()
+        if rc != 0:
+            return rc
+    return fn()
+
+
 def run_pipeline(
     repo_dir: str,
     run_dir: str,
@@ -826,111 +838,99 @@ def run_pipeline(
         effort=effort,
     )
 
-    # Wave A: intent + dead-code-search in parallel. Both are inputs to the
-    # specialists (intent → architecture-refined/momentum read it;
-    # dead-code → consumers reads it), so they must complete before Wave B.
-    log(f"{pr_id}: Wave A — intent + dead-code-search")
-    with ThreadPoolExecutor(max_workers=2) as ex:
-        intent_fut = ex.submit(_run_standalone, "intent", **common_kwargs)
-        # dead-code-search is search-shaped (grep breadth, not reasoning
-        # depth) and anything load-bearing it finds is re-verified by the
-        # consumers specialist + critic, so it runs at medium regardless of
-        # PR size. Intent stays size-scaled: it is the anchor every
-        # specialist grades against.
-        dc_fut = ex.submit(_run_standalone, "dead-code-search",
-                           **dict(common_kwargs, effort="medium"))
-        intent_rc = intent_fut.result()
-        dc_rc = dc_fut.result()
+    def intent_node() -> int:
+        rc = _run_standalone("intent", **common_kwargs)
+        if rc != 0:
+            return rc
+        try:
+            intent_text = _validate_intent(run / "agents" / "intent" / "output.md")
+        except ValueError as e:
+            log(f"{pr_id}: {e} — aborting")
+            return 4
+        # Stage the VALIDATED line, not the raw output: the aggregator copies
+        # this file verbatim into a public PR comment, and the raw output is
+        # derived from PR-author-controlled inputs.
+        _stage_scratch(scratch / "inferred-intent.md", (intent_text + "\n").encode())
+        log(f"{pr_id}: {intent_text}")
+        return 0
+
+    def dead_code_node() -> int:
+        # Search-shaped (grep breadth, not reasoning depth) and re-verified by
+        # consumers + critic, so medium effort regardless of PR size.
+        rc = _run_standalone("dead-code-search", **dict(common_kwargs, effort="medium"))
+        if rc != 0:
+            return rc
+        _stage_scratch(scratch / "dead-code.md",
+                       (run / "agents" / "dead-code-search" / "output.md").read_bytes())
+        return 0
+
+    prev_review = run / "inputs" / "previous-review.md"
+    has_prev = prev_review.exists() and prev_review.stat().st_size > 0
+    log(f"{pr_id}: pipeline — intent ‖ dead-code-search ‖ {len(SPECIALISTS)} specialists"
+        + (" + momentum" if has_prev else "") + f" (codex cap {CODEX_MAX_CONCURRENCY})")
+    # Every node is submitted up front; _after edges order them. Threads are not
+    # the concurrency cap — the codex semaphore is — so the pool holds every node
+    # at once and a ready node never queues behind a waiting one. Collect ALL
+    # results, never break early: a hung future left to __exit__'s shutdown(wait=True)
+    # blocked the pipeline indefinitely once (see SPECIALIST_TIMEOUT_SEC).
+    with ThreadPoolExecutor(max_workers=len(SPECIALISTS) + 4) as ex:
+        intent_f = ex.submit(intent_node)
+        dc_f = ex.submit(dead_code_node)
+        deps = {"consumers": [intent_f, dc_f]}
+        angles = {
+            ex.submit(_after, deps.get(s, [intent_f]),
+                      partial(run_specialist, specialist=s, **common_kwargs)): s
+            for s in SPECIALISTS
+        }
+        if has_prev:
+            angles[ex.submit(_after, [intent_f],
+                             partial(_run_standalone, "momentum", **common_kwargs))] = "momentum"
+        intent_rc, dc_rc = intent_f.result(), dc_f.result()
+        outcomes = []
+        for fut in as_completed(angles):
+            try:
+                outcomes.append((angles[fut], fut.result(), None))
+            except Exception as exc:
+                outcomes.append((angles[fut], None, exc))
+    # Abort precedence is parity with the old waves: an intent / dead-code
+    # failure is reported as itself, never as the specialists it starved.
     if intent_rc != 0:
         return _abort(repo, f"{pr_id}: intent inference failed (exit={intent_rc}) — aborting")
     if dc_rc != 0:
         return _abort(repo, f"{pr_id}: dead-code search failed (exit={dc_rc}) — aborting")
 
-    intent_dir = run / "agents" / "intent"
-    try:
-        intent_text = _validate_intent(intent_dir / "output.md")
-    except ValueError as e:
-        return _abort(repo, f"{pr_id}: {e} — aborting")
-    # Stage the VALIDATED line, not the raw output. _validate_intent selects
-    # rather than requiring a single non-blank line, so the old strict check no
-    # longer bounds what lands here — and the aggregator copies this file's
-    # contents verbatim into a public PR comment after stripping the prefix
-    # from the start. Staging raw output would publish any preamble or
-    # reasoning the agent emitted around the line, all of it derived from
-    # PR-author-controlled inputs.
-    _stage_scratch(scratch / "inferred-intent.md", (intent_text + "\n").encode())
-    _stage_scratch(scratch / "dead-code.md",
-                   (run / "agents" / "dead-code-search" / "output.md").read_bytes())
-    log(f"{pr_id}: Wave A complete: {intent_text}")
-
-    # Wave B: all SPECIALISTS + (momentum if re-review) in parallel. Momentum
-    # reads inferred-intent.md (Wave A) but no specialist output, so it can
-    # run alongside the specialists.
-    prev_review = run / "inputs" / "previous-review.md"
-    has_prev = prev_review.exists() and prev_review.stat().st_size > 0
-    label = f"{len(SPECIALISTS)} specialists" + (" + momentum" if has_prev else "")
-    log(f"{pr_id}: Wave B — {label}")
     timed_out: list[str] = []
     hard_failures: list[str] = []
-    # Collect ALL results — never `break` early. Early break left the with-
-    # block's __exit__ to call ex.shutdown(wait=True) on a hung future and
-    # the pipeline blocked indefinitely (see SPECIALIST_TIMEOUT_SEC docstring).
-    # With run_codex's 45m subprocess timeout, every future now resolves.
-    with ThreadPoolExecutor(max_workers=len(SPECIALISTS) + 1) as ex:
-        futures = {
-            ex.submit(run_specialist, specialist=s, **common_kwargs): s
-            for s in SPECIALISTS
-        }
-        if has_prev:
-            futures[ex.submit(_run_standalone, "momentum", **common_kwargs)] = "momentum"
-        for fut in as_completed(futures):
-            name = futures[fut]
-            try:
-                rc = fut.result()
-            except Exception as exc:
-                hard_failures.append(f"{name}: raised {type(exc).__name__}: {exc}")
-                continue
-            if rc == 124:
-                # 124 = soft-degrade: a specialist timeout OR a per-call codex
-                # capacity bounce (run_codex maps both here). Drop the angle and
-                # complete the review; the accurate reason is in the specialist's
-                # own log.txt, so keep this line generic rather than asserting a
-                # timeout that may have been a capacity bounce.
-                timed_out.append(name)
-                log(f"{pr_id}: specialist {name} did not complete (timeout / model-at-capacity) — degrading")
-            elif rc != 0:
-                # run_specialist's own log line names the failing stage's
-                # log.txt; don't second-guess with the always-specialist path.
-                hard_failures.append(f"{name}: exited non-zero (rc={rc})")
+    for name, rc, exc in outcomes:
+        if exc is not None:
+            hard_failures.append(f"{name}: raised {type(exc).__name__}: {exc}")
+        elif rc == 124:
+            # 124 = soft-degrade: a specialist timeout OR a per-call codex
+            # capacity bounce (run_codex maps both here). Drop the angle and
+            # complete the review; the reason is in the agent's own log.txt.
+            timed_out.append(name)
+            log(f"{pr_id}: specialist {name} did not complete (timeout / model-at-capacity) — degrading")
+        elif rc != 0:
+            hard_failures.append(f"{name}: exited non-zero (rc={rc})")
 
-    # Hard failures (rc != 0 and != 124 — contract violations, crashes) are
-    # genuine breakage, not transient: abort loudly so a real bug never ships
-    # a half-built review.
+    # Hard failures (contract violations, crashes) are genuine breakage: abort
+    # loudly so a real bug never ships a half-built review.
     if hard_failures:
         return _abort(
-            repo, f"{pr_id}: Wave B hard failures: {'; '.join(hard_failures)} — aborting"
+            repo, f"{pr_id}: specialist hard failures: {'; '.join(hard_failures)} — aborting"
         )
 
-    # Specialist timeouts (rc=124) do NOT abort. Aborting forced a full
-    # same-SHA re-review on the next tick — re-paying the whole ~18-call
-    # fan-out for the angles that already succeeded (pure quota waste, and
-    # the deadlock that caused the timeout often recurs, so it never
-    # converged). Instead we complete the review with the angles that
-    # finished and name the timed-out ones in _wave_b_timeouts.txt, which
-    # review-one-pr.sh renders as a ⏱️ warning in the header registry
-    # (alongside 🧪 / 🔍). The aggregator reads whatever scratch files exist.
+    # Timeouts (rc=124) do NOT abort: re-paying the whole fan-out for the angles
+    # that already succeeded was pure quota waste and never converged. Name the
+    # timed-out specialists in _wave_b_timeouts.txt (rendered as a ⏱️ header
+    # warning); momentum is a re-review-only meta-angle, so its timeout only
+    # drops the banner and stays out of the coverage sentinel.
     if timed_out:
-        # Only specialist timeouts reduce review coverage and gate approval.
-        # momentum is a re-review-only meta-angle (convergence prose, not a
-        # correctness specialist) — its timeout just drops the banner. Keep it
-        # out of the specialist sentinel, which run-dir.sh renders as
-        # "specialist(s) skipped" and review-one-pr.sh treats as
-        # approval-ineligible coverage loss.
         spec_timed_out = [n for n in timed_out if n in SPECIALISTS]
         if spec_timed_out:
             (run / "_wave_b_timeouts.txt").write_text("\n".join(spec_timed_out) + "\n")
         log(
-            f"{pr_id}: {len(timed_out)} Wave B stage(s) did not complete "
+            f"{pr_id}: {len(timed_out)} stage(s) did not complete "
             f"(timeout / model-at-capacity: {', '.join(timed_out)}) — completing review without them"
         )
 
@@ -938,9 +938,9 @@ def run_pipeline(
     if has_prev and (run / "agents" / "momentum" / "output.md").exists():
         _stage_scratch(scratch / "momentum.md",
                        (run / "agents" / "momentum" / "output.md").read_bytes())
-    log(f"{pr_id}: Wave B complete")
+    log(f"{pr_id}: specialists complete")
 
-    # Aggregator (sequential — depends on Waves A + B)
+    # Aggregator — runs after every node has resolved.
     log(f"{pr_id}: aggregator...")
     agg_prompt = build_prompt(
         kind="aggregator", agent="aggregator", prompts_dir=prompts_dir,
