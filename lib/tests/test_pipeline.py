@@ -251,6 +251,36 @@ class TestLog(unittest.TestCase):
                     self.assertEqual("[w7]" in written, want_tag)
 
 
+class TestActiveSpecialists(unittest.TestCase):
+    """Per-specialist changed-line floors: an angle whose floor exceeds the
+    reviewed diff's LOC is skipped; unknown size (None) runs every angle."""
+
+    def test_every_specialist_has_a_floor(self):
+        self.assertEqual(set(pipeline.SPECIALIST_MIN_LOC), set(pipeline.SPECIALISTS))
+
+    def test_floors_partition_by_loc(self):
+        every = ["security", "data-integrity", "architecture-refined",
+                 "contract-drift", "tests", "shape", "consumers"]
+        cases = {
+            None: (every, []),
+            0:    (["contract-drift", "shape"],
+                   ["security", "data-integrity", "architecture-refined", "tests", "consumers"]),
+            19:   (["contract-drift", "shape"],
+                   ["security", "data-integrity", "architecture-refined", "tests", "consumers"]),
+            20:   (["security", "data-integrity", "contract-drift", "tests", "shape"],
+                   ["architecture-refined", "consumers"]),
+            50:   (["security", "data-integrity", "architecture-refined", "contract-drift", "tests", "shape"],
+                   ["consumers"]),
+            200:  (every, []),
+        }
+        for loc, (want_active, want_skipped) in cases.items():
+            with self.subTest(loc=loc):
+                active, skipped = pipeline._active_specialists(loc)
+                # SPECIALISTS order is preserved on both sides.
+                self.assertEqual(active, want_active)
+                self.assertEqual(skipped, want_skipped)
+
+
 class TestStageScratch(unittest.TestCase):
     """Two properties of the writer: the entry ends up a REAL file, and a
     planted entry is dropped rather than written through — the entry, not

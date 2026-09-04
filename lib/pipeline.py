@@ -34,6 +34,30 @@ def _reasoning_effort(diff_loc: int) -> str:
     return "medium" if diff_loc < SMALL_PR_LOC else "high"
 
 
+# Per-specialist changed-line floor. A specialist whose floor exceeds the
+# reviewed diff's LOC does not run (nor its critic); its prompt goes to the
+# aggregator as a missed-opportunity screen (skipped-angles.md). Floors come
+# from the bakeoff's applied-finding yield by diff size (2026-09-04 join of
+# 50,608 specialist runs): contract-drift pays at any size; security /
+# data-integrity / tests clear 10% from 20 LOC; architecture-refined from 50;
+# consumers never below 200. shape stays on at every size — its "parallel
+# pattern at instance one" question is a small-diff phenomenon. Re-derive
+# from the bakeoff once sibling search + KID have been live for two weeks.
+SPECIALIST_MIN_LOC = {
+    "contract-drift": 0, "shape": 0,
+    "security": 20, "data-integrity": 20, "tests": 20,
+    "architecture-refined": 50, "consumers": 200,
+}
+
+
+def _active_specialists(diff_loc: int | None) -> tuple[list[str], list[str]]:
+    """(active, skipped) in SPECIALISTS order. None = unknown size = run all."""
+    if diff_loc is None:
+        return list(SPECIALISTS), []
+    active = [s for s in SPECIALISTS if diff_loc >= SPECIALIST_MIN_LOC[s]]
+    return active, [s for s in SPECIALISTS if s not in active]
+
+
 # Per-kind codex model routing. The critic pass runs once per specialist
 # (doubling the specialist fan-out) and mostly resolves yes/no against evidence
 # the specialist already cited, so it runs on the cheap/fast gpt-5.6-luna
