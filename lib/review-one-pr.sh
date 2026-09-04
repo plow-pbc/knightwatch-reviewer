@@ -149,6 +149,8 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 
 # --- sibling-repo symlinks (cross-repo grep without leaking host paths) ---
 . "$_LIB_DIR/sibling-symlinks.sh"
+# Deterministic sibling grep of new/changed symbols — appended to prior-art.md.
+. "$_LIB_DIR/prior-art-grep.sh"
 
 # --- path-scrub safety net (strip leaked host paths before posting) ---
 . "$_LIB_DIR/path-scrub.sh"
@@ -1398,6 +1400,16 @@ if ! materialize_sibling_symlinks "$REPO_DIR" SOURCE_PATHS "${INCLUDED_SLUGS[@]}
     log "$PR_ID: materialize_sibling_symlinks failed — aborting (would otherwise serve partial sibling content while claiming full coverage)"
     rm -rf "$REPO_DIR"
     exit 1
+fi
+
+# ---- deterministic sibling prior-art (no codex tokens) ----
+# Needs the .siblings/ tree above; lands after kid's section in prior-art.md.
+SIBLING_PRIOR_ART=$(sibling_prior_art "$KID_INPUT_DIFF" "$REPO_DIR" "$REPO")
+if [ -n "$SIBLING_PRIOR_ART" ]; then
+    log "$PR_ID: sibling prior-art: $(printf '%s\n' "$SIBLING_PRIOR_ART" | grep -c '^### ') symbol(s) with sibling hits"
+    PRIOR_ART="${PRIOR_ART:+$PRIOR_ART
+
+}$SIBLING_PRIOR_ART"
 fi
 
 # ---- write scratch files ----
