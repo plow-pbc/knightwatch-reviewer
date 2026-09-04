@@ -37,7 +37,8 @@
 #     borrowing the timeout wording, and suppresses the `consumers` entry
 #     timeout_note_for_run would otherwise render as a second, contradictory
 #     note for the same event
-#   - review_is_approval: both coverage-loss refusals, and the
+#   - review_is_approval: both coverage-loss refusals, the refusal when the
+#     test job RAN and reported a non-PASSED outcome, and the
 #     absent-test-outcome.tsv "no objection" case historical run dirs need
 #
 # Hermetic — sources lib/run-dir.sh and invokes helpers with explicit
@@ -640,14 +641,15 @@ fi
     || { echo "FAIL: timeout_note_for_run mutated _wave_b_timeouts.txt — the approval gate reads that file"; exit 1; }
 rm -rf "$_dc_dir"
 
-# ===== review_is_approval (coverage-loss refusals) =====
+# ===== review_is_approval (coverage-loss + failing-test refusals) =====
 # Single owner of "did this review approve?" — the worker's GitHub submit gate
-# and the carried-forward projection both route through it. Two coverage-loss
-# classes refuse: a timed-out specialist (fenced via
-# latest_author_visible_review_approved in prior-reviews-smoke.sh) and a test
-# job that aborted on a reviewer-host fault. ABSENT test-outcome.tsv is not a
-# refusal — the function is also called against historical run dirs that predate
-# the file, and those must keep their approval status.
+# and the carried-forward projection both route through it. Three classes
+# refuse: a timed-out specialist (fenced via
+# latest_author_visible_review_approved in prior-reviews-smoke.sh), a test job
+# that aborted on a reviewer-host fault, and a test job that RAN and reported a
+# non-PASSED outcome. ABSENT test-outcome.tsv is not a refusal — the function is
+# also called against historical run dirs that predate the file, and those must
+# keep their approval status.
 _ria_dir=$(mktemp -d)
 echo "  review_is_approval: APPROVE + no test-outcome.tsv → approves (historical run dirs)..."
 review_is_approval "VERDICT: APPROVE" "$_ria_dir" \
@@ -664,6 +666,25 @@ if review_is_approval "VERDICT: APPROVE" "$_ria_dir"; then
     echo "FAIL: a reviewer-side test abort auto-approved — tests never ran, nothing blocked it"
     exit 1
 fi
+
+# The tests RAN and reported a failure. The aggregator can't be relied on to
+# catch this: when the job outlives the test-gate's wait bound the readers get
+# "not run" and the real outcome lands afterwards, so an APPROVE verdict over a
+# known-red suite reaches GitHub unless this row refuses it. Both non-PASSED
+# shapes classify_just_test_outcome emits are fenced.
+for _ria_case in "FAILED (exit 1)" "TIMED OUT (>30m)"; do
+    echo "  review_is_approval: APPROVE + tests ran + '$_ria_case' → refuses..."
+    printf 'true\t%s\t0\t42\n' "$_ria_case" > "$_ria_dir/test-outcome.tsv"
+    if review_is_approval "VERDICT: APPROVE" "$_ria_dir"; then
+        echo "FAIL: approved over a test job that ran and reported '$_ria_case'"
+        exit 1
+    fi
+done
+
+echo "  review_is_approval: APPROVE + tests ran + PASSED → approves..."
+printf 'true\tPASSED\t0\t42\n' > "$_ria_dir/test-outcome.tsv"
+review_is_approval "VERDICT: APPROVE" "$_ria_dir" \
+    || { echo "FAIL: a green test run withheld approval — the refusal is over-broad"; exit 1; }
 rm -rf "$_ria_dir"
 
 # Realistic clean-PR composition: every pre-check passed. Fence the
@@ -681,4 +702,4 @@ assert_contains "$result" "✅ Tests passed" "clean-PR tests"
 assert_contains "$result" "✅ Prior-art (KID) checked" "clean-PR kid"
 assert_contains "$result" "✅ Strict typing enforced" "clean-PR strict-typing"
 
-echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 10 tests-note + 3 kid-note + 3 review_is_approval + clean-PR composition + bakeoff-marker pin)"
+echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 10 tests-note + 3 kid-note + 6 review_is_approval + clean-PR composition + bakeoff-marker pin)"

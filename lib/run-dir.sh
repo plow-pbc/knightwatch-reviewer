@@ -859,8 +859,8 @@ latest_author_visible_review_sha() {
 # review_is_approval VERDICT_LINE RUN_DIR
 #   exit 0 iff this run is an actual approval: the aggregator verdict is
 #   `VERDICT: APPROVE`/`APPROVE — pending: ...` AND coverage was full (no
-#   specialist timed out, i.e. _wave_b_timeouts.txt is absent/empty, AND the
-#   background test job reported an outcome rather than aborting).
+#   specialist timed out, i.e. _wave_b_timeouts.txt is absent/empty) AND the
+#   background test job neither aborted nor reported a failure.
 #
 # Single owner of "did this review approve?" — both the worker's GitHub
 # submit gate (review-one-pr.sh) and the carried-forward `approved`
@@ -869,17 +869,26 @@ latest_author_visible_review_sha() {
 # approved in the other. A partial review (a specialist, possibly security,
 # was skipped) is never an approval — disclosed by the ⏱️ header instead.
 review_is_approval() {
-    local verdict="$1" run_dir="$2"
+    local verdict="$1" run_dir="$2" ran summary
     [[ "$verdict" == VERDICT:\ APPROVE* ]] || return 1
     [ -s "$run_dir/_wave_b_timeouts.txt" ] && return 1
-    # Same coverage-loss class as a timed-out specialist: `just test` never ran
-    # because of a reviewer-host fault, so this run must not auto-approve.
     # ABSENT test-outcome.tsv means "no objection", not "aborted" — historical
     # run dirs read by latest_author_visible_review_approved predate the file
     # and must keep their approval status.
-    [ -f "$run_dir/test-outcome.tsv" ] \
-        && [ "$(cut -f2 < "$run_dir/test-outcome.tsv")" = "$TEST_ABORTED_SUMMARY" ] \
-        && return 1
+    [ -f "$run_dir/test-outcome.tsv" ] || return 0
+    IFS=$'\t' read -r ran summary _ < "$run_dir/test-outcome.tsv"
+    # The tests RAN and did not pass — FAILED (exit N) or TIMED OUT (>W). The
+    # aggregator is no longer a reliable gate on this: a job delayed past the
+    # test-gate's wait bound stages "not run" for the readers and reports its
+    # real outcome afterwards, so an APPROVE verdict can be written over a
+    # failure nobody saw. This row is that outcome — refuse on it directly.
+    [ "$ran" = "true" ] && [ "$summary" != "PASSED" ] && return 1
+    # Same coverage-loss class as a timed-out specialist: `just test` never ran
+    # because of a reviewer-host fault, so this run must not auto-approve. NOT
+    # subsumed by the rule above — an aborted job writes TESTS_RAN=false, and
+    # every OTHER false row is a legitimate skip (no justfile, untrusted
+    # author, budget exhausted) that must keep approving.
+    [ "$summary" = "$TEST_ABORTED_SUMMARY" ] && return 1
     return 0
 }
 
