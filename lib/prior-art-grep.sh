@@ -15,11 +15,14 @@ PRIOR_ART_MAX_HITS="${PRIOR_ART_MAX_HITS:-5}"
 PRIOR_ART_MAX_BYTES="${PRIOR_ART_MAX_BYTES:-24576}"
 
 # _prior_art_symbols PREFIX DIFF — identifiers defined on diff lines starting
-# with PREFIX ('+' added, '-' removed), one per line, unique, ≥4 chars.
+# with PREFIX ('+' added, '-' removed), one per line, unique, ≥4 chars. For
+# '-' the enclosing declarations git names in hunk headers (`@@ … @@ def foo`)
+# count too: a body-only edit changes `foo` for every sibling caller without
+# touching its declaration line.
 _prior_art_symbols() {
     local prefix="$1"
-    printf '%s\n' "$2" \
-      | grep -E "^[$prefix][^$prefix]" | cut -c2- \
+    { printf '%s\n' "$2" | grep -E "^[$prefix][^$prefix]" | cut -c2-
+      [ "$prefix" = '-' ] && printf '%s\n' "$2" | sed -nE 's/^@@[^@]*@@ (.+)$/\1/p'; } \
       | sed -nE \
           -e 's/.*(^|[^A-Za-z0-9_])(def|class|function|func|fn|struct|type|interface|enum|const|let|var|val|proc)[[:space:]]+([A-Za-z_][A-Za-z0-9_]{3,}).*/\3/p' \
           -e 's/^[[:space:]]*([A-Za-z_][A-Za-z0-9_]{3,})[[:space:]]*\(\)[[:space:]]*\{.*/\1/p' \

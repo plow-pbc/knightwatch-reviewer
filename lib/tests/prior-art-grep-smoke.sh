@@ -70,4 +70,9 @@ echo "  7: a public-repo review cites path:line only — no sibling source text 
 out=$(REPO_VISIBILITY=public sibling_prior_art "$DIFF" "$WORK" "acme/self")
 printf '%s\n' "$out" | grep -qE '^- acme/libx/src/[^:]+:[0-9]+$' || { echo "FAIL: public review should cite path:line only"; printf '%s\n' "$out"; exit 1; }
 printf '%s\n' "$out" | grep -qE '^- [^ ]+:[0-9]+: ' && { echo "FAIL: sibling source text leaked into a public-repo review"; printf '%s\n' "$out"; exit 1; }
-echo "  PASS (7 scenarios: new-symbol-prior-art, changed-symbol-references, self-and-.git-excluded, no-hit-empty, per-symbol-cap, bash-decls-and-changed-first, public-review-cites-only)"
+echo "  8: a body-only edit still lists the enclosing function's sibling callers (hunk header)..."
+BODY_DIFF=$(printf '@@ -12,3 +12,4 @@ def fetch_widgets(limit, offset=0):\n     rows = query(limit)\n-    return rows\n+    rows = rows[offset:]\n+    return rows\n')
+out=$(sibling_prior_art "$BODY_DIFF" "$WORK" "acme/self")
+printf '%s\n' "$out" | grep -A2 '^### fetch_widgets$' | grep -q 'acme/libx/src/retry.py:3' || { echo "FAIL: body-only edit lost the enclosing symbol's callers"; printf '%s\n' "$out"; exit 1; }
+printf '%s\n' "$out" | grep -q '^## Sibling prior art' && { echo "FAIL: a body-only edit introduces no new symbol"; printf '%s\n' "$out"; exit 1; }
+echo "  PASS (8 scenarios: new-symbol-prior-art, changed-symbol-references, self-and-.git-excluded, no-hit-empty, per-symbol-cap, bash-decls-and-changed-first, public-review-cites-only, body-only-edit-via-hunk-header)"
