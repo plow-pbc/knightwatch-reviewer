@@ -1139,9 +1139,18 @@ if [ -n "$KID_PROJECT_PATH" ] && [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -n "
     # no lookup, rather than a live-source query the header can't vouch for.
     KID_QUERY_DIR="$LOCAL_STATE_DIR/kid-query/${PR_ID//[^a-zA-Z0-9]/_}"
     KID_SNAPSHOT="$KID_QUERY_DIR/.keepitdry"
+    # Generation stamp of the live index: its published sha plus whether the
+    # refresh's marker is up. A refresh landing DURING the cp would leave a
+    # mixed-generation copy (old chroma files, new .indexed-sha) that judges as
+    # fresh; a stamp that moved across the copy means the copy is discarded.
+    kid_generation() { cat "$1/.indexed-sha" 2>/dev/null; [ -e "$1/.stale" ] && echo stale; }
+    KID_GEN_BEFORE=$(kid_generation "$KID_PROJECT_PATH/.keepitdry")
     if ! { rm -rf "$KID_QUERY_DIR" && mkdir -p "$KID_QUERY_DIR" && cp -r "$KID_PROJECT_PATH/.keepitdry" "$KID_SNAPSHOT"; }; then
         KID_DETAIL="index copy failed"
         log "$PR_ID: kid index copy failed — skipping prior-art lookup"
+    elif [ "$(kid_generation "$KID_PROJECT_PATH/.keepitdry")" != "$KID_GEN_BEFORE" ]; then
+        KID_DETAIL="index changed during copy"
+        log "$PR_ID: kid index changed during copy — skipping prior-art lookup (next review retries)"
     else
         export KID_PROJECT="$KID_QUERY_DIR"
         KID_STDERR=$(mktemp)

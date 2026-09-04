@@ -66,4 +66,8 @@ printf '%s\n' "$out" | grep -q '^### stage_marker$' || { echo "FAIL: bash functi
 refs_pos=$(printf '%s\n' "$out" | grep -n '^## Sibling references' | cut -d: -f1)
 new_pos=$(printf '%s\n' "$out" | grep -n '^## Sibling prior art' | cut -d: -f1)
 [ "$refs_pos" -lt "$new_pos" ] || { echo "FAIL: changed-symbol references must precede new-symbol prior art (budget order)"; printf '%s\n' "$out"; exit 1; }
-echo "  PASS (6 scenarios: new-symbol-prior-art, changed-symbol-references, self-and-.git-excluded, no-hit-empty, per-symbol-cap, bash-decls-and-changed-first)"
+echo "  7: a public-repo review cites path:line only — no sibling source text in a public comment..."
+out=$(REPO_VISIBILITY=public sibling_prior_art "$DIFF" "$WORK" "acme/self")
+printf '%s\n' "$out" | grep -qx -- '- acme/libx/src/retry.py:1' || { echo "FAIL: public review should cite path:line only"; printf '%s\n' "$out"; exit 1; }
+printf '%s\n' "$out" | grep -q 'def retry_with_backoff' && { echo "FAIL: sibling source text leaked into a public-repo review"; exit 1; }
+echo "  PASS (7 scenarios: new-symbol-prior-art, changed-symbol-references, self-and-.git-excluded, no-hit-empty, per-symbol-cap, bash-decls-and-changed-first, public-review-cites-only)"

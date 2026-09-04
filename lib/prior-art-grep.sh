@@ -31,6 +31,9 @@ _prior_art_symbols() {
 
 # _prior_art_grep SYMBOL WORKDIR SELF_SLUG — up to PRIOR_ART_MAX_HITS lines
 # "- owner/repo/path:line: text", excluding the PR's own repo, .git, lockfiles.
+# On a public-repo review (REPO_VISIBILITY=public, resolved by the worker) the
+# text is omitted: a sibling may be private, and prior-art.md feeds a public
+# comment. path:line is the same citation form consumers.md already posts.
 _prior_art_grep() {
     local sym="$1" root="$2/.siblings" self="$3" line rel path lineno text
     [ -d "$root" ] || return 0
@@ -43,7 +46,8 @@ _prior_art_grep() {
             path="${rel%%:*}"; rel="${rel#*:}"
             lineno="${rel%%:*}"; text="${rel#*:}"
             text="${text#"${text%%[![:space:]]*}"}" # trim leading indentation
-            printf -- '- %s:%s: %s\n' "$path" "$lineno" "$text" | cut -c1-200
+            [ "${REPO_VISIBILITY:-}" = public ] && text=""
+            printf -- '- %s:%s%s\n' "$path" "$lineno" "${text:+: $text}" | cut -c1-200
         done
 }
 
