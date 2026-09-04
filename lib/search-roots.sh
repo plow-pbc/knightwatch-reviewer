@@ -111,7 +111,11 @@ stage_search_roots() {
             missing=$((missing + 1))
             continue
         fi
-        if ! git -C "$sibling_path" rev-parse --git-dir >/dev/null 2>&1; then
+        # The sibling mount is read-only and operator-owned; the reviewer runs
+        # as root, so git's dubious-ownership check (2.35+) rejects it. Scope the
+        # exemption to this one path — never global, never '*', which would
+        # also cover PR clones.
+        if ! git -c safe.directory="$sibling_path" -C "$sibling_path" rev-parse --git-dir >/dev/null 2>&1; then
             body+="$sibling_repo missing"$'\n'
             missing=$((missing + 1))
             continue

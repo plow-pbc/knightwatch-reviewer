@@ -794,4 +794,19 @@ assert_grep 'review-one-pr.sh should append the fallback note when resolve_revie
 # (contract-drift's aggregator registration is now covered by the
 # SPECIALISTS-derived roster check above — no per-name assert needed.)
 
+# lib/prior-art-grep.sh appends two grepped sections to prior-art.md; the
+# specialists that own cross-repo shape and callers must read them by name,
+# or the deterministic evidence is staged for nobody.
+echo "  asserting sibling prior-art sections are consumed..."
+assert_grep "shape.md must require a per-symbol Prior-art verdict" \
+    'Prior-art: <owner/repo/path>' prompts/specialists/shape.md
+assert_no_grep "architecture-refined.md must not duplicate shape's per-symbol Prior-art verdict" \
+    'Prior-art: <owner/repo/path>' prompts/specialists/architecture-refined.md
+assert_grep "consumers.md must read the sibling-references section" \
+    'Sibling references — changed/removed symbols' prompts/specialists/consumers.md
+assert_grep "aggregator.md must know prior-art.md carries sibling sections" \
+    'Sibling prior art — new symbols' prompts/aggregator.md
+assert_grep "common-header.md must describe the sibling sections of prior-art.md" \
+    'Sibling prior art — new symbols' prompts/common-header.md
+
 echo "  PASS"

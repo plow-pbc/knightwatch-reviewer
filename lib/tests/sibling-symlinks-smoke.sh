@@ -546,4 +546,14 @@ fi
 rm -f "$SENTINEL_TARGET"
 rm -rf "$ESCAPE_SHIM"
 
-echo "  ok: sibling materialization whitelist-gated, redirect-safe, idempotent, committed-blobs-only, symlink-safe, fail-fast, snap-sha-pinned, path-traversal-safe"
+# --- scenario 14: sibling owned by another uid still materializes ----
+# GIT_TEST_ASSUME_DIFFERENT_OWNER is git's own switch for "this repo is
+# owned by someone else" — what a root reviewer sees on the uid-1000
+# read-only /kwr mount. Every git call here must carry a per-path
+# safe.directory or the materializer aborts the whole review.
+echo "  scenario 14: sibling owned by another uid → still materialized..."
+GIT_TEST_ASSUME_DIFFERENT_OWNER=1 materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/foo" \
+    || { echo "FAIL: materialize should succeed under different-owner git"; exit 1; }
+assert_tracked_file_copy "scenario 14: foo/main.py" "acme/foo" "main.py" "$TMPDIR/foo/main.py"
+
+echo "  ok: sibling materialization whitelist-gated, redirect-safe, idempotent, committed-blobs-only, symlink-safe, fail-fast, snap-sha-pinned, path-traversal-safe, different-owner-safe"

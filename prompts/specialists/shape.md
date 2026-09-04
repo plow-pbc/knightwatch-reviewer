@@ -10,6 +10,8 @@ ALSO read: `.codex-scratch/inferred-intent.md`, `.codex-scratch/file-history.md`
 
 2. **Does the new code invent a pattern parallel to one this repo already has, or extend/improve the existing seam?** This is the single most common LLM defect. It often surfaces as a *single new instance* (one inline `os.getenv()`, one raw `psycopg2.connect()`, one `threading.Thread()`), so DRY-style "N copies in this PR" detection misses it. Your job is to catch it at instance-1 — and when no canonical exists yet, to call out the second instance so a shape gets established before instance-3.
 
+**Prior-art verdict — one line per new symbol or pattern the diff introduces, in your probe or in a closing `Prior-art:` list:** `Prior-art: <owner/repo/path> — extend` (the sibling shape should be reused/extended), `Prior-art: <owner/repo/path> — replace` (this PR's shape supersedes the sibling's; say why), or `Prior-art: none after sibling grep + KID`. Start from `prior-art.md § Sibling prior art — new symbols`; a name that appears there and gets no verdict is a miss. Inventing a shape a sibling already owns is the exact defect this angle exists for, and across repos it is the one most often missed.
+
 **Method (walk the diff):**
 
 For each new construct, name its problem class and emit a probe per `.codex-scratch/probe-schema.md`. Common classes — and the canonical shape you should grep for in this repo:

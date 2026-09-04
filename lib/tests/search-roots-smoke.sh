@@ -202,4 +202,17 @@ if printf '%s' "$OUT" | grep -q "acme/notgit included"; then
     exit 1
 fi
 
-echo "  PASS (8 scenarios: knightwatch-allowlist, fallback, missing-on-disk, empty-allowlist, comments, declared-but-unconfigured, error-propagation, non-git-source-missing)"
+# --- scenario 9: sibling owned by another uid is still included ------
+# GIT_TEST_ASSUME_DIFFERENT_OWNER makes git treat every repo as owned by
+# someone else — the exact condition a root reviewer hits on the uid-1000
+# /kwr bind mount (git 2.35+ "dubious ownership"). Every sibling on wakeup
+# classified as `missing` because of it.
+# The PR clone itself is the reviewer's own (root-owned) — exempt it via
+# env config so only the sibling trips the check, as in production.
+echo "  scenario 9: sibling owned by another uid → still included..."
+SELF_REPO=$(make_self_repo yes "acme/foo")
+OUT=$(GIT_TEST_ASSUME_DIFFERENT_OWNER=1 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$SELF_REPO" \
+    stage_search_roots "acme/self" "$SELF_REPO" "origin/main")
+assert_contains "scenario 9: foo included under different-owner git" "acme/foo included .siblings/acme/foo" "$OUT"
+
+echo "  PASS (9 scenarios: knightwatch-allowlist, fallback, missing-on-disk, empty-allowlist, comments, declared-but-unconfigured, error-propagation, non-git-source-missing, different-owner-included)"

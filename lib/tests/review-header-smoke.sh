@@ -535,8 +535,8 @@ assert_fails_with "unrecognized summary" "unrecognized TEST_SUMMARY" -- \
 
 # ===== format_kid_note =====
 assert_kid_note() {
-    local kid_ran="$1" want="$2" desc="$3" got
-    got=$(format_kid_note "$kid_ran")
+    local kid_ran="$1" want="$2" desc="$3" detail="${4:-}" got
+    got=$(format_kid_note "$kid_ran" "$detail")
     if [ "$got" != "$want" ]; then
         echo "FAIL: format_kid_note($kid_ran) — $desc"
         echo "  expected: $want"
@@ -555,6 +555,48 @@ assert_kid_note "true" "✅ Prior-art (KID) checked" "kid ran successfully"
 # to the worker log + KID_FLAG; this is the public reader-facing label.
 echo "  format_kid_note: false → 🔍 Prior-art (KID) unavailable..."
 assert_kid_note "false" "🔍 Prior-art (KID) unavailable" "kid skipped or errored — both render as 'unavailable'"
+
+# The cause reaches the posted header, not just the worker log: an operator
+# reading the review learns WHY prior art is missing without a journal dive.
+echo "  format_kid_note: false + detail → names the cause..."
+assert_kid_note "false" "🔍 Prior-art (KID) unavailable — no /kwr mount (KID_ROOT unset)" \
+    "skip cause appended" "no /kwr mount (KID_ROOT unset)"
+
+# Third state: the lookup ran, but against an index kid-refresh marked .stale.
+echo "  format_kid_note: stale → ⚠️ Prior-art (KID) STALE — <detail>..."
+assert_kid_note "stale" "⚠️ Prior-art (KID) STALE — index at 64d1bb0, 140 commits behind for 58 days (index-timeout)" \
+    "stale index named with sha/behind/age/reason" "index at 64d1bb0, 140 commits behind for 58 days (index-timeout)"
+
+# kid_stale_detail reads the marker plow-kid-refresh.sh writes and renders the
+# STALE detail; a `since` that won't parse renders "?" days, never a false 0.
+echo "  kid_stale_detail: real .stale marker → sha7/behind/days/reason..."
+_stale=$(mktemp)
+printf 'reason=index-timeout\nindexed=64d1bb0abcdef\nbehind=140\nsince=%s\n' \
+    "$(python3 -c "import datetime; print((datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=58)).strftime('%Y-%m-%dT%H:%M:%SZ'))")" > "$_stale"
+got=$(kid_stale_detail "$_stale")
+[ "$got" = "index at 64d1bb0, 140 commits behind for 58 days (index-timeout)" ] \
+    || { echo "FAIL: kid_stale_detail — got: $got"; exit 1; }
+printf 'reason=diverged\nindexed=never\nbehind=?\nsince=garbage\n' > "$_stale"
+[ "$(kid_stale_detail "$_stale")" = "index at never, ? commits behind for ? days (diverged)" ] \
+    || { echo "FAIL: kid_stale_detail unparseable since — got: $(kid_stale_detail "$_stale")"; exit 1; }
+rm -f "$_stale"
+
+# kid_index_behind needs no marker: .indexed-sha against the mirror's HEAD,
+# under a different-owner git (the read-only /kwr mount in production).
+echo "  kid_index_behind: current → empty; one commit later → 1 behind; never indexed → never; unreadable HEAD → loud..."
+_mirror=$(mktemp -d)
+git -C "$_mirror" init -q && git -C "$_mirror" -c user.email=t@t -c user.name=t commit -q --allow-empty -m one
+_snap="$_mirror/.keepitdry"; mkdir -p "$_snap"; git -C "$_mirror" rev-parse HEAD > "$_snap/.indexed-sha"
+[ -z "$(GIT_TEST_ASSUME_DIFFERENT_OWNER=1 kid_index_behind "$_snap" "$_mirror")" ] || { echo "FAIL: kid_index_behind — current index reported behind"; exit 1; }
+git -C "$_mirror" -c user.email=t@t -c user.name=t commit -q --allow-empty -m two
+_sha7=$(cut -c1-7 "$_snap/.indexed-sha")
+got=$(GIT_TEST_ASSUME_DIFFERENT_OWNER=1 kid_index_behind "$_snap" "$_mirror")
+[ "$got" = "index at $_sha7, 1 commits behind HEAD (index-behind)" ] || { echo "FAIL: kid_index_behind — got: $got"; exit 1; }
+rm -f "$_snap/.indexed-sha"
+[ "$(kid_index_behind "$_snap" "$_mirror")" = "index at never, 2 commits behind HEAD (index-behind)" ] || { echo "FAIL: kid_index_behind never-indexed — got: $(kid_index_behind "$_snap" "$_mirror")"; exit 1; }
+# An unreadable mirror must not read as fresh — the silent-✅ shape this exists to kill.
+[ "$(kid_index_behind "$_snap" "$_mirror/nope")" = "mirror HEAD unreadable (index-unverifiable)" ] || { echo "FAIL: kid_index_behind unreadable HEAD read as fresh"; exit 1; }
+rm -rf "$_mirror"
 
 echo "  format_kid_note: bogus → fail-fast..."
 assert_fails_with "bogus kid_ran" "kid_ran must be" -- format_kid_note "maybe"
@@ -646,4 +688,4 @@ assert_contains "$result" "✅ Tests passed" "clean-PR tests"
 assert_contains "$result" "✅ Prior-art (KID) checked" "clean-PR kid"
 assert_contains "$result" "✅ Strict typing enforced" "clean-PR strict-typing"
 
-echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 10 tests-note + 3 kid-note + 6 review_is_approval + clean-PR composition + bakeoff-marker pin)"
+echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 10 tests-note + 5 kid-note + 6 review_is_approval + clean-PR composition + bakeoff-marker pin)"

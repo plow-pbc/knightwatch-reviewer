@@ -149,6 +149,8 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 
 # --- sibling-repo symlinks (cross-repo grep without leaking host paths) ---
 . "$_LIB_DIR/sibling-symlinks.sh"
+# Deterministic sibling grep of new/changed symbols — appended to prior-art.md.
+. "$_LIB_DIR/prior-art-grep.sh"
 
 # --- path-scrub safety net (strip leaked host paths before posting) ---
 . "$_LIB_DIR/path-scrub.sh"
@@ -1115,10 +1117,11 @@ TEST_JOB_PID=$!
 PRIOR_ART=""
 KID_FLAG="$STATE_DIR/kid-last-failure"
 # KID_RAN tracks whether the prior-art lookup actually executed and
-# returned. Flipped false on any "didn't run" path so the disclosure
-# header (built below) can warn the reader that the architecture-refined
-# specialist's cross-repo DRY signal is missing for this run.
+# returned (true / stale / false — see format_kid_note); KID_DETAIL is
+# the short cause the disclosure header prints on every non-true path,
+# so a reader learns WHY the cross-repo DRY signal is missing.
 KID_RAN=false
+KID_DETAIL=""
 # Per-repo kid index path. KID_PATHS was loaded at file scope via the
 # tracked-repos.sh loader (Bash arrays don't survive the process
 # boundary between review.sh and this worker; the loader pre-declares
@@ -1130,41 +1133,73 @@ if [ -n "$KID_PROJECT_PATH" ] && [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -n "
     # sqlite needs write access even for a query (WAL). Query a throwaway copy in
     # a per-container writable dir: cp is cheap (~0.2s, page-cached), keeps each
     # review on the freshest host-refreshed index, and isolates the query from
-    # the shared index entirely. Falls back to the path itself if the copy fails.
+    # the shared index entirely. The copy is also the freshness authority: its
+    # .stale / .indexed-sha describe the evidence this review actually queried,
+    # where the live mirror can be rewritten by a refresh mid-review. No copy →
+    # no lookup, rather than a live-source query the header can't vouch for.
     KID_QUERY_DIR="$LOCAL_STATE_DIR/kid-query/${PR_ID//[^a-zA-Z0-9]/_}"
-    if rm -rf "$KID_QUERY_DIR" && mkdir -p "$KID_QUERY_DIR" \
-       && cp -r "$KID_PROJECT_PATH/.keepitdry" "$KID_QUERY_DIR/.keepitdry"; then
+    KID_SNAPSHOT="$KID_QUERY_DIR/.keepitdry"
+    # Generation stamp of the live index: its published sha plus the refresh
+    # marker's reason. A refresh landing DURING the cp would leave a
+    # mixed-generation copy (old chroma files, new .indexed-sha) that judges as
+    # fresh, so a stamp that moved across the copy discards it; a stamp that
+    # reads `refreshing` on both sides is a copy of half-written chroma files
+    # (no valid generation at all), discarded too. Both retry next review.
+    kid_generation() { head -c 40 "$1/.indexed-sha" 2>/dev/null; head -c 256 "$1/.stale" 2>/dev/null | grep '^reason='; }
+    KID_GEN_BEFORE=$(kid_generation "$KID_PROJECT_PATH/.keepitdry")
+    if ! { rm -rf "$KID_QUERY_DIR" && mkdir -p "$KID_QUERY_DIR" && cp -r "$KID_PROJECT_PATH/.keepitdry" "$KID_SNAPSHOT"; }; then
+        KID_DETAIL="index copy failed"
+        log "$PR_ID: kid index copy failed — skipping prior-art lookup"
+    elif [ "$(kid_generation "$KID_PROJECT_PATH/.keepitdry")" != "$KID_GEN_BEFORE" ]; then
+        KID_DETAIL="index changed during copy"
+        log "$PR_ID: kid index changed during copy — skipping prior-art lookup (next review retries)"
+    elif [ "${KID_GEN_BEFORE##*reason=}" = refreshing ]; then
+        KID_DETAIL="index refreshing (kid index in progress)"
+        log "$PR_ID: kid index refreshing — skipping prior-art lookup (next review retries)"
+    else
         export KID_PROJECT="$KID_QUERY_DIR"
-    else
-        log "$PR_ID: kid index copy failed — querying source path directly"
-        export KID_PROJECT="$KID_PROJECT_PATH"
-    fi
-    KID_STDERR=$(mktemp)
-    PRIOR_ART=$(printf '%s' "$KID_INPUT_DIFF" | python3 "$KWR_CLONE_ROOT/knightwatch-kid/scripts/kid_dry_check.py" 2>"$KID_STDERR")
-    KID_EXIT=$?
-    if [ $KID_EXIT -ne 0 ]; then
-        KID_ERR_SUMMARY=$(tail -n 3 "$KID_STDERR" | tr '\n' ' ')
-        log "$PR_ID: KID FAILURE (exit $KID_EXIT, project $KID_PROJECT) — degrading to kid-less review. stderr tail: $KID_ERR_SUMMARY"
-        {
-            echo "timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
-            echo "pr: $PR_ID"
-            echo "project: $KID_PROJECT"
-            echo "exit: $KID_EXIT"
-            echo "--- stderr tail ---"
-            tail -n 20 "$KID_STDERR"
-        } > "$KID_FLAG"
-        PRIOR_ART=""
-    else
-        rm -f "$KID_FLAG"
-        KID_RAN=true
-        if [ -n "$PRIOR_ART" ]; then
-            BLOCK_COUNT=$(printf '%s\n' "$PRIOR_ART" | grep -c '^### New block')
-            log "$PR_ID: kid surfaced prior-art for $BLOCK_COUNT block(s)"
+        KID_STDERR=$(mktemp)
+        PRIOR_ART=$(printf '%s' "$KID_INPUT_DIFF" | python3 "$KWR_CLONE_ROOT/knightwatch-kid/scripts/kid_dry_check.py" 2>"$KID_STDERR")
+        KID_EXIT=$?
+        if [ $KID_EXIT -ne 0 ]; then
+            KID_ERR_SUMMARY=$(tail -n 3 "$KID_STDERR" | tr '\n' ' ')
+            log "$PR_ID: KID FAILURE (exit $KID_EXIT, project $KID_PROJECT) — degrading to kid-less review. stderr tail: $KID_ERR_SUMMARY"
+            {
+                echo "timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
+                echo "pr: $PR_ID"
+                echo "project: $KID_PROJECT"
+                echo "exit: $KID_EXIT"
+                echo "--- stderr tail ---"
+                tail -n 20 "$KID_STDERR"
+            } > "$KID_FLAG"
+            PRIOR_ART=""
+            KID_DETAIL="lookup failed (exit $KID_EXIT)"
+        else
+            rm -f "$KID_FLAG"
+            KID_RAN=true
+            if [ -n "$PRIOR_ART" ]; then
+                BLOCK_COUNT=$(printf '%s\n' "$PRIOR_ART" | grep -c '^### New block')
+                log "$PR_ID: kid surfaced prior-art for $BLOCK_COUNT block(s)"
+            fi
+            # The lookup still ran — the answer is just from an index kid-refresh
+            # marked stale (plow-kid-refresh.sh writes the marker) or one behind
+            # the mirror's HEAD. Judged on the SNAPSHOT queried, never the live
+            # source. Say so.
+            if [ -f "$KID_SNAPSHOT/.stale" ]; then
+                KID_DETAIL=$(kid_stale_detail "$KID_SNAPSHOT/.stale")
+            else
+                KID_DETAIL=$(kid_index_behind "$KID_SNAPSHOT" "$KID_PROJECT_PATH")
+            fi
+            if [ -n "$KID_DETAIL" ]; then
+                KID_RAN=stale
+                log "$PR_ID: KID index STALE — $KID_DETAIL"
+            fi
         fi
+        rm -f "$KID_STDERR"
     fi
-    rm -f "$KID_STDERR"
     rm -rf "$KID_QUERY_DIR"
 elif [ -z "$KID_PROJECT_PATH" ]; then
+    KID_DETAIL="no KID_PATHS entry"
     log "$PR_ID: no KID_PATHS entry for $REPO — skipping prior-art lookup"
 # Test the kid ENTRYPOINT's reachability, not `-z KWR_CLONE_ROOT`: tracked-repos.sh
 # defaults KWR_CLONE_ROOT unconditionally, so an unset test can never fire and this
@@ -1172,8 +1207,10 @@ elif [ -z "$KID_PROJECT_PATH" ]; then
 # indistinguishable from the legitimate pre-index state. With KID_ROOT unset in
 # config.env the fleet renders no /kwr mount at all, so the entrypoint is simply absent.
 elif [ ! -f "${KWR_CLONE_ROOT:-}/knightwatch-kid/scripts/kid_dry_check.py" ]; then
+    KID_DETAIL="no /kwr mount (KID_ROOT unset)"
     log "$PR_ID: no kid_dry_check.py under KWR_CLONE_ROOT=${KWR_CLONE_ROOT:-} — skipping prior-art lookup (KID_ROOT unset in config.env, or 'just fleet' not re-run?)"
 elif [ -n "$KID_INPUT_DIFF" ]; then
+    KID_DETAIL="index not built"
     log "$PR_ID: kid index not yet built at $KID_PROJECT_PATH — skipping prior-art lookup (an index outside KID_ROOT also needs its host path listed in KID_EXTRA_MOUNTS in config.env)"
 fi
 
@@ -1380,6 +1417,16 @@ if ! materialize_sibling_symlinks "$REPO_DIR" SOURCE_PATHS "${INCLUDED_SLUGS[@]}
     log "$PR_ID: materialize_sibling_symlinks failed — aborting (would otherwise serve partial sibling content while claiming full coverage)"
     rm -rf "$REPO_DIR"
     exit 1
+fi
+
+# ---- deterministic sibling prior-art (no codex tokens) ----
+# Needs the .siblings/ tree above; lands after kid's section in prior-art.md.
+SIBLING_PRIOR_ART=$(sibling_prior_art "$KID_INPUT_DIFF" "$REPO_DIR" "$REPO")
+if [ -n "$SIBLING_PRIOR_ART" ]; then
+    log "$PR_ID: sibling prior-art: $(printf '%s\n' "$SIBLING_PRIOR_ART" | grep -c '^### ') symbol(s) with sibling hits"
+    PRIOR_ART="${PRIOR_ART:+$PRIOR_ART
+
+}$SIBLING_PRIOR_ART"
 fi
 
 # ---- write scratch files ----
@@ -1823,7 +1870,7 @@ if ! TESTS_NOTE=$(format_tests_note "$TESTS_RAN" "$TEST_SUMMARY" "$_CONV_HEADER"
     exit 1
 fi
 REVIEW_NOTES+=("$TESTS_NOTE")
-if ! KID_NOTE=$(format_kid_note "$KID_RAN"); then
+if ! KID_NOTE=$(format_kid_note "$KID_RAN" "$KID_DETAIL"); then
     log "$PR_ID: format_kid_note failed (ran='$KID_RAN') — internal invariant violated, aborting"
     rm -rf "$REPO_DIR"
     exit 1

@@ -16,12 +16,10 @@ STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/plow-kid-refresh.log}"
 LOCK="${LOCK:-/tmp/plow-kid-refresh.lock}"
 # Bound each repo's index so one that cannot finish doesn't take the whole
-# sweep down with it. Deliberately just this — the unit already owns the sweep
-# deadline (TimeoutStartSec), and hardening the rest of that path (reporting
-# when systemd rather than this script calls time, and rotating the iteration
-# order so a truncated sweep doesn't starve the same tail every tick) belongs
-# with the unfinishable-index problem in #227, not here.
-KID_INDEX_TIMEOUT="${KID_INDEX_TIMEOUT:-300}"
+# sweep down with it. plow's full index needs well over 5 minutes (#227); the
+# unit's TimeoutStartSec (3h) bounds the sweep, and the lock above makes an
+# hourly fire during a long sweep a no-op.
+KID_INDEX_TIMEOUT="${KID_INDEX_TIMEOUT:-1800}"
 
 # Tracked-repo manifest — same KID_PATHS this script's siblings use.
 # The refresh iterates every entry; a repo that hasn't been indexed
@@ -52,6 +50,45 @@ trap 'rm -f "$LOCK"' EXIT
 # and one summary line carry as much as a per-cause split would.
 FAILED=0
 
+# mark_stale PROJECT REASON — write .keepitdry/.stale (atomic); cwd is PROJECT. `since` is the
+# first failing sweep and survives later ones so the review header can say how
+# long the index has been behind. The marker rides the same read-only mount the
+# reviewer already has, so no new bind is needed for it to be seen.
+#
+# The mirror is a checkout of a tracked repo, so everything under it is
+# author-shaped: the temp file is created exclusively (a committed
+# `.stale.tmp` symlink into this unit's writable paths would otherwise be
+# followed), and `indexed` is validated to a full sha (a committed multiline
+# `.indexed-sha` must never reach a key=value line). The rename replaces a
+# symlink at the marker path instead of following it.
+atomic_write() {   # atomic_write TARGET CONTENT — exclusive temp + rename; never follows a symlink at TARGET
+    local target="$1" tmp
+    tmp=$(mktemp "$(dirname "$target")/.pub.XXXXXX") || return 1
+    printf '%s\n' "$2" > "$tmp" && mv -f "$tmp" "$target"
+}
+
+write_marker() {
+    local project="$1" reason="$2" marker="$1/.keepitdry/.stale"
+    local indexed behind="?" since
+    mkdir -p "$project/.keepitdry"
+    indexed=$(head -c 40 "$project/.keepitdry/.indexed-sha" 2>/dev/null)
+    [[ "$indexed" =~ ^[0-9a-f]{7,40}$ ]] || indexed=never
+    [ "$indexed" != never ] && behind=$(git rev-list --count "$indexed..HEAD" 2>/dev/null || echo "?")
+    since=$(grep '^since=' "$marker" 2>/dev/null | cut -d= -f2-)
+    [ -n "$since" ] || since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    atomic_write "$marker" "$(printf 'reason=%s\nindexed=%s\nbehind=%s\nsince=%s' "$reason" "$indexed" "$behind" "$since")"
+}
+
+mark_stale() {
+    write_marker "$1" "$2"
+    FAILED=$((FAILED + 1))
+}
+
+default_branch() {   # origin/HEAD's short name; main when the remote never told us
+    local ref
+    ref=$(git symbolic-ref -q refs/remotes/origin/HEAD 2>/dev/null) && printf '%s' "${ref##refs/remotes/origin/}" || printf 'main'
+}
+
 for NAME in "${!KID_PATHS[@]}"; do
     PROJECT="${KID_PATHS[$NAME]}"
 
@@ -81,24 +118,27 @@ for NAME in "${!KID_PATHS[@]}"; do
     # bootstrap burned from the sweep's 20min budget every hour.
     if [ ! -w "$PROJECT" ]; then
         log "$NAME: $PROJECT not writable under this unit's sandbox — outside ReadWritePaths; re-run install.sh to widen it, then this repo will index"
-        FAILED=$((FAILED + 1))
+        FAILED=$((FAILED + 1))   # no marker possible here: the project is the thing we can't write
         continue
     fi
 
-    if ! git fetch origin main --quiet 2>>"$LOG_FILE"; then
-        log "$NAME: git fetch failed — skipping"
-        FAILED=$((FAILED + 1))
+    BRANCH=$(default_branch)
+    if ! git fetch origin "$BRANCH" --quiet 2>>"$LOG_FILE"; then
+        log "$NAME: git fetch origin $BRANCH failed — skipping"
+        mark_stale "$PROJECT" fetch-failed
         continue
     fi
 
     LOCAL=$(git rev-parse HEAD 2>/dev/null)
-    REMOTE=$(git rev-parse origin/main 2>/dev/null)
+    REMOTE=$(git rev-parse "origin/$BRANCH" 2>/dev/null)
 
     if [ "$LOCAL" != "$REMOTE" ]; then
         log "$NAME: new commits ${LOCAL:0:7} → ${REMOTE:0:7}, pulling"
         if ! git pull --ff-only --quiet 2>>"$LOG_FILE"; then
-            log "$NAME: git pull --ff-only failed — skipping index"
-            FAILED=$((FAILED + 1))
+            # A mirror nobody should commit to has local commits. Never reset it
+            # from a timer — name it and let the operator look.
+            log "$NAME: git pull --ff-only failed — mirror diverged from origin/$BRANCH; not resetting"
+            mark_stale "$PROJECT" diverged
             continue
         fi
     fi
@@ -111,14 +151,20 @@ for NAME in "${!KID_PATHS[@]}"; do
     # one comparison also covers the bootstrap case.
     HEAD_SHA=$(git rev-parse HEAD 2>/dev/null)
     SHA_FILE="$PROJECT/.keepitdry/.indexed-sha"
-    [ "$(cat "$SHA_FILE" 2>/dev/null)" = "$HEAD_SHA" ] && continue
+    [ "$(cat "$SHA_FILE" 2>/dev/null)" = "$HEAD_SHA" ] && { rm -f "$PROJECT/.keepitdry/.stale"; continue; }
 
+    # A reviewer copies the index while this runs; the marker makes that
+    # review say STALE (refreshing) instead of ✅ on a half-written index.
+    write_marker "$PROJECT" refreshing
     if timeout "$KID_INDEX_TIMEOUT" kid index "$PROJECT" >> "$LOG_FILE" 2>&1; then
-        echo "$HEAD_SHA" > "$SHA_FILE"
+        atomic_write "$SHA_FILE" "$HEAD_SHA"
+        rm -f "$PROJECT/.keepitdry/.stale"
         log "$NAME: index complete at ${HEAD_SHA:0:7}"
     else
-        log "$NAME: kid index failed (or exceeded ${KID_INDEX_TIMEOUT}s)"
-        FAILED=$((FAILED + 1))
+        rc=$?
+        reason=index-failed; [ "$rc" -eq 124 ] && reason=index-timeout
+        log "$NAME: kid index failed ($reason, budget ${KID_INDEX_TIMEOUT}s)"
+        mark_stale "$PROJECT" "$reason"
     fi
 done
 

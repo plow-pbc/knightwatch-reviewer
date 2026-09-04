@@ -126,6 +126,9 @@ test:
     echo "=== sibling-symlinks smoke test ==="
     bash lib/tests/sibling-symlinks-smoke.sh
 
+    echo "=== prior-art-grep smoke test ==="
+    bash lib/tests/prior-art-grep-smoke.sh
+
     echo ""
     echo "=== codex-scratch-redirect smoke test ==="
     bash lib/tests/codex-scratch-redirect-smoke.sh

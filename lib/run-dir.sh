@@ -570,29 +570,70 @@ format_tests_note() {
     esac
 }
 
-# format_kid_note KID_RAN
+# format_kid_note RAN [DETAIL]
 #
-# Symmetric with format_tests_note: emits one fragment whether KID ran
-# or was skipped, so the header surfaces the prior-art check on every
-# review instead of going silent on the success path.
-#
-# "unavailable" (not "not run") on the false path: KID_RAN=false covers
-# both operational states the worker compresses into one boolean — KID
-# never invoked (no per-repo KID config / no .keepitdry / no diff input)
-# AND invoked-but-errored (KID_EXIT != 0, KID_FLAG written). Either way,
-# prior-art context did not inform the review; the public header reflects
-# that without mis-stating the error path as a skip. Operator-facing
-# diagnostics still go to the worker log + KID_FLAG.
+# Symmetric with format_tests_note: one fragment on every review, so the
+# prior-art check never goes silent. RAN is tri-state:
+#   true  — lookup ran on a fresh index
+#   stale — lookup ran, but kid-refresh marked the index .keepitdry/.stale
+#   false — did not run (never invoked, or invoked-but-errored)
+# DETAIL names the cause so the operator sees WHY from the posted header,
+# not from the worker log (which still carries the full diagnostics).
 format_kid_note() {
-    local kid_ran="$1"
+    local kid_ran="$1" detail="${2:-}"
     case "$kid_ran" in
         true)  printf '✅ Prior-art (KID) checked' ;;
-        false) printf '🔍 Prior-art (KID) unavailable' ;;
+        stale) printf '⚠️ Prior-art (KID) STALE — %s' "$detail" ;;
+        false) printf '🔍 Prior-art (KID) unavailable'; [ -n "$detail" ] && printf ' — %s' "$detail" ;;
         *)
-            printf 'format_kid_note: kid_ran must be "true"/"false", got "%s"\n' "$kid_ran" >&2
+            printf 'format_kid_note: kid_ran must be true/stale/false, got "%s"\n' "$kid_ran" >&2
             return 1
             ;;
     esac
+}
+
+# kid_stale_detail MARKER_FILE
+#
+# Renders the STALE detail from the .keepitdry/.stale marker plow-kid-refresh.sh
+# writes (reason= / indexed= / behind= / since=). Days since `since` are
+# computed in python3 (portable — `date -d` is GNU-only, see the epoch→ISO
+# note in review-one-pr.sh) and render as "?" when it won't parse, never as
+# a false 0.
+kid_index_behind() {
+    # kid_index_behind INDEX_DIR MIRROR — a STALE detail when INDEX_DIR's
+    # .indexed-sha != MIRROR's HEAD (or HEAD is unreadable), nothing when
+    # current. INDEX_DIR is the snapshot the review queried, so the verdict
+    # describes the evidence actually used; MIRROR supplies only the reference
+    # HEAD. Independent of the marker: covers a repo the refresh could not write
+    # to (outside its sandbox) and the hour between a push and the next sweep.
+    # The mirror is a read-only mount owned by another uid, hence the
+    # path-scoped safe.directory (same exemption lib/search-roots.sh takes).
+    local index="$1" project="$2" indexed head behind
+    head=$(git -c safe.directory="$project" -C "$project" rev-parse HEAD 2>/dev/null) \
+        || { printf 'mirror HEAD unreadable (index-unverifiable)'; return 0; }
+    indexed=$(head -c 40 "$index/.indexed-sha" 2>/dev/null)
+    # Same trust boundary as write_marker in plow-kid-refresh.sh: the file is
+    # author-shaped, so anything but a sha reads as never indexed.
+    [[ "$indexed" =~ ^[0-9a-f]{7,40}$ ]] || indexed=""
+    [ "$indexed" = "$head" ] && return 0
+    behind=$(git -c safe.directory="$project" -C "$project" rev-list --count "${indexed:+$indexed..}HEAD" 2>/dev/null || echo "?")
+    local short="${indexed:0:7}"
+    printf 'index at %s, %s commits behind HEAD (index-behind)' "${short:-never}" "$behind"
+}
+
+kid_stale_detail() {
+    local marker="$1" body reason indexed behind since days
+    # The marker lives in an author-shaped mirror: bounded read, same as
+    # .indexed-sha (kid_index_behind) and the worker's generation stamp.
+    body=$(head -c 512 "$marker" 2>/dev/null)
+    reason=$(printf '%s\n' "$body" | grep '^reason=' | cut -d= -f2-)
+    indexed=$(printf '%s\n' "$body" | grep '^indexed=' | cut -d= -f2-)
+    behind=$(printf '%s\n' "$body" | grep '^behind=' | cut -d= -f2-)
+    since=$(printf '%s\n' "$body" | grep '^since=' | cut -d= -f2-)
+    days=$(python3 -c "import datetime,sys
+try: print((datetime.datetime.now(datetime.timezone.utc) - datetime.datetime.strptime(sys.argv[1], '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=datetime.timezone.utc)).days)
+except ValueError: print('?')" "$since")
+    printf 'index at %s, %s commits behind for %s days (%s)' "${indexed:0:7}" "$behind" "$days" "$reason"
 }
 
 # format_specialist_timeouts NAMES_CSV
