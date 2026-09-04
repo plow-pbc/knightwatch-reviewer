@@ -535,8 +535,8 @@ assert_fails_with "unrecognized summary" "unrecognized TEST_SUMMARY" -- \
 
 # ===== format_kid_note =====
 assert_kid_note() {
-    local kid_ran="$1" want="$2" desc="$3" got
-    got=$(format_kid_note "$kid_ran")
+    local kid_ran="$1" want="$2" desc="$3" detail="${4:-}" got
+    got=$(format_kid_note "$kid_ran" "$detail")
     if [ "$got" != "$want" ]; then
         echo "FAIL: format_kid_note($kid_ran) — $desc"
         echo "  expected: $want"
@@ -555,6 +555,17 @@ assert_kid_note "true" "✅ Prior-art (KID) checked" "kid ran successfully"
 # to the worker log + KID_FLAG; this is the public reader-facing label.
 echo "  format_kid_note: false → 🔍 Prior-art (KID) unavailable..."
 assert_kid_note "false" "🔍 Prior-art (KID) unavailable" "kid skipped or errored — both render as 'unavailable'"
+
+# The cause reaches the posted header, not just the worker log: an operator
+# reading the review learns WHY prior art is missing without a journal dive.
+echo "  format_kid_note: false + detail → names the cause..."
+assert_kid_note "false" "🔍 Prior-art (KID) unavailable — no /kwr mount (KID_ROOT unset)" \
+    "skip cause appended" "no /kwr mount (KID_ROOT unset)"
+
+# Third state: the lookup ran, but against an index kid-refresh marked .stale.
+echo "  format_kid_note: stale → ⚠️ Prior-art (KID) STALE — <detail>..."
+assert_kid_note "stale" "⚠️ Prior-art (KID) STALE — index at 64d1bb0, 140 commits behind for 58 days (index-timeout)" \
+    "stale index named with sha/behind/age/reason" "index at 64d1bb0, 140 commits behind for 58 days (index-timeout)"
 
 echo "  format_kid_note: bogus → fail-fast..."
 assert_fails_with "bogus kid_ran" "kid_ran must be" -- format_kid_note "maybe"
@@ -646,4 +657,4 @@ assert_contains "$result" "✅ Tests passed" "clean-PR tests"
 assert_contains "$result" "✅ Prior-art (KID) checked" "clean-PR kid"
 assert_contains "$result" "✅ Strict typing enforced" "clean-PR strict-typing"
 
-echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 10 tests-note + 3 kid-note + 6 review_is_approval + clean-PR composition + bakeoff-marker pin)"
+echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 10 tests-note + 5 kid-note + 6 review_is_approval + clean-PR composition + bakeoff-marker pin)"

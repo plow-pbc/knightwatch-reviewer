@@ -570,26 +570,23 @@ format_tests_note() {
     esac
 }
 
-# format_kid_note KID_RAN
+# format_kid_note RAN [DETAIL]
 #
-# Symmetric with format_tests_note: emits one fragment whether KID ran
-# or was skipped, so the header surfaces the prior-art check on every
-# review instead of going silent on the success path.
-#
-# "unavailable" (not "not run") on the false path: KID_RAN=false covers
-# both operational states the worker compresses into one boolean — KID
-# never invoked (no per-repo KID config / no .keepitdry / no diff input)
-# AND invoked-but-errored (KID_EXIT != 0, KID_FLAG written). Either way,
-# prior-art context did not inform the review; the public header reflects
-# that without mis-stating the error path as a skip. Operator-facing
-# diagnostics still go to the worker log + KID_FLAG.
+# Symmetric with format_tests_note: one fragment on every review, so the
+# prior-art check never goes silent. RAN is tri-state:
+#   true  — lookup ran on a fresh index
+#   stale — lookup ran, but kid-refresh marked the index .keepitdry/.stale
+#   false — did not run (never invoked, or invoked-but-errored)
+# DETAIL names the cause so the operator sees WHY from the posted header,
+# not from the worker log (which still carries the full diagnostics).
 format_kid_note() {
-    local kid_ran="$1"
+    local kid_ran="$1" detail="${2:-}"
     case "$kid_ran" in
         true)  printf '✅ Prior-art (KID) checked' ;;
-        false) printf '🔍 Prior-art (KID) unavailable' ;;
+        stale) printf '⚠️ Prior-art (KID) STALE — %s' "$detail" ;;
+        false) printf '🔍 Prior-art (KID) unavailable'; [ -n "$detail" ] && printf ' — %s' "$detail" ;;
         *)
-            printf 'format_kid_note: kid_ran must be "true"/"false", got "%s"\n' "$kid_ran" >&2
+            printf 'format_kid_note: kid_ran must be true/stale/false, got "%s"\n' "$kid_ran" >&2
             return 1
             ;;
     esac

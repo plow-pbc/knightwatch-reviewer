@@ -1115,10 +1115,11 @@ TEST_JOB_PID=$!
 PRIOR_ART=""
 KID_FLAG="$STATE_DIR/kid-last-failure"
 # KID_RAN tracks whether the prior-art lookup actually executed and
-# returned. Flipped false on any "didn't run" path so the disclosure
-# header (built below) can warn the reader that the architecture-refined
-# specialist's cross-repo DRY signal is missing for this run.
+# returned (true / stale / false — see format_kid_note); KID_DETAIL is
+# the short cause the disclosure header prints on every non-true path,
+# so a reader learns WHY the cross-repo DRY signal is missing.
 KID_RAN=false
+KID_DETAIL=""
 # Per-repo kid index path. KID_PATHS was loaded at file scope via the
 # tracked-repos.sh loader (Bash arrays don't survive the process
 # boundary between review.sh and this worker; the loader pre-declares
@@ -1154,6 +1155,7 @@ if [ -n "$KID_PROJECT_PATH" ] && [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -n "
             tail -n 20 "$KID_STDERR"
         } > "$KID_FLAG"
         PRIOR_ART=""
+        KID_DETAIL="lookup failed (exit $KID_EXIT)"
     else
         rm -f "$KID_FLAG"
         KID_RAN=true
@@ -1161,10 +1163,24 @@ if [ -n "$KID_PROJECT_PATH" ] && [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -n "
             BLOCK_COUNT=$(printf '%s\n' "$PRIOR_ART" | grep -c '^### New block')
             log "$PR_ID: kid surfaced prior-art for $BLOCK_COUNT block(s)"
         fi
+        STALE_MARKER="$KID_PROJECT_PATH/.keepitdry/.stale"
+        if [ -f "$STALE_MARKER" ]; then
+            # The lookup still ran — the answer is just from an old index
+            # (kid-refresh writes the marker; plow-kid-refresh.sh). Say so.
+            _reason=$(grep '^reason=' "$STALE_MARKER" | cut -d= -f2-)
+            _indexed=$(grep '^indexed=' "$STALE_MARKER" | cut -d= -f2-)
+            _behind=$(grep '^behind=' "$STALE_MARKER" | cut -d= -f2-)
+            _since=$(grep '^since=' "$STALE_MARKER" | cut -d= -f2-)
+            _days=$(( ( $(date +%s) - $(date -d "$_since" +%s 2>/dev/null || date +%s) ) / 86400 ))
+            KID_RAN=stale
+            KID_DETAIL="index at ${_indexed:0:7}, ${_behind} commits behind for ${_days} days (${_reason})"
+            log "$PR_ID: KID index STALE — $KID_DETAIL"
+        fi
     fi
     rm -f "$KID_STDERR"
     rm -rf "$KID_QUERY_DIR"
 elif [ -z "$KID_PROJECT_PATH" ]; then
+    KID_DETAIL="no KID_PATHS entry"
     log "$PR_ID: no KID_PATHS entry for $REPO — skipping prior-art lookup"
 # Test the kid ENTRYPOINT's reachability, not `-z KWR_CLONE_ROOT`: tracked-repos.sh
 # defaults KWR_CLONE_ROOT unconditionally, so an unset test can never fire and this
@@ -1172,8 +1188,10 @@ elif [ -z "$KID_PROJECT_PATH" ]; then
 # indistinguishable from the legitimate pre-index state. With KID_ROOT unset in
 # config.env the fleet renders no /kwr mount at all, so the entrypoint is simply absent.
 elif [ ! -f "${KWR_CLONE_ROOT:-}/knightwatch-kid/scripts/kid_dry_check.py" ]; then
+    KID_DETAIL="no /kwr mount (KID_ROOT unset)"
     log "$PR_ID: no kid_dry_check.py under KWR_CLONE_ROOT=${KWR_CLONE_ROOT:-} — skipping prior-art lookup (KID_ROOT unset in config.env, or 'just fleet' not re-run?)"
 elif [ -n "$KID_INPUT_DIFF" ]; then
+    KID_DETAIL="index not built"
     log "$PR_ID: kid index not yet built at $KID_PROJECT_PATH — skipping prior-art lookup (an index outside KID_ROOT also needs its host path listed in KID_EXTRA_MOUNTS in config.env)"
 fi
 
@@ -1823,7 +1841,7 @@ if ! TESTS_NOTE=$(format_tests_note "$TESTS_RAN" "$TEST_SUMMARY" "$_CONV_HEADER"
     exit 1
 fi
 REVIEW_NOTES+=("$TESTS_NOTE")
-if ! KID_NOTE=$(format_kid_note "$KID_RAN"); then
+if ! KID_NOTE=$(format_kid_note "$KID_RAN" "$KID_DETAIL"); then
     log "$PR_ID: format_kid_note failed (ran='$KID_RAN') — internal invariant violated, aborting"
     rm -rf "$REPO_DIR"
     exit 1
