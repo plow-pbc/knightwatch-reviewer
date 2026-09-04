@@ -1685,6 +1685,15 @@ grep -q "^agent=tests .*saw_test_results=True$" "$RECORD17" || { echo "FAIL: sce
 grep -q "^tests_saw_marker=True$" "$RECORD17"             || { echo "FAIL: scenario 17b — staged test-results.md lacks the test's output"; cat "$RECORD17"; exit 1; }
 echo "  scenario 17b (overlap) ok"
 
+# (c) timings: meta.json carries the per-stage map; run.log has one timing line.
+META17="$RUN17/meta.json"
+[ "$(jq -r '.timings.total // "none"' "$META17")" != "none" ] || { echo "FAIL: scenario 17c — meta.json.timings.total missing"; cat "$META17"; exit 1; }
+[ "$(jq -r '.timings.security.rc // "none"' "$META17")" = "0" ] || { echo "FAIL: scenario 17c — meta.json.timings lacks the pipeline node map"; cat "$META17"; exit 1; }
+[ "$(jq -r '.timings.test' "$META17")" -ge 3 ] || { echo "FAIL: scenario 17c — timings.test should cover the 3s fake test"; cat "$META17"; exit 1; }
+grep -qE "timing setup=[0-9]+s test=[0-9]+s\(queue [0-9]+s\) intent=[0-9]+s dead-code=[0-9]+s specialists=[0-9]+s aggregator=[0-9]+s total=[0-9]+s" "$LOG17" \
+    || { echo "FAIL: scenario 17c — run.log lacks the timing line"; grep -n timing "$LOG17"; exit 1; }
+echo "  scenario 17c (timings) ok"
+
 # (a, cont'd) path-scrub: the aggregator cited one path under EACH clone
 # (TEST_DIR's, REPO_DIR's) — both must scrub to repo-relative in the posted
 # comment, proving the scrub's TEST_DIR prefix doesn't just no-op alongside

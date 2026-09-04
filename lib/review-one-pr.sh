@@ -330,6 +330,20 @@ GH_POSTED=false
 # emits a "clean incremental unavailable" disclosure at the top of
 # the posted review.
 USED_FALLBACK=false
+# Compose $RUN_DIR/timings.json = pipeline.py's node map + the worker's own
+# phases (integer seconds). Safe on every exit path: missing inputs become 0.
+compose_run_timings() {
+    local now; now=$(date +%s)
+    local nodes='{}'; [ -s "$RUN_DIR/timings.json" ] && nodes=$(cat "$RUN_DIR/timings.json")
+    jq -n --argjson nodes "$nodes" \
+        --argjson setup "$(( ${PIPELINE_START_TS:-$now} - REVIEW_START_TS ))" \
+        --argjson test "${TEST_RUN_S:-0}" --argjson queue "${TEST_LOCK_WAIT_S:-0}" \
+        --argjson pipeline "$(( ${PIPELINE_END_TS:-$now} - ${PIPELINE_START_TS:-$now} ))" \
+        --argjson total "$(( now - REVIEW_START_TS ))" \
+        '$nodes + {setup: $setup, test: $test, test_queue: $queue, pipeline: $pipeline, total: $total}' \
+        > "$RUN_DIR/timings.json"
+}
+
 finalize_run() {
     # Thin wrapper around finalize_meta_json (lib/run-dir.sh) that supplies
     # the worker's runtime closure (RUN_DIR / RUN_STATUS / GH_POSTED / now).
@@ -340,8 +354,9 @@ finalize_run() {
     # Past checkout meta.json always exists, so finalize_meta_json staying
     # fail-loud below catches a genuinely un-stamped real run.
     [ -f "$RUN_DIR/meta.json" ] || return 0
+    compose_run_timings
     if ! finalize_meta_json "$RUN_DIR/meta.json" \
-            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$RUN_STATUS" "$GH_POSTED"; then
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$RUN_STATUS" "$GH_POSTED" "$RUN_DIR/timings.json"; then
         log "$PR_ID: finalize_run failed — meta.json left un-stamped"
     fi
 }
@@ -425,6 +440,14 @@ TEST_DIR="$REPO_DIR-test"
 # Set once the background `just test` job is forked (below); "" until then so
 # the EXIT trap's cleanup_test_clone is set -u-safe on an early exit.
 TEST_JOB_PID=""
+# Phase timestamps + the test job's own durations, read back off
+# test-outcome.tsv on the success path. All "" until their phase happens so
+# compose_run_timings' ${VAR:-...} defaults hold on every early exit under
+# set -u (an abort never reaches the TSV read, so these two stay empty).
+PIPELINE_START_TS=""
+PIPELINE_END_TS=""
+TEST_RUN_S=""
+TEST_LOCK_WAIT_S=""
 # An abort mid-pipeline must not leave `just test` running under a deleted
 # tree. pkill the job's children FIRST: the worker's own `exit 1` paths don't
 # signal the process group, so killing only the subshell would orphan the
@@ -1592,6 +1615,7 @@ fi
 # Per-angle critics run inline within each angle pipeline; no central
 # critic, no splitter. Aggregator output written to a deterministic path
 # we read after.
+PIPELINE_START_TS=$(date +%s)
 PR_ID="$PR_ID" \
 PR_TITLE="$PR_TITLE" \
 PR_URL="$PR_URL" \
@@ -1603,6 +1627,7 @@ LOG_FILE="$LOG_FILE" \
 OPERATOR_NAME="${OPERATOR_NAME:-Sam}" \
     python3 "$_LIB_DIR/pipeline.py" "$REPO_DIR" "$RUN_DIR"
 PIPELINE_EXIT=$?
+PIPELINE_END_TS=$(date +%s)
 AGG_OUT="$RUN_DIR/agents/aggregator/output.md"
 
 # Aggregator output is what gets posted to GitHub — abort on any pipeline
@@ -1823,6 +1848,17 @@ fi
 # the two prefixes can't overlap (one is the other plus "-test").
 COMMENT_BODY=$(scrub_review_paths "$COMMENT_BODY" "$TEST_DIR" SOURCE_PATHS)
 COMMENT_BODY=$(scrub_review_paths "$COMMENT_BODY" "$REPO_DIR" SOURCE_PATHS)
+
+# One `timing` line per review, right before the post — the review's latency
+# breakdown reduced to a single greppable row. Composing first also stamps
+# timings.json for the meta merge in finalize_run. `specialists` is a SPAN
+# (first start → last end), not a sum: the angles run concurrently.
+compose_run_timings
+log "$PR_ID: $(jq -r '
+    def d(n): (.[n] | if . == null then 0 else (.end - .start) | floor end);
+    def span(names): ([names[] as $n | .[$n] | select(. != null)] | if length == 0 then 0 else ((map(.end) | max) - (map(.start) | min) | floor) end);
+    "timing setup=\(.setup)s test=\(.test)s(queue \(.test_queue)s) intent=\(d("intent"))s dead-code=\(d("dead-code-search"))s specialists=\(span(["security","data-integrity","architecture-refined","contract-drift","tests","shape","consumers"]))s aggregator=\(d("aggregator"))s total=\(.total)s"
+' "$RUN_DIR/timings.json")"
 
 # The fleet's heaviest WRITE, and GitHub's secondary limits are driven mainly by
 # content creation — so it is the call most likely to 403. As a bare `gh` it was
