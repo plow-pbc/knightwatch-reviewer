@@ -919,6 +919,21 @@ if [ "\$1" = "api" ]; then
     if [ -n "\$jqexpr" ]; then printf '%s\n' "\$result" | jq -r "\$jqexpr"; else printf '%s\n' "\$result"; fi
     exit 0
 fi
+
+# --- gh pr comment (the worker's posted-review path — --body only, the
+#     only form review-one-pr.sh uses) ---
+if [ "\$1" = "pr" ] && [ "\$2" = "comment" ]; then
+    cbody=""
+    args=("\$@"); n=\${#args[@]}
+    for ((i=1; i<n; i++)); do
+        [ "\${args[i]}" = "--body" ] && { cbody="\${args[i+1]}"; break; }
+    done
+    newid=\$(jq '([.[].id] | max // 0) + 1' "\$STORE")
+    result=\$(jq -n --argjson id "\$newid" --arg body "\$cbody" --arg login "\$BOT_LOGIN" \
+        '{id:\$id, body:\$body, user:{login:\$login}}')
+    jq --argjson c "\$result" '. + [\$c]' "\$STORE" > "\$STORE.tmp" && mv "\$STORE.tmp" "\$STORE"
+    exit 0
+fi
 exit 0
 STUB
     chmod +x "$stub_path"
@@ -1625,7 +1640,9 @@ with open(os.environ['KWR_SMOKE_RECORD'], 'a') as rec:
 if agent == 'intent':
     body = "Inferred intent: smoke.\n"
 elif agent == 'aggregator':
-    body = "VERDICT: 1 blocking probe\n\nsmoke review body\n"
+    # One path under each clone: the test clone's must scrub to repo-relative
+    # (the path-scrub fix this exercises), the codex workdir's must too.
+    body = f"VERDICT: 1 blocking probe\n\nsmoke review body {repo}-test/leak.py:1 {repo}/keep.py:2\n"
 elif agent == 'dead-code-search':
     body = "none\n"
 else:
@@ -1655,5 +1672,29 @@ if [ -e "$STATE17/workdirs/test-org_probe-repo__1-test" ]; then
 fi
 grep -q "just test PASSED" "$LOG17" || { echo "FAIL: scenario 17a — run.log lacks 'just test PASSED'"; tail -20 "$LOG17"; exit 1; }
 echo "  scenario 17a (isolation) ok"
+
+# (a, cont'd) path-scrub: the aggregator cited one path under EACH clone
+# (TEST_DIR's, REPO_DIR's) — both must scrub to repo-relative in the posted
+# comment, proving the scrub's TEST_DIR prefix doesn't just no-op alongside
+# the pre-existing REPO_DIR one.
+POSTED17=$(jq -r '[.[] | select(.body | contains("smoke review body"))] | last | .body' "$STORE17")
+if [ -z "$POSTED17" ] || [ "$POSTED17" = "null" ]; then
+    echo "FAIL: scenario 17a — no posted review comment found in the gh stub store"; cat "$STORE17"; exit 1
+fi
+case "$POSTED17" in
+    *leak.py:1*) : ;;
+    *) echo "FAIL: scenario 17a — posted comment lost the test-clone path entirely (expected 'leak.py:1')"; printf '%s\n' "$POSTED17"; exit 1 ;;
+esac
+case "$POSTED17" in
+    *keep.py:2*) : ;;
+    *) echo "FAIL: scenario 17a — posted comment lost the codex-workdir path entirely (expected 'keep.py:2')"; printf '%s\n' "$POSTED17"; exit 1 ;;
+esac
+case "$POSTED17" in
+    *-test/leak.py*) echo "FAIL: scenario 17a — test-clone path leaked unscrubbed ('-test/leak.py' survived)"; printf '%s\n' "$POSTED17"; exit 1 ;;
+esac
+case "$POSTED17" in
+    *"$STATE17/workdirs"*) echo "FAIL: scenario 17a — posted comment still carries the \$STATE17/workdirs host prefix"; printf '%s\n' "$POSTED17"; exit 1 ;;
+esac
+echo "  scenario 17a (path-scrub covers the test clone too) ok"
 
 echo "  PASS (17 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + requester-gate skip + metadata-lookup guard pre-allocation abort + placeholder reuse anti-spam + codex 429 backoff + usage-cap quota placeholder w/ pool status + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort + whole-PR re-review keeps memory + test clone isolation/overlap/timings)"

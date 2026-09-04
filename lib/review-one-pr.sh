@@ -873,19 +873,20 @@ if [ -z "$KID_INPUT_DIFF" ]; then
 fi
 
 # ---- just test ----
-# Bound `just`'s justfile discovery to REPO_DIR — without --justfile,
+# Bound `just`'s justfile discovery to TEST_DIR — without --justfile,
 # `just` walks up the directory tree and could pick up an ancestor
 # justfile (workdirs live at $STATE_DIR/workdirs/<pr>; walk-up reaches
 # $STATE_DIR and $HOME). Trusted-author runs mirror canonical .env*
-# files into the workdir before this call, so executing an unrelated
+# files into TEST_DIR before this call, so executing an unrelated
 # ancestor recipe with those secrets in scope is a real boundary
 # crossing. The enumerated list mirrors `just`'s full set of accepted
 # names so non-canonical-but-real justfiles aren't missed.
-# Test log lives in reviewer-controlled run state, NOT under $REPO_DIR (the
-# PR checkout). A PR author could commit `.test-output.log` as a symlink into
-# the unit's writable paths (ReadWritePaths=/home/odio/.pr-reviewer), and the
-# truncate/redirect writes below would follow it — a write-through out of the
-# sandbox. $RUN_DIR is allocated by the reviewer (line ~160), not the PR.
+# Test log lives in reviewer-controlled run state, NOT under $TEST_DIR (the
+# tree PR-controlled `just test` executes in). A PR author could commit
+# `.test-output.log` as a symlink into the unit's writable paths
+# (ReadWritePaths=/home/odio/.pr-reviewer), and the truncate/redirect writes
+# below would follow it — a write-through out of the sandbox. $RUN_DIR is
+# allocated by the reviewer (line ~160), not the PR.
 TEST_LOG="$RUN_DIR/test-output.log"
 TEST_TIMEOUT=30m
 
@@ -1768,6 +1769,11 @@ fi
 # models occasionally leak the workdir abs path or the .siblings/
 # symlink prefix. This is the last hop before the comment becomes
 # public — strip any remaining workdir/<sibling-abs>/.siblings prefixes.
+# Two prefixes now: TEST_DIR ("$REPO_DIR-test", quoted in `just test`
+# output that reaches the tests specialist/aggregator via test-results.md)
+# and REPO_DIR itself. Scrub TEST_DIR first — it's the longer string, and
+# the two prefixes can't overlap (one is the other plus "-test").
+COMMENT_BODY=$(scrub_review_paths "$COMMENT_BODY" "$TEST_DIR" SOURCE_PATHS)
 COMMENT_BODY=$(scrub_review_paths "$COMMENT_BODY" "$REPO_DIR" SOURCE_PATHS)
 
 # The fleet's heaviest WRITE, and GitHub's secondary limits are driven mainly by
