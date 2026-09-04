@@ -2,6 +2,7 @@
 """Pipeline orchestration for knightwatch-reviewer."""
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -820,6 +821,22 @@ def _test_gate(run: Path, scratch: Path, pr_id: str) -> int:
     return 0
 
 
+def _timed(name: str, pr_id: str, run: Path, timings: dict, lock: threading.Lock, fn):
+    """Wrap one node: log start/done and record wall-clock + rc. Rewrites
+    <run>/timings.json after every node so it is current on any abort path."""
+    def go() -> int:
+        t0 = time.time()
+        log(f"{pr_id}: {name} start")
+        rc = fn()
+        t1 = time.time()
+        with lock:
+            timings[name] = {"start": round(t0, 3), "end": round(t1, 3), "rc": rc}
+            (run / "timings.json").write_text(json.dumps(timings, indent=1) + "\n")
+        log(f"{pr_id}: {name} done ({t1 - t0:.0f}s, rc={rc})")
+        return rc
+    return go
+
+
 def _after(deps: list, fn) -> int:
     """DAG edge: run `fn` once every dependency future returned 0; otherwise
     propagate the first non-zero code without running (the caller reports the
@@ -894,6 +911,11 @@ def run_pipeline(
                        (run / "agents" / "dead-code-search" / "output.md").read_bytes())
         return 0
 
+    timings: dict = {}
+    tlock = threading.Lock()
+    def timed(name, fn):
+        return _timed(name, pr_id, run, timings, tlock, fn)
+
     prev_review = run / "inputs" / "previous-review.md"
     has_prev = prev_review.exists() and prev_review.stat().st_size > 0
     log(f"{pr_id}: pipeline — intent ‖ dead-code-search ‖ {len(SPECIALISTS)} specialists"
@@ -904,18 +926,18 @@ def run_pipeline(
     # results, never break early: a hung future left to __exit__'s shutdown(wait=True)
     # blocked the pipeline indefinitely once (see SPECIALIST_TIMEOUT_SEC).
     with ThreadPoolExecutor(max_workers=len(SPECIALISTS) + 4) as ex:
-        intent_f = ex.submit(intent_node)
-        dc_f = ex.submit(dead_code_node)
-        test_f = ex.submit(_test_gate, run, scratch, pr_id)
+        intent_f = ex.submit(timed("intent", intent_node))
+        dc_f = ex.submit(timed("dead-code-search", dead_code_node))
+        test_f = ex.submit(timed("test-gate", partial(_test_gate, run, scratch, pr_id)))
         deps = {"consumers": [intent_f, dc_f], "tests": [intent_f, test_f]}
         angles = {
             ex.submit(_after, deps.get(s, [intent_f]),
-                      partial(run_specialist, specialist=s, **common_kwargs)): s
+                      timed(s, partial(run_specialist, specialist=s, **common_kwargs))): s
             for s in SPECIALISTS
         }
         if has_prev:
             angles[ex.submit(_after, [intent_f],
-                             partial(_run_standalone, "momentum", **common_kwargs))] = "momentum"
+                             timed("momentum", partial(_run_standalone, "momentum", **common_kwargs)))] = "momentum"
         intent_rc = intent_f.result()
         dc_f.result()  # exception raised inside the node must still surface
         test_f.result()
@@ -983,7 +1005,7 @@ def run_pipeline(
     # The aggregator is the single synthesis step that merges/dedupes/ranks
     # every angle into the posted review — the one place a premium reasoning
     # budget pays off, so it runs at xhigh regardless of the size-scaled effort.
-    rc = run_codex("aggregator", str(repo), agg_prompt, str(agg_dir), effort="xhigh")
+    rc = timed("aggregator", partial(run_codex, "aggregator", str(repo), agg_prompt, str(agg_dir), effort="xhigh"))()
     if rc != 0:
         return _abort(repo, f"{pr_id}: aggregator failed (exit={rc}) — aborting")
     log(f"{pr_id}: aggregator complete")

@@ -1,4 +1,5 @@
 """Tests for lib/pipeline.py — mocked codex subprocess."""
+import json
 import os
 import signal
 import stat
@@ -1441,6 +1442,20 @@ class TestRunPipeline(unittest.TestCase):
                          "consumers ran without dead-code.md")
         self.assertEqual((self.run_dir / "_wave_b_timeouts.txt").read_text(), "consumers\n")
         self.assertTrue((self.run_dir / "agents" / "aggregator" / "output.md").exists())
+
+    @patch("pipeline.subprocess.Popen")
+    def test_timings_json_records_every_node(self, mock_popen):
+        """Per-node wall-clock lands in <run>/timings.json so review latency is a
+        jq query, not log archaeology."""
+        mock_popen.side_effect = _make_codex_stub()
+        rc = self._run()
+        self.assertEqual(rc, 0)
+        timings = json.loads((self.run_dir / "timings.json").read_text())
+        expected = {"intent", "dead-code-search", "test-gate", "aggregator", *pipeline.SPECIALISTS}
+        self.assertEqual(set(timings), expected)
+        for name, t in timings.items():
+            self.assertGreaterEqual(t["end"], t["start"], name)
+            self.assertEqual(t["rc"], 0, name)
 
     @patch("pipeline.subprocess.Popen")
     def test_one_angle_failure_aborts_pipeline(self, mock_popen):
