@@ -968,13 +968,34 @@ JUST_TEST_SKIP_REASON=$(just_test_skip_reason "$JUST_FILE" "$IS_TRUSTED_AUTHOR")
 # `just test` runs in the background against TEST_DIR while the LLM stages
 # start; only the `tests` specialist and the aggregator wait on it (via
 # pipeline.py's test-gate node). The subshell owns the just-test flock and
-# the clone, reports through two files, and ALWAYS leaves the sentinel —
-# subshells don't inherit the parent's EXIT trap, so it sets its own, and
-# it writes the results file BEFORE the trap fires the sentinel the gate
-# polls for.
+# the clone, and reports through two files that _test_job_exit (below)
+# guarantees on every path — subshells don't inherit the parent's EXIT trap,
+# so the job sets its own.
 TEST_JOB_START=$(date +%s)
+# The job's single "reported" owner, run on EVERY subshell exit — including
+# run_just_test's fail-fast `exit 1` paths (lib/run-dir.sh: wrong DOCKER_HOST,
+# bridge-reset failure, a reviewer-test process surviving SIGKILL), which now
+# leave only the subshell and so skip the reporting writes below. The gate
+# read_bytes()es test-results.md the moment the sentinel appears and the header
+# note needs an outcome row, so backfill both BEFORE touching the sentinel.
+# It also owns the clone delete (the mirrored live .env files must not sit on
+# disk through the specialist phase, on the aborted path either).
+_test_job_exit() {
+    if [ ! -f "$RUN_DIR/test-outcome.tsv" ]; then
+        local aborted="not run (test job aborted before reporting)"
+        log "$PR_ID: FATAL — test job exited before reporting its outcome; review continues with '$aborted'"
+        printf '**Result:** %s\n\nThe `just test` job aborted before reporting; the cause is in the worker run.log.\n' \
+            "$aborted" > "$RUN_DIR/test-results.md"
+        printf '%s\t%s\t%s\t%s\n' false "$aborted" 0 "$(( $(date +%s) - TEST_JOB_START ))" \
+            > "$RUN_DIR/test-outcome.tsv"
+    fi
+    touch "$RUN_DIR/test-done"
+    # Skips cleanup_test_clone's kill branch: TEST_JOB_PID is still the
+    # pre-fork "" in here.
+    cleanup_test_clone
+}
 (
-    trap 'touch "$RUN_DIR/test-done"' EXIT
+    trap _test_job_exit EXIT
     JUST_TEST_LOCK_WAIT=0
     if [ -n "$JUST_TEST_SKIP_REASON" ]; then
         log "$PR_ID: skipping \`just test\` — $JUST_TEST_SKIP_REASON (author $PR_AUTHOR)"
@@ -1050,14 +1071,8 @@ TEST_JOB_START=$(date +%s)
     # after the workdir is wiped), and trusted-author `just test` output can
     # carry creds/PII beyond the tail — don't retain the unbounded artifact.
     rm -f "$TEST_LOG"
-    # The test clone (mirrored env files included) was only needed for `just
-    # test`; delete it now so secrets don't sit on disk during the long
-    # specialist phase, instead of waiting for the EXIT trap. Runs regardless
-    # of which test path above fired (or even if no test ran at all). Skips
-    # the kill branch: TEST_JOB_PID is still the pre-fork "" in here.
-    cleanup_test_clone
     log "$PR_ID: just test ${TEST_SUMMARY}"
-    printf '**Result:** %s\nLast 500 lines of `just test` output:\n```\n%s\n```\n' \
+    printf '**Result:** %s\n\nLast 500 lines of `just test` output:\n```\n%s\n```\n' \
         "$TEST_SUMMARY" "${TEST_LOG_TAIL:-(no output captured)}" > "$RUN_DIR/test-results.md"
     printf '%s\t%s\t%s\t%s\n' "$TESTS_RAN" "$TEST_SUMMARY" "$JUST_TEST_LOCK_WAIT" \
         "$(( $(date +%s) - TEST_JOB_START ))" > "$RUN_DIR/test-outcome.tsv"
@@ -1552,10 +1567,11 @@ fi
 write_scratch "$REPO_DIR" "commits.md" "$COMMITS"
 
 # Pre-spend stale-head gate: the last cheap moment to cancel before the
-# LLM fan-out. A push that landed during setup (checkout → just test →
-# kid → scratch staging — routinely 20-40 min) means this run's snapshot
-# is already superseded; posting it anyway is what stacked 61 stale
-# reviews across the last 60 plow PRs. Movement DURING the specialists is
+# LLM fan-out. A push that landed during setup (checkout → kid → scratch
+# staging; `just test` no longer serializes ahead of this — it runs in the
+# background alongside the specialists) means this run's snapshot is already
+# superseded; posting it anyway is what stacked 61 stale reviews across the
+# last 60 plow PRs. Movement DURING the specialists is
 # still disclosed post-hoc via the existing ⚠️ Stale header — completed
 # reviews are paid for, so they post. Best-effort fetch, fail-open on gh
 # failure (empty PRE_SPEND_HEAD → proceed), same shape as the post-run
@@ -1587,18 +1603,6 @@ LOG_FILE="$LOG_FILE" \
 OPERATOR_NAME="${OPERATOR_NAME:-Sam}" \
     python3 "$_LIB_DIR/pipeline.py" "$REPO_DIR" "$RUN_DIR"
 PIPELINE_EXIT=$?
-
-# Join the test job (normally long finished — the test-gate already waited on
-# its sentinel) and read its outcome for the header note. Clearing the pid
-# keeps the EXIT trap from signalling a recycled one after it is reaped.
-wait "$TEST_JOB_PID"
-TEST_JOB_PID=""
-IFS=$'\t' read -r TESTS_RAN TEST_SUMMARY TEST_LOCK_WAIT_S TEST_RUN_S < "$RUN_DIR/test-outcome.tsv" || {
-    log "$PR_ID: test job left no outcome (test-outcome.tsv missing) — internal invariant violated, aborting"
-    rm -rf "$REPO_DIR"
-    exit 1
-}
-
 AGG_OUT="$RUN_DIR/agents/aggregator/output.md"
 
 # Aggregator output is what gets posted to GitHub — abort on any pipeline
@@ -1672,6 +1676,20 @@ if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
     [ -d "$REPO_DIR" ] && rm -rf "$REPO_DIR"
     exit 1
 fi
+
+# Join the test job — success path only; the abort above already reaps it via
+# the EXIT trap's cleanup_test_clone. It is normally long finished (the
+# test-gate waited on its sentinel, which _test_job_exit writes after the
+# outcome row). Clearing the pid keeps that trap from signalling a recycled
+# one after it is reaped.
+wait "$TEST_JOB_PID"
+TEST_JOB_PID=""
+IFS=$'\t' read -r TESTS_RAN TEST_SUMMARY TEST_LOCK_WAIT_S TEST_RUN_S < "$RUN_DIR/test-outcome.tsv" || {
+    log "$PR_ID: test job left no outcome (test-outcome.tsv missing) — internal invariant violated, aborting"
+    rm -rf "$REPO_DIR"
+    exit 1
+}
+
 REVIEW=$(cat "$AGG_OUT")
 if ! echo "$REVIEW" | grep -q '^VERDICT:'; then
     log "$PR_ID: aggregator output missing VERDICT line — aborting"

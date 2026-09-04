@@ -1709,4 +1709,70 @@ case "$POSTED17" in
 esac
 echo "  scenario 17a (path-scrub covers the test clone too) ok"
 
-echo "  PASS (17 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + requester-gate skip + metadata-lookup guard pre-allocation abort + placeholder reuse anti-spam + codex 429 backoff + usage-cap quota placeholder w/ pool status + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort + whole-PR re-review keeps memory + test clone isolation/overlap/timings)"
+# ---- scenario 18: a fail-fast inside the test job still reports an outcome ----
+# run_just_test has `exit 1` fail-fast paths that, now that `just test` runs in
+# a background subshell, exit only THAT subshell — skipping its reporting
+# writes. The job's EXIT trap must still leave test-results.md + the outcome row
+# BEFORE the sentinel (pipeline.py's test-gate read_bytes()es the file the
+# moment the sentinel appears) and still delete the test clone, so the review
+# completes as "Tests not run" instead of burning the full codex spend and then
+# aborting on a FileNotFoundError. Driven for real: REVIEWER_TEST_USER set with
+# a DOCKER_HOST that isn't the dind endpoint trips run_just_test's first
+# fail-fast (the dind-reap endpoint pin, lib/run-dir.sh). Reuses scenario 17's
+# fixture repo — same justfile + .env.example, fresh state dir and store.
+echo "  scenario 18: test-job fail-fast still reports (review completes as 'Tests not run')..."
+STATE18="$TMPDIR/state-18"; STORE18="$TMPDIR/comment-store-18.json"
+seed_state_dir "$STATE18"
+git clone -q "$BARE17" "$STATE18/repos/test-org_probe-repo"
+echo "ANTHROPIC_API_KEY=sk-smoke-live" > "$STATE18/repos/test-org_probe-repo/.env"   # what the trusted mirror copies
+mkdir -p "$STATE18/pool/solo"
+echo "[]" > "$STORE18"
+write_stateful_gh_stub "$HOME/.local/bin/gh" "$STORE18" "main" "$PR_SHA17"
+# `chown -R reviewer-test` is the only privileged op that runs before the
+# fail-fast, and this suite isn't root — stub it (same shape as
+# run-just-test-isolation-smoke.sh). Nothing after the endpoint pin runs.
+printf '#!/bin/bash\nexit 0\n' > "$HOME/.local/bin/chown"; chmod +x "$HOME/.local/bin/chown"
+cat > "$HOME/.local/bin/codex" <<'FAKE'
+#!/usr/bin/env python3
+import sys
+from pathlib import Path
+argv = sys.argv
+out = Path(argv[argv.index('-o') + 1]); agent = out.parent.name
+if agent == 'intent':
+    body = "Inferred intent: smoke.\n"
+elif agent == 'aggregator':
+    body = "VERDICT: 1 blocking probe\n\nsmoke review body 18\n"
+elif agent == 'dead-code-search':
+    body = "none\n"
+else:
+    body = "No probes.\n"
+out.write_text(body)
+FAKE
+chmod +x "$HOME/.local/bin/codex"
+GH_STUB_PERMISSION_ROLE=write REVIEWER_TEST_USER=reviewer-test DOCKER_HOST="" \
+    run_worker_in_state "$STATE18" \
+    "test-org/probe-repo" "1" "$PR_SHA17" "feat/test" "Test PR" "false" "someuser" || true
+rm -f "$HOME/.local/bin/codex" "$HOME/.local/bin/chown"
+RUN18=$(ls -d "$STATE18"/runs/test-org_probe-repo__1__* 2>/dev/null | head -1)
+LOG18="$RUN18/run.log"
+grep -q "FATAL — refusing dind reap" "$LOG18" \
+    || { echo "FAIL: scenario 18 — run_just_test's dind-endpoint fail-fast never fired"; tail -20 "$LOG18"; exit 1; }
+grep -q "FATAL — test job exited before reporting its outcome" "$LOG18" \
+    || { echo "FAIL: scenario 18 — aborted test job left no fallback outcome"; tail -20 "$LOG18"; exit 1; }
+if grep -q "test job left no outcome" "$LOG18"; then
+    echo "FAIL: scenario 18 — worker mislabelled the abort as a missing outcome"; tail -20 "$LOG18"; exit 1
+fi
+POSTED18=$(jq -r '[.[] | select(.body | contains("smoke review body 18"))] | last | .body' "$STORE18")
+if [ -z "$POSTED18" ] || [ "$POSTED18" = "null" ]; then
+    echo "FAIL: scenario 18 — review never posted (the test job's fail-fast aborted the whole run)"; cat "$STORE18"; exit 1
+fi
+case "$POSTED18" in
+    *"🧪 Tests not run"*) : ;;
+    *) echo "FAIL: scenario 18 — posted header lacks the 'Tests not run' note"; printf '%s\n' "$POSTED18"; exit 1 ;;
+esac
+if [ -e "$STATE18/workdirs/test-org_probe-repo__1-test" ]; then
+    echo "FAIL: scenario 18 — test clone (mirrored .env) left on disk after the aborted test job"; exit 1
+fi
+echo "  scenario 18 (test-job fail-fast reports an outcome) ok"
+
+echo "  PASS (18 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + requester-gate skip + metadata-lookup guard pre-allocation abort + placeholder reuse anti-spam + codex 429 backoff + usage-cap quota placeholder w/ pool status + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort + whole-PR re-review keeps memory + test clone isolation/overlap/timings + test-job fail-fast still reports)"
