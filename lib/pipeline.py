@@ -932,9 +932,16 @@ def run_pipeline(
             # Only `consumers` reads dead-code.md, and by the time this failure
             # is known the other specialists have already run. Aborting would
             # waste those calls and re-pay them on the retry tick, so degrade
-            # the one dependent angle (124 → the timeout path names it in
-            # _wave_b_timeouts.txt) and complete the review.
+            # the one dependent angle (124 → _after skips `consumers`, landing
+            # it in _wave_b_timeouts.txt) and complete the review.
+            #
+            # That 124 is shared with real timeouts, so on its own the header
+            # would claim `consumers` timed out — a cause that did not happen,
+            # blamed on an agent that never ran. The sentinel carries the real
+            # cause + exit code; run-dir.sh's dead_code_note_for_run renders it
+            # and suppresses the borrowed timeout wording.
             log(f"{pr_id}: dead-code search failed (exit={rc}) — degrading consumers")
+            (run / "_dead_code_failed.txt").write_text(f"{rc}\n")
             return 124
         _stage_scratch(scratch / "dead-code.md",
                        (run / "agents" / "dead-code-search" / "output.md").read_bytes())

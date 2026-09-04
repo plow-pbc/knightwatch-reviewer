@@ -1508,13 +1508,21 @@ class TestRunPipeline(unittest.TestCase):
         specialists have already run by the time a dead-code-search failure is
         known. Aborting would waste those calls and re-pay them on the retry
         tick, so the failure degrades the one dependent angle instead: the
-        review completes, `consumers` never runs, and the ⏱️ sentinel names it."""
-        mock_popen.side_effect = _make_codex_stub(plan={"dead-code-search": (1, "")})
+        review completes, `consumers` never runs, and the ⏱️ sentinel names it.
+
+        The node flattens the failure to 124 (a code shared with real
+        timeouts), so it also drops its own sentinel carrying the REAL exit
+        code — otherwise the header would assert a timeout that never happened
+        and blame `consumers`, which never ran. Exit 7 (not 1) so the assertion
+        cannot pass on a flattened or hardcoded value."""
+        mock_popen.side_effect = _make_codex_stub(plan={"dead-code-search": (7, "")})
         rc = self._run()
         self.assertEqual(rc, 0)
         self.assertFalse((self.run_dir / "agents" / "consumers").exists(),
                          "consumers ran without dead-code.md")
         self.assertEqual((self.run_dir / "_wave_b_timeouts.txt").read_text(), "consumers\n")
+        self.assertEqual((self.run_dir / "_dead_code_failed.txt").read_text(), "7\n",
+                         "dead-code sentinel must carry the real exit code, not the 124 soft-degrade")
         self.assertTrue((self.run_dir / "agents" / "aggregator" / "output.md").exists())
 
     @patch("pipeline.subprocess.Popen")

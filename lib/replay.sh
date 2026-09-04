@@ -316,6 +316,8 @@ fi
 # replayed run whose specialists timed out doesn't read as full coverage.
 TIMEOUT_NOTE=$(timeout_note_for_run "$RUN_DIR")
 [ -n "$TIMEOUT_NOTE" ] && REVIEW_NOTES+=("$TIMEOUT_NOTE")
+DEAD_CODE_NOTE=$(dead_code_note_for_run "$RUN_DIR")
+[ -n "$DEAD_CODE_NOTE" ] && REVIEW_NOTES+=("$DEAD_CODE_NOTE")
 
 AGG_BODY=$(cat "$AGG_OUT_FILE")
 STITCHED=$(prepend_review_header "$AGG_BODY" "${REVIEW_NOTES[@]}")

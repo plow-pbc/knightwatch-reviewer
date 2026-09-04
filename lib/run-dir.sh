@@ -589,8 +589,52 @@ format_specialist_timeouts() {
 timeout_note_for_run() {
     local sentinel="$1/_wave_b_timeouts.txt" timed_out
     [ -s "$sentinel" ] || return 0
-    timed_out=$(paste -sd, "$sentinel")
+    # A dead-code pre-pass failure also lands `consumers` here (the 124 that
+    # skips it is what keeps the run approval-ineligible), but that event is
+    # already disclosed — with its real cause — by dead_code_note_for_run.
+    # Drop the name so one event never renders as two contradictory notes; the
+    # sentinel FILE stays untouched, since review_is_approval reads it.
+    if [ -s "$1/_dead_code_failed.txt" ]; then
+        timed_out=$(sed '/^consumers$/d' "$sentinel" | paste -sd,)
+    else
+        timed_out=$(paste -sd, "$sentinel")
+    fi
+    [ -n "$timed_out" ] || return 0
     format_specialist_timeouts "$timed_out"
+}
+
+# format_dead_code_failure EXIT_CODE
+#
+# One header fragment for the dead-code pre-pass exiting non-zero — a hard
+# failure of the standalone `dead-code-search` agent, not a timeout and not a
+# capacity bounce. pipeline.py degrades the single dependent angle
+# (`consumers`) instead of aborting, so coverage is partial and must be
+# disclosed; reusing format_specialist_timeouts' wording would assert a cause
+# that did not happen and name `consumers`, which never ran at all.
+#
+# Pure function. Empty EXIT_CODE is an invariant violation (the caller only
+# invokes this when _dead_code_failed.txt is non-empty) — fail-fast.
+format_dead_code_failure() {
+    local rc="$1"
+    if [ -z "$rc" ]; then
+        printf 'format_dead_code_failure: empty exit code — internal invariant violated\n' >&2
+        return 1
+    fi
+    printf '⚠️ Partial review — the dead-code pre-pass failed (exit %s); the `consumers` angle was skipped' "$rc"
+}
+
+# dead_code_note_for_run RUN_DIR
+#
+# Sentinel→note adapter, symmetric with timeout_note_for_run: echoes the
+# format_dead_code_failure fragment when this run recorded a dead-code
+# pre-pass failure (_dead_code_failed.txt non-empty), else nothing. Shared by
+# the live worker (review-one-pr.sh) and replay (replay.sh) so both surfaces
+# disclose the degraded angle identically.
+dead_code_note_for_run() {
+    local sentinel="$1/_dead_code_failed.txt" rc
+    [ -s "$sentinel" ] || return 0
+    rc=$(tr -dc '0-9' < "$sentinel")
+    format_dead_code_failure "$rc"
 }
 
 # prepend_review_header COMMENT_BODY NOTE [NOTE...]

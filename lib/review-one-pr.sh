@@ -1817,6 +1817,11 @@ REVIEW_NOTES+=("$SCOPE_NOTE")
 # reduced coverage (shared adapter — replay.sh uses the same helper).
 TIMEOUT_NOTE=$(timeout_note_for_run "$RUN_DIR")
 [ -n "$TIMEOUT_NOTE" ] && REVIEW_NOTES+=("$TIMEOUT_NOTE")
+# Same soft-degrade class, different cause: a hard dead-code-search failure
+# skips `consumers` too, and names itself honestly rather than borrowing the
+# timeout wording (shared adapter — replay.sh uses the same helper).
+DEAD_CODE_NOTE=$(dead_code_note_for_run "$RUN_DIR")
+[ -n "$DEAD_CODE_NOTE" ] && REVIEW_NOTES+=("$DEAD_CODE_NOTE")
 # Symmetric pre-check disclosure: every pre-check emits one fragment
 # describing its outcome (pass/fail/skip), not just on miss. Old asym-
 # metric pattern collapsed clean-PR headers to scope-only and left
