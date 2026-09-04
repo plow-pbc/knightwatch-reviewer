@@ -1149,12 +1149,14 @@ fi
 # resolve_binding has unit coverage (conventions-smoke.sh), but nothing proved the
 # WORKER actually stages what Codex consumes for a convention repo:
 #   - inputs/convention.md (so specialists review by that convention's grammar)
-#   - inputs/test-results.md carrying the convention's test-note (the gate is the
-#     convention's own — here ref/verify.sh — NOT a missing justfile)
+#   - <run_dir>/test-results.md carrying the convention's test-note (the gate is
+#     the convention's own — here ref/verify.sh — NOT a missing justfile); the
+#     worker writes this synchronously and pipeline.py's test-gate stages it
+#     into .codex-scratch for the `tests` specialist + aggregator
 # The operator's kwr-config (a local fixture here) binds org `test-org` + a root
 # `SEED.md` marker → conventions/seed.md. Detection reads the marker at the
 # TRUSTED base ref; the fixture has no justfile so the convention's test-note fires.
-echo "  scenario: convention repo (kwr-config binding, SEED.md@base, no justfile) — convention.md + test-note staged into inputs/..."
+echo "  scenario: convention repo (kwr-config binding, SEED.md@base, no justfile) — convention.md staged into inputs/, test-note into test-results.md..."
 
 # kwr-config fixture: a binding (marker SEED.md in org test-org) → a convention
 # doc whose frontmatter declares the test gate. The worker reads this cache; only
@@ -1251,7 +1253,7 @@ fi
 
 # test-results.md must carry the convention's test-note — the gate is the
 # convention's own (ref/verify.sh), NOT the generic "no justfile" coverage gap.
-TEST_RESULTS_MD9="$RUN_DIR9/inputs/test-results.md"
+TEST_RESULTS_MD9="$RUN_DIR9/test-results.md"
 if [ ! -f "$TEST_RESULTS_MD9" ]; then
     echo "FAIL: scenario 9 — $TEST_RESULTS_MD9 not staged"
     [ -f "$LOG9" ] && { echo "--- run.log ---"; tail -n 30 "$LOG9"; }

@@ -1017,6 +1017,13 @@ Last 500 lines of \`just test\` output:
 ${TEST_LOG_TAIL:-(no output captured)}
 \`\`\`"
 
+# pipeline.py's test-gate stages these for the `tests` specialist + aggregator:
+# results first, then the sentinel (the gate reads results once it sees the
+# sentinel). Written synchronously for now; the background test job takes
+# this over when it lands.
+printf '%s\n' "$TEST_RESULTS" > "$RUN_DIR/test-results.md"
+touch "$RUN_DIR/test-done"
+
 # ---- standards ----
 # $STANDARDS was captured in the early convention-read section above (alongside the
 # convention body/note) so a mid-review org-sync pull can't split it from the
@@ -1305,7 +1312,6 @@ rm -rf "$REPO_DIR/.codex-scratch"
 mkdir -p "$REPO_DIR/.codex-scratch"
 write_scratch "$REPO_DIR" "diff.patch"         "$KID_INPUT_DIFF"
 write_scratch "$REPO_DIR" "previous-review.md" "$PREV_BODY"
-write_scratch "$REPO_DIR" "test-results.md"    "$TEST_RESULTS"
 write_scratch "$REPO_DIR" "prior-art.md"       "${PRIOR_ART:-}"
 write_scratch "$REPO_DIR" "dead-code-static.md" "${DEAD_CODE_STATIC:-}"
 write_scratch "$REPO_DIR" "search-roots.md"    "${SEARCH_ROOTS:-}"
