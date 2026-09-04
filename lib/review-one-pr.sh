@@ -1709,16 +1709,16 @@ if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
 fi
 
 # Join the test job — success path only; the abort above already reaps it via
-# the EXIT trap's cleanup_test_clone. It is normally long finished (the
-# test-gate waited on the same outcome row this reads back). Clearing the pid
-# keeps that trap from signalling a recycled one after it is reaped.
+# the EXIT trap. Normally long finished: the test-gate waited on this same row.
 wait "$TEST_JOB_PID"
-TEST_JOB_PID=""
 IFS=$'\t' read -r TESTS_RAN TEST_SUMMARY TEST_LOCK_WAIT_S TEST_RUN_S < "$RUN_DIR/test-outcome.tsv" || {
     log "$PR_ID: test job left no outcome (test-outcome.tsv missing) — internal invariant violated, aborting"
     rm -rf "$REPO_DIR"
     exit 1
 }
+# Cleared only AFTER that read, so the trap stops signalling a recycled pid: a
+# signal-killed job writes no row, and that abort needs the marker to reap.
+TEST_JOB_PID=""
 
 REVIEW=$(cat "$AGG_OUT")
 if ! echo "$REVIEW" | grep -q '^VERDICT:'; then

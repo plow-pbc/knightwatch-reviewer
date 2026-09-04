@@ -1769,7 +1769,6 @@ chmod +x "$HOME/.local/bin/codex"
 GH_STUB_PERMISSION_ROLE=write REVIEWER_TEST_USER=reviewer-test DOCKER_HOST="" \
     run_worker_in_state "$STATE18" \
     "test-org/probe-repo" "1" "$PR_SHA17" "feat/test" "Test PR" "false" "someuser" || true
-rm -f "$HOME/.local/bin/codex" "$HOME/.local/bin/chown" "$HOME/.local/bin/pkill" "$HOME/.local/bin/pgrep"
 RUN18=$(ls -d "$STATE18"/runs/test-org_probe-repo__1__* 2>/dev/null | head -1)
 LOG18="$RUN18/run.log"
 grep -q "FATAL — refusing dind reap" "$LOG18" \
@@ -1806,4 +1805,37 @@ grep -q -- "-u reviewer-test" "$REAP18" \
     && { echo "FAIL: scenario 18 — a worker holding no test job swept the shared uid, killing sibling runs"; cat "$REAP18"; exit 1; } || true
 echo "  scenario 18 (test-job fail-fast reports an outcome, without sweeping the shared uid) ok"
 
-echo "  PASS (18 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + requester-gate skip + metadata-lookup guard pre-allocation abort + placeholder reuse anti-spam + codex 429 backoff + usage-cap quota placeholder w/ pool status + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort + whole-PR re-review keeps memory + test clone isolation/overlap/timings + test-job fail-fast still reports)"
+# ---- scenario 19: a job that left no outcome row is still reaped ------------
+# The join clears TEST_JOB_PID only AFTER the outcome row is read. Clearing it
+# first stranded the signal-kill path: `wait` returns nonzero, the read then
+# aborts the worker, and the EXIT trap — seeing an empty marker — skipped its
+# UID-wide reap, leaving detached `reviewer-test` descendants to contaminate a
+# later PR's shared test state. Reproduced by planting a DIRECTORY where the row
+# goes (from the chown stub, run_just_test's first call), so every write to it
+# fails exactly as the killed subshell's silence does; test-results.md is
+# planted alongside so the test-gate never reads a body that isn't there.
+echo "  scenario 19: a test job that left no outcome row still reaps the shared uid..."
+STATE19="$TMPDIR/state-19"; STORE19="$TMPDIR/comment-store-19.json"
+seed_state_dir "$STATE19"
+git clone -q "$BARE17" "$STATE19/repos/test-org_probe-repo"
+echo "ANTHROPIC_API_KEY=sk-smoke-live" > "$STATE19/repos/test-org_probe-repo/.env"
+mkdir -p "$STATE19/pool/solo"
+echo "[]" > "$STORE19"
+write_stateful_gh_stub "$HOME/.local/bin/gh" "$STORE19" "main" "$PR_SHA17"
+printf '#!/bin/bash\nfor d in "%s"/runs/*/; do printf "**Result:** planted\\n" > "$d/test-results.md"; mkdir -p "$d/test-outcome.tsv"; done\nexit 0\n' \
+    "$STATE19" > "$HOME/.local/bin/chown"
+REAP19="$TMPDIR/reap-19.calls"; : > "$REAP19"
+printf '#!/bin/bash\necho "pkill $*" >> "%s"\nexit 0\n' "$REAP19" > "$HOME/.local/bin/pkill"
+chmod +x "$HOME/.local/bin/chown" "$HOME/.local/bin/pkill"
+GH_STUB_PERMISSION_ROLE=write REVIEWER_TEST_USER=reviewer-test DOCKER_HOST="" \
+    run_worker_in_state "$STATE19" \
+    "test-org/probe-repo" "1" "$PR_SHA17" "feat/test" "Test PR" "false" "someuser" || true
+rm -f "$HOME/.local/bin/codex" "$HOME/.local/bin/chown" "$HOME/.local/bin/pkill" "$HOME/.local/bin/pgrep"
+LOG19="$(ls -d "$STATE19"/runs/test-org_probe-repo__1__* 2>/dev/null | head -1)/run.log"
+grep -q "test job left no outcome" "$LOG19" \
+    || { echo "FAIL: scenario 19 — the join never reached the missing-outcome abort"; tail -20 "$LOG19"; exit 1; }
+grep -q -- "-u reviewer-test" "$REAP19" \
+    || { echo "FAIL: scenario 19 — aborted on the missing row without reaping; a detached test descendant outlives the run"; exit 1; }
+echo "  scenario 19 (a missing outcome row still reaps the shared uid) ok"
+
+echo "  PASS (19 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + requester-gate skip + metadata-lookup guard pre-allocation abort + placeholder reuse anti-spam + codex 429 backoff + usage-cap quota placeholder w/ pool status + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort + whole-PR re-review keeps memory + test clone isolation/overlap/timings + test-job fail-fast still reports + missing outcome row still reaps)"
