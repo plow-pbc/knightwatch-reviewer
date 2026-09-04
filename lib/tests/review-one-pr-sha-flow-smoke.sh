@@ -1609,7 +1609,9 @@ git clone -q "$BARE17" "$WORK17"
     git commit -qm "init: justfile + .env.example"
     git push -q origin main
     git checkout -qb feat/test
-    echo "feature" > feature.txt
+    # 24 changed lines: clears the security/tests floors (pipeline.py
+    # SPECIALIST_MIN_LOC) so the overlap assertion below has both angles.
+    seq 1 24 > feature.txt
     git add feature.txt
     git commit -qm "feature"
 )

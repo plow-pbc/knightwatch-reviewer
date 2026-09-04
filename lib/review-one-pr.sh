@@ -834,14 +834,16 @@ if [ -z "$FULL_PR_DIFF" ]; then
     rm -rf "$REPO_DIR"
     exit 1
 fi
-# Changed-line count (added + deleted) via structured --numstat, the same
-# LOC shape lib/loc-trend.sh uses — exact, and immune to the +/- content-line
-# miscount a unified-diff regex parse would introduce. pipeline.py scales
-# codex reasoning effort down to medium for PRs under its SMALL_PR_LOC
-# threshold, where high reasoning isn't worth the quota. (Binary files report
-# `-`/`-`, which awk sums as 0 — correct, they have no line count.)
-PR_DIFF_LOC=$(git -C "$REPO_DIR" diff --numstat "$BASE_REF_SHA...$REVIEWED_SHA" 2>/dev/null \
-    | awk '{a += $1; d += $2} END {print a + d + 0}')
+# Changed-line count (added + deleted) of the REVIEWED diff via structured
+# --numstat, the same LOC shape lib/loc-trend.sh uses — exact, and immune to
+# the +/- content-line miscount a unified-diff regex parse would introduce.
+# pipeline.py scales codex reasoning effort down to medium under SMALL_PR_LOC
+# and skips specialists under their SPECIALIST_MIN_LOC floor. Full PR here;
+# recomputed over the incremental range below when the re-review is clean.
+# (Binary files report `-`/`-`, which awk sums as 0 — correct, they have no
+# line count.)
+changed_lines() { git -C "$REPO_DIR" diff --numstat "$1" 2>/dev/null | awk '{a += $1; d += $2} END {print a + d + 0}'; }
+PR_DIFF_LOC=$(changed_lines "$BASE_REF_SHA...$REVIEWED_SHA")
 log "$PR_ID: full PR diff size = ${#FULL_PR_DIFF} bytes, ${PR_DIFF_LOC} changed lines"
 KID_INPUT_DIFF="$FULL_PR_DIFF"
 
@@ -871,7 +873,8 @@ PREV_APPROVED=$(latest_author_visible_review_approved "$STATE_DIR" "$REPO_SLUG_F
 if [ -n "$KNOWN_SHA" ] && [ "$FORCE_WHOLE_PR" != "true" ]; then
     if is_clean_incremental_available "$REPO_DIR" "$KNOWN_SHA"; then
         KID_INPUT_DIFF=$(git -C "$REPO_DIR" diff "$KNOWN_SHA..$REVIEWED_SHA")
-        log "$PR_ID: clean incremental diff since ${KNOWN_SHA:0:7}"
+        PR_DIFF_LOC=$(changed_lines "$KNOWN_SHA..$REVIEWED_SHA")
+        log "$PR_ID: clean incremental diff since ${KNOWN_SHA:0:7} = ${PR_DIFF_LOC} changed lines (effort + specialist floors scale on this, not the full PR)"
     else
         USED_FALLBACK=true
         log "$PR_ID: incremental not clean (rebased or merged-from-main since ${KNOWN_SHA:0:7}); using full PR diff"
@@ -1783,13 +1786,13 @@ fi
 # Leading HTML comment is the orchestrator's discriminator for "this is
 # one of our auto-posts" — see the corresponding jq filter in review.sh.
 # The bakeoff marker captures which specialists were invoked on this
-# review so lib/bakeoff-store.sh can establish per-review denominators.
-# Single source of truth: derive from lib/pipeline.py::SPECIALISTS so adding a
-# specialist there flows into the bakeoff roster AND the timing span below.
-# aggregator is appended because it can attribute its own cross-angle probes.
-# Fail-fast — no fallback. If pipeline.py is broken, we want the review to
-# fail loudly here, not silently post with a stale roster.
-BAKEOFF_SPECIALISTS=$(python3 -c "import sys; sys.path.insert(0, '$_LIB_DIR/..'); from lib.pipeline import SPECIALISTS; print(','.join(list(SPECIALISTS) + ['aggregator']))")
+# review so lib/bakeoff-store.sh can establish per-review denominators:
+# the angles that ran, `screened-<angle>` for each one the aggregator
+# screened under its floor, then aggregator (bakeoff_roster_for_run, sourced
+# from lib/pipeline.py::SPECIALISTS). Fail-fast — no fallback. If pipeline.py
+# is broken, we want the review to fail loudly here, not silently post with a
+# stale roster.
+BAKEOFF_SPECIALISTS=$(bakeoff_roster_for_run "$RUN_DIR")
 COMMENT_BODY="$BOT_AUTO_POST_MARKER
 $BOT_AI_AUTHOR_MARKER
 <!-- knightwatch-bakeoff: specialists=$BAKEOFF_SPECIALISTS -->
@@ -1876,6 +1879,10 @@ if ! KID_NOTE=$(format_kid_note "$KID_RAN" "$KID_DETAIL"); then
     exit 1
 fi
 REVIEW_NOTES+=("$KID_NOTE")
+# Small-diff lane: angles under their changed-line floor did not run
+# (pipeline.py names them in _skipped_angles.txt; the aggregator screened them).
+SKIPPED_ANGLES_NOTE=$(skipped_angles_note_for_run "$RUN_DIR" "$PR_DIFF_LOC")
+[ -n "$SKIPPED_ANGLES_NOTE" ] && REVIEW_NOTES+=("$SKIPPED_ANGLES_NOTE")
 # Strict typing stays guarded: empty STRICT_TYPING_NOTE means the repo
 # either has no strict-typing check configured (per-repo strict-typing.sh
 # absent + no STRICT_TYPING_CMDS entry) or the checker errored (logged

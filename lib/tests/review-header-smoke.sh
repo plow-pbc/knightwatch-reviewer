@@ -628,6 +628,37 @@ assert_contains "$got" "security,shape" "adapter joins sentinel lines"
 assert_contains "$got" "capacity" "note discloses model-at-capacity (shared soft-degrade sentinel, not timeout-only)"
 rm -rf "$_tnfr_dir"
 
+# ===== format_skipped_angles / skipped_angles_note_for_run (small-diff lane) =====
+# Angles under their changed-line floor never ran; the header says so (and
+# that the aggregator screened them), via the same sentinel→note adapter
+# shape as the ⏱️ timeout warning.
+echo "  format_skipped_angles: names + LOC → ⚡ small-diff lane note (exact text)..."
+[ "$(format_skipped_angles "security,data-integrity,tests" 12)" = \
+  "⚡ Small-diff lane (12 lines): skipped security, data-integrity, tests — screened by aggregator" ] \
+    || { echo "FAIL: skipped-angles note text"; exit 1; }
+echo "  format_skipped_angles: empty → fail-fast..."
+assert_fails_with "empty names" "empty names" -- format_skipped_angles "" 12
+
+_sanr_dir=$(mktemp -d)
+echo "  skipped_angles_note_for_run: no sentinel → empty (every angle ran)..."
+[ -z "$(skipped_angles_note_for_run "$_sanr_dir" 12)" ] || { echo "FAIL: expected empty note when no _skipped_angles.txt"; exit 1; }
+echo "  skipped_angles_note_for_run: sentinel present → ⚡ note lands in the posted header..."
+printf 'security\nconsumers\n' > "$_sanr_dir/_skipped_angles.txt"
+result=$(prepend_review_header "$BODY" \
+    "$(format_review_scope "full" "$SHA_NEW")" \
+    "$(skipped_angles_note_for_run "$_sanr_dir" 12)")
+assert_contains "$result" "⚡ Small-diff lane (12 lines): skipped security, consumers — screened by aggregator" "header carries the skipped-angles note"
+# The bakeoff roster follows the same sentinel: a screened angle is its own
+# lane, never a zero-yield run of the specialist that never happened.
+echo "  bakeoff_roster_for_run: skipped angles become screened-<angle> lanes; aggregator last..."
+roster=$(bakeoff_roster_for_run "$_sanr_dir")
+[ "$roster" = "data-integrity,architecture-refined,contract-drift,tests,shape,screened-security,screened-consumers,aggregator" ] \
+    || { echo "FAIL: roster with skipped angles — got: $roster"; exit 1; }
+rm -f "$_sanr_dir/_skipped_angles.txt"
+[ "$(bakeoff_roster_for_run "$_sanr_dir")" = "security,data-integrity,architecture-refined,contract-drift,tests,shape,consumers,aggregator" ] \
+    || { echo "FAIL: roster with every angle run — got: $(bakeoff_roster_for_run "$_sanr_dir")"; exit 1; }
+rm -rf "$_sanr_dir"
+
 # ===== review_is_approval (coverage-loss + failing-test refusals) =====
 # Single owner of "did this review approve?" — the worker's GitHub submit gate
 # and the carried-forward projection both route through it. Three classes
