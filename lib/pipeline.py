@@ -15,11 +15,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
 from pathlib import Path
 
-SPECIALISTS = (
-    "security", "data-integrity", "architecture-refined",
-    "contract-drift", "tests", "shape", "consumers",
-)
-
 # Reasoning effort scales with PR size. The flagship model at high reasoning
 # is the dominant per-call quota cost; small PRs don't warrant it, so a diff
 # under SMALL_PR_LOC changed lines runs the whole review at medium.
@@ -34,9 +29,10 @@ def _reasoning_effort(diff_loc: int) -> str:
     return "medium" if diff_loc < SMALL_PR_LOC else "high"
 
 
-# Per-specialist changed-line floor. A specialist whose floor exceeds the
-# reviewed diff's LOC does not run (nor its critic); its prompt goes to the
-# aggregator as a missed-opportunity screen (skipped-angles.md). Floors come
+# The specialist roster, in fan-out order, keyed to each angle's changed-line
+# floor. A specialist whose floor exceeds the reviewed diff's LOC does not
+# run (nor its critic); its prompt goes to the aggregator as a
+# missed-opportunity screen (skipped-angles.md). Floors come
 # from the bakeoff's applied-finding yield by diff size (2026-09-04 join of
 # 50,608 specialist runs): contract-drift pays at any size; security /
 # data-integrity / tests clear 10% from 20 LOC; architecture-refined from 50;
@@ -44,10 +40,10 @@ def _reasoning_effort(diff_loc: int) -> str:
 # pattern at instance one" question is a small-diff phenomenon. Re-derive
 # from the bakeoff once sibling search + KID have been live for two weeks.
 SPECIALIST_MIN_LOC = {
-    "contract-drift": 0, "shape": 0,
-    "security": 20, "data-integrity": 20, "tests": 20,
-    "architecture-refined": 50, "consumers": 200,
+    "security": 20, "data-integrity": 20, "architecture-refined": 50,
+    "contract-drift": 0, "tests": 20, "shape": 0, "consumers": 200,
 }
+SPECIALISTS = tuple(SPECIALIST_MIN_LOC)
 
 
 def _active_specialists(diff_loc: int | None) -> tuple[list[str], list[str]]:
@@ -620,11 +616,7 @@ def build_prompt(
 
 SKIPPED_ANGLES_PREAMBLE = (
     "# Skipped angles\n\n"
-    "This diff is {loc} changed lines. The specialist angles below were skipped because the "
-    "diff is small (per-angle floors in lib/pipeline.py SPECIALIST_MIN_LOC). Keep that in mind, "
-    "and, as needed, add high-severity (`blocking`) probes that were missed as a result — tag "
-    "each `[from: <angle>]` in the leading slot so the bakeoff attributes it. Do not add "
-    "`medium` or lower probes for a skipped angle.\n\n"
+    "This diff is {loc} changed lines. Screen the skipped specialist prompts below.\n\n"
 )
 
 

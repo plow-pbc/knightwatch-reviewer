@@ -188,7 +188,7 @@ assert_grep "common-header.md must pin cut-positive Q polarity — without it a 
 echo "  asserting aggregator screens skipped angles..."
 assert_grep "aggregator.md must read skipped-angles.md" 'skipped-angles.md' prompts/aggregator.md
 assert_grep "aggregator.md must cap skipped-angle probes at blocking with a [from:] tag" \
-    'skipped angle: `blocking` only, tagged `[from: <angle>]`' prompts/aggregator.md
+    'skipped angle: `blocking` only, tagged `[from: screened-<angle>]`' prompts/aggregator.md
 
 # Cross-file marker: any consumer parsing the rendered Probes section
 # by `[from: <specialist>]` depends on aggregator.md owning the token format.

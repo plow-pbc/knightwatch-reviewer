@@ -648,6 +648,15 @@ result=$(prepend_review_header "$BODY" \
     "$(format_review_scope "full" "$SHA_NEW")" \
     "$(skipped_angles_note_for_run "$_sanr_dir" 12)")
 assert_contains "$result" "⚡ Small-diff lane (12 lines): skipped security, consumers — screened by aggregator" "header carries the skipped-angles note"
+# The bakeoff roster follows the same sentinel: a screened angle is its own
+# lane, never a zero-yield run of the specialist that never happened.
+echo "  bakeoff_roster_for_run: skipped angles become screened-<angle> lanes; aggregator last..."
+roster=$(bakeoff_roster_for_run "$_sanr_dir")
+[ "$roster" = "data-integrity,architecture-refined,contract-drift,tests,shape,screened-security,screened-consumers,aggregator" ] \
+    || { echo "FAIL: roster with skipped angles — got: $roster"; exit 1; }
+rm -f "$_sanr_dir/_skipped_angles.txt"
+[ "$(bakeoff_roster_for_run "$_sanr_dir")" = "security,data-integrity,architecture-refined,contract-drift,tests,shape,consumers,aggregator" ] \
+    || { echo "FAIL: roster with every angle run — got: $(bakeoff_roster_for_run "$_sanr_dir")"; exit 1; }
 rm -rf "$_sanr_dir"
 
 # ===== review_is_approval (coverage-loss + failing-test refusals) =====

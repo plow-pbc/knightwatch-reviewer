@@ -1786,13 +1786,13 @@ fi
 # Leading HTML comment is the orchestrator's discriminator for "this is
 # one of our auto-posts" — see the corresponding jq filter in review.sh.
 # The bakeoff marker captures which specialists were invoked on this
-# review so lib/bakeoff-store.sh can establish per-review denominators.
-# Single source of truth: derive from lib/pipeline.py::SPECIALISTS so adding a
-# specialist there flows into the bakeoff roster AND the timing span below.
-# aggregator is appended because it can attribute its own cross-angle probes.
-# Fail-fast — no fallback. If pipeline.py is broken, we want the review to
-# fail loudly here, not silently post with a stale roster.
-BAKEOFF_SPECIALISTS=$(python3 -c "import sys; sys.path.insert(0, '$_LIB_DIR/..'); from lib.pipeline import SPECIALISTS; print(','.join(list(SPECIALISTS) + ['aggregator']))")
+# review so lib/bakeoff-store.sh can establish per-review denominators:
+# the angles that ran, `screened-<angle>` for each one the aggregator
+# screened under its floor, then aggregator (bakeoff_roster_for_run, sourced
+# from lib/pipeline.py::SPECIALISTS). Fail-fast — no fallback. If pipeline.py
+# is broken, we want the review to fail loudly here, not silently post with a
+# stale roster.
+BAKEOFF_SPECIALISTS=$(bakeoff_roster_for_run "$RUN_DIR")
 COMMENT_BODY="$BOT_AUTO_POST_MARKER
 $BOT_AI_AUTHOR_MARKER
 <!-- knightwatch-bakeoff: specialists=$BAKEOFF_SPECIALISTS -->

@@ -255,9 +255,6 @@ class TestActiveSpecialists(unittest.TestCase):
     """Per-specialist changed-line floors: an angle whose floor exceeds the
     reviewed diff's LOC is skipped; unknown size (None) runs every angle."""
 
-    def test_every_specialist_has_a_floor(self):
-        self.assertEqual(set(pipeline.SPECIALIST_MIN_LOC), set(pipeline.SPECIALISTS))
-
     def test_floors_partition_by_loc(self):
         every = ["security", "data-integrity", "architecture-refined",
                  "contract-drift", "tests", "shape", "consumers"]
