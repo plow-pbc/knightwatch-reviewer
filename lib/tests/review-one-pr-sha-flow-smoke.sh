@@ -1741,6 +1741,14 @@ write_stateful_gh_stub "$HOME/.local/bin/gh" "$STORE18" "main" "$PR_SHA17"
 # fail-fast, and this suite isn't root — stub it (same shape as
 # run-just-test-isolation-smoke.sh). Nothing after the endpoint pin runs.
 printf '#!/bin/bash\nexit 0\n' > "$HOME/.local/bin/chown"; chmod +x "$HOME/.local/bin/chown"
+# pkill/pgrep are stubbed for the same reason (and recorded, for the cleanup
+# assertion below): unstubbed, a real `pkill -KILL -u reviewer-test` would reach
+# the HOST's processes if that account exists — including this suite, when it
+# runs as reviewer-test on the container review path.
+REAP18="$TMPDIR/reap-18.calls"; : > "$REAP18"
+printf '#!/bin/bash\necho "pkill $*" >> "%s"\nexit 0\n' "$REAP18" > "$HOME/.local/bin/pkill"
+printf '#!/bin/bash\nexit 1\n' > "$HOME/.local/bin/pgrep"
+chmod +x "$HOME/.local/bin/pkill" "$HOME/.local/bin/pgrep"
 cat > "$HOME/.local/bin/codex" <<'FAKE'
 #!/usr/bin/env python3
 import sys
@@ -1761,7 +1769,7 @@ chmod +x "$HOME/.local/bin/codex"
 GH_STUB_PERMISSION_ROLE=write REVIEWER_TEST_USER=reviewer-test DOCKER_HOST="" \
     run_worker_in_state "$STATE18" \
     "test-org/probe-repo" "1" "$PR_SHA17" "feat/test" "Test PR" "false" "someuser" || true
-rm -f "$HOME/.local/bin/codex" "$HOME/.local/bin/chown"
+rm -f "$HOME/.local/bin/codex" "$HOME/.local/bin/chown" "$HOME/.local/bin/pkill" "$HOME/.local/bin/pgrep"
 RUN18=$(ls -d "$STATE18"/runs/test-org_probe-repo__1__* 2>/dev/null | head -1)
 LOG18="$RUN18/run.log"
 grep -q "FATAL — refusing dind reap" "$LOG18" \
@@ -1790,6 +1798,15 @@ esac
 if [ -e "$STATE18/workdirs/test-org_probe-repo__1-test" ]; then
     echo "FAIL: scenario 18 — test clone (mirrored .env) left on disk after the aborted test job"; exit 1
 fi
-echo "  scenario 18 (test-job fail-fast reports an outcome) ok"
+# cleanup_test_clone must run the UID-wide reap before deleting the clone. The
+# `pkill -P <job pid>` it already did reaches only the job's own children — a
+# `setsid` descendant of `just test` escapes it, outlives the clone it was
+# running against, and contaminates the next review's test run. This is the only
+# path where nothing else reaps: run_just_test's own reap is on the clean path.
+if ! grep -qx "pkill -KILL -u reviewer-test" "$REAP18"; then
+    echo "FAIL: scenario 18 — the abort path never reaped the test user's processes (a detached descendant survives the clone delete)"
+    cat "$REAP18"; exit 1
+fi
+echo "  scenario 18 (test-job fail-fast reports an outcome + reaps the test user) ok"
 
-echo "  PASS (18 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + requester-gate skip + metadata-lookup guard pre-allocation abort + placeholder reuse anti-spam + codex 429 backoff + usage-cap quota placeholder w/ pool status + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort + whole-PR re-review keeps memory + test clone isolation/overlap/timings + test-job fail-fast still reports)"
+echo "  PASS (18 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + requester-gate skip + metadata-lookup guard pre-allocation abort + placeholder reuse anti-spam + codex 429 backoff + usage-cap quota placeholder w/ pool status + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort + whole-PR re-review keeps memory + test clone isolation/overlap/timings + test-job fail-fast still reports and reaps)"

@@ -470,6 +470,14 @@ cleanup_test_clone() {
         kill "$TEST_JOB_PID" 2>/dev/null
         wait "$TEST_JOB_PID" 2>/dev/null
     fi
+    # `-P` only reaches the job's own children — a `setsid` descendant escapes
+    # it, survives the clone delete below, and contaminates the next review.
+    # The UID-wide reap (lib/run-dir.sh) is the one that catches it; the clean
+    # path already runs it, so the abort path must too. Before the delete, so a
+    # survivor can't write into a half-removed tree. No-op on the host path,
+    # where REVIEWER_TEST_USER is unset and the operator owns those processes.
+    reap_test_user_processes \
+        || log "$PR_ID: reviewer-test process survived SIGKILL during test-clone cleanup"
     [ -n "${TEST_DIR:-}" ] && rm -rf "$TEST_DIR"; return 0
 }
 

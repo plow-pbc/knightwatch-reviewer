@@ -283,6 +283,33 @@ prune_stale_scenario_images() {
         || log "$PR_ID: build cache prune failed (non-fatal)"
 }
 
+# reap_test_user_processes
+#
+# Bounded TERM → wait → KILL → confirm-dead sweep over everything owned by
+# $REVIEWER_TEST_USER. `pkill -u` is UID-based, so it reaps the session-detached
+# writer a `just test` can `setsid` — the one a process-tree kill (pkill -P)
+# structurally cannot reach. TERM-only would leave a TERM-trapping writer alive
+# to race the .codex-scratch wipe or read root-staged inputs, so the KILL pass
+# is not optional.
+#
+# Single owner of "reap the test user's processes": run_just_test calls it after
+# a clean run, cleanup_test_clone (lib/review-one-pr.sh) on the abort path,
+# before the test clone is deleted. A detached descendant otherwise outlives
+# both the subshell and its own clone and contaminates the next review's run.
+#
+# No-op (rc 0) when REVIEWER_TEST_USER is unset: the host/systemd path runs
+# `just test` as the operator, and a UID-wide reap there would kill the
+# operator's own processes. Returns 1 iff something survived SIGKILL — callers
+# decide how loud that is.
+reap_test_user_processes() {
+    [ -n "${REVIEWER_TEST_USER:-}" ] || return 0
+    pkill -TERM -u "$REVIEWER_TEST_USER" 2>/dev/null || true
+    for _ in $(seq 1 50); do pgrep -u "$REVIEWER_TEST_USER" >/dev/null 2>&1 || break; sleep 0.1; done
+    pkill -KILL -u "$REVIEWER_TEST_USER" 2>/dev/null || true
+    for _ in $(seq 1 20); do pgrep -u "$REVIEWER_TEST_USER" >/dev/null 2>&1 || break; sleep 0.1; done
+    ! pgrep -u "$REVIEWER_TEST_USER" >/dev/null 2>&1
+}
+
 # run_just_test JUST_FILE REPO_DIR TEST_LOG TEST_TIMEOUT TEST_KILL_AFTER
 #
 # Runs `just test` under a timeout that escalates to SIGKILL, so a wedged or
@@ -360,22 +387,12 @@ run_just_test() {
             > "$test_log" 2>&1 || rc=$?
         # The test ran as reviewer-test on a reviewer-test-owned tree; everything
         # after (git log/show, the .codex-scratch wipe + write_scratch) runs as
-        # root. Reap any leftover reviewer-test procs (a test can `setsid` a
-        # detached writer that outlives `just test`; pkill -u is UID-based so it
-        # catches session-detached ones), restore ownership (else root git trips
-        # the dubious-ownership guard), and strip group/other write bits so
-        # nothing the test left behind (e.g. after a `chmod 777`) can race the
-        # root scratch-staging path. Exit status is preserved for the classifier.
-        # Bounded reap before root scratch staging: TERM, wait for exit, then
-        # KILL (uncatchable) any that ignored it — a TERM-only best-effort would
-        # leave a TERM-trapping writer alive to race the .codex-scratch wipe or
-        # read root-staged inputs. pkill -u is UID-based, so it reaps even
-        # setsid-detached procs.
-        pkill -TERM -u "$REVIEWER_TEST_USER" 2>/dev/null || true
-        for _ in $(seq 1 50); do pgrep -u "$REVIEWER_TEST_USER" >/dev/null 2>&1 || break; sleep 0.1; done
-        pkill -KILL -u "$REVIEWER_TEST_USER" 2>/dev/null || true
-        for _ in $(seq 1 20); do pgrep -u "$REVIEWER_TEST_USER" >/dev/null 2>&1 || break; sleep 0.1; done
-        if pgrep -u "$REVIEWER_TEST_USER" >/dev/null 2>&1; then
+        # root. Reap the test user's leftovers first, then restore ownership
+        # (else root git trips the dubious-ownership guard) and strip
+        # group/other write bits so nothing the test left behind (e.g. after a
+        # `chmod 777`) can race the root scratch-staging path. Exit status is
+        # preserved for the classifier.
+        if ! reap_test_user_processes; then
             # A process surviving SIGKILL is a catastrophic integrity failure
             # (uninterruptible I/O, or a kernel/namespace bug). Fail fast — do NOT
             # proceed into root-owned scratch staging where a live writer could
