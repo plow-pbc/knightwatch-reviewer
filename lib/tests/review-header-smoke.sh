@@ -32,11 +32,6 @@
 #     emission (every pre-check produces exactly one fragment, so the
 #     header doesn't collapse to scope-only on clean PRs), including the
 #     reviewer-side test-job abort rendering distinctly from a clean skip
-#   - format_dead_code_failure + dead_code_note_for_run: a hard dead-code
-#     pre-pass failure names its own cause and exit code instead of
-#     borrowing the timeout wording, and suppresses the `consumers` entry
-#     timeout_note_for_run would otherwise render as a second, contradictory
-#     note for the same event
 #   - review_is_approval: both coverage-loss refusals, the refusal when the
 #     test job RAN and reported a non-PASSED outcome, and the
 #     absent-test-outcome.tsv "no objection" case historical run dirs need
@@ -590,56 +585,6 @@ assert_contains "$got" "⏱️" "adapter emits timeout note"
 assert_contains "$got" "security,shape" "adapter joins sentinel lines"
 assert_contains "$got" "capacity" "note discloses model-at-capacity (shared soft-degrade sentinel, not timeout-only)"
 rm -rf "$_tnfr_dir"
-
-# ===== format_dead_code_failure (distinct cause, same soft-degrade class) =====
-# A hard `dead-code-search` exit degrades `consumers` through the same 124 the
-# timeout path uses. Without its own fragment the header would assert a cause
-# that did not happen (a timeout / capacity bounce) and blame `consumers`,
-# which never ran at all.
-echo "  format_dead_code_failure: exit code → ⚠️ note naming the pre-pass and the skipped angle..."
-got=$(format_dead_code_failure "7")
-assert_contains "$got" "⚠️" "dead-code failure emoji"
-assert_contains "$got" "dead-code pre-pass failed (exit 7)" "names the real cause + the real exit code"
-assert_contains "$got" '`consumers`' "names the angle skipped as a consequence"
-if printf '%s' "$got" | grep -qE 'timed out|capacity|⏱️'; then
-    echo "FAIL: dead-code failure note borrows the timeout wording — asserts a cause that did not happen"
-    echo "  got: $got"
-    exit 1
-fi
-
-echo "  format_dead_code_failure: empty → fail-fast (caller only invokes on non-empty sentinel)..."
-assert_fails_with "empty exit code" "empty exit code" -- format_dead_code_failure ""
-
-# ===== dead_code_note_for_run, and its interaction with timeout_note_for_run =====
-_dc_dir=$(mktemp -d)
-echo "  dead_code_note_for_run: no sentinel → empty (pre-pass ran clean)..."
-[ -z "$(dead_code_note_for_run "$_dc_dir")" ] || { echo "FAIL: expected empty note when no _dead_code_failed.txt"; exit 1; }
-
-echo "  dead_code_note_for_run: sentinel present → ⚠️ note carrying the real exit code..."
-printf '7\n' > "$_dc_dir/_dead_code_failed.txt"
-assert_contains "$(dead_code_note_for_run "$_dc_dir")" "exit 7" "adapter reads the exit code off the sentinel"
-
-# One event, one note: pipeline.py's 124 lands `consumers` in BOTH sentinels
-# (that 124 is what keeps the run approval-ineligible), so the timeout adapter
-# must drop the name rather than post a second, contradictory ⏱️ note.
-echo "  timeout_note_for_run: dead-code sentinel + consumers-only → no timeout note (one event, one note)..."
-printf 'consumers\n' > "$_dc_dir/_wave_b_timeouts.txt"
-got=$(timeout_note_for_run "$_dc_dir")
-[ -z "$got" ] || { echo "FAIL: consumers rendered as a timeout AND as a dead-code failure — two contradictory notes; got: $got"; exit 1; }
-
-echo "  timeout_note_for_run: dead-code sentinel + a genuine timeout → names only the genuine one..."
-printf 'consumers\nsecurity\n' > "$_dc_dir/_wave_b_timeouts.txt"
-got=$(timeout_note_for_run "$_dc_dir")
-assert_contains "$got" "security" "a real specialist timeout alongside still renders unchanged"
-if printf '%s' "$got" | grep -q "consumers"; then
-    echo "FAIL: timeout note still names consumers while the dead-code note explains it; got: $got"
-    exit 1
-fi
-# The sentinel FILE stays byte-identical: review_is_approval reads it for the
-# approval-ineligibility gate (fenced in prior-reviews-smoke.sh).
-[ "$(cat "$_dc_dir/_wave_b_timeouts.txt")" = "$(printf 'consumers\nsecurity')" ] \
-    || { echo "FAIL: timeout_note_for_run mutated _wave_b_timeouts.txt — the approval gate reads that file"; exit 1; }
-rm -rf "$_dc_dir"
 
 # ===== review_is_approval (coverage-loss + failing-test refusals) =====
 # Single owner of "did this review approve?" — the worker's GitHub submit gate

@@ -1514,26 +1514,24 @@ class TestRunPipeline(unittest.TestCase):
         self.assertFalse(self.repo_dir.exists())
 
     @patch("pipeline.subprocess.Popen")
-    def test_dead_code_failure_degrades_consumers_instead_of_aborting(self, mock_popen):
-        """Only `consumers` reads dead-code.md, and under the DAG the other six
-        specialists have already run by the time a dead-code-search failure is
-        known. Aborting would waste those calls and re-pay them on the retry
-        tick, so the failure degrades the one dependent angle instead: the
-        review completes, `consumers` never runs, and the ⏱️ sentinel names it.
-
-        The node flattens the failure to 124 (a code shared with real
-        timeouts), so it also drops its own sentinel carrying the REAL exit
-        code — otherwise the header would assert a timeout that never happened
-        and blame `consumers`, which never ran. Exit 7 (not 1) so the assertion
-        cannot pass on a flattened or hardcoded value."""
+    def test_dead_code_failure_stages_a_marker_and_keeps_consumers(self, mock_popen):
+        """`consumers` walks the diff itself either way, and common-header.md
+        already documents an empty dead-code.md as the both-passes-failed
+        shape — so a pre-pass failure must cost no angle. The node stages a
+        failure-MARKED file (a human debugging the run can tell it from "found
+        nothing") and returns 0: the review completes, `consumers` runs, and
+        nothing lands in the coverage sentinel that would block approval. Exit
+        7 (not 1) so the marker's code cannot pass on a hardcoded value."""
         mock_popen.side_effect = _make_codex_stub(plan={"dead-code-search": (7, "")})
         rc = self._run()
         self.assertEqual(rc, 0)
-        self.assertFalse((self.run_dir / "agents" / "consumers").exists(),
-                         "consumers ran without dead-code.md")
-        self.assertEqual((self.run_dir / "_wave_b_timeouts.txt").read_text(), "consumers\n")
-        self.assertEqual((self.run_dir / "_dead_code_failed.txt").read_text(), "7\n",
-                         "dead-code sentinel must carry the real exit code, not the 124 soft-degrade")
+        self.assertTrue((self.run_dir / "agents" / "consumers" / "output.md").exists(),
+                        "consumers was skipped over evidence it never depended on")
+        self.assertFalse((self.run_dir / "_wave_b_timeouts.txt").exists(),
+                         "a failed pre-pass left the review approval-ineligible")
+        staged = (self.repo_dir / ".codex-scratch" / "dead-code.md").read_text()
+        self.assertIn("exit 7", staged,
+                      "staged evidence must mark the failure, not read as 'found nothing'")
         self.assertTrue((self.run_dir / "agents" / "aggregator" / "output.md").exists())
 
     @patch("pipeline.subprocess.Popen")

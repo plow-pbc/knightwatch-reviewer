@@ -930,22 +930,17 @@ def run_pipeline(
         # consumers + critic, so medium effort regardless of PR size.
         rc = _run_standalone("dead-code-search", **dict(common_kwargs, effort="medium"))
         if rc != 0:
-            # Only `consumers` reads dead-code.md, and by the time this failure
-            # is known the other specialists have already run. Aborting would
-            # waste those calls and re-pay them on the retry tick, so degrade
-            # the one dependent angle (124 → _after skips `consumers`, landing
-            # it in _wave_b_timeouts.txt) and complete the review.
-            #
-            # That 124 is shared with real timeouts, so on its own the header
-            # would claim `consumers` timed out — a cause that did not happen,
-            # blamed on an agent that never ran. The sentinel carries the real
-            # cause + exit code; run-dir.sh's dead_code_note_for_run renders it
-            # and suppresses the borrowed timeout wording.
-            log(f"{pr_id}: dead-code search failed (exit={rc}) — degrading consumers")
-            (run / "_dead_code_failed.txt").write_text(f"{rc}\n")
-            return 124
-        _stage_scratch(scratch / "dead-code.md",
-                       (run / "agents" / "dead-code-search" / "output.md").read_bytes())
+            # `consumers` never depended on this evidence: it always walks the
+            # diff itself (prompts/specialists/consumers.md), and common-header
+            # already documents an empty dead-code.md as the both-passes-failed
+            # shape. So the failure costs no angle — stage it AS the evidence,
+            # marked so a human debugging the run can tell it from "found
+            # nothing", and complete the review.
+            log(f"{pr_id}: dead-code search failed (exit={rc}) — staging a failure marker as its evidence")
+            body = f"(dead-code pre-pass failed: exit {rc} — no evidence available)\n".encode()
+        else:
+            body = (run / "agents" / "dead-code-search" / "output.md").read_bytes()
+        _stage_scratch(scratch / "dead-code.md", body)
         return 0
 
     timings: dict = {}
@@ -985,9 +980,8 @@ def run_pipeline(
             except Exception as exc:
                 outcomes.append((angles[fut], None, exc))
     # Abort precedence: only intent aborts here — every specialist depends on
-    # it, so nothing has been spent. A dead-code-search failure is handled
-    # inside dead_code_node (degrades `consumers` via the rc=124 path below)
-    # rather than reported as its own abort.
+    # it, so nothing has been spent. A dead-code-search failure is absorbed
+    # inside dead_code_node (it stages a marked-failed dead-code.md, returns 0).
     if intent_rc != 0:
         return _abort(repo, f"{pr_id}: intent inference failed (exit={intent_rc}) — aborting")
 
