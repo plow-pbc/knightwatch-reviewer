@@ -670,6 +670,27 @@ timeout_note_for_run() {
     format_specialist_timeouts "$timed_out"
 }
 
+# format_skipped_angles NAMES_CSV LOC — the small-diff lane header fragment:
+# angles under their changed-line floor (pipeline.py SPECIALIST_MIN_LOC) did
+# not run; the aggregator screened their prompts instead. Same invariant as
+# format_specialist_timeouts: empty names is a caller bug — fail-fast.
+format_skipped_angles() {
+    local names="$1" loc="$2"
+    if [ -z "$names" ]; then
+        printf 'format_skipped_angles: empty names — internal invariant violated\n' >&2
+        return 1
+    fi
+    printf '⚡ Small-diff lane (%s lines): skipped %s — screened by aggregator' "$loc" "${names//,/, }"
+}
+
+# skipped_angles_note_for_run RUN_DIR LOC — sentinel→note adapter for
+# _skipped_angles.txt, the sibling of timeout_note_for_run.
+skipped_angles_note_for_run() {
+    local sentinel="$1/_skipped_angles.txt"
+    [ -s "$sentinel" ] || return 0
+    format_skipped_angles "$(paste -sd, "$sentinel")" "$2"
+}
+
 # prepend_review_header COMMENT_BODY NOTE [NOTE...]
 #
 # Renders the unified deterministic registry as one blockquote line right
