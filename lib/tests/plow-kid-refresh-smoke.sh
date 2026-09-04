@@ -293,14 +293,18 @@ first_since=$(grep '^since=' "$STALE")
 MOCK_KID_EXIT=1 run_refresh
 [ "$(grep '^since=' "$STALE")" = "$first_since" ] || { echo "FAIL scenario 9: since must be preserved across sweeps"; cat "$STALE"; exit 1; }
 
-echo "  scenario 9b: a committed .stale.tmp symlink and a multiline .indexed-sha never reach the marker's target or content..."
+echo "  scenario 9b: committed .stale.tmp / .indexed-sha symlinks are never followed; non-sha content never reaches the marker..."
 VICTIM="$TMPDIR/victim.env"; printf 'KEEP=me\n' > "$VICTIM"
 ln -s "$VICTIM" "$PROJ/.keepitdry/.stale.tmp"
-printf 'aaaaaaaa\nreason=injected\n' > "$PROJ/.keepitdry/.indexed-sha"
+ln -s "$VICTIM" "$PROJ/.keepitdry/.indexed-sha"     # reads as "KEEP=me": not a sha
 MOCK_KID_EXIT=1 run_refresh
 [ "$(cat "$VICTIM")" = "KEEP=me" ] || { echo "FAIL scenario 9b: marker write followed a committed symlink"; cat "$VICTIM"; exit 1; }
 grep -q '^indexed=never$' "$STALE" || { echo "FAIL scenario 9b: a non-sha .indexed-sha must render as never"; cat "$STALE"; exit 1; }
 [ "$(grep -c '^reason=' "$STALE")" -eq 1 ] || { echo "FAIL scenario 9b: injected line reached the marker"; cat "$STALE"; exit 1; }
+run_refresh   # successful index publishes .indexed-sha — through the symlink would truncate the victim to a sha
+[ "$(cat "$VICTIM")" = "KEEP=me" ] || { echo "FAIL scenario 9b: .indexed-sha write followed a committed symlink"; cat "$VICTIM"; exit 1; }
+[ ! -L "$PROJ/.keepitdry/.indexed-sha" ] && [ "$(cat "$PROJ/.keepitdry/.indexed-sha")" = "aaaaaaaa" ] \
+    || { echo "FAIL scenario 9b: .indexed-sha should be a regular file holding HEAD"; ls -la "$PROJ/.keepitdry"; exit 1; }
 rm -f "$PROJ/.keepitdry/.stale.tmp" "$PROJ/.keepitdry/.indexed-sha"
 
 echo "  scenario 10: a successful index — or one already current — clears .stale; the marker reads refreshing while kid runs..."

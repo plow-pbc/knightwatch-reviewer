@@ -61,18 +61,22 @@ FAILED=0
 # followed), and `indexed` is validated to a full sha (a committed multiline
 # `.indexed-sha` must never reach a key=value line). The rename replaces a
 # symlink at the marker path instead of following it.
+atomic_write() {   # atomic_write TARGET CONTENT — exclusive temp + rename; never follows a symlink at TARGET
+    local target="$1" tmp
+    tmp=$(mktemp "$(dirname "$target")/.pub.XXXXXX") || return 1
+    printf '%s\n' "$2" > "$tmp" && mv -f "$tmp" "$target"
+}
+
 write_marker() {
     local project="$1" reason="$2" marker="$1/.keepitdry/.stale"
-    local indexed behind="?" since tmp
+    local indexed behind="?" since
     mkdir -p "$project/.keepitdry"
     indexed=$(head -c 40 "$project/.keepitdry/.indexed-sha" 2>/dev/null)
     [[ "$indexed" =~ ^[0-9a-f]{7,40}$ ]] || indexed=never
     [ "$indexed" != never ] && behind=$(git rev-list --count "$indexed..HEAD" 2>/dev/null || echo "?")
     since=$(grep '^since=' "$marker" 2>/dev/null | cut -d= -f2-)
     [ -n "$since" ] || since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    tmp=$(mktemp "$project/.keepitdry/.stale.XXXXXX") || return 1
-    printf 'reason=%s\nindexed=%s\nbehind=%s\nsince=%s\n' "$reason" "$indexed" "$behind" "$since" > "$tmp" \
-        && mv -f "$tmp" "$marker"
+    atomic_write "$marker" "$(printf 'reason=%s\nindexed=%s\nbehind=%s\nsince=%s' "$reason" "$indexed" "$behind" "$since")"
 }
 
 mark_stale() {
@@ -153,7 +157,7 @@ for NAME in "${!KID_PATHS[@]}"; do
     # review say STALE (refreshing) instead of ✅ on a half-written index.
     write_marker "$PROJECT" refreshing
     if timeout "$KID_INDEX_TIMEOUT" kid index "$PROJECT" >> "$LOG_FILE" 2>&1; then
-        echo "$HEAD_SHA" > "$SHA_FILE"
+        atomic_write "$SHA_FILE" "$HEAD_SHA"
         rm -f "$PROJECT/.keepitdry/.stale"
         log "$NAME: index complete at ${HEAD_SHA:0:7}"
     else

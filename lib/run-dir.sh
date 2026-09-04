@@ -600,14 +600,18 @@ format_kid_note() {
 # note in review-one-pr.sh) and render as "?" when it won't parse, never as
 # a false 0.
 kid_index_behind() {
-    # Prints a STALE detail when .indexed-sha != the mirror's HEAD, nothing when
-    # current. Independent of the marker: covers a repo the refresh could not
-    # write to (outside its sandbox) and the hour between a push and the next
-    # sweep. The mirror is a read-only mount owned by another uid, hence the
+    # kid_index_behind INDEX_DIR MIRROR — a STALE detail when INDEX_DIR's
+    # .indexed-sha != MIRROR's HEAD (or HEAD is unreadable), nothing when
+    # current. INDEX_DIR is the snapshot the review queried, so the verdict
+    # describes the evidence actually used; MIRROR supplies only the reference
+    # HEAD. Independent of the marker: covers a repo the refresh could not write
+    # to (outside its sandbox) and the hour between a push and the next sweep.
+    # The mirror is a read-only mount owned by another uid, hence the
     # path-scoped safe.directory (same exemption lib/search-roots.sh takes).
-    local project="$1" indexed head behind
-    head=$(git -c safe.directory="$project" -C "$project" rev-parse HEAD 2>/dev/null) || return 0
-    indexed=$(head -c 40 "$project/.keepitdry/.indexed-sha" 2>/dev/null)
+    local index="$1" project="$2" indexed head behind
+    head=$(git -c safe.directory="$project" -C "$project" rev-parse HEAD 2>/dev/null) \
+        || { printf 'mirror HEAD unreadable (index-unverifiable)'; return 0; }
+    indexed=$(head -c 40 "$index/.indexed-sha" 2>/dev/null)
     # Same trust boundary as write_marker in plow-kid-refresh.sh: the file is
     # author-shaped, so anything but a sha reads as never indexed.
     [[ "$indexed" =~ ^[0-9a-f]{7,40}$ ]] || indexed=""

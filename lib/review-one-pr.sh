@@ -1133,51 +1133,56 @@ if [ -n "$KID_PROJECT_PATH" ] && [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -n "
     # sqlite needs write access even for a query (WAL). Query a throwaway copy in
     # a per-container writable dir: cp is cheap (~0.2s, page-cached), keeps each
     # review on the freshest host-refreshed index, and isolates the query from
-    # the shared index entirely. Falls back to the path itself if the copy fails.
+    # the shared index entirely. The copy is also the freshness authority: its
+    # .stale / .indexed-sha describe the evidence this review actually queried,
+    # where the live mirror can be rewritten by a refresh mid-review. No copy →
+    # no lookup, rather than a live-source query the header can't vouch for.
     KID_QUERY_DIR="$LOCAL_STATE_DIR/kid-query/${PR_ID//[^a-zA-Z0-9]/_}"
-    if rm -rf "$KID_QUERY_DIR" && mkdir -p "$KID_QUERY_DIR" \
-       && cp -r "$KID_PROJECT_PATH/.keepitdry" "$KID_QUERY_DIR/.keepitdry"; then
+    KID_SNAPSHOT="$KID_QUERY_DIR/.keepitdry"
+    if ! { rm -rf "$KID_QUERY_DIR" && mkdir -p "$KID_QUERY_DIR" && cp -r "$KID_PROJECT_PATH/.keepitdry" "$KID_SNAPSHOT"; }; then
+        KID_DETAIL="index copy failed"
+        log "$PR_ID: kid index copy failed — skipping prior-art lookup"
+    else
         export KID_PROJECT="$KID_QUERY_DIR"
-    else
-        log "$PR_ID: kid index copy failed — querying source path directly"
-        export KID_PROJECT="$KID_PROJECT_PATH"
-    fi
-    KID_STDERR=$(mktemp)
-    PRIOR_ART=$(printf '%s' "$KID_INPUT_DIFF" | python3 "$KWR_CLONE_ROOT/knightwatch-kid/scripts/kid_dry_check.py" 2>"$KID_STDERR")
-    KID_EXIT=$?
-    if [ $KID_EXIT -ne 0 ]; then
-        KID_ERR_SUMMARY=$(tail -n 3 "$KID_STDERR" | tr '\n' ' ')
-        log "$PR_ID: KID FAILURE (exit $KID_EXIT, project $KID_PROJECT) — degrading to kid-less review. stderr tail: $KID_ERR_SUMMARY"
-        {
-            echo "timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
-            echo "pr: $PR_ID"
-            echo "project: $KID_PROJECT"
-            echo "exit: $KID_EXIT"
-            echo "--- stderr tail ---"
-            tail -n 20 "$KID_STDERR"
-        } > "$KID_FLAG"
-        PRIOR_ART=""
-        KID_DETAIL="lookup failed (exit $KID_EXIT)"
-    else
-        rm -f "$KID_FLAG"
-        KID_RAN=true
-        if [ -n "$PRIOR_ART" ]; then
-            BLOCK_COUNT=$(printf '%s\n' "$PRIOR_ART" | grep -c '^### New block')
-            log "$PR_ID: kid surfaced prior-art for $BLOCK_COUNT block(s)"
-        fi
-        # The lookup still ran — the answer is just from an index kid-refresh
-        # marked stale (plow-kid-refresh.sh writes the marker). Say so.
-        if [ -f "$KID_PROJECT_PATH/.keepitdry/.stale" ]; then
-            KID_DETAIL=$(kid_stale_detail "$KID_PROJECT_PATH/.keepitdry/.stale")
+        KID_STDERR=$(mktemp)
+        PRIOR_ART=$(printf '%s' "$KID_INPUT_DIFF" | python3 "$KWR_CLONE_ROOT/knightwatch-kid/scripts/kid_dry_check.py" 2>"$KID_STDERR")
+        KID_EXIT=$?
+        if [ $KID_EXIT -ne 0 ]; then
+            KID_ERR_SUMMARY=$(tail -n 3 "$KID_STDERR" | tr '\n' ' ')
+            log "$PR_ID: KID FAILURE (exit $KID_EXIT, project $KID_PROJECT) — degrading to kid-less review. stderr tail: $KID_ERR_SUMMARY"
+            {
+                echo "timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
+                echo "pr: $PR_ID"
+                echo "project: $KID_PROJECT"
+                echo "exit: $KID_EXIT"
+                echo "--- stderr tail ---"
+                tail -n 20 "$KID_STDERR"
+            } > "$KID_FLAG"
+            PRIOR_ART=""
+            KID_DETAIL="lookup failed (exit $KID_EXIT)"
         else
-            KID_DETAIL=$(kid_index_behind "$KID_PROJECT_PATH")
+            rm -f "$KID_FLAG"
+            KID_RAN=true
+            if [ -n "$PRIOR_ART" ]; then
+                BLOCK_COUNT=$(printf '%s\n' "$PRIOR_ART" | grep -c '^### New block')
+                log "$PR_ID: kid surfaced prior-art for $BLOCK_COUNT block(s)"
+            fi
+            # The lookup still ran — the answer is just from an index kid-refresh
+            # marked stale (plow-kid-refresh.sh writes the marker) or one behind
+            # the mirror's HEAD. Judged on the SNAPSHOT queried, never the live
+            # source. Say so.
+            if [ -f "$KID_SNAPSHOT/.stale" ]; then
+                KID_DETAIL=$(kid_stale_detail "$KID_SNAPSHOT/.stale")
+            else
+                KID_DETAIL=$(kid_index_behind "$KID_SNAPSHOT" "$KID_PROJECT_PATH")
+            fi
+            if [ -n "$KID_DETAIL" ]; then
+                KID_RAN=stale
+                log "$PR_ID: KID index STALE — $KID_DETAIL"
+            fi
         fi
-        if [ -n "$KID_DETAIL" ]; then
-            KID_RAN=stale
-            log "$PR_ID: KID index STALE — $KID_DETAIL"
-        fi
+        rm -f "$KID_STDERR"
     fi
-    rm -f "$KID_STDERR"
     rm -rf "$KID_QUERY_DIR"
 elif [ -z "$KID_PROJECT_PATH" ]; then
     KID_DETAIL="no KID_PATHS entry"

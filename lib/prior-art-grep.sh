@@ -22,6 +22,7 @@ _prior_art_symbols() {
       | grep -E "^[$prefix][^$prefix]" | cut -c2- \
       | sed -nE \
           -e 's/.*(^|[^A-Za-z0-9_])(def|class|function|func|fn|struct|type|interface|enum|const|let|var|val|proc)[[:space:]]+([A-Za-z_][A-Za-z0-9_]{3,}).*/\3/p' \
+          -e 's/^[[:space:]]*([A-Za-z_][A-Za-z0-9_]{3,})[[:space:]]*\(\)[[:space:]]*\{.*/\1/p' \
           -e 's/^[[:space:]]*([A-Z][A-Z0-9_]{3,})[[:space:]]*=.*/\1/p' \
           -e 's/.*(--[a-z][a-z0-9-]{3,}).*/\1/p' \
       | grep -vxE 'self|this|None|True|False|null|true|false|return|import|from|main|test|init' \
@@ -51,7 +52,9 @@ sibling_prior_art() {
     local diff="$1" workdir="$2" self="$3"
     local out="" count=0 sym hits section body prefix title removed
     removed=$(_prior_art_symbols '-' "$diff")
-    for section in new changed; do
+    # Changed symbols first: a stale sibling caller is blocking-band evidence,
+    # so it takes the shared symbol/byte budget ahead of reuse hints.
+    for section in changed new; do
         body=""; prefix='+'; title='## Sibling prior art — new symbols'
         [ "$section" = changed ] && { prefix='-'; title='## Sibling references — changed/removed symbols'; }
         while IFS= read -r sym; do

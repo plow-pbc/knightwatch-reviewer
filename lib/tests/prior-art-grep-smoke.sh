@@ -57,4 +57,13 @@ for i in $(seq 1 9); do printf 'x = retry_with_backoff()\n' > "$WORK/.siblings/a
 n=$(sibling_prior_art "$DIFF" "$WORK" "acme/self" \
     | awk '/^### retry_with_backoff$/ { f=1; next } /^#/ { f=0 } f && /^- / { n++ } END { print n+0 }')
 [ "$n" -eq 5 ] || { echo "FAIL: $n hits, cap is 5"; exit 1; }
-echo "  PASS (5 scenarios: new-symbol-prior-art, changed-symbol-references, self-and-.git-excluded, no-hit-empty, per-symbol-cap)"
+
+echo "  6: bash name() { declarations count; changed symbols take the budget before new ones..."
+printf 'stage_marker() {\n  :\n}\nstage_marker\n' > "$WORK/.siblings/acme/libx/src/lib.sh"
+BASH_DIFF=$(printf '+stage_marker() {\n+    :\n+}\n-def fetch_widgets(limit):\n')
+out=$(sibling_prior_art "$BASH_DIFF" "$WORK" "acme/self")
+printf '%s\n' "$out" | grep -q '^### stage_marker$' || { echo "FAIL: bash function declaration not extracted"; printf '%s\n' "$out"; exit 1; }
+refs_pos=$(printf '%s\n' "$out" | grep -n '^## Sibling references' | cut -d: -f1)
+new_pos=$(printf '%s\n' "$out" | grep -n '^## Sibling prior art' | cut -d: -f1)
+[ "$refs_pos" -lt "$new_pos" ] || { echo "FAIL: changed-symbol references must precede new-symbol prior art (budget order)"; printf '%s\n' "$out"; exit 1; }
+echo "  PASS (6 scenarios: new-symbol-prior-art, changed-symbol-references, self-and-.git-excluded, no-hit-empty, per-symbol-cap, bash-decls-and-changed-first)"
