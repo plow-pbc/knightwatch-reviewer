@@ -883,7 +883,13 @@ def run_pipeline(
         # consumers + critic, so medium effort regardless of PR size.
         rc = _run_standalone("dead-code-search", **dict(common_kwargs, effort="medium"))
         if rc != 0:
-            return rc
+            # Only `consumers` reads dead-code.md, and by the time this failure
+            # is known the other specialists have already run. Aborting would
+            # waste those calls and re-pay them on the retry tick, so degrade
+            # the one dependent angle (124 → the timeout path names it in
+            # _wave_b_timeouts.txt) and complete the review.
+            log(f"{pr_id}: dead-code search failed (exit={rc}) — degrading consumers")
+            return 124
         _stage_scratch(scratch / "dead-code.md",
                        (run / "agents" / "dead-code-search" / "output.md").read_bytes())
         return 0
@@ -910,7 +916,8 @@ def run_pipeline(
         if has_prev:
             angles[ex.submit(_after, [intent_f],
                              partial(_run_standalone, "momentum", **common_kwargs))] = "momentum"
-        intent_rc, dc_rc = intent_f.result(), dc_f.result()
+        intent_rc = intent_f.result()
+        dc_f.result()  # exception raised inside the node must still surface
         test_f.result()
         outcomes = []
         for fut in as_completed(angles):
@@ -918,12 +925,12 @@ def run_pipeline(
                 outcomes.append((angles[fut], fut.result(), None))
             except Exception as exc:
                 outcomes.append((angles[fut], None, exc))
-    # Abort precedence is parity with the old waves: an intent / dead-code
-    # failure is reported as itself, never as the specialists it starved.
+    # Abort precedence: only intent aborts here — every specialist depends on
+    # it, so nothing has been spent. A dead-code-search failure is handled
+    # inside dead_code_node (degrades `consumers` via the rc=124 path below)
+    # rather than reported as its own abort.
     if intent_rc != 0:
         return _abort(repo, f"{pr_id}: intent inference failed (exit={intent_rc}) — aborting")
-    if dc_rc != 0:
-        return _abort(repo, f"{pr_id}: dead-code search failed (exit={dc_rc}) — aborting")
 
     timed_out: list[str] = []
     hard_failures: list[str] = []

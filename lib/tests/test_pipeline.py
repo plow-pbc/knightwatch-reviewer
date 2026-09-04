@@ -1428,15 +1428,19 @@ class TestRunPipeline(unittest.TestCase):
         self.assertFalse(self.repo_dir.exists())
 
     @patch("pipeline.subprocess.Popen")
-    def test_dead_code_failure_aborts_loud(self, mock_popen):
-        """dead-code-search becomes fail-loud (was fail-soft in shell pipeline)."""
-        mock_popen.side_effect = _make_codex_stub({
-            "intent": (0, "Inferred intent: stub.\n"),
-            "dead-code-search": (7, ""),
-        })
+    def test_dead_code_failure_degrades_consumers_instead_of_aborting(self, mock_popen):
+        """Only `consumers` reads dead-code.md, and under the DAG the other six
+        specialists have already run by the time a dead-code-search failure is
+        known. Aborting would waste those calls and re-pay them on the retry
+        tick, so the failure degrades the one dependent angle instead: the
+        review completes, `consumers` never runs, and the ⏱️ sentinel names it."""
+        mock_popen.side_effect = _make_codex_stub(plan={"dead-code-search": (1, "")})
         rc = self._run()
-        self.assertNotEqual(rc, 0)
-        self.assertFalse(self.repo_dir.exists())
+        self.assertEqual(rc, 0)
+        self.assertFalse((self.run_dir / "agents" / "consumers").exists(),
+                         "consumers ran without dead-code.md")
+        self.assertEqual((self.run_dir / "_wave_b_timeouts.txt").read_text(), "consumers\n")
+        self.assertTrue((self.run_dir / "agents" / "aggregator" / "output.md").exists())
 
     @patch("pipeline.subprocess.Popen")
     def test_one_angle_failure_aborts_pipeline(self, mock_popen):
