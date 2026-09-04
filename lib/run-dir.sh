@@ -288,19 +288,15 @@ prune_stale_scenario_images() {
 # Bounded TERM → wait → KILL → confirm-dead sweep over everything owned by
 # $REVIEWER_TEST_USER. `pkill -u` is UID-based, so it reaps the session-detached
 # writer a `just test` can `setsid` — the one a process-tree kill (pkill -P)
-# structurally cannot reach. TERM-only would leave a TERM-trapping writer alive
-# to race the .codex-scratch wipe or read root-staged inputs, so the KILL pass
-# is not optional.
+# structurally cannot reach — and the KILL pass is not optional, or a
+# TERM-trapping writer survives to race the .codex-scratch wipe.
 #
-# Single owner of "reap the test user's processes": run_just_test calls it after
-# a clean run, cleanup_test_clone (lib/review-one-pr.sh) on the abort path,
-# before the test clone is deleted. A detached descendant otherwise outlives
-# both the subshell and its own clone and contaminates the next review's run.
-#
-# No-op (rc 0) when REVIEWER_TEST_USER is unset: the host/systemd path runs
-# `just test` as the operator, and a UID-wide reap there would kill the
-# operator's own processes. Returns 1 iff something survived SIGKILL — callers
-# decide how loud that is.
+# Single owner of that reap: run_just_test after a clean run, cleanup_test_clone
+# (lib/review-one-pr.sh) on the abort path before the clone is deleted, where a
+# detached descendant would otherwise outlive both the subshell and its clone.
+# No-op (rc 0) when REVIEWER_TEST_USER is unset — the host/systemd path runs
+# `just test` as the operator, whose processes must not be signalled. Returns 1
+# iff something survived SIGKILL; callers decide how loud that is.
 reap_test_user_processes() {
     [ -n "${REVIEWER_TEST_USER:-}" ] || return 0
     pkill -TERM -u "$REVIEWER_TEST_USER" 2>/dev/null || true
@@ -895,16 +891,15 @@ review_is_approval() {
     [ -f "$run_dir/test-outcome.tsv" ] || return 0
     IFS=$'\t' read -r ran summary _ < "$run_dir/test-outcome.tsv"
     # The tests RAN and did not pass — FAILED (exit N) or TIMED OUT (>W). The
-    # aggregator is no longer a reliable gate on this: a job delayed past the
+    # aggregator is not a reliable gate on this: a job delayed past the
     # test-gate's wait bound stages "not run" for the readers and reports its
     # real outcome afterwards, so an APPROVE verdict can be written over a
     # failure nobody saw. This row is that outcome — refuse on it directly.
     [ "$ran" = "true" ] && [ "$summary" != "PASSED" ] && return 1
     # Same coverage-loss class as a timed-out specialist: `just test` never ran
-    # because of a reviewer-host fault, so this run must not auto-approve. NOT
-    # subsumed by the rule above — an aborted job writes TESTS_RAN=false, and
-    # every OTHER false row is a legitimate skip (no justfile, untrusted
-    # author, budget exhausted) that must keep approving.
+    # because of a reviewer-host fault. NOT subsumed by the rule above — an
+    # aborted job writes TESTS_RAN=false, and every OTHER false row is a
+    # legitimate skip (no justfile, untrusted author) that must keep approving.
     [ "$summary" = "$TEST_ABORTED_SUMMARY" ] && return 1
     return 0
 }

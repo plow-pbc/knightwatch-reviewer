@@ -44,6 +44,13 @@ def _fast_watchdog(stale=0.1, poll=0.05, timeout=5.0):
         yield
 
 
+def _report_test_job(run_dir: Path, body: str = "**Result:** PASSED\n") -> None:
+    """Stand in for the worker's background `just test` job, in its write order:
+    results body first, then the outcome row that unblocks the test-gate."""
+    (run_dir / "test-results.md").write_text(body)
+    (run_dir / "test-outcome.tsv").write_text("true\tPASSED\t0\t3\n")
+
+
 def _write_minimal_prompts(prompts_dir: Path) -> None:
     """Write the full minimal prompt tree run_pipeline + the CLI smoke need.
 
@@ -313,16 +320,19 @@ class TestTestGateWaitBound(unittest.TestCase):
     are exclusive, never min()'d — the cap is short enough that combining them
     would abandon a live test job on every real review."""
 
-    def _gate(self, env: dict, sentinel: bool = False) -> tuple[int, str]:
+    def _gate(self, env: dict, reported: bool = False) -> tuple[int, str]:
         """Run _test_gate over a throwaway run/scratch pair; returns (rc, the
-        staged scratch body) read before the temp dir goes away."""
+        staged scratch body) read before the temp dir goes away. `reported`
+        writes the outcome row too — a results body ALONE must not unblock the
+        gate, since the job writes that body before it has an outcome."""
         with TemporaryDirectory() as d:
             run, scratch = Path(d) / "run", Path(d) / "scratch"
             run.mkdir()
             scratch.mkdir()
-            (run / "test-results.md").write_text("**Result:** PASSED\n")
-            if sentinel:
-                (run / "test-done").touch()
+            if reported:
+                _report_test_job(run)
+            else:
+                (run / "test-results.md").write_text("**Result:** PASSED\n")
             with patch.dict(os.environ, env, clear=True):
                 rc = pipeline._test_gate(run, scratch, "o/r#1")
             return rc, (scratch / "test-results.md").read_text()
@@ -368,11 +378,13 @@ class TestTestGateWaitBound(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(staged, "**Result:** not run (worker timeout budget exhausted)\n")
 
-    def test_sentinel_present_stages_the_real_result(self):
+    def test_outcome_row_present_stages_the_real_result(self):
         # The bounds must not shortcut the happy path: an already-reported job
-        # is staged verbatim even with both bounds long past.
+        # is staged verbatim even with both bounds long past. The three cases
+        # above pass a results body with NO outcome row and all give up — the
+        # other half of the contract: the row, not the body, says "done".
         with patch.object(pipeline, "TEST_GATE_MAX_WAIT_SEC", 0):
-            rc, staged = self._gate({"WORKER_DEADLINE_EPOCH": "0"}, sentinel=True)
+            rc, staged = self._gate({"WORKER_DEADLINE_EPOCH": "0"}, reported=True)
         self.assertEqual(rc, 0)
         self.assertEqual(staged, "**Result:** PASSED\n")
 
@@ -1391,8 +1403,7 @@ class TestRunPipeline(unittest.TestCase):
         # The worker's background test job writes these before the pipeline
         # needs them; the fixture stands in for it. Tests that exercise the
         # wait itself delete them first.
-        (self.run_dir / "test-results.md").write_text("**Result:** PASSED\n")
-        (self.run_dir / "test-done").touch()
+        _report_test_job(self.run_dir)
 
         self.prompts = Path(self.tmp.name) / "prompts"
         self.prompts.mkdir()
@@ -1714,11 +1725,10 @@ class TestRunPipeline(unittest.TestCase):
     @patch("pipeline.subprocess.Popen")
     def test_tests_specialist_waits_for_test_results_and_others_do_not(self, mock_popen):
         """`just test` runs in the background. Every specialist except `tests`
-        starts without it; `tests` starts only after the worker's sentinel
+        starts without it; `tests` starts only after the worker's outcome row
         lands, and then sees the staged results. Security's stub plays the
-        worker: it asserts `tests` hasn't started, then writes the results and
-        the sentinel."""
-        (self.run_dir / "test-done").unlink()
+        worker: it asserts `tests` hasn't started, then reports."""
+        (self.run_dir / "test-outcome.tsv").unlink()
         (self.run_dir / "test-results.md").unlink()
         started: list[str] = []
         seen: dict[str, str] = {}
@@ -1728,8 +1738,7 @@ class TestRunPipeline(unittest.TestCase):
             with lock:
                 started.append(name)
             if name == "security":
-                (self.run_dir / "test-results.md").write_text("**Result:** from-security\n")
-                (self.run_dir / "test-done").touch()
+                _report_test_job(self.run_dir, "**Result:** from-security\n")
             if name == "tests":
                 seen["tests"] = scratch.read_text() if scratch.exists() else "<absent>"
         mock_popen.side_effect = _make_codex_stub(before_write=worker_stub)
@@ -1740,9 +1749,9 @@ class TestRunPipeline(unittest.TestCase):
 
     @patch("pipeline.subprocess.Popen")
     def test_test_gate_stages_not_run_past_the_worker_deadline(self, mock_popen):
-        """No sentinel by WORKER_DEADLINE_EPOCH → the gate stages a 'not run'
+        """No outcome row by WORKER_DEADLINE_EPOCH → the gate stages a 'not run'
         body (the shape a skipped test already has) and the review completes."""
-        (self.run_dir / "test-done").unlink()
+        (self.run_dir / "test-outcome.tsv").unlink()
         (self.run_dir / "test-results.md").unlink()
         mock_popen.side_effect = _make_codex_stub()
         with patch.dict(os.environ, {"WORKER_DEADLINE_EPOCH": str(time.time() - 1)}):
@@ -2175,8 +2184,7 @@ class TestPipelineCLI(unittest.TestCase):
         # The worker's background test job writes these before the pipeline
         # needs them; the fixture stands in for it (no patch — this class
         # runs a subprocess).
-        (self.run_dir / "test-results.md").write_text("**Result:** PASSED\n")
-        (self.run_dir / "test-done").touch()
+        _report_test_job(self.run_dir)
 
         self.prompts = root / "prompts"
         self.prompts.mkdir()

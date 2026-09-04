@@ -154,10 +154,11 @@ for f in pr-comments.md loc-trend.md \
          file-history.md commits.md search-roots.md; do
     write_scratch "$REPO_DIR" "$f" "(replay: not staged — upstream pipeline stage skipped)"
 done
-# pipeline.py's test-gate stages test-results.md itself from the run dir; a
-# replay has no test job, so hand it the placeholder + sentinel up front.
+# pipeline.py's test-gate stages test-results.md itself from the run dir, and
+# polls test-outcome.tsv to know the body is complete; a replay has no test job,
+# so hand it both up front — the body first, in the gate's own write order.
 printf '%s\n' "(replay: not staged — upstream pipeline stage skipped)" > "$RUN_DIR/test-results.md"
-touch "$RUN_DIR/test-done"
+printf '%s\t%s\t%s\t%s\n' false "not run (replay: no test job)" 0 0 > "$RUN_DIR/test-outcome.tsv"
 # author-intent.md is NOT an upstream-pipeline artifact — it is public PR
 # metadata replay can fetch itself, and intent.md now requires it. Staging the
 # sentinel here would silently strip the author's rationale from every replay,

@@ -1742,9 +1742,9 @@ write_stateful_gh_stub "$HOME/.local/bin/gh" "$STORE18" "main" "$PR_SHA17"
 # run-just-test-isolation-smoke.sh). Nothing after the endpoint pin runs.
 printf '#!/bin/bash\nexit 0\n' > "$HOME/.local/bin/chown"; chmod +x "$HOME/.local/bin/chown"
 # pkill/pgrep are stubbed for the same reason (and recorded, for the cleanup
-# assertion below): unstubbed, a real `pkill -KILL -u reviewer-test` would reach
-# the HOST's processes if that account exists — including this suite, when it
-# runs as reviewer-test on the container review path.
+# assertion below): unstubbed, a real `pkill -KILL -u reviewer-test` reaches the
+# HOST's processes where that account exists — this suite included, when it runs
+# as reviewer-test on the container review path.
 REAP18="$TMPDIR/reap-18.calls"; : > "$REAP18"
 printf '#!/bin/bash\necho "pkill $*" >> "%s"\nexit 0\n' "$REAP18" > "$HOME/.local/bin/pkill"
 printf '#!/bin/bash\nexit 1\n' > "$HOME/.local/bin/pgrep"
@@ -1798,11 +1798,10 @@ esac
 if [ -e "$STATE18/workdirs/test-org_probe-repo__1-test" ]; then
     echo "FAIL: scenario 18 — test clone (mirrored .env) left on disk after the aborted test job"; exit 1
 fi
-# cleanup_test_clone must run the UID-wide reap before deleting the clone. The
-# `pkill -P <job pid>` it already did reaches only the job's own children — a
-# `setsid` descendant of `just test` escapes it, outlives the clone it was
-# running against, and contaminates the next review's test run. This is the only
-# path where nothing else reaps: run_just_test's own reap is on the clean path.
+# cleanup_test_clone must run the UID-wide reap before deleting the clone: its
+# `pkill -P <job pid>` reaches only the job's own children, so a `setsid`
+# descendant escapes it and outlives the clone it was running against. This is
+# the only path where nothing else reaps — run_just_test's own is the clean one.
 if ! grep -qx "pkill -KILL -u reviewer-test" "$REAP18"; then
     echo "FAIL: scenario 18 — the abort path never reaped the test user's processes (a detached descendant survives the clone delete)"
     cat "$REAP18"; exit 1

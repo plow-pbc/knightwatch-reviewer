@@ -667,11 +667,10 @@ if review_is_approval "VERDICT: APPROVE" "$_ria_dir"; then
     exit 1
 fi
 
-# The tests RAN and reported a failure. The aggregator can't be relied on to
-# catch this: when the job outlives the test-gate's wait bound the readers get
-# "not run" and the real outcome lands afterwards, so an APPROVE verdict over a
-# known-red suite reaches GitHub unless this row refuses it. Both non-PASSED
-# shapes classify_just_test_outcome emits are fenced.
+# The tests RAN and reported a failure. The aggregator can't catch this: when
+# the job outlives the test-gate's wait bound the readers get "not run" and the
+# real outcome lands afterwards, so an APPROVE over a known-red suite reaches
+# GitHub unless this row refuses it. Both non-PASSED shapes are fenced.
 for _ria_case in "FAILED (exit 1)" "TIMED OUT (>30m)"; do
     echo "  review_is_approval: APPROVE + tests ran + '$_ria_case' → refuses..."
     printf 'true\t%s\t0\t42\n' "$_ria_case" > "$_ria_dir/test-outcome.tsv"

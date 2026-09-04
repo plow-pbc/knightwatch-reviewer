@@ -471,11 +471,9 @@ cleanup_test_clone() {
         wait "$TEST_JOB_PID" 2>/dev/null
     fi
     # `-P` only reaches the job's own children — a `setsid` descendant escapes
-    # it, survives the clone delete below, and contaminates the next review.
-    # The UID-wide reap (lib/run-dir.sh) is the one that catches it; the clean
-    # path already runs it, so the abort path must too. Before the delete, so a
-    # survivor can't write into a half-removed tree. No-op on the host path,
-    # where REVIEWER_TEST_USER is unset and the operator owns those processes.
+    # it and survives the clone delete below. The UID-wide reap (lib/run-dir.sh)
+    # catches it; the clean path already runs it, so this one must too, and
+    # before the delete so a survivor can't write into a half-removed tree.
     reap_test_user_processes \
         || log "$PR_ID: reviewer-test process survived SIGKILL during test-clone cleanup"
     [ -n "${TEST_DIR:-}" ] && rm -rf "$TEST_DIR"; return 0
@@ -1018,9 +1016,10 @@ TEST_JOB_START=$(date +%s)
 # The job's single "reported" owner, run on EVERY subshell exit — including
 # run_just_test's fail-fast `exit 1` paths (lib/run-dir.sh: wrong DOCKER_HOST,
 # bridge-reset failure, a reviewer-test process surviving SIGKILL), which now
-# leave only the subshell and so skip the reporting writes below. The gate
-# read_bytes()es test-results.md the moment the sentinel appears and the header
-# note needs an outcome row, so backfill both BEFORE touching the sentinel.
+# leave only the subshell and so skip the reporting writes below. test-outcome.tsv
+# is what pipeline.py's test-gate polls for, and it read_bytes()es
+# test-results.md the moment that row appears — so every reporting path here and
+# below writes the results body FIRST, outcome row second.
 # It also owns the clone delete (the mirrored live .env files must not sit on
 # disk through the specialist phase, on the aborted path either).
 _test_job_exit() {
@@ -1035,7 +1034,6 @@ _test_job_exit() {
         printf '%s\t%s\t%s\t%s\n' false "$aborted" 0 "$(( $(date +%s) - TEST_JOB_START ))" \
             > "$RUN_DIR/test-outcome.tsv"
     fi
-    touch "$RUN_DIR/test-done"
     # Skips cleanup_test_clone's kill branch: TEST_JOB_PID is still the
     # pre-fork "" in here.
     cleanup_test_clone
@@ -1729,9 +1727,8 @@ fi
 
 # Join the test job — success path only; the abort above already reaps it via
 # the EXIT trap's cleanup_test_clone. It is normally long finished (the
-# test-gate waited on its sentinel, which _test_job_exit writes after the
-# outcome row). Clearing the pid keeps that trap from signalling a recycled
-# one after it is reaped.
+# test-gate waited on the same outcome row this reads back). Clearing the pid
+# keeps that trap from signalling a recycled one after it is reaped.
 wait "$TEST_JOB_PID"
 TEST_JOB_PID=""
 IFS=$'\t' read -r TESTS_RAN TEST_SUMMARY TEST_LOCK_WAIT_S TEST_RUN_S < "$RUN_DIR/test-outcome.tsv" || {

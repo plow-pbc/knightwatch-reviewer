@@ -177,14 +177,10 @@ grep -q "GH_TOKEN_VISIBLE" "$d/log-prune-fail" \
 install_docker_stub                                                          # restore
 
 # --- reap_test_user_processes ------------------------------------------------
-# One owner for "reap the test user's processes": run_just_test after a clean
-# run, and cleanup_test_clone (lib/review-one-pr.sh) on the abort path, where
-# `pkill -P` alone leaves a session-detached descendant alive to outlive its own
-# clone. The uid switch can't happen in a unit test, so recording stubs assert
-# the contract that matters: WHO gets signalled, in what order, and that the
-# host path signals nobody. Last section — the stubs it installs are not
-# restored. `sleep` is stubbed too so the survivor case doesn't spend the
-# bounded wait (7s) of real sleeps; the bound itself is the loop counts above.
+# The uid switch can't happen in a unit test, so recording stubs assert the
+# contract that matters: WHO gets signalled, in what order, and that the host
+# path signals nobody. Last section — its stubs are not restored; `sleep` is one
+# of them, so the survivor case doesn't spend the bounded wait's real 7s.
 REAP_CALLS="$d/reap.calls"
 printf '#!/bin/bash\necho "pkill $*" >> "%s"\nexit 0\n' "$REAP_CALLS" > "$d/bin/pkill"
 printf '#!/bin/bash\necho "pgrep $*" >> "%s"\nexit "${REAP_PGREP_RC:-1}"\n' "$REAP_CALLS" > "$d/bin/pgrep"
@@ -192,14 +188,11 @@ printf '#!/bin/bash\nexit 0\n' > "$d/bin/sleep"
 chmod +x "$d/bin/pkill" "$d/bin/pgrep" "$d/bin/sleep"
 
 : > "$REAP_CALLS"
-(unset REVIEWER_TEST_USER; reap_test_user_processes) \
-    || fail "host path (REVIEWER_TEST_USER unset) returned non-zero"
-[ ! -s "$REAP_CALLS" ] \
-    || fail "host path signalled processes — a UID-wide reap there kills the operator's own: $(cat "$REAP_CALLS")"
+(unset REVIEWER_TEST_USER; reap_test_user_processes) || fail "host path (REVIEWER_TEST_USER unset) returned non-zero"
+[ ! -s "$REAP_CALLS" ] || fail "host path signalled processes — a UID-wide reap there kills the operator's own: $(cat "$REAP_CALLS")"
 
 : > "$REAP_CALLS"
-REVIEWER_TEST_USER=reviewer-test reap_test_user_processes \
-    || fail "reap reported a survivor when pgrep says the test user has no processes"
+REVIEWER_TEST_USER=reviewer-test reap_test_user_processes || fail "reap reported a survivor though pgrep says the test user has none"
 grep -qx "pkill -TERM -u reviewer-test" "$REAP_CALLS" || fail "reap never TERMed the test user's processes"
 grep -qx "pkill -KILL -u reviewer-test" "$REAP_CALLS" || fail "reap never escalated to SIGKILL (a TERM-trapping writer would survive)"
 awk '/pkill -TERM/{t=1} /pkill -KILL/{if(!t) exit 1}' "$REAP_CALLS" || fail "reap sent SIGKILL before SIGTERM"

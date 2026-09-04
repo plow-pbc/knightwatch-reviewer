@@ -196,7 +196,7 @@ _CODEX_CYBER_REFUSAL_RE = re.compile(
 CODEX_MAX_CONCURRENCY = 4
 _codex_slots = threading.BoundedSemaphore(CODEX_MAX_CONCURRENCY)
 
-# How often the test-gate node re-checks for the worker's `test-done` sentinel.
+# How often the test-gate node re-checks for the worker's test-outcome.tsv.
 TEST_GATE_POLL_SEC = 5.0
 # Headroom the gate leaves in front of review.sh's WORKER_DEADLINE_EPOCH, which
 # is the same instant its `timeout -k` SIGTERMs this process group. Giving up AT
@@ -823,9 +823,10 @@ def _run_standalone(
 
 
 def _test_gate(run: Path, scratch: Path, pr_id: str) -> int:
-    """Wait for review-one-pr.sh's background `just test` job — it writes
-    <run>/test-results.md and then touches <run>/test-done — and stage the
-    results for the `tests` specialist + aggregator (the only readers; see
+    """Wait for review-one-pr.sh's background `just test` job — every reporting
+    path there writes <run>/test-results.md and THEN <run>/test-outcome.tsv, so
+    that row's existence means the body is complete — and stage the results for
+    the `tests` specialist + aggregator (the only readers; see
     prompts/common-header.md). Always 0: once the wait is up it stages a
     'not run' body, the shape a skipped test already has, so both readers
     always find the file. The wait ends at the worker deadline less
@@ -833,15 +834,15 @@ def _test_gate(run: Path, scratch: Path, pr_id: str) -> int:
     to actually finish and post), or — only when that env is absent, i.e. replay
     and direct invocation — at TEST_GATE_MAX_WAIT_SEC. Never both: see the
     constants for why capping ahead of a live deadline abandons the test job."""
-    done = run / "test-done"
+    outcome = run / "test-outcome.tsv"
     deadline_raw = os.environ.get("WORKER_DEADLINE_EPOCH")
     if deadline_raw:
         give_up = float(deadline_raw) - TEST_GATE_DEADLINE_MARGIN_SEC
     else:
         give_up = time.time() + TEST_GATE_MAX_WAIT_SEC
-    while not done.exists():
+    while not outcome.exists():
         if time.time() >= give_up:
-            log(f"{pr_id}: test-gate: no test-done sentinel within the gate's wait bound — staging 'not run'")
+            log(f"{pr_id}: test-gate: no test-outcome.tsv within the gate's wait bound — staging 'not run'")
             _stage_scratch(scratch / "test-results.md",
                            b"**Result:** not run (worker timeout budget exhausted)\n")
             return 0
