@@ -122,14 +122,16 @@ materialize_sibling_symlinks() {
         # the new commit. Pinning the SHA up front makes the whole
         # materialization a single coherent snapshot. PR #37 review 5
         # finding 1 (BCR — 5th instance of silent-coverage-loss).
-        if ! snap_sha=$(git -C "$src" rev-parse HEAD 2>/dev/null); then
+        # -c safe.directory: the sibling mount is owned by another uid (see
+        # lib/search-roots.sh); scoped to this path on every call below.
+        if ! snap_sha=$(git -c safe.directory="$src" -C "$src" rev-parse HEAD 2>/dev/null); then
             echo "materialize_sibling_symlinks: git rev-parse HEAD failed for $slug ($src)" >&2
             return 1
         fi
 
         # Capture to tempfile (NUL-safe + status-checkable).
         list_file=$(mktemp -t kw-sib-XXXXXX) || return 1
-        if ! git -C "$src" ls-tree -r -z "$snap_sha" > "$list_file" 2>/dev/null; then
+        if ! git -c safe.directory="$src" -C "$src" ls-tree -r -z "$snap_sha" > "$list_file" 2>/dev/null; then
             rm -f "$list_file"
             echo "materialize_sibling_symlinks: git ls-tree -r $snap_sha failed for $slug ($src)" >&2
             return 1
@@ -162,7 +164,7 @@ materialize_sibling_symlinks() {
                     ;;
             esac
             mkdir -p "$target/$(dirname "$rel")"
-            if ! git -C "$src" show "$snap_sha:$rel" > "$target/$rel" 2>/dev/null; then
+            if ! git -c safe.directory="$src" -C "$src" show "$snap_sha:$rel" > "$target/$rel" 2>/dev/null; then
                 rm -f "$list_file"
                 echo "materialize_sibling_symlinks: git show $snap_sha:$rel failed for $slug" >&2
                 return 1
