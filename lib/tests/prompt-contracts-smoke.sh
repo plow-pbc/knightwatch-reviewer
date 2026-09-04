@@ -183,6 +183,13 @@ echo "  asserting common-header pins Scope-justification Q polarity (prevents in
 assert_grep "common-header.md must pin cut-positive Q polarity — without it a need-positive Q + 'cut X' edit re-inverts the rendered advice" \
     "cut-positive" prompts/common-header.md
 
+# Small-diff lane: angles under their floor never run; the aggregator screens
+# their prompts and may add blocking-only probes attributed to the skipped angle.
+echo "  asserting aggregator screens skipped angles..."
+assert_grep "aggregator.md must read skipped-angles.md" 'skipped-angles.md' prompts/aggregator.md
+assert_grep "aggregator.md must cap skipped-angle probes at blocking with a [from:] tag" \
+    'skipped angle: `blocking` only, tagged `[from: <angle>]`' prompts/aggregator.md
+
 # Cross-file marker: any consumer parsing the rendered Probes section
 # by `[from: <specialist>]` depends on aggregator.md owning the token format.
 echo "  asserting [from: <specialist>] attribution token in aggregator.md..."
