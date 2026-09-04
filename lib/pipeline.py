@@ -202,13 +202,23 @@ TEST_GATE_POLL_SEC = 5.0
 # is the same instant its `timeout -k` SIGTERMs this process group. Giving up AT
 # the deadline rescues nothing: the `tests` specialist, its critic, and the xhigh
 # aggregator all still have to run afterwards, so a review that unblocks there is
-# a fully-spent one that never posts. 10 min is that tail.
+# a fully-spent one that never posts. 10 min is that tail. This is the ONLY bound
+# whenever the deadline is set — it already tracks the test job's real ceiling,
+# which is that same deadline less cap_test_timeout's 35s reserve, however long
+# the job queued on the shared just-test semaphore first.
 TEST_GATE_DEADLINE_MARGIN_SEC = 10 * 60
-# Unconditional ceiling, applied even when WORKER_DEADLINE_EPOCH is set. It is
-# UNSET for replay and direct invocation, where the deadline branch alone waits
-# forever — the trigger being a test subshell killed by signal without running
-# its EXIT trap (an OOM-kill; `( ) &` resets the parent's traps and the job sets
-# no TERM handler of its own). Covers TEST_TIMEOUT (30m) plus the queue wait.
+# Fallback bound for when WORKER_DEADLINE_EPOCH is unset or empty — replay and
+# direct invocation — where the deadline branch alone would wait forever if the
+# test subshell were killed by signal without running its EXIT trap (an OOM-kill;
+# `( ) &` resets the parent's traps and the job sets no TERM handler of its own).
+# Deliberately NOT combined with the deadline bound. Under review.sh's 90m
+# WORKER_TIMEOUT the deadline bound is worker_start+80m, while this cap would be
+# gate_start+40m — and the gate is submitted at pipeline start, minutes into the
+# worker, so a `min()` of the two always picks this one. That abandons a test job
+# that is still legitimately running: the gate would hand the `tests` specialist
+# and the aggregator "not run" while the worker publishes the real outcome in the
+# header, putting `✅ Tests passed` above a body that reasoned from "tests not
+# run" — and silently costing the auto-approval when the aggregator downgrades.
 TEST_GATE_MAX_WAIT_SEC = 40 * 60
 
 
@@ -818,15 +828,17 @@ def _test_gate(run: Path, scratch: Path, pr_id: str) -> int:
     results for the `tests` specialist + aggregator (the only readers; see
     prompts/common-header.md). Always 0: once the wait is up it stages a
     'not run' body, the shape a skipped test already has, so both readers
-    always find the file. The wait ends at whichever comes first — the worker
-    deadline less TEST_GATE_DEADLINE_MARGIN_SEC (leaving the downstream readers
-    enough budget to actually finish and post) or TEST_GATE_MAX_WAIT_SEC, which
-    also bounds replay/direct invocation, where the deadline env is unset."""
+    always find the file. The wait ends at the worker deadline less
+    TEST_GATE_DEADLINE_MARGIN_SEC (leaving the downstream readers enough budget
+    to actually finish and post), or — only when that env is absent, i.e. replay
+    and direct invocation — at TEST_GATE_MAX_WAIT_SEC. Never both: see the
+    constants for why capping ahead of a live deadline abandons the test job."""
     done = run / "test-done"
     deadline_raw = os.environ.get("WORKER_DEADLINE_EPOCH")
-    give_up = time.time() + TEST_GATE_MAX_WAIT_SEC
     if deadline_raw:
-        give_up = min(give_up, float(deadline_raw) - TEST_GATE_DEADLINE_MARGIN_SEC)
+        give_up = float(deadline_raw) - TEST_GATE_DEADLINE_MARGIN_SEC
+    else:
+        give_up = time.time() + TEST_GATE_MAX_WAIT_SEC
     while not done.exists():
         if time.time() >= give_up:
             log(f"{pr_id}: test-gate: no test-done sentinel within the gate's wait bound — staging 'not run'")

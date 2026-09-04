@@ -309,7 +309,9 @@ class TestTestGateWaitBound(unittest.TestCase):
     `timeout -k`, so the gate unblocked at the instant the worker is SIGTERMed
     and the `tests` specialist + critic + aggregator got zero budget. And with
     the env unset (replay, direct invocation) the old code had no bound at all.
-    Both cases must stage the 'not run' body and return promptly."""
+    Both cases must stage the 'not run' body and return promptly. The two bounds
+    are exclusive, never min()'d — the cap is short enough that combining them
+    would abandon a live test job on every real review."""
 
     def _gate(self, env: dict, sentinel: bool = False) -> tuple[int, str]:
         """Run _test_gate over a throwaway run/scratch pair; returns (rc, the
@@ -326,16 +328,41 @@ class TestTestGateWaitBound(unittest.TestCase):
             return rc, (scratch / "test-results.md").read_text()
 
     def test_gives_up_early_enough_for_the_downstream_readers(self):
-        # Deadline 5 min out, margin 10 min → already past the give-up instant.
-        # Pre-fix this waited the full 5 min and handed the readers nothing.
-        rc, staged = self._gate({"WORKER_DEADLINE_EPOCH": str(time.time() + 300)})
+        # A deadline still in the FUTURE but inside the margin → give up at
+        # once, so the readers keep their budget. The elapsed assertion is the
+        # load-bearing half: without it a revert still passes, because the
+        # pre-fix loop reaches the deadline itself and stages the same body —
+        # just later. Keep the offset small so a revert FAILS fast (0.5s)
+        # instead of hanging out to a realistic 5-minute deadline.
+        with patch.object(pipeline, "TEST_GATE_POLL_SEC", 0.05):
+            t0 = time.time()
+            rc, staged = self._gate({"WORKER_DEADLINE_EPOCH": str(time.time() + 0.5)})
+            self.assertLess(time.time() - t0, pipeline.TEST_GATE_POLL_SEC,
+                            "gate waited for the deadline itself instead of a margin ahead of it")
+        self.assertEqual(rc, 0)
+        self.assertEqual(staged, "**Result:** not run (worker timeout budget exhausted)\n")
+
+    def test_max_wait_does_not_bind_when_a_deadline_is_set(self):
+        # The two bounds must NOT be min()'d. review.sh's 90m WORKER_TIMEOUT puts
+        # the deadline bound at worker_start+80m and the cap at gate_start+40m,
+        # so a min() always picks the cap and abandons a test job that is still
+        # legitimately running — feeding the aggregator "not run" while the
+        # header carries the real outcome. Cap pinned to 0 here: it must be
+        # inert, leaving the gate waiting on the (near) deadline bound instead.
+        with patch.object(pipeline, "TEST_GATE_POLL_SEC", 0.05), \
+             patch.object(pipeline, "TEST_GATE_MAX_WAIT_SEC", 0):
+            deadline = time.time() + pipeline.TEST_GATE_DEADLINE_MARGIN_SEC + 0.5
+            t0 = time.time()
+            rc, staged = self._gate({"WORKER_DEADLINE_EPOCH": str(deadline)})
+            self.assertGreater(time.time() - t0, 0.25,
+                               "cap bound the wait even though a worker deadline was set")
         self.assertEqual(rc, 0)
         self.assertEqual(staged, "**Result:** not run (worker timeout budget exhausted)\n")
 
     def test_max_wait_bounds_the_gate_with_no_deadline_env(self):
         # Replay/direct invocation: no WORKER_DEADLINE_EPOCH, so the cap is the
-        # only bound. Pre-fix this hung forever whenever the test subshell died
-        # by signal without running its EXIT trap (OOM-kill).
+        # only bound — its whole job. Pre-fix this hung forever whenever the test
+        # subshell died by signal without running its EXIT trap (OOM-kill).
         with patch.object(pipeline, "TEST_GATE_MAX_WAIT_SEC", 0):
             rc, staged = self._gate({})
         self.assertEqual(rc, 0)
