@@ -303,6 +303,53 @@ class TestStageScratch(unittest.TestCase):
             self.assertEqual(outside.read_text(), "original\n")
 
 
+class TestTestGateWaitBound(unittest.TestCase):
+    """_test_gate's give-up instant. Waiting to WORKER_DEADLINE_EPOCH itself
+    rescued nothing — review.sh stamps that env on the same line that starts
+    `timeout -k`, so the gate unblocked at the instant the worker is SIGTERMed
+    and the `tests` specialist + critic + aggregator got zero budget. And with
+    the env unset (replay, direct invocation) the old code had no bound at all.
+    Both cases must stage the 'not run' body and return promptly."""
+
+    def _gate(self, env: dict, sentinel: bool = False) -> tuple[int, str]:
+        """Run _test_gate over a throwaway run/scratch pair; returns (rc, the
+        staged scratch body) read before the temp dir goes away."""
+        with TemporaryDirectory() as d:
+            run, scratch = Path(d) / "run", Path(d) / "scratch"
+            run.mkdir()
+            scratch.mkdir()
+            (run / "test-results.md").write_text("**Result:** PASSED\n")
+            if sentinel:
+                (run / "test-done").touch()
+            with patch.dict(os.environ, env, clear=True):
+                rc = pipeline._test_gate(run, scratch, "o/r#1")
+            return rc, (scratch / "test-results.md").read_text()
+
+    def test_gives_up_early_enough_for_the_downstream_readers(self):
+        # Deadline 5 min out, margin 10 min → already past the give-up instant.
+        # Pre-fix this waited the full 5 min and handed the readers nothing.
+        rc, staged = self._gate({"WORKER_DEADLINE_EPOCH": str(time.time() + 300)})
+        self.assertEqual(rc, 0)
+        self.assertEqual(staged, "**Result:** not run (worker timeout budget exhausted)\n")
+
+    def test_max_wait_bounds_the_gate_with_no_deadline_env(self):
+        # Replay/direct invocation: no WORKER_DEADLINE_EPOCH, so the cap is the
+        # only bound. Pre-fix this hung forever whenever the test subshell died
+        # by signal without running its EXIT trap (OOM-kill).
+        with patch.object(pipeline, "TEST_GATE_MAX_WAIT_SEC", 0):
+            rc, staged = self._gate({})
+        self.assertEqual(rc, 0)
+        self.assertEqual(staged, "**Result:** not run (worker timeout budget exhausted)\n")
+
+    def test_sentinel_present_stages_the_real_result(self):
+        # The bounds must not shortcut the happy path: an already-reported job
+        # is staged verbatim even with both bounds long past.
+        with patch.object(pipeline, "TEST_GATE_MAX_WAIT_SEC", 0):
+            rc, staged = self._gate({"WORKER_DEADLINE_EPOCH": "0"}, sentinel=True)
+        self.assertEqual(rc, 0)
+        self.assertEqual(staged, "**Result:** PASSED\n")
+
+
 class TestRunCodex(unittest.TestCase):
     """run_codex wraps `codex exec`; matches lib/run-specialist.sh contract."""
 

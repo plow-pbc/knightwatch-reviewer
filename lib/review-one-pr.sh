@@ -332,16 +332,28 @@ GH_POSTED=false
 USED_FALLBACK=false
 # Compose $RUN_DIR/timings.json = pipeline.py's node map + the worker's own
 # phases (integer seconds). Safe on every exit path: missing inputs become 0.
+# tmp+mv (same shape as finalize_meta_json, lib/run-dir.sh): redirecting straight
+# onto timings.json truncates it before jq runs, so any jq failure — a torn read,
+# a non-numeric TEST_RUN_S off a tab-shifted TSV — would destroy the node map
+# rather than leave it. Returns 1 on failure; the caller keeps the old file.
 compose_run_timings() {
     local now; now=$(date +%s)
     local nodes='{}'; [ -s "$RUN_DIR/timings.json" ] && nodes=$(cat "$RUN_DIR/timings.json")
-    jq -n --argjson nodes "$nodes" \
+    local tmp="$RUN_DIR/timings.json.tmp"
+    if ! jq -n --argjson nodes "$nodes" \
         --argjson setup "$(( ${PIPELINE_START_TS:-$now} - REVIEW_START_TS ))" \
         --argjson test "${TEST_RUN_S:-0}" --argjson queue "${TEST_LOCK_WAIT_S:-0}" \
         --argjson pipeline "$(( ${PIPELINE_END_TS:-$now} - ${PIPELINE_START_TS:-$now} ))" \
         --argjson total "$(( now - REVIEW_START_TS ))" \
         '$nodes + {setup: $setup, test: $test, test_queue: $queue, pipeline: $pipeline, total: $total}' \
-        > "$RUN_DIR/timings.json"
+        > "$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    if ! mv -f "$tmp" "$RUN_DIR/timings.json"; then
+        rm -f "$tmp"
+        return 1
+    fi
 }
 
 finalize_run() {
@@ -1005,7 +1017,10 @@ TEST_JOB_START=$(date +%s)
 # disk through the specialist phase, on the aborted path either).
 _test_job_exit() {
     if [ ! -f "$RUN_DIR/test-outcome.tsv" ]; then
-        local aborted="not run (test job aborted before reporting)"
+        # Shared literal (lib/run-dir.sh): review_is_approval reads it back off
+        # the row below to withhold approval, format_tests_note to label the
+        # header note as a reviewer-side fault.
+        local aborted="$TEST_ABORTED_SUMMARY"
         log "$PR_ID: FATAL — test job exited before reporting its outcome; review continues with '$aborted'"
         printf '**Result:** %s\n\nThe `just test` job aborted before reporting; the cause is in the worker run.log.\n' \
             "$aborted" > "$RUN_DIR/test-results.md"
@@ -1380,12 +1395,14 @@ fi
 
 # ---- write scratch files ----
 # Redirect-safe staging — wipe + recreate .codex-scratch HERE, immediately before
-# the first write and AFTER all PR-controlled execution (`just test`, canonical
-# fetch). A PR checkout could commit .codex-scratch as a symlink to a writable
-# service path, OR a trusted-author `just test` could replace it with one mid-run;
-# either would make the root-owned write_scratch + per-specialist writes below
-# redirect critic/momentum/dead-code outputs (and prompt files) into that target.
-# Wiping after the untrusted code runs closes both. Mirrors lib/sibling-symlinks.sh.
+# the first write and AFTER the canonical fetch, now the only way PR-controlled
+# content reaches this tree: a PR checkout could commit .codex-scratch as a
+# symlink to a writable service path, making the root-owned write_scratch +
+# per-specialist writes below redirect critic/momentum/dead-code outputs (and
+# prompt files) into that target. Wiping after the fetch closes it. `just test`
+# is no longer a second trigger — it runs concurrently in TEST_DIR (its own
+# clone at "$REPO_DIR-test") and structurally cannot reach this .codex-scratch.
+# Mirrors lib/sibling-symlinks.sh.
 rm -rf "$REPO_DIR/.codex-scratch"
 mkdir -p "$REPO_DIR/.codex-scratch"
 write_scratch "$REPO_DIR" "diff.patch"         "$KID_INPUT_DIFF"

@@ -1775,9 +1775,17 @@ POSTED18=$(jq -r '[.[] | select(.body | contains("smoke review body 18"))] | las
 if [ -z "$POSTED18" ] || [ "$POSTED18" = "null" ]; then
     echo "FAIL: scenario 18 — review never posted (the test job's fail-fast aborted the whole run)"; cat "$STORE18"; exit 1
 fi
+# The note must name this as a REVIEWER-SIDE fault. Rendering it as the generic
+# "🧪 Tests not run" made a dind hiccup read exactly like a no-justfile or
+# untrusted-author skip, so nothing in the public comment told the operator the
+# tests were missing because our host broke.
 case "$POSTED18" in
-    *"🧪 Tests not run"*) : ;;
-    *) echo "FAIL: scenario 18 — posted header lacks the 'Tests not run' note"; printf '%s\n' "$POSTED18"; exit 1 ;;
+    *"test job aborted"*) : ;;
+    *) echo "FAIL: scenario 18 — posted header lacks the reviewer-side abort note"; printf '%s\n' "$POSTED18"; exit 1 ;;
+esac
+case "$POSTED18" in
+    *"🧪 Tests not run"*)
+        echo "FAIL: scenario 18 — abort rendered as the generic clean-skip note"; printf '%s\n' "$POSTED18"; exit 1 ;;
 esac
 if [ -e "$STATE18/workdirs/test-org_probe-repo__1-test" ]; then
     echo "FAIL: scenario 18 — test clone (mirrored .env) left on disk after the aborted test job"; exit 1

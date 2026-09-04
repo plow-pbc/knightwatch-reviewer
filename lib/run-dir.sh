@@ -13,6 +13,15 @@
 # downstream consumer needs a different posture.
 BOT_AI_AUTHOR_MARKER="${BOT_AI_AUTHOR_MARKER:-<!-- knightwatch-reviewer:ai-author note=load-bearing-probes operating-point=pre-pmf prefer=cut-loc-over-add -->}"
 
+# Single source of truth for the TEST_SUMMARY the background test job's EXIT
+# trap writes when it died before reporting (review-one-pr.sh::_test_job_exit) —
+# a reviewer-host fault (a dind hiccup tripping run_just_test's fail-fast), not
+# a clean skip. Three sites key off this exact text: that writer, and the two
+# readers below — review_is_approval (an aborted test job is coverage loss, so
+# the run can't approve) and format_tests_note (which labels it as a fault in
+# the public header). One constant so the three can't drift.
+TEST_ABORTED_SUMMARY="not run (test job aborted before reporting)"
+
 # allocate_run_dir RUN_DIR
 #
 # Creates RUN_DIR (and agents/, inputs/) as a unit, or fails loud:
@@ -489,6 +498,14 @@ classify_just_test_outcome() {
 format_tests_note() {
     local tests_ran="$1" summary="$2" convention_header="${3:-}"
     if [ "$tests_ran" = "false" ]; then
+        # A reviewer-side abort is a FAULT, not a skip: the operator reading the
+        # PR must be able to tell "we chose not to run tests" from "our own host
+        # broke". Checked before the convention branch so a convention repo's
+        # gate fragment can't mask it either.
+        if [ "$summary" = "$TEST_ABORTED_SUMMARY" ]; then
+            printf "⚠️ Tests not run — the reviewer's test job aborted (reviewer-side fault, not a skip)"
+            return
+        fi
         # A convention repo (operator-defined via kwr-config) may declare its own
         # test gate instead of a root justfile — e.g. a SEED's `## Verification`/
         # `ref/verify.sh`. When the caller passes that convention's `test-header`
@@ -798,7 +815,8 @@ latest_author_visible_review_sha() {
 # review_is_approval VERDICT_LINE RUN_DIR
 #   exit 0 iff this run is an actual approval: the aggregator verdict is
 #   `VERDICT: APPROVE`/`APPROVE — pending: ...` AND coverage was full (no
-#   specialist timed out, i.e. _wave_b_timeouts.txt is absent/empty).
+#   specialist timed out, i.e. _wave_b_timeouts.txt is absent/empty, AND the
+#   background test job reported an outcome rather than aborting).
 #
 # Single owner of "did this review approve?" — both the worker's GitHub
 # submit gate (review-one-pr.sh) and the carried-forward `approved`
@@ -810,6 +828,14 @@ review_is_approval() {
     local verdict="$1" run_dir="$2"
     [[ "$verdict" == VERDICT:\ APPROVE* ]] || return 1
     [ -s "$run_dir/_wave_b_timeouts.txt" ] && return 1
+    # Same coverage-loss class as a timed-out specialist: `just test` never ran
+    # because of a reviewer-host fault, so this run must not auto-approve.
+    # ABSENT test-outcome.tsv means "no objection", not "aborted" — historical
+    # run dirs read by latest_author_visible_review_approved predate the file
+    # and must keep their approval status.
+    [ -f "$run_dir/test-outcome.tsv" ] \
+        && [ "$(cut -f2 < "$run_dir/test-outcome.tsv")" = "$TEST_ABORTED_SUMMARY" ] \
+        && return 1
     return 0
 }
 

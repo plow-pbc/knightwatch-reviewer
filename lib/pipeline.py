@@ -198,6 +198,18 @@ _codex_slots = threading.BoundedSemaphore(CODEX_MAX_CONCURRENCY)
 
 # How often the test-gate node re-checks for the worker's `test-done` sentinel.
 TEST_GATE_POLL_SEC = 5.0
+# Headroom the gate leaves in front of review.sh's WORKER_DEADLINE_EPOCH, which
+# is the same instant its `timeout -k` SIGTERMs this process group. Giving up AT
+# the deadline rescues nothing: the `tests` specialist, its critic, and the xhigh
+# aggregator all still have to run afterwards, so a review that unblocks there is
+# a fully-spent one that never posts. 10 min is that tail.
+TEST_GATE_DEADLINE_MARGIN_SEC = 10 * 60
+# Unconditional ceiling, applied even when WORKER_DEADLINE_EPOCH is set. It is
+# UNSET for replay and direct invocation, where the deadline branch alone waits
+# forever — the trigger being a test subshell killed by signal without running
+# its EXIT trap (an OOM-kill; `( ) &` resets the parent's traps and the job sets
+# no TERM handler of its own). Covers TEST_TIMEOUT (30m) plus the queue wait.
+TEST_GATE_MAX_WAIT_SEC = 40 * 60
 
 
 def _ts() -> str:
@@ -804,15 +816,20 @@ def _test_gate(run: Path, scratch: Path, pr_id: str) -> int:
     """Wait for review-one-pr.sh's background `just test` job — it writes
     <run>/test-results.md and then touches <run>/test-done — and stage the
     results for the `tests` specialist + aggregator (the only readers; see
-    prompts/common-header.md). Always 0: past the worker deadline it stages a
+    prompts/common-header.md). Always 0: once the wait is up it stages a
     'not run' body, the shape a skipped test already has, so both readers
-    always find the file. The job's own EXIT trap writes the sentinel on every
-    path, so the deadline branch is fail-loud hygiene, not an expected path."""
+    always find the file. The wait ends at whichever comes first — the worker
+    deadline less TEST_GATE_DEADLINE_MARGIN_SEC (leaving the downstream readers
+    enough budget to actually finish and post) or TEST_GATE_MAX_WAIT_SEC, which
+    also bounds replay/direct invocation, where the deadline env is unset."""
     done = run / "test-done"
     deadline_raw = os.environ.get("WORKER_DEADLINE_EPOCH")
+    give_up = time.time() + TEST_GATE_MAX_WAIT_SEC
+    if deadline_raw:
+        give_up = min(give_up, float(deadline_raw) - TEST_GATE_DEADLINE_MARGIN_SEC)
     while not done.exists():
-        if deadline_raw and time.time() >= float(deadline_raw):
-            log(f"{pr_id}: test-gate: no test-done sentinel by the worker deadline — staging 'not run'")
+        if time.time() >= give_up:
+            log(f"{pr_id}: test-gate: no test-done sentinel within the gate's wait bound — staging 'not run'")
             _stage_scratch(scratch / "test-results.md",
                            b"**Result:** not run (worker timeout budget exhausted)\n")
             return 0
