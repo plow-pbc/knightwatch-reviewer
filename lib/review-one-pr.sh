@@ -390,7 +390,7 @@ cleanup_eyes() {
         -f body="${PLACEHOLDER_HEADER}${EYES_ABORT_BODY}" \
         >/dev/null 2>&1 || true
 }
-trap 'finalize_run; cleanup_eyes' EXIT
+trap 'finalize_run; cleanup_eyes; cleanup_test_clone' EXIT
 # SIGTERM (from the dispatcher's `timeout` ceiling) and SIGINT must run the
 # EXIT trap too — bare bash exits on an untrapped SIGTERM WITHOUT firing the
 # EXIT trap, which would leave the 👀 placeholder dangling on a timeout-kill.
@@ -415,6 +415,14 @@ REPO_SLUG=$(echo "$REPO" | tr '/' '_')
 CANONICAL_DIR="$REPOS_DIR/$REPO_SLUG"
 PR_WORKDIR_SLUG="${REPO_SLUG}__${PR_NUM}"
 REPO_DIR="$WORKDIRS_DIR/${PR_WORKDIR_SLUG}"
+
+# Second shared clone of the same head, for `just test` only. run_just_test
+# chowns its tree to the unprivileged test user for the test's duration, so
+# the tree codex reads must be a different one — otherwise PR-controlled test
+# code could rewrite .codex-scratch/* under a running specialist. It also
+# keeps the mirrored live .env files out of the codex workdir entirely.
+TEST_DIR="$REPO_DIR-test"
+cleanup_test_clone() { [ -n "${TEST_DIR:-}" ] && rm -rf "$TEST_DIR"; return 0; }
 
 CANONICAL_LOCK_DIR="$LOCAL_STATE_DIR/canonical-locks"
 mkdir -p "$CANONICAL_LOCK_DIR"
@@ -629,10 +637,19 @@ fi
 # Tear down any stale per-PR workdir and create a fresh shared clone.
 # --shared gives us hardlinked objects from canonical, so this is cheap.
 # Canonical's refs/heads/$PR_BRANCH shows up here as origin/$PR_BRANCH.
-rm -rf "$REPO_DIR"
+rm -rf "$REPO_DIR" "$TEST_DIR"
 mkdir -p "$(dirname "$REPO_DIR")"
 if ! git clone --shared "$CANONICAL_DIR" "$REPO_DIR" --no-single-branch --quiet; then
     log "$PR_ID: git clone --shared failed — aborting"
+    exit 1
+fi
+
+# Second shared clone, for `just test` only — see TEST_DIR's definition above.
+# Cloned here (still holding the canonical lock) rather than lazily before the
+# test block, so both clones observe the same canonical state.
+if ! git clone --shared "$CANONICAL_DIR" "$TEST_DIR" --no-single-branch --quiet; then
+    log "$PR_ID: git clone --shared (test clone) failed — aborting"
+    rm -rf "$REPO_DIR"
     exit 1
 fi
 
@@ -671,6 +688,13 @@ if [ -z "$REVIEWED_SHA" ]; then
 fi
 if [ "$REVIEWED_SHA" != "$PR_SHA" ]; then
     log "$PR_ID: orchestrator enumerated ${PR_SHA:0:7}, worker checked out ${REVIEWED_SHA:0:7} — using checked-out SHA for header + state + meta"
+fi
+
+# Pin the test clone to the exact same commit codex will read.
+if ! git -C "$TEST_DIR" checkout --detach "$REVIEWED_SHA" --quiet; then
+    log "$PR_ID: test-clone checkout of ${REVIEWED_SHA:0:7} failed — aborting"
+    rm -rf "$REPO_DIR"
+    exit 1
 fi
 
 # meta.json — minimal post-mortem header. Written here (after checkout)
@@ -724,15 +748,15 @@ fi
 COPIED_ENV_FILES=()
 if [ "$IS_TRUSTED_AUTHOR" = true ]; then
     while IFS= read -r -d '' example_path; do
-        rel="${example_path#"$REPO_DIR"/}"
+        rel="${example_path#"$TEST_DIR"/}"
         target_rel="${rel%.example}"
         canonical_src="$CANONICAL_DIR/$target_rel"
-        workdir_dst="$REPO_DIR/$target_rel"
+        workdir_dst="$TEST_DIR/$target_rel"
         if [ -e "$canonical_src" ] && [ ! -e "$workdir_dst" ]; then
             cp -L "$canonical_src" "$workdir_dst"
             COPIED_ENV_FILES+=("$workdir_dst")
         fi
-    done < <(find "$REPO_DIR" -type f -name '.env*.example' \
+    done < <(find "$TEST_DIR" -type f -name '.env*.example' \
         -not -path '*/.git/*' -not -path '*/node_modules/*' -print0)
     [ "${#COPIED_ENV_FILES[@]}" -gt 0 ] && \
         log "$PR_ID: mirrored ${#COPIED_ENV_FILES[@]} env file(s) from canonical (PR_AUTHOR=$PR_AUTHOR trusted)"
@@ -881,7 +905,7 @@ fi
 
 JUST_FILE=""
 for n in justfile Justfile JUSTFILE .justfile .Justfile .JUSTFILE; do
-    [ -f "$REPO_DIR/$n" ] && { JUST_FILE="$REPO_DIR/$n"; break; }
+    [ -f "$TEST_DIR/$n" ] && { JUST_FILE="$TEST_DIR/$n"; break; }
 done
 
 # Convention DETECTION (lib/conventions.sh) — operator-defined via the kwr-config
@@ -987,7 +1011,7 @@ else
         # inner `timeout` creates it), so the dispatcher's outer `timeout -k` can't
         # reach a SIGTERM-ignoring pytest tree — only this inner -k can. The subtree
         # shares the inner group, so the SIGKILL reaps it wholesale.
-        run_just_test "$JUST_FILE" "$REPO_DIR" "$TEST_LOG" "$TEST_WINDOW" 30s
+        run_just_test "$JUST_FILE" "$TEST_DIR" "$TEST_LOG" "$TEST_WINDOW" 30s
         TEST_EXIT=$?
         release_just_test_lock
         IFS=$'\t' read -r TESTS_RAN TEST_SUMMARY < <(classify_just_test_outcome "$TEST_EXIT" "$TEST_LOG" "$TEST_WINDOW")
@@ -1000,14 +1024,11 @@ TEST_LOG_TAIL=$(tail -n 500 "$TEST_LOG")
 # beyond the tail — don't retain the unbounded artifact.
 rm -f "$TEST_LOG"
 
-# Env files were only needed for `just test`; delete eagerly so secrets
-# don't sit in the workdir during the long specialist phase. REPO_DIR is
-# also rm -rf'd on every exit path below, so this is a belt-and-suspenders
-# early sweep, not the only cleanup. Runs regardless of which test path
-# above fired (or even if no test ran at all).
-for f in "${COPIED_ENV_FILES[@]}"; do
-    rm -f "$f"
-done
+# The test clone (mirrored env files included) was only needed for `just
+# test`; delete it now so secrets don't sit on disk during the long
+# specialist phase, instead of waiting for the EXIT trap. Runs regardless of
+# which test path above fired (or even if no test ran at all).
+cleanup_test_clone
 
 log "$PR_ID: just test ${TEST_SUMMARY}"
 TEST_RESULTS="**Result:** ${TEST_SUMMARY}

@@ -1568,4 +1568,92 @@ if ! grep -qF "$LOC_LINE12" "$IN12/reeval-status.md"; then
     exit 1
 fi
 
-echo "  PASS (16 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + requester-gate skip + metadata-lookup guard pre-allocation abort + placeholder reuse anti-spam + codex 429 backoff + usage-cap quota placeholder w/ pool status + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort + whole-PR re-review keeps memory)"
+# ===== Scenario 17: `just test` in its own clone, overlapped with the LLM stages =====
+# (a) Isolation: run_just_test chowns its tree to the test user, so the tree
+#     codex reads must be a different one. The fake test recipe records where
+#     it ran and which tree holds the mirrored .env.
+# (b) Overlap (Task 7): a slow fake test must not delay the specialists; the
+#     tests specialist must still see its results.
+# (c) Timings (Task 8): meta.json.timings + one `timing` log line.
+echo "  scenario 17: test clone isolation + overlap + timings..."
+RECORD17="$TMPDIR/record-17.txt"; : > "$RECORD17"
+export KWR_SMOKE_RECORD="$RECORD17"
+BARE17="$TMPDIR/github-side-17.git"; WORK17="$TMPDIR/working-17"
+git init -q --bare -b main "$BARE17"
+git clone -q "$BARE17" "$WORK17"
+(
+    cd "$WORK17"
+    git config user.email t@t; git config user.name t; git config commit.gpgsign false
+    echo "base" > README.md
+    echo "ANTHROPIC_API_KEY=" > .env.example
+    # The recipe records: its cwd, whether the mirrored .env is in cwd, and
+    # whether it leaked into the codex workdir (cwd minus the -test suffix).
+    # It sleeps so the overlap assertion has something to overlap with.
+    printf 'test:\n    #!/usr/bin/env bash\n    sleep 3\n    r="$KWR_SMOKE_RECORD"\n    echo "test_cwd=$PWD" >> "$r"\n    [ -e .env ] && echo "env_in_test_clone=yes" >> "$r" || echo "env_in_test_clone=no" >> "$r"\n    [ -e "${PWD%%-test}/.env" ] && echo "env_in_workdir=yes" >> "$r" || echo "env_in_workdir=no" >> "$r"\n    echo "test_end=$(date +%%s.%%N)" >> "$r"\n    echo "SMOKE-TEST-OUTPUT-MARKER"\n' > justfile
+    git add README.md .env.example justfile
+    git commit -qm "init: justfile + .env.example"
+    git push -q origin main
+    git checkout -qb feat/test
+    echo "feature" > feature.txt
+    git add feature.txt
+    git commit -qm "feature"
+)
+PR_SHA17=$(git -C "$WORK17" rev-parse HEAD)
+git -C "$WORK17" push -q origin feat/test:refs/pull/1/head
+STATE17="$TMPDIR/state-17"; STORE17="$TMPDIR/comment-store-17.json"
+seed_state_dir "$STATE17"
+git clone -q "$BARE17" "$STATE17/repos/test-org_probe-repo"
+echo "ANTHROPIC_API_KEY=sk-smoke-live" > "$STATE17/repos/test-org_probe-repo/.env"   # what the trusted mirror copies
+mkdir -p "$STATE17/pool/solo"
+echo "[]" > "$STORE17"
+write_stateful_gh_stub "$HOME/.local/bin/gh" "$STORE17" "main" "$PR_SHA17"
+cp -r "$PROJECT_ROOT/prompts/." "$HOME/.pr-reviewer/prompts/"
+# Fake codex: contract-valid output per agent; records start time and whether
+# .codex-scratch/test-results.md existed when it started.
+cat > "$HOME/.local/bin/codex" <<'FAKE'
+#!/usr/bin/env python3
+import os, sys, time
+from pathlib import Path
+argv = sys.argv
+out = Path(argv[argv.index('-o') + 1]); agent = out.parent.name
+repo = Path(argv[argv.index('-C') + 1])
+staged = (repo / '.codex-scratch' / 'test-results.md')
+with open(os.environ['KWR_SMOKE_RECORD'], 'a') as rec:
+    rec.write(f"agent={agent} start={time.time():.3f} saw_test_results={staged.exists()}\n")
+    if agent == 'tests' and staged.exists():
+        rec.write(f"tests_saw_marker={'SMOKE-TEST-OUTPUT-MARKER' in staged.read_text()}\n")
+if agent == 'intent':
+    body = "Inferred intent: smoke.\n"
+elif agent == 'aggregator':
+    body = "VERDICT: 1 blocking probe\n\nsmoke review body\n"
+elif agent == 'dead-code-search':
+    body = "none\n"
+else:
+    body = "No probes.\n"
+out.write_text(body)
+FAKE
+chmod +x "$HOME/.local/bin/codex"
+# GH_STUB_PERMISSION_ROLE=write (not GH_STUB_TRUSTED_USERS, which only vouches
+# for the exact login it lists): write_stateful_gh_stub hardcodes the PR
+# author to "test-user", distinct from the requester login below, and this
+# scenario needs BOTH trusted so `just test` actually executes — same
+# blanket-trust idiom scenario 10 uses for the identical need.
+GH_STUB_PERMISSION_ROLE=write run_worker_in_state "$STATE17" \
+    "test-org/probe-repo" "1" "$PR_SHA17" "feat/test" "Test PR" "false" "someuser" || true
+rm -f "$HOME/.local/bin/codex"
+unset KWR_SMOKE_RECORD
+RUN17=$(ls -d "$STATE17"/runs/test-org_probe-repo__1__* 2>/dev/null | head -1)
+LOG17="$RUN17/run.log"
+# (a) isolation
+if ! grep -q "^test_cwd=$STATE17/workdirs/test-org_probe-repo__1-test$" "$RECORD17"; then
+    echo "FAIL: scenario 17a — just test did not run in the -test clone"; cat "$RECORD17"; exit 1
+fi
+grep -q "^env_in_test_clone=yes$" "$RECORD17" || { echo "FAIL: scenario 17a — mirrored .env missing from the test clone"; cat "$RECORD17"; exit 1; }
+grep -q "^env_in_workdir=no$" "$RECORD17"     || { echo "FAIL: scenario 17a — live .env leaked into the codex workdir"; cat "$RECORD17"; exit 1; }
+if [ -e "$STATE17/workdirs/test-org_probe-repo__1-test" ]; then
+    echo "FAIL: scenario 17a — test clone left behind after the review"; exit 1
+fi
+grep -q "just test PASSED" "$LOG17" || { echo "FAIL: scenario 17a — run.log lacks 'just test PASSED'"; tail -20 "$LOG17"; exit 1; }
+echo "  scenario 17a (isolation) ok"
+
+echo "  PASS (17 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + requester-gate skip + metadata-lookup guard pre-allocation abort + placeholder reuse anti-spam + codex 429 backoff + usage-cap quota placeholder w/ pool status + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort + whole-PR re-review keeps memory + test clone isolation/overlap/timings)"
