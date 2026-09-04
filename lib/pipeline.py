@@ -618,6 +618,27 @@ def build_prompt(
     return prelude + "\n\n" + _substitute_placeholders(template, **subs)
 
 
+SKIPPED_ANGLES_PREAMBLE = (
+    "# Skipped angles\n\n"
+    "This diff is {loc} changed lines. The specialist angles below were skipped because the "
+    "diff is small (per-angle floors in lib/pipeline.py SPECIALIST_MIN_LOC). Keep that in mind, "
+    "and, as needed, add high-severity (`blocking`) probes that were missed as a result — tag "
+    "each `[from: <angle>]` in the leading slot so the bakeoff attributes it. Do not add "
+    "`medium` or lower probes for a skipped angle.\n\n"
+)
+
+
+def _skipped_angles_doc(pdir: Path, diff_loc: int, skipped: list[str]) -> str:
+    """The aggregator's screen for angles that did not run: instruction + each
+    specialist's own prompt body (no common-header / policy — the aggregator
+    already carries the policy, and the header is specialist scaffolding)."""
+    parts = [SKIPPED_ANGLES_PREAMBLE.format(loc=diff_loc)]
+    for angle in skipped:
+        body = _strip_leading_html_comment((pdir / "specialists" / f"{angle}.md").read_text()).strip()
+        parts.append(f"## {angle}\n\n{body}\n\n")
+    return "".join(parts)
+
+
 def _duplicate_ids(ids: list[str]) -> list[str]:
     seen: set[str] = set()
     dupes: list[str] = []
@@ -926,6 +947,12 @@ def run_pipeline(
     # Absent/empty PR_DIFF_LOC → high (safe default, pre-existing behavior).
     raw_loc = os.environ.get("PR_DIFF_LOC")
     effort = _reasoning_effort(int(raw_loc)) if raw_loc else "high"
+    diff_loc = int(raw_loc) if raw_loc else None
+    active, skipped = _active_specialists(diff_loc)
+    if skipped:
+        _stage_scratch(scratch / "skipped-angles.md",
+                       _skipped_angles_doc(Path(prompts_dir), diff_loc, skipped).encode())
+        (run / "_skipped_angles.txt").write_text("\n".join(skipped) + "\n")
 
     common_kwargs = dict(
         repo_dir=repo_dir, run_dir=run_dir, prompts_dir=prompts_dir,
@@ -974,7 +1001,8 @@ def run_pipeline(
 
     prev_review = run / "inputs" / "previous-review.md"
     has_prev = prev_review.exists() and prev_review.stat().st_size > 0
-    log(f"{pr_id}: pipeline — intent ‖ dead-code-search ‖ {len(SPECIALISTS)} specialists"
+    log(f"{pr_id}: pipeline — intent ‖ dead-code-search ‖ {len(active)} specialists"
+        + (f" (skipped under floor: {', '.join(skipped)}; {diff_loc} changed lines)" if skipped else "")
         + (" + momentum" if has_prev else "") + f" (codex cap {CODEX_MAX_CONCURRENCY})")
     # Every node is submitted up front; _after edges order them. Threads are not
     # the concurrency cap — the codex semaphore is — so the pool holds every node
@@ -989,7 +1017,7 @@ def run_pipeline(
         angles = {
             ex.submit(_after, deps.get(s, [intent_f]),
                       timed(s, partial(run_specialist, specialist=s, **common_kwargs))): s
-            for s in SPECIALISTS
+            for s in active
         }
         if has_prev:
             angles[ex.submit(_after, [intent_f],

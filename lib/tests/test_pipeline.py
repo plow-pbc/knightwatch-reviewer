@@ -1487,6 +1487,48 @@ class TestRunPipeline(unittest.TestCase):
         self.assertFalse((self.run_dir / "agents" / "momentum" / "output.md").exists())
 
     @patch("pipeline.subprocess.Popen")
+    def test_small_diff_skips_floored_specialists_and_stages_skipped_angles(self, mock_popen):
+        mock_popen.side_effect = _make_codex_stub({
+            "intent": (0, "Inferred intent: stub.\n"),
+            "dead-code-search": (0, "dc\n"),
+            "aggregator": (0, "# Review\nVERDICT: APPROVE\n"),
+        })
+        with patch.dict(os.environ, {"PR_DIFF_LOC": "12"}):
+            self.assertEqual(self._run(), 0)
+        ran = {s for s in pipeline.SPECIALISTS if (self.run_dir / "agents" / s / "output.md").exists()}
+        self.assertEqual(ran, {"contract-drift", "shape"})
+        skipped = ["security", "data-integrity", "architecture-refined", "tests", "consumers"]
+        for s in skipped:
+            self.assertFalse((self.run_dir / "agents" / f"critic-{s}").exists(), s)
+            self.assertFalse((self.repo_dir / ".codex-scratch" / "specialists" / f"{s}.md").exists(), s)
+        staged = (self.repo_dir / ".codex-scratch" / "skipped-angles.md").read_text()
+        self.assertIn("12 changed lines", staged)
+        for s in skipped:
+            self.assertIn(f"## {s}\n", staged)
+            self.assertIn(f"BODY {s}", staged)   # the specialist body from _write_minimal_prompts
+        self.assertNotIn("H ", staged)           # no common-header
+        self.assertNotIn("POLICY", staged)       # no policy prelude
+        self.assertEqual((self.run_dir / "_skipped_angles.txt").read_text().split(), skipped)
+
+    @patch("pipeline.subprocess.Popen")
+    def test_unknown_or_large_diff_runs_every_specialist_and_stages_nothing(self, mock_popen):
+        for env in ({}, {"PR_DIFF_LOC": "500"}):
+            with self.subTest(env=env):
+                mock_popen.side_effect = _make_codex_stub({
+                    "intent": (0, "Inferred intent: stub.\n"),
+                    "dead-code-search": (0, "dc\n"),
+                    "aggregator": (0, "# Review\nVERDICT: APPROVE\n"),
+                })
+                with patch.dict(os.environ, env, clear=False):
+                    if not env:
+                        os.environ.pop("PR_DIFF_LOC", None)
+                    self.assertEqual(self._run(), 0)
+                for s in pipeline.SPECIALISTS:
+                    self.assertTrue((self.run_dir / "agents" / s / "output.md").exists(), s)
+                self.assertFalse((self.repo_dir / ".codex-scratch" / "skipped-angles.md").exists())
+                self.assertFalse((self.run_dir / "_skipped_angles.txt").exists())
+
+    @patch("pipeline.subprocess.Popen")
     def test_re_review_runs_momentum(self, mock_popen):
         (self.run_dir / "inputs" / "previous-review.md").write_text("prior review body\n")
         mock_popen.side_effect = _make_codex_stub({
