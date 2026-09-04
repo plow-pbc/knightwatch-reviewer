@@ -1673,6 +1673,18 @@ fi
 grep -q "just test PASSED" "$LOG17" || { echo "FAIL: scenario 17a — run.log lacks 'just test PASSED'"; tail -20 "$LOG17"; exit 1; }
 echo "  scenario 17a (isolation) ok"
 
+# (b) overlap: a non-`tests` specialist started before the fake test ended,
+#     and the tests specialist saw the staged results with the test's output.
+TEST_END17=$(sed -n 's/^test_end=//p' "$RECORD17" | head -1)
+SEC_START17=$(sed -n 's/^agent=security start=\([0-9.]*\).*/\1/p' "$RECORD17" | head -1)
+[ -n "$TEST_END17" ] && [ -n "$SEC_START17" ] || { echo "FAIL: scenario 17b — record missing test_end or security start"; cat "$RECORD17"; exit 1; }
+if ! python3 -c "import sys; sys.exit(0 if float('$SEC_START17') < float('$TEST_END17') else 1)"; then
+    echo "FAIL: scenario 17b — security started only after just test finished (no overlap)"; cat "$RECORD17"; exit 1
+fi
+grep -q "^agent=tests .*saw_test_results=True$" "$RECORD17" || { echo "FAIL: scenario 17b — tests specialist started without test-results.md"; cat "$RECORD17"; exit 1; }
+grep -q "^tests_saw_marker=True$" "$RECORD17"             || { echo "FAIL: scenario 17b — staged test-results.md lacks the test's output"; cat "$RECORD17"; exit 1; }
+echo "  scenario 17b (overlap) ok"
+
 # (a, cont'd) path-scrub: the aggregator cited one path under EACH clone
 # (TEST_DIR's, REPO_DIR's) — both must scrub to repo-relative in the posted
 # comment, proving the scrub's TEST_DIR prefix doesn't just no-op alongside

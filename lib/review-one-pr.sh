@@ -422,7 +422,21 @@ REPO_DIR="$WORKDIRS_DIR/${PR_WORKDIR_SLUG}"
 # code could rewrite .codex-scratch/* under a running specialist. It also
 # keeps the mirrored live .env files out of the codex workdir entirely.
 TEST_DIR="$REPO_DIR-test"
-cleanup_test_clone() { [ -n "${TEST_DIR:-}" ] && rm -rf "$TEST_DIR"; return 0; }
+# Set once the background `just test` job is forked (below); "" until then so
+# the EXIT trap's cleanup_test_clone is set -u-safe on an early exit.
+TEST_JOB_PID=""
+# An abort mid-pipeline must not leave `just test` running under a deleted
+# tree. pkill the job's children FIRST: the worker's own `exit 1` paths don't
+# signal the process group, so killing only the subshell would orphan the
+# `timeout`/`just` tree it is waiting on.
+cleanup_test_clone() {
+    if [ -n "${TEST_JOB_PID:-}" ] && kill -0 "$TEST_JOB_PID" 2>/dev/null; then
+        pkill -TERM -P "$TEST_JOB_PID" 2>/dev/null
+        kill "$TEST_JOB_PID" 2>/dev/null
+        wait "$TEST_JOB_PID" 2>/dev/null
+    fi
+    [ -n "${TEST_DIR:-}" ] && rm -rf "$TEST_DIR"; return 0
+}
 
 CANONICAL_LOCK_DIR="$LOCAL_STATE_DIR/canonical-locks"
 mkdir -p "$CANONICAL_LOCK_DIR"
@@ -950,101 +964,105 @@ STANDARDS=$(resolve_standards)
 # PAT) + network (host path), or drive the privileged dind daemon (container
 # path). just_test_skip_reason (lib/auth.sh) is the single source of truth.
 JUST_TEST_SKIP_REASON=$(just_test_skip_reason "$JUST_FILE" "$IS_TRUSTED_AUTHOR")
-if [ -n "$JUST_TEST_SKIP_REASON" ]; then
-    log "$PR_ID: skipping \`just test\` — $JUST_TEST_SKIP_REASON (author $PR_AUTHOR)"
-    TESTS_RAN=false
-    # For a convention repo whose convention declares a test-gate (test-note) and
-    # that has no justfile, "not run (no justfile)" is the EXPECTED shape, not a
-    # coverage gap — the gate is the convention's own (e.g. a SEED's
-    # `## Verification`/ref/verify.sh). Surface the convention's note so the tests
-    # specialist doesn't read a missing justfile as a missing harness. (Only the
-    # no-justfile skip; an untrusted-author skip still reports its security reason.)
-    if [ -n "$CONVENTION_TEST_NOTE" ] && [ -z "$JUST_FILE" ]; then
-        TEST_SUMMARY="$CONVENTION_TEST_NOTE"
-    else
-        TEST_SUMMARY="not run ($JUST_TEST_SKIP_REASON)"
-    fi
-    : > "$TEST_LOG"
-else
-    # Global concurrency cap on `just test` (MAX_CONCURRENT_TESTS slots,
-    # default 3). Each `just test` brings up a docker compose stack, so we
-    # ration how many run at once to stay under the unit's MemoryHigh —
-    # this is a memory bound, NOT correctness. plow's test-scenarios
-    # namespaces its compose project name + host ports per checkout dir,
-    # so concurrent same-repo and cross-repo runs no longer collide on
-    # shared host state (the hardcoded chat-postgres-1 stack that forced
-    # the old per-repo mutex was removed from `just test` 2026-05-15; #638
-    # deletes it). See lib/locking.sh::acquire_just_test_lock.
-    JUST_TEST_LOCK_WAIT_START=$(date +%s)
-    # #100's global N-slot semaphore, with slots in the SHARED STATE_DIR so the
-    # MAX_CONCURRENT_TESTS cap on concurrent `just test` holds ACROSS reviewer
-    # containers — protecting the host's memory. (This subsumes the per-container
-    # just-test lock; LOCAL_STATE_DIR scopes the canonical clone lock + ephemeral
-    # KID query copies — per-account stop-state lives in $STATE_DIR/pool/,
-    # see lib/state-io.sh.)
-    acquire_just_test_lock "$STATE_DIR"
-    JUST_TEST_LOCK_WAIT=$(( $(date +%s) - JUST_TEST_LOCK_WAIT_START ))
-    if [ "$JUST_TEST_LOCK_WAIT" -ge 5 ]; then
-        log "$PR_ID: just-test slot acquired after ${JUST_TEST_LOCK_WAIT}s queue"
-    fi
-    # Cap the inner test window to the outer worker budget left (the dispatcher
-    # stamps WORKER_DEADLINE_EPOCH; unset on a direct/smoke invocation → full
-    # window). This keeps the inner `timeout -k` firing before the outer worker
-    # timeout, so a wedged test is reaped by the inner -k (which reaches its
-    # process group) rather than orphaned by the outer kill while this lock is
-    # released — see cap_test_timeout. Reserve 35s = the 30s inner kill-after
-    # (below) + a 5s scheduling buffer, so the inner SIGKILL lands strictly
-    # before the outer SIGTERM instead of racing it on the same second.
-    if [ -n "${WORKER_DEADLINE_EPOCH:-}" ]; then
-        TEST_WINDOW=$(cap_test_timeout "$WORKER_DEADLINE_EPOCH" "$(date +%s)" 35 "$TEST_TIMEOUT")
-    else
-        TEST_WINDOW="$TEST_TIMEOUT"
-    fi
-    if [ -z "$TEST_WINDOW" ]; then
-        log "$PR_ID: worker budget exhausted by ${JUST_TEST_LOCK_WAIT}s just-test queue — skipping \`just test\`"
-        release_just_test_lock
+
+# `just test` runs in the background against TEST_DIR while the LLM stages
+# start; only the `tests` specialist and the aggregator wait on it (via
+# pipeline.py's test-gate node). The subshell owns the just-test flock and
+# the clone, reports through two files, and ALWAYS leaves the sentinel —
+# subshells don't inherit the parent's EXIT trap, so it sets its own, and
+# it writes the results file BEFORE the trap fires the sentinel the gate
+# polls for.
+TEST_JOB_START=$(date +%s)
+(
+    trap 'touch "$RUN_DIR/test-done"' EXIT
+    JUST_TEST_LOCK_WAIT=0
+    if [ -n "$JUST_TEST_SKIP_REASON" ]; then
+        log "$PR_ID: skipping \`just test\` — $JUST_TEST_SKIP_REASON (author $PR_AUTHOR)"
         TESTS_RAN=false
-        TEST_SUMMARY="not run (worker timeout budget exhausted by queue wait)"
+        # For a convention repo whose convention declares a test-gate (test-note) and
+        # that has no justfile, "not run (no justfile)" is the EXPECTED shape, not a
+        # coverage gap — the gate is the convention's own (e.g. a SEED's
+        # `## Verification`/ref/verify.sh). Surface the convention's note so the tests
+        # specialist doesn't read a missing justfile as a missing harness. (Only the
+        # no-justfile skip; an untrusted-author skip still reports its security reason.)
+        if [ -n "$CONVENTION_TEST_NOTE" ] && [ -z "$JUST_FILE" ]; then
+            TEST_SUMMARY="$CONVENTION_TEST_NOTE"
+        else
+            TEST_SUMMARY="not run ($JUST_TEST_SKIP_REASON)"
+        fi
         : > "$TEST_LOG"
     else
-        log "$PR_ID: running \`just --justfile $JUST_FILE test\` (timeout ${TEST_WINDOW})..."
-        # 30s kill-after: `just test` runs in its own process group (run_just_test's
-        # inner `timeout` creates it), so the dispatcher's outer `timeout -k` can't
-        # reach a SIGTERM-ignoring pytest tree — only this inner -k can. The subtree
-        # shares the inner group, so the SIGKILL reaps it wholesale.
-        run_just_test "$JUST_FILE" "$TEST_DIR" "$TEST_LOG" "$TEST_WINDOW" 30s
-        TEST_EXIT=$?
-        release_just_test_lock
-        IFS=$'\t' read -r TESTS_RAN TEST_SUMMARY < <(classify_just_test_outcome "$TEST_EXIT" "$TEST_LOG" "$TEST_WINDOW")
+        # Global concurrency cap on `just test` (MAX_CONCURRENT_TESTS slots,
+        # default 3). Each `just test` brings up a docker compose stack, so we
+        # ration how many run at once to stay under the unit's MemoryHigh —
+        # this is a memory bound, NOT correctness. plow's test-scenarios
+        # namespaces its compose project name + host ports per checkout dir,
+        # so concurrent same-repo and cross-repo runs no longer collide on
+        # shared host state (the hardcoded chat-postgres-1 stack that forced
+        # the old per-repo mutex was removed from `just test` 2026-05-15; #638
+        # deletes it). See lib/locking.sh::acquire_just_test_lock.
+        JUST_TEST_LOCK_WAIT_START=$(date +%s)
+        # #100's global N-slot semaphore, with slots in the SHARED STATE_DIR so the
+        # MAX_CONCURRENT_TESTS cap on concurrent `just test` holds ACROSS reviewer
+        # containers — protecting the host's memory. (This subsumes the per-container
+        # just-test lock; LOCAL_STATE_DIR scopes the canonical clone lock + ephemeral
+        # KID query copies — per-account stop-state lives in $STATE_DIR/pool/,
+        # see lib/state-io.sh.)
+        acquire_just_test_lock "$STATE_DIR"
+        JUST_TEST_LOCK_WAIT=$(( $(date +%s) - JUST_TEST_LOCK_WAIT_START ))
+        if [ "$JUST_TEST_LOCK_WAIT" -ge 5 ]; then
+            log "$PR_ID: just-test slot acquired after ${JUST_TEST_LOCK_WAIT}s queue"
+        fi
+        # Cap the inner test window to the outer worker budget left (the dispatcher
+        # stamps WORKER_DEADLINE_EPOCH; unset on a direct/smoke invocation → full
+        # window). This keeps the inner `timeout -k` firing before the outer worker
+        # timeout, so a wedged test is reaped by the inner -k (which reaches its
+        # process group) rather than orphaned by the outer kill while this lock is
+        # released — see cap_test_timeout. Reserve 35s = the 30s inner kill-after
+        # (below) + a 5s scheduling buffer, so the inner SIGKILL lands strictly
+        # before the outer SIGTERM instead of racing it on the same second.
+        if [ -n "${WORKER_DEADLINE_EPOCH:-}" ]; then
+            TEST_WINDOW=$(cap_test_timeout "$WORKER_DEADLINE_EPOCH" "$(date +%s)" 35 "$TEST_TIMEOUT")
+        else
+            TEST_WINDOW="$TEST_TIMEOUT"
+        fi
+        if [ -z "$TEST_WINDOW" ]; then
+            log "$PR_ID: worker budget exhausted by ${JUST_TEST_LOCK_WAIT}s just-test queue — skipping \`just test\`"
+            release_just_test_lock
+            TESTS_RAN=false
+            TEST_SUMMARY="not run (worker timeout budget exhausted by queue wait)"
+            : > "$TEST_LOG"
+        else
+            log "$PR_ID: running \`just --justfile $JUST_FILE test\` (timeout ${TEST_WINDOW})..."
+            # 30s kill-after: `just test` runs in its own process group (run_just_test's
+            # inner `timeout` creates it), so the dispatcher's outer `timeout -k` can't
+            # reach a SIGTERM-ignoring pytest tree — only this inner -k can. The subtree
+            # shares the inner group, so the SIGKILL reaps it wholesale.
+            run_just_test "$JUST_FILE" "$TEST_DIR" "$TEST_LOG" "$TEST_WINDOW" 30s
+            TEST_EXIT=$?
+            release_just_test_lock
+            IFS=$'\t' read -r TESTS_RAN TEST_SUMMARY < <(classify_just_test_outcome "$TEST_EXIT" "$TEST_LOG" "$TEST_WINDOW")
+        fi
     fi
-fi
-TEST_LOG_TAIL=$(tail -n 500 "$TEST_LOG")
-# The header only uses the 500-line tail; drop the full log now that it's been
-# read + classified. It lives in reviewer-owned $RUN_DIR (persists after the
-# workdir is wiped), and trusted-author `just test` output can carry creds/PII
-# beyond the tail — don't retain the unbounded artifact.
-rm -f "$TEST_LOG"
-
-# The test clone (mirrored env files included) was only needed for `just
-# test`; delete it now so secrets don't sit on disk during the long
-# specialist phase, instead of waiting for the EXIT trap. Runs regardless of
-# which test path above fired (or even if no test ran at all).
-cleanup_test_clone
-
-log "$PR_ID: just test ${TEST_SUMMARY}"
-TEST_RESULTS="**Result:** ${TEST_SUMMARY}
-
-Last 500 lines of \`just test\` output:
-\`\`\`
-${TEST_LOG_TAIL:-(no output captured)}
-\`\`\`"
-
-# pipeline.py's test-gate stages these for the `tests` specialist + aggregator:
-# results first, then the sentinel (the gate reads results once it sees the
-# sentinel). Written synchronously for now; the background test job takes
-# this over when it lands.
-printf '%s\n' "$TEST_RESULTS" > "$RUN_DIR/test-results.md"
-touch "$RUN_DIR/test-done"
+    TEST_LOG_TAIL=$(tail -n 500 "$TEST_LOG")
+    # The header only uses the 500-line tail; drop the full log now that it's
+    # been read + classified. It lives in reviewer-owned $RUN_DIR (persists
+    # after the workdir is wiped), and trusted-author `just test` output can
+    # carry creds/PII beyond the tail — don't retain the unbounded artifact.
+    rm -f "$TEST_LOG"
+    # The test clone (mirrored env files included) was only needed for `just
+    # test`; delete it now so secrets don't sit on disk during the long
+    # specialist phase, instead of waiting for the EXIT trap. Runs regardless
+    # of which test path above fired (or even if no test ran at all). Skips
+    # the kill branch: TEST_JOB_PID is still the pre-fork "" in here.
+    cleanup_test_clone
+    log "$PR_ID: just test ${TEST_SUMMARY}"
+    printf '**Result:** %s\nLast 500 lines of `just test` output:\n```\n%s\n```\n' \
+        "$TEST_SUMMARY" "${TEST_LOG_TAIL:-(no output captured)}" > "$RUN_DIR/test-results.md"
+    printf '%s\t%s\t%s\t%s\n' "$TESTS_RAN" "$TEST_SUMMARY" "$JUST_TEST_LOCK_WAIT" \
+        "$(( $(date +%s) - TEST_JOB_START ))" > "$RUN_DIR/test-outcome.tsv"
+) &
+TEST_JOB_PID=$!
 
 # ---- standards ----
 # $STANDARDS was captured in the early convention-read section above (alongside the
@@ -1569,6 +1587,18 @@ LOG_FILE="$LOG_FILE" \
 OPERATOR_NAME="${OPERATOR_NAME:-Sam}" \
     python3 "$_LIB_DIR/pipeline.py" "$REPO_DIR" "$RUN_DIR"
 PIPELINE_EXIT=$?
+
+# Join the test job (normally long finished — the test-gate already waited on
+# its sentinel) and read its outcome for the header note. Clearing the pid
+# keeps the EXIT trap from signalling a recycled one after it is reaped.
+wait "$TEST_JOB_PID"
+TEST_JOB_PID=""
+IFS=$'\t' read -r TESTS_RAN TEST_SUMMARY TEST_LOCK_WAIT_S TEST_RUN_S < "$RUN_DIR/test-outcome.tsv" || {
+    log "$PR_ID: test job left no outcome (test-outcome.tsv missing) — internal invariant violated, aborting"
+    rm -rf "$REPO_DIR"
+    exit 1
+}
+
 AGG_OUT="$RUN_DIR/agents/aggregator/output.md"
 
 # Aggregator output is what gets posted to GitHub — abort on any pipeline
