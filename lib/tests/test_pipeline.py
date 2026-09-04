@@ -339,16 +339,19 @@ class TestTestGateWaitBound(unittest.TestCase):
 
     def test_gives_up_early_enough_for_the_downstream_readers(self):
         # A deadline still in the FUTURE but inside the margin → give up at
-        # once, so the readers keep their budget. The elapsed assertion is the
-        # load-bearing half: without it a revert still passes, because the
-        # pre-fix loop reaches the deadline itself and stages the same body —
-        # just later. Keep the offset small so a revert FAILS fast (0.5s)
-        # instead of hanging out to a realistic 5-minute deadline.
-        with patch.object(pipeline, "TEST_GATE_POLL_SEC", 0.05):
-            t0 = time.time()
-            rc, staged = self._gate({"WORKER_DEADLINE_EPOCH": str(time.time() + 0.5)})
-            self.assertLess(time.time() - t0, pipeline.TEST_GATE_POLL_SEC,
-                            "gate waited for the deadline itself instead of a margin ahead of it")
+        # once, so the readers keep their budget. The no-sleep assertion is
+        # the load-bearing half: without it a revert still passes, because
+        # the pre-fix loop reaches the deadline and stages the same body,
+        # just later, after sleeping to get there. The fake clock advances
+        # only when read, so a reverted gate converges on its own deadline.
+        clock, sleeps = [1_000_000.0], []
+        def fake_time():
+            t, clock[0] = clock[0], clock[0] + 1.0
+            return t
+        with patch.object(pipeline.time, "time", fake_time), \
+             patch.object(pipeline.time, "sleep", sleeps.append):
+            rc, staged = self._gate({"WORKER_DEADLINE_EPOCH": str(clock[0] + 0.5)})
+        self.assertEqual(sleeps, [], "gate slept instead of giving up at once")
         self.assertEqual(rc, 0)
         self.assertEqual(staged, "**Result:** not run (worker timeout budget exhausted)\n")
 
@@ -1649,11 +1652,15 @@ class TestRunPipeline(unittest.TestCase):
         2 — and the review still completes."""
         lock = threading.Lock()
         state = {"cur": 0, "peak": 0}
-        def track(_name, _out_path):
+        barrier = threading.Barrier(2, timeout=5)  # intent/dead-code-search: the no-dep pair
+        def track(name, _out_path):
             with lock:
                 state["cur"] += 1
                 state["peak"] = max(state["peak"], state["cur"])
-            time.sleep(0.05)
+            if name in ("intent", "dead-code-search"):
+                barrier.wait()
+            else:
+                time.sleep(0.05)
             with lock:
                 state["cur"] -= 1
         with patch.object(pipeline, "CODEX_MAX_CONCURRENCY", 2):
