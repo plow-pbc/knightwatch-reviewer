@@ -1145,7 +1145,7 @@ if [ -n "$KID_PROJECT_PATH" ] && [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -n "
     # fresh, so a stamp that moved across the copy discards it; a stamp that
     # reads `refreshing` on both sides is a copy of half-written chroma files
     # (no valid generation at all), discarded too. Both retry next review.
-    kid_generation() { head -c 40 "$1/.indexed-sha" 2>/dev/null; grep '^reason=' "$1/.stale" 2>/dev/null; }
+    kid_generation() { head -c 40 "$1/.indexed-sha" 2>/dev/null; head -c 256 "$1/.stale" 2>/dev/null | grep '^reason='; }
     KID_GEN_BEFORE=$(kid_generation "$KID_PROJECT_PATH/.keepitdry")
     if ! { rm -rf "$KID_QUERY_DIR" && mkdir -p "$KID_QUERY_DIR" && cp -r "$KID_PROJECT_PATH/.keepitdry" "$KID_SNAPSHOT"; }; then
         KID_DETAIL="index copy failed"

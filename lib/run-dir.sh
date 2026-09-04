@@ -622,11 +622,14 @@ kid_index_behind() {
 }
 
 kid_stale_detail() {
-    local marker="$1" reason indexed behind since days
-    reason=$(grep '^reason=' "$marker" | cut -d= -f2-)
-    indexed=$(grep '^indexed=' "$marker" | cut -d= -f2-)
-    behind=$(grep '^behind=' "$marker" | cut -d= -f2-)
-    since=$(grep '^since=' "$marker" | cut -d= -f2-)
+    local marker="$1" body reason indexed behind since days
+    # The marker lives in an author-shaped mirror: bounded read, same as
+    # .indexed-sha (kid_index_behind) and the worker's generation stamp.
+    body=$(head -c 512 "$marker" 2>/dev/null)
+    reason=$(printf '%s\n' "$body" | grep '^reason=' | cut -d= -f2-)
+    indexed=$(printf '%s\n' "$body" | grep '^indexed=' | cut -d= -f2-)
+    behind=$(printf '%s\n' "$body" | grep '^behind=' | cut -d= -f2-)
+    since=$(printf '%s\n' "$body" | grep '^since=' | cut -d= -f2-)
     days=$(python3 -c "import datetime,sys
 try: print((datetime.datetime.now(datetime.timezone.utc) - datetime.datetime.strptime(sys.argv[1], '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=datetime.timezone.utc)).days)
 except ValueError: print('?')" "$since")
