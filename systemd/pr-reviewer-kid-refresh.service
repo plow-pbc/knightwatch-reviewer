@@ -13,7 +13,9 @@ Environment=HOME=/home/odio
 # defense-in-depth on top of the ~/.local-not-in-ReadWritePaths fix).
 Environment=PATH=/usr/local/bin:/usr/bin:/bin:/home/odio/.local/bin
 ExecStart=/home/odio/.pr-reviewer/plow-kid-refresh.sh
-TimeoutStartSec=20min
+# Per-repo index budget is 30min (KID_INDEX_TIMEOUT) and plow alone outgrew the
+# old 20min sweep ceiling; the script's lock makes an overlapping hourly fire a no-op.
+TimeoutStartSec=3h
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=pr-reviewer-kid-refresh

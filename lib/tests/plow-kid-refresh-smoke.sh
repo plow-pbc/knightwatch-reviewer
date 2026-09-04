@@ -62,12 +62,15 @@ cat > "$HOME/.local/bin/git" <<'STUB'
 #!/bin/bash
 echo "GIT $*" >> "${STUB_GIT_LOG:-/dev/null}"
 case "$1" in
-    fetch|pull) exit 0 ;;
+    fetch)        exit "${MOCK_GIT_FETCH_EXIT:-0}" ;;
+    pull)         exit "${MOCK_GIT_PULL_EXIT:-0}" ;;
+    symbolic-ref) echo "refs/remotes/origin/${MOCK_GIT_DEFAULT:-main}" ;;
+    rev-list)     echo "${MOCK_GIT_BEHIND:-3}" ;;
     rev-parse)
-        # Two callers: HEAD (LOCAL), origin/main (REMOTE).
+        # Two callers: HEAD (LOCAL), origin/<branch> (REMOTE).
         case "$2" in
             HEAD)        echo "${MOCK_GIT_LOCAL_SHA:-aaaaaaaa}" ;;
-            origin/main) echo "${MOCK_GIT_REMOTE_SHA:-aaaaaaaa}" ;;
+            origin/*)    echo "${MOCK_GIT_REMOTE_SHA:-aaaaaaaa}" ;;
             --short)
                 # `git rev-parse --short HEAD` is used in log strings
                 # after a successful index. Emit a stub short SHA.
@@ -264,4 +267,51 @@ n=$(count_kid)
 [ ! -f "$PROJ_A/.keepitdry/.indexed-sha" ] && [ ! -f "$PROJ_B/.keepitdry/.indexed-sha" ] || { echo "FAIL scenario 8: a timed-out index advanced its marker — the retry is lost"; exit 1; }
 [ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 8: timed-out indexes reported success"; cat "$LOG_FILE"; exit 1; }
 
-echo "  PASS (9 scenarios: empty-noop, missing-checkout-tolerated-not-alarmed, bootstrap-on-no-.keepitdry, index-current-is-a-noop, failed-index-retries-next-tick, new-commits-pull-then-index, unwritable-project-skipped-loudly, index-failure-is-not-success, per-repo-timeout-does-not-strand-the-sweep)"
+# Scenarios 9-12: the .keepitdry/.stale marker. A repo this sweep left without
+# a fresh index carries reason/indexed/behind/since through the same read-only
+# mount the reviewer already has, so the posted header can say STALE and why.
+echo "  scenario 9: index failure writes .stale (reason, indexed, since) — since survives later sweeps..."
+PROJ="$TMPDIR/proj-stale"
+mkdir -p "$PROJ/.git" "$PROJ/.keepitdry"
+STALE="$PROJ/.keepitdry/.stale"
+cat > "$STATE_DIR/repos.conf" <<CONF
+REPOS=("acme/stale")
+declare -A KID_PATHS=([acme/stale]="$PROJ")
+CONF
+MOCK_KID_EXIT=1 run_refresh
+[ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 9: expected exit 1"; exit 1; }
+[ -f "$STALE" ] || { echo "FAIL scenario 9: .stale not written"; exit 1; }
+grep -q '^reason=index-failed$' "$STALE" || { echo "FAIL scenario 9: reason"; cat "$STALE"; exit 1; }
+grep -q '^indexed=never$' "$STALE" || { echo "FAIL scenario 9: indexed"; cat "$STALE"; exit 1; }
+grep -q '^behind=?$' "$STALE" || { echo "FAIL scenario 9: behind unknown when never indexed"; cat "$STALE"; exit 1; }
+grep -q '^since=20' "$STALE" || { echo "FAIL scenario 9: since"; cat "$STALE"; exit 1; }
+first_since=$(grep '^since=' "$STALE")
+MOCK_KID_EXIT=1 run_refresh
+[ "$(grep '^since=' "$STALE")" = "$first_since" ] || { echo "FAIL scenario 9: since must be preserved across sweeps"; cat "$STALE"; exit 1; }
+
+echo "  scenario 10: a successful index — or one already current — clears .stale..."
+run_refresh
+[ ! -e "$STALE" ] || { echo "FAIL scenario 10: .stale should be removed after a successful index"; exit 1; }
+printf 'reason=index-failed\nindexed=never\nbehind=?\nsince=2026-01-01T00:00:00Z\n' > "$STALE"
+run_refresh   # .indexed-sha already == HEAD → the no-op short-circuit must still clear it
+n=$(count_kid)
+[ "$n" -eq 0 ] || { echo "FAIL scenario 10: expected the index-current no-op, got $n kid calls"; exit 1; }
+[ ! -e "$STALE" ] || { echo "FAIL scenario 10: leftover .stale survived an index-current sweep"; exit 1; }
+
+echo "  scenario 11: diverged mirror is reported (behind counted), never reset; fetch failure reported too..."
+MOCK_GIT_LOCAL_SHA=aaaaaaaa MOCK_GIT_REMOTE_SHA=bbbbbbbb MOCK_GIT_PULL_EXIT=1 MOCK_GIT_BEHIND=7 run_refresh
+[ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 11: expected exit 1 on a diverged mirror"; exit 1; }
+grep -q '^reason=diverged$' "$STALE" || { echo "FAIL scenario 11: diverged reason"; cat "$STALE"; exit 1; }
+grep -q '^indexed=aaaaaaaa$' "$STALE" || { echo "FAIL scenario 11: indexed sha from .indexed-sha"; cat "$STALE"; exit 1; }
+grep -q '^behind=7$' "$STALE" || { echo "FAIL scenario 11: behind from rev-list"; cat "$STALE"; exit 1; }
+grep -q '^GIT reset' "$STUB_GIT_LOG" && { echo "FAIL scenario 11: refresh must never reset a mirror"; exit 1; }
+MOCK_GIT_FETCH_EXIT=1 run_refresh
+[ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 11: expected exit 1 on a fetch failure"; exit 1; }
+grep -q '^reason=fetch-failed$' "$STALE" || { echo "FAIL scenario 11: fetch-failed reason"; cat "$STALE"; exit 1; }
+
+echo "  scenario 12: default branch comes from origin/HEAD, not a hardcoded main..."
+MOCK_GIT_DEFAULT=master run_refresh
+grep -q '^GIT fetch origin master' "$STUB_GIT_LOG" || { echo "FAIL scenario 12: expected fetch of origin master"; cat "$STUB_GIT_LOG"; exit 1; }
+grep -q '^GIT rev-parse origin/master' "$STUB_GIT_LOG" || { echo "FAIL scenario 12: expected rev-parse of origin/master"; cat "$STUB_GIT_LOG"; exit 1; }
+
+echo "  PASS (13 scenarios: empty-noop, missing-checkout-tolerated-not-alarmed, bootstrap-on-no-.keepitdry, index-current-is-a-noop, failed-index-retries-next-tick, new-commits-pull-then-index, unwritable-project-skipped-loudly, index-failure-is-not-success, per-repo-timeout-does-not-strand-the-sweep, stale-marker-written-with-since-preserved, stale-marker-cleared-on-success, diverged-and-fetch-failure-reported-never-reset, default-branch-from-origin-HEAD)"
