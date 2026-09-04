@@ -330,6 +330,32 @@ GH_POSTED=false
 # emits a "clean incremental unavailable" disclosure at the top of
 # the posted review.
 USED_FALLBACK=false
+# Compose $RUN_DIR/timings.json = pipeline.py's node map + the worker's own
+# phases (integer seconds). Safe on every exit path: missing inputs become 0.
+# tmp+mv (same shape as finalize_meta_json, lib/run-dir.sh): redirecting straight
+# onto timings.json truncates it before jq runs, so any jq failure — a torn read,
+# a non-numeric TEST_RUN_S off a tab-shifted TSV — would destroy the node map
+# rather than leave it. Returns 1 on failure; the caller keeps the old file.
+compose_run_timings() {
+    local now; now=$(date +%s)
+    local nodes='{}'; [ -s "$RUN_DIR/timings.json" ] && nodes=$(cat "$RUN_DIR/timings.json")
+    local tmp="$RUN_DIR/timings.json.tmp"
+    if ! jq -n --argjson nodes "$nodes" \
+        --argjson setup "$(( ${PIPELINE_START_TS:-$now} - REVIEW_START_TS ))" \
+        --argjson test "${TEST_RUN_S:-0}" --argjson queue "${TEST_LOCK_WAIT_S:-0}" \
+        --argjson pipeline "$(( ${PIPELINE_END_TS:-$now} - ${PIPELINE_START_TS:-$now} ))" \
+        --argjson total "$(( now - REVIEW_START_TS ))" \
+        '$nodes + {setup: $setup, test: $test, test_queue: $queue, pipeline: $pipeline, total: $total}' \
+        > "$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    if ! mv -f "$tmp" "$RUN_DIR/timings.json"; then
+        rm -f "$tmp"
+        return 1
+    fi
+}
+
 finalize_run() {
     # Thin wrapper around finalize_meta_json (lib/run-dir.sh) that supplies
     # the worker's runtime closure (RUN_DIR / RUN_STATUS / GH_POSTED / now).
@@ -340,8 +366,9 @@ finalize_run() {
     # Past checkout meta.json always exists, so finalize_meta_json staying
     # fail-loud below catches a genuinely un-stamped real run.
     [ -f "$RUN_DIR/meta.json" ] || return 0
+    compose_run_timings
     if ! finalize_meta_json "$RUN_DIR/meta.json" \
-            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$RUN_STATUS" "$GH_POSTED"; then
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$RUN_STATUS" "$GH_POSTED" "$RUN_DIR/timings.json"; then
         log "$PR_ID: finalize_run failed — meta.json left un-stamped"
     fi
 }
@@ -374,7 +401,7 @@ $BOT_AI_AUTHOR_MARKER
 $BOT_PLACEHOLDER_MARKER
 "
 # Default placeholder body for any abort path; specific aborts (e.g. the
-# Wave B timeout branch in the pipeline block below) override this with
+# specialist-timeout branch in the pipeline block below) override this with
 # a more informative message before the EXIT trap fires. Single PATCH
 # lifecycle — cleanup_eyes is the only writer of the abort placeholder.
 EYES_ABORT_BODY="review aborted before completion — see knightwatch-reviewer logs; will retry on the next tick if the PR head hasn't moved."
@@ -390,7 +417,7 @@ cleanup_eyes() {
         -f body="${PLACEHOLDER_HEADER}${EYES_ABORT_BODY}" \
         >/dev/null 2>&1 || true
 }
-trap 'finalize_run; cleanup_eyes' EXIT
+trap 'finalize_run; cleanup_eyes; cleanup_test_clone' EXIT
 # SIGTERM (from the dispatcher's `timeout` ceiling) and SIGINT must run the
 # EXIT trap too — bare bash exits on an untrapped SIGTERM WITHOUT firing the
 # EXIT trap, which would leave the 👀 placeholder dangling on a timeout-kill.
@@ -415,6 +442,25 @@ REPO_SLUG=$(echo "$REPO" | tr '/' '_')
 CANONICAL_DIR="$REPOS_DIR/$REPO_SLUG"
 PR_WORKDIR_SLUG="${REPO_SLUG}__${PR_NUM}"
 REPO_DIR="$WORKDIRS_DIR/${PR_WORKDIR_SLUG}"
+
+# Second shared clone of the same head, for `just test` only. run_just_test
+# chowns its tree to the unprivileged test user for the test's duration, so
+# the tree codex reads must be a different one — otherwise PR-controlled test
+# code could rewrite .codex-scratch/* under a running specialist. It also
+# keeps the mirrored live .env files out of the codex workdir entirely.
+TEST_DIR="$REPO_DIR-test"
+# Set once the background `just test` job is forked (below); "" until then so
+# the EXIT trap's cleanup_test_clone is set -u-safe on an early exit.
+TEST_JOB_PID=""
+# Phase timestamps + the test job's own durations, read back off
+# test-outcome.tsv on the success path. All "" until their phase happens so
+# compose_run_timings' ${VAR:-...} defaults hold on every early exit under
+# set -u (an abort never reaches the TSV read, so these two stay empty).
+PIPELINE_START_TS=""
+PIPELINE_END_TS=""
+TEST_RUN_S=""
+TEST_LOCK_WAIT_S=""
+# cleanup_test_clone (lib/run-dir.sh) tears the job + its clone down on abort.
 
 CANONICAL_LOCK_DIR="$LOCAL_STATE_DIR/canonical-locks"
 mkdir -p "$CANONICAL_LOCK_DIR"
@@ -629,10 +675,19 @@ fi
 # Tear down any stale per-PR workdir and create a fresh shared clone.
 # --shared gives us hardlinked objects from canonical, so this is cheap.
 # Canonical's refs/heads/$PR_BRANCH shows up here as origin/$PR_BRANCH.
-rm -rf "$REPO_DIR"
+rm -rf "$REPO_DIR" "$TEST_DIR"
 mkdir -p "$(dirname "$REPO_DIR")"
 if ! git clone --shared "$CANONICAL_DIR" "$REPO_DIR" --no-single-branch --quiet; then
     log "$PR_ID: git clone --shared failed — aborting"
+    exit 1
+fi
+
+# Second shared clone, for `just test` only — see TEST_DIR's definition above.
+# Cloned here (still holding the canonical lock) rather than lazily before the
+# test block, so both clones observe the same canonical state.
+if ! git clone --shared "$CANONICAL_DIR" "$TEST_DIR" --no-single-branch --quiet; then
+    log "$PR_ID: git clone --shared (test clone) failed — aborting"
+    rm -rf "$REPO_DIR"
     exit 1
 fi
 
@@ -671,6 +726,13 @@ if [ -z "$REVIEWED_SHA" ]; then
 fi
 if [ "$REVIEWED_SHA" != "$PR_SHA" ]; then
     log "$PR_ID: orchestrator enumerated ${PR_SHA:0:7}, worker checked out ${REVIEWED_SHA:0:7} — using checked-out SHA for header + state + meta"
+fi
+
+# Pin the test clone to the exact same commit codex will read.
+if ! git -C "$TEST_DIR" checkout --detach "$REVIEWED_SHA" --quiet; then
+    log "$PR_ID: test-clone checkout of ${REVIEWED_SHA:0:7} failed — aborting"
+    rm -rf "$REPO_DIR"
+    exit 1
 fi
 
 # meta.json — minimal post-mortem header. Written here (after checkout)
@@ -724,15 +786,15 @@ fi
 COPIED_ENV_FILES=()
 if [ "$IS_TRUSTED_AUTHOR" = true ]; then
     while IFS= read -r -d '' example_path; do
-        rel="${example_path#"$REPO_DIR"/}"
+        rel="${example_path#"$TEST_DIR"/}"
         target_rel="${rel%.example}"
         canonical_src="$CANONICAL_DIR/$target_rel"
-        workdir_dst="$REPO_DIR/$target_rel"
+        workdir_dst="$TEST_DIR/$target_rel"
         if [ -e "$canonical_src" ] && [ ! -e "$workdir_dst" ]; then
             cp -L "$canonical_src" "$workdir_dst"
             COPIED_ENV_FILES+=("$workdir_dst")
         fi
-    done < <(find "$REPO_DIR" -type f -name '.env*.example' \
+    done < <(find "$TEST_DIR" -type f -name '.env*.example' \
         -not -path '*/.git/*' -not -path '*/node_modules/*' -print0)
     [ "${#COPIED_ENV_FILES[@]}" -gt 0 ] && \
         log "$PR_ID: mirrored ${#COPIED_ENV_FILES[@]} env file(s) from canonical (PR_AUTHOR=$PR_AUTHOR trusted)"
@@ -849,19 +911,20 @@ if [ -z "$KID_INPUT_DIFF" ]; then
 fi
 
 # ---- just test ----
-# Bound `just`'s justfile discovery to REPO_DIR — without --justfile,
+# Bound `just`'s justfile discovery to TEST_DIR — without --justfile,
 # `just` walks up the directory tree and could pick up an ancestor
 # justfile (workdirs live at $STATE_DIR/workdirs/<pr>; walk-up reaches
 # $STATE_DIR and $HOME). Trusted-author runs mirror canonical .env*
-# files into the workdir before this call, so executing an unrelated
+# files into TEST_DIR before this call, so executing an unrelated
 # ancestor recipe with those secrets in scope is a real boundary
 # crossing. The enumerated list mirrors `just`'s full set of accepted
 # names so non-canonical-but-real justfiles aren't missed.
-# Test log lives in reviewer-controlled run state, NOT under $REPO_DIR (the
-# PR checkout). A PR author could commit `.test-output.log` as a symlink into
-# the unit's writable paths (ReadWritePaths=/home/odio/.pr-reviewer), and the
-# truncate/redirect writes below would follow it — a write-through out of the
-# sandbox. $RUN_DIR is allocated by the reviewer (line ~160), not the PR.
+# Test log lives in reviewer-controlled run state, NOT under $TEST_DIR (the
+# tree PR-controlled `just test` executes in). A PR author could commit
+# `.test-output.log` as a symlink into the unit's writable paths
+# (ReadWritePaths=/home/odio/.pr-reviewer), and the truncate/redirect writes
+# below would follow it — a write-through out of the sandbox. $RUN_DIR is
+# allocated by the reviewer (line ~160), not the PR.
 TEST_LOG="$RUN_DIR/test-output.log"
 TEST_TIMEOUT=30m
 
@@ -881,7 +944,7 @@ fi
 
 JUST_FILE=""
 for n in justfile Justfile JUSTFILE .justfile .Justfile .JUSTFILE; do
-    [ -f "$REPO_DIR/$n" ] && { JUST_FILE="$REPO_DIR/$n"; break; }
+    [ -f "$TEST_DIR/$n" ] && { JUST_FILE="$TEST_DIR/$n"; break; }
 done
 
 # Convention DETECTION (lib/conventions.sh) — operator-defined via the kwr-config
@@ -925,97 +988,123 @@ STANDARDS=$(resolve_standards)
 # PAT) + network (host path), or drive the privileged dind daemon (container
 # path). just_test_skip_reason (lib/auth.sh) is the single source of truth.
 JUST_TEST_SKIP_REASON=$(just_test_skip_reason "$JUST_FILE" "$IS_TRUSTED_AUTHOR")
-if [ -n "$JUST_TEST_SKIP_REASON" ]; then
-    log "$PR_ID: skipping \`just test\` — $JUST_TEST_SKIP_REASON (author $PR_AUTHOR)"
-    TESTS_RAN=false
-    # For a convention repo whose convention declares a test-gate (test-note) and
-    # that has no justfile, "not run (no justfile)" is the EXPECTED shape, not a
-    # coverage gap — the gate is the convention's own (e.g. a SEED's
-    # `## Verification`/ref/verify.sh). Surface the convention's note so the tests
-    # specialist doesn't read a missing justfile as a missing harness. (Only the
-    # no-justfile skip; an untrusted-author skip still reports its security reason.)
-    if [ -n "$CONVENTION_TEST_NOTE" ] && [ -z "$JUST_FILE" ]; then
-        TEST_SUMMARY="$CONVENTION_TEST_NOTE"
-    else
-        TEST_SUMMARY="not run ($JUST_TEST_SKIP_REASON)"
+
+# `just test` runs in the background against TEST_DIR while the LLM stages
+# start; only the `tests` specialist and the aggregator wait on it (via
+# pipeline.py's test-gate node). The subshell owns the just-test flock and
+# the clone, and reports through two files that _test_job_exit (below)
+# guarantees on every path — subshells don't inherit the parent's EXIT trap,
+# so the job sets its own.
+TEST_JOB_START=$(date +%s)
+# The job's single "reported" owner, run on EVERY subshell exit — including
+# run_just_test's fail-fast `exit 1` paths (lib/run-dir.sh: wrong DOCKER_HOST,
+# bridge-reset failure, a reviewer-test process surviving SIGKILL), which now
+# leave only the subshell and so skip the reporting writes below. test-outcome.tsv
+# is what pipeline.py's test-gate polls for, and it read_bytes()es
+# test-results.md the moment that row appears — so every reporting path here and
+# below writes the results body FIRST, outcome row second.
+# It also owns the clone delete (the mirrored live .env files must not sit on
+# disk through the specialist phase, on the aborted path either).
+_test_job_exit() {
+    if [ ! -f "$RUN_DIR/test-outcome.tsv" ]; then
+        # Shared literal (lib/run-dir.sh): review_is_approval reads it back off
+        # the row below to withhold approval, format_tests_note to label the
+        # header note as a reviewer-side fault.
+        local aborted="$TEST_ABORTED_SUMMARY"
+        log "$PR_ID: FATAL — test job exited before reporting its outcome; review continues with '$aborted'"
+        printf '**Result:** %s\n\nThe `just test` job aborted before reporting; the cause is in the worker run.log.\n' \
+            "$aborted" > "$RUN_DIR/test-results.md"
+        printf '%s\t%s\t%s\t%s\n' false "$aborted" 0 "$(( $(date +%s) - TEST_JOB_START ))" \
+            > "$RUN_DIR/test-outcome.tsv"
     fi
-    : > "$TEST_LOG"
-else
-    # Global concurrency cap on `just test` (MAX_CONCURRENT_TESTS slots,
-    # default 3). Each `just test` brings up a docker compose stack, so we
-    # ration how many run at once to stay under the unit's MemoryHigh —
-    # this is a memory bound, NOT correctness. plow's test-scenarios
-    # namespaces its compose project name + host ports per checkout dir,
-    # so concurrent same-repo and cross-repo runs no longer collide on
-    # shared host state (the hardcoded chat-postgres-1 stack that forced
-    # the old per-repo mutex was removed from `just test` 2026-05-15; #638
-    # deletes it). See lib/locking.sh::acquire_just_test_lock.
-    JUST_TEST_LOCK_WAIT_START=$(date +%s)
-    # #100's global N-slot semaphore, with slots in the SHARED STATE_DIR so the
-    # MAX_CONCURRENT_TESTS cap on concurrent `just test` holds ACROSS reviewer
-    # containers — protecting the host's memory. (This subsumes the per-container
-    # just-test lock; LOCAL_STATE_DIR scopes the canonical clone lock + ephemeral
-    # KID query copies — per-account stop-state lives in $STATE_DIR/pool/,
-    # see lib/state-io.sh.)
-    acquire_just_test_lock "$STATE_DIR"
-    JUST_TEST_LOCK_WAIT=$(( $(date +%s) - JUST_TEST_LOCK_WAIT_START ))
-    if [ "$JUST_TEST_LOCK_WAIT" -ge 5 ]; then
-        log "$PR_ID: just-test slot acquired after ${JUST_TEST_LOCK_WAIT}s queue"
-    fi
-    # Cap the inner test window to the outer worker budget left (the dispatcher
-    # stamps WORKER_DEADLINE_EPOCH; unset on a direct/smoke invocation → full
-    # window). This keeps the inner `timeout -k` firing before the outer worker
-    # timeout, so a wedged test is reaped by the inner -k (which reaches its
-    # process group) rather than orphaned by the outer kill while this lock is
-    # released — see cap_test_timeout. Reserve 35s = the 30s inner kill-after
-    # (below) + a 5s scheduling buffer, so the inner SIGKILL lands strictly
-    # before the outer SIGTERM instead of racing it on the same second.
-    if [ -n "${WORKER_DEADLINE_EPOCH:-}" ]; then
-        TEST_WINDOW=$(cap_test_timeout "$WORKER_DEADLINE_EPOCH" "$(date +%s)" 35 "$TEST_TIMEOUT")
-    else
-        TEST_WINDOW="$TEST_TIMEOUT"
-    fi
-    if [ -z "$TEST_WINDOW" ]; then
-        log "$PR_ID: worker budget exhausted by ${JUST_TEST_LOCK_WAIT}s just-test queue — skipping \`just test\`"
-        release_just_test_lock
+    # Skips cleanup_test_clone's kill AND reap branches: TEST_JOB_PID is still
+    # the pre-fork "" in here, and run_just_test already reaped whatever it ran.
+    cleanup_test_clone
+}
+(
+    trap _test_job_exit EXIT
+    JUST_TEST_LOCK_WAIT=0
+    if [ -n "$JUST_TEST_SKIP_REASON" ]; then
+        log "$PR_ID: skipping \`just test\` — $JUST_TEST_SKIP_REASON (author $PR_AUTHOR)"
         TESTS_RAN=false
-        TEST_SUMMARY="not run (worker timeout budget exhausted by queue wait)"
+        # For a convention repo whose convention declares a test-gate (test-note) and
+        # that has no justfile, "not run (no justfile)" is the EXPECTED shape, not a
+        # coverage gap — the gate is the convention's own (e.g. a SEED's
+        # `## Verification`/ref/verify.sh). Surface the convention's note so the tests
+        # specialist doesn't read a missing justfile as a missing harness. (Only the
+        # no-justfile skip; an untrusted-author skip still reports its security reason.)
+        if [ -n "$CONVENTION_TEST_NOTE" ] && [ -z "$JUST_FILE" ]; then
+            TEST_SUMMARY="$CONVENTION_TEST_NOTE"
+        else
+            TEST_SUMMARY="not run ($JUST_TEST_SKIP_REASON)"
+        fi
         : > "$TEST_LOG"
     else
-        log "$PR_ID: running \`just --justfile $JUST_FILE test\` (timeout ${TEST_WINDOW})..."
-        # 30s kill-after: `just test` runs in its own process group (run_just_test's
-        # inner `timeout` creates it), so the dispatcher's outer `timeout -k` can't
-        # reach a SIGTERM-ignoring pytest tree — only this inner -k can. The subtree
-        # shares the inner group, so the SIGKILL reaps it wholesale.
-        run_just_test "$JUST_FILE" "$REPO_DIR" "$TEST_LOG" "$TEST_WINDOW" 30s
-        TEST_EXIT=$?
-        release_just_test_lock
-        IFS=$'\t' read -r TESTS_RAN TEST_SUMMARY < <(classify_just_test_outcome "$TEST_EXIT" "$TEST_LOG" "$TEST_WINDOW")
+        # Global concurrency cap on `just test` (MAX_CONCURRENT_TESTS slots,
+        # default 3). Each `just test` brings up a docker compose stack, so we
+        # ration how many run at once to stay under the unit's MemoryHigh —
+        # this is a memory bound, NOT correctness. plow's test-scenarios
+        # namespaces its compose project name + host ports per checkout dir,
+        # so concurrent same-repo and cross-repo runs no longer collide on
+        # shared host state (the hardcoded chat-postgres-1 stack that forced
+        # the old per-repo mutex was removed from `just test` 2026-05-15; #638
+        # deletes it). See lib/locking.sh::acquire_just_test_lock.
+        JUST_TEST_LOCK_WAIT_START=$(date +%s)
+        # #100's global N-slot semaphore, with slots in the SHARED STATE_DIR so the
+        # MAX_CONCURRENT_TESTS cap on concurrent `just test` holds ACROSS reviewer
+        # containers — protecting the host's memory. (This subsumes the per-container
+        # just-test lock; LOCAL_STATE_DIR scopes the canonical clone lock + ephemeral
+        # KID query copies — per-account stop-state lives in $STATE_DIR/pool/,
+        # see lib/state-io.sh.)
+        acquire_just_test_lock "$STATE_DIR"
+        JUST_TEST_LOCK_WAIT=$(( $(date +%s) - JUST_TEST_LOCK_WAIT_START ))
+        if [ "$JUST_TEST_LOCK_WAIT" -ge 5 ]; then
+            log "$PR_ID: just-test slot acquired after ${JUST_TEST_LOCK_WAIT}s queue"
+        fi
+        # Cap the inner test window to the outer worker budget left (the dispatcher
+        # stamps WORKER_DEADLINE_EPOCH; unset on a direct/smoke invocation → full
+        # window). This keeps the inner `timeout -k` firing before the outer worker
+        # timeout, so a wedged test is reaped by the inner -k (which reaches its
+        # process group) rather than orphaned by the outer kill while this lock is
+        # released — see cap_test_timeout. Reserve 35s = the 30s inner kill-after
+        # (below) + a 5s scheduling buffer, so the inner SIGKILL lands strictly
+        # before the outer SIGTERM instead of racing it on the same second.
+        if [ -n "${WORKER_DEADLINE_EPOCH:-}" ]; then
+            TEST_WINDOW=$(cap_test_timeout "$WORKER_DEADLINE_EPOCH" "$(date +%s)" 35 "$TEST_TIMEOUT")
+        else
+            TEST_WINDOW="$TEST_TIMEOUT"
+        fi
+        if [ -z "$TEST_WINDOW" ]; then
+            log "$PR_ID: worker budget exhausted by ${JUST_TEST_LOCK_WAIT}s just-test queue — skipping \`just test\`"
+            release_just_test_lock
+            TESTS_RAN=false
+            TEST_SUMMARY="not run (worker timeout budget exhausted by queue wait)"
+            : > "$TEST_LOG"
+        else
+            log "$PR_ID: running \`just --justfile $JUST_FILE test\` (timeout ${TEST_WINDOW})..."
+            # 30s kill-after: `just test` runs in its own process group (run_just_test's
+            # inner `timeout` creates it), so the dispatcher's outer `timeout -k` can't
+            # reach a SIGTERM-ignoring pytest tree — only this inner -k can. The subtree
+            # shares the inner group, so the SIGKILL reaps it wholesale.
+            run_just_test "$JUST_FILE" "$TEST_DIR" "$TEST_LOG" "$TEST_WINDOW" 30s
+            TEST_EXIT=$?
+            release_just_test_lock
+            IFS=$'\t' read -r TESTS_RAN TEST_SUMMARY < <(classify_just_test_outcome "$TEST_EXIT" "$TEST_LOG" "$TEST_WINDOW")
+        fi
     fi
-fi
-TEST_LOG_TAIL=$(tail -n 500 "$TEST_LOG")
-# The header only uses the 500-line tail; drop the full log now that it's been
-# read + classified. It lives in reviewer-owned $RUN_DIR (persists after the
-# workdir is wiped), and trusted-author `just test` output can carry creds/PII
-# beyond the tail — don't retain the unbounded artifact.
-rm -f "$TEST_LOG"
-
-# Env files were only needed for `just test`; delete eagerly so secrets
-# don't sit in the workdir during the long specialist phase. REPO_DIR is
-# also rm -rf'd on every exit path below, so this is a belt-and-suspenders
-# early sweep, not the only cleanup. Runs regardless of which test path
-# above fired (or even if no test ran at all).
-for f in "${COPIED_ENV_FILES[@]}"; do
-    rm -f "$f"
-done
-
-log "$PR_ID: just test ${TEST_SUMMARY}"
-TEST_RESULTS="**Result:** ${TEST_SUMMARY}
-
-Last 500 lines of \`just test\` output:
-\`\`\`
-${TEST_LOG_TAIL:-(no output captured)}
-\`\`\`"
+    TEST_LOG_TAIL=$(tail -n 500 "$TEST_LOG")
+    # The header only uses the 500-line tail; drop the full log now that it's
+    # been read + classified. It lives in reviewer-owned $RUN_DIR (persists
+    # after the workdir is wiped), and trusted-author `just test` output can
+    # carry creds/PII beyond the tail — don't retain the unbounded artifact.
+    rm -f "$TEST_LOG"
+    log "$PR_ID: just test ${TEST_SUMMARY}"
+    printf '**Result:** %s\n\nLast 500 lines of `just test` output:\n```\n%s\n```\n' \
+        "$TEST_SUMMARY" "${TEST_LOG_TAIL:-(no output captured)}" > "$RUN_DIR/test-results.md"
+    printf '%s\t%s\t%s\t%s\n' "$TESTS_RAN" "$TEST_SUMMARY" "$JUST_TEST_LOCK_WAIT" \
+        "$(( $(date +%s) - TEST_JOB_START ))" > "$RUN_DIR/test-outcome.tsv"
+) &
+TEST_JOB_PID=$!
 
 # ---- standards ----
 # $STANDARDS was captured in the early convention-read section above (alongside the
@@ -1295,17 +1384,18 @@ fi
 
 # ---- write scratch files ----
 # Redirect-safe staging — wipe + recreate .codex-scratch HERE, immediately before
-# the first write and AFTER all PR-controlled execution (`just test`, canonical
-# fetch). A PR checkout could commit .codex-scratch as a symlink to a writable
-# service path, OR a trusted-author `just test` could replace it with one mid-run;
-# either would make the root-owned write_scratch + per-specialist writes below
-# redirect critic/momentum/dead-code outputs (and prompt files) into that target.
-# Wiping after the untrusted code runs closes both. Mirrors lib/sibling-symlinks.sh.
+# the first write and AFTER the canonical fetch, now the only way PR-controlled
+# content reaches this tree: a PR checkout could commit .codex-scratch as a
+# symlink to a writable service path, making the root-owned write_scratch +
+# per-specialist writes below redirect critic/momentum/dead-code outputs (and
+# prompt files) into that target. Wiping after the fetch closes it. `just test`
+# is no longer a second trigger — it runs concurrently in TEST_DIR (its own
+# clone at "$REPO_DIR-test") and structurally cannot reach this .codex-scratch.
+# Mirrors lib/sibling-symlinks.sh.
 rm -rf "$REPO_DIR/.codex-scratch"
 mkdir -p "$REPO_DIR/.codex-scratch"
 write_scratch "$REPO_DIR" "diff.patch"         "$KID_INPUT_DIFF"
 write_scratch "$REPO_DIR" "previous-review.md" "$PREV_BODY"
-write_scratch "$REPO_DIR" "test-results.md"    "$TEST_RESULTS"
 write_scratch "$REPO_DIR" "prior-art.md"       "${PRIOR_ART:-}"
 write_scratch "$REPO_DIR" "dead-code-static.md" "${DEAD_CODE_STATIC:-}"
 write_scratch "$REPO_DIR" "search-roots.md"    "${SEARCH_ROOTS:-}"
@@ -1506,10 +1596,11 @@ fi
 write_scratch "$REPO_DIR" "commits.md" "$COMMITS"
 
 # Pre-spend stale-head gate: the last cheap moment to cancel before the
-# LLM fan-out. A push that landed during setup (checkout → just test →
-# kid → scratch staging — routinely 20-40 min) means this run's snapshot
-# is already superseded; posting it anyway is what stacked 61 stale
-# reviews across the last 60 plow PRs. Movement DURING the specialists is
+# LLM fan-out. A push that landed during setup (checkout → kid → scratch
+# staging; `just test` no longer serializes ahead of this — it runs in the
+# background alongside the specialists) means this run's snapshot is already
+# superseded; posting it anyway is what stacked 61 stale reviews across the
+# last 60 plow PRs. Movement DURING the specialists is
 # still disclosed post-hoc via the existing ⚠️ Stale header — completed
 # reviews are paid for, so they post. Best-effort fetch, fail-open on gh
 # failure (empty PRE_SPEND_HEAD → proceed), same shape as the post-run
@@ -1530,6 +1621,7 @@ fi
 # Per-angle critics run inline within each angle pipeline; no central
 # critic, no splitter. Aggregator output written to a deterministic path
 # we read after.
+PIPELINE_START_TS=$(date +%s)
 PR_ID="$PR_ID" \
 PR_TITLE="$PR_TITLE" \
 PR_URL="$PR_URL" \
@@ -1541,6 +1633,7 @@ LOG_FILE="$LOG_FILE" \
 OPERATOR_NAME="${OPERATOR_NAME:-Sam}" \
     python3 "$_LIB_DIR/pipeline.py" "$REPO_DIR" "$RUN_DIR"
 PIPELINE_EXIT=$?
+PIPELINE_END_TS=$(date +%s)
 AGG_OUT="$RUN_DIR/agents/aggregator/output.md"
 
 # Aggregator output is what gets posted to GitHub — abort on any pipeline
@@ -1614,6 +1707,19 @@ if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
     [ -d "$REPO_DIR" ] && rm -rf "$REPO_DIR"
     exit 1
 fi
+
+# Join the test job — success path only; the abort above already reaps it via
+# the EXIT trap. Normally long finished: the test-gate waited on this same row.
+wait "$TEST_JOB_PID"
+IFS=$'\t' read -r TESTS_RAN TEST_SUMMARY TEST_LOCK_WAIT_S TEST_RUN_S < "$RUN_DIR/test-outcome.tsv" || {
+    log "$PR_ID: test job left no outcome (test-outcome.tsv missing) — internal invariant violated, aborting"
+    rm -rf "$REPO_DIR"
+    exit 1
+}
+# Cleared only AFTER that read, so the trap stops signalling a recycled pid: a
+# signal-killed job writes no row, and that abort needs the marker to reap.
+TEST_JOB_PID=""
+
 REVIEW=$(cat "$AGG_OUT")
 if ! echo "$REVIEW" | grep -q '^VERDICT:'; then
     log "$PR_ID: aggregator output missing VERDICT line — aborting"
@@ -1631,8 +1737,8 @@ fi
 # one of our auto-posts" — see the corresponding jq filter in review.sh.
 # The bakeoff marker captures which specialists were invoked on this
 # review so lib/bakeoff-store.sh can establish per-review denominators.
-# Single source of truth: derive from lib/pipeline.py::SPECIALISTS so adding
-# a specialist there also flows into the bakeoff roster automatically.
+# Single source of truth: derive from lib/pipeline.py::SPECIALISTS so adding a
+# specialist there flows into the bakeoff roster AND the timing span below.
 # aggregator is appended because it can attribute its own cross-angle probes.
 # Fail-fast — no fallback. If pipeline.py is broken, we want the review to
 # fail loudly here, not silently post with a stale roster.
@@ -1741,7 +1847,23 @@ fi
 # models occasionally leak the workdir abs path or the .siblings/
 # symlink prefix. This is the last hop before the comment becomes
 # public — strip any remaining workdir/<sibling-abs>/.siblings prefixes.
+# Two prefixes now: TEST_DIR ("$REPO_DIR-test", quoted in `just test`
+# output that reaches the tests specialist/aggregator via test-results.md)
+# and REPO_DIR itself. Scrub TEST_DIR first — it's the longer string, and
+# the two prefixes can't overlap (one is the other plus "-test").
+COMMENT_BODY=$(scrub_review_paths "$COMMENT_BODY" "$TEST_DIR" SOURCE_PATHS)
 COMMENT_BODY=$(scrub_review_paths "$COMMENT_BODY" "$REPO_DIR" SOURCE_PATHS)
+
+# One `timing` line per review, right before the post — the review's latency
+# breakdown reduced to a single greppable row. Composing first also stamps
+# timings.json for the meta merge in finalize_run. `specialists` SPANS (the
+# angles run concurrently) BAKEOFF_SPECIALISTS' derived roster, never a 2nd list.
+compose_run_timings
+log "$PR_ID: $(jq -r --arg specialists "${BAKEOFF_SPECIALISTS%,aggregator}" '
+    def d(n): (.[n] | if . == null then 0 else (.end - .start) | floor end);
+    def span(names): ([names[] as $n | .[$n] | select(. != null)] | if length == 0 then 0 else ((map(.end) | max) - (map(.start) | min) | floor) end);
+    "timing setup=\(.setup)s test=\(.test)s(queue \(.test_queue)s) intent=\(d("intent"))s dead-code=\(d("dead-code-search"))s specialists=\(span($specialists | split(",")))s aggregator=\(d("aggregator"))s total=\(.total)s"
+' "$RUN_DIR/timings.json")"
 
 # The fleet's heaviest WRITE, and GitHub's secondary limits are driven mainly by
 # content creation — so it is the call most likely to 403. As a bare `gh` it was

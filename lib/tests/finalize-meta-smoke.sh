@@ -8,7 +8,7 @@
 # early-stamp call site failed serialization. The repair branch is the
 # bug fix the bot called out as needing a regression fence.
 #
-# Locks down four branches:
+# Locks down six branches:
 #   1. Completed run with early posted_at present → preserve early
 #      posted_at (do NOT overwrite with finalize ts), add finished_at +
 #      status="completed".
@@ -25,6 +25,9 @@
 #      pre-checkout abort) pre-checks existence itself — review-one-pr.sh's
 #      finalize_run guards `[ -f meta.json ]`, mirroring cleanup_eyes. Pinned
 #      here so the guard is never pushed back down into this hermetic helper.
+#   6. Optional 5th arg (timings file) → merged in as .timings; absent or
+#      empty file leaves .timings off and still returns 0, because timings
+#      are best-effort and must never fail a run's finalization.
 #
 # Hermetic: sources lib/run-dir.sh directly and invokes the helper with
 # explicit args; no closure state needed.
@@ -140,4 +143,21 @@ if [ -e "$META" ] || [ -e "$META.tmp" ]; then
     exit 1
 fi
 
-echo "  PASS (5 scenarios: early-posted_at-preserved, no-gratuitous-stamp, REPAIR-on-gh-posted, malformed-returns-1, missing-returns-1)"
+# --- scenario: timings file merged as .timings when given ---
+META_T="$TMPDIR/meta-timings.json"
+echo '{"other":"x"}' > "$META_T"
+TIMINGS_T="$TMPDIR/timings.json"
+echo '{"intent":{"start":1,"end":2,"rc":0},"total":9}' > "$TIMINGS_T"
+if ! finalize_meta_json "$META_T" "$EXIT_TS" "completed" "true" "$TIMINGS_T"; then
+    echo "FAIL: timings scenario — finalize_meta_json returned non-zero"; exit 1
+fi
+[ "$(jq -r '.timings.total' "$META_T")" = "9" ] || { echo "FAIL: timings scenario — .timings.total not merged"; cat "$META_T"; exit 1; }
+[ "$(jq -r '.timings.intent.rc' "$META_T")" = "0" ] || { echo "FAIL: timings scenario — .timings.intent not merged"; cat "$META_T"; exit 1; }
+[ "$(jq -r '.status' "$META_T")" = "completed" ] || { echo "FAIL: timings scenario — status lost"; exit 1; }
+# absent file → no .timings key, still succeeds
+echo '{"other":"x"}' > "$META_T"
+finalize_meta_json "$META_T" "$EXIT_TS" "aborted" "false" "$TMPDIR/does-not-exist.json" || { echo "FAIL: timings scenario — absent timings file must not fail"; exit 1; }
+[ "$(jq -r '.timings // "none"' "$META_T")" = "none" ] || { echo "FAIL: timings scenario — .timings present without a file"; exit 1; }
+echo "  timings merge scenario ok"
+
+echo "  PASS (6 scenarios: early-posted_at-preserved, no-gratuitous-stamp, REPAIR-on-gh-posted, malformed-returns-1, missing-returns-1, timings-merge)"

@@ -25,38 +25,41 @@ Two more, from the public [`tkmx-client`](https://github.com/srosro/tkmx-client)
 
 ## How it works
 
-A timer polls tracked repos for new or updated PRs. For each, it runs a two-wave pipeline:
+A timer polls tracked repos for new or updated PRs. For each, it runs a dependency DAG: every stage starts the moment its inputs exist, with at most 4 codex calls in flight per review.
 
-- **Wave A** (parallel): two **standalone** stages — `intent` (infers the end-user-facing outcome the PR is reaching for) and `dead-code-search` (pre-pass static + LLM evidence). Both seed scratch inputs the next wave reads.
-- **Wave B** (parallel): the seven **specialists** — `security`, `data-integrity`, `architecture-refined` (over-engineering + DRY/duplication), `contract-drift`, `consumers`, `shape`, `tests` — each looking at one angle of the diff against the rest of the repo. On re-reviews, the `momentum` standalone joins Wave B (it tracks LOC trajectory and prior-round drift). Each specialist emits structured **probes** (hypothesis + severity + class), and a per-angle `critic` then resolves each probe (`Answer: yes/no/unknown` + evidence).
-- **Aggregator** (sequential): renders a single ranked **Probes** section with `[from: <specialist>]` attribution, a verdict (`APPROVE` or one or more blocking probes), and an AI-author callout so Codex/Claude Code/Cursor can parse load-bearing open probes directly. A marker (`<!-- knightwatch-reviewer:auto-post -->`) tags every post so reply automation and human babysitting can filter cleanly.
+- **`just test`** runs in the background from the start, in its own clone of the PR head (never the tree the agents read). Only the `tests` specialist and the aggregator wait for it.
+- **Standalones**: `intent` (infers the end-user-facing outcome the PR is reaching for) and `dead-code-search` (static + LLM evidence). Every specialist waits for `intent`; only `consumers` waits for `dead-code-search`.
+- **Specialists** — `security`, `data-integrity`, `architecture-refined` (over-engineering + DRY/duplication), `contract-drift`, `consumers`, `shape`, `tests` — each looks at one angle of the diff against the rest of the repo. On re-reviews, the `momentum` standalone runs alongside them (it tracks LOC trajectory and prior-round drift). Each specialist emits structured **probes** (hypothesis + severity + class), and a per-angle `critic` then resolves each probe (`Answer: yes/no/unknown` + evidence).
+- **Aggregator** (after every stage): renders a single ranked **Probes** section with `[from: <specialist>]` attribution, a verdict (`APPROVE` or one or more blocking probes), and an AI-author callout so Codex/Claude Code/Cursor can parse load-bearing open probes directly. A marker (`<!-- knightwatch-reviewer:auto-post -->`) tags every post so reply automation and human babysitting can filter cleanly.
+
+Every run records per-stage wall-clock in `meta.json.timings` and logs one `timing …` line, so review latency is a `jq` query.
 
 ```mermaid
 flowchart TB
-    PR([PR opened or updated]) --> WA
+    PR([PR opened or updated]) --> jt & intent & dcs
 
-    subgraph WA[Wave A — parallel pre-pass]
-        direction LR
-        intent[intent<br/>infer end-user goal]
-        dcs[dead-code-search<br/>static + LLM evidence]
-    end
+    jt["just test<br/>(own clone, background)"] --> tg[(test-results.md)]
+    intent[intent<br/>infer end-user goal] --> ii[(inferred-intent.md)]
+    dcs[dead-code-search<br/>static + LLM evidence] --> dc[(dead-code.md)]
 
-    WA --> scratch[(.codex-scratch/<br/>inferred-intent.md<br/>dead-code.md)]
-    scratch --> WB
+    ii --> sec & di & archref & cd & shp & tst & cons & mom
+    dc --> cons
+    tg --> tst
 
-    subgraph WB[Wave B — 7 specialists in parallel; each chains to a per-angle critic]
+    subgraph S[specialists — start as soon as their inputs exist; each chains to a per-angle critic; ≤4 codex calls in flight]
         direction LR
         sec[security] --> ksec[critic]
         di[data-integrity] --> kdi[critic]
         archref["architecture-refined"] --> karchref[critic]
-        tst[tests] --> ktst[critic]
-        shp[shape] --> kshp[critic]
         cd["contract-drift"] --> kcd[critic]
+        shp[shape] --> kshp[critic]
+        tst[tests] --> ktst[critic]
         cons[consumers] --> kcons[critic]
         mom["momentum<br/>(re-review only)"]
     end
 
-    WB --> agg["aggregator<br/>merge · dedupe · rank"]
+    S --> agg["aggregator<br/>merge · dedupe · rank"]
+    tg --> agg
     agg --> out([Posted review:<br/>VERDICT + ranked Probes])
 ```
 

@@ -30,7 +30,11 @@
 #   - classify_just_test_outcome worker-seam (9 scenarios)
 #   - format_tests_note + format_kid_note: symmetric pass/fail/skip
 #     emission (every pre-check produces exactly one fragment, so the
-#     header doesn't collapse to scope-only on clean PRs)
+#     header doesn't collapse to scope-only on clean PRs), including the
+#     reviewer-side test-job abort rendering distinctly from a clean skip
+#   - review_is_approval: both coverage-loss refusals, the refusal when the
+#     test job RAN and reported a non-PASSED outcome, and the
+#     absent-test-outcome.tsv "no objection" case historical run dirs need
 #
 # Hermetic — sources lib/run-dir.sh and invokes helpers with explicit
 # args; no closure state.
@@ -458,6 +462,28 @@ assert_tests_note "true" "TIMED OUT (>30m)" "🧪 Tests timed out (>30m)" "timeo
 echo "  format_tests_note: not run (no justfile) → 🧪 Tests not run..."
 assert_tests_note "false" "not run (no justfile in repo root)" "🧪 Tests not run" "no justfile"
 
+# A reviewer-side abort (the test job's EXIT-trap fallback row) is a FAULT, not
+# a skip. Rendering it as the generic "Tests not run" made a dind hiccup
+# indistinguishable from a no-justfile repo in the public header — and the run
+# still posted. Distinct wording is the operator's only tell.
+echo "  format_tests_note: aborted test job → distinct reviewer-side-fault note..."
+assert_tests_note "false" "$TEST_ABORTED_SUMMARY" \
+    "⚠️ Tests not run — the reviewer's test job aborted (reviewer-side fault, not a skip)" \
+    "reviewer-side abort"
+
+echo "  format_tests_note: aborted test job must NOT collapse to the generic skip wording..."
+result=$(format_tests_note "false" "$TEST_ABORTED_SUMMARY")
+if [ "$result" = "🧪 Tests not run" ]; then
+    echo "FAIL: reviewer-side abort rendered as a clean skip — the fault is invisible to the author"
+    exit 1
+fi
+
+# A convention repo's own gate fragment must not mask the abort either: the
+# convention branch answers "which gate", the abort answers "our host broke".
+echo "  format_tests_note: convention header does not mask an aborted test job..."
+result=$(format_tests_note "false" "$TEST_ABORTED_SUMMARY" "gate is \`ref/verify.sh\`")
+assert_contains "$result" "aborted" "abort survives a convention header"
+
 # A convention repo (operator-defined via kwr-config) may have no root justfile
 # by design. When the worker passes the convention's `test-header` (3rd arg, only
 # when there's no justfile), the public header must state that real gate — NOT
@@ -560,6 +586,51 @@ assert_contains "$got" "security,shape" "adapter joins sentinel lines"
 assert_contains "$got" "capacity" "note discloses model-at-capacity (shared soft-degrade sentinel, not timeout-only)"
 rm -rf "$_tnfr_dir"
 
+# ===== review_is_approval (coverage-loss + failing-test refusals) =====
+# Single owner of "did this review approve?" — the worker's GitHub submit gate
+# and the carried-forward projection both route through it. Three classes
+# refuse: a timed-out specialist (fenced via
+# latest_author_visible_review_approved in prior-reviews-smoke.sh), a test job
+# that aborted on a reviewer-host fault, and a test job that RAN and reported a
+# non-PASSED outcome. ABSENT test-outcome.tsv is not a refusal — the function is
+# also called against historical run dirs that predate the file, and those must
+# keep their approval status.
+_ria_dir=$(mktemp -d)
+echo "  review_is_approval: APPROVE + no test-outcome.tsv → approves (historical run dirs)..."
+review_is_approval "VERDICT: APPROVE" "$_ria_dir" \
+    || { echo "FAIL: absent test-outcome.tsv withheld approval — pre-deploy runs would flip to un-approved"; exit 1; }
+
+echo "  review_is_approval: APPROVE + routine 'not run' skip row → still approves..."
+printf 'false\tnot run (no justfile in repo root)\t0\t3\n' > "$_ria_dir/test-outcome.tsv"
+review_is_approval "VERDICT: APPROVE" "$_ria_dir" \
+    || { echo "FAIL: a routine no-justfile skip withheld approval"; exit 1; }
+
+echo "  review_is_approval: APPROVE + aborted test job → refuses..."
+printf 'false\t%s\t0\t3\n' "$TEST_ABORTED_SUMMARY" > "$_ria_dir/test-outcome.tsv"
+if review_is_approval "VERDICT: APPROVE" "$_ria_dir"; then
+    echo "FAIL: a reviewer-side test abort auto-approved — tests never ran, nothing blocked it"
+    exit 1
+fi
+
+# The tests RAN and reported a failure. The aggregator can't catch this: when
+# the job outlives the test-gate's wait bound the readers get "not run" and the
+# real outcome lands afterwards, so an APPROVE over a known-red suite reaches
+# GitHub unless this row refuses it. Both non-PASSED shapes are fenced.
+for _ria_case in "FAILED (exit 1)" "TIMED OUT (>30m)"; do
+    echo "  review_is_approval: APPROVE + tests ran + '$_ria_case' → refuses..."
+    printf 'true\t%s\t0\t42\n' "$_ria_case" > "$_ria_dir/test-outcome.tsv"
+    if review_is_approval "VERDICT: APPROVE" "$_ria_dir"; then
+        echo "FAIL: approved over a test job that ran and reported '$_ria_case'"
+        exit 1
+    fi
+done
+
+echo "  review_is_approval: APPROVE + tests ran + PASSED → approves..."
+printf 'true\tPASSED\t0\t42\n' > "$_ria_dir/test-outcome.tsv"
+review_is_approval "VERDICT: APPROVE" "$_ria_dir" \
+    || { echo "FAIL: a green test run withheld approval — the refusal is over-broad"; exit 1; }
+rm -rf "$_ria_dir"
+
 # Realistic clean-PR composition: every pre-check passed. Fence the
 # end-to-end header — readers should see a four-fragment line, not a
 # scope-only line that hides whether anything ran.
@@ -575,4 +646,4 @@ assert_contains "$result" "✅ Tests passed" "clean-PR tests"
 assert_contains "$result" "✅ Prior-art (KID) checked" "clean-PR kid"
 assert_contains "$result" "✅ Strict typing enforced" "clean-PR strict-typing"
 
-echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 7 tests-note + 3 kid-note + clean-PR composition + bakeoff-marker pin)"
+echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 10 tests-note + 3 kid-note + 6 review_is_approval + clean-PR composition + bakeoff-marker pin)"

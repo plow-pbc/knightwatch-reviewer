@@ -919,6 +919,21 @@ if [ "\$1" = "api" ]; then
     if [ -n "\$jqexpr" ]; then printf '%s\n' "\$result" | jq -r "\$jqexpr"; else printf '%s\n' "\$result"; fi
     exit 0
 fi
+
+# --- gh pr comment (the worker's posted-review path — --body only, the
+#     only form review-one-pr.sh uses) ---
+if [ "\$1" = "pr" ] && [ "\$2" = "comment" ]; then
+    cbody=""
+    args=("\$@"); n=\${#args[@]}
+    for ((i=1; i<n; i++)); do
+        [ "\${args[i]}" = "--body" ] && { cbody="\${args[i+1]}"; break; }
+    done
+    newid=\$(jq '([.[].id] | max // 0) + 1' "\$STORE")
+    result=\$(jq -n --argjson id "\$newid" --arg body "\$cbody" --arg login "\$BOT_LOGIN" \
+        '{id:\$id, body:\$body, user:{login:\$login}}')
+    jq --argjson c "\$result" '. + [\$c]' "\$STORE" > "\$STORE.tmp" && mv "\$STORE.tmp" "\$STORE"
+    exit 0
+fi
 exit 0
 STUB
     chmod +x "$stub_path"
@@ -964,7 +979,7 @@ echo "  placeholder-reuse anti-spam scenario ok"
 # backs off instead of immediately re-claiming.
 echo "  scenario: codex 429 → backoff (quota-pause + 429 placeholder), not hard-abort..."
 
-# Full prompts so the pipeline reaches run_codex (Wave A intent) and the fake
+# Full prompts so the pipeline reaches run_codex (the intent stage) and the fake
 # codex's 429 lands — not an early build_prompt abort.
 cp -r "$PROJECT_ROOT/prompts/." "$HOME/.pr-reviewer/prompts/"
 
@@ -1149,12 +1164,14 @@ fi
 # resolve_binding has unit coverage (conventions-smoke.sh), but nothing proved the
 # WORKER actually stages what Codex consumes for a convention repo:
 #   - inputs/convention.md (so specialists review by that convention's grammar)
-#   - inputs/test-results.md carrying the convention's test-note (the gate is the
-#     convention's own — here ref/verify.sh — NOT a missing justfile)
+#   - <run_dir>/test-results.md carrying the convention's test-note (the gate is
+#     the convention's own — here ref/verify.sh — NOT a missing justfile); the
+#     worker writes this synchronously and pipeline.py's test-gate stages it
+#     into .codex-scratch for the `tests` specialist + aggregator
 # The operator's kwr-config (a local fixture here) binds org `test-org` + a root
 # `SEED.md` marker → conventions/seed.md. Detection reads the marker at the
 # TRUSTED base ref; the fixture has no justfile so the convention's test-note fires.
-echo "  scenario: convention repo (kwr-config binding, SEED.md@base, no justfile) — convention.md + test-note staged into inputs/..."
+echo "  scenario: convention repo (kwr-config binding, SEED.md@base, no justfile) — convention.md staged into inputs/, test-note into test-results.md..."
 
 # kwr-config fixture: a binding (marker SEED.md in org test-org) → a convention
 # doc whose frontmatter declares the test gate. The worker reads this cache; only
@@ -1251,7 +1268,7 @@ fi
 
 # test-results.md must carry the convention's test-note — the gate is the
 # convention's own (ref/verify.sh), NOT the generic "no justfile" coverage gap.
-TEST_RESULTS_MD9="$RUN_DIR9/inputs/test-results.md"
+TEST_RESULTS_MD9="$RUN_DIR9/test-results.md"
 if [ ! -f "$TEST_RESULTS_MD9" ]; then
     echo "FAIL: scenario 9 — $TEST_RESULTS_MD9 not staged"
     [ -f "$LOG9" ] && { echo "--- run.log ---"; tail -n 30 "$LOG9"; }
@@ -1566,4 +1583,259 @@ if ! grep -qF "$LOC_LINE12" "$IN12/reeval-status.md"; then
     exit 1
 fi
 
-echo "  PASS (16 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + requester-gate skip + metadata-lookup guard pre-allocation abort + placeholder reuse anti-spam + codex 429 backoff + usage-cap quota placeholder w/ pool status + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort + whole-PR re-review keeps memory)"
+# ===== Scenario 17: `just test` in its own clone, overlapped with the LLM stages =====
+# (a) Isolation: run_just_test chowns its tree to the test user, so the tree
+#     codex reads must be a different one. The fake test recipe records where
+#     it ran and which tree holds the mirrored .env.
+# (b) Overlap (Task 7): a slow fake test must not delay the specialists; the
+#     tests specialist must still see its results.
+# (c) Timings (Task 8): meta.json.timings + one `timing` log line.
+echo "  scenario 17: test clone isolation + overlap + timings..."
+RECORD17="$TMPDIR/record-17.txt"; : > "$RECORD17"
+export KWR_SMOKE_RECORD="$RECORD17"
+BARE17="$TMPDIR/github-side-17.git"; WORK17="$TMPDIR/working-17"
+git init -q --bare -b main "$BARE17"
+git clone -q "$BARE17" "$WORK17"
+(
+    cd "$WORK17"
+    git config user.email t@t; git config user.name t; git config commit.gpgsign false
+    echo "base" > README.md
+    echo "ANTHROPIC_API_KEY=" > .env.example
+    # The recipe records: its cwd, whether the mirrored .env is in cwd, and
+    # whether it leaked into the codex workdir (cwd minus the -test suffix).
+    # It sleeps so the overlap assertion has something to overlap with.
+    printf 'test:\n    #!/usr/bin/env bash\n    sleep 3\n    r="$KWR_SMOKE_RECORD"\n    echo "test_cwd=$PWD" >> "$r"\n    [ -e .env ] && echo "env_in_test_clone=yes" >> "$r" || echo "env_in_test_clone=no" >> "$r"\n    [ -e "${PWD%%-test}/.env" ] && echo "env_in_workdir=yes" >> "$r" || echo "env_in_workdir=no" >> "$r"\n    echo "test_end=$(date +%%s.%%N)" >> "$r"\n    echo "SMOKE-TEST-OUTPUT-MARKER"\n' > justfile
+    git add README.md .env.example justfile
+    git commit -qm "init: justfile + .env.example"
+    git push -q origin main
+    git checkout -qb feat/test
+    echo "feature" > feature.txt
+    git add feature.txt
+    git commit -qm "feature"
+)
+PR_SHA17=$(git -C "$WORK17" rev-parse HEAD)
+git -C "$WORK17" push -q origin feat/test:refs/pull/1/head
+STATE17="$TMPDIR/state-17"; STORE17="$TMPDIR/comment-store-17.json"
+seed_state_dir "$STATE17"
+git clone -q "$BARE17" "$STATE17/repos/test-org_probe-repo"
+echo "ANTHROPIC_API_KEY=sk-smoke-live" > "$STATE17/repos/test-org_probe-repo/.env"   # what the trusted mirror copies
+mkdir -p "$STATE17/pool/solo"
+echo "[]" > "$STORE17"
+write_stateful_gh_stub "$HOME/.local/bin/gh" "$STORE17" "main" "$PR_SHA17"
+cp -r "$PROJECT_ROOT/prompts/." "$HOME/.pr-reviewer/prompts/"
+# Fake codex: contract-valid output per agent; records start time and whether
+# .codex-scratch/test-results.md existed when it started.
+cat > "$HOME/.local/bin/codex" <<'FAKE'
+#!/usr/bin/env python3
+import os, sys, time
+from pathlib import Path
+argv = sys.argv
+out = Path(argv[argv.index('-o') + 1]); agent = out.parent.name
+repo = Path(argv[argv.index('-C') + 1])
+staged = (repo / '.codex-scratch' / 'test-results.md')
+with open(os.environ['KWR_SMOKE_RECORD'], 'a') as rec:
+    rec.write(f"agent={agent} start={time.time():.3f} saw_test_results={staged.exists()}\n")
+    if agent == 'tests' and staged.exists():
+        rec.write(f"tests_saw_marker={'SMOKE-TEST-OUTPUT-MARKER' in staged.read_text()}\n")
+if agent == 'intent':
+    body = "Inferred intent: smoke.\n"
+elif agent == 'aggregator':
+    # One path under each clone: the test clone's must scrub to repo-relative
+    # (the path-scrub fix this exercises), the codex workdir's must too.
+    body = f"VERDICT: 1 blocking probe\n\nsmoke review body {repo}-test/leak.py:1 {repo}/keep.py:2\n"
+elif agent == 'dead-code-search':
+    body = "none\n"
+else:
+    body = "No probes.\n"
+out.write_text(body)
+FAKE
+chmod +x "$HOME/.local/bin/codex"
+# GH_STUB_PERMISSION_ROLE=write (not GH_STUB_TRUSTED_USERS, which only vouches
+# for the exact login it lists): write_stateful_gh_stub hardcodes the PR
+# author to "test-user", distinct from the requester login below, and this
+# scenario needs BOTH trusted so `just test` actually executes — same
+# blanket-trust idiom scenario 10 uses for the identical need.
+GH_STUB_PERMISSION_ROLE=write run_worker_in_state "$STATE17" \
+    "test-org/probe-repo" "1" "$PR_SHA17" "feat/test" "Test PR" "false" "someuser" || true
+rm -f "$HOME/.local/bin/codex"
+unset KWR_SMOKE_RECORD
+RUN17=$(ls -d "$STATE17"/runs/test-org_probe-repo__1__* 2>/dev/null | head -1)
+LOG17="$RUN17/run.log"
+# (a) isolation
+if ! grep -q "^test_cwd=$STATE17/workdirs/test-org_probe-repo__1-test$" "$RECORD17"; then
+    echo "FAIL: scenario 17a — just test did not run in the -test clone"; cat "$RECORD17"; exit 1
+fi
+grep -q "^env_in_test_clone=yes$" "$RECORD17" || { echo "FAIL: scenario 17a — mirrored .env missing from the test clone"; cat "$RECORD17"; exit 1; }
+grep -q "^env_in_workdir=no$" "$RECORD17"     || { echo "FAIL: scenario 17a — live .env leaked into the codex workdir"; cat "$RECORD17"; exit 1; }
+if [ -e "$STATE17/workdirs/test-org_probe-repo__1-test" ]; then
+    echo "FAIL: scenario 17a — test clone left behind after the review"; exit 1
+fi
+grep -q "just test PASSED" "$LOG17" || { echo "FAIL: scenario 17a — run.log lacks 'just test PASSED'"; tail -20 "$LOG17"; exit 1; }
+echo "  scenario 17a (isolation) ok"
+
+# (b) overlap: a non-`tests` specialist started before the fake test ended,
+#     and the tests specialist saw the staged results with the test's output.
+TEST_END17=$(sed -n 's/^test_end=//p' "$RECORD17" | head -1)
+SEC_START17=$(sed -n 's/^agent=security start=\([0-9.]*\).*/\1/p' "$RECORD17" | head -1)
+[ -n "$TEST_END17" ] && [ -n "$SEC_START17" ] || { echo "FAIL: scenario 17b — record missing test_end or security start"; cat "$RECORD17"; exit 1; }
+if ! python3 -c "import sys; sys.exit(0 if float('$SEC_START17') < float('$TEST_END17') else 1)"; then
+    echo "FAIL: scenario 17b — security started only after just test finished (no overlap)"; cat "$RECORD17"; exit 1
+fi
+grep -q "^agent=tests .*saw_test_results=True$" "$RECORD17" || { echo "FAIL: scenario 17b — tests specialist started without test-results.md"; cat "$RECORD17"; exit 1; }
+grep -q "^tests_saw_marker=True$" "$RECORD17"             || { echo "FAIL: scenario 17b — staged test-results.md lacks the test's output"; cat "$RECORD17"; exit 1; }
+echo "  scenario 17b (overlap) ok"
+
+# (c) timings: meta.json carries the per-stage map; run.log has one timing line.
+META17="$RUN17/meta.json"
+[ "$(jq -r '.timings.total // "none"' "$META17")" != "none" ] || { echo "FAIL: scenario 17c — meta.json.timings.total missing"; cat "$META17"; exit 1; }
+[ "$(jq -r '.timings.security.rc // "none"' "$META17")" = "0" ] || { echo "FAIL: scenario 17c — meta.json.timings lacks the pipeline node map"; cat "$META17"; exit 1; }
+[ "$(jq -r '.timings.test' "$META17")" -ge 3 ] || { echo "FAIL: scenario 17c — timings.test should cover the 3s fake test"; cat "$META17"; exit 1; }
+grep -qE "timing setup=[0-9]+s test=[0-9]+s\(queue [0-9]+s\) intent=[0-9]+s dead-code=[0-9]+s specialists=[0-9]+s aggregator=[0-9]+s total=[0-9]+s" "$LOG17" \
+    || { echo "FAIL: scenario 17c — run.log lacks the timing line"; grep -n timing "$LOG17"; exit 1; }
+echo "  scenario 17c (timings) ok"
+
+# (a, cont'd) path-scrub: the aggregator cited one path under EACH clone
+# (TEST_DIR's, REPO_DIR's) — both must scrub to repo-relative in the posted
+# comment, proving the scrub's TEST_DIR prefix doesn't just no-op alongside
+# the pre-existing REPO_DIR one.
+POSTED17=$(jq -r '[.[] | select(.body | contains("smoke review body"))] | last | .body' "$STORE17")
+if [ -z "$POSTED17" ] || [ "$POSTED17" = "null" ]; then
+    echo "FAIL: scenario 17a — no posted review comment found in the gh stub store"; cat "$STORE17"; exit 1
+fi
+case "$POSTED17" in
+    *leak.py:1*) : ;;
+    *) echo "FAIL: scenario 17a — posted comment lost the test-clone path entirely (expected 'leak.py:1')"; printf '%s\n' "$POSTED17"; exit 1 ;;
+esac
+case "$POSTED17" in
+    *keep.py:2*) : ;;
+    *) echo "FAIL: scenario 17a — posted comment lost the codex-workdir path entirely (expected 'keep.py:2')"; printf '%s\n' "$POSTED17"; exit 1 ;;
+esac
+case "$POSTED17" in
+    *-test/leak.py*) echo "FAIL: scenario 17a — test-clone path leaked unscrubbed ('-test/leak.py' survived)"; printf '%s\n' "$POSTED17"; exit 1 ;;
+esac
+case "$POSTED17" in
+    *"$STATE17/workdirs"*) echo "FAIL: scenario 17a — posted comment still carries the \$STATE17/workdirs host prefix"; printf '%s\n' "$POSTED17"; exit 1 ;;
+esac
+echo "  scenario 17a (path-scrub covers the test clone too) ok"
+
+# ---- scenario 18: a fail-fast inside the test job still reports an outcome ----
+# run_just_test has `exit 1` fail-fast paths that, now that `just test` runs in
+# a background subshell, exit only THAT subshell — skipping its reporting
+# writes. The job's EXIT trap must still leave test-results.md + the outcome row
+# BEFORE the sentinel (pipeline.py's test-gate read_bytes()es the file the
+# moment the sentinel appears) and still delete the test clone, so the review
+# completes as "Tests not run" instead of burning the full codex spend and then
+# aborting on a FileNotFoundError. Driven for real: REVIEWER_TEST_USER set with
+# a DOCKER_HOST that isn't the dind endpoint trips run_just_test's first
+# fail-fast (the dind-reap endpoint pin, lib/run-dir.sh). Reuses scenario 17's
+# fixture repo — same justfile + .env.example, fresh state dir and store.
+echo "  scenario 18: test-job fail-fast still reports (review completes as 'Tests not run')..."
+STATE18="$TMPDIR/state-18"; STORE18="$TMPDIR/comment-store-18.json"
+seed_state_dir "$STATE18"
+git clone -q "$BARE17" "$STATE18/repos/test-org_probe-repo"
+echo "ANTHROPIC_API_KEY=sk-smoke-live" > "$STATE18/repos/test-org_probe-repo/.env"   # what the trusted mirror copies
+mkdir -p "$STATE18/pool/solo"
+echo "[]" > "$STORE18"
+write_stateful_gh_stub "$HOME/.local/bin/gh" "$STORE18" "main" "$PR_SHA17"
+# `chown -R reviewer-test` is the only privileged op that runs before the
+# fail-fast, and this suite isn't root — stub it (same shape as
+# run-just-test-isolation-smoke.sh). Nothing after the endpoint pin runs.
+printf '#!/bin/bash\nexit 0\n' > "$HOME/.local/bin/chown"; chmod +x "$HOME/.local/bin/chown"
+# pkill/pgrep are stubbed for the same reason (and recorded, for the cleanup
+# assertion below): unstubbed, a real `pkill -KILL -u reviewer-test` reaches the
+# HOST's processes where that account exists — this suite included, when it runs
+# as reviewer-test on the container review path.
+REAP18="$TMPDIR/reap-18.calls"; : > "$REAP18"
+printf '#!/bin/bash\necho "pkill $*" >> "%s"\nexit 0\n' "$REAP18" > "$HOME/.local/bin/pkill"
+printf '#!/bin/bash\nexit 1\n' > "$HOME/.local/bin/pgrep"
+chmod +x "$HOME/.local/bin/pkill" "$HOME/.local/bin/pgrep"
+cat > "$HOME/.local/bin/codex" <<'FAKE'
+#!/usr/bin/env python3
+import sys
+from pathlib import Path
+argv = sys.argv
+out = Path(argv[argv.index('-o') + 1]); agent = out.parent.name
+if agent == 'intent':
+    body = "Inferred intent: smoke.\n"
+elif agent == 'aggregator':
+    body = "VERDICT: 1 blocking probe\n\nsmoke review body 18\n"
+elif agent == 'dead-code-search':
+    body = "none\n"
+else:
+    body = "No probes.\n"
+out.write_text(body)
+FAKE
+chmod +x "$HOME/.local/bin/codex"
+GH_STUB_PERMISSION_ROLE=write REVIEWER_TEST_USER=reviewer-test DOCKER_HOST="" \
+    run_worker_in_state "$STATE18" \
+    "test-org/probe-repo" "1" "$PR_SHA17" "feat/test" "Test PR" "false" "someuser" || true
+RUN18=$(ls -d "$STATE18"/runs/test-org_probe-repo__1__* 2>/dev/null | head -1)
+LOG18="$RUN18/run.log"
+grep -q "FATAL — refusing dind reap" "$LOG18" \
+    || { echo "FAIL: scenario 18 — run_just_test's dind-endpoint fail-fast never fired"; tail -20 "$LOG18"; exit 1; }
+grep -q "FATAL — test job exited before reporting its outcome" "$LOG18" \
+    || { echo "FAIL: scenario 18 — aborted test job left no fallback outcome"; tail -20 "$LOG18"; exit 1; }
+if grep -q "test job left no outcome" "$LOG18"; then
+    echo "FAIL: scenario 18 — worker mislabelled the abort as a missing outcome"; tail -20 "$LOG18"; exit 1
+fi
+POSTED18=$(jq -r '[.[] | select(.body | contains("smoke review body 18"))] | last | .body' "$STORE18")
+if [ -z "$POSTED18" ] || [ "$POSTED18" = "null" ]; then
+    echo "FAIL: scenario 18 — review never posted (the test job's fail-fast aborted the whole run)"; cat "$STORE18"; exit 1
+fi
+# The note must name this as a REVIEWER-SIDE fault. Rendering it as the generic
+# "🧪 Tests not run" made a dind hiccup read exactly like a no-justfile or
+# untrusted-author skip, so nothing in the public comment told the operator the
+# tests were missing because our host broke.
+case "$POSTED18" in
+    *"test job aborted"*) : ;;
+    *) echo "FAIL: scenario 18 — posted header lacks the reviewer-side abort note"; printf '%s\n' "$POSTED18"; exit 1 ;;
+esac
+case "$POSTED18" in
+    *"🧪 Tests not run"*)
+        echo "FAIL: scenario 18 — abort rendered as the generic clean-skip note"; printf '%s\n' "$POSTED18"; exit 1 ;;
+esac
+if [ -e "$STATE18/workdirs/test-org_probe-repo__1-test" ]; then
+    echo "FAIL: scenario 18 — test clone (mirrored .env) left on disk after the aborted test job"; exit 1
+fi
+# End-to-end half of cleanup_test_clone's reap gate (both sides unit-tested in
+# run-just-test-isolation-smoke): this worker joined its test job and cleared the
+# pid, so its EXIT trap must NOT sweep the shared reviewer-test account, which
+# also owns a sibling PR's live `just test`.
+grep -q -- "-u reviewer-test" "$REAP18" \
+    && { echo "FAIL: scenario 18 — a worker holding no test job swept the shared uid, killing sibling runs"; cat "$REAP18"; exit 1; } || true
+echo "  scenario 18 (test-job fail-fast reports an outcome, without sweeping the shared uid) ok"
+
+# ---- scenario 19: a job that left no outcome row is still reaped ------------
+# The join clears TEST_JOB_PID only AFTER the outcome row is read. Clearing it
+# first stranded the signal-kill path: `wait` returns nonzero, the read then
+# aborts the worker, and the EXIT trap — seeing an empty marker — skipped its
+# UID-wide reap, leaving detached `reviewer-test` descendants to contaminate a
+# later PR's shared test state. Reproduced by planting a DIRECTORY where the row
+# goes (from the chown stub, run_just_test's first call), so every write to it
+# fails exactly as the killed subshell's silence does; test-results.md is
+# planted alongside so the test-gate never reads a body that isn't there.
+echo "  scenario 19: a test job that left no outcome row still reaps the shared uid..."
+STATE19="$TMPDIR/state-19"; STORE19="$TMPDIR/comment-store-19.json"
+seed_state_dir "$STATE19"
+git clone -q "$BARE17" "$STATE19/repos/test-org_probe-repo"
+echo "ANTHROPIC_API_KEY=sk-smoke-live" > "$STATE19/repos/test-org_probe-repo/.env"
+mkdir -p "$STATE19/pool/solo"
+echo "[]" > "$STORE19"
+write_stateful_gh_stub "$HOME/.local/bin/gh" "$STORE19" "main" "$PR_SHA17"
+printf '#!/bin/bash\nfor d in "%s"/runs/*/; do printf "**Result:** planted\\n" > "$d/test-results.md"; mkdir -p "$d/test-outcome.tsv"; done\nexit 0\n' \
+    "$STATE19" > "$HOME/.local/bin/chown"
+REAP19="$TMPDIR/reap-19.calls"; : > "$REAP19"
+printf '#!/bin/bash\necho "pkill $*" >> "%s"\nexit 0\n' "$REAP19" > "$HOME/.local/bin/pkill"
+chmod +x "$HOME/.local/bin/chown" "$HOME/.local/bin/pkill"
+GH_STUB_PERMISSION_ROLE=write REVIEWER_TEST_USER=reviewer-test DOCKER_HOST="" \
+    run_worker_in_state "$STATE19" \
+    "test-org/probe-repo" "1" "$PR_SHA17" "feat/test" "Test PR" "false" "someuser" || true
+rm -f "$HOME/.local/bin/codex" "$HOME/.local/bin/chown" "$HOME/.local/bin/pkill" "$HOME/.local/bin/pgrep"
+LOG19="$(ls -d "$STATE19"/runs/test-org_probe-repo__1__* 2>/dev/null | head -1)/run.log"
+grep -q "test job left no outcome" "$LOG19" \
+    || { echo "FAIL: scenario 19 — the join never reached the missing-outcome abort"; tail -20 "$LOG19"; exit 1; }
+grep -q -- "-u reviewer-test" "$REAP19" \
+    || { echo "FAIL: scenario 19 — aborted on the missing row without reaping; a detached test descendant outlives the run"; exit 1; }
+echo "  scenario 19 (a missing outcome row still reaps the shared uid) ok"
+
+echo "  PASS (19 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + requester-gate skip + metadata-lookup guard pre-allocation abort + placeholder reuse anti-spam + codex 429 backoff + usage-cap quota placeholder w/ pool status + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort + whole-PR re-review keeps memory + test clone isolation/overlap/timings + test-job fail-fast still reports + missing outcome row still reaps)"

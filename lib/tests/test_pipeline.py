@@ -1,4 +1,5 @@
 """Tests for lib/pipeline.py — mocked codex subprocess."""
+import json
 import os
 import signal
 import stat
@@ -41,6 +42,13 @@ def _fast_watchdog(stale=0.1, poll=0.05, timeout=5.0):
          patch.object(pipeline, "WATCHDOG_POLL_SEC", poll), \
          patch.object(pipeline, "SPECIALIST_TIMEOUT_SEC", timeout):
         yield
+
+
+def _report_test_job(run_dir: Path, body: str = "**Result:** PASSED\n") -> None:
+    """Stand in for the worker's background `just test` job, in its write order:
+    results body first, then the outcome row that unblocks the test-gate."""
+    (run_dir / "test-results.md").write_text(body)
+    (run_dir / "test-outcome.tsv").write_text("true\tPASSED\t0\t3\n")
 
 
 def _write_minimal_prompts(prompts_dir: Path) -> None:
@@ -283,7 +291,7 @@ class TestStageScratch(unittest.TestCase):
 
     def test_refuses_an_entry_re_planted_after_the_unlink(self):
         # The unlink covers a plant present on entry; O_EXCL covers the
-        # window after it, which is live — Wave B specialists run
+        # window after it, which is live — specialists run
         # concurrently, so a peer can re-plant there. Suppressing the unlink
         # simulates losing that race. FileExistsError, not OSError: only
         # O_EXCL's EEXIST should refuse, and a broader assert would pass on
@@ -300,6 +308,88 @@ class TestStageScratch(unittest.TestCase):
                 with self.assertRaises(FileExistsError):
                     pipeline._stage_scratch(dest, b"staged\n")
             self.assertEqual(outside.read_text(), "original\n")
+
+
+class TestTestGateWaitBound(unittest.TestCase):
+    """_test_gate's give-up instant. Waiting to WORKER_DEADLINE_EPOCH itself
+    rescued nothing — review.sh stamps that env on the same line that starts
+    `timeout -k`, so the gate unblocked at the instant the worker is SIGTERMed
+    and the `tests` specialist + critic + aggregator got zero budget. And with
+    the env unset (replay, direct invocation) the old code had no bound at all.
+    Both cases must stage the 'not run' body and return promptly. The two bounds
+    are exclusive, never min()'d — the cap is short enough that combining them
+    would abandon a live test job on every real review."""
+
+    def _gate(self, env: dict, reported: bool = False) -> tuple[int, str]:
+        """Run _test_gate over a throwaway run/scratch pair; returns (rc, the
+        staged scratch body) read before the temp dir goes away. `reported`
+        writes the outcome row too — a results body ALONE must not unblock the
+        gate, since the job writes that body before it has an outcome."""
+        with TemporaryDirectory() as d:
+            run, scratch = Path(d) / "run", Path(d) / "scratch"
+            run.mkdir()
+            scratch.mkdir()
+            if reported:
+                _report_test_job(run)
+            else:
+                (run / "test-results.md").write_text("**Result:** PASSED\n")
+            with patch.dict(os.environ, env, clear=True):
+                rc = pipeline._test_gate(run, scratch, "o/r#1")
+            return rc, (scratch / "test-results.md").read_text()
+
+    def test_gives_up_early_enough_for_the_downstream_readers(self):
+        # A deadline still in the FUTURE but inside the margin → give up at
+        # once, so the readers keep their budget. The no-sleep assertion is
+        # the load-bearing half: without it a revert still passes, because
+        # the pre-fix loop reaches the deadline and stages the same body,
+        # just later, after sleeping to get there. The fake clock advances
+        # only when read, so a reverted gate converges on its own deadline.
+        clock, sleeps = [1_000_000.0], []
+        def fake_time():
+            t, clock[0] = clock[0], clock[0] + 1.0
+            return t
+        with patch.object(pipeline.time, "time", fake_time), \
+             patch.object(pipeline.time, "sleep", sleeps.append):
+            rc, staged = self._gate({"WORKER_DEADLINE_EPOCH": str(clock[0] + 0.5)})
+        self.assertEqual(sleeps, [], "gate slept instead of giving up at once")
+        self.assertEqual(rc, 0)
+        self.assertEqual(staged, "**Result:** not run (worker timeout budget exhausted)\n")
+
+    def test_max_wait_does_not_bind_when_a_deadline_is_set(self):
+        # The two bounds must NOT be min()'d. review.sh's 90m WORKER_TIMEOUT puts
+        # the deadline bound at worker_start+80m and the cap at gate_start+40m,
+        # so a min() always picks the cap and abandons a test job that is still
+        # legitimately running — feeding the aggregator "not run" while the
+        # header carries the real outcome. Cap pinned to 0 here: it must be
+        # inert, leaving the gate waiting on the (near) deadline bound instead.
+        with patch.object(pipeline, "TEST_GATE_POLL_SEC", 0.05), \
+             patch.object(pipeline, "TEST_GATE_MAX_WAIT_SEC", 0):
+            deadline = time.time() + pipeline.TEST_GATE_DEADLINE_MARGIN_SEC + 0.5
+            t0 = time.time()
+            rc, staged = self._gate({"WORKER_DEADLINE_EPOCH": str(deadline)})
+            self.assertGreater(time.time() - t0, 0.25,
+                               "cap bound the wait even though a worker deadline was set")
+        self.assertEqual(rc, 0)
+        self.assertEqual(staged, "**Result:** not run (worker timeout budget exhausted)\n")
+
+    def test_max_wait_bounds_the_gate_with_no_deadline_env(self):
+        # Replay/direct invocation: no WORKER_DEADLINE_EPOCH, so the cap is the
+        # only bound — its whole job. Pre-fix this hung forever whenever the test
+        # subshell died by signal without running its EXIT trap (OOM-kill).
+        with patch.object(pipeline, "TEST_GATE_MAX_WAIT_SEC", 0):
+            rc, staged = self._gate({})
+        self.assertEqual(rc, 0)
+        self.assertEqual(staged, "**Result:** not run (worker timeout budget exhausted)\n")
+
+    def test_outcome_row_present_stages_the_real_result(self):
+        # The bounds must not shortcut the happy path: an already-reported job
+        # is staged verbatim even with both bounds long past. The three cases
+        # above pass a results body with NO outcome row and all give up — the
+        # other half of the contract: the row, not the body, says "done".
+        with patch.object(pipeline, "TEST_GATE_MAX_WAIT_SEC", 0):
+            rc, staged = self._gate({"WORKER_DEADLINE_EPOCH": "0"}, reported=True)
+        self.assertEqual(rc, 0)
+        self.assertEqual(staged, "**Result:** PASSED\n")
 
 
 class TestRunCodex(unittest.TestCase):
@@ -388,7 +478,7 @@ class TestRunCodex(unittest.TestCase):
         whole pgrp (not just the direct child). Without killpg, codex's
         tool descendants reparent to PID 1 with reviewer credentials and
         disabled sandboxing — the security probe from the first review
-        round. The 124 propagates so Wave B's existing fail-loud abort
+        round. The 124 propagates so the run's existing fail-loud abort
         fires."""
         agent_dir = self._agent_dir("intent")
         mock_popen.side_effect = _make_codex_stub(plan={"intent": "TIMEOUT"})
@@ -457,7 +547,7 @@ class TestRunCodex(unittest.TestCase):
         whose work legitimately runs past the staleness threshold leaves
         log.txt frozen the whole time while err.txt grows continuously —
         watching log.txt alone kills a healthy, productive process (the
-        cncorp/plow#700/#638/#692/#695 abort wave). The watchdog must treat
+        cncorp/plow#700/#638/#692/#695 abort run). The watchdog must treat
         err.txt activity as liveness."""
         agent_dir = self._agent_dir("intent")
 
@@ -558,10 +648,10 @@ class TestRunCodex(unittest.TestCase):
     def test_stale_kill_does_not_retry_when_worker_budget_too_tight(self, mock_popen, mock_killpg):
         """The retry gate has two budget checks: per-Codex (elapsed under
         this attempt's cap) AND outer-worker (review.sh's WORKER_DEADLINE_EPOCH
-        env, which covers just test + Wave A + earlier specialists). If
+        env, which covers just test + every earlier stage). If
         per-Codex says fine but the outer worker is already nearly out of
         wall-clock, no retry — otherwise the worker `timeout` would fire
-        mid-retry before Wave B writes the sentinel."""
+        mid-retry before the run writes the sentinel."""
         agent_dir = self._agent_dir("intent")
         mock_popen.side_effect = lambda argv, **kwargs: FakePopen(
             returncode=-signal.SIGKILL, raise_timeout=True
@@ -581,7 +671,7 @@ class TestRunCodex(unittest.TestCase):
         """A stale-log kill that fires late in the per-specialist budget
         is NOT retryable: another full attempt at that point could push
         past review.sh's 90 min outer worker timeout with no margin left
-        for Wave B's abort to write its sentinel. The retryable predicate
+        for the run's abort to write its sentinel. The retryable predicate
         only fires when at least one staleness threshold's worth of
         budget remains."""
         agent_dir = self._agent_dir("intent")
@@ -1211,7 +1301,7 @@ class TestRunSpecialist(unittest.TestCase):
         critic to answer with a bare 'No probes.' in that case, so the critic
         codex call is deterministic waste. run_specialist must synthesize the
         layered output WITHOUT spending a codex call (the single biggest
-        Wave-B quota saving on clean PRs)."""
+        specialist-phase quota saving on clean PRs)."""
         mock_popen.side_effect = _make_codex_stub({
             "security": (0, "Surveyed the auth paths.\n\nNo probes.\n"),
         })
@@ -1313,6 +1403,10 @@ class TestRunPipeline(unittest.TestCase):
         self.run_dir = Path(self.tmp.name) / "run"
         (self.run_dir / "agents").mkdir(parents=True)
         (self.run_dir / "inputs").mkdir(parents=True)
+        # The worker's background test job writes these before the pipeline
+        # needs them; the fixture stands in for it. Tests that exercise the
+        # wait itself delete them first.
+        _report_test_job(self.run_dir)
 
         self.prompts = Path(self.tmp.name) / "prompts"
         self.prompts.mkdir()
@@ -1325,6 +1419,7 @@ class TestRunPipeline(unittest.TestCase):
             patch.object(pipeline, "STALENESS_THRESHOLD_SEC", 0.1),
             patch.object(pipeline, "WATCHDOG_POLL_SEC", 0.05),
             patch.object(pipeline, "SPECIALIST_TIMEOUT_SEC", 5.0),
+            patch.object(pipeline, "TEST_GATE_POLL_SEC", 0.05),
         ):
             p.start()
             self.addCleanup(p.stop)
@@ -1422,15 +1517,39 @@ class TestRunPipeline(unittest.TestCase):
         self.assertFalse(self.repo_dir.exists())
 
     @patch("pipeline.subprocess.Popen")
-    def test_dead_code_failure_aborts_loud(self, mock_popen):
-        """dead-code-search becomes fail-loud (was fail-soft in shell pipeline)."""
-        mock_popen.side_effect = _make_codex_stub({
-            "intent": (0, "Inferred intent: stub.\n"),
-            "dead-code-search": (7, ""),
-        })
+    def test_dead_code_failure_stages_a_marker_and_keeps_consumers(self, mock_popen):
+        """`consumers` walks the diff itself either way, and common-header.md
+        already documents an empty dead-code.md as the both-passes-failed
+        shape — so a pre-pass failure must cost no angle. The node stages a
+        failure-MARKED file (a human debugging the run can tell it from "found
+        nothing") and returns 0: the review completes, `consumers` runs, and
+        nothing lands in the coverage sentinel that would block approval. Exit
+        7 (not 1) so the marker's code cannot pass on a hardcoded value."""
+        mock_popen.side_effect = _make_codex_stub(plan={"dead-code-search": (7, "")})
         rc = self._run()
-        self.assertNotEqual(rc, 0)
-        self.assertFalse(self.repo_dir.exists())
+        self.assertEqual(rc, 0)
+        self.assertTrue((self.run_dir / "agents" / "consumers" / "output.md").exists(),
+                        "consumers was skipped over evidence it never depended on")
+        self.assertFalse((self.run_dir / "_wave_b_timeouts.txt").exists(),
+                         "a failed pre-pass left the review approval-ineligible")
+        staged = (self.repo_dir / ".codex-scratch" / "dead-code.md").read_text()
+        self.assertIn("exit 7", staged,
+                      "staged evidence must mark the failure, not read as 'found nothing'")
+        self.assertTrue((self.run_dir / "agents" / "aggregator" / "output.md").exists())
+
+    @patch("pipeline.subprocess.Popen")
+    def test_timings_json_records_every_node(self, mock_popen):
+        """Per-node wall-clock lands in <run>/timings.json so review latency is a
+        jq query, not log archaeology."""
+        mock_popen.side_effect = _make_codex_stub()
+        rc = self._run()
+        self.assertEqual(rc, 0)
+        timings = json.loads((self.run_dir / "timings.json").read_text())
+        expected = {"intent", "dead-code-search", "test-gate", "aggregator", *pipeline.SPECIALISTS}
+        self.assertEqual(set(timings), expected)
+        for name, t in timings.items():
+            self.assertGreaterEqual(t["end"], t["start"], name)
+            self.assertEqual(t["rc"], 0, name)
 
     @patch("pipeline.subprocess.Popen")
     def test_one_angle_failure_aborts_pipeline(self, mock_popen):
@@ -1483,9 +1602,9 @@ class TestRunPipeline(unittest.TestCase):
 
     @patch("pipeline.subprocess.Popen")
     def test_wave_a_runs_intent_and_dead_code_in_parallel(self, mock_popen):
-        """Wave A's intent + dead-code-search must run concurrently. Use
-        threading.Barrier(2): both stubs wait at the barrier — if Wave A
-        is serial, the first stub blocks alone and BrokenBarrierError
+        """intent + dead-code-search must run concurrently. Use
+        threading.Barrier(2): both stubs wait at the barrier — if they
+        are serialized, the first stub blocks alone and BrokenBarrierError
         fires, failing the pipeline. The latency win depends on this
         contract; pin it behaviorally."""
         barrier = threading.Barrier(2, timeout=5)
@@ -1497,10 +1616,24 @@ class TestRunPipeline(unittest.TestCase):
         self.assertEqual(rc, 0)
 
     @patch("pipeline.subprocess.Popen")
+    def test_specialists_start_before_dead_code_search_finishes(self, mock_popen):
+        """Only `consumers` reads dead-code.md, so the other specialists must not
+        wait for dead-code-search. Gate dead-code-search and security on one
+        Barrier(2): if security could not start until dead-code-search finished,
+        dead-code-search blocks alone → BrokenBarrierError → run fails."""
+        barrier = threading.Barrier(2, timeout=5)
+        def hit_barrier(name, _out_path):
+            if name in ("dead-code-search", "security"):
+                barrier.wait()
+        mock_popen.side_effect = _make_codex_stub(before_write=hit_barrier)
+        rc = self._run()
+        self.assertEqual(rc, 0)
+
+    @patch("pipeline.subprocess.Popen")
     def test_wave_b_runs_specialists_concurrently(self, mock_popen):
-        """Wave B's specialist fan-out must run concurrently. Pick two
+        """The specialist fan-out must run concurrently. Pick two
         deterministic specialists (security, shape) and gate them
-        on a shared Barrier(2). Serial Wave B regression → first stub
+        on a shared Barrier(2). A serial fan-out regression → first stub
         blocks alone → BrokenBarrierError → run fails."""
         barrier = threading.Barrier(2, timeout=5)
         def hit_barrier(name, _out_path):
@@ -1511,38 +1644,60 @@ class TestRunPipeline(unittest.TestCase):
         self.assertEqual(rc, 0)
 
     @patch("pipeline.subprocess.Popen")
-    def test_wave_b_concurrency_is_capped(self, mock_popen):
-        """Wave B caps simultaneous specialist codex calls at
-        WAVE_B_MAX_CONCURRENCY so a review can't fire all 7 at once and trip
-        429s (the 2026-06-03 storm). With the cap at 2, peak concurrent
-        specialists must not exceed 2 — and the review still completes."""
+    def test_codex_concurrency_is_capped_across_all_agents(self, mock_popen):
+        """CODEX_MAX_CONCURRENCY bounds simultaneous codex calls of EVERY kind
+        (intent, dead-code, specialists, critics, momentum, aggregator), so a
+        review can't fire all its agents at once and trip 429s (the 2026-06-03
+        storm). With the cap at 2, peak concurrent codex calls must not exceed
+        2 — and the review still completes."""
         lock = threading.Lock()
         state = {"cur": 0, "peak": 0}
+        barrier = threading.Barrier(2, timeout=5)  # intent/dead-code-search: the no-dep pair
         def track(name, _out_path):
-            if name in pipeline.SPECIALISTS:
-                with lock:
-                    state["cur"] += 1
-                    state["peak"] = max(state["peak"], state["cur"])
+            with lock:
+                state["cur"] += 1
+                state["peak"] = max(state["peak"], state["cur"])
+            if name in ("intent", "dead-code-search"):
+                barrier.wait()
+            else:
                 time.sleep(0.05)
-                with lock:
-                    state["cur"] -= 1
-        with patch.object(pipeline, "WAVE_B_MAX_CONCURRENCY", 2):
+            with lock:
+                state["cur"] -= 1
+        with patch.object(pipeline, "CODEX_MAX_CONCURRENCY", 2):
             mock_popen.side_effect = _make_codex_stub(before_write=track)
             rc = self._run()
         self.assertEqual(rc, 0)
-        self.assertGreaterEqual(state["peak"], 1)   # specialists actually ran
+        self.assertGreaterEqual(state["peak"], 2)   # agents actually overlapped
         self.assertLessEqual(state["peak"], 2)      # never exceeded the cap
 
     @patch("pipeline.subprocess.Popen")
-    def test_wave_b_starts_after_wave_a_artifacts_staged(self, mock_popen):
-        """Wave A → Wave B is a hard barrier: every specialist (and momentum
-        on re-review) must see `.codex-scratch/inferred-intent.md` and
-        `.codex-scratch/dead-code.md` staged as REGULAR files at the moment
-        they start."""
+    def test_each_angle_starts_after_its_own_dependencies_staged(self, mock_popen):
+        """Each angle starts only once ITS OWN dependencies staged their scratch:
+        every specialist (and momentum on re-review) must see
+        `.codex-scratch/inferred-intent.md` as a REGULAR file at the moment it
+        starts, and `consumers` — the one angle that reads it — must also see
+        `.codex-scratch/dead-code.md`.
+
+        The dead-code half needs a gate to be falsifiable. The fake codex is
+        instantaneous and `consumers` is the LAST specialist submitted, so
+        dead-code-search would stage its file first by scheduling alone — the
+        assertion would hold with the `consumers` → dead-code-search edge
+        deleted. So hold dead-code-search inside its own codex call until
+        `consumers` starts. With the edge intact `consumers` cannot start, the
+        wait expires, and only the edge can have ordered them; delete `dc_f`
+        from `deps["consumers"]` and `consumers` runs immediately, snapshots a
+        scratch dir with no `dead-code.md` (dead-code-search is still parked
+        pre-write), and this fails. Gating on `consumers` itself rather than on
+        the other specialists is what makes that deterministic: absent the edge
+        `consumers` is one of eight equal competitors and may legitimately start
+        LAST, after any "the others have started" release already let
+        dead-code-search through. The wait can only expire on the passing path,
+        so it can never fail spuriously."""
         (self.run_dir / "inputs" / "previous-review.md").write_text("prior\n")
         scratch = self.repo_dir / ".codex-scratch"
         seen: list[tuple[str, set[str]]] = []
         lock = threading.Lock()
+        consumers_started = threading.Event()
         def capture_scratch_files(name, _out_path):
             if name in pipeline.SPECIALISTS or name == "momentum":
                 with lock:
@@ -1551,15 +1706,66 @@ class TestRunPipeline(unittest.TestCase):
                         {p.name for p in scratch.iterdir()
                          if p.is_file() and not p.is_symlink()},
                     ))
+                # Snapshot first, THEN release: dead-code-search must still be
+                # parked (nothing staged) at the instant `consumers` looks.
+                if name == "consumers":
+                    consumers_started.set()
+            elif name == "dead-code-search":
+                # Only elapses on the passing path, where it is the whole point:
+                # `consumers` is blocked on this very call, so nothing will set
+                # the event. Generous enough that a loaded box still lets an
+                # unblocked `consumers` start inside it.
+                consumers_started.wait(timeout=0.5)
         mock_popen.side_effect = _make_codex_stub(before_write=capture_scratch_files)
         rc = self._run()
         self.assertEqual(rc, 0)
         self.assertEqual(len(seen), len(pipeline.SPECIALISTS) + 1)  # +momentum
         for name, staged in seen:
             self.assertIn("inferred-intent.md", staged,
-                          f"{name} started before Wave A staged inferred-intent.md as a real file")
-            self.assertIn("dead-code.md", staged,
-                          f"{name} started before Wave A staged dead-code.md as a real file")
+                          f"{name} started before intent staged inferred-intent.md as a real file")
+            if name == "consumers":
+                self.assertIn("dead-code.md", staged,
+                              "consumers started before dead-code-search staged dead-code.md")
+
+    @patch("pipeline.subprocess.Popen")
+    def test_tests_specialist_waits_for_test_results_and_others_do_not(self, mock_popen):
+        """`just test` runs in the background. Every specialist except `tests`
+        starts without it; `tests` starts only after the worker's outcome row
+        lands, and then sees the staged results. Security's stub plays the
+        worker: it asserts `tests` hasn't started, then reports."""
+        (self.run_dir / "test-outcome.tsv").unlink()
+        (self.run_dir / "test-results.md").unlink()
+        started: list[str] = []
+        seen: dict[str, str] = {}
+        lock = threading.Lock()
+        scratch = self.repo_dir / ".codex-scratch" / "test-results.md"
+        def worker_stub(name, _out_path):
+            with lock:
+                started.append(name)
+            if name == "security":
+                _report_test_job(self.run_dir, "**Result:** from-security\n")
+            if name == "tests":
+                seen["tests"] = scratch.read_text() if scratch.exists() else "<absent>"
+        mock_popen.side_effect = _make_codex_stub(before_write=worker_stub)
+        rc = self._run()
+        self.assertEqual(rc, 0)
+        self.assertLess(started.index("security"), started.index("tests"))
+        self.assertEqual(seen["tests"], "**Result:** from-security\n")
+
+    @patch("pipeline.subprocess.Popen")
+    def test_test_gate_stages_not_run_past_the_worker_deadline(self, mock_popen):
+        """No outcome row by WORKER_DEADLINE_EPOCH → the gate stages a 'not run'
+        body (the shape a skipped test already has) and the review completes."""
+        (self.run_dir / "test-outcome.tsv").unlink()
+        (self.run_dir / "test-results.md").unlink()
+        mock_popen.side_effect = _make_codex_stub()
+        with patch.dict(os.environ, {"WORKER_DEADLINE_EPOCH": str(time.time() - 1)}):
+            rc = self._run()
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            (self.repo_dir / ".codex-scratch" / "test-results.md").read_text(),
+            "**Result:** not run (worker timeout budget exhausted)\n",
+        )
 
     @patch("pipeline.subprocess.Popen")
     def test_specialist_timeout_completes_review_with_sentinel(self, mock_popen):
@@ -1980,6 +2186,10 @@ class TestPipelineCLI(unittest.TestCase):
         self.run_dir = root / "run"
         (self.run_dir / "agents").mkdir(parents=True)
         (self.run_dir / "inputs").mkdir(parents=True)
+        # The worker's background test job writes these before the pipeline
+        # needs them; the fixture stands in for it (no patch — this class
+        # runs a subprocess).
+        _report_test_job(self.run_dir)
 
         self.prompts = root / "prompts"
         self.prompts.mkdir()
@@ -2088,7 +2298,7 @@ class TestPipelineCLI(unittest.TestCase):
         sender (parent pid, parent cmdline, TracerPid) before re-raising
         so the next mystery kill is debuggable from the journal alone.
         Regression target: cncorp/plow#680 18:43:28 where a SIGTERM
-        aborted Wave B with no log evidence pointing at the sender.
+        aborted the specialists with no log evidence pointing at the sender.
 
         Approach: run a tiny harness that imports pipeline, installs
         the handler the same way main() does, then sleeps. SIGTERM the
@@ -2171,7 +2381,7 @@ class TestRealPromptsCompose(unittest.TestCase):
         The prelude is prepended to everything, so a policy edit can reach an
         agent whose role prompt it never touched — that is how a "you may read
         any file" grant leaked into the staged-inputs-only intent pre-pass. (A
-        prelude output directive once aborted every review before Wave B too;
+        prelude output directive once aborted every review before the specialists too;
         that class is retired in _validate_intent, which now selects the intent
         line instead of requiring it to be the only one, so this test fences
         reach and envelope only.) Asserted against the ASSEMBLED prompt: a

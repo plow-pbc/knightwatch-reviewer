@@ -13,6 +13,15 @@
 # downstream consumer needs a different posture.
 BOT_AI_AUTHOR_MARKER="${BOT_AI_AUTHOR_MARKER:-<!-- knightwatch-reviewer:ai-author note=load-bearing-probes operating-point=pre-pmf prefer=cut-loc-over-add -->}"
 
+# Single source of truth for the TEST_SUMMARY the background test job's EXIT
+# trap writes when it died before reporting (review-one-pr.sh::_test_job_exit) —
+# a reviewer-host fault (a dind hiccup tripping run_just_test's fail-fast), not
+# a clean skip. Three sites key off this exact text: that writer, and the two
+# readers below — review_is_approval (an aborted test job is coverage loss, so
+# the run can't approve) and format_tests_note (which labels it as a fault in
+# the public header). One constant so the three can't drift.
+TEST_ABORTED_SUMMARY="not run (test job aborted before reporting)"
+
 # allocate_run_dir RUN_DIR
 #
 # Creates RUN_DIR (and agents/, inputs/) as a unit, or fails loud:
@@ -106,13 +115,19 @@ discard_empty_run_dir() {
 # worker calls — a wrong glob, missing self-exclusion, or empty-file
 # filter regression silently disables the aggregator's carry-forward
 # (Re-review handling) without tripping any other test.
-# finalize_meta_json META_FILE FINISHED_AT STATUS GH_POSTED
+# finalize_meta_json META_FILE FINISHED_AT STATUS GH_POSTED [TIMINGS_FILE]
 #
 # Atomically rewrites $META_FILE with finished_at + status, and repairs
 # posted_at = $FINISHED_AT iff GH_POSTED == "true" AND existing posted_at
 # is empty. Existing posted_at values are preserved (the early-stamp path
 # in review-one-pr.sh sets posted_at right after gh succeeds; this
 # function must not clobber that).
+#
+# TIMINGS_FILE is optional: when given AND non-empty, its JSON object is
+# merged in as .timings (per-stage wall-clock for `jq`-able latency
+# post-mortems). Absent/empty leaves .timings off entirely rather than
+# stamping a null — timings are best-effort, so a run that couldn't compose
+# them still finalizes normally.
 #
 # Hermetic — no closures, all inputs are args. Caller handles logging on
 # non-zero return so the smoke can drive the function without setting up
@@ -126,10 +141,13 @@ discard_empty_run_dir() {
 # sibling cleanup_eyes self-guards on EYES_COMMENT_ID. Smoke regression-fences
 # the branches the worker depends on (see lib/tests/finalize-meta-smoke.sh).
 finalize_meta_json() {
-    local meta_file="$1" finished_at="$2" status="$3" gh_posted="$4"
-    local tmp="${meta_file}.tmp"
-    if ! jq --arg ts "$finished_at" --arg status "$status" --arg gh_posted "$gh_posted" \
-            '. + {finished_at: $ts, status: $status} + (if ($gh_posted == "true") and ((.posted_at // "") == "") then {posted_at: $ts} else {} end)' \
+    local meta_file="$1" finished_at="$2" status="$3" gh_posted="$4" timings_file="${5:-}"
+    local tmp="${meta_file}.tmp" timings='null'
+    [ -n "$timings_file" ] && [ -s "$timings_file" ] && timings=$(cat "$timings_file")
+    if ! jq --arg ts "$finished_at" --arg status "$status" --arg gh_posted "$gh_posted" --argjson timings "$timings" \
+            '. + {finished_at: $ts, status: $status}
+               + (if ($gh_posted == "true") and ((.posted_at // "") == "") then {posted_at: $ts} else {} end)
+               + (if $timings == null then {} else {timings: $timings} end)' \
             "$meta_file" > "$tmp" 2>/dev/null; then
         rm -f "$tmp"
         return 1
@@ -265,6 +283,52 @@ prune_stale_scenario_images() {
         || log "$PR_ID: build cache prune failed (non-fatal)"
 }
 
+# reap_test_user_processes
+#
+# Bounded TERM → wait → KILL → confirm-dead sweep over everything owned by
+# $REVIEWER_TEST_USER. `pkill -u` is UID-based, so it reaps the session-detached
+# writer a `just test` can `setsid` — the one a process-tree kill (pkill -P)
+# structurally cannot reach — and the KILL pass is not optional, or a
+# TERM-trapping writer survives to race the .codex-scratch wipe.
+#
+# Single owner of that reap: run_just_test after a clean run, cleanup_test_clone
+# (below) on the abort path before the clone is deleted, where a detached
+# descendant would otherwise outlive both the subshell and its clone.
+# No-op (rc 0) when REVIEWER_TEST_USER is unset — the host/systemd path runs
+# `just test` as the operator, whose processes must not be signalled. Returns 1
+# iff something survived SIGKILL; callers decide how loud that is.
+reap_test_user_processes() {
+    [ -n "${REVIEWER_TEST_USER:-}" ] || return 0
+    pkill -TERM -u "$REVIEWER_TEST_USER" 2>/dev/null || true
+    for _ in $(seq 1 50); do pgrep -u "$REVIEWER_TEST_USER" >/dev/null 2>&1 || break; sleep 0.1; done
+    pkill -KILL -u "$REVIEWER_TEST_USER" 2>/dev/null || true
+    for _ in $(seq 1 20); do pgrep -u "$REVIEWER_TEST_USER" >/dev/null 2>&1 || break; sleep 0.1; done
+    ! pgrep -u "$REVIEWER_TEST_USER" >/dev/null 2>&1
+}
+
+# cleanup_test_clone
+#
+# Teardown for the background `just test` job, from the worker's EXIT trap (the
+# trap is in review-one-pr.sh; the function lives here so the smoke drives the
+# one the worker calls). Kill the job's children FIRST — the worker's `exit 1`
+# paths don't signal the process group, so killing just the subshell orphans the
+# `timeout`/`just` tree — then reap UID-wide, which catches the `setsid`
+# descendant `-P` cannot, before the delete so a survivor can't write into a
+# half-removed tree. Both gated on this worker still HOLDING a forked job: the
+# reap sweeps a shared account, so ungated it kills a sibling PR's live run on
+# every worker exit. run_just_test's is equally broad, safe only because a
+# container pins MAX_CONCURRENT=1 (review-loop.sh) — one review, one test, per
+# PID namespace; above 1 both call sites are unsafe.
+cleanup_test_clone() {
+    if [ -n "${TEST_JOB_PID:-}" ]; then
+        kill -0 "$TEST_JOB_PID" 2>/dev/null && {
+            pkill -TERM -P "$TEST_JOB_PID" 2>/dev/null; kill "$TEST_JOB_PID" 2>/dev/null; wait "$TEST_JOB_PID" 2>/dev/null
+        }
+        reap_test_user_processes || log "$PR_ID: reviewer-test process survived SIGKILL during test-clone cleanup"
+    fi
+    [ -n "${TEST_DIR:-}" ] && rm -rf "$TEST_DIR"; return 0
+}
+
 # run_just_test JUST_FILE REPO_DIR TEST_LOG TEST_TIMEOUT TEST_KILL_AFTER
 #
 # Runs `just test` under a timeout that escalates to SIGKILL, so a wedged or
@@ -342,22 +406,12 @@ run_just_test() {
             > "$test_log" 2>&1 || rc=$?
         # The test ran as reviewer-test on a reviewer-test-owned tree; everything
         # after (git log/show, the .codex-scratch wipe + write_scratch) runs as
-        # root. Reap any leftover reviewer-test procs (a test can `setsid` a
-        # detached writer that outlives `just test`; pkill -u is UID-based so it
-        # catches session-detached ones), restore ownership (else root git trips
-        # the dubious-ownership guard), and strip group/other write bits so
-        # nothing the test left behind (e.g. after a `chmod 777`) can race the
-        # root scratch-staging path. Exit status is preserved for the classifier.
-        # Bounded reap before root scratch staging: TERM, wait for exit, then
-        # KILL (uncatchable) any that ignored it — a TERM-only best-effort would
-        # leave a TERM-trapping writer alive to race the .codex-scratch wipe or
-        # read root-staged inputs. pkill -u is UID-based, so it reaps even
-        # setsid-detached procs.
-        pkill -TERM -u "$REVIEWER_TEST_USER" 2>/dev/null || true
-        for _ in $(seq 1 50); do pgrep -u "$REVIEWER_TEST_USER" >/dev/null 2>&1 || break; sleep 0.1; done
-        pkill -KILL -u "$REVIEWER_TEST_USER" 2>/dev/null || true
-        for _ in $(seq 1 20); do pgrep -u "$REVIEWER_TEST_USER" >/dev/null 2>&1 || break; sleep 0.1; done
-        if pgrep -u "$REVIEWER_TEST_USER" >/dev/null 2>&1; then
+        # root. Reap the test user's leftovers first, then restore ownership
+        # (else root git trips the dubious-ownership guard) and strip
+        # group/other write bits so nothing the test left behind (e.g. after a
+        # `chmod 777`) can race the root scratch-staging path. Exit status is
+        # preserved for the classifier.
+        if ! reap_test_user_processes; then
             # A process surviving SIGKILL is a catastrophic integrity failure
             # (uninterruptible I/O, or a kernel/namespace bug). Fail fast — do NOT
             # proceed into root-owned scratch staging where a live writer could
@@ -480,6 +534,14 @@ classify_just_test_outcome() {
 format_tests_note() {
     local tests_ran="$1" summary="$2" convention_header="${3:-}"
     if [ "$tests_ran" = "false" ]; then
+        # A reviewer-side abort is a FAULT, not a skip: the operator reading the
+        # PR must be able to tell "we chose not to run tests" from "our own host
+        # broke". Checked before the convention branch so a convention repo's
+        # gate fragment can't mask it either.
+        if [ "$summary" = "$TEST_ABORTED_SUMMARY" ]; then
+            printf "⚠️ Tests not run — the reviewer's test job aborted (reviewer-side fault, not a skip)"
+            return
+        fi
         # A convention repo (operator-defined via kwr-config) may declare its own
         # test gate instead of a root justfile — e.g. a SEED's `## Verification`/
         # `ref/verify.sh`. When the caller passes that convention's `test-header`
@@ -789,7 +851,8 @@ latest_author_visible_review_sha() {
 # review_is_approval VERDICT_LINE RUN_DIR
 #   exit 0 iff this run is an actual approval: the aggregator verdict is
 #   `VERDICT: APPROVE`/`APPROVE — pending: ...` AND coverage was full (no
-#   specialist timed out, i.e. _wave_b_timeouts.txt is absent/empty).
+#   specialist timed out, i.e. _wave_b_timeouts.txt is absent/empty) AND the
+#   background test job neither aborted nor reported a failure.
 #
 # Single owner of "did this review approve?" — both the worker's GitHub
 # submit gate (review-one-pr.sh) and the carried-forward `approved`
@@ -798,9 +861,25 @@ latest_author_visible_review_sha() {
 # approved in the other. A partial review (a specialist, possibly security,
 # was skipped) is never an approval — disclosed by the ⏱️ header instead.
 review_is_approval() {
-    local verdict="$1" run_dir="$2"
+    local verdict="$1" run_dir="$2" ran summary
     [[ "$verdict" == VERDICT:\ APPROVE* ]] || return 1
     [ -s "$run_dir/_wave_b_timeouts.txt" ] && return 1
+    # ABSENT test-outcome.tsv means "no objection", not "aborted" — historical
+    # run dirs read by latest_author_visible_review_approved predate the file
+    # and must keep their approval status.
+    [ -f "$run_dir/test-outcome.tsv" ] || return 0
+    IFS=$'\t' read -r ran summary _ < "$run_dir/test-outcome.tsv"
+    # The tests RAN and did not pass — FAILED (exit N) or TIMED OUT (>W). The
+    # aggregator is not a reliable gate on this: a job delayed past the
+    # test-gate's wait bound stages "not run" for the readers and reports its
+    # real outcome afterwards, so an APPROVE verdict can be written over a
+    # failure nobody saw. This row is that outcome — refuse on it directly.
+    [ "$ran" = "true" ] && [ "$summary" != "PASSED" ] && return 1
+    # Same coverage-loss class as a timed-out specialist: `just test` never ran
+    # because of a reviewer-host fault. NOT subsumed by the rule above — an
+    # aborted job writes TESTS_RAN=false, and every OTHER false row is a
+    # legitimate skip (no justfile, untrusted author) that must keep approving.
+    [ "$summary" = "$TEST_ABORTED_SUMMARY" ] && return 1
     return 0
 }
 
