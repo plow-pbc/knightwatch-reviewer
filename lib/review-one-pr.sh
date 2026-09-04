@@ -460,24 +460,7 @@ PIPELINE_START_TS=""
 PIPELINE_END_TS=""
 TEST_RUN_S=""
 TEST_LOCK_WAIT_S=""
-# An abort mid-pipeline must not leave `just test` running under a deleted
-# tree. pkill the job's children FIRST: the worker's own `exit 1` paths don't
-# signal the process group, so killing only the subshell would orphan the
-# `timeout`/`just` tree it is waiting on.
-cleanup_test_clone() {
-    if [ -n "${TEST_JOB_PID:-}" ] && kill -0 "$TEST_JOB_PID" 2>/dev/null; then
-        pkill -TERM -P "$TEST_JOB_PID" 2>/dev/null
-        kill "$TEST_JOB_PID" 2>/dev/null
-        wait "$TEST_JOB_PID" 2>/dev/null
-    fi
-    # `-P` only reaches the job's own children — a `setsid` descendant escapes
-    # it and survives the clone delete below. The UID-wide reap (lib/run-dir.sh)
-    # catches it; the clean path already runs it, so this one must too, and
-    # before the delete so a survivor can't write into a half-removed tree.
-    reap_test_user_processes \
-        || log "$PR_ID: reviewer-test process survived SIGKILL during test-clone cleanup"
-    [ -n "${TEST_DIR:-}" ] && rm -rf "$TEST_DIR"; return 0
-}
+# cleanup_test_clone (lib/run-dir.sh) tears the job + its clone down on abort.
 
 CANONICAL_LOCK_DIR="$LOCAL_STATE_DIR/canonical-locks"
 mkdir -p "$CANONICAL_LOCK_DIR"
@@ -1034,8 +1017,8 @@ _test_job_exit() {
         printf '%s\t%s\t%s\t%s\n' false "$aborted" 0 "$(( $(date +%s) - TEST_JOB_START ))" \
             > "$RUN_DIR/test-outcome.tsv"
     fi
-    # Skips cleanup_test_clone's kill branch: TEST_JOB_PID is still the
-    # pre-fork "" in here.
+    # Skips cleanup_test_clone's kill AND reap branches: TEST_JOB_PID is still
+    # the pre-fork "" in here, and run_just_test already reaped whatever it ran.
     cleanup_test_clone
 }
 (

@@ -292,8 +292,8 @@ prune_stale_scenario_images() {
 # TERM-trapping writer survives to race the .codex-scratch wipe.
 #
 # Single owner of that reap: run_just_test after a clean run, cleanup_test_clone
-# (lib/review-one-pr.sh) on the abort path before the clone is deleted, where a
-# detached descendant would otherwise outlive both the subshell and its clone.
+# (below) on the abort path before the clone is deleted, where a detached
+# descendant would otherwise outlive both the subshell and its clone.
 # No-op (rc 0) when REVIEWER_TEST_USER is unset — the host/systemd path runs
 # `just test` as the operator, whose processes must not be signalled. Returns 1
 # iff something survived SIGKILL; callers decide how loud that is.
@@ -304,6 +304,29 @@ reap_test_user_processes() {
     pkill -KILL -u "$REVIEWER_TEST_USER" 2>/dev/null || true
     for _ in $(seq 1 20); do pgrep -u "$REVIEWER_TEST_USER" >/dev/null 2>&1 || break; sleep 0.1; done
     ! pgrep -u "$REVIEWER_TEST_USER" >/dev/null 2>&1
+}
+
+# cleanup_test_clone
+#
+# Teardown for the background `just test` job, from the worker's EXIT trap (the
+# trap is in review-one-pr.sh; the function lives here so the smoke drives the
+# one the worker calls). Kill the job's children FIRST — the worker's `exit 1`
+# paths don't signal the process group, so killing just the subshell orphans the
+# `timeout`/`just` tree — then reap UID-wide, which catches the `setsid`
+# descendant `-P` cannot, before the delete so a survivor can't write into a
+# half-removed tree. Both gated on this worker still HOLDING a forked job: the
+# reap sweeps a shared account, so ungated it kills a sibling PR's live run on
+# every worker exit. run_just_test's is equally broad, safe only because a
+# container pins MAX_CONCURRENT=1 (review-loop.sh) — one review, one test, per
+# PID namespace; above 1 both call sites are unsafe.
+cleanup_test_clone() {
+    if [ -n "${TEST_JOB_PID:-}" ]; then
+        kill -0 "$TEST_JOB_PID" 2>/dev/null && {
+            pkill -TERM -P "$TEST_JOB_PID" 2>/dev/null; kill "$TEST_JOB_PID" 2>/dev/null; wait "$TEST_JOB_PID" 2>/dev/null
+        }
+        reap_test_user_processes || log "$PR_ID: reviewer-test process survived SIGKILL during test-clone cleanup"
+    fi
+    [ -n "${TEST_DIR:-}" ] && rm -rf "$TEST_DIR"; return 0
 }
 
 # run_just_test JUST_FILE REPO_DIR TEST_LOG TEST_TIMEOUT TEST_KILL_AFTER

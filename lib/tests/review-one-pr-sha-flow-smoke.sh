@@ -1798,14 +1798,12 @@ esac
 if [ -e "$STATE18/workdirs/test-org_probe-repo__1-test" ]; then
     echo "FAIL: scenario 18 — test clone (mirrored .env) left on disk after the aborted test job"; exit 1
 fi
-# cleanup_test_clone must run the UID-wide reap before deleting the clone: its
-# `pkill -P <job pid>` reaches only the job's own children, so a `setsid`
-# descendant escapes it and outlives the clone it was running against. This is
-# the only path where nothing else reaps — run_just_test's own is the clean one.
-if ! grep -qx "pkill -KILL -u reviewer-test" "$REAP18"; then
-    echo "FAIL: scenario 18 — the abort path never reaped the test user's processes (a detached descendant survives the clone delete)"
-    cat "$REAP18"; exit 1
-fi
-echo "  scenario 18 (test-job fail-fast reports an outcome + reaps the test user) ok"
+# End-to-end half of cleanup_test_clone's reap gate (both sides unit-tested in
+# run-just-test-isolation-smoke): this worker joined its test job and cleared the
+# pid, so its EXIT trap must NOT sweep the shared reviewer-test account, which
+# also owns a sibling PR's live `just test`.
+grep -q -- "-u reviewer-test" "$REAP18" \
+    && { echo "FAIL: scenario 18 — a worker holding no test job swept the shared uid, killing sibling runs"; cat "$REAP18"; exit 1; } || true
+echo "  scenario 18 (test-job fail-fast reports an outcome, without sweeping the shared uid) ok"
 
-echo "  PASS (18 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + requester-gate skip + metadata-lookup guard pre-allocation abort + placeholder reuse anti-spam + codex 429 backoff + usage-cap quota placeholder w/ pool status + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort + whole-PR re-review keeps memory + test clone isolation/overlap/timings + test-job fail-fast still reports and reaps)"
+echo "  PASS (18 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + requester-gate skip + metadata-lookup guard pre-allocation abort + placeholder reuse anti-spam + codex 429 backoff + usage-cap quota placeholder w/ pool status + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort + whole-PR re-review keeps memory + test clone isolation/overlap/timings + test-job fail-fast still reports)"

@@ -187,18 +187,20 @@ printf '#!/bin/bash\necho "pgrep $*" >> "%s"\nexit "${REAP_PGREP_RC:-1}"\n' "$RE
 printf '#!/bin/bash\nexit 0\n' > "$d/bin/sleep"
 chmod +x "$d/bin/pkill" "$d/bin/pgrep" "$d/bin/sleep"
 
-: > "$REAP_CALLS"
-(unset REVIEWER_TEST_USER; reap_test_user_processes) || fail "host path (REVIEWER_TEST_USER unset) returned non-zero"
+: > "$REAP_CALLS"; (unset REVIEWER_TEST_USER; reap_test_user_processes) || fail "host path (REVIEWER_TEST_USER unset) returned non-zero"
 [ ! -s "$REAP_CALLS" ] || fail "host path signalled processes — a UID-wide reap there kills the operator's own: $(cat "$REAP_CALLS")"
-
-: > "$REAP_CALLS"
-REVIEWER_TEST_USER=reviewer-test reap_test_user_processes || fail "reap reported a survivor though pgrep says the test user has none"
+: > "$REAP_CALLS"; REVIEWER_TEST_USER=reviewer-test reap_test_user_processes || fail "reap reported a survivor though pgrep says the test user has none"
 grep -qx "pkill -TERM -u reviewer-test" "$REAP_CALLS" || fail "reap never TERMed the test user's processes"
 grep -qx "pkill -KILL -u reviewer-test" "$REAP_CALLS" || fail "reap never escalated to SIGKILL (a TERM-trapping writer would survive)"
 awk '/pkill -TERM/{t=1} /pkill -KILL/{if(!t) exit 1}' "$REAP_CALLS" || fail "reap sent SIGKILL before SIGTERM"
+: > "$REAP_CALLS"; REAP_PGREP_RC=0 REVIEWER_TEST_USER=reviewer-test reap_test_user_processes && fail "a process surviving SIGKILL reported success — run_just_test could not fail loud on it" || true
 
-: > "$REAP_CALLS"
-REAP_PGREP_RC=0 REVIEWER_TEST_USER=reviewer-test reap_test_user_processes \
-    && fail "a process surviving SIGKILL reported success — run_just_test could not fail loud on it" || true
+# cleanup_test_clone gates that sweep on THIS worker holding a forked job: the
+# account is shared, so an ungated one kills a sibling PR's live `just test`.
+TEST_DIR="$d/no-such-clone"; (exit 0) & _gone=$!; wait "$_gone" 2>/dev/null   # a pid we own, already reaped
+: > "$REAP_CALLS"; TEST_JOB_PID="" cleanup_test_clone
+[ ! -s "$REAP_CALLS" ] || fail "cleanup with no forked test job swept the shared uid — kills a sibling PR's live run: $(cat "$REAP_CALLS")"
+: > "$REAP_CALLS"; TEST_JOB_PID="$_gone" cleanup_test_clone
+grep -qx "pkill -KILL -u reviewer-test" "$REAP_CALLS" || fail "cleanup with a forked job skipped the reap — a setsid descendant outlives its clone"
 
 echo "PASS: run-just-test-isolation-smoke"
