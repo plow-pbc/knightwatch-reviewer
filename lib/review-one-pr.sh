@@ -1732,8 +1732,8 @@ fi
 # one of our auto-posts" — see the corresponding jq filter in review.sh.
 # The bakeoff marker captures which specialists were invoked on this
 # review so lib/bakeoff-store.sh can establish per-review denominators.
-# Single source of truth: derive from lib/pipeline.py::SPECIALISTS so adding
-# a specialist there also flows into the bakeoff roster automatically.
+# Single source of truth: derive from lib/pipeline.py::SPECIALISTS so adding a
+# specialist there flows into the bakeoff roster AND the timing span below.
 # aggregator is appended because it can attribute its own cross-angle probes.
 # Fail-fast — no fallback. If pipeline.py is broken, we want the review to
 # fail loudly here, not silently post with a stale roster.
@@ -1851,13 +1851,13 @@ COMMENT_BODY=$(scrub_review_paths "$COMMENT_BODY" "$REPO_DIR" SOURCE_PATHS)
 
 # One `timing` line per review, right before the post — the review's latency
 # breakdown reduced to a single greppable row. Composing first also stamps
-# timings.json for the meta merge in finalize_run. `specialists` is a SPAN
-# (first start → last end), not a sum: the angles run concurrently.
+# timings.json for the meta merge in finalize_run. `specialists` SPANS (the
+# angles run concurrently) BAKEOFF_SPECIALISTS' derived roster, never a 2nd list.
 compose_run_timings
-log "$PR_ID: $(jq -r '
+log "$PR_ID: $(jq -r --arg specialists "${BAKEOFF_SPECIALISTS%,aggregator}" '
     def d(n): (.[n] | if . == null then 0 else (.end - .start) | floor end);
     def span(names): ([names[] as $n | .[$n] | select(. != null)] | if length == 0 then 0 else ((map(.end) | max) - (map(.start) | min) | floor) end);
-    "timing setup=\(.setup)s test=\(.test)s(queue \(.test_queue)s) intent=\(d("intent"))s dead-code=\(d("dead-code-search"))s specialists=\(span(["security","data-integrity","architecture-refined","contract-drift","tests","shape","consumers"]))s aggregator=\(d("aggregator"))s total=\(.total)s"
+    "timing setup=\(.setup)s test=\(.test)s(queue \(.test_queue)s) intent=\(d("intent"))s dead-code=\(d("dead-code-search"))s specialists=\(span($specialists | split(",")))s aggregator=\(d("aggregator"))s total=\(.total)s"
 ' "$RUN_DIR/timings.json")"
 
 # The fleet's heaviest WRITE, and GitHub's secondary limits are driven mainly by
