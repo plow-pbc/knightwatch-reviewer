@@ -1168,8 +1168,12 @@ if [ -n "$KID_PROJECT_PATH" ] && [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -n "
         # The lookup still ran — the answer is just from an index kid-refresh
         # marked stale (plow-kid-refresh.sh writes the marker). Say so.
         if [ -f "$KID_PROJECT_PATH/.keepitdry/.stale" ]; then
-            KID_RAN=stale
             KID_DETAIL=$(kid_stale_detail "$KID_PROJECT_PATH/.keepitdry/.stale")
+        else
+            KID_DETAIL=$(kid_index_behind "$KID_PROJECT_PATH")
+        fi
+        if [ -n "$KID_DETAIL" ]; then
+            KID_RAN=stale
             log "$PR_ID: KID index STALE — $KID_DETAIL"
         fi
     fi

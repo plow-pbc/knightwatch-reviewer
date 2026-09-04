@@ -581,6 +581,21 @@ printf 'reason=diverged\nindexed=never\nbehind=?\nsince=garbage\n' > "$_stale"
     || { echo "FAIL: kid_stale_detail unparseable since — got: $(kid_stale_detail "$_stale")"; exit 1; }
 rm -f "$_stale"
 
+# kid_index_behind needs no marker: .indexed-sha against the mirror's HEAD,
+# under a different-owner git (the read-only /kwr mount in production).
+echo "  kid_index_behind: current → empty; one commit later → 1 behind; never indexed → never..."
+_mirror=$(mktemp -d)
+git -C "$_mirror" init -q && git -C "$_mirror" -c user.email=t@t -c user.name=t commit -q --allow-empty -m one
+mkdir -p "$_mirror/.keepitdry"; git -C "$_mirror" rev-parse HEAD > "$_mirror/.keepitdry/.indexed-sha"
+[ -z "$(GIT_TEST_ASSUME_DIFFERENT_OWNER=1 kid_index_behind "$_mirror")" ] || { echo "FAIL: kid_index_behind — current index reported behind"; exit 1; }
+git -C "$_mirror" -c user.email=t@t -c user.name=t commit -q --allow-empty -m two
+_sha7=$(cut -c1-7 "$_mirror/.keepitdry/.indexed-sha")
+got=$(GIT_TEST_ASSUME_DIFFERENT_OWNER=1 kid_index_behind "$_mirror")
+[ "$got" = "index at $_sha7, 1 commits behind HEAD (index-behind)" ] || { echo "FAIL: kid_index_behind — got: $got"; exit 1; }
+rm -f "$_mirror/.keepitdry/.indexed-sha"
+[ "$(kid_index_behind "$_mirror")" = "index at never, 2 commits behind HEAD (index-behind)" ] || { echo "FAIL: kid_index_behind never-indexed — got: $(kid_index_behind "$_mirror")"; exit 1; }
+rm -rf "$_mirror"
+
 echo "  format_kid_note: bogus → fail-fast..."
 assert_fails_with "bogus kid_ran" "kid_ran must be" -- format_kid_note "maybe"
 

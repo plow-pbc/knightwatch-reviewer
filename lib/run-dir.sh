@@ -599,6 +599,21 @@ format_kid_note() {
 # computed in python3 (portable — `date -d` is GNU-only, see the epoch→ISO
 # note in review-one-pr.sh) and render as "?" when it won't parse, never as
 # a false 0.
+kid_index_behind() {
+    # Prints a STALE detail when .indexed-sha != the mirror's HEAD, nothing when
+    # current. Independent of the marker: covers a repo the refresh could not
+    # write to (outside its sandbox) and the hour between a push and the next
+    # sweep. The mirror is a read-only mount owned by another uid, hence the
+    # path-scoped safe.directory (same exemption lib/search-roots.sh takes).
+    local project="$1" indexed head behind
+    head=$(git -c safe.directory="$project" -C "$project" rev-parse HEAD 2>/dev/null) || return 0
+    indexed=$(head -c 40 "$project/.keepitdry/.indexed-sha" 2>/dev/null)
+    [ "$indexed" = "$head" ] && return 0
+    behind=$(git -c safe.directory="$project" -C "$project" rev-list --count "${indexed:+$indexed..}HEAD" 2>/dev/null || echo "?")
+    local short="${indexed:0:7}"
+    printf 'index at %s, %s commits behind HEAD (index-behind)' "${short:-never}" "$behind"
+}
+
 kid_stale_detail() {
     local marker="$1" reason indexed behind since days
     reason=$(grep '^reason=' "$marker" | cut -d= -f2-)

@@ -54,16 +54,29 @@ FAILED=0
 # first failing sweep and survives later ones so the review header can say how
 # long the index has been behind. The marker rides the same read-only mount the
 # reviewer already has, so no new bind is needed for it to be seen.
-mark_stale() {
+#
+# The mirror is a checkout of a tracked repo, so everything under it is
+# author-shaped: the temp file is created exclusively (a committed
+# `.stale.tmp` symlink into this unit's writable paths would otherwise be
+# followed), and `indexed` is validated to a full sha (a committed multiline
+# `.indexed-sha` must never reach a key=value line). The rename replaces a
+# symlink at the marker path instead of following it.
+write_marker() {
     local project="$1" reason="$2" marker="$1/.keepitdry/.stale"
-    local indexed behind="?" since
+    local indexed behind="?" since tmp
     mkdir -p "$project/.keepitdry"
-    indexed=$(cat "$project/.keepitdry/.indexed-sha" 2>/dev/null || echo never)
+    indexed=$(head -c 40 "$project/.keepitdry/.indexed-sha" 2>/dev/null)
+    [[ "$indexed" =~ ^[0-9a-f]{7,40}$ ]] || indexed=never
     [ "$indexed" != never ] && behind=$(git rev-list --count "$indexed..HEAD" 2>/dev/null || echo "?")
     since=$(grep '^since=' "$marker" 2>/dev/null | cut -d= -f2-)
     [ -n "$since" ] || since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    printf 'reason=%s\nindexed=%s\nbehind=%s\nsince=%s\n' "$reason" "$indexed" "$behind" "$since" > "$marker.tmp" \
-        && mv -f "$marker.tmp" "$marker"
+    tmp=$(mktemp "$project/.keepitdry/.stale.XXXXXX") || return 1
+    printf 'reason=%s\nindexed=%s\nbehind=%s\nsince=%s\n' "$reason" "$indexed" "$behind" "$since" > "$tmp" \
+        && mv -f "$tmp" "$marker"
+}
+
+mark_stale() {
+    write_marker "$1" "$2"
     FAILED=$((FAILED + 1))
 }
 
@@ -136,6 +149,9 @@ for NAME in "${!KID_PATHS[@]}"; do
     SHA_FILE="$PROJECT/.keepitdry/.indexed-sha"
     [ "$(cat "$SHA_FILE" 2>/dev/null)" = "$HEAD_SHA" ] && { rm -f "$PROJECT/.keepitdry/.stale"; continue; }
 
+    # A reviewer copies the index while this runs; the marker makes that
+    # review say STALE (refreshing) instead of ✅ on a half-written index.
+    write_marker "$PROJECT" refreshing
     if timeout "$KID_INDEX_TIMEOUT" kid index "$PROJECT" >> "$LOG_FILE" 2>&1; then
         echo "$HEAD_SHA" > "$SHA_FILE"
         rm -f "$PROJECT/.keepitdry/.stale"

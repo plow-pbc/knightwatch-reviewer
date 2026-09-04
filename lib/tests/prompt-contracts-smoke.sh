@@ -800,7 +800,7 @@ assert_grep 'review-one-pr.sh should append the fallback note when resolve_revie
 echo "  asserting sibling prior-art sections are consumed..."
 assert_grep "shape.md must require a per-symbol Prior-art verdict" \
     'Prior-art: <owner/repo/path>' prompts/specialists/shape.md
-assert_grep "architecture-refined.md must require a per-symbol Prior-art verdict" \
+assert_no_grep "architecture-refined.md must not duplicate shape's per-symbol Prior-art verdict" \
     'Prior-art: <owner/repo/path>' prompts/specialists/architecture-refined.md
 assert_grep "consumers.md must read the sibling-references section" \
     'Sibling references — changed/removed symbols' prompts/specialists/consumers.md

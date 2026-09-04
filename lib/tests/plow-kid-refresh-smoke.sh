@@ -48,6 +48,8 @@ export STUB_GIT_LOG="$STATE_DIR/git-calls.log"
 cat > "$HOME/.local/bin/kid" <<'STUB'
 #!/bin/bash
 echo "KID $*" >> "${STUB_KID_LOG:-/dev/null}"
+# What a reviewer copying the index mid-run would see: the marker's reason.
+[ -f "$2/.keepitdry/.stale" ] && echo "MARKER-DURING-INDEX $(grep '^reason=' "$2/.keepitdry/.stale")" >> "${STUB_KID_LOG:-/dev/null}"
 # MOCK_KID_SLEEP simulates an index that cannot finish inside its budget, so
 # the timeout scenarios exercise a real SIGTERM rather than a fast exit code.
 [ -n "${MOCK_KID_SLEEP:-}" ] && sleep "$MOCK_KID_SLEEP"
@@ -291,9 +293,21 @@ first_since=$(grep '^since=' "$STALE")
 MOCK_KID_EXIT=1 run_refresh
 [ "$(grep '^since=' "$STALE")" = "$first_since" ] || { echo "FAIL scenario 9: since must be preserved across sweeps"; cat "$STALE"; exit 1; }
 
-echo "  scenario 10: a successful index — or one already current — clears .stale..."
+echo "  scenario 9b: a committed .stale.tmp symlink and a multiline .indexed-sha never reach the marker's target or content..."
+VICTIM="$TMPDIR/victim.env"; printf 'KEEP=me\n' > "$VICTIM"
+ln -s "$VICTIM" "$PROJ/.keepitdry/.stale.tmp"
+printf 'aaaaaaaa\nreason=injected\n' > "$PROJ/.keepitdry/.indexed-sha"
+MOCK_KID_EXIT=1 run_refresh
+[ "$(cat "$VICTIM")" = "KEEP=me" ] || { echo "FAIL scenario 9b: marker write followed a committed symlink"; cat "$VICTIM"; exit 1; }
+grep -q '^indexed=never$' "$STALE" || { echo "FAIL scenario 9b: a non-sha .indexed-sha must render as never"; cat "$STALE"; exit 1; }
+[ "$(grep -c '^reason=' "$STALE")" -eq 1 ] || { echo "FAIL scenario 9b: injected line reached the marker"; cat "$STALE"; exit 1; }
+rm -f "$PROJ/.keepitdry/.stale.tmp" "$PROJ/.keepitdry/.indexed-sha"
+
+echo "  scenario 10: a successful index — or one already current — clears .stale; the marker reads refreshing while kid runs..."
+: > "$STUB_KID_LOG"
 run_refresh
 [ ! -e "$STALE" ] || { echo "FAIL scenario 10: .stale should be removed after a successful index"; exit 1; }
+grep -q '^MARKER-DURING-INDEX reason=refreshing$' "$STUB_KID_LOG" || { echo "FAIL scenario 10: no refreshing marker while kid index ran"; cat "$STUB_KID_LOG"; exit 1; }
 printf 'reason=index-failed\nindexed=never\nbehind=?\nsince=2026-01-01T00:00:00Z\n' > "$STALE"
 run_refresh   # .indexed-sha already == HEAD → the no-op short-circuit must still clear it
 n=$(count_kid)
@@ -316,4 +330,4 @@ MOCK_GIT_DEFAULT=master run_refresh
 grep -q '^GIT fetch origin master' "$STUB_GIT_LOG" || { echo "FAIL scenario 12: expected fetch of origin master"; cat "$STUB_GIT_LOG"; exit 1; }
 grep -q '^GIT rev-parse origin/master' "$STUB_GIT_LOG" || { echo "FAIL scenario 12: expected rev-parse of origin/master"; cat "$STUB_GIT_LOG"; exit 1; }
 
-echo "  PASS (13 scenarios: empty-noop, missing-checkout-tolerated-not-alarmed, bootstrap-on-no-.keepitdry, index-current-is-a-noop, failed-index-retries-next-tick, new-commits-pull-then-index, unwritable-project-skipped-loudly, index-failure-is-not-success, per-repo-timeout-does-not-strand-the-sweep, stale-marker-written-with-since-preserved, stale-marker-cleared-on-success, diverged-and-fetch-failure-reported-never-reset, default-branch-from-origin-HEAD)"
+echo "  PASS (14 scenarios: empty-noop, missing-checkout-tolerated-not-alarmed, bootstrap-on-no-.keepitdry, index-current-is-a-noop, failed-index-retries-next-tick, new-commits-pull-then-index, unwritable-project-skipped-loudly, index-failure-is-not-success, per-repo-timeout-does-not-strand-the-sweep, stale-marker-written-with-since-preserved, marker-write-never-follows-a-committed-symlink, stale-marker-cleared-on-success, diverged-and-fetch-failure-reported-never-reset, default-branch-from-origin-HEAD)"
