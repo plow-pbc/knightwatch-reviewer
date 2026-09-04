@@ -567,6 +567,20 @@ echo "  format_kid_note: stale → ⚠️ Prior-art (KID) STALE — <detail>..."
 assert_kid_note "stale" "⚠️ Prior-art (KID) STALE — index at 64d1bb0, 140 commits behind for 58 days (index-timeout)" \
     "stale index named with sha/behind/age/reason" "index at 64d1bb0, 140 commits behind for 58 days (index-timeout)"
 
+# kid_stale_detail reads the marker plow-kid-refresh.sh writes and renders the
+# STALE detail; a `since` that won't parse renders "?" days, never a false 0.
+echo "  kid_stale_detail: real .stale marker → sha7/behind/days/reason..."
+_stale=$(mktemp)
+printf 'reason=index-timeout\nindexed=64d1bb0abcdef\nbehind=140\nsince=%s\n' \
+    "$(python3 -c "import datetime; print((datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=58)).strftime('%Y-%m-%dT%H:%M:%SZ'))")" > "$_stale"
+got=$(kid_stale_detail "$_stale")
+[ "$got" = "index at 64d1bb0, 140 commits behind for 58 days (index-timeout)" ] \
+    || { echo "FAIL: kid_stale_detail — got: $got"; exit 1; }
+printf 'reason=diverged\nindexed=never\nbehind=?\nsince=garbage\n' > "$_stale"
+[ "$(kid_stale_detail "$_stale")" = "index at never, ? commits behind for ? days (diverged)" ] \
+    || { echo "FAIL: kid_stale_detail unparseable since — got: $(kid_stale_detail "$_stale")"; exit 1; }
+rm -f "$_stale"
+
 echo "  format_kid_note: bogus → fail-fast..."
 assert_fails_with "bogus kid_ran" "kid_ran must be" -- format_kid_note "maybe"
 

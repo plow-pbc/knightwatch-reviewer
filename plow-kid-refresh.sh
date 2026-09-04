@@ -101,7 +101,7 @@ for NAME in "${!KID_PATHS[@]}"; do
     # bootstrap burned from the sweep's 20min budget every hour.
     if [ ! -w "$PROJECT" ]; then
         log "$NAME: $PROJECT not writable under this unit's sandbox — outside ReadWritePaths; re-run install.sh to widen it, then this repo will index"
-        mark_stale "$PROJECT" not-writable
+        FAILED=$((FAILED + 1))   # no marker possible here: the project is the thing we can't write
         continue
     fi
 

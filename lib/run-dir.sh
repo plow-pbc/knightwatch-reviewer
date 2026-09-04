@@ -592,6 +592,25 @@ format_kid_note() {
     esac
 }
 
+# kid_stale_detail MARKER_FILE
+#
+# Renders the STALE detail from the .keepitdry/.stale marker plow-kid-refresh.sh
+# writes (reason= / indexed= / behind= / since=). Days since `since` are
+# computed in python3 (portable — `date -d` is GNU-only, see the epoch→ISO
+# note in review-one-pr.sh) and render as "?" when it won't parse, never as
+# a false 0.
+kid_stale_detail() {
+    local marker="$1" reason indexed behind since days
+    reason=$(grep '^reason=' "$marker" | cut -d= -f2-)
+    indexed=$(grep '^indexed=' "$marker" | cut -d= -f2-)
+    behind=$(grep '^behind=' "$marker" | cut -d= -f2-)
+    since=$(grep '^since=' "$marker" | cut -d= -f2-)
+    days=$(python3 -c "import datetime,sys
+try: print((datetime.datetime.now(datetime.timezone.utc) - datetime.datetime.strptime(sys.argv[1], '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=datetime.timezone.utc)).days)
+except ValueError: print('?')" "$since")
+    printf 'index at %s, %s commits behind for %s days (%s)' "${indexed:0:7}" "$behind" "$days" "$reason"
+}
+
 # format_specialist_timeouts NAMES_CSV
 #
 # One header fragment naming the angle(s) that timed out (codex parallel-

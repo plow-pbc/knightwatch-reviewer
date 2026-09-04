@@ -31,7 +31,7 @@ _prior_art_symbols() {
 # _prior_art_grep SYMBOL WORKDIR SELF_SLUG — up to PRIOR_ART_MAX_HITS lines
 # "- owner/repo/path:line: text", excluding the PR's own repo, .git, lockfiles.
 _prior_art_grep() {
-    local sym="$1" root="$2/.siblings" self="$3" line rel text
+    local sym="$1" root="$2/.siblings" self="$3" line rel path lineno text
     [ -d "$root" ] || return 0
     grep -rnwF --exclude-dir=.git --exclude-dir=node_modules --exclude='*.lock' --exclude=package-lock.json \
          -- "$sym" "$root" 2>/dev/null \
@@ -39,9 +39,10 @@ _prior_art_grep() {
       | head -n "$PRIOR_ART_MAX_HITS" \
       | while IFS= read -r line; do
             rel="${line#"$root/"}"                 # owner/repo/path:NN:text
-            text="${rel#*:}"; text="${text#*:}"    # drop path and line number
-            text="${text#"${text%%[![:space:]]*}"}"
-            printf -- '- %s: %s\n' "${rel%%:"$text"}" "$text" | cut -c1-200
+            path="${rel%%:*}"; rel="${rel#*:}"
+            lineno="${rel%%:*}"; text="${rel#*:}"
+            text="${text#"${text%%[![:space:]]*}"}" # trim leading indentation
+            printf -- '- %s:%s: %s\n' "$path" "$lineno" "$text" | cut -c1-200
         done
 }
 

@@ -14,6 +14,7 @@ def retry_with_backoff(fn, attempts=3):
 result = fetch_widgets(limit=10)
 EOF
 printf 'def retry_with_backoff(): pass\n' > "$WORK/.siblings/acme/self/src/dup.py"   # self must be excluded
+printf 'class Client:\n    def retry_with_backoff(self):\n        pass\n' > "$WORK/.siblings/acme/libx/src/nested.py"   # indented hit
 mkdir -p "$WORK/.siblings/acme/libx/.git"; printf 'retry_with_backoff\n' > "$WORK/.siblings/acme/libx/.git/junk"
 
 DIFF=$(cat <<'EOF'
@@ -35,6 +36,8 @@ printf '%s\n' "$out" | grep -q '^## Sibling prior art — new symbols$' || { ech
 printf '%s\n' "$out" | grep -q '^### retry_with_backoff$' || { echo "FAIL: symbol"; printf '%s\n' "$out"; exit 1; }
 printf '%s\n' "$out" | grep -q '^- acme/libx/src/retry.py:1: def retry_with_backoff' || { echo "FAIL: citation"; printf '%s\n' "$out"; exit 1; }
 printf '%s\n' "$out" | grep -q '\.siblings/' && { echo "FAIL: leaked .siblings prefix"; exit 1; }
+# Indented matches (methods, nested defs — most real code) cite path:line then the trimmed text, once.
+printf '%s\n' "$out" | grep -qx -- '- acme/libx/src/nested.py:2: def retry_with_backoff(self):' || { echo "FAIL: indented citation"; printf '%s\n' "$out"; exit 1; }
 
 echo "  2: changed definition finds sibling references..."
 printf '%s\n' "$out" | grep -q '^## Sibling references — changed/removed symbols$' || { echo "FAIL: refs header"; printf '%s\n' "$out"; exit 1; }

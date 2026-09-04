@@ -1165,17 +1165,11 @@ if [ -n "$KID_PROJECT_PATH" ] && [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -n "
             BLOCK_COUNT=$(printf '%s\n' "$PRIOR_ART" | grep -c '^### New block')
             log "$PR_ID: kid surfaced prior-art for $BLOCK_COUNT block(s)"
         fi
-        STALE_MARKER="$KID_PROJECT_PATH/.keepitdry/.stale"
-        if [ -f "$STALE_MARKER" ]; then
-            # The lookup still ran — the answer is just from an old index
-            # (kid-refresh writes the marker; plow-kid-refresh.sh). Say so.
-            _reason=$(grep '^reason=' "$STALE_MARKER" | cut -d= -f2-)
-            _indexed=$(grep '^indexed=' "$STALE_MARKER" | cut -d= -f2-)
-            _behind=$(grep '^behind=' "$STALE_MARKER" | cut -d= -f2-)
-            _since=$(grep '^since=' "$STALE_MARKER" | cut -d= -f2-)
-            _days=$(( ( $(date +%s) - $(date -d "$_since" +%s 2>/dev/null || date +%s) ) / 86400 ))
+        # The lookup still ran — the answer is just from an index kid-refresh
+        # marked stale (plow-kid-refresh.sh writes the marker). Say so.
+        if [ -f "$KID_PROJECT_PATH/.keepitdry/.stale" ]; then
             KID_RAN=stale
-            KID_DETAIL="index at ${_indexed:0:7}, ${_behind} commits behind for ${_days} days (${_reason})"
+            KID_DETAIL=$(kid_stale_detail "$KID_PROJECT_PATH/.keepitdry/.stale")
             log "$PR_ID: KID index STALE — $KID_DETAIL"
         fi
     fi

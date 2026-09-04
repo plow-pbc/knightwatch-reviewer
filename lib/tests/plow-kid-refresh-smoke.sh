@@ -234,6 +234,8 @@ n=$(count_kid)
 grep -q 'not writable under this unit.s sandbox' "$LOG_FILE" || { echo "FAIL scenario 6: expected the sandbox-drift log line"; cat "$LOG_FILE"; exit 1; }
 grep -q 'install.sh' "$LOG_FILE" || { echo "FAIL scenario 6: log line must name the remedy (re-run install.sh)"; cat "$LOG_FILE"; exit 1; }
 [ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 6: refresh exited 0 despite a repo it could never index"; cat "$LOG_FILE"; exit 1; }
+# No marker is possible on an unwritable project — the log line + red unit carry it.
+[ ! -e "$PROJ/.keepitdry/.stale" ] || { echo "FAIL scenario 6: a .stale marker was written into an unwritable project"; exit 1; }
 
 # Scenario 7: kid itself fails → the repo has no fresh index, so the unit must
 # not report success. A missing index is invisible at review time (reviews just
