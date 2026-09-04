@@ -979,7 +979,7 @@ echo "  placeholder-reuse anti-spam scenario ok"
 # backs off instead of immediately re-claiming.
 echo "  scenario: codex 429 → backoff (quota-pause + 429 placeholder), not hard-abort..."
 
-# Full prompts so the pipeline reaches run_codex (Wave A intent) and the fake
+# Full prompts so the pipeline reaches run_codex (the intent stage) and the fake
 # codex's 429 lands — not an early build_prompt abort.
 cp -r "$PROJECT_ROOT/prompts/." "$HOME/.pr-reviewer/prompts/"
 

@@ -64,7 +64,7 @@ release_pr_lock() {
 # so we ration how many stacks run at once rather than let every in-flight
 # review fire one. Slots are GLOBAL — one pool across all repos — because
 # memory is a host-wide budget; a per-repo cap would let N repos each run
-# MAX_SLOTS stacks and overrun it. Wave A/B and the aggregator run
+# MAX_SLOTS stacks and overrun it. The LLM stages and the aggregator run
 # slot-free so cross-PR review parallelism stays intact.
 #
 # Why this replaced the old per-repo exclusive mutex: that mutex existed

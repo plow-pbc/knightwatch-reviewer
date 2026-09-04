@@ -35,7 +35,7 @@ def _reasoning_effort(diff_loc: int) -> str:
 
 
 # Per-kind codex model routing. The critic pass runs once per specialist
-# (doubling the Wave-B fan-out) and mostly resolves yes/no against evidence
+# (doubling the specialist fan-out) and mostly resolves yes/no against evidence
 # the specialist already cited, so it runs on the cheap/fast gpt-5.6-luna
 # tier; every other agent uses the flagship gpt-5.6-sol.
 DEFAULT_MODEL = "gpt-5.6-sol"
@@ -234,8 +234,8 @@ def _stage_scratch(dest: Path, data: bytes) -> None:
 
     Real, because an agent enumerating with `find -type f` can't see a
     symlink. Unlink-then-O_EXCL, because every call site runs after agents
-    have executed PR-controlled code in the workdir and Wave B specialists
-    run concurrently, so the entry may be a symlink or hard link pointing
+    have executed PR-controlled code in the workdir and specialists run
+    concurrently, so the entry may be a symlink or hard link pointing
     outside it: unlink drops the entry without touching its inode, O_EXCL
     refuses a peer's re-plant in the window after. That reproduces the
     `_relink` this replaced, whose `symlink_to` was race-safe for free
@@ -262,7 +262,7 @@ def _wait_with_watchdog(
     at the final answer, while all live tool/reasoning activity streams to
     stderr. Watching stdout alone false-kills any investigation agent whose
     work runs past the staleness threshold (cncorp/plow#700/#638/#692/#695
-    abort wave); a genuine deadlock goes silent on BOTH streams and is still
+    abort run); a genuine deadlock goes silent on BOTH streams and is still
     caught. run_codex opens both files before this call, so a missing-file
     stat here is a real invariant violation — let it raise, don't mask it.
 
@@ -298,10 +298,10 @@ def _wait_with_watchdog(
             # Two gates: per-Codex (elapsed under this attempt's own cap,
             # one staleness threshold of headroom) AND outer worker
             # (review.sh's `timeout $WORKER_TIMEOUT` wrap covers just test
-            # + Wave A + all earlier specialists, so wall-clock remaining
-            # can be tighter than per-Codex elapsed would suggest). Both
-            # must pass; otherwise the worker would be killed mid-retry
-            # before Wave B's abort can write _wave_b_timeouts.txt.
+            # + every earlier stage, so wall-clock remaining can be tighter
+            # than per-Codex elapsed would suggest). Both must pass; otherwise
+            # the worker would be killed mid-retry before the run's abort can
+            # write _wave_b_timeouts.txt.
             # WORKER_DEADLINE_EPOCH unset (tests outside the harness)
             # skips the worker gate.
             deadline_raw = os.environ.get("WORKER_DEADLINE_EPOCH")
@@ -334,7 +334,7 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
     _wait_with_watchdog), retries codex exactly once: log.txt is archived
     to log.attempt1.txt and any half-written output.md is unlinked first.
     Non-retryable kills (hard-cap, late-stale, worker-budget-exhausted)
-    and two-in-a-row hangs return 124 so Wave B's abort path fires."""
+    and two-in-a-row hangs return 124 so the run's degrade/abort path fires."""
     repo = Path(repo_dir)
     agent = Path(agent_dir)
     agent.mkdir(parents=True, exist_ok=True)
@@ -446,11 +446,11 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
             # quota-pause.
             (agent.parent.parent / "_codex_rate_limit.txt").write_text("codex 429 rate limit\n")
         elif _CODEX_CAPACITY_RE.search(capacity_err_line):
-            # Per-call capacity bounce: degrade THIS angle only and let Wave B
-            # complete the review without it — never abort the run or pause the
+            # Per-call capacity bounce: degrade THIS angle only and let the
+            # review complete without it — never abort the run or pause the
             # account (capacity is per-call, not account-wide, so no sentinel).
             # Return 124, the soft-degrade rc shared with specialist timeouts, so
-            # the existing Wave-B drop-angle path + run_specialist's crit_rc==124
+            # the existing drop-angle path + run_specialist's crit_rc==124
             # scratch-drop handle it with no new seam.
             log(f"{name}: model at capacity — degrading this angle (per-call transient)")
             return 124
@@ -695,7 +695,7 @@ def run_specialist(
     # contest: _validate_critic_output already requires the critic answer with
     # a bare 'No probes.' in that case, so the critic codex call is
     # deterministic waste. Synthesize the identical layered output and skip it
-    # — the single biggest Wave-B quota saving on clean PRs.
+    # — the single biggest specialist-phase quota saving on clean PRs.
     if not _probe_ids(spec_out):
         layered = spec_out + "\n\n---\n\nNo probes."
         (spec_agent_dir / "layered.md").write_text(layered)
@@ -709,7 +709,7 @@ def run_specialist(
     crit_agent_dir = run / "agents" / f"critic-{specialist}"
     crit_rc = run_codex(f"critic-{specialist}", str(repo), crit_prompt, str(crit_agent_dir), effort=effort)
     if crit_rc != 0:
-        # A timed-out critic (rc=124) no longer aborts the review — Wave B
+        # A timed-out critic (rc=124) no longer aborts the review — the review
         # completes. The raw, un-critiqued specialist output staged in scratch
         # would then be consumed by the aggregator as if it were a full angle,
         # even though the header reports the angle as skipped. Drop it so the
@@ -776,7 +776,7 @@ def _validate_intent(intent_out: Path) -> str:
     # Select the intent line rather than requiring it to be the ONLY non-blank
     # line. The strict count made any stray line fatal — and since policy.md is
     # prepended to every agent, a prelude edit that never touches intent.md
-    # could add one and abort every review on every repo before Wave B (it did,
+    # could add one and abort every review on every repo before the specialists (it did,
     # in cd955a9). Selecting retires that whole class: no prompt wording can
     # kill the pipeline. Still fails loud when no intent line is produced at
     # all, which is the contract violation actually worth aborting on.
@@ -1014,7 +1014,7 @@ def run_pipeline(
 
 def _trace_sigterm_source(signum: int, _frame: object) -> None:
     """SIGTERM forensics. On 2026-05-22 a SIGTERM aborted pipeline.py
-    mid-Wave-B and no log evidence pointed at the sender (OOM/oomd
+    mid-specialists and no log evidence pointed at the sender (OOM/oomd
     silent, no internal timeout matched). Capture parent pid+cmdline
     and TracerPid before exiting so the next mystery kill is
     debuggable. Re-exits 128+signum to preserve the previous bash-side

@@ -78,8 +78,9 @@ jq -n \
 . "$LIB_DIR/scratch.sh"
 . "$LIB_DIR/knightwatch-config.sh"
 . "$LIB_DIR/conventions.sh"
-# Pipeline shape (Wave A: intent ∥ dead-code-search → Wave B: the SPECIALISTS
-# ∥ momentum-on-re-review → aggregator) is implemented in lib/pipeline.py.
+# Pipeline shape (intent ∥ dead-code-search ∥ just-test gate → the SPECIALISTS
+# as their inputs land, each → critic; ∥ momentum on re-review → aggregator) is
+# implemented in lib/pipeline.py.
 # Replay invokes it as a subprocess below after staging scratch inputs.
 
 WORK="$(mktemp -d)"

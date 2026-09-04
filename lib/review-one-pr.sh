@@ -389,7 +389,7 @@ $BOT_AI_AUTHOR_MARKER
 $BOT_PLACEHOLDER_MARKER
 "
 # Default placeholder body for any abort path; specific aborts (e.g. the
-# Wave B timeout branch in the pipeline block below) override this with
+# specialist-timeout branch in the pipeline block below) override this with
 # a more informative message before the EXIT trap fires. Single PATCH
 # lifecycle — cleanup_eyes is the only writer of the abort placeholder.
 EYES_ABORT_BODY="review aborted before completion — see knightwatch-reviewer logs; will retry on the next tick if the PR head hasn't moved."

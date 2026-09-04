@@ -284,7 +284,7 @@ class TestStageScratch(unittest.TestCase):
 
     def test_refuses_an_entry_re_planted_after_the_unlink(self):
         # The unlink covers a plant present on entry; O_EXCL covers the
-        # window after it, which is live — Wave B specialists run
+        # window after it, which is live — specialists run
         # concurrently, so a peer can re-plant there. Suppressing the unlink
         # simulates losing that race. FileExistsError, not OSError: only
         # O_EXCL's EEXIST should refuse, and a broader assert would pass on
@@ -389,7 +389,7 @@ class TestRunCodex(unittest.TestCase):
         whole pgrp (not just the direct child). Without killpg, codex's
         tool descendants reparent to PID 1 with reviewer credentials and
         disabled sandboxing — the security probe from the first review
-        round. The 124 propagates so Wave B's existing fail-loud abort
+        round. The 124 propagates so the run's existing fail-loud abort
         fires."""
         agent_dir = self._agent_dir("intent")
         mock_popen.side_effect = _make_codex_stub(plan={"intent": "TIMEOUT"})
@@ -458,7 +458,7 @@ class TestRunCodex(unittest.TestCase):
         whose work legitimately runs past the staleness threshold leaves
         log.txt frozen the whole time while err.txt grows continuously —
         watching log.txt alone kills a healthy, productive process (the
-        cncorp/plow#700/#638/#692/#695 abort wave). The watchdog must treat
+        cncorp/plow#700/#638/#692/#695 abort run). The watchdog must treat
         err.txt activity as liveness."""
         agent_dir = self._agent_dir("intent")
 
@@ -559,10 +559,10 @@ class TestRunCodex(unittest.TestCase):
     def test_stale_kill_does_not_retry_when_worker_budget_too_tight(self, mock_popen, mock_killpg):
         """The retry gate has two budget checks: per-Codex (elapsed under
         this attempt's cap) AND outer-worker (review.sh's WORKER_DEADLINE_EPOCH
-        env, which covers just test + Wave A + earlier specialists). If
+        env, which covers just test + every earlier stage). If
         per-Codex says fine but the outer worker is already nearly out of
         wall-clock, no retry — otherwise the worker `timeout` would fire
-        mid-retry before Wave B writes the sentinel."""
+        mid-retry before the run writes the sentinel."""
         agent_dir = self._agent_dir("intent")
         mock_popen.side_effect = lambda argv, **kwargs: FakePopen(
             returncode=-signal.SIGKILL, raise_timeout=True
@@ -582,7 +582,7 @@ class TestRunCodex(unittest.TestCase):
         """A stale-log kill that fires late in the per-specialist budget
         is NOT retryable: another full attempt at that point could push
         past review.sh's 90 min outer worker timeout with no margin left
-        for Wave B's abort to write its sentinel. The retryable predicate
+        for the run's abort to write its sentinel. The retryable predicate
         only fires when at least one staleness threshold's worth of
         budget remains."""
         agent_dir = self._agent_dir("intent")
@@ -1212,7 +1212,7 @@ class TestRunSpecialist(unittest.TestCase):
         critic to answer with a bare 'No probes.' in that case, so the critic
         codex call is deterministic waste. run_specialist must synthesize the
         layered output WITHOUT spending a codex call (the single biggest
-        Wave-B quota saving on clean PRs)."""
+        specialist-phase quota saving on clean PRs)."""
         mock_popen.side_effect = _make_codex_stub({
             "security": (0, "Surveyed the auth paths.\n\nNo probes.\n"),
         })
@@ -1508,9 +1508,9 @@ class TestRunPipeline(unittest.TestCase):
 
     @patch("pipeline.subprocess.Popen")
     def test_wave_a_runs_intent_and_dead_code_in_parallel(self, mock_popen):
-        """Wave A's intent + dead-code-search must run concurrently. Use
-        threading.Barrier(2): both stubs wait at the barrier — if Wave A
-        is serial, the first stub blocks alone and BrokenBarrierError
+        """intent + dead-code-search must run concurrently. Use
+        threading.Barrier(2): both stubs wait at the barrier — if they
+        are serialized, the first stub blocks alone and BrokenBarrierError
         fires, failing the pipeline. The latency win depends on this
         contract; pin it behaviorally."""
         barrier = threading.Barrier(2, timeout=5)
@@ -1537,9 +1537,9 @@ class TestRunPipeline(unittest.TestCase):
 
     @patch("pipeline.subprocess.Popen")
     def test_wave_b_runs_specialists_concurrently(self, mock_popen):
-        """Wave B's specialist fan-out must run concurrently. Pick two
+        """The specialist fan-out must run concurrently. Pick two
         deterministic specialists (security, shape) and gate them
-        on a shared Barrier(2). Serial Wave B regression → first stub
+        on a shared Barrier(2). A serial fan-out regression → first stub
         blocks alone → BrokenBarrierError → run fails."""
         barrier = threading.Barrier(2, timeout=5)
         def hit_barrier(name, _out_path):
@@ -2203,7 +2203,7 @@ class TestPipelineCLI(unittest.TestCase):
         sender (parent pid, parent cmdline, TracerPid) before re-raising
         so the next mystery kill is debuggable from the journal alone.
         Regression target: cncorp/plow#680 18:43:28 where a SIGTERM
-        aborted Wave B with no log evidence pointing at the sender.
+        aborted the specialists with no log evidence pointing at the sender.
 
         Approach: run a tiny harness that imports pipeline, installs
         the handler the same way main() does, then sleeps. SIGTERM the
@@ -2286,7 +2286,7 @@ class TestRealPromptsCompose(unittest.TestCase):
         The prelude is prepended to everything, so a policy edit can reach an
         agent whose role prompt it never touched — that is how a "you may read
         any file" grant leaked into the staged-inputs-only intent pre-pass. (A
-        prelude output directive once aborted every review before Wave B too;
+        prelude output directive once aborted every review before the specialists too;
         that class is retired in _validate_intent, which now selects the intent
         line instead of requiring it to be the only one, so this test fences
         reach and envelope only.) Asserted against the ASSEMBLED prompt: a
