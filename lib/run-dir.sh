@@ -608,6 +608,9 @@ kid_index_behind() {
     local project="$1" indexed head behind
     head=$(git -c safe.directory="$project" -C "$project" rev-parse HEAD 2>/dev/null) || return 0
     indexed=$(head -c 40 "$project/.keepitdry/.indexed-sha" 2>/dev/null)
+    # Same trust boundary as write_marker in plow-kid-refresh.sh: the file is
+    # author-shaped, so anything but a sha reads as never indexed.
+    [[ "$indexed" =~ ^[0-9a-f]{7,40}$ ]] || indexed=""
     [ "$indexed" = "$head" ] && return 0
     behind=$(git -c safe.directory="$project" -C "$project" rev-list --count "${indexed:+$indexed..}HEAD" 2>/dev/null || echo "?")
     local short="${indexed:0:7}"
