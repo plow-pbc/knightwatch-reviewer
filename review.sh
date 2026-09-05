@@ -138,7 +138,7 @@ refresh_queue() {
     local TICK_FETCHED_AT_ISO REPO_SLUG_FOR_GATE KNOWN_SHA
     local FORCE_REVIEW FORCE_WHOLE_PR TRIGGER_USER TRIGGER_BODY
     local REVIEWED_AT_ISO COMMENTS_JSON WHOLE_TRIGGER INCREMENTAL_TRIGGER
-    local TRIGGER_JSON LAST_COMMIT_DATE LAST_COMMIT_TS AGE_SECS spec
+    local TRIGGER_JSON LAST_COMMIT_DATE LAST_COMMIT_TS AGE_SECS spec WAIT_SINCE
     local PR_UPDATED_AT SEEN_UPDATED_FILE LAST_SEEN_UPDATED_AT
     local DECLINED_ALREADY DECLINE_ERR DECLINE_HEADER LIVE_SHA
     while IFS= read -r PR_JSON; do
@@ -619,6 +619,22 @@ A maintainer with push access can unblock it by posting \`/${BOT_CMD_PREFIX}-rev
             continue
         fi
 
+        # Aging key — how long this PR has been waiting for a worker. The queue
+        # is served oldest-first (write_queue sorts on it), which is the whole
+        # fairness model: served depth is only ever ~live-worker-count, since
+        # every worker restarts its walk at position 0 each tick, so anything
+        # ranked by recency instead of age starves below that cutoff (#247,
+        # #253). A triggered PR waits since its earliest unserved trigger — a
+        # later comment must not push it back — otherwise since the PR's last
+        # event (updatedAt; the enumeration time if the search omitted it).
+        WAIT_SINCE=""
+        if [ "$FORCE_REVIEW" = "true" ]; then
+            WAIT_SINCE=$(printf '%s' "$COMMENTS_JSON" |
+                jq -r --arg since "$REVIEWED_AT_ISO" --arg cmd_prefix "$BOT_CMD_PREFIX" \
+                    "$JQ_ASKS"'[.[] | select(.created_at > $since and (asks_body($cmd_prefix + "-review") or asks_body($cmd_prefix + "-update-review"))) | .created_at] | min // empty')
+        fi
+        [ -n "$WAIT_SINCE" ] || WAIT_SINCE="${PR_UPDATED_AT:-$TICK_FETCHED_AT_ISO}"
+
         # Capture the trigger comment BODY into the spec (not a tmp file) so
         # any consuming container can materialize .codex-scratch/trigger-comment.md
         # locally at dispatch. The trust gate already cleared TRIGGER_BODY to ""
@@ -628,11 +644,11 @@ A maintainer with push access can unblock it by posting \`/${BOT_CMD_PREFIX}-rev
             --arg branch "$PR_BRANCH" --arg title "$PR_TITLE" \
             --argjson force "$([ "$FORCE_WHOLE_PR" = true ] && echo true || echo false)" \
             --arg tuser "$TRIGGER_USER" --arg tbody "$TRIGGER_BODY" \
-            --arg tick "$TICK_FETCHED_AT_ISO" \
+            --arg tick "$TICK_FETCHED_AT_ISO" --arg since "$WAIT_SINCE" \
             --arg rlogin "$REQUESTER_LOGIN" \
             '{repo:$repo, pr_num:$pr_num, sha:$sha, branch:$branch, title:$title,
               force_whole_pr:$force, requester_login:$rlogin,
-              trigger_user:$tuser, trigger_body:$tbody, tick_at:$tick}')
+              trigger_user:$tuser, trigger_body:$tbody, tick_at:$tick, since:$since}')
         specs+=("$spec")
     done < <(echo "$ALL_PRS" | jq -c '.[]')
 

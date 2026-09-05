@@ -28,12 +28,15 @@ queue_needs_refresh() {
     [ "$(( $3 - refreshed ))" -ge "$2" ]
 }
 
-# write_queue STATE_DIR NOW_EPOCH SPECS_JSON — atomically write the queue.
+# write_queue STATE_DIR NOW_EPOCH SPECS_JSON — atomically write the queue,
+# ordered oldest-waiting first on each spec's `since` (ISO 8601, lexically
+# sortable). Consumers walk from the head, so this order IS the scheduling
+# policy: age, never recency or repo name (#247, #253).
 write_queue() {
     local f tmp; f=$(queue_path "$1")
     tmp=$(mktemp "${TMPDIR:-/tmp}/queue.XXXXXX")
     if jq -n --argjson now "$2" --argjson specs "$3" \
-            '{refreshed_at:$now, specs:$specs}' > "$tmp"; then
+            '{refreshed_at:$now, specs:($specs | sort_by(.since))}' > "$tmp"; then
         mv -f "$tmp" "$f"
     else
         rm -f "$tmp"; return 1

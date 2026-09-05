@@ -509,6 +509,14 @@ if ! grep -qF "trigger_file=$STATE_DIR/tmp/pr-review-trigger" "$LOG_FILE"; then
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
+# The queue ages a triggered PR from its trigger, not from the PR's later
+# updatedAt (the stub stamps one newer than NOW_ISO) — a comment landing after
+# the request must not push the PR back down the queue (#247).
+since=$(jq -r '.specs[0].since' "$STATE_DIR/queue.json")
+if [ "$since" != "$NOW_ISO" ]; then
+    echo "FAIL scenario 3: expected queue since=$NOW_ISO (the trigger's created_at), got $since"
+    exit 1
+fi
 
 # Scenario 4 (bot self-trigger filter): same SHA, comment whose body
 # carries the auto-post marker → no dispatch. The bot's own posted review
