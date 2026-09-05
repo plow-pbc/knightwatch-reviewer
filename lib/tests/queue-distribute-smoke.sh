@@ -11,6 +11,9 @@
 #      floor regardless of queue/lock state (the removed AND-gate starved here).
 #   E. Floor cadence — empty queue: fresh→no refetch, stale→refetch (the floor
 #      is the only refresh trigger; idle discovers new PRs on it, not before).
+#   G. Aging order — the refreshed queue is served oldest-waiting first: the
+#      PR whose updatedAt is older heads the queue regardless of the order the
+#      enumeration returned it in (#247, #253).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -26,7 +29,7 @@ declare -A KID_PATHS=()
 CONF
 export HOME="$TMPDIR_BASE/home"; mkdir -p "$HOME/.local/bin"; export PATH="$HOME/.local/bin:$PATH"
 
-# gh stub: log every call; two open PRs (one per repo), no comments.
+# gh stub: log every call; two open PRs (one per repo, trusted author), no comments.
 GH_LOG="$TMPDIR_BASE/gh-calls.log"; export GH_LOG
 cat > "$HOME/.local/bin/gh" <<'STUB'
 #!/bin/bash
@@ -34,12 +37,12 @@ echo "$*" >> "$GH_LOG"
 if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
     repo=""; for ((i=1;i<=$#;i++)); do [ "${!i}" = "--repo" ] && { j=$((i+1)); repo="${!j}"; }; done
     case "$repo" in
-        cncorp/plow)         echo '[{"number":1,"title":"P1","headRefName":"f1","headRefOid":"aaa111"}]';;
-        cncorp/plow-content) echo '[{"number":2,"title":"P2","headRefName":"f2","headRefOid":"bbb222"}]';;
+        cncorp/plow)         echo '[{"number":1,"title":"P1","headRefName":"f1","headRefOid":"aaa111","updatedAt":"2026-05-29T02:00:00Z","author":{"login":"dev"}}]';;
+        cncorp/plow-content) echo '[{"number":2,"title":"P2","headRefName":"f2","headRefOid":"bbb222","updatedAt":"2026-05-29T01:00:00Z","author":{"login":"dev"}}]';;
         *) echo '[]';;
     esac
 elif [ "$1" = "api" ]; then
-    for arg in "$@"; do case "$arg" in */issues/*/comments*) echo '[]'; exit 0;; */pulls/*/commits*) echo '2020-01-01T00:00:00Z'; exit 0;; esac; done
+    for arg in "$@"; do case "$arg" in */issues/*/comments*) echo '[]'; exit 0;; */pulls/*/commits*) echo '2020-01-01T00:00:00Z'; exit 0;; */collaborators/*/permission) echo write; exit 0;; esac; done
     echo "{}"
 else echo "{}"; fi
 STUB
@@ -154,6 +157,16 @@ write_queue "$STATE_DIR" "$STALE_TS" '[]'
 e_stale=$(gh_enumerate_calls)
 [ "$e_stale" -ge 1 ] || { echo "FAIL E: stale empty (idle) queue did NOT refetch ($e_stale) — the floor must refresh an idle queue so new PRs are discovered"; cat "$GH_LOG"; exit 1; }
 echo "  OK E"
+
+# --- G. aging order — enumeration lists cncorp/plow first (newer updatedAt),
+#        cncorp/plow-content second (older). The written queue must lead with
+#        the older one: position in the queue is age, not enumeration order. ---
+echo "  G: aging order — older updatedAt heads the refreshed queue..."
+rm -rf "$STATE_DIR/queue.json" "$STATE_DIR/seen-updated"   # a prior scenario's watermark would idle-skip the PRs
+run_review
+head_repo=$(jq -r '.specs[0].repo' "$STATE_DIR/queue.json")
+[ "$head_repo" = "cncorp/plow-content" ] || { echo "FAIL G: expected the older PR (cncorp/plow-content) at the head of the queue, got $head_repo"; jq . "$STATE_DIR/queue.json"; exit 1; }
+echo "  OK G"
 
 # --- F / F3. mid-tick claim-stop, one runner over two stop-states -------------
 # A worker that trips a stop-state must stop review.sh claiming the REST of the
