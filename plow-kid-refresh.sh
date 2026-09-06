@@ -124,6 +124,18 @@ for NAME in "${!KID_PATHS[@]}"; do
 
     BRANCH=$(default_branch)
     if ! git fetch origin "$BRANCH" --quiet 2>>"$LOG_FILE"; then
+        # An org repo with no commits yet clones fine — gh leaves a valid .git
+        # with an unborn HEAD — and then fails this fetch every hour: the
+        # default branch the API reports has never been pushed, so there is no
+        # ref to fetch. That is "nothing here yet", not an index that went
+        # stale, so it joins the missing-checkout skip above as tolerated and
+        # untallied; it self-heals on the repo's first push. ls-remote must
+        # SUCCEED and print nothing — a network or auth failure exits non-zero
+        # and still reaches the fetch-failed tally below.
+        if REMOTE_HEADS=$(git ls-remote --heads origin 2>>"$LOG_FILE") && [ -z "$REMOTE_HEADS" ]; then
+            log "$NAME: upstream has no branches yet — nothing to index, skipping"
+            continue
+        fi
         log "$NAME: git fetch origin $BRANCH failed — skipping"
         mark_stale "$PROJECT" fetch-failed
         continue
