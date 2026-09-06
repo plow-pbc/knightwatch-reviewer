@@ -68,6 +68,10 @@ case "$1" in
     pull)         exit "${MOCK_GIT_PULL_EXIT:-0}" ;;
     symbolic-ref) echo "refs/remotes/origin/${MOCK_GIT_DEFAULT:-main}" ;;
     rev-list)     echo "${MOCK_GIT_BEHIND:-3}" ;;
+    # Defaults to one head, so a fetch failure stays a fetch failure. Set
+    # MOCK_GIT_LSREMOTE_OUT= (empty) for a repo with no commits yet, or
+    # MOCK_GIT_LSREMOTE_EXIT=1 for a remote that cannot be reached at all.
+    ls-remote)    printf '%s' "${MOCK_GIT_LSREMOTE_OUT-deadbeef refs/heads/main}"; exit "${MOCK_GIT_LSREMOTE_EXIT:-0}" ;;
     rev-parse)
         # Two callers: HEAD (LOCAL), origin/<branch> (REMOTE).
         case "$2" in
@@ -329,9 +333,23 @@ MOCK_GIT_FETCH_EXIT=1 run_refresh
 [ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 11: expected exit 1 on a fetch failure"; exit 1; }
 grep -q '^reason=fetch-failed$' "$STALE" || { echo "FAIL scenario 11: fetch-failed reason"; cat "$STALE"; exit 1; }
 
+echo "  scenario 11b: an upstream with no branches yet is tolerated, not tallied — and clears the marker a prior sweep left..."
+# Deliberately NOT cleared first: scenario 11 just left reason=fetch-failed here,
+# which is exactly the state every pre-fix sweep wrote for an empty repo. The
+# recovery transition is the assertion — a green unit that still leaves the
+# marker has the review worker posting KID STALE forever.
+[ -f "$STALE" ] || { echo "FAIL scenario 11b: expected scenario 11's fetch-failed marker to carry in"; exit 1; }
+MOCK_GIT_FETCH_EXIT=1 MOCK_GIT_LSREMOTE_OUT= run_refresh
+[ "$REFRESH_RC" -eq 0 ] || { echo "FAIL scenario 11b: an empty upstream reddened the unit — permanent alarm buries real staleness"; cat "$LOG_FILE"; exit 1; }
+[ ! -e "$STALE" ] || { echo "FAIL scenario 11b: an empty upstream must CLEAR the marker — a green unit that leaves it still posts KID STALE"; cat "$STALE"; exit 1; }
+grep -q 'no branches yet' "$LOG_FILE" || { echo "FAIL scenario 11b: expected the empty-upstream reason in the log"; cat "$LOG_FILE"; exit 1; }
+MOCK_GIT_FETCH_EXIT=1 MOCK_GIT_LSREMOTE_EXIT=1 run_refresh   # unreachable remote, not an empty one
+[ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 11b: an unreachable remote must still redden the unit"; cat "$LOG_FILE"; exit 1; }
+grep -q '^reason=fetch-failed$' "$STALE" || { echo "FAIL scenario 11b: fetch-failed reason"; cat "$STALE"; exit 1; }
+
 echo "  scenario 12: default branch comes from origin/HEAD, not a hardcoded main..."
 MOCK_GIT_DEFAULT=master run_refresh
 grep -q '^GIT fetch origin master' "$STUB_GIT_LOG" || { echo "FAIL scenario 12: expected fetch of origin master"; cat "$STUB_GIT_LOG"; exit 1; }
 grep -q '^GIT rev-parse origin/master' "$STUB_GIT_LOG" || { echo "FAIL scenario 12: expected rev-parse of origin/master"; cat "$STUB_GIT_LOG"; exit 1; }
 
-echo "  PASS (14 scenarios: empty-noop, missing-checkout-tolerated-not-alarmed, bootstrap-on-no-.keepitdry, index-current-is-a-noop, failed-index-retries-next-tick, new-commits-pull-then-index, unwritable-project-skipped-loudly, index-failure-is-not-success, per-repo-timeout-does-not-strand-the-sweep, stale-marker-written-with-since-preserved, marker-write-never-follows-a-committed-symlink, stale-marker-cleared-on-success, diverged-and-fetch-failure-reported-never-reset, default-branch-from-origin-HEAD)"
+echo "  PASS (15 scenarios: empty-noop, missing-checkout-tolerated-not-alarmed, bootstrap-on-no-.keepitdry, index-current-is-a-noop, failed-index-retries-next-tick, new-commits-pull-then-index, unwritable-project-skipped-loudly, index-failure-is-not-success, per-repo-timeout-does-not-strand-the-sweep, stale-marker-written-with-since-preserved, marker-write-never-follows-a-committed-symlink, stale-marker-cleared-on-success, diverged-and-fetch-failure-reported-never-reset, empty-upstream-tolerated-and-marker-cleared, default-branch-from-origin-HEAD)"
