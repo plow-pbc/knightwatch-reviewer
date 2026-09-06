@@ -133,6 +133,11 @@ for NAME in "${!KID_PATHS[@]}"; do
         # SUCCEED and print nothing — a network or auth failure exits non-zero
         # and still reaches the fetch-failed tally below.
         if REMOTE_HEADS=$(git ls-remote --heads origin 2>>"$LOG_FILE") && [ -z "$REMOTE_HEADS" ]; then
+            # Clear whatever a prior sweep left: every tick before this fix wrote
+            # reason=fetch-failed, and the review worker reads the marker, not the
+            # unit's exit status — so keeping it would turn the unit green while
+            # the repo's first PR still posted "KID STALE ... for N days".
+            rm -f "$PROJECT/.keepitdry/.stale"
             log "$NAME: upstream has no branches yet — nothing to index, skipping"
             continue
         fi
