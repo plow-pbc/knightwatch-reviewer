@@ -263,9 +263,18 @@ format_review_scope() {
 # and builds it that way. Untags by tag, not id: a cache-hit twin carries two
 # tags and `docker rmi <id>` refuses a multi-repository image.
 #
+# Also reclaims what the `docker rm -fv` reap structurally cannot. Each review's
+# `just test` brings up a compose project named after its unique per-PR workdir,
+# stranding a network and its NAMED volumes (-v takes only anonymous ones) in a
+# dind that outlives them all. Networks are the load-bearing half: the default
+# address pools hold ~30, after which `network create` fails ("all predefined
+# address pools have been fully subnetted") and every later review on that
+# worker reports a red test gate belonging to no PR. Unconditional and safe —
+# the reap leaves nothing attached.
+#
 # Never fatal: reclaiming disk must not fail a review.
 SCENARIO_BUILD_CACHE_MAX_AGE_H=168
-prune_stale_scenario_images() {
+prune_stale_scenario_artifacts() {
     local repo_dir="$1" pr_num tag stale=()
     pr_num=$(basename "$repo_dir"); pr_num="${pr_num##*__}"
     while IFS= read -r tag; do
@@ -281,6 +290,8 @@ prune_stale_scenario_images() {
     docker image prune -f >/dev/null 2>&1 || log "$PR_ID: dangling image prune failed (non-fatal)"
     docker builder prune -f --filter "until=${SCENARIO_BUILD_CACHE_MAX_AGE_H}h" >/dev/null 2>&1 \
         || log "$PR_ID: build cache prune failed (non-fatal)"
+    docker network prune -f >/dev/null 2>&1 || log "$PR_ID: network prune failed (non-fatal)"
+    docker volume prune -af >/dev/null 2>&1 || log "$PR_ID: volume prune failed (non-fatal)"
 }
 
 # reap_test_user_processes
@@ -386,7 +397,7 @@ run_just_test() {
         orphans=$(docker ps -aq) && { [ -z "$orphans" ] || docker rm -fv $orphans >/dev/null; } \
             && mkdir -p "$scenario_shared" && find "$scenario_shared" -mindepth 1 -delete && chmod 1777 "$scenario_shared" \
             || { log "$PR_ID: FATAL — scenario-shared bridge reset failed (dind reap or bridge prep)"; exit 1; }
-        prune_stale_scenario_images "$repo_dir"
+        prune_stale_scenario_artifacts "$repo_dir"
         local rc=0
         # Keep the uv/pip package caches OFF the dind-shared volume: point them at the
         # test user's own HOME via UV_CACHE_DIR/PIP_CACHE_DIR (both override
