@@ -45,6 +45,7 @@ echo "docker \$*" >> "$d/docker.calls"
 # Image inventory for the scenario-image reclaim. __950 is the review under
 # test (its workdir basename is the compose project), __951 belongs to another
 # PR, python is a pulled base image.
+[ "\$1" = network ] && [ "\$2" = ls ] && seq 1 "\${DIND_NETS:-0}"
 if [ "\$1" = images ]; then
     echo "cncorp_plow__950-scenarios-plow-api:latest"
     echo "cncorp_plow__951-scenarios-plow-api:latest"
@@ -83,6 +84,12 @@ run_just_test /dev/null "$d/repo" "$d/log" 30s 5s
 [ ! -e "$d/sshared/plow-scenario-shared" ] || fail "stale bridge entries survived the per-run reset (issue #172 class)"
 [ "$(stat -c %a "$d/sshared")" = "1777" ]  || fail "bridge root not left mode 1777 after the reset"
 grep -q "docker rm -f" "$d/docker.calls" && fail "reap ran docker rm on a clean dind (no orphans — empty-args rm would abort every review)" || true
+# The reap must empty the dind, not just its containers — why, once, at
+# prune_stale_scenario_artifacts in lib/run-dir.sh.
+grep -q "network prune -f" "$d/docker.calls" \
+    || fail "leaked compose networks never pruned — the dind address pool exhausts and every later just test fails at compose up"
+grep -qE "volume prune .*(-a|--all)" "$d/docker.calls" \
+    || fail "named per-PR compose volumes never pruned — -v reclaims only anonymous ones, so db-data leaks GBs per review"
 grep -q "GH_TOKEN_VISIBLE=<unset>" "$d/log"            || fail "GH_TOKEN leaked into the test command env despite the env -i scrub"
 grep -q "DOCKER_HOST_VISIBLE=tcp://127.0.0.1:2375" "$d/log" || fail "DOCKER_HOST not preserved for the dind daemon"
 grep -q "XDG_CACHE_HOME_VISIBLE=$d/sshared" "$d/log" || fail "XDG_CACHE_HOME not steered to the bridge dir (nested-dind scenario token bridge missing)"
@@ -130,7 +137,7 @@ grep -q "GH_TOKEN_VISIBLE=secret-xyz" "$d/log2"        || fail "host path unexpe
 
 # --- scenario image reclaim -------------------------------------------------
 # Runs in the same preflight as the reap above, on a sandbox this run owns.
-# The selection contract is stated once, at prune_stale_scenario_images in
+# The selection contract is stated once, at prune_stale_scenario_artifacts in
 # lib/run-dir.sh; these cases pin its consequences.
 export REVIEWER_TEST_USER=reviewer-test
 install_docker_stub                          # earlier sections narrowed it
@@ -175,6 +182,17 @@ grep -q "GH_TOKEN_VISIBLE" "$d/log-prune-fail" \
     || fail "the review did not proceed past a failed reclaim"
 
 install_docker_stub                                                          # restore
+
+# --- address-pool headroom ---------------------------------------------------
+# The prunes above stop the leak that bricked three workers; this warning is what
+# names the NEXT one before it surfaces as a red test gate on an unrelated PR.
+: > "$d/docker.calls"
+out=$(DIND_NETS=25 run_just_test /dev/null "$d/cncorp_plow__950" "$d/log-nets-hi" 30s 5s 2>&1) || true
+grep -q "dind holds 25 networks" <<<"$out" \
+    || fail "no headroom warning with 25 of ~31 pool slots held — the next exhaustion is silent until it fails a PR"
+out=$(run_just_test /dev/null "$d/cncorp_plow__950" "$d/log-nets-lo" 30s 5s 2>&1) || true
+grep -q "dind holds" <<<"$out" \
+    && fail "headroom warning fired on a reclaimed dind — a per-review warning nobody can act on is noise" || true
 
 # --- reap_test_user_processes ------------------------------------------------
 # The uid switch can't happen in a unit test, so recording stubs assert the
