@@ -45,6 +45,7 @@ echo "docker \$*" >> "$d/docker.calls"
 # Image inventory for the scenario-image reclaim. __950 is the review under
 # test (its workdir basename is the compose project), __951 belongs to another
 # PR, python is a pulled base image.
+[ "\$1" = network ] && [ "\$2" = ls ] && seq 1 "\${DIND_NETS:-0}"
 if [ "\$1" = images ]; then
     echo "cncorp_plow__950-scenarios-plow-api:latest"
     echo "cncorp_plow__951-scenarios-plow-api:latest"
@@ -181,6 +182,17 @@ grep -q "GH_TOKEN_VISIBLE" "$d/log-prune-fail" \
     || fail "the review did not proceed past a failed reclaim"
 
 install_docker_stub                                                          # restore
+
+# --- address-pool headroom ---------------------------------------------------
+# The prunes above stop the leak that bricked three workers; this warning is what
+# names the NEXT one before it surfaces as a red test gate on an unrelated PR.
+: > "$d/docker.calls"
+out=$(DIND_NETS=25 run_just_test /dev/null "$d/cncorp_plow__950" "$d/log-nets-hi" 30s 5s 2>&1) || true
+grep -q "dind holds 25 networks" <<<"$out" \
+    || fail "no headroom warning with 25 of ~31 pool slots held — the next exhaustion is silent until it fails a PR"
+out=$(run_just_test /dev/null "$d/cncorp_plow__950" "$d/log-nets-lo" 30s 5s 2>&1) || true
+grep -q "dind holds" <<<"$out" \
+    && fail "headroom warning fired on a reclaimed dind — a per-review warning nobody can act on is noise" || true
 
 # --- reap_test_user_processes ------------------------------------------------
 # The uid switch can't happen in a unit test, so recording stubs assert the
