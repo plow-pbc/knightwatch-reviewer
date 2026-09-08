@@ -92,3 +92,22 @@ declare -A SOURCE_PATHS=(
 # to disable both whole-org review and auto-sync.
 #   e.g. ORGS=(your-org)   # review every repo in your-org
 ORGS=()
+
+# Authors whose PRs are reviewed even without push access — the operator's
+# STANDING VOUCH, made once here instead of a per-PR /<prefix>-review comment
+# from a maintainer.
+#
+# Keyed by "owner/repo" (that repo only) or bare "owner" (every repo under it);
+# the exact repo key is checked first, then the owner key. Values are
+# whitespace-separated GitHub logins, matched case-insensitively.
+#
+# READING ONLY, and that is the whole point: an allowlisted author's diff is
+# reviewed, but their code is never executed (no `.env` mirror, no `just test`),
+# they cannot approve, teach the corpus, or vouch for a THIRD author's PR, and
+# their comment prose is not staged as reviewer input. Every one of those gates
+# stays on live push access — grant push access if you want them.
+#
+# Operator-owned by construction: this file lives outside every repo it governs,
+# so no PR can allowlist its own author.
+#   e.g. declare -A TRUSTED_AUTHORS=([your-org]="octocat")
+declare -A TRUSTED_AUTHORS=()

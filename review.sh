@@ -133,7 +133,7 @@ refresh_queue() {
     # (jq '.[]' on [] emits nothing), and the single tail write handles the
     # 0-eligible case — one writer, not two copies of the same empty write.
     local PR_JSON REPO PR_NUM PR_TITLE PR_BRANCH PR_SHA PR_ID
-    local PR_AUTHOR AUTHOR_TRUST_RC AUTHOR_TRUSTED REQUESTER_TRUSTED _cand _cand_rc
+    local PR_AUTHOR AUTHOR_TRUST_RC AUTHOR_ADMISSIBLE REQUESTER_TRUSTED _cand _cand_rc
     local VOUCH_INDETERMINATE NOTICED_ALREADY NOTICE_ERR REQUESTER_LOGIN
     local TICK_FETCHED_AT_ISO REPO_SLUG_FOR_GATE KNOWN_SHA
     local FORCE_REVIEW FORCE_WHOLE_PR TRIGGER_USER TRIGGER_BODY
@@ -216,19 +216,32 @@ refresh_queue() {
             continue
         fi
 
-        # Author trust, derived once per surviving PR and passed to the worker
-        # rather than re-derived there. Below the idle-skip on purpose: a gate
-        # that needed trust to decide could not save the trust call, and that
-        # call is one uncached core-API request per PR per tick per container.
-        is_trusted_repo_author "$REPO" "$PR_AUTHOR"; AUTHOR_TRUST_RC=$?
-        # Tri-state (lib/auth.sh): 0 trusted, 1 untrusted, 2 INDETERMINATE. An
-        # indeterminate result must never collapse to "untrusted" — that would
-        # drop a genuinely-trusted author's PR on a throttled lookup.
-        if [ "$AUTHOR_TRUST_RC" -eq 2 ]; then
-            log "$PR_ID: trust check deferred — API error ($PR_AUTHOR); retrying next tick"
-            continue
+        # Can this author's PR be READ without anyone asking? ADMISSIBLE, never
+        # "trusted": nothing derived here may gate execution — the worker
+        # recomputes that live from push access (RT8), and this file is not
+        # allowed to serialize either boolean into the queue.
+        #
+        # Below the idle-skip on purpose: a gate that needed this to decide
+        # could not save the trust call, and that call is one uncached core-API
+        # request per PR per tick per container.
+        #
+        # The manifest allowlist goes first because it is free and definitive —
+        # so it costs nothing on the common path, and an allowlisted author is
+        # still reviewed while the collaborators endpoint is throttling, where
+        # the tri-state check below would defer.
+        if is_allowlisted_author "$REPO" "$PR_AUTHOR"; then
+            AUTHOR_ADMISSIBLE=true
+        else
+            is_trusted_repo_author "$REPO" "$PR_AUTHOR"; AUTHOR_TRUST_RC=$?
+            # Tri-state (lib/auth.sh): 0 trusted, 1 untrusted, 2 INDETERMINATE. An
+            # indeterminate result must never collapse to "untrusted" — that would
+            # drop a genuinely-trusted author's PR on a throttled lookup.
+            if [ "$AUTHOR_TRUST_RC" -eq 2 ]; then
+                log "$PR_ID: trust check deferred — API error ($PR_AUTHOR); retrying next tick"
+                continue
+            fi
+            AUTHOR_ADMISSIBLE=false; [ "$AUTHOR_TRUST_RC" -eq 0 ] && AUTHOR_ADMISSIBLE=true
         fi
-        AUTHOR_TRUSTED=false; [ "$AUTHOR_TRUST_RC" -eq 0 ] && AUTHOR_TRUSTED=true
 
         FORCE_REVIEW=false
         FORCE_WHOLE_PR=false
@@ -239,7 +252,7 @@ refresh_queue() {
         # this the override could never be seen — the comment carrying it would
         # never be read. The idle-skip above keeps it cheap: an unreviewable PR is
         # only re-read when its updatedAt moves, which is when a vouch arrives.
-        if [ -n "$KNOWN_SHA" ] || [ "$AUTHOR_TRUSTED" != true ]; then
+        if [ -n "$KNOWN_SHA" ] || [ "$AUTHOR_ADMISSIBLE" != true ]; then
             # Cutoff timestamp sources from runs/ (meta.json.started_at)
             # — single source of truth since state.json was retired in
             # PR #38. started_at is stamped at run init (line ~165 of
@@ -497,7 +510,14 @@ This request stays open and fires automatically on your next push. To force a wh
 
         # Requester trust — ONE value decides whether this PR is reviewed at
         # all. Opening the PR is the author's implicit request; a
-        # /<prefix>-review from a push-access user is an additional one.
+        # /<prefix>-review from a push-access user is an additional one; and the
+        # manifest's TRUSTED_AUTHORS entry is that same vouch, made once in
+        # operator config instead of per PR (folded in via AUTHOR_ADMISSIBLE
+        # above). All three admit READING; none of them grants execution.
+        #
+        # The allowlist admits its own author only. The vouch scan below stays
+        # on live push access, so an allowlisted contributor cannot turn around
+        # and admit a third party's PR.
         #
         # OR over that set, never "latest wins": an untrusted drive-by must not
         # suppress a trusted author's review, nor nullify a maintainer's vouch.
@@ -518,7 +538,7 @@ This request stays open and fires automatically on your next push. To force a wh
         #
         # Only asked when it can change the answer — a trusted author is
         # already a trusted requester.
-        REQUESTER_TRUSTED="$AUTHOR_TRUSTED"
+        REQUESTER_TRUSTED="$AUTHOR_ADMISSIBLE"
         # WHO asked, not merely that someone did — the worker re-verifies this
         # login at admission, because the queue can wait and push access can be
         # revoked in the gap. The author is the implicit requester when trusted.

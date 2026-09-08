@@ -192,6 +192,23 @@ REPOS=(
 
 The host auxiliary timers pick it up on their next tick. **The containerized review loop reads a separate manifest** — `docker/secrets/manifest/repos.conf` (the `manifest/` **directory** is mounted at `/shared/manifest`), polled every 30s — so edit *that* copy to change which repos the fleet reviews. The edit applies within one enumerate window (`ENUMERATE_SECS`, 60s) — no restart, no re-render. Not instantly: `queue.json` is refreshed on that floor and consumed every 30s, so specs enumerated just before the edit can still dispatch for up to a window afterward. It is a directory mount rather than a file mount deliberately: docker pins a file bind-mount to its source **inode**, and ordinary editors write a temp file and rename over the original, so a file mount would leave every container serving the pre-edit manifest while the host file looked correct — silently, with no error. Set `ORGS` there for whole-org coverage; reserve `REPOS` for specific repos in partially-tracked orgs. `SOURCE_PATHS` in the same file enables cross-repo grep/search-roots and `KID_PATHS` wires kid-prior-art lookup. Per-repo **reviewer policy** — the operating point and any repo-specific calibration — lives in each tracked repo's root `REVIEW.md`; the **universal review policy** (security fence, voice posture, decline rules, review-loop rules) lives in [`prompts/policy.md`](prompts/policy.md) and is prepended to every agent by `lib/pipeline.py:build_prompt`, so no repo carries it (roborev gets the same rules from `seed-auto-roborev`'s installed `sync-review-config.sh`/`_src_rubric`); per-repo **pipeline mechanics** — sibling allowlist, dead-code command, strict-typing command — stay in that repo's `.knightwatch/` directory. Both are read from the base branch via `lib/knightwatch-config.sh`, so PR-head edits don't take effect until merged. A repo with no `REVIEW.md` gets the org default from `default_review_md`. See the inline comments in [`repos.conf.example`](repos.conf.example) for shapes and `lib/tracked-repos.sh` for the loader.
 
+### Author allowlist
+
+Reviews are gated on **push access** (see [Use on a PR](#use-on-a-pr)). A recurring outside contributor would otherwise need a maintainer to type `/srosro-review` on every PR they open. `TRUSTED_AUTHORS` in the same manifest makes that vouch once:
+
+```sh
+declare -A TRUSTED_AUTHORS=(
+    ["your-org"]="octocat"                    # every repo in the org
+    ["other-org/just-this-repo"]="hubot"      # one repo
+)
+```
+
+The exact `owner/repo` key is checked first, then the bare `owner`; values are whitespace-separated logins, matched case-insensitively. Like every other manifest edit, it applies within one enumerate window (60s) with no restart.
+
+It is a **standing vouch, and nothing more**: an allowlisted author's PRs are admitted for **reading**, and their code is still never executed — no `.env` mirror, no `just test`. They also cannot `/srosro-approve`, teach the corpus via `/srosro-memorize`, vouch for a *third* author's PR, or have their comment prose staged as reviewer input. Every one of those stays on live push access. If you want a contributor to have those, grant them push access — that is what push access is.
+
+The list is operator-owned by construction: it lives in the reviewer's manifest, outside every repo it governs, so no PR can allowlist its own author.
+
 ### kid prior-art
 
 A DRY pre-pass: before the specialists run, `lib/review-one-pr.sh` runs [`kid`](https://github.com/srosro/knightwatch-kid) (`keepitdry`) against a semantic index of your canonical code and surfaces existing code similar to each new block, so the reviewer can flag duplication. It's **opt-in** — a no-op unless a repo has a `KID_PATHS` entry.
@@ -202,7 +219,7 @@ The refresh marks a repo it could not bring up to date with `<repo>/.keepitdry/.
 
 ## Use on a PR
 
-Reviews fire on PR open and again after a period of idle (the `STABLE_SECS` stability window) — for PRs whose **author has push access**. A PR from a contributor without push access is not reviewed until someone with push access asks: the reviewer posts a one-time comment explaining that, and any collaborator **with push access** can unblock it by posting `/srosro-review` as the **first line** of a comment (framing after it is kept and shapes the review; a mention inside prose or a fenced example deliberately does not vouch). The vouch admits the PR for **reading** only; the contributor's code is still never executed (no `.env` mirror, no `just test`), and it is re-verified at admission, so a maintainer who loses push access stops vouching. To force a fresh review on the new head, post a slash command:
+Reviews fire on PR open and again after a period of idle (the `STABLE_SECS` stability window) — for PRs whose **author has push access**. A PR from a contributor without push access is not reviewed until someone with push access asks: the reviewer posts a one-time comment explaining that, and any collaborator **with push access** can unblock it by posting `/srosro-review` as the **first line** of a comment (framing after it is kept and shapes the review; a mention inside prose or a fenced example deliberately does not vouch). The vouch admits the PR for **reading** only; the contributor's code is still never executed (no `.env` mirror, no `just test`), and it is re-verified at admission, so a maintainer who loses push access stops vouching. A contributor who needs this every time belongs in the manifest's `TRUSTED_AUTHORS` instead — the same vouch, made once (see [Author allowlist](#author-allowlist)). To force a fresh review on the new head, post a slash command:
 
 > **Command prefix:** all bot commands use the prefix from `BOT_CMD_PREFIX` (default: `srosro`). Set it in `~/.pr-reviewer/config.env` to fork-customize. Examples below use the default.
 
