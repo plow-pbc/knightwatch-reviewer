@@ -1453,6 +1453,57 @@ if ! grep -q "skipping .env mirror" "$LOG10C"; then
     exit 1
 fi
 
+# ===== Scenarios 10e/10f: the manifest allowlist admits READING, for its own
+# author only =====
+# The behavioral half of the allowlist's two security properties. RT10 in
+# orchestrator-skip-smoke keeps only the fences with no runtime harness (the
+# approve/memorize pollers); these two run the real worker:
+#   10e — an allowlisted author with NO push access is reviewed, and nothing
+#         executes. A regression that let admission-by-allowlist leak into the
+#         execution verdict would produce a run dir AND mirror the secret.
+#   10f — the same allowlist entry does NOT admit a THIRD party's PR. The entry
+#         says "this person's own PRs may be read", so a maintainer who vouched
+#         while they had push access must stop admitting that PR once revoked —
+#         drop the `= "$PR_AUTHOR"` conjunct and this goes red.
+# The stub's PR author is test-user, so the requester arg is what makes these
+# two differ; neither sets GH_STUB_TRUSTED_USERS, so push access is denied.
+echo "  scenario: an allowlisted author is reviewed, and still executes nothing..."
+STATE10E="$TMPDIR/state-10e"
+seed_state_dir "$STATE10E"
+git clone -q "$GITHUB_BARE10" "$STATE10E/repos/test-org_probe-repo"
+REPO_ENV10E="$TMPDIR/repo-env-10e"
+mkdir -p "$REPO_ENV10E/test-org_probe-repo"
+echo "ANTHROPIC_API_KEY=sk-test-live-fixture" > "$REPO_ENV10E/test-org_probe-repo/.env.test-live"
+write_gh_stub "$HOME/.local/bin/gh" "main" "$PR_SHA10"
+MOCK_ALLOWLISTED="test-user" REPO_ENV_DIR="$REPO_ENV10E" run_worker_in_state "$STATE10E" \
+    "test-org/probe-repo" "10" "$PR_SHA10" "feat/test" "Live-cred PR" "false" "test-user" || true
+RUN_DIR10E=$(find "$STATE10E/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
+[ -n "$RUN_DIR10E" ] \
+    || { echo "FAIL: scenario 10e — no run dir; the manifest allowlist did not admit its own author"; [ -f "$STATE10E/orchestrator.log" ] && cat "$STATE10E/orchestrator.log"; exit 1; }
+LOG10E="$RUN_DIR10E/run.log"
+if grep -qE "mirrored [0-9]+ env file\(s\) from canonical" "$LOG10E"; then
+    echo "FAIL: scenario 10e — .env mirror fired for an allowlisted author with no push access; the allowlist grants READING only"
+    tail -n 30 "$LOG10E"
+    exit 1
+fi
+grep -q "skipping .env mirror" "$LOG10E" \
+    || { echo "FAIL: scenario 10e — no skip line; the mirror gate did not run at all, so the absence above proves nothing"; tail -n 30 "$LOG10E"; exit 1; }
+
+echo "  scenario: an allowlisted THIRD PARTY does not admit someone else's PR..."
+STATE10F="$TMPDIR/state-10f"
+seed_state_dir "$STATE10F"
+git clone -q "$GITHUB_BARE10" "$STATE10F/repos/test-org_probe-repo"
+write_gh_stub "$HOME/.local/bin/gh" "main" "$PR_SHA10"
+MOCK_ALLOWLISTED="someuser" run_worker_in_state "$STATE10F" \
+    "test-org/probe-repo" "10" "$PR_SHA10" "feat/test" "Live-cred PR" "false" "someuser"
+SKIP_EC10F=$?
+# Run dir first: it is the property under test, so a regression reports as
+# "admitted a third party" rather than as whatever the admitted run failed on
+# several stages later.
+assert_no_probe_run_dir "$STATE10F" "scenario 10f — an allowlist entry admitted a THIRD party's PR to sandbox-bypassed reading"
+[ "$SKIP_EC10F" -eq 0 ] \
+    || { echo "FAIL: scenario 10f — worker exited $SKIP_EC10F (expected 0 = silent skip); a revoked voucher is 'nobody asked', not a deferral"; exit 1; }
+
 # ===== Scenario 11: pre-spend stale-head gate — mismatch → abort before specialists =====
 # The ONLY coverage of the pre-spend gate (the decision is inline in the
 # worker): when gh reports a headRefOid that differs from the
@@ -1840,4 +1891,4 @@ grep -q -- "-u reviewer-test" "$REAP19" \
     || { echo "FAIL: scenario 19 — aborted on the missing row without reaping; a detached test descendant outlives the run"; exit 1; }
 echo "  scenario 19 (a missing outcome row still reaps the shared uid) ok"
 
-echo "  PASS (19 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + requester-gate skip + metadata-lookup guard pre-allocation abort + placeholder reuse anti-spam + codex 429 backoff + usage-cap quota placeholder w/ pool status + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort + whole-PR re-review keeps memory + test clone isolation/overlap/timings + test-job fail-fast still reports + missing outcome row still reaps)"
+echo "  PASS (21 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + requester-gate skip + metadata-lookup guard pre-allocation abort + placeholder reuse anti-spam + codex 429 backoff + usage-cap quota placeholder w/ pool status + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort + whole-PR re-review keeps memory + test clone isolation/overlap/timings + allowlisted author reviewed w/o execution + allowlist admits no third party + test-job fail-fast still reports + missing outcome row still reaps)"

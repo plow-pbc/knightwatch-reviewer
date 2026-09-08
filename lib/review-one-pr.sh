@@ -219,12 +219,30 @@ fi
 # rc=1 (definitively no access) → skip, as if nobody had asked.
 # rc=2 (unverifiable)           → DEFER; this decision can drop a PR a
 #                                 maintainer legitimately requested.
+#
+# The manifest allowlist is the third admission route, and it joins this chain
+# rather than short-circuiting ahead of it so REQUESTER_RC always holds a real
+# push-access verdict: the EXECUTION gate below reuses it when the requester is
+# also the author — which an allowlisted author always is — and a synthesized
+# "admitted" would hand them the .env mirror and `just test` on the strength of
+# a config line that grants reading only.
+#
+# `= "$PR_AUTHOR"` is the entry's whole scope: it says "this person's own PRs
+# may be READ", never "this person may admit anyone's PR". Without it a
+# maintainer who vouched for a third party while they still had push access
+# would keep admitting that PR from the allowlist after losing it — precisely
+# the revocation this re-verification exists to catch.
 is_trusted_repo_author_live "$REPO" "$REQUESTER_LOGIN"; REQUESTER_RC=$?
-if [ "$REQUESTER_RC" -eq 2 ]; then
+if [ "$REQUESTER_RC" -ne 0 ] && [ "$REQUESTER_LOGIN" = "$PR_AUTHOR" ] \
+        && is_allowlisted_author "$REPO" "$REQUESTER_LOGIN"; then
+    # Ahead of the rc=2 defer on purpose: the allowlist is definitive and needs
+    # no API, so a standing-vouched author is still reviewed while the
+    # collaborators endpoint is throttling.
+    log "$PR_ID: admitted by the manifest author allowlist (@$REQUESTER_LOGIN) — reading only"
+elif [ "$REQUESTER_RC" -eq 2 ]; then
     log "$PR_ID: requester re-check deferred — API error (@$REQUESTER_LOGIN); retrying next tick"
     exit 1
-fi
-if [ "$REQUESTER_RC" -ne 0 ]; then
+elif [ "$REQUESTER_RC" -ne 0 ]; then
     # Silent skip, deliberately. This exit sits above the per-run run.log, so a
     # line could only land in the shared orchestrator.log — and a permanently
     # untrusted PR re-fires every ~30s, which would flood it. An untrusted skip
@@ -250,6 +268,10 @@ fi
 # unconditionally by the dispatcher when the author is trusted. Two identical
 # `collaborators/<login>/permission` calls per review is precisely the per-tick
 # API cost this branch exists to remove, reintroduced one screen apart.
+#
+# Safe to reuse on the allowlist path too: REQUESTER_RC is always the live
+# push-access answer, never "the allowlist admitted them" — so an allowlisted
+# author with no push access reuses rc=1 and is denied execution right here.
 #
 # Both worker checks are LIVE (#233): this is the admission gate that mirrors
 # credentials and runs PR code, and it fires up to ~40 min after the dispatcher

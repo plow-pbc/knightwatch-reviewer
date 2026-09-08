@@ -23,6 +23,14 @@
 declare -a REPOS=()
 declare -A KID_PATHS=()
 declare -A SOURCE_PATHS=()
+# TRUSTED_AUTHORS — the operator's STANDING VOUCH list, keyed by "owner/repo"
+# or bare "owner". Read only by lib/auth.sh::is_allowlisted_author, which
+# admits those authors' PRs for READING without a per-PR /<prefix>-review
+# comment. It grants no capability: execution, approval and memorize all stay
+# on live push access. Pre-declared because an undeclared associative name
+# makes `${TRUSTED_AUTHORS[$repo]:-}` an ARITHMETIC subscript, which dies under
+# `set -u` on a repo slug rather than defaulting to empty.
+declare -A TRUSTED_AUTHORS=()
 # ORGS — GitHub orgs reviewed in FULL: every non-archived open PR in the org
 # is eligible, discovered via one batched `search(user:<org> …)` per owner per
 # tick (NOT a per-repo fan-out — see lib/pr-enumerate.sh). A newly-created repo

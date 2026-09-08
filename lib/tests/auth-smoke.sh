@@ -260,4 +260,76 @@ MOCK_PERM_MODE=role MOCK_PERM_ROLE=none is_trusted_repo_author "cncorp/plow" "ma
 MOCK_PERM_MODE=role MOCK_PERM_ROLE=none is_trusted_repo_author "othercorp/plow" "alice" \
     && { echo "FAIL scenario 14: alice's verdict must not cross repos"; exit 1; } || true
 
-echo "  PASS (14 scenarios: trust-tristate-matrix[9 rows: 3×trusted/2×untrusted/404/403/5xx/empty], indeterminate-defers-not-trusted, trust-empty, approval-self-skipped, approval-success, approval-failure-fail-loud, just-test run/untrusted-skip/no-justfile, trust-cache hit/non-trusted-never-cached[403+untrusted]/live-bypasses-cache/expired-re-probes/keyed-per-repo-user)"
+reset_gh_pause; reset_trust_cache
+echo "  scenario 15: is_allowlisted_author — manifest standing vouch matrix..."
+# Reads config already in memory, so it is binary, not tri-state, and must cost
+# no API call at all: the ALLOWLIST_MATRIX asserts the verdict, the API-log
+# assertion after it is what keeps this a config read rather than a lookup.
+# "repo|login|want_rc" — rc 0 allowlisted, 1 not.
+: > "$GH_API_LOG"
+declare -A TRUSTED_AUTHORS=(
+    ["cncorp"]="octocat  Hubot"
+    ["othercorp/plow"]="alice"
+)
+ALLOWLIST_MATRIX=(
+    "owner key covers every repo under it|cncorp/plow|octocat|0"
+    "owner key, second repo|cncorp/other|octocat|0"
+    "exact repo key|othercorp/plow|alice|0"
+    "repo key does not leak to a sibling repo|othercorp/other|alice|1"
+    "login case is irrelevant — GitHub logins are|cncorp/plow|OCTOCAT|0"
+    "manifest case is irrelevant too|cncorp/plow|hubot|0"
+    "a prefix must not match|cncorp/plow|octo|1"
+    "a suffix must not match|cncorp/plow|cat|1"
+    "non-member|cncorp/plow|mallory|1"
+    "empty login|cncorp/plow||1"
+    "unlisted owner|elsewhere/plow|octocat|1"
+)
+for row in "${ALLOWLIST_MATRIX[@]}"; do
+    IFS='|' read -r label repo login want <<<"$row"
+    set +e
+    is_allowlisted_author "$repo" "$login"
+    got=$?
+    set -e
+    [ "$got" = "$want" ] || { echo "FAIL scenario 15 [$label]: expected rc=$want, got rc=$got"; exit 1; }
+done
+[ "$(grep -c '^API' "$GH_API_LOG")" = "0" ] \
+    || { echo "FAIL scenario 15: the allowlist hit the permission API — it must be a pure config read, so an allowlisted author stays reviewable while GitHub throttles"; exit 1; }
+
+reset_gh_pause; reset_trust_cache
+echo "  scenario 16: the allowlist grants READING only — it must not reach any capability gate..."
+# The security invariant of the whole feature. Every gate below hands out a
+# capability (running PR code with mirrored .env; approving; teaching the
+# corpus), and each one asks live push access. An allowlisted author with no
+# push access must fail all of them, or a config line has become a grant.
+MOCK_PERM_MODE=role MOCK_PERM_ROLE=read
+export MOCK_PERM_MODE MOCK_PERM_ROLE
+is_allowlisted_author "cncorp/plow" "octocat" \
+    || { echo "FAIL scenario 16: fixture is wrong — octocat must be allowlisted for this to prove anything"; exit 1; }
+set +e
+is_trusted_repo_author_live "cncorp/plow" "octocat"; live_rc=$?
+is_trusted_repo_author "cncorp/plow" "octocat"; cached_rc=$?
+set -e
+[ "$live_rc" = 1 ] \
+    || { echo "FAIL scenario 16: is_trusted_repo_author_live consulted the allowlist (rc=$live_rc) — this gate mirrors .env and runs PR code"; exit 1; }
+[ "$cached_rc" = 1 ] \
+    || { echo "FAIL scenario 16: is_trusted_repo_author consulted the allowlist (rc=$cached_rc)"; exit 1; }
+# ...and the one gate that consumes that boolean directly still declines.
+skip=$(just_test_skip_reason "/tmp/justfile" false)
+[ -n "$skip" ] \
+    || { echo "FAIL scenario 16: just_test would RUN an allowlisted author's code — the allowlist is reading-only"; exit 1; }
+unset MOCK_PERM_MODE MOCK_PERM_ROLE
+
+reset_gh_pause; reset_trust_cache
+echo "  scenario 17: an absent manifest array reads as 'nobody is allowlisted', not an error..."
+# lib/auth.sh is sourced by consumers that never load the manifest, and an
+# UNDECLARED associative name makes ${TRUSTED_AUTHORS[$repo]} an ARITHMETIC
+# subscript — under `set -u` that dies on a repo slug instead of defaulting.
+unset TRUSTED_AUTHORS
+set +e
+( set -u; is_allowlisted_author "cncorp/plow" "octocat" )
+got=$?
+set -e
+[ "$got" = 1 ] \
+    || { echo "FAIL scenario 17: expected rc=1 with no manifest loaded, got rc=$got (a crash here takes down every review on a manifest-less consumer)"; exit 1; }
+
+echo "  PASS (17 scenarios: trust-tristate-matrix[9 rows: 3×trusted/2×untrusted/404/403/5xx/empty], indeterminate-defers-not-trusted, trust-empty, approval-self-skipped, approval-success, approval-failure-fail-loud, just-test run/untrusted-skip/no-justfile, trust-cache hit/non-trusted-never-cached[403+untrusted]/live-bypasses-cache/expired-re-probes/keyed-per-repo-user, allowlist-matrix[11 rows: owner/repo keys, case, prefix+suffix near-miss, empty]+no-API, allowlist-grants-reading-only, allowlist-absent-manifest)"

@@ -12,6 +12,11 @@
 #     ran, so a cached verdict answers "did they have access THEN", not "may
 #     this happen NOW".
 #
+#   is_allowlisted_author — ADMISSION only, and no API call at all: the
+#     operator's standing vouch, read from the manifest. It admits a PR for
+#     reading and grants no capability, so it is deliberately absent from
+#     every acting gate below.
+#
 #   is_trusted_repo_author — ENUMERATION only. The caller is deciding whether a
 #     PR is worth looking at, and the acting gate behind it re-checks live. One
 #     uncached call per PR per tick per container is what tripped GitHub's
@@ -54,6 +59,47 @@ is_bot_account() {
         *"[bot]"|"Copilot"|"copilot") return 0 ;;
         *) return 1 ;;
     esac
+}
+
+# is_allowlisted_author REPO LOGIN → 0 when the manifest carries a STANDING
+# VOUCH for this author on this repo.
+#
+# Not a third trust level. It is the operator making, once and in config, the
+# statement a maintainer otherwise types per PR as /<prefix>-review — so it
+# admits a PR for READING and never for running. Every capability gate stays on
+# live push access: the .env mirror + `just test`, approval submission, corpus
+# memorize, and vouching for someone ELSE. auth-smoke.sh fences that split.
+#
+# Binary, not tri-state, on purpose: this reads config already in memory, so
+# there is no "couldn't verify" outcome to defer on. It is also free, which is
+# why callers consult it BEFORE the permission API — an allowlisted author is
+# still reviewed while the collaborators endpoint is throttling, where the
+# tri-state check would defer.
+#
+# TRUSTED_AUTHORS is keyed by "owner/repo" (that repo only) or bare "owner"
+# (every repo under it); values are whitespace-separated logins, compared
+# case-insensitively because GitHub logins are. Operator-owned by construction:
+# the manifest lives outside every reviewed repo, so no PR can allowlist its
+# own author the way an in-repo file could.
+is_allowlisted_author() {
+    local repo="$1" login="${2,,}" key entry
+    [ -n "$login" ] || return 1
+    # Ask before reading. `${arr[$k]:-}` on an UNDECLARED name is arithmetic-
+    # evaluated (bash reads the subscript as an index expression), so a repo
+    # slug there dies under `set -u` before the :- default can apply. The
+    # manifest loader pre-declares the array; this keeps auth.sh usable
+    # standalone, where "no manifest" simply means "nobody is allowlisted".
+    declare -p TRUSTED_AUTHORS >/dev/null 2>&1 || return 1
+    for key in "$repo" "${repo%%/*}"; do
+        entry="${TRUSTED_AUTHORS[$key]:-}"
+        # Padded containment rather than word-splitting: the split form would
+        # glob-expand a manifest value against the cwd. Newlines/tabs are
+        # folded first so a multi-line quoted entry still matches, and the
+        # padding is what keeps `jean` from matching `jeanjacintho`.
+        entry="${entry//[$'\t\n\r']/ }"
+        case " ${entry,,} " in *" $login "*) return 0 ;; esac
+    done
+    return 1
 }
 
 # The LIVE admission check — one API call, never cached. Every caller about to
