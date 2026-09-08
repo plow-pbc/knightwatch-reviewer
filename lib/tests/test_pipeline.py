@@ -1447,6 +1447,18 @@ class TestRunPipeline(unittest.TestCase):
             patch.object(pipeline, "WATCHDOG_POLL_SEC", 0.05),
             patch.object(pipeline, "SPECIALIST_TIMEOUT_SEC", 5.0),
             patch.object(pipeline, "TEST_GATE_POLL_SEC", 0.05),
+            # FakePopen's pids are synthetic (100000 + a counter) but the
+            # watchdog's os.killpg is real, so a TIMEOUT-stub test signals
+            # whatever process group actually holds that pgid on the host.
+            # Root-owned, that raises PermissionError — which the watchdog
+            # doesn't catch (only ProcessLookupError), so it surfaced as a
+            # spurious `specialist hard failures: … PermissionError` abort and
+            # made the timeout tests flake with the host's process table.
+            # Owned by this user, killpg SUCCEEDS and takes out an unrelated
+            # group. TestRunCodex already patches it per hang test; doing it
+            # for the whole class means no future TIMEOUT-stub test can signal
+            # the host by forgetting to.
+            patch("pipeline.os.killpg"),
         ):
             p.start()
             self.addCleanup(p.stop)
