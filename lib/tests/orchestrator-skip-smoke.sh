@@ -1774,24 +1774,44 @@ done
 # --- RT11: an allowlist edit re-opens an already-skipped PR. The idle-skip's
 # premise is "this exact state was fully evaluated and needed nothing", but it
 # reads the PR and nothing else — and an allowlist edit moves neither updatedAt
-# (the manifest is not the PR) nor KNOWN_SHA (the author was dropped before any
-# review). Without the bypass, adding an author to TRUSTED_AUTHORS leaves their
-# already-noticed PRs unreviewed until someone pushes or comments, which is the
-# exact population the allowlist exists to admit. Two ticks, same updatedAt.
-echo "  scenario RT11: adding an author to the allowlist re-opens their skipped PR..."
-rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
-printf '[]\n' > "$MOCK_COMMENTS_FILE"
+# (the manifest is not the PR) nor KNOWN_SHA (the drop that wrote the watermark
+# left it wherever it was). Without the bypass, adding an author to
+# TRUSTED_AUTHORS leaves their already-noticed PRs unreviewed until someone
+# pushes or comments, which is the exact population the allowlist exists to
+# admit. Both rows share the arrange/act — untrusted tick to lay the watermark,
+# then an identical tick with only the manifest changed — and differ in what
+# runs/ holds, which is what the bypass predicate reads:
+#   never  — no prior review at all (KNOWN_SHA empty).
+#   stale  — reviewed at an OLDER head, then dropped after a later push. The
+#            reason the predicate is `KNOWN_SHA = PR_SHA` and not merely
+#            non-empty: this KNOWN_SHA is real but stale, so "have we reviewed
+#            anything?" takes the skip while the CURRENT head has never been
+#            read. Swap it back and this row goes red while `never` stays green.
+# Fields: label | seeded reviewed_sha ("" = none)
+RT11_MATRIX=(
+  "never reviewed|"
+  "reviewed at an older head|older_sha_999"
+)
+echo "  scenario RT11: an allowlist edit re-opens a skipped PR (${#RT11_MATRIX[@]} rows: never / stale KNOWN_SHA)..."
 RT11_UPD="2026-08-10T05:00:00Z"
-MOCK_PR_UPDATED_AT="$RT11_UPD" MOCK_TRUSTED_USERS="$BOT_USER" MOCK_PR_AUTHOR="stranger" run_orchestrator
-[ -f "$STATE_DIR/seen-updated/cncorp_plow__1" ] \
-    || { echo "FAIL RT11: tick 1 left no watermark — the setup this scenario needs never happened"; cat "$LOG_FILE"; exit 1; }
-rm -f "$STATE_DIR/queue.json"
-# Only the manifest changes. Same updatedAt, same comments, same everything.
-MOCK_ALLOWLISTED="stranger" MOCK_PR_UPDATED_AT="$RT11_UPD" MOCK_TRUSTED_USERS="$BOT_USER" \
-    MOCK_PR_AUTHOR="stranger" run_orchestrator
-q11=$(jq '.specs | length' "$STATE_DIR/queue.json" 2>/dev/null || echo 0); q11=${q11:-0}
-[ "$q11" -eq 1 ] \
-    || { echo "FAIL RT11: got $q11 spec(s) — the watermark outlived the allowlist edit, so a newly-vouched author's open PRs stay unreviewed until they push"; cat "$LOG_FILE"; exit 1; }
+for row in "${RT11_MATRIX[@]}"; do
+    IFS='|' read -r rlabel rsha <<<"$row"
+    rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated"
+    clear_seeded_runs
+    [ -n "$rsha" ] && seed_run "cncorp_plow" "1" "20260429T100000000Z" "$rsha" "COMMENT" >/dev/null
+    printf '[]\n' > "$MOCK_COMMENTS_FILE"
+    MOCK_PR_UPDATED_AT="$RT11_UPD" MOCK_TRUSTED_USERS="$BOT_USER" MOCK_PR_AUTHOR="stranger" run_orchestrator
+    [ -f "$STATE_DIR/seen-updated/cncorp_plow__1" ] \
+        || { echo "FAIL RT11 [$rlabel]: tick 1 left no watermark — the setup this row needs never happened"; cat "$LOG_FILE"; exit 1; }
+    rm -f "$STATE_DIR/queue.json"
+    # Only the manifest changes. Same updatedAt, same comments, same runs/.
+    MOCK_ALLOWLISTED="stranger" MOCK_PR_UPDATED_AT="$RT11_UPD" MOCK_TRUSTED_USERS="$BOT_USER" \
+        MOCK_PR_AUTHOR="stranger" run_orchestrator
+    q11=$(jq '.specs | length' "$STATE_DIR/queue.json" 2>/dev/null || echo 0); q11=${q11:-0}
+    [ "$q11" -eq 1 ] \
+        || { echo "FAIL RT11 [$rlabel]: got $q11 spec(s) — the watermark outlived the allowlist edit, so a newly-vouched author's open PRs stay unreviewed until they push"; cat "$LOG_FILE"; exit 1; }
+done
+clear_seeded_runs
 
 
 # NOTE: the HOST-PATH scenario that once occupied this slot was deleted here.
