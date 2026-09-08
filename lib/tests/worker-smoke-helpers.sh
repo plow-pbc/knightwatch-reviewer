@@ -30,6 +30,9 @@ write_probe_repos_conf() {
 REPOS=("test-org/probe-repo")
 declare -A KID_PATHS=()
 declare -A SOURCE_PATHS=()
+# Per-scenario allowlist: the worker sources this file, so a scenario's
+# env-prefix reaches it. Empty (the default) means nobody is allowlisted.
+declare -A TRUSTED_AUTHORS=(["test-org"]="${MOCK_ALLOWLISTED:-}")
 CONF
 }
 

@@ -220,31 +220,35 @@ fi
 # rc=2 (unverifiable)           → DEFER; this decision can drop a PR a
 #                                 maintainer legitimately requested.
 #
-# REQUESTER_RC stays EMPTY on the allowlist path, and that is load-bearing
-# rather than tidiness: the EXECUTION gate below reuses this verdict when the
-# requester is also the author, which an allowlisted author always is. Writing
-# a "0 = admitted" here would hand them the .env mirror and `just test` on the
-# strength of a config line that grants reading only. Empty means the execution
-# gate makes its own live push-access call — the only verdict allowed to grant
-# capability.
-REQUESTER_RC=""
-if is_allowlisted_author "$REPO" "$REQUESTER_LOGIN"; then
+# The manifest allowlist is the third admission route, and it joins this chain
+# rather than short-circuiting ahead of it so REQUESTER_RC always holds a real
+# push-access verdict: the EXECUTION gate below reuses it when the requester is
+# also the author — which an allowlisted author always is — and a synthesized
+# "admitted" would hand them the .env mirror and `just test` on the strength of
+# a config line that grants reading only.
+#
+# `= "$PR_AUTHOR"` is the entry's whole scope: it says "this person's own PRs
+# may be READ", never "this person may admit anyone's PR". Without it a
+# maintainer who vouched for a third party while they still had push access
+# would keep admitting that PR from the allowlist after losing it — precisely
+# the revocation this re-verification exists to catch.
+is_trusted_repo_author_live "$REPO" "$REQUESTER_LOGIN"; REQUESTER_RC=$?
+if [ "$REQUESTER_RC" -ne 0 ] && [ "$REQUESTER_LOGIN" = "$PR_AUTHOR" ] \
+        && is_allowlisted_author "$REPO" "$REQUESTER_LOGIN"; then
+    # Ahead of the rc=2 defer on purpose: the allowlist is definitive and needs
+    # no API, so a standing-vouched author is still reviewed while the
+    # collaborators endpoint is throttling.
     log "$PR_ID: admitted by the manifest author allowlist (@$REQUESTER_LOGIN) — reading only"
-else
-    is_trusted_repo_author_live "$REPO" "$REQUESTER_LOGIN"; REQUESTER_RC=$?
-    if [ "$REQUESTER_RC" -eq 2 ]; then
-        log "$PR_ID: requester re-check deferred — API error (@$REQUESTER_LOGIN); retrying next tick"
-        exit 1
-    fi
-    if [ "$REQUESTER_RC" -ne 0 ]; then
-        # Silent skip, deliberately. This exit sits above the per-run run.log, so
-        # a line could only land in the shared orchestrator.log — and a
-        # permanently untrusted PR re-fires every ~30s, which would flood it. An
-        # untrusted skip is stable POLICY, not a failure; the operator-facing
-        # "why is this PR unreviewed?" signal is logged once by the dispatcher
-        # (#189).
-        exit 0
-    fi
+elif [ "$REQUESTER_RC" -eq 2 ]; then
+    log "$PR_ID: requester re-check deferred — API error (@$REQUESTER_LOGIN); retrying next tick"
+    exit 1
+elif [ "$REQUESTER_RC" -ne 0 ]; then
+    # Silent skip, deliberately. This exit sits above the per-run run.log, so a
+    # line could only land in the shared orchestrator.log — and a permanently
+    # untrusted PR re-fires every ~30s, which would flood it. An untrusted skip
+    # is stable POLICY, not a failure; the operator-facing "why is this PR
+    # unreviewed?" signal is logged once by the dispatcher (#189).
+    exit 0
 fi
 
 # Recomputed here, not inherited: this is the permission that gates EXECUTION,
@@ -265,17 +269,16 @@ fi
 # `collaborators/<login>/permission` calls per review is precisely the per-tick
 # API cost this branch exists to remove, reintroduced one screen apart.
 #
-# Guarded on a NON-EMPTY REQUESTER_RC, which is the one thing keeping the
-# manifest allowlist out of this gate: an allowlisted author was admitted with
-# no permission call at all, so there is no verdict to reuse and the shortcut
-# must fall through to the live call below.
+# Safe to reuse on the allowlist path too: REQUESTER_RC is always the live
+# push-access answer, never "the allowlist admitted them" — so an allowlisted
+# author with no push access reuses rc=1 and is denied execution right here.
 #
 # Both worker checks are LIVE (#233): this is the admission gate that mirrors
 # credentials and runs PR code, and it fires up to ~40 min after the dispatcher
 # enqueued the PR. Serving it from the dispatcher's cache would let a
 # collaborator revoked inside that window still execute here. Twice per review
 # run is nothing — the per-tick dispatcher call is where the volume was.
-if [ -n "$REQUESTER_RC" ] && [ "$REQUESTER_LOGIN" = "$PR_AUTHOR" ]; then
+if [ "$REQUESTER_LOGIN" = "$PR_AUTHOR" ]; then
     AUTHOR_RC="$REQUESTER_RC"
 else
     is_trusted_repo_author_live "$REPO" "$PR_AUTHOR"; AUTHOR_RC=$?

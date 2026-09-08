@@ -212,7 +212,19 @@ refresh_queue() {
         # what lets the gate cover an UNREVIEWABLE PR too: such a PR never gets a
         # KNOWN_SHA (the worker exits above allocate_run_dir, deliberately —
         # #189), so it was re-enumerated and trust-checked every ~30s forever.
-        if [ -n "$PR_UPDATED_AT" ] && [ "$PR_UPDATED_AT" = "$LAST_SEEN_UPDATED_AT" ]; then
+        #
+        # ...with one exception, because that premise reads the PR and nothing
+        # else. An allowlist edit moves NEITHER input: the manifest is not the
+        # PR, so updatedAt stays put, and an author dropped before any review
+        # has no KNOWN_SHA. Adding someone to TRUSTED_AUTHORS would otherwise
+        # leave their already-skipped PRs unreviewed until a push or a comment
+        # bumped updatedAt — the exact PRs the allowlist exists to admit, and a
+        # contradiction of the one-enumerate-window activation every other
+        # manifest edit gets. Free to ask, so the idle tick stays API-silent
+        # (RT2): it reads config already in memory. Self-limiting too — the
+        # bypass stops the moment that first review lands a KNOWN_SHA.
+        if [ -n "$PR_UPDATED_AT" ] && [ "$PR_UPDATED_AT" = "$LAST_SEEN_UPDATED_AT" ] \
+                && { [ -n "$KNOWN_SHA" ] || ! is_allowlisted_author "$REPO" "$PR_AUTHOR"; }; then
             continue
         fi
 

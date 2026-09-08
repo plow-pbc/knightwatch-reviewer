@@ -1755,31 +1755,43 @@ for row in "${ALLOWLIST_MATRIX[@]}"; do
     esac
 done
 
-# --- RT10: the allowlist reaches ADMISSION and nothing else. RT5 and RT8 pin
-# the execution gate's inputs; this pins the one seam where the new admission
-# route could leak into them.
+# --- RT10: the CAPABILITY pollers never consult the allowlist. Approving a PR
+# and teaching the shared corpus are grants, and the allowlist grants reading;
+# widening either would hand a config line the authority push access carries.
 #
-# The worker reuses the requester's verdict for the author when they are the
-# same person — and an allowlisted author always is. That reuse is now guarded
-# on a NON-EMPTY REQUESTER_RC, which the allowlist branch deliberately leaves
-# unset; drop the guard and a config line silently grants the .env mirror and
-# `just test`. Static, like RT5/RT8: reaching it behaviorally needs the full
-# worker harness, but swapping either line fails this.
-echo "  scenario RT10: the manifest allowlist cannot reach the execution gate..."
-w10="$PROJECT_ROOT/lib/review-one-pr.sh"
-grep -qE 'if \[ -n "\$REQUESTER_RC" \] && \[ "\$REQUESTER_LOGIN" = "\$PR_AUTHOR" \]' "$w10" \
-    || { echo "FAIL RT10: the execution gate reuses REQUESTER_RC unguarded — an allowlist-admitted author would inherit 'admitted' as permission to RUN"; exit 1; }
-grep -qE 'is_allowlisted_author' "$w10" \
-    || { echo "FAIL RT10: the worker no longer re-checks the allowlist at admission — a queued spec would be admitted on the dispatcher's word alone"; exit 1; }
-# The capability gates must never consult it, in either file.
+# Static because these two have no runtime harness. The rest of the allowlist's
+# reading-only contract IS driven behaviorally and does not belong here:
+# auth-smoke scenario 16 runs the trust primitives against an allowlisted login
+# and asserts they still say "no push access", and
+# review-one-pr-sha-flow-smoke's 10e/10f run the real worker for the execution
+# gate and the third-party admission fence.
+echo "  scenario RT10: the capability pollers never consult the allowlist..."
 for f10 in "$PROJECT_ROOT/poll-pr-actions.sh" "$PROJECT_ROOT/learn-from-replies.sh"; do
     grep -q 'is_allowlisted_author' "$f10" \
         && { echo "FAIL RT10: $(basename "$f10") consults the allowlist — approving and teaching the corpus are capabilities, and the allowlist grants reading only"; exit 1; }
 done
-# And it must stay OUT of the trust primitives themselves, which every acting
-# gate calls: widening one of those would grant all of them at once.
-grep -q 'is_allowlisted_author' <(sed -n '/^is_trusted_repo_author_live()/,/^}/p;/^is_trusted_repo_author()/,/^}/p' "$PROJECT_ROOT/lib/auth.sh") \
-    && { echo "FAIL RT10: a trust primitive consults the allowlist — that hands every acting gate (.env mirror, just test, /approve, /memorize) to a config line"; exit 1; }
+
+# --- RT11: an allowlist edit re-opens an already-skipped PR. The idle-skip's
+# premise is "this exact state was fully evaluated and needed nothing", but it
+# reads the PR and nothing else — and an allowlist edit moves neither updatedAt
+# (the manifest is not the PR) nor KNOWN_SHA (the author was dropped before any
+# review). Without the bypass, adding an author to TRUSTED_AUTHORS leaves their
+# already-noticed PRs unreviewed until someone pushes or comments, which is the
+# exact population the allowlist exists to admit. Two ticks, same updatedAt.
+echo "  scenario RT11: adding an author to the allowlist re-opens their skipped PR..."
+rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
+printf '[]\n' > "$MOCK_COMMENTS_FILE"
+RT11_UPD="2026-08-10T05:00:00Z"
+MOCK_PR_UPDATED_AT="$RT11_UPD" MOCK_TRUSTED_USERS="$BOT_USER" MOCK_PR_AUTHOR="stranger" run_orchestrator
+[ -f "$STATE_DIR/seen-updated/cncorp_plow__1" ] \
+    || { echo "FAIL RT11: tick 1 left no watermark — the setup this scenario needs never happened"; cat "$LOG_FILE"; exit 1; }
+rm -f "$STATE_DIR/queue.json"
+# Only the manifest changes. Same updatedAt, same comments, same everything.
+MOCK_ALLOWLISTED="stranger" MOCK_PR_UPDATED_AT="$RT11_UPD" MOCK_TRUSTED_USERS="$BOT_USER" \
+    MOCK_PR_AUTHOR="stranger" run_orchestrator
+q11=$(jq '.specs | length' "$STATE_DIR/queue.json" 2>/dev/null || echo 0); q11=${q11:-0}
+[ "$q11" -eq 1 ] \
+    || { echo "FAIL RT11: got $q11 spec(s) — the watermark outlived the allowlist edit, so a newly-vouched author's open PRs stay unreviewed until they push"; cat "$LOG_FILE"; exit 1; }
 
 
 # NOTE: the HOST-PATH scenario that once occupied this slot was deleted here.
