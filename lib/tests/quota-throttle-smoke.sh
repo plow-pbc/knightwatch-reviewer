@@ -92,6 +92,25 @@ python3 "$SRC" record --codex-home "$d/jit" --out "$d/jit.json" || fail "record 
 grep -q '"used_percent": 100.0' "$d/jit.json" \
     || fail "second-level resets_at jitter fragmented one window: $(cat "$d/jit.json")"
 
+# --- record: the WEEKLY block is identified by its window, not its position.
+#     A tiered response that puts a short session limit in `primary` must not
+#     be read as weekly usage -- the weekly figure here sits in `secondary`.
+tier="$d/tier/sessions/2026/09/10"; mkdir -p "$tier"
+printf '{"payload":{"rate_limits":{"primary":{"used_percent":97.0,"window_minutes":300,"resets_at":%s},"secondary":{"used_percent":31.0,"window_minutes":10080,"resets_at":%s}}}}\n' \
+    "$cur" "$cur" > "$tier/rollout-tier.jsonl"
+python3 "$SRC" record --codex-home "$d/tier" --out "$d/tier.json" || fail "record failed on a tiered rate-limit shape"
+grep -q '"used_percent": 31.0' "$d/tier.json" \
+    || fail "record read a 5-hour limit as the weekly window: $(cat "$d/tier.json")"
+
+# --- record: a rollout with NO weekly-window block yields no snapshot, rather
+#     than silently adopting a short window's percentage.
+none5h="$d/none5h/sessions/2026/09/10"; mkdir -p "$none5h"
+printf '{"payload":{"rate_limits":{"primary":{"used_percent":99.0,"window_minutes":300,"resets_at":%s}}}}\n' \
+    "$cur" > "$none5h/rollout-5h.jsonl"
+python3 "$SRC" record --codex-home "$d/none5h" --out "$d/none5h.json" \
+    && fail "record accepted a non-weekly window as the weekly snapshot"
+[ ! -e "$d/none5h.json" ] || fail "record wrote a snapshot from a non-weekly block"
+
 # --- record: no snapshot anywhere -> non-zero, and no file written.
 mkdir -p "$d/empty"
 python3 "$SRC" record --codex-home "$d/empty" --out "$d/none.json" && fail "record exited 0 with no snapshot available"

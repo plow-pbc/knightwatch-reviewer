@@ -20,7 +20,8 @@ import sys
 import time
 from glob import glob
 
-WINDOW_H = 168.0          # codex weekly window; window_minutes is always 10080
+WINDOW_H = 168.0          # codex weekly window
+WINDOW_MINUTES = 10080    # ...as codex reports it; the block must say so, not be assumed
 MAX_ROLLOUTS = 200        # bounded scan: newest N by mtime under the date dirs
 WINDOW_TOL_S = 3600       # resets_at jitters by seconds within one window
 
@@ -52,17 +53,28 @@ def decide(used, resets_at, now, pct, min_elapsed_h, pause_h):
     return int(min(now + pause_h * 3600.0, resets_at))
 
 
-def _primary(obj):
-    """Deepest-first search for a rate_limits block carrying a usable primary."""
+def _weekly(obj):
+    """Deepest-first search for the WEEKLY rate-limit block.
+
+    Identified by its declared window, never by position. Every account
+    observed reports the weekly cap as `primary` with `secondary` null, but
+    that is an observation, not a contract -- a tiered response placing a
+    short session limit in `primary` would otherwise be read as weekly usage
+    and mis-decide silently, in both directions. A block whose window does not
+    match is not the one we want, so it is skipped rather than trusted.
+    """
     if isinstance(obj, dict):
         rl = obj.get("rate_limits")
         if isinstance(rl, dict):
-            p = rl.get("primary")
-            if isinstance(p, dict) and p.get("used_percent") is not None \
-               and p.get("resets_at") is not None:
-                return p
+            for key in ("primary", "secondary"):
+                b = rl.get(key)
+                if isinstance(b, dict) \
+                   and b.get("window_minutes") == WINDOW_MINUTES \
+                   and b.get("used_percent") is not None \
+                   and b.get("resets_at") is not None:
+                    return b
         for v in obj.values():
-            found = _primary(v)
+            found = _weekly(v)
             if found:
                 return found
     return None
@@ -100,7 +112,7 @@ def latest_snapshot(codex_home):
             if '"rate_limits"' not in line:
                 continue
             try:
-                p = _primary(json.loads(line))
+                p = _weekly(json.loads(line))
             except (ValueError, TypeError):
                 continue
             if p:
