@@ -166,7 +166,7 @@ printf '#!/bin/bash\ntouch "%s/called"\nexit 1\n' "$d" > "$d/review.sh"; chmod +
 mkdir -p "$d/state/pool/solo"
 cap=$(( $(date +%s) + 5*24*3600 ))
 printf '%s\n' "$cap" > "$d/state/pool/solo/quota-paused-until"
-printf '{"used_percent": 99.0, "resets_at": %s, "observed_at": %s}\n' "$cap" "$(date +%s)" \
+printf '{"used_percent": 99.0, "resets_at": %s}\n' "$cap" \
     > "$d/state/pool/solo/usage.json"
 ( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" CONFIG_ENV_FILE="$d/config.env" ./review-loop.sh ) >/dev/null 2>&1 || true
 [ "$(head -n1 "$d/state/pool/solo/quota-paused-until")" = "$cap" ] \
@@ -182,8 +182,8 @@ printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"; chmod +x "$d/bin/docker"
 printf '#!/bin/bash\ntouch "%s/called"\nexit 1\n' "$d" > "$d/review.sh"; chmod +x "$d/review.sh"
 mkdir -p "$d/state/pool/solo"
 # 53% used with 101h left => elapsed 67h => projection 133%
-printf '{"used_percent": 53.0, "resets_at": %s, "observed_at": %s}\n' \
-    "$(( $(date +%s) + 101*3600 ))" "$(date +%s)" > "$d/state/pool/solo/usage.json"
+printf '{"used_percent": 53.0, "resets_at": %s}\n' \
+    "$(( $(date +%s) + 101*3600 ))" > "$d/state/pool/solo/usage.json"
 ( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" CONFIG_ENV_FILE="$d/config.env" ./review-loop.sh ) >/dev/null 2>&1 || true
 [ -s "$d/state/pool/solo/throttle-paused-until" ] || fail "review-loop did not stamp a throttle pause for a 133%-projected account"
 [ ! -e "$d/called" ] || fail "review-loop claimed a PR on the tick that engaged the throttle"
@@ -202,6 +202,25 @@ out=$( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DI
 [ -e "$d/called" ] || fail "a broken throttle stopped the loop claiming (must fail OPEN)"
 printf '%s' "$out" | grep -q 'decide FAILED' || fail "a broken throttle was silent (must fail LOUD); got: $(printf '%s' "$out" | tail -3)"
 [ ! -s "$d/state/pool/solo/throttle-paused-until" ] || fail "a failed decide stamped a pause file"
+rm -rf "$d"
+
+# 4f. Throttle config must reach the python child. config.env holds BARE
+#     assignments (an ordinary operator edit), and a bare assignment is not
+#     inherited by a subprocess -- so without an explicit export, an operator's
+#     `KWR_THROTTLE_PCT=0` is silently ignored and the account keeps throttling
+#     at the default. Same defect GH_TOKEN's export above exists to prevent.
+d=$(make_sandbox)
+printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"; chmod +x "$d/bin/docker"
+printf '#!/bin/bash\ntouch "%s/called"\nexit 1\n' "$d" > "$d/review.sh"; chmod +x "$d/review.sh"
+mkdir -p "$d/state/pool/solo"
+# 53% used with 101h left => projection 133%: would throttle at the default.
+printf '{"used_percent": 53.0, "resets_at": %s}\n' \
+    "$(( $(date +%s) + 101*3600 ))" > "$d/state/pool/solo/usage.json"
+printf 'GH_TOKEN=ghp_fake_for_smoke\nKWR_THROTTLE_PCT=0\n' > "$d/config.env"
+( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" CONFIG_ENV_FILE="$d/config.env" ./review-loop.sh ) >/dev/null 2>&1 || true
+[ ! -s "$d/state/pool/solo/throttle-paused-until" ] \
+    || fail "KWR_THROTTLE_PCT=0 in config.env did not reach quota_throttle.py — the operator's disable was ignored"
+[ -e "$d/called" ] || fail "loop did not claim with the throttle disabled"
 rm -rf "$d"
 
 # 5. Auth offline: a fatal auth error takes the worker offline until re-login.

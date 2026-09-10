@@ -48,6 +48,12 @@ _KWR_STATE_DIR="${STATE_DIR:?review-loop.sh requires STATE_DIR from the compose 
 source "${CONFIG_ENV_FILE:?review-loop.sh requires CONFIG_ENV_FILE from the compose environment}"
 export GH_TOKEN="${GH_TOKEN:?review-loop.sh: no GH_TOKEN after sourcing $CONFIG_ENV_FILE — the quota probe would run unauthenticated and report nothing}"
 export REVIEWER_LIB_DIR="$(pwd)/lib" PROMPTS_DIR="$(pwd)/prompts" STATE_DIR="$_KWR_STATE_DIR"
+# Same reason as GH_TOKEN above: quota_throttle.py runs as a separate process, so
+# a bare `KWR_THROTTLE_PCT=0` in config.env would never reach it and an operator's
+# explicit disable would silently keep throttling at the default. Exported by NAME
+# only -- an unset var stays unset rather than being handed a value here, which
+# keeps quota_throttle.py the single source of the defaults.
+export KWR_THROTTLE_PCT KWR_THROTTLE_MIN_ELAPSED_H KWR_THROTTLE_PAUSE_H
 unset _KWR_STATE_DIR
 # Shared logger (timestamp + [w<WORKER_ID>] tag). LOG_FILE is unset here —
 # review.sh sets it later — so log() falls back to stdout-only, which is what

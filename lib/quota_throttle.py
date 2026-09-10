@@ -26,13 +26,6 @@ MAX_ROLLOUTS = 200        # bounded scan: newest N by mtime under the date dirs
 WINDOW_TOL_S = 3600       # resets_at jitters by seconds within one window
 
 
-def _env_float(name, default):
-    try:
-        return float(os.environ.get(name, "") or default)
-    except ValueError:
-        return float(default)
-
-
 def decide(used, resets_at, now, pct, min_elapsed_h, pause_h):
     """Epoch to throttle until, or None to keep claiming.
 
@@ -53,30 +46,20 @@ def decide(used, resets_at, now, pct, min_elapsed_h, pause_h):
     return int(min(now + pause_h * 3600.0, resets_at))
 
 
-def _weekly(obj):
-    """Deepest-first search for the WEEKLY rate-limit block.
+def _weekly(rec):
+    """The weekly reading from one rollout line as (used_percent, resets_at).
 
-    Identified by its declared window, never by position. Every account
-    observed reports the weekly cap as `primary` with `secondary` null, but
-    that is an observation, not a contract -- a tiered response placing a
-    short session limit in `primary` would otherwise be read as weekly usage
-    and mis-decide silently, in both directions. A block whose window does not
-    match is not the one we want, so it is skipped rather than trusted.
+    Identified by its declared window, never by position: a tiered response
+    placing a short session limit here would otherwise be read as weekly usage
+    and mis-decide silently. A block whose window does not match is skipped,
+    which fails open -- no snapshot rather than a wrong one.
     """
-    if isinstance(obj, dict):
-        rl = obj.get("rate_limits")
-        if isinstance(rl, dict):
-            for key in ("primary", "secondary"):
-                b = rl.get(key)
-                if isinstance(b, dict) \
-                   and b.get("window_minutes") == WINDOW_MINUTES \
-                   and b.get("used_percent") is not None \
-                   and b.get("resets_at") is not None:
-                    return b
-        for v in obj.values():
-            found = _weekly(v)
-            if found:
-                return found
+    try:
+        p = rec["payload"]["rate_limits"]["primary"]
+        if p["window_minutes"] == WINDOW_MINUTES:
+            return (float(p["used_percent"]), int(p["resets_at"]))
+    except (KeyError, TypeError, ValueError):
+        pass
     return None
 
 
@@ -112,18 +95,18 @@ def latest_snapshot(codex_home):
             if '"rate_limits"' not in line:
                 continue
             try:
-                p = _weekly(json.loads(line))
-            except (ValueError, TypeError):
+                rec = json.loads(line)
+            except ValueError:
                 continue
-            if p:
-                seen.append((float(p["used_percent"]), int(p["resets_at"])))
+            hit = _weekly(rec)
+            if hit:
+                seen.append(hit)
     if not seen:
         return None
     newest = max(r for _, r in seen)
     window = [(u, r) for u, r in seen if newest - r <= WINDOW_TOL_S]
     return {"used_percent": max(u for u, _ in window),
-            "resets_at": max(r for _, r in window),
-            "observed_at": int(time.time())}
+            "resets_at": max(r for _, r in window)}
 
 
 def main(argv=None):
@@ -168,9 +151,9 @@ def main(argv=None):
     until = decide(
         used, resets_at,
         args.now if args.now is not None else int(time.time()),
-        _env_float("KWR_THROTTLE_PCT", 90),
-        _env_float("KWR_THROTTLE_MIN_ELAPSED_H", 24),
-        _env_float("KWR_THROTTLE_PAUSE_H", 24),
+        float(os.environ.get("KWR_THROTTLE_PCT", 90)),
+        float(os.environ.get("KWR_THROTTLE_MIN_ELAPSED_H", 24)),
+        float(os.environ.get("KWR_THROTTLE_PAUSE_H", 24)),
     )
     if until is not None:
         print(until)

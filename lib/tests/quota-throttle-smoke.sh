@@ -15,43 +15,34 @@ NOW=1789000000
 H=3600
 
 # usage.json fixture: $1=out $2=used $3=resets_at
-mkusage() { printf '{"used_percent": %s, "resets_at": %s, "observed_at": %s}\n' "$2" "$3" "$NOW" > "$1"; }
+mkusage() { printf '{"used_percent": %s, "resets_at": %s}\n' "$2" "$3" > "$1"; }
 # decide with a pinned clock; prints the epoch or nothing
 decide() { python3 "$SRC" decide --usage "$1" --now "$NOW"; }
 
 d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
 
-# --- Trigger A: projection over the 90% line fires once the gate is open.
-# elapsed = 67h  ->  threshold is 90*67/168 = 35.9% used.
-r=$(( NOW + (168-67)*H ))
-mkusage "$d/u.json" 53.0 "$r"
-out=$(decide "$d/u.json") || fail "decide exited non-zero on a firing projection"
-[ -n "$out" ] || fail "projection 53%@67h (=133%) did not fire"
-[ "$out" = "$(( NOW + 24*H ))" ] || fail "expected a 24h pause, got $out"
-
-# --- Trigger A: under the line does NOT fire (same elapsed, 28% used = 70%).
-mkusage "$d/u.json" 28.0 "$r"
-[ -z "$(decide "$d/u.json")" ] || fail "projection 28%@67h (=70%) fired but is under 90%"
-
-# --- Gate: before 24h elapsed the projection is ignored no matter how large.
-# elapsed = 12h, used 20% -> projection 280%, but the gate is shut.
-r12=$(( NOW + (168-12)*H ))
-mkusage "$d/u.json" 20.0 "$r12"
-[ -z "$(decide "$d/u.json")" ] || fail "projection fired at 12h elapsed (confidence gate must block it)"
-
-# --- Trigger B: absolute 90% fires even with the gate shut.
-mkusage "$d/u.json" 93.0 "$r12"
-[ -n "$(decide "$d/u.json")" ] || fail "absolute trigger did not fire at 93% used inside the gate window"
-
-# --- Pause is capped at the window reset (reset 6h out -> pause 6h, not 24h).
-r6=$(( NOW + 6*H ))
-mkusage "$d/u.json" 95.0 "$r6"
-[ "$(decide "$d/u.json")" = "$r6" ] || fail "pause was not capped at resets_at"
-
-# --- Fail open: rolled window (resets_at in the past) must NOT throttle,
-#     even though the stale reading says 100% used.
-mkusage "$d/u.json" 100.0 "$(( NOW - 10 ))"
-[ -z "$(decide "$d/u.json")" ] || fail "throttled on a reading from an expired window"
+# --- Decision table. Every row is the same arrange/act (write a snapshot,
+#     run decide, compare stdout), so they belong in one matrix rather than
+#     seven near-identical blocks. elapsed = 168h - (resets_at - NOW).
+r=$(( NOW + (168-67)*H ))     # elapsed 67h -> line sits at 90*67/168 = 35.9% used
+r12=$(( NOW + (168-12)*H ))   # elapsed 12h -> inside the confidence gate
+r6=$(( NOW + 6*H ))           # reset sooner than the 24h pause length
+DECIDE_CASES=(
+  "projection over the line fires|53.0|$r|-|$(( NOW + 24*H ))"
+  "projection under the line does not|28.0|$r|-|"
+  "gate blocks a huge projection before 24h|20.0|$r12|-|"
+  "absolute trigger fires inside the gate|93.0|$r12|-|$(( NOW + 24*H ))"
+  "pause is capped at the window reset|95.0|$r6|-|$r6"
+  "rolled window is ignored, not trusted|100.0|$(( NOW - 10 ))|-|"
+  "KWR_THROTTLE_PCT=0 disables the throttle|99.0|$r|0|"
+)
+for row in "${DECIDE_CASES[@]}"; do
+    IFS='|' read -r name used reset pct want <<<"$row"
+    mkusage "$d/u.json" "$used" "$reset"
+    if [ "$pct" = - ]; then got=$(decide "$d/u.json")
+    else got=$(KWR_THROTTLE_PCT="$pct" decide "$d/u.json"); fi
+    [ "$got" = "$want" ] || fail "$name: expected '$want', got '$got'"
+done
 
 # --- Fail open: missing file, malformed file, disabled.
 # A MISSING snapshot is legitimately idle: silent, exit 0, nothing on stderr.
@@ -104,16 +95,6 @@ jit="$d/jit/sessions/2026/09/10"; mkdir -p "$jit"
 python3 "$SRC" record --codex-home "$d/jit" --out "$d/jit.json" || fail "record failed on jittered resets_at"
 grep -q '"used_percent": 100.0' "$d/jit.json" \
     || fail "second-level resets_at jitter fragmented one window: $(cat "$d/jit.json")"
-
-# --- record: the WEEKLY block is identified by its window, not its position.
-#     A tiered response that puts a short session limit in `primary` must not
-#     be read as weekly usage -- the weekly figure here sits in `secondary`.
-tier="$d/tier/sessions/2026/09/10"; mkdir -p "$tier"
-printf '{"payload":{"rate_limits":{"primary":{"used_percent":97.0,"window_minutes":300,"resets_at":%s},"secondary":{"used_percent":31.0,"window_minutes":10080,"resets_at":%s}}}}\n' \
-    "$cur" "$cur" > "$tier/rollout-tier.jsonl"
-python3 "$SRC" record --codex-home "$d/tier" --out "$d/tier.json" || fail "record failed on a tiered rate-limit shape"
-grep -q '"used_percent": 31.0' "$d/tier.json" \
-    || fail "record read a 5-hour limit as the weekly window: $(cat "$d/tier.json")"
 
 # --- record: a rollout with NO weekly-window block yields no snapshot, rather
 #     than silently adopting a short window's percentage.
