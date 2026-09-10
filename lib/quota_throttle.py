@@ -1,33 +1,16 @@
 #!/usr/bin/env python3
 """Preemptive weekly-quota throttle for one codex account.
 
-Codex records a rate-limit snapshot into its own session rollout on every turn,
-so an account's weekly usage is readable from disk and costs no API quota:
+Codex records a rate-limit snapshot into its session rollout on every turn, so
+weekly usage is readable from disk at no API cost:
 
-    {"limit_id": "codex",
-     "primary": {"used_percent": 53.0, "window_minutes": 10080,
+    {"primary": {"used_percent": 53.0, "window_minutes": 10080,
                  "resets_at": 1789440911}, ...}
 
-Two modes, matching the producer/consumer split:
-
-  record  scan this account's recent rollouts for the newest weekly snapshot
-          and write it to the pool's usage.json. Run once per review by
-          review-one-pr.sh, so the per-tick consumer reads one small file
-          instead of globbing tens of thousands of rollouts.
-
-  decide  read that file and print the epoch this account should be throttled
-          until, or nothing if it should keep claiming. Run every tick by
-          review-loop.sh.
-
-Two triggers fire a pause (see the design doc):
-
-  A projection  used * 168 / elapsed >= PCT, once elapsed >= MIN_ELAPSED_H.
-                The gate is a confidence gate: it keeps the projection off a
-                denominator too small to mean anything.
-  B absolute    used >= PCT, ungated. There is nothing left to project once an
-                account is already at the threshold, and the gate is blind to
-                accounts that burn a week's quota inside a day -- which is how
-                two of three caps happened on 2026-09-10.
+`record` captures that snapshot after a review; `decide` reads it each tick and
+prints the epoch to throttle until. Two triggers fire a pause: a projection
+gated on enough elapsed window to trust it, and an ungated absolute check --
+the gate is blind to accounts that burn a week's quota inside a day.
 """
 
 import argparse
@@ -52,9 +35,9 @@ def _env_float(name, default):
 def decide(used, resets_at, now, pct, min_elapsed_h, pause_h):
     """Epoch to throttle until, or None to keep claiming.
 
-    Fails open on every unusable input: a disabled threshold, and a reading
-    whose window has already rolled (its used_percent describes a dead window,
-    so trusting it would throttle an account that is actually at zero).
+    Fails open on a disabled threshold and on a reading whose window already
+    rolled -- that used_percent describes a dead window, so trusting it would
+    throttle an account currently at zero.
     """
     if pct <= 0:
         return None
