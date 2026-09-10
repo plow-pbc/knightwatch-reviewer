@@ -29,6 +29,10 @@ make_sandbox() {
     # review-loop.sh sources lib/state-io.sh (log + quota_active/quota_pause_file);
     # give the sandbox the real lib so the quota-pause check exercises production code.
     cp "$(dirname "$SRC")/lib/state-io.sh" "$d/lib/state-io.sh"
+    # Same reason as state-io.sh above: review-loop resolves the throttle module
+    # under $(pwd)/lib, so without this the decide call silently no-ops and the
+    # throttle cases below would pass against an unimplemented gate.
+    cp "$(dirname "$SRC")/lib/quota_throttle.py" "$d/lib/quota_throttle.py"
     printf '#!/bin/bash\nexit 0\n' > "$d/bin/sleep"; chmod +x "$d/bin/sleep"  # noop: don't actually wait
     # Provisioned codex home. Every case passes CODEX_HOME="$d/codex" so the
     # startup auth guard reads the sandbox, never the operator's real ~/.codex
@@ -135,6 +139,54 @@ touch -d '3 hours ago' "$d/state/pool/solo"
 printf '%s\n' "$(( $(date +%s) - 10 ))" > "$d/state/pool/solo/quota-paused-until"
 ( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" CONFIG_ENV_FILE="$d/config.env" ./review-loop.sh ) >/dev/null 2>&1 || true
 [ -e "$d/called" ] || fail "review-loop skipped the tick with a PAST quota epoch (should resume)"
+rm -rf "$d"
+
+# 4b. Weekly-quota throttle: a FUTURE throttle epoch skips ticks, and an
+#     expired one resumes -- the same shape as the hard cap above, but a
+#     SEPARATE file, because the hard cap's file has a single writer and a
+#     24h soft stamp must never shorten a cap that runs for days.
+d=$(make_sandbox)
+printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"; chmod +x "$d/bin/docker"
+printf '#!/bin/bash\ntouch "%s/called"\nexit 1\n' "$d" > "$d/review.sh"; chmod +x "$d/review.sh"
+mkdir -p "$d/state/pool/solo"
+printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$d/state/pool/solo/throttle-paused-until"
+( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" CONFIG_ENV_FILE="$d/config.env" ./review-loop.sh ) >/dev/null 2>&1 || true
+[ ! -e "$d/called" ] || fail "review-loop ran review.sh while quota-throttled (should skip the tick)"
+printf '%s\n' "$(( $(date +%s) - 10 ))" > "$d/state/pool/solo/throttle-paused-until"
+( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" CONFIG_ENV_FILE="$d/config.env" ./review-loop.sh ) >/dev/null 2>&1 || true
+[ -e "$d/called" ] || fail "review-loop skipped the tick with an EXPIRED throttle epoch (should resume)"
+rm -rf "$d"
+
+# 4c. A throttle evaluation must never shorten an active hard-cap pause: the
+#     two live in separate files with one writer each, so a days-long cap
+#     survives a tick that would otherwise stamp a 24h soft pause.
+d=$(make_sandbox)
+printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"; chmod +x "$d/bin/docker"
+printf '#!/bin/bash\ntouch "%s/called"\nexit 1\n' "$d" > "$d/review.sh"; chmod +x "$d/review.sh"
+mkdir -p "$d/state/pool/solo"
+cap=$(( $(date +%s) + 5*24*3600 ))
+printf '%s\n' "$cap" > "$d/state/pool/solo/quota-paused-until"
+printf '{"used_percent": 99.0, "resets_at": %s, "observed_at": %s}\n' "$cap" "$(date +%s)" \
+    > "$d/state/pool/solo/usage.json"
+( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" CONFIG_ENV_FILE="$d/config.env" ./review-loop.sh ) >/dev/null 2>&1 || true
+[ "$(head -n1 "$d/state/pool/solo/quota-paused-until")" = "$cap" ] \
+    || fail "the throttle path rewrote quota-paused-until (hard cap must keep its sole writer)"
+rm -rf "$d"
+
+# 4d. The throttle STAMPS a pause from a usage snapshot: an account whose
+#     projection is over the line stops claiming on the very first tick, with
+#     no hard cap present. This is the case that proves the gate is wired to
+#     the decision module rather than only reading a pre-written file.
+d=$(make_sandbox)
+printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"; chmod +x "$d/bin/docker"
+printf '#!/bin/bash\ntouch "%s/called"\nexit 1\n' "$d" > "$d/review.sh"; chmod +x "$d/review.sh"
+mkdir -p "$d/state/pool/solo"
+# 53% used with 101h left => elapsed 67h => projection 133%
+printf '{"used_percent": 53.0, "resets_at": %s, "observed_at": %s}\n' \
+    "$(( $(date +%s) + 101*3600 ))" "$(date +%s)" > "$d/state/pool/solo/usage.json"
+( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" CONFIG_ENV_FILE="$d/config.env" ./review-loop.sh ) >/dev/null 2>&1 || true
+[ -s "$d/state/pool/solo/throttle-paused-until" ] || fail "review-loop did not stamp a throttle pause for a 133%-projected account"
+[ ! -e "$d/called" ] || fail "review-loop claimed a PR on the tick that engaged the throttle"
 rm -rf "$d"
 
 # 5. Auth offline: a fatal auth error takes the worker offline until re-login.

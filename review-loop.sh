@@ -132,6 +132,29 @@ while true; do
         sleep "$POLL_SECS"; continue
     fi
     rm -f "$(quota_pause_file)"   # absent or window passed; resume claiming
+    # Preemptive weekly-quota throttle. The hard cap above is reactive -- by the
+    # time it fires the account is at 100% and dark for days. This one reads the
+    # usage snapshot codex already writes into its rollouts and backs the account
+    # off BEFORE it exhausts the window. Evaluated after the cap so a capped
+    # account never reaches it, and re-evaluated on every tick: while throttled
+    # `used` is frozen while `elapsed` grows, so the projection strictly falls
+    # and the account resumes on its own once it is back under the line.
+    if throttle_active; then
+        log "[review-loop] weekly-quota throttled — skipping tick (until $(date -d "@$(head -n1 "$(throttle_pause_file)")" '+%a %H:%M' 2>/dev/null || echo 'window'))"
+        sleep "$POLL_SECS"; continue
+    fi
+    rm -f "$(throttle_pause_file)"   # absent or window passed; resume claiming
+    THROTTLE_UNTIL=$(python3 "$REVIEWER_LIB_DIR/quota_throttle.py" \
+        decide --usage "$(usage_snapshot_file)" 2>/dev/null || true)
+    if [ -n "$THROTTLE_UNTIL" ]; then
+        printf '%s\n' "$THROTTLE_UNTIL" > "$(throttle_pause_file)"
+        # Read the percentage with sed rather than a second python spawn: the
+        # snapshot is one flat JSON object, and nesting a python -c inside a
+        # log "$( )" is a quoting hazard for no benefit.
+        _used=$(sed -n 's/.*"used_percent": *\([0-9.]*\).*/\1/p' "$(usage_snapshot_file)" 2>/dev/null)
+        log "[review-loop] weekly-quota throttle engaged (${_used:-?}% of weekly cap used) — pausing until $(date -d "@$THROTTLE_UNTIL" '+%a %H:%M' 2>/dev/null || echo "$THROTTLE_UNTIL")"
+        sleep "$POLL_SECS"; continue
+    fi
     # GitHub rate limit → skip the tick. Unlike the two gates above (per-account
     # codex state) this one is FLEET-TOTAL: every container and the host systemd
     # timers spend one PAT and read one bind-mounted inode (lib/state-io.sh), so

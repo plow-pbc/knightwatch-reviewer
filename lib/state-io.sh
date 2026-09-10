@@ -108,6 +108,20 @@ quota_pause_file() { printf '%s' "$(pool_state_dir)/quota-paused-until"; }
 # empty file never occurs in practice).
 quota_active() { [ "$(date +%s)" -lt "$(head -n1 "$(quota_pause_file)" 2>/dev/null || echo 0)" ]; }
 
+# Preemptive weekly-quota throttle. Deliberately a SEPARATE file from the hard
+# cap above: that one's comment ("the sole writer always writes a numeric
+# epoch") is load-bearing, and review-loop.sh rm -f's it on expiry. A soft 24h
+# stamp sharing the inode could shorten a cap that runs for days and resume a
+# genuinely-capped account into the spin-abort storm the cap exists to prevent.
+# One writer per file keeps that invariant intact: review-one-pr.sh owns the
+# cap, review-loop.sh owns the throttle.
+throttle_pause_file() { printf '%s' "$(pool_state_dir)/throttle-paused-until"; }
+throttle_active() { [ "$(date +%s)" -lt "$(head -n1 "$(throttle_pause_file)" 2>/dev/null || echo 0)" ]; }
+
+# Latest weekly-usage snapshot for this account, written once per review by
+# review-one-pr.sh and read every tick by review-loop.sh (lib/quota_throttle.py).
+usage_snapshot_file() { printf '%s' "$(pool_state_dir)/usage.json"; }
+
 # Fatal-auth offline marker: when codex's token is invalidated (reused/rotated
 # refresh token, revoked session — NOT a usage cap), review-one-pr.sh records
 # the live auth.json mtime here and the worker goes OFFLINE. Unlike a quota
