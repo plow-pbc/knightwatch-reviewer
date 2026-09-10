@@ -144,8 +144,23 @@ while true; do
         sleep "$POLL_SECS"; continue
     fi
     rm -f "$(throttle_pause_file)"   # absent or window passed; resume claiming
-    THROTTLE_UNTIL=$(python3 "$REVIEWER_LIB_DIR/quota_throttle.py" \
-        decide --usage "$(usage_snapshot_file)" 2>/dev/null || true)
+    # Fail OPEN but never SILENT. A broken decide -- a traceback, an unreadable
+    # snapshot, python3 gone missing -- must not stop the fleet reviewing, but
+    # it must not read as "under quota" either: that is the throttle quietly
+    # ceasing to exist while the logs still look healthy, which is the exact
+    # dark-period this feature exists to prevent. Merge stderr in and require a
+    # bare epoch back, so anything else is reported rather than assumed benign.
+    THROTTLE_OUT=$(python3 "$REVIEWER_LIB_DIR/quota_throttle.py" \
+        decide --usage "$(usage_snapshot_file)" 2>&1); THROTTLE_RC=$?
+    THROTTLE_UNTIL=""
+    if [ "$THROTTLE_RC" -ne 0 ]; then
+        log "[review-loop] weekly-quota decide FAILED rc=$THROTTLE_RC — throttle inactive this tick: $(printf '%s' "$THROTTLE_OUT" | tr '\n' ' ' | cut -c1-200)"
+    elif [ -n "$THROTTLE_OUT" ]; then
+        case "$THROTTLE_OUT" in
+            *[!0-9]*) log "[review-loop] weekly-quota decide returned a non-epoch — throttle inactive this tick: $(printf '%s' "$THROTTLE_OUT" | tr '\n' ' ' | cut -c1-200)" ;;
+            *) THROTTLE_UNTIL="$THROTTLE_OUT" ;;
+        esac
+    fi
     if [ -n "$THROTTLE_UNTIL" ]; then
         printf '%s\n' "$THROTTLE_UNTIL" > "$(throttle_pause_file)"
         # Read the percentage with sed rather than a second python spawn: the

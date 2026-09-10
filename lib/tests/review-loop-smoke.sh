@@ -189,6 +189,21 @@ printf '{"used_percent": 53.0, "resets_at": %s, "observed_at": %s}\n' \
 [ ! -e "$d/called" ] || fail "review-loop claimed a PR on the tick that engaged the throttle"
 rm -rf "$d"
 
+# 4e. A broken throttle must fail OPEN but LOUD. If decide cannot run, the loop
+#     keeps claiming (reviews must not stop because a throttle broke) but says
+#     so -- a silent no-op is indistinguishable from "under quota", which is
+#     the throttle ceasing to exist while the logs look healthy.
+d=$(make_sandbox)
+printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"; chmod +x "$d/bin/docker"
+printf '#!/bin/bash\ntouch "%s/called"\nexit 1\n' "$d" > "$d/review.sh"; chmod +x "$d/review.sh"
+mkdir -p "$d/state/pool/solo"
+printf 'import sys\nsys.stderr.write("boom: simulated decide failure\\n")\nsys.exit(3)\n' > "$d/lib/quota_throttle.py"
+out=$( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" CONFIG_ENV_FILE="$d/config.env" ./review-loop.sh 2>&1 ) || true
+[ -e "$d/called" ] || fail "a broken throttle stopped the loop claiming (must fail OPEN)"
+printf '%s' "$out" | grep -q 'decide FAILED' || fail "a broken throttle was silent (must fail LOUD); got: $(printf '%s' "$out" | tail -3)"
+[ ! -s "$d/state/pool/solo/throttle-paused-until" ] || fail "a failed decide stamped a pause file"
+rm -rf "$d"
+
 # 5. Auth offline: a fatal auth error takes the worker offline until re-login.
 #    While the marker's recorded auth.json mtime still matches the live file,
 #    review-loop never claims; a re-login (newer auth.json mtime) clears the
