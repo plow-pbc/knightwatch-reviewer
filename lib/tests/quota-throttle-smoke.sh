@@ -54,9 +54,22 @@ mkusage "$d/u.json" 100.0 "$(( NOW - 10 ))"
 [ -z "$(decide "$d/u.json")" ] || fail "throttled on a reading from an expired window"
 
 # --- Fail open: missing file, malformed file, disabled.
+# A MISSING snapshot is legitimately idle: silent, exit 0, nothing on stderr.
+miss_err=$(python3 "$SRC" decide --usage "$d/nope.json" --now "$NOW" 2>&1 >/dev/null) \
+    || fail "a missing usage file exited non-zero (it means the throttle is idle, not broken)"
+[ -z "$miss_err" ] || fail "a missing usage file wrote to stderr: $miss_err"
 [ -z "$(decide "$d/nope.json")" ] || fail "throttled with no usage file"
+
+# A CORRUPT snapshot is a fault: still no throttle, but loud -- non-zero exit
+# and a stderr diagnostic, so review-loop.sh reports it instead of reading the
+# empty result as "under quota".
 printf 'not json\n' > "$d/bad.json"
-[ -z "$(decide "$d/bad.json")" ] || fail "throttled on a malformed usage file"
+bad_out=$(python3 "$SRC" decide --usage "$d/bad.json" --now "$NOW" 2>/dev/null) \
+    && fail "a corrupt usage file exited 0 — indistinguishable from 'no throttle needed'"
+[ -z "$bad_out" ] || fail "a corrupt usage file still printed a throttle epoch: $bad_out"
+bad_err=$(python3 "$SRC" decide --usage "$d/bad.json" --now "$NOW" 2>&1 >/dev/null || true)
+printf '%s' "$bad_err" | grep -q 'unreadable usage snapshot' \
+    || fail "a corrupt usage file produced no stderr diagnostic; got: $bad_err"
 mkusage "$d/u.json" 99.0 "$r"
 [ -z "$(KWR_THROTTLE_PCT=0 decide "$d/u.json")" ] || fail "KWR_THROTTLE_PCT=0 did not disable the throttle"
 

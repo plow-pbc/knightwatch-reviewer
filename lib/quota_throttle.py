@@ -151,14 +151,20 @@ def main(argv=None):
         os.replace(tmp, args.out)
         return 0
 
-    # decide -- every failure path is silent and non-throttling.
+    # decide -- always non-throttling on failure, but only SILENT when the
+    # snapshot is legitimately absent. A file that exists and will not parse is
+    # a fault, not an idle throttle, and collapsing the two is what lets the
+    # feature stop working while the loop's logs still read healthy.
     try:
         with open(args.usage) as fh:
             snap = json.load(fh)
         used = float(snap["used_percent"])
         resets_at = int(snap["resets_at"])
-    except (OSError, ValueError, TypeError, KeyError):
-        return 0
+    except FileNotFoundError:
+        return 0          # nothing recorded yet; the throttle is simply idle
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        sys.stderr.write(f"unreadable usage snapshot {args.usage}: {exc}\n")
+        return 2
     until = decide(
         used, resets_at,
         args.now if args.now is not None else int(time.time()),
