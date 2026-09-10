@@ -1706,6 +1706,16 @@ OPERATOR_NAME="${OPERATOR_NAME:-Sam}" \
     python3 "$_LIB_DIR/pipeline.py" "$REPO_DIR" "$RUN_DIR"
 PIPELINE_EXIT=$?
 PIPELINE_END_TS=$(date +%s)
+
+# Record this account's weekly quota usage for the preemptive throttle. Codex
+# already wrote the snapshot into its own rollout during the run, so this is a
+# bounded local read, not an API call -- and doing it HERE (once per review)
+# keeps review-loop.sh's per-tick check down to reading one small file.
+# Never fatal: a missing snapshot just means no throttle this round.
+python3 "$_LIB_DIR/quota_throttle.py" record \
+    --codex-home "${CODEX_HOME:-$HOME/.codex}" \
+    --out "$(usage_snapshot_file)" 2>/dev/null \
+    || log "$PR_ID: no codex usage snapshot found — throttle idle this round"
 AGG_OUT="$RUN_DIR/agents/aggregator/output.md"
 
 # Aggregator output is what gets posted to GitHub — abort on any pipeline

@@ -508,6 +508,8 @@ pool_status() {
             state="🔒 offline (codex auth invalid; awaiting operator re-login)"
         elif [ "$now" -lt "${until:-0}" ]; then
             state="⏸ quota-paused until $(date -d "@$until" '+%a %b %-d %H:%M %Z' 2>/dev/null || echo "epoch $until")"
+        elif [ "$now" -lt "$(head -n1 "$dir/throttle-paused-until" 2>/dev/null || echo 0)" ]; then
+            state="🐢 throttled until $(date -d "@$(head -n1 "$dir/throttle-paused-until")" '+%a %b %-d %H:%M %Z' 2>/dev/null || echo 'window')"
         else
             state="✅ active"
         fi

@@ -75,4 +75,17 @@ mkdir -p "$d/empty"
 python3 "$SRC" record --codex-home "$d/empty" --out "$d/none.json" && fail "record exited 0 with no snapshot available"
 [ ! -e "$d/none.json" ] || fail "record wrote a file when no snapshot was found"
 
+# --- pool_status renders a throttled account distinctly from a hard cap, so
+#     the author-facing paused comment shows the real reason for the wait.
+lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+s=$(mktemp -d)
+mkdir -p "$s/pool/1"
+printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$s/pool/1/throttle-paused-until"
+out=$( STATE_DIR="$s" WORKER_ID=1 bash -c "source '$lib_dir/state-io.sh'; pool_status" )
+printf '%s' "$out" | grep -q 'throttled' \
+    || fail "pool_status did not surface a throttled account (got: $out)"
+printf '%s' "$out" | grep -q 'quota-paused' \
+    && fail "pool_status mislabeled a throttle as a hard quota pause (got: $out)"
+rm -rf "$s"
+
 echo "quota-throttle smoke: all checks passed"
