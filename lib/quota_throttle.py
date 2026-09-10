@@ -39,6 +39,7 @@ from glob import glob
 
 WINDOW_H = 168.0          # codex weekly window; window_minutes is always 10080
 MAX_ROLLOUTS = 200        # bounded scan: newest N by mtime under the date dirs
+WINDOW_TOL_S = 3600       # resets_at jitters by seconds within one window
 
 
 def _env_float(name, default):
@@ -87,34 +88,46 @@ def _primary(obj):
 def latest_snapshot(codex_home):
     """Newest weekly snapshot for this account, or None.
 
-    Selection is by max resets_at, NOT by file mtime: rollouts interleave
-    readings from an already-expired window with current ones, so the newest
-    file can carry the older window.
+    Three properties of real rollouts drive this, each verified against the
+    live fleet on 2026-09-10 -- a naive read gets all three wrong:
+
+    1. A single rollout carries readings from MORE THAN ONE window. Sessions
+       get resumed, so the last rate_limits line in a file is often an older
+       window's. Reading one line per file reported w3 at 55% while it was
+       actually capped at 100% -- in a file that held the 100% reading.
+    2. resets_at JITTERS by a few seconds between readings of the same window
+       (...846/...847/...848 all name one window), so grouping by exact
+       equality shatters a window into useless fragments.
+    3. Within a window used_percent only ever grows, so the max across that
+       window IS the latest reading -- and no ordering heuristic is needed to
+       find it. Scanning more files can then only sharpen the estimate, never
+       corrupt it, which makes MAX_ROLLOUTS a precision knob rather than a
+       correctness risk. Under-reading is fail-safe: it throttles late, never
+       early.
     """
     files = glob(os.path.join(codex_home, "sessions", "*", "*", "*", "*.jsonl"))
     files.sort(key=lambda f: os.path.getmtime(f), reverse=True)
-    best = None
+    seen = []
     for path in files[:MAX_ROLLOUTS]:
         try:
             lines = open(path, errors="replace").read().splitlines()
         except OSError:
             continue
-        for line in reversed(lines):
+        for line in lines:
             if '"rate_limits"' not in line:
                 continue
             try:
                 p = _primary(json.loads(line))
             except (ValueError, TypeError):
                 continue
-            if not p:
-                continue
-            snap = (float(p["used_percent"]), int(p["resets_at"]))
-            if best is None or snap[1] > best[1]:
-                best = snap
-            break
-    if best is None:
+            if p:
+                seen.append((float(p["used_percent"]), int(p["resets_at"])))
+    if not seen:
         return None
-    return {"used_percent": best[0], "resets_at": best[1],
+    newest = max(r for _, r in seen)
+    window = [(u, r) for u, r in seen if newest - r <= WINDOW_TOL_S]
+    return {"used_percent": max(u for u, _ in window),
+            "resets_at": max(r for _, r in window),
             "observed_at": int(time.time())}
 
 

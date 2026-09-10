@@ -70,6 +70,28 @@ touch -d '1 hour ago' "$sess/rollout-a.jsonl"      # current-window reading is t
 python3 "$SRC" record --codex-home "$d/codex" --out "$d/rec.json" || fail "record exited non-zero with a readable snapshot"
 grep -q '"used_percent": 41.0' "$d/rec.json" || fail "record did not select by max resets_at (took the newest file instead)"
 
+# --- record: one rollout carrying TWO windows. Sessions get resumed, so the
+#     LAST rate_limits line in a file is routinely an older window's reading.
+#     Taking one line per file reported a capped account (100%) as 55%.
+mixed="$d/mixed/sessions/2026/09/10"; mkdir -p "$mixed"
+{ printf '{"payload":{"rate_limits":{"primary":{"used_percent":100.0,"window_minutes":10080,"resets_at":%s}}}}\n' "$cur"
+  printf '{"payload":{"rate_limits":{"primary":{"used_percent":64.0,"window_minutes":10080,"resets_at":%s}}}}\n' "$old"
+} > "$mixed/rollout-mixed.jsonl"
+python3 "$SRC" record --codex-home "$d/mixed" --out "$d/mixed.json" || fail "record failed on a mixed-window rollout"
+grep -q '"used_percent": 100.0' "$d/mixed.json" \
+    || fail "record took the file's LAST reading (an older window) instead of the current window's: $(cat "$d/mixed.json")"
+
+# --- record: resets_at jitters by seconds inside one window, so grouping by
+#     exact equality shatters it. All three readings below are one window.
+jit="$d/jit/sessions/2026/09/10"; mkdir -p "$jit"
+{ printf '{"payload":{"rate_limits":{"primary":{"used_percent":100.0,"window_minutes":10080,"resets_at":%s}}}}\n' "$(( cur ))"
+  printf '{"payload":{"rate_limits":{"primary":{"used_percent":70.0,"window_minutes":10080,"resets_at":%s}}}}\n' "$(( cur + 1 ))"
+  printf '{"payload":{"rate_limits":{"primary":{"used_percent":55.0,"window_minutes":10080,"resets_at":%s}}}}\n' "$(( cur + 2 ))"
+} > "$jit/rollout-jitter.jsonl"
+python3 "$SRC" record --codex-home "$d/jit" --out "$d/jit.json" || fail "record failed on jittered resets_at"
+grep -q '"used_percent": 100.0' "$d/jit.json" \
+    || fail "second-level resets_at jitter fragmented one window: $(cat "$d/jit.json")"
+
 # --- record: no snapshot anywhere -> non-zero, and no file written.
 mkdir -p "$d/empty"
 python3 "$SRC" record --codex-home "$d/empty" --out "$d/none.json" && fail "record exited 0 with no snapshot available"
