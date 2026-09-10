@@ -29,6 +29,10 @@ make_sandbox() {
     # review-loop.sh sources lib/state-io.sh (log + quota_active/quota_pause_file);
     # give the sandbox the real lib so the quota-pause check exercises production code.
     cp "$(dirname "$SRC")/lib/state-io.sh" "$d/lib/state-io.sh"
+    # Same reason as state-io.sh above: review-loop resolves the throttle module
+    # under $(pwd)/lib, so without this the decide call silently no-ops and the
+    # throttle cases below would pass against an unimplemented gate.
+    cp "$(dirname "$SRC")/lib/quota_throttle.py" "$d/lib/quota_throttle.py"
     printf '#!/bin/bash\nexit 0\n' > "$d/bin/sleep"; chmod +x "$d/bin/sleep"  # noop: don't actually wait
     # Provisioned codex home. Every case passes CODEX_HOME="$d/codex" so the
     # startup auth guard reads the sandbox, never the operator's real ~/.codex
@@ -42,6 +46,24 @@ make_sandbox() {
     # credential helper and the worker all run unauthenticated.
     printf 'GH_TOKEN=ghp_fake_for_smoke\n' > "$d/config.env"
     echo "$d"
+}
+
+# Ready-to-tick sandbox: dind up, a review.sh that marks it ran, pool dir made.
+# Sets the global `d`, like the `d=$(make_sandbox)` line it replaces.
+make_ready_sandbox() {
+    d=$(make_sandbox)
+    printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"                      # dind ready
+    printf '#!/bin/bash\ntouch "%s/called"\nexit 1\n' "$d" > "$d/review.sh"
+    chmod +x "$d/bin/docker" "$d/review.sh"
+    mkdir -p "$d/state/pool/solo"
+}
+
+# One tick against that sandbox. Exits non-zero by design (stub review.sh
+# returns 1), so callers add `|| true`.
+run_loop_once() {
+    ( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x \
+        STATE_DIR="$d/state" CODEX_HOME="$d/codex" \
+        CONFIG_ENV_FILE="$d/config.env" ./review-loop.sh )
 }
 
 # 1. dind never ready → fail loud (non-zero), don't hang.
@@ -121,20 +143,84 @@ fi
 rm -rf "$d"
 
 # 4. Quota backoff: a FUTURE paused-until epoch → review-loop never calls review.sh; PAST → resumes.
-d=$(make_sandbox)
-printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"; chmod +x "$d/bin/docker"   # dind ready
-printf '#!/bin/bash\ntouch "%s/called"\nexit 1\n' "$d" > "$d/review.sh"; chmod +x "$d/review.sh"
-mkdir -p "$d/state/pool/solo"
+make_ready_sandbox
 printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$d/state/pool/solo/quota-paused-until"
 # Backdate AFTER the file write (creating a file bumps the dir mtime): the
 # loop's registration touch is then the only thing that can freshen it — the pin.
 touch -d '3 hours ago' "$d/state/pool/solo"
-( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" CONFIG_ENV_FILE="$d/config.env" ./review-loop.sh ) >/dev/null 2>&1 || true
+run_loop_once >/dev/null 2>&1 || true
 [ ! -e "$d/called" ] || fail "review-loop ran review.sh while quota-paused (should skip the tick)"
 [ "$(stat -c %Y "$d/state/pool/solo")" -gt $(( $(date +%s) - 3600 )) ] || fail "loop tick did not touch the account dir (liveness registration unpinned)"
 printf '%s\n' "$(( $(date +%s) - 10 ))" > "$d/state/pool/solo/quota-paused-until"
-( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" CONFIG_ENV_FILE="$d/config.env" ./review-loop.sh ) >/dev/null 2>&1 || true
+run_loop_once >/dev/null 2>&1 || true
 [ -e "$d/called" ] || fail "review-loop skipped the tick with a PAST quota epoch (should resume)"
+rm -rf "$d"
+
+# 4b. Weekly-quota throttle: a FUTURE throttle epoch skips ticks, and an
+#     expired one resumes -- the same shape as the hard cap above, but a
+#     SEPARATE file, because the hard cap's file has a single writer and a
+#     24h soft stamp must never shorten a cap that runs for days.
+make_ready_sandbox
+printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$d/state/pool/solo/throttle-paused-until"
+run_loop_once >/dev/null 2>&1 || true
+[ ! -e "$d/called" ] || fail "review-loop ran review.sh while quota-throttled (should skip the tick)"
+printf '%s\n' "$(( $(date +%s) - 10 ))" > "$d/state/pool/solo/throttle-paused-until"
+run_loop_once >/dev/null 2>&1 || true
+[ -e "$d/called" ] || fail "review-loop skipped the tick with an EXPIRED throttle epoch (should resume)"
+rm -rf "$d"
+
+# 4c. A throttle evaluation must never shorten an active hard-cap pause: the
+#     two live in separate files with one writer each, so a days-long cap
+#     survives a tick that would otherwise stamp a 24h soft pause.
+make_ready_sandbox
+cap=$(( $(date +%s) + 5*24*3600 ))
+printf '%s\n' "$cap" > "$d/state/pool/solo/quota-paused-until"
+printf '{"used_percent": 99.0, "resets_at": %s}\n' "$cap" \
+    > "$d/state/pool/solo/usage.json"
+run_loop_once >/dev/null 2>&1 || true
+[ "$(head -n1 "$d/state/pool/solo/quota-paused-until")" = "$cap" ] \
+    || fail "the throttle path rewrote quota-paused-until (hard cap must keep its sole writer)"
+rm -rf "$d"
+
+# 4d. The throttle STAMPS a pause from a usage snapshot: an account whose
+#     projection is over the line stops claiming on the very first tick, with
+#     no hard cap present. This is the case that proves the gate is wired to
+#     the decision module rather than only reading a pre-written file.
+make_ready_sandbox
+# 53% used with 101h left => elapsed 67h => projection 133%
+printf '{"used_percent": 53.0, "resets_at": %s}\n' \
+    "$(( $(date +%s) + 101*3600 ))" > "$d/state/pool/solo/usage.json"
+run_loop_once >/dev/null 2>&1 || true
+[ -s "$d/state/pool/solo/throttle-paused-until" ] || fail "review-loop did not stamp a throttle pause for a 133%-projected account"
+[ ! -e "$d/called" ] || fail "review-loop claimed a PR on the tick that engaged the throttle"
+rm -rf "$d"
+
+# 4e. A broken throttle must fail OPEN but LOUD. If decide cannot run, the loop
+#     keeps claiming (reviews must not stop because a throttle broke) but says
+#     so -- a silent no-op is indistinguishable from "under quota", which is
+#     the throttle ceasing to exist while the logs look healthy.
+make_ready_sandbox
+printf 'import sys\nsys.stderr.write("boom: simulated decide failure\\n")\nsys.exit(3)\n' > "$d/lib/quota_throttle.py"
+out=$(run_loop_once 2>&1) || true
+[ -e "$d/called" ] || fail "a broken throttle stopped the loop claiming (must fail OPEN)"
+printf '%s' "$out" | grep -q 'decide FAILED' || fail "a broken throttle was silent (must fail LOUD); got: $(printf '%s' "$out" | tail -3)"
+[ ! -s "$d/state/pool/solo/throttle-paused-until" ] || fail "a failed decide stamped a pause file"
+rm -rf "$d"
+
+# 4f. Throttle config must reach the python child. config.env holds BARE
+#     assignments (an ordinary operator edit), and a bare assignment is not
+#     inherited by a subprocess -- so without an explicit export, an operator's
+#     `KWR_THROTTLE_PCT=0` is silently ignored and the account keeps throttling
+#     at the default. Same defect GH_TOKEN's export above exists to prevent.
+make_ready_sandbox
+# 53% used with 101h left => projection 133%: would throttle at the default.
+printf '{"used_percent": 53.0, "resets_at": %s}\n' \
+    "$(( $(date +%s) + 101*3600 ))" > "$d/state/pool/solo/usage.json"
+printf 'GH_TOKEN=ghp_fake_for_smoke\nKWR_THROTTLE_PCT=0\n' > "$d/config.env"
+run_loop_once >/dev/null 2>&1 || true
+[ ! -s "$d/state/pool/solo/throttle-paused-until" ] \
+    || fail "KWR_THROTTLE_PCT=0 in config.env did not reach quota_throttle.py — the operator's disable was ignored"
+[ -e "$d/called" ] || fail "loop did not claim with the throttle disabled"
 rm -rf "$d"
 
 # 5. Auth offline: a fatal auth error takes the worker offline until re-login.
@@ -150,11 +236,11 @@ printf '#!/bin/bash\ntouch "%s/called"\nexit 1\n' "$d" > "$d/review.sh"; chmod +
 mkdir -p "$d/state/pool/solo"   # review-loop's registration, done test-side
 ( cd "$d" && STATE_DIR="$d/state" CODEX_HOME="$d/codex" bash -c '. lib/state-io.sh && mark_auth_offline' )
 [ -s "$d/state/pool/solo/auth-offline" ] || fail "mark_auth_offline did not write the auth-offline marker"
-( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" CONFIG_ENV_FILE="$d/config.env" ./review-loop.sh ) >/dev/null 2>&1 || true
+run_loop_once >/dev/null 2>&1 || true
 [ ! -e "$d/called" ] || fail "review-loop ran review.sh while auth-offline (should skip until re-login)"
 # Simulate operator re-login: bump auth.json mtime past the marker.
 touch -d "+1 hour" "$d/codex/auth.json"
-( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" CONFIG_ENV_FILE="$d/config.env" ./review-loop.sh ) >/dev/null 2>&1 || true
+run_loop_once >/dev/null 2>&1 || true
 [ -e "$d/called" ] || fail "review-loop stayed offline after re-login (newer auth.json mtime should resume)"
 [ ! -e "$d/state/pool/solo/auth-offline" ] || fail "review-loop did not clear the auth-offline marker after re-login"
 rm -rf "$d"

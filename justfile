@@ -274,6 +274,10 @@ test:
     bash lib/tests/reeval-marker-smoke.sh
 
     echo ""
+    echo "=== quota-throttle smoke test ==="
+    bash lib/tests/quota-throttle-smoke.sh
+
+    echo ""
     echo "all checks passed"
 
 # Render docker-compose.yml from docker/secrets/fleet.conf.

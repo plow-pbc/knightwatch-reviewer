@@ -48,6 +48,12 @@ _KWR_STATE_DIR="${STATE_DIR:?review-loop.sh requires STATE_DIR from the compose 
 source "${CONFIG_ENV_FILE:?review-loop.sh requires CONFIG_ENV_FILE from the compose environment}"
 export GH_TOKEN="${GH_TOKEN:?review-loop.sh: no GH_TOKEN after sourcing $CONFIG_ENV_FILE — the quota probe would run unauthenticated and report nothing}"
 export REVIEWER_LIB_DIR="$(pwd)/lib" PROMPTS_DIR="$(pwd)/prompts" STATE_DIR="$_KWR_STATE_DIR"
+# Same reason as GH_TOKEN above: quota_throttle.py runs as a separate process, so
+# a bare `KWR_THROTTLE_PCT=0` in config.env would never reach it and an operator's
+# explicit disable would silently keep throttling at the default. Exported by NAME
+# only -- an unset var stays unset rather than being handed a value here, which
+# keeps quota_throttle.py the single source of the defaults.
+export KWR_THROTTLE_PCT KWR_THROTTLE_MIN_ELAPSED_H KWR_THROTTLE_PAUSE_H
 unset _KWR_STATE_DIR
 # Shared logger (timestamp + [w<WORKER_ID>] tag). LOG_FILE is unset here —
 # review.sh sets it later — so log() falls back to stdout-only, which is what
@@ -132,6 +138,44 @@ while true; do
         sleep "$POLL_SECS"; continue
     fi
     rm -f "$(quota_pause_file)"   # absent or window passed; resume claiming
+    # Preemptive weekly-quota throttle. The hard cap above is reactive -- by the
+    # time it fires the account is at 100% and dark for days. This one reads the
+    # usage snapshot codex already writes into its rollouts and backs the account
+    # off BEFORE it exhausts the window. Evaluated after the cap so a capped
+    # account never reaches it, and re-evaluated on every tick: while throttled
+    # `used` is frozen while `elapsed` grows, so the projection strictly falls
+    # and the account resumes on its own once it is back under the line.
+    if throttle_active; then
+        log "[review-loop] weekly-quota throttled — skipping tick (until $(date -d "@$(head -n1 "$(throttle_pause_file)")" '+%a %H:%M' 2>/dev/null || echo 'window'))"
+        sleep "$POLL_SECS"; continue
+    fi
+    rm -f "$(throttle_pause_file)"   # absent or window passed; resume claiming
+    # Fail OPEN but never SILENT. A broken decide -- a traceback, an unreadable
+    # snapshot, python3 gone missing -- must not stop the fleet reviewing, but
+    # it must not read as "under quota" either: that is the throttle quietly
+    # ceasing to exist while the logs still look healthy, which is the exact
+    # dark-period this feature exists to prevent. Merge stderr in and require a
+    # bare epoch back, so anything else is reported rather than assumed benign.
+    THROTTLE_OUT=$(python3 "$REVIEWER_LIB_DIR/quota_throttle.py" \
+        decide --usage "$(usage_snapshot_file)" 2>&1); THROTTLE_RC=$?
+    THROTTLE_UNTIL=""
+    if [ "$THROTTLE_RC" -ne 0 ]; then
+        log "[review-loop] weekly-quota decide FAILED rc=$THROTTLE_RC — throttle inactive this tick: $(printf '%s' "$THROTTLE_OUT" | tr '\n' ' ' | cut -c1-200)"
+    elif [ -n "$THROTTLE_OUT" ]; then
+        case "$THROTTLE_OUT" in
+            *[!0-9]*) log "[review-loop] weekly-quota decide returned a non-epoch — throttle inactive this tick: $(printf '%s' "$THROTTLE_OUT" | tr '\n' ' ' | cut -c1-200)" ;;
+            *) THROTTLE_UNTIL="$THROTTLE_OUT" ;;
+        esac
+    fi
+    if [ -n "$THROTTLE_UNTIL" ]; then
+        printf '%s\n' "$THROTTLE_UNTIL" > "$(throttle_pause_file)"
+        # Read the percentage with sed rather than a second python spawn: the
+        # snapshot is one flat JSON object, and nesting a python -c inside a
+        # log "$( )" is a quoting hazard for no benefit.
+        _used=$(sed -n 's/.*"used_percent": *\([0-9.]*\).*/\1/p' "$(usage_snapshot_file)" 2>/dev/null)
+        log "[review-loop] weekly-quota throttle engaged (${_used:-?}% of weekly cap used) — pausing until $(date -d "@$THROTTLE_UNTIL" '+%a %H:%M' 2>/dev/null || echo "$THROTTLE_UNTIL")"
+        sleep "$POLL_SECS"; continue
+    fi
     # GitHub rate limit → skip the tick. Unlike the two gates above (per-account
     # codex state) this one is FLEET-TOTAL: every container and the host systemd
     # timers spend one PAT and read one bind-mounted inode (lib/state-io.sh), so
