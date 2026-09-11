@@ -110,6 +110,61 @@ mkdir -p "$d/empty"
 python3 "$SRC" record --codex-home "$d/empty" --out "$d/none.json" && fail "record exited 0 with no snapshot available"
 [ ! -e "$d/none.json" ] || fail "record wrote a file when no snapshot was found"
 
+# --- status: a snapshot whose window has ROLLED must not report its stale
+#     percentage as current usage. An account that capped mid-window leaves
+#     its last non-null reading on disk and goes dark, so that number can sit
+#     there for days looking live -- the exact way a hand-rolled fleet table
+#     reported a capped account at 96% when it was actually at 100%.
+pool=$(mktemp -d)
+mkdir -p "$pool/1" "$pool/2" "$pool/3"
+# w1: current window, under the line.
+printf '{"used_percent": 22.0, "resets_at": %s}\n' "$(( NOW + (168-91)*H ))" > "$pool/1/usage.json"
+# w2: snapshot from a window that already ended, and hard-capped.
+printf '{"used_percent": 96.0, "resets_at": %s}\n' "$(( NOW - 2*24*H ))" > "$pool/2/usage.json"
+printf '%s\n' "$(( NOW + 3*24*H ))" > "$pool/2/quota-paused-until"
+# w3: no snapshot at all.
+out=$(python3 "$SRC" status --pool-dir "$pool" --now "$NOW")
+
+printf '%s' "$out" | grep -qE '^1 +22%' \
+    || fail "status did not report w1's current usage; got: $out"
+printf '%s' "$out" | grep -q '96' \
+    && fail "status printed a stale percentage as current usage: $(printf '%s' "$out" | grep 2)"
+printf '%s' "$out" | grep -E '^2 ' | grep -q 'stale: window ended' \
+    || fail "status did not mark w2's rolled window as stale; got: $(printf '%s' "$out" | grep -E '^2 ')"
+printf '%s' "$out" | grep -E '^2 ' | grep -q 'quota-paused until' \
+    || fail "status lost w2's quota-pause state; got: $(printf '%s' "$out" | grep -E '^2 ')"
+# Quota-scoped wording: this table reads only the two pause files, so it must
+# not claim lifecycle states it never inspected. quota-paused-until is also
+# stamped by the transient 429 backoff, and a worker can be auth-offline or
+# silent while carrying no pause at all -- both are pool_status's to report.
+printf '%s' "$out" | grep -qE 'hard-capped|claiming' \
+    && fail "status used lifecycle wording it cannot substantiate from quota files alone: $out"
+printf '%s' "$out" | grep -E '^3 ' | grep -q 'no snapshot recorded' \
+    || fail "status did not report w3 as having no snapshot; got: $out"
+
+# A snapshot read exactly at window open sits at elapsed == 0. Dividing by it
+# raises, and because status loops every account one such row would blank the
+# WHOLE table rather than just itself.
+mkdir -p "$pool/4"
+printf '{"used_percent": 0.0, "resets_at": %s}\n' "$(( NOW + 168*H ))" > "$pool/4/usage.json"
+out=$(python3 "$SRC" status --pool-dir "$pool" --now "$NOW") \
+    || fail "status crashed on an account whose window just opened (elapsed == 0)"
+printf '%s' "$out" | grep -E '^4 ' | grep -q 'window just opened' \
+    || fail "status did not mark the just-opened window; got: $(printf '%s' "$out" | grep -E '^4 ')"
+printf '%s' "$out" | grep -qE '^1 +22%' \
+    || fail "one just-opened account took out the rest of the table; got: $out"
+# A snapshot that EXISTS but will not parse is a fault, not absence: reported
+# per-row (status prints every account, so one bad file must not blank the
+# table) rather than coerced into looking like "none recorded".
+printf 'not json\n' > "$pool/4/usage.json"
+out=$(python3 "$SRC" status --pool-dir "$pool" --now "$NOW") \
+    || fail "status crashed on an unreadable snapshot instead of reporting the row"
+printf '%s' "$out" | grep -E '^4 ' | grep -q 'unreadable snapshot' \
+    || fail "an unreadable snapshot was reported as benign absence; got: $(printf '%s' "$out" | grep -E '^4 ')"
+printf '%s' "$out" | grep -qE '^1 +22%' \
+    || fail "one unreadable snapshot took out the rest of the table; got: $out"
+rm -rf "$pool"
+
 # --- pool_status renders a throttled account distinctly from a hard cap, so
 #     the author-facing paused comment shows the real reason for the wait.
 lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
