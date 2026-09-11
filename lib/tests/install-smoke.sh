@@ -300,10 +300,6 @@ done
 _kid_rw=$(grep -E '^ReadWritePaths=' "$SYSTEMD_DIR/pr-reviewer-kid-refresh.service")
 printf '%s' "$_kid_rw" | tr ' ' '\n' | grep -qxF "$EXPECTED_KWR_CLONE_ROOT" \
     || { echo "FAIL scenario 1: kid-refresh ReadWritePaths does not grant the clone root ($EXPECTED_KWR_CLONE_ROOT) — a repo org-sync clones after this install cannot be indexed until someone re-runs install.sh; got: $_kid_rw"; exit 1; }
-# And prove it for a concrete path that is NOT a tracked repo at render time.
-_future_repo="$EXPECTED_KWR_CLONE_ROOT/repo-cloned-after-this-install"
-printf '%s' "$_kid_rw" | grep -qF -- "$EXPECTED_KWR_CLONE_ROOT" \
-    || { echo "FAIL scenario 1: $_future_repo would be outside the kid-refresh sandbox"; exit 1; }
 
 # Regression pin: every codex-running unit must point npm's cache under a
 # ReadWritePaths dir. codex is npm-managed; npm's default cache (~/.npm) is
