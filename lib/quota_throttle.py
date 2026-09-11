@@ -126,15 +126,27 @@ def account_state(pool_dir, account, now):
                 return int(fh.readline().strip())
         except (OSError, ValueError):
             return 0
+    # Quota-scoped wording on purpose. This reads the two pause files and
+    # nothing else, so it cannot say "hard-capped" (quota-paused-until is also
+    # stamped by the transient 429 backoff, review-one-pr.sh) nor "claiming"
+    # (an auth-offline or long-silent worker is not claiming, and only
+    # pool_status looks at those). Lifecycle stays pool_status's to report.
     cap, throttle = epoch("quota-paused-until"), epoch("throttle-paused-until")
-    state = ("hard-capped until " + _stamp(cap) if now < cap else
-             "throttled until " + _stamp(throttle) if now < throttle else "claiming")
+    state = ("quota-paused until " + _stamp(cap) if now < cap else
+             "throttled until " + _stamp(throttle) if now < throttle else
+             "no quota pause")
     try:
         with open(os.path.join(d, "usage.json")) as fh:
             snap = json.load(fh)
         used, resets_at = float(snap["used_percent"]), int(snap["resets_at"])
-    except (OSError, ValueError, TypeError, KeyError):
+    except FileNotFoundError:
         return {"account": account, "note": "no snapshot recorded", "state": state}
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        # Reported, not coerced to look like absence -- decide() draws the same
+        # line. Kept per-row rather than raised: status prints every account, so
+        # one bad file must not blank the table.
+        return {"account": account, "note": f"unreadable snapshot: {exc}",
+                "state": state}
     if resets_at <= now:
         return {"account": account, "state": state,
                 "note": "stale: window ended " + _stamp(resets_at)}

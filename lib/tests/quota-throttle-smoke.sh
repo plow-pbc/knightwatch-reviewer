@@ -131,8 +131,14 @@ printf '%s' "$out" | grep -q '96' \
     && fail "status printed a stale percentage as current usage: $(printf '%s' "$out" | grep 2)"
 printf '%s' "$out" | grep -E '^2 ' | grep -q 'stale: window ended' \
     || fail "status did not mark w2's rolled window as stale; got: $(printf '%s' "$out" | grep -E '^2 ')"
-printf '%s' "$out" | grep -E '^2 ' | grep -q 'hard-capped until' \
-    || fail "status lost w2's hard-cap state; got: $(printf '%s' "$out" | grep -E '^2 ')"
+printf '%s' "$out" | grep -E '^2 ' | grep -q 'quota-paused until' \
+    || fail "status lost w2's quota-pause state; got: $(printf '%s' "$out" | grep -E '^2 ')"
+# Quota-scoped wording: this table reads only the two pause files, so it must
+# not claim lifecycle states it never inspected. quota-paused-until is also
+# stamped by the transient 429 backoff, and a worker can be auth-offline or
+# silent while carrying no pause at all -- both are pool_status's to report.
+printf '%s' "$out" | grep -qE 'hard-capped|claiming' \
+    && fail "status used lifecycle wording it cannot substantiate from quota files alone: $out"
 printf '%s' "$out" | grep -E '^3 ' | grep -q 'no snapshot recorded' \
     || fail "status did not report w3 as having no snapshot; got: $out"
 
@@ -147,6 +153,16 @@ printf '%s' "$out" | grep -E '^4 ' | grep -q 'window just opened' \
     || fail "status did not mark the just-opened window; got: $(printf '%s' "$out" | grep -E '^4 ')"
 printf '%s' "$out" | grep -qE '^1 +22%' \
     || fail "one just-opened account took out the rest of the table; got: $out"
+# A snapshot that EXISTS but will not parse is a fault, not absence: reported
+# per-row (status prints every account, so one bad file must not blank the
+# table) rather than coerced into looking like "none recorded".
+printf 'not json\n' > "$pool/4/usage.json"
+out=$(python3 "$SRC" status --pool-dir "$pool" --now "$NOW") \
+    || fail "status crashed on an unreadable snapshot instead of reporting the row"
+printf '%s' "$out" | grep -E '^4 ' | grep -q 'unreadable snapshot' \
+    || fail "an unreadable snapshot was reported as benign absence; got: $(printf '%s' "$out" | grep -E '^4 ')"
+printf '%s' "$out" | grep -qE '^1 +22%' \
+    || fail "one unreadable snapshot took out the rest of the table; got: $out"
 rm -rf "$pool"
 
 # --- pool_status renders a throttled account distinctly from a hard cap, so
