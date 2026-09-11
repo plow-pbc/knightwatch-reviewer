@@ -268,7 +268,14 @@ done
 # placeholder-only-in-comment edit can't sneak past the assertion while the
 # actual directive ships broken — the exact gap knightwatch flagged on PR #41.
 declare -A REQUIRED_PLACEHOLDER=(
-    [pr-reviewer-kid-refresh.service]='@KID_RW_PATHS@'
+    # Pins the CLONE ROOT, not the old per-repo @KID_RW_PATHS@ enumeration.
+    # The enumeration renders at install time while org-sync clones repos
+    # hourly, so a newly-tracked repo sat outside the sandbox until someone
+    # re-ran install.sh with sudo — this unit failed hourly for three days in
+    # Sep 2026 on exactly that. The root self-heals, and still satisfies the
+    # chromadb-WAL requirement above, since every enumerated path was already
+    # a child of it.
+    [pr-reviewer-kid-refresh.service]='@KWR_CLONE_ROOT@ @KID_RW_PATHS@'
     # org-sync writes the kwr-config cache under HOME (~/services/kwr-config),
     # which ProtectHome=read-only would block without this RW grant; pin it so a
     # future edit can't silently drop it and break the cache pull at activation.

@@ -454,7 +454,12 @@ LIVE_AFTER=$(sha1sum "$OVERLAY2/repos.conf" | awk '{print $1}')
 # mistake, the template path would leak into the rendered unit.
 KID_REFRESH_UNIT="$SAND_SYSTEMD2/pr-reviewer-kid-refresh.service"
 [ -f "$KID_REFRESH_UNIT" ] || { echo "FAIL D.2: kid-refresh unit not installed"; ls -la "$SAND_SYSTEMD2"; exit 1; }
-grep -q "/var/operator/custom-checkout" "$KID_REFRESH_UNIT" || { echo "FAIL D.2: kid-refresh unit missing operator path /var/operator/custom-checkout"; grep '^ReadWritePaths=' "$KID_REFRESH_UNIT"; exit 1; }
+# Anchored to the live ReadWritePaths= directive, not the whole file: the
+# unit's own comments mention @KID_RW_PATHS@, so install.sh substitutes the
+# operator path into COMMENT text too. A whole-file grep therefore passes on
+# a unit whose actual grant dropped the enumeration — which is exactly how a
+# change that left external KID_PATHS checkouts read-only cleared this suite.
+grep -q '^ReadWritePaths=.*/var/operator/custom-checkout' "$KID_REFRESH_UNIT" || { echo "FAIL D.2: kid-refresh ReadWritePaths= is missing operator path /var/operator/custom-checkout (a comment mention does not grant write)"; grep '^ReadWritePaths=' "$KID_REFRESH_UNIT"; exit 1; }
 grep -q "/should/not/appear" "$KID_REFRESH_UNIT" && { echo "FAIL D.2: kid-refresh unit contains template path /should/not/appear — .example was sourced instead of live"; grep '^ReadWritePaths=' "$KID_REFRESH_UNIT"; exit 1; }
 # Auto-manifest render fence: install.sh sources repos.conf.auto via
 # the loader, which drops legacy KID_PATHS values and convention-

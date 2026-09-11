@@ -26,17 +26,26 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 ProtectHome=read-only
-# @KID_RW_PATHS@ is rendered at install time by install.sh from
-# repos.conf's KID_PATHS values (deduped, space-separated absolute
-# paths). Keeps the sandbox minimal — adding a repo to repos.conf
-# widens ReadWritePaths by exactly that one path on the next install,
-# never the whole parent. Do not edit @KID_RW_PATHS@ by hand here.
+# TWO grants, because tracked repos arrive two ways:
+#
+# @KWR_CLONE_ROOT@ covers everything org-sync clones. That timer runs hourly
+# while install.sh renders this unit only at deploy time, so with the
+# enumeration alone a newly-tracked repo sat outside the sandbox and could not
+# be indexed until someone re-ran install.sh with sudo — this unit failed
+# hourly for three days in Sep 2026, then again within six hours of the deploy
+# that cleared it. pr-reviewer-org-sync.service already grants this root for
+# the same reason. With it, a repo cloned at 14:05 indexes at 14:30.
+#
+# @KID_RW_PATHS@ stays because a manual KID_PATHS entry in repos.conf may point
+# ANYWHERE (lib/tracked-repos.sh keeps operator overrides and they win over the
+# convention default). Those checkouts live outside the clone root, so dropping
+# the enumeration would silently leave them read-only and stale.
+#
 # See pr-reviewer-bakeoff.service for the rationale on excluding /home/odio/.local.
 # kid's binary lives at ~/.local/bin/kid (symlink) and
 # ~/.local/share/uv/tools/keepitdry/bin/kid (target); both must remain
-# read-only so attacker-replaced kid can't be exec'd. kid's data lives
-# under each tracked repo's .keepitdry/ — covered by @KID_RW_PATHS@.
-ReadWritePaths=/home/odio/.pr-reviewer @KID_RW_PATHS@ /home/odio/.cache /home/odio/.config
+# read-only so attacker-replaced kid can't be exec'd.
+ReadWritePaths=/home/odio/.pr-reviewer @KWR_CLONE_ROOT@ @KID_RW_PATHS@ /home/odio/.cache /home/odio/.config
 
 [Install]
 WantedBy=multi-user.target
