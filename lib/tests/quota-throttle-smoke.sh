@@ -135,6 +135,18 @@ printf '%s' "$out" | grep -E '^2 ' | grep -q 'hard-capped until' \
     || fail "status lost w2's hard-cap state; got: $(printf '%s' "$out" | grep -E '^2 ')"
 printf '%s' "$out" | grep -E '^3 ' | grep -q 'no snapshot recorded' \
     || fail "status did not report w3 as having no snapshot; got: $out"
+
+# A snapshot read exactly at window open sits at elapsed == 0. Dividing by it
+# raises, and because status loops every account one such row would blank the
+# WHOLE table rather than just itself.
+mkdir -p "$pool/4"
+printf '{"used_percent": 0.0, "resets_at": %s}\n' "$(( NOW + 168*H ))" > "$pool/4/usage.json"
+out=$(python3 "$SRC" status --pool-dir "$pool" --now "$NOW") \
+    || fail "status crashed on an account whose window just opened (elapsed == 0)"
+printf '%s' "$out" | grep -E '^4 ' | grep -q 'window just opened' \
+    || fail "status did not mark the just-opened window; got: $(printf '%s' "$out" | grep -E '^4 ')"
+printf '%s' "$out" | grep -qE '^1 +22%' \
+    || fail "one just-opened account took out the rest of the table; got: $out"
 rm -rf "$pool"
 
 # --- pool_status renders a throttled account distinctly from a hard cap, so

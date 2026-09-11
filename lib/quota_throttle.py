@@ -139,6 +139,13 @@ def account_state(pool_dir, account, now):
         return {"account": account, "state": state,
                 "note": "stale: window ended " + _stamp(resets_at)}
     elapsed = WINDOW_H - (resets_at - now) / 3600.0
+    if elapsed <= 0:
+        # A snapshot taken as the window opens sits at elapsed == 0 exactly
+        # (used_percent reads 0.0% there), and dividing by it would raise --
+        # taking out the whole table, not just this row. decide() guards the
+        # same division for the same reason.
+        return {"account": account, "state": state,
+                "note": "window just opened"}
     return {"account": account, "state": state, "used": used,
             "elapsed": elapsed, "projected": used * WINDOW_H / elapsed,
             "resets_at": resets_at}
