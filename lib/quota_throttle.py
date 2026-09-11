@@ -109,6 +109,45 @@ def latest_snapshot(codex_home):
             "resets_at": max(r for _, r in window)}
 
 
+def account_state(pool_dir, account, now):
+    """One account's quota line for the operator table.
+
+    `used` is reported ONLY when the snapshot describes the window that is
+    still open. A reading whose window has rolled says nothing about current
+    usage -- an account that capped mid-window leaves its last non-null
+    reading behind and goes dark, so the stale number can sit there for days
+    looking like a live measurement. decide() already ignores those; this
+    prints why instead of a misleading percentage.
+    """
+    d = os.path.join(pool_dir, account)
+    def epoch(name):
+        try:
+            with open(os.path.join(d, name)) as fh:
+                return int(fh.readline().strip())
+        except (OSError, ValueError):
+            return 0
+    cap, throttle = epoch("quota-paused-until"), epoch("throttle-paused-until")
+    state = ("hard-capped until " + _stamp(cap) if now < cap else
+             "throttled until " + _stamp(throttle) if now < throttle else "claiming")
+    try:
+        with open(os.path.join(d, "usage.json")) as fh:
+            snap = json.load(fh)
+        used, resets_at = float(snap["used_percent"]), int(snap["resets_at"])
+    except (OSError, ValueError, TypeError, KeyError):
+        return {"account": account, "note": "no snapshot recorded", "state": state}
+    if resets_at <= now:
+        return {"account": account, "state": state,
+                "note": "stale: window ended " + _stamp(resets_at)}
+    elapsed = WINDOW_H - (resets_at - now) / 3600.0
+    return {"account": account, "state": state, "used": used,
+            "elapsed": elapsed, "projected": used * WINDOW_H / elapsed,
+            "resets_at": resets_at}
+
+
+def _stamp(epoch_s):
+    return time.strftime("%b %d %H:%M UTC", time.gmtime(epoch_s))
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     sub = ap.add_subparsers(dest="mode", required=True)
@@ -121,6 +160,10 @@ def main(argv=None):
     dec.add_argument("--usage", required=True)
     dec.add_argument("--now", type=int, default=None)
 
+    st = sub.add_parser("status", help="per-account quota table for the fleet")
+    st.add_argument("--pool-dir", required=True)
+    st.add_argument("--now", type=int, default=None)
+
     args = ap.parse_args(argv)
 
     if args.mode == "record":
@@ -132,6 +175,20 @@ def main(argv=None):
             json.dump(snap, fh)
             fh.write("\n")
         os.replace(tmp, args.out)
+        return 0
+
+    if args.mode == "status":
+        now = args.now if args.now is not None else int(time.time())
+        for account in sorted(os.listdir(args.pool_dir)):
+            if not os.path.isdir(os.path.join(args.pool_dir, account)):
+                continue
+            r = account_state(args.pool_dir, account, now)
+            if "used" in r:
+                print(f"{r['account']:<4}{r['used']:>6.0f}%{r['elapsed']:>7.0f}h"
+                      f"{r['projected']:>10.0f}%  {r['state']}")
+            else:
+                print(f"{r['account']:<4}{'—':>6} {'—':>6}  {'—':>9}  "
+                      f"{r['state']} ({r['note']})")
         return 0
 
     # decide -- always non-throttling on failure, but only SILENT when the
