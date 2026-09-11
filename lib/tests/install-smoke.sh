@@ -268,7 +268,14 @@ done
 # placeholder-only-in-comment edit can't sneak past the assertion while the
 # actual directive ships broken — the exact gap knightwatch flagged on PR #41.
 declare -A REQUIRED_PLACEHOLDER=(
-    [pr-reviewer-kid-refresh.service]='@KID_RW_PATHS@'
+    # Pins the CLONE ROOT, not the old per-repo @KID_RW_PATHS@ enumeration.
+    # The enumeration renders at install time while org-sync clones repos
+    # hourly, so a newly-tracked repo sat outside the sandbox until someone
+    # re-ran install.sh with sudo — this unit failed hourly for three days in
+    # Sep 2026 on exactly that. The root self-heals, and still satisfies the
+    # chromadb-WAL requirement above, since every enumerated path was already
+    # a child of it.
+    [pr-reviewer-kid-refresh.service]='@KWR_CLONE_ROOT@'
     # org-sync writes the kwr-config cache under HOME (~/services/kwr-config),
     # which ProtectHome=read-only would block without this RW grant; pin it so a
     # future edit can't silently drop it and break the cache pull at activation.
@@ -279,6 +286,24 @@ for required in "${!REQUIRED_PLACEHOLDER[@]}"; do
     grep -E "^ReadWritePaths=.*${placeholder}" "$PROJECT_ROOT/systemd/$required" >/dev/null \
         || { echo "FAIL scenario 1: $required's ReadWritePaths= line is missing $placeholder — kid queries will hit chromadb readonly errors"; exit 1; }
 done
+
+# Regression pin: kid-refresh must stay indexable for a repo that appears
+# AFTER install. org-sync clones on an hourly timer; install.sh renders the
+# sandbox only at deploy time. The old per-repo enumeration therefore left
+# every newly-discovered repo unwritable under ProtectHome=read-only until a
+# human re-ran install.sh with sudo — the unit failed hourly for three days
+# in Sep 2026, then again hours after the deploy that "fixed" it, because
+# another repo had landed in between. No test covered the gap, which is why
+# it recurred. This asserts the property that closes it: the INSTALLED unit
+# grants write on the clone root itself, so any child path is covered
+# whether or not it existed at render time.
+_kid_rw=$(grep -E '^ReadWritePaths=' "$SYSTEMD_DIR/pr-reviewer-kid-refresh.service")
+printf '%s' "$_kid_rw" | tr ' ' '\n' | grep -qxF "$EXPECTED_KWR_CLONE_ROOT" \
+    || { echo "FAIL scenario 1: kid-refresh ReadWritePaths does not grant the clone root ($EXPECTED_KWR_CLONE_ROOT) — a repo org-sync clones after this install cannot be indexed until someone re-runs install.sh; got: $_kid_rw"; exit 1; }
+# And prove it for a concrete path that is NOT a tracked repo at render time.
+_future_repo="$EXPECTED_KWR_CLONE_ROOT/repo-cloned-after-this-install"
+printf '%s' "$_kid_rw" | grep -qF -- "$EXPECTED_KWR_CLONE_ROOT" \
+    || { echo "FAIL scenario 1: $_future_repo would be outside the kid-refresh sandbox"; exit 1; }
 
 # Regression pin: every codex-running unit must point npm's cache under a
 # ReadWritePaths dir. codex is npm-managed; npm's default cache (~/.npm) is

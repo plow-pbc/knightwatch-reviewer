@@ -26,17 +26,31 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 ProtectHome=read-only
-# @KID_RW_PATHS@ is rendered at install time by install.sh from
-# repos.conf's KID_PATHS values (deduped, space-separated absolute
-# paths). Keeps the sandbox minimal — adding a repo to repos.conf
-# widens ReadWritePaths by exactly that one path on the next install,
-# never the whole parent. Do not edit @KID_RW_PATHS@ by hand here.
+# @KWR_CLONE_ROOT@ — the checkout root — rather than the per-repo
+# @KID_RW_PATHS@ enumeration this unit used to carry. The enumeration kept
+# the sandbox minimal, but it was rendered at INSTALL time while org-sync
+# discovers and clones repos HOURLY, so every newly-tracked repo landed
+# outside the sandbox and could not be indexed until someone re-ran
+# install.sh with sudo. That is not a rare edge: it failed this unit every
+# hour for three days in Sep 2026, and again within hours of the deploy that
+# "fixed" it, because another repo had appeared in between.
+#
+# pr-reviewer-org-sync.service already resolved the identical problem the
+# same way, and documents @KWR_CLONE_ROOT@ as the only shape that works
+# without a preceding install.sh re-render. This unit now self-heals: a repo
+# cloned at 14:05 indexes on the 14:30 tick, with no deploy in the loop.
+#
+# What the widening costs is small and bounded. Every path the enumeration
+# ever granted was already a child of this root, so the only new reach is
+# over directories under the root that are not tracked repos — and org-sync
+# holds write on that same tree already. What the comment below actually
+# protects is untouched:
 # See pr-reviewer-bakeoff.service for the rationale on excluding /home/odio/.local.
 # kid's binary lives at ~/.local/bin/kid (symlink) and
 # ~/.local/share/uv/tools/keepitdry/bin/kid (target); both must remain
 # read-only so attacker-replaced kid can't be exec'd. kid's data lives
-# under each tracked repo's .keepitdry/ — covered by @KID_RW_PATHS@.
-ReadWritePaths=/home/odio/.pr-reviewer @KID_RW_PATHS@ /home/odio/.cache /home/odio/.config
+# under each tracked repo's .keepitdry/ — covered by @KWR_CLONE_ROOT@.
+ReadWritePaths=/home/odio/.pr-reviewer @KWR_CLONE_ROOT@ /home/odio/.cache /home/odio/.config
 
 [Install]
 WantedBy=multi-user.target
