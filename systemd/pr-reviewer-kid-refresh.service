@@ -26,31 +26,26 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 ProtectHome=read-only
-# @KWR_CLONE_ROOT@ — the checkout root — rather than the per-repo
-# @KID_RW_PATHS@ enumeration this unit used to carry. The enumeration kept
-# the sandbox minimal, but it was rendered at INSTALL time while org-sync
-# discovers and clones repos HOURLY, so every newly-tracked repo landed
-# outside the sandbox and could not be indexed until someone re-ran
-# install.sh with sudo. That is not a rare edge: it failed this unit every
-# hour for three days in Sep 2026, and again within hours of the deploy that
-# "fixed" it, because another repo had appeared in between.
+# TWO grants, because tracked repos arrive two ways:
 #
-# pr-reviewer-org-sync.service already resolved the identical problem the
-# same way, and documents @KWR_CLONE_ROOT@ as the only shape that works
-# without a preceding install.sh re-render. This unit now self-heals: a repo
-# cloned at 14:05 indexes on the 14:30 tick, with no deploy in the loop.
+# @KWR_CLONE_ROOT@ covers everything org-sync clones. That timer runs hourly
+# while install.sh renders this unit only at deploy time, so with the
+# enumeration alone a newly-tracked repo sat outside the sandbox and could not
+# be indexed until someone re-ran install.sh with sudo — this unit failed
+# hourly for three days in Sep 2026, then again within six hours of the deploy
+# that cleared it. pr-reviewer-org-sync.service already grants this root for
+# the same reason. With it, a repo cloned at 14:05 indexes at 14:30.
 #
-# What the widening costs is small and bounded. Every path the enumeration
-# ever granted was already a child of this root, so the only new reach is
-# over directories under the root that are not tracked repos — and org-sync
-# holds write on that same tree already. What the comment below actually
-# protects is untouched:
+# @KID_RW_PATHS@ stays because a manual KID_PATHS entry in repos.conf may point
+# ANYWHERE (lib/tracked-repos.sh keeps operator overrides and they win over the
+# convention default). Those checkouts live outside the clone root, so dropping
+# the enumeration would silently leave them read-only and stale.
+#
 # See pr-reviewer-bakeoff.service for the rationale on excluding /home/odio/.local.
 # kid's binary lives at ~/.local/bin/kid (symlink) and
 # ~/.local/share/uv/tools/keepitdry/bin/kid (target); both must remain
-# read-only so attacker-replaced kid can't be exec'd. kid's data lives
-# under each tracked repo's .keepitdry/ — covered by @KWR_CLONE_ROOT@.
-ReadWritePaths=/home/odio/.pr-reviewer @KWR_CLONE_ROOT@ /home/odio/.cache /home/odio/.config
+# read-only so attacker-replaced kid can't be exec'd.
+ReadWritePaths=/home/odio/.pr-reviewer @KWR_CLONE_ROOT@ @KID_RW_PATHS@ /home/odio/.cache /home/odio/.config
 
 [Install]
 WantedBy=multi-user.target
