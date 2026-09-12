@@ -43,6 +43,10 @@ if [ "$1" = "api" ]; then
         # exit = API error. gh_api_retry passes both through to the caller.
         case "${MOCK_PERM_MODE:-role}" in
             403) echo "gh: HTTP 403: API rate limit exceeded" >&2; exit 1 ;;
+            # The OTHER 403, verbatim as gh emits it: GitHub refuses this
+            # endpoint to a caller without push on the repo, for every subject.
+            # Definitive, not transient — the pair of 403 rows is the contract.
+            403-structural) echo "gh: Must have push access to view collaborator permission. (HTTP 403)" >&2; exit 1 ;;
             5xx) echo "gh: HTTP 503: Service Unavailable" >&2; exit 1 ;;
             empty) exit 1 ;;  # non-zero exit, no stdout/stderr (network drop)
             404) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
@@ -94,7 +98,8 @@ TRUST_MATRIX=(
     "clean-200 read (none)|role|none|1"
     "clean-200 read (read)|role|read|1"
     "404 non-collaborator|404||1"
-    "403 rate-limit|403||2"
+    "403 rate-limit (transient)|403||2"
+    "403 structural (caller lacks push)|403-structural||1"
     "5xx server error|5xx||2"
     "empty (network drop)|empty||2"
 )
@@ -102,7 +107,12 @@ for row in "${TRUST_MATRIX[@]}"; do
     IFS='|' read -r label mode role want <<<"$row"
     # Every row reuses cncorp/plow+someuser, so a live cache would answer rows
     # 2..n from row 1's verdict and the matrix would stop testing the stub.
-    reset_trust_cache
+    # The PAUSE is the same hazard from the other side: the 403 rate-limit row
+    # stamps a fleet pause, after which gh_retry short-circuits with an EMPTY
+    # errfile and every later row returns rc=2 without reaching its stub. The
+    # rows that follow it all wanted 2, so they passed for the wrong reason and
+    # the gap stayed invisible until a row below wanted something else.
+    reset_gh_pause; reset_trust_cache
     set +e
     GH_API_RETRY_MAX=1 MOCK_PERM_MODE="$mode" MOCK_PERM_ROLE="$role" \
         is_trusted_repo_author "cncorp/plow" "someuser"
@@ -332,4 +342,4 @@ set -e
 [ "$got" = 1 ] \
     || { echo "FAIL scenario 17: expected rc=1 with no manifest loaded, got rc=$got (a crash here takes down every review on a manifest-less consumer)"; exit 1; }
 
-echo "  PASS (17 scenarios: trust-tristate-matrix[9 rows: 3×trusted/2×untrusted/404/403/5xx/empty], indeterminate-defers-not-trusted, trust-empty, approval-self-skipped, approval-success, approval-failure-fail-loud, just-test run/untrusted-skip/no-justfile, trust-cache hit/non-trusted-never-cached[403+untrusted]/live-bypasses-cache/expired-re-probes/keyed-per-repo-user, allowlist-matrix[11 rows: owner/repo keys, case, prefix+suffix near-miss, empty]+no-API, allowlist-grants-reading-only, allowlist-absent-manifest)"
+echo "  PASS (17 scenarios: trust-tristate-matrix[10 rows: 3×trusted/2×untrusted/404/403-transient/403-structural/5xx/empty], indeterminate-defers-not-trusted, trust-empty, approval-self-skipped, approval-success, approval-failure-fail-loud, just-test run/untrusted-skip/no-justfile, trust-cache hit/non-trusted-never-cached[403+untrusted]/live-bypasses-cache/expired-re-probes/keyed-per-repo-user, allowlist-matrix[11 rows: owner/repo keys, case, prefix+suffix near-miss, empty]+no-API, allowlist-grants-reading-only, allowlist-absent-manifest)"
