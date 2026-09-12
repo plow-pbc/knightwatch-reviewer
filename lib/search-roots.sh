@@ -24,6 +24,14 @@
 #                   .siblings/<slug> path is the workdir-relative
 #                   directory the materializer (sibling-symlinks.sh)
 #                   populates after this helper runs.
+#
+#                   A SOURCE_PATHS value may point at a SUBDIRECTORY
+#                   of a git repo (an upstream framework's peer set, not
+#                   its whole tree). The `included` gate is unchanged —
+#                   the subdirectory must exist and `git rev-parse
+#                   --git-dir` must succeed from it, which it does
+#                   inside any checkout.
+#
 #   missing       — slug in SOURCE_PATHS BUT either (a) the checkout
 #                   directory is absent on this host or (b) the
 #                   checkout exists but isn't a git repo (so the
