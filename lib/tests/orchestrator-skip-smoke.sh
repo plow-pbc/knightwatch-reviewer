@@ -1546,6 +1546,44 @@ n7=$( { grep -c 'untrusted-requester-notice' "$COMMENT_POST_LOG" 2>/dev/null || 
 [ "$n7" -eq 0 ] || { echo "FAIL RT7: told the author they have no push access while trust was merely unverifiable"; exit 1; }
 clear_seeded_runs
 
+# --- RT7b: on a read-only repo the notice IS posted — the skip is permanent, not
+# a defer — but it must not state the author lacks push access. It is RT7's
+# claim at the other code, where the drop is correct and only the PROSE can be
+# wrong. The distinction is not cosmetic: this notice is published on someone
+# else's repository, and the structural 403 is a fact about OUR token, so the
+# default text told @Tiagohbello he lacked push access to a repo he OWNS.
+# It also has to withhold the maintainer-vouch remedy, which cannot work here —
+# a voucher is trust-checked identically and draws the same 403.
+echo "  scenario RT7b: read-only repo — the notice never claims the author lacks push access..."
+rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated"; : > "$COMMENT_POST_LOG"
+printf '[]\n' > "$MOCK_COMMENTS_FILE"
+# The REAL wording, so the classifier does the work — a hand-picked rc would
+# test the branch while leaving lib/auth.sh free to stop producing rc=3.
+# Deliberately not a rate-limit string: that stamps the fleet pause and every
+# later call short-circuits, which would test the pause instead of this path.
+MOCK_PR_UPDATED_AT="2026-08-10T03:05:00Z" MOCK_PR_AUTHOR="repo-owner" \
+    MOCK_PERMISSION_RC=1 \
+    MOCK_PERMISSION_ERR="gh: Must have push access to view collaborator permission. (HTTP 403)" \
+    run_orchestrator
+grep -q 'untrusted-requester-notice' "$COMMENT_POST_LOG" \
+    || { echo "FAIL RT7b: no notice posted — a permanent skip must still tell the author once"; cat "$LOG_FILE"; exit 1; }
+grep -q 'does not have push access' "$COMMENT_POST_LOG" \
+    && { echo "FAIL RT7b: published a false claim — the token cannot see this repo's permissions, so it learned nothing about @repo-owner"; cut -c1-200 "$COMMENT_POST_LOG"; exit 1; } || true
+grep -q 'only \*\*read\*\* access to this repository' "$COMMENT_POST_LOG" \
+    || { echo "FAIL RT7b: the notice does not say the limit is the reviewer's own access"; cut -c1-200 "$COMMENT_POST_LOG"; exit 1; }
+grep -q 'will not unblock it' "$COMMENT_POST_LOG" \
+    || { echo "FAIL RT7b: still offers the maintainer-vouch remedy, which draws the same 403 here"; cut -c1-200 "$COMMENT_POST_LOG"; exit 1; }
+# The OPERATOR log is the second consumer of the same fact, and the one that
+# drifted: the notice was corrected while this line kept the false cause, so
+# the operator diagnosing the skip got sent down the dead end the notice had
+# just stopped offering. Asserted here rather than in its own scenario — it is
+# the same claim under the same conditions, read by a different audience.
+grep -q 'has no push access' "$LOG_FILE" \
+    && { echo "FAIL RT7b: the operator log still states the author lacks push access"; grep 'not reviewed' "$LOG_FILE" | head -2; exit 1; } || true
+grep -q 'read-only access to .*NO ONE' "$LOG_FILE" \
+    || { echo "FAIL RT7b: the operator log does not name the read-only token as the cause"; grep 'not reviewed' "$LOG_FILE" | head -2; exit 1; }
+: > "$COMMENT_POST_LOG"
+
 # --- RT6: ALL FOUR trigger selectors are anchored, not just the whole-PR one.
 # RT1's mid-prose row exercises the requester scan; these exercise the dispatch
 # side. Both commands, both directions: prose that merely names a command must

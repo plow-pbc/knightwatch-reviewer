@@ -197,8 +197,12 @@ for REPO in "${REPOS[@]}"; do
                 # LIVE (#233): /memorize mutates the shared rule corpus and
                 # pushes it, so it shapes every future review. Memorize
                 # comments are rare — no volume argument for a cached verdict.
-                if ! is_trusted_repo_author_live "$REPO" "$USER"; then
-                    log "${REPO}#${PR_NUM}: /${BOT_CMD_PREFIX}-memorize from @${USER} ignored (no push access)"
+                # rc captured, not collapsed to a boolean: the log has to name
+                # WHY, and "no push access" is only one of the three reasons a
+                # non-zero comes back (lib/auth.sh::trust_denial_reason).
+                is_trusted_repo_author_live "$REPO" "$USER"; MEMO_RC=$?
+                if [ "$MEMO_RC" -ne 0 ]; then
+                    log "${REPO}#${PR_NUM}: /${BOT_CMD_PREFIX}-memorize from @${USER} ignored ($(trust_denial_reason "$MEMO_RC" "$REPO"))"
                     continue
                 fi
                 REPLY_KEY="${REPO}#${PR_NUM}#${ID}"

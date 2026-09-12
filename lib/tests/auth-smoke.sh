@@ -170,15 +170,45 @@ reason=$(just_test_skip_reason "/repo/justfile" true)
 
 reset_gh_pause; reset_trust_cache
 echo "  scenario 8: just_test_skip_reason skips untrusted authors regardless of mode..."
-reason=$(just_test_skip_reason "/repo/justfile" false)
+reason=$(just_test_skip_reason "/repo/justfile" false "$(trust_denial_reason 1)")
 [ -n "$reason" ] || { echo "FAIL scenario 8: untrusted author should be skipped"; exit 1; }
-printf '%s' "$reason" | grep -qi "untrusted" || { echo "FAIL scenario 8: skip reason should name the untrusted author, got: $reason"; exit 1; }
+printf '%s' "$reason" | grep -qi "no push access" || { echo "FAIL scenario 8: skip reason should name the cause, got: $reason"; exit 1; }
 
 reset_gh_pause; reset_trust_cache
 echo "  scenario 9: just_test_skip_reason skips when there is no justfile..."
 reason=$(just_test_skip_reason "" true)
 [ -n "$reason" ] || { echo "FAIL scenario 9: missing justfile should skip"; exit 1; }
 printf '%s' "$reason" | grep -qi "justfile" || { echo "FAIL scenario 9: skip reason should name the missing justfile, got: $reason"; exit 1; }
+
+reset_gh_pause; reset_trust_cache
+echo "  scenario 9b: trust_denial_reason — only rc=1 may say 'no push access'..."
+# The phrase lives here so consumers cannot flatten it. Every non-zero used to
+# be written up as "no push access" at each call site, which is a claim only a
+# DEFINITIVE answer supports — so rc=3 published it about people whose access
+# was merely unverifiable, including a repo's own owner (#278).
+# Columns: rc|must contain|must NOT contain
+DENIAL_MATRIX=(
+    "1|no push access|could not be verified"
+    "2|could not be verified|read-only access"
+    "3|read-only access to cncorp/plow|@"
+)
+for row in "${DENIAL_MATRIX[@]}"; do
+    IFS='|' read -r drc dwant dnope <<<"$row"
+    got=$(trust_denial_reason "$drc" "cncorp/plow")
+    printf '%s' "$got" | grep -qF "$dwant" \
+        || { echo "FAIL scenario 9b [rc=$drc]: expected to contain '$dwant', got: $got"; exit 1; }
+    printf '%s' "$got" | grep -qF "$dnope" \
+        && { echo "FAIL scenario 9b [rc=$drc]: must not contain '$dnope', got: $got"; exit 1; } || true
+done
+# rc=3 must not flatten on the ONE path that reaches the PR itself — this
+# string is rendered into the review's `not run (...)` test summary.
+reason=$(just_test_skip_reason "/repo/justfile" false "$(trust_denial_reason 3 "cncorp/plow")")
+printf '%s' "$reason" | grep -qF "no push access" \
+    && { echo "FAIL scenario 9b: the author-visible test summary still claims 'no push access' on an unverifiable verdict, got: $reason"; exit 1; } || true
+# ...and omitting the denial is not a quiet fall-back to rc=1's wording but a
+# hard failure, so the escape hatch beside the seam cannot be taken by accident.
+( just_test_skip_reason "/repo/justfile" false ) 2>/dev/null \
+    && { echo "FAIL scenario 9b: omitting the denial reason still produced a skip string — a caller can flatten rc=3 by leaving the argument off"; exit 1; } || true
 
 
 # --- is_trusted_repo_author caching (#233) ---
@@ -327,7 +357,7 @@ set -e
 [ "$cached_rc" = 1 ] \
     || { echo "FAIL scenario 16: is_trusted_repo_author consulted the allowlist (rc=$cached_rc)"; exit 1; }
 # ...and the one gate that consumes that boolean directly still declines.
-skip=$(just_test_skip_reason "/tmp/justfile" false)
+skip=$(just_test_skip_reason "/tmp/justfile" false "$(trust_denial_reason 1)")
 [ -n "$skip" ] \
     || { echo "FAIL scenario 16: just_test would RUN an allowlisted author's code — the allowlist is reading-only"; exit 1; }
 unset MOCK_PERM_MODE MOCK_PERM_ROLE
@@ -345,4 +375,4 @@ set -e
 [ "$got" = 1 ] \
     || { echo "FAIL scenario 17: expected rc=1 with no manifest loaded, got rc=$got (a crash here takes down every review on a manifest-less consumer)"; exit 1; }
 
-echo "  PASS (17 scenarios: trust-tristate-matrix[10 rows: 3×trusted/2×untrusted/404/403-transient/403-structural-permanent/5xx/empty], indeterminate-defers-not-trusted, trust-empty, approval-self-skipped, approval-success, approval-failure-fail-loud, just-test run/untrusted-skip/no-justfile, trust-cache hit/non-trusted-never-cached[403+untrusted]/live-bypasses-cache/expired-re-probes/keyed-per-repo-user, allowlist-matrix[11 rows: owner/repo keys, case, prefix+suffix near-miss, empty]+no-API, allowlist-grants-reading-only, allowlist-absent-manifest)"
+echo "  PASS (18 scenarios: trust-tristate-matrix[10 rows: 3×trusted/2×untrusted/404/403-transient/403-structural-permanent/5xx/empty], indeterminate-defers-not-trusted, trust-empty, approval-self-skipped, approval-success, approval-failure-fail-loud, just-test run/untrusted-skip/no-justfile/denial-reason-matrix[3 rows]+no-flatten-on-the-PR-visible-path, trust-cache hit/non-trusted-never-cached[403+untrusted]/live-bypasses-cache/expired-re-probes/keyed-per-repo-user, allowlist-matrix[11 rows: owner/repo keys, case, prefix+suffix near-miss, empty]+no-API, allowlist-grants-reading-only, allowlist-absent-manifest)"

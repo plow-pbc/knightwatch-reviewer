@@ -103,7 +103,7 @@ approve_check() {
             log "$APPROVE_KEY: permission check failed (API error) — leaving unseen to retry next tick"
             continue
         elif [ "$trust_rc" -ne 0 ]; then
-            log "$APPROVE_KEY: /${BOT_CMD_PREFIX}-approve from @$USER ignored (no push access)"
+            log "$APPROVE_KEY: /${BOT_CMD_PREFIX}-approve from @$USER ignored ($(trust_denial_reason "$trust_rc" "$REPO"))"
             seen_set "$APPROVES_SEEN_FILE" "$APPROVE_KEY"; continue
         fi
         # Body carries the marker so later ticks (and review.sh's filter) treat it

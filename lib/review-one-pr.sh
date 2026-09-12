@@ -823,7 +823,7 @@ if [ "$IS_TRUSTED_AUTHOR" = true ]; then
     [ "${#COPIED_ENV_FILES[@]}" -gt 0 ] && \
         log "$PR_ID: mirrored ${#COPIED_ENV_FILES[@]} env file(s) from canonical (PR_AUTHOR=$PR_AUTHOR trusted)"
 else
-    log "$PR_ID: skipping .env mirror — PR_AUTHOR=$PR_AUTHOR has no push access"
+    log "$PR_ID: skipping .env mirror — PR_AUTHOR=$PR_AUTHOR: $(trust_denial_reason "$AUTHOR_RC" "$REPO")"
 fi
 
 # ---- build diff + REVIEW_TASK (three paths) ----
@@ -1014,7 +1014,8 @@ STANDARDS=$(resolve_standards)
 # would otherwise run with the reviewer's home-dir read access (~/.ssh, the gh
 # PAT) + network (host path), or drive the privileged dind daemon (container
 # path). just_test_skip_reason (lib/auth.sh) is the single source of truth.
-JUST_TEST_SKIP_REASON=$(just_test_skip_reason "$JUST_FILE" "$IS_TRUSTED_AUTHOR")
+JUST_TEST_SKIP_REASON=$(just_test_skip_reason "$JUST_FILE" "$IS_TRUSTED_AUTHOR" \
+    "$(trust_denial_reason "$AUTHOR_RC" "$REPO")")
 
 # `just test` runs in the background against TEST_DIR while the LLM stages
 # start; only the `tests` specialist and the aggregator wait on it (via
