@@ -1573,6 +1573,15 @@ grep -q 'only \*\*read\*\* access to this repository' "$COMMENT_POST_LOG" \
     || { echo "FAIL RT7b: the notice does not say the limit is the reviewer's own access"; cut -c1-200 "$COMMENT_POST_LOG"; exit 1; }
 grep -q 'will not unblock it' "$COMMENT_POST_LOG" \
     || { echo "FAIL RT7b: still offers the maintainer-vouch remedy, which draws the same 403 here"; cut -c1-200 "$COMMENT_POST_LOG"; exit 1; }
+# The OPERATOR log is the second consumer of the same fact, and the one that
+# drifted: the notice was corrected while this line kept the false cause, so
+# the operator diagnosing the skip got sent down the dead end the notice had
+# just stopped offering. Asserted here rather than in its own scenario — it is
+# the same claim under the same conditions, read by a different audience.
+grep -q 'has no push access' "$LOG_FILE" \
+    && { echo "FAIL RT7b: the operator log still states the author lacks push access"; grep 'not reviewed' "$LOG_FILE" | head -2; exit 1; } || true
+grep -q 'read-only access to .*NO ONE' "$LOG_FILE" \
+    || { echo "FAIL RT7b: the operator log does not name the read-only token as the cause"; grep 'not reviewed' "$LOG_FILE" | head -2; exit 1; }
 : > "$COMMENT_POST_LOG"
 
 # --- RT6: ALL FOUR trigger selectors are anchored, not just the whole-PR one.

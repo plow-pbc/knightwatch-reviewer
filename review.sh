@@ -134,7 +134,7 @@ refresh_queue() {
     # 0-eligible case — one writer, not two copies of the same empty write.
     local PR_JSON REPO PR_NUM PR_TITLE PR_BRANCH PR_SHA PR_ID
     local PR_AUTHOR AUTHOR_TRUST_RC AUTHOR_ADMISSIBLE REQUESTER_TRUSTED _cand _cand_rc
-    local VOUCH_INDETERMINATE NOTICED_ALREADY NOTICE_ERR NOTICE_BODY REQUESTER_LOGIN
+    local VOUCH_INDETERMINATE NOTICED_ALREADY NOTICE_ERR NOTICE_BODY SKIP_REASON REQUESTER_LOGIN
     local TICK_FETCHED_AT_ISO REPO_SLUG_FOR_GATE KNOWN_SHA
     local FORCE_REVIEW FORCE_WHOLE_PR TRIGGER_USER TRIGGER_BODY
     local REVIEWED_AT_ISO COMMENTS_JSON WHOLE_TRIGGER INCREMENTAL_TRIGGER
@@ -624,7 +624,25 @@ This request stays open and fires automatically on your next push. To force a wh
         # than queueing a worker that would only skip: that is what makes a
         # PERMANENT skip cost one evaluation instead of one per tick.
         if [ "$REQUESTER_TRUSTED" != true ]; then
-            log "$PR_ID: not reviewed — no trusted requester (author @${PR_AUTHOR:-?} has no push access; a maintainer can comment /${BOT_CMD_PREFIX}-review)"
+            # rc=3 (lib/auth.sh) reports THIS TOKEN's visibility, not the
+            # author's permission — so both the diagnosis and the remedy differ,
+            # and a maintainer's vouch draws the same 403. Chosen once, here,
+            # because the operator log and the author's notice were drifting
+            # apart: the log is what the operator reads to diagnose the skip, so
+            # a false cause there sends them down the same dead end the notice
+            # used to. One branch, both consumers.
+            if [ "${AUTHOR_TRUST_RC:-}" = 3 ]; then
+                SKIP_REASON="this reviewer's token has read-only access to ${REPO}, so NO ONE's push access is verifiable here; the operator can allowlist @${PR_AUTHOR:-?} in TRUSTED_AUTHORS"
+                NOTICE_BODY="Not reviewed — this reviewer's GitHub token has only **read** access to this repository, so it cannot verify push access for *anyone* here. GitHub answers the collaborator-permission endpoint with 403 for every subject when the caller lacks push — the repository owner included — so this reflects what the reviewer can see, **not** @${PR_AUTHOR}'s permissions.
+
+Posting \`/${BOT_CMD_PREFIX}-review\` will not unblock it: a maintainer's vouch is checked the same way and hits the same 403. The reviewer's operator can unblock it by adding the author to \`TRUSTED_AUTHORS\` in the reviewer's manifest, which admits the PR for reading only — the PR's code is still never executed."
+            else
+                SKIP_REASON="author @${PR_AUTHOR:-?} has no push access; a maintainer can comment /${BOT_CMD_PREFIX}-review"
+                NOTICE_BODY="Not reviewed — @${PR_AUTHOR} does not have push access to this repository, so this reviewer will not read or run the PR.
+
+A maintainer with push access can unblock it by posting \`/${BOT_CMD_PREFIX}-review\` as the **first line** of a comment (any framing after it is kept and shapes the review). The review then runs against the diff only; the PR's code is still never executed."
+            fi
+            log "$PR_ID: not reviewed — no trusted requester ($SKIP_REASON)"
             # Tell the author once. The skip is permanent and otherwise silent.
             # Not for bots or ghost accounts: dependabot/renovate/Copilot all
             # read as "no push access", so without this every dependency-bump PR
@@ -653,32 +671,6 @@ This request stays open and fires automatically on your next push. To force a wh
                         # the branch watermarks regardless, so a cause-free line would
                         # leave an undeliverable notice undiagnosable.
                         NOTICE_ERR=$(mktemp)
-                        # Two different facts, so two different notices. The
-                        # default says the author HAS no push access, which is
-                        # only knowable from a definitive answer (rc=1). On a
-                        # repo this token has read-only, the answer is rc=3 —
-                        # we did not learn anything about the author — and
-                        # stating it anyway published a false claim about a
-                        # named person on their own repository: @Tiagohbello,
-                        # who OWNS plow-founder-agent, was told he lacks push
-                        # access to it (#275's endpoint, seen live on PR #5).
-                        #
-                        # The remedy line is the half that actually costs time.
-                        # A maintainer's vouch is trust-checked the same way and
-                        # hits the same 403, so on these repos the default text
-                        # sends the author to an unblock path that CANNOT work —
-                        # #275's "no in-repo escape hatch". The real unblock is
-                        # operator-side, so say that instead of inviting a
-                        # round-trip that ends where it started.
-                        if [ "${AUTHOR_TRUST_RC:-}" = 3 ]; then
-                            NOTICE_BODY="Not reviewed — this reviewer's GitHub token has only **read** access to this repository, so it cannot verify push access for *anyone* here. GitHub answers the collaborator-permission endpoint with 403 for every subject when the caller lacks push — the repository owner included — so this reflects what the reviewer can see, **not** @${PR_AUTHOR}'s permissions.
-
-Posting \`/${BOT_CMD_PREFIX}-review\` will not unblock it: a maintainer's vouch is checked the same way and hits the same 403. The reviewer's operator can unblock it by adding the author to \`TRUSTED_AUTHORS\` in the reviewer's manifest, which admits the PR for reading only — the PR's code is still never executed."
-                        else
-                            NOTICE_BODY="Not reviewed — @${PR_AUTHOR} does not have push access to this repository, so this reviewer will not read or run the PR.
-
-A maintainer with push access can unblock it by posting \`/${BOT_CMD_PREFIX}-review\` as the **first line** of a comment (any framing after it is kept and shapes the review). The review then runs against the diff only; the PR's code is still never executed."
-                        fi
                         gh api "repos/$REPO/issues/$PR_NUM/comments" --method POST \
                             -f body="${BOT_AUTO_POST_MARKER}${UNTRUSTED_NOTICE_MARKER}
 ${NOTICE_BODY}" >/dev/null 2>"$NOTICE_ERR" \
