@@ -170,9 +170,9 @@ reason=$(just_test_skip_reason "/repo/justfile" true)
 
 reset_gh_pause; reset_trust_cache
 echo "  scenario 8: just_test_skip_reason skips untrusted authors regardless of mode..."
-reason=$(just_test_skip_reason "/repo/justfile" false)
+reason=$(just_test_skip_reason "/repo/justfile" false "$(trust_denial_reason 1)")
 [ -n "$reason" ] || { echo "FAIL scenario 8: untrusted author should be skipped"; exit 1; }
-printf '%s' "$reason" | grep -qi "untrusted" || { echo "FAIL scenario 8: skip reason should name the untrusted author, got: $reason"; exit 1; }
+printf '%s' "$reason" | grep -qi "no push access" || { echo "FAIL scenario 8: skip reason should name the cause, got: $reason"; exit 1; }
 
 reset_gh_pause; reset_trust_cache
 echo "  scenario 9: just_test_skip_reason skips when there is no justfile..."
@@ -205,10 +205,10 @@ done
 reason=$(just_test_skip_reason "/repo/justfile" false "$(trust_denial_reason 3 "cncorp/plow")")
 printf '%s' "$reason" | grep -qF "no push access" \
     && { echo "FAIL scenario 9b: the author-visible test summary still claims 'no push access' on an unverifiable verdict, got: $reason"; exit 1; } || true
-# ...while the default (no denial passed) keeps the rc=1 wording verbatim, so
-# every existing caller reads exactly as before.
-printf '%s' "$(just_test_skip_reason "/repo/justfile" false)" | grep -qF "untrusted author (no push access)" \
-    || { echo "FAIL scenario 9b: the default skip reason changed for callers that pass no denial"; exit 1; }
+# ...and omitting the denial is not a quiet fall-back to rc=1's wording but a
+# hard failure, so the escape hatch beside the seam cannot be taken by accident.
+( just_test_skip_reason "/repo/justfile" false ) 2>/dev/null \
+    && { echo "FAIL scenario 9b: omitting the denial reason still produced a skip string — a caller can flatten rc=3 by leaving the argument off"; exit 1; } || true
 
 
 # --- is_trusted_repo_author caching (#233) ---
@@ -357,7 +357,7 @@ set -e
 [ "$cached_rc" = 1 ] \
     || { echo "FAIL scenario 16: is_trusted_repo_author consulted the allowlist (rc=$cached_rc)"; exit 1; }
 # ...and the one gate that consumes that boolean directly still declines.
-skip=$(just_test_skip_reason "/tmp/justfile" false)
+skip=$(just_test_skip_reason "/tmp/justfile" false "$(trust_denial_reason 1)")
 [ -n "$skip" ] \
     || { echo "FAIL scenario 16: just_test would RUN an allowlisted author's code — the allowlist is reading-only"; exit 1; }
 unset MOCK_PERM_MODE MOCK_PERM_ROLE

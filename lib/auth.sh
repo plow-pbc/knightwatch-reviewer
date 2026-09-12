@@ -202,11 +202,14 @@ is_trusted_repo_author() {
 # run untrusted tests (without canonical secrets), which still exposed those
 # credentials to exfiltration. Trusted authors with a justfile run as before.
 just_test_skip_reason() {
-    local just_file="$1" is_trusted="$2" denial="${3:-}"
+    local just_file="$1" is_trusted="$2"
     if [ -z "$just_file" ]; then
         echo "no justfile in repo root"
     elif [ "$is_trusted" != true ]; then
-        echo "${denial:-untrusted author (no push access)} — PR code is not executed"
+        # Required HERE, not at the top: the no-justfile arm has no author to
+        # describe. A default would be an escape hatch beside the seam — omit
+        # the arg and you silently get rc=1's wording, in author-visible prose.
+        echo "${3?just_test_skip_reason: a denial reason is required for an untrusted author — pass trust_denial_reason \"\$rc\" \"\$repo\"} — PR code is not executed"
     fi
 }
 
