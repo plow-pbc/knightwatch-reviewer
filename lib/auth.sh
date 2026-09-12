@@ -202,12 +202,34 @@ is_trusted_repo_author() {
 # run untrusted tests (without canonical secrets), which still exposed those
 # credentials to exfiltration. Trusted authors with a justfile run as before.
 just_test_skip_reason() {
-    local just_file="$1" is_trusted="$2"
+    local just_file="$1" is_trusted="$2" denial="${3:-}"
     if [ -z "$just_file" ]; then
         echo "no justfile in repo root"
     elif [ "$is_trusted" != true ]; then
-        echo "untrusted author (no push access) — PR code is not executed"
+        echo "${denial:-untrusted author (no push access)} — PR code is not executed"
     fi
+}
+
+# trust_denial_reason RC [REPO] → the human-readable cause behind a non-zero
+# verdict, for a log line or an author-visible summary.
+#
+# One owner for the PHRASE, next to the owner of the CODE, because every
+# consumer was hand-writing "no push access" — which only rc=1 establishes.
+# Each new consumer re-flattened rc=3 and re-published a claim the lookup never
+# made, most visibly telling a repository's OWNER he lacked push access to it
+# (#275 for the endpoint, #278 for the sweep). Patching them one at a time is
+# what made it recur: a consumer cannot flatten a distinction it never spells,
+# so the phrase moved here rather than a fifth site learning to say it right.
+#
+# Cause only — no remedy. Those genuinely differ per consumer (a maintainer
+# vouch unblocks a review but is meaningless to /memorize), so each appends its
+# own and none has to re-derive the cause.
+trust_denial_reason() {
+    case "$1" in
+        3) printf 'push access could not be verified — this reviewer has read-only access to %s' "${2:-this repository}" ;;
+        2) printf 'push access could not be verified — the permission lookup failed' ;;
+        *) printf 'no push access' ;;
+    esac
 }
 
 # submit_approval REPO PR_NUM BOT_USER PR_AUTHOR APPROVE_BODY — wraps the

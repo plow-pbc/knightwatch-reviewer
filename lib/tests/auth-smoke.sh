@@ -180,6 +180,36 @@ reason=$(just_test_skip_reason "" true)
 [ -n "$reason" ] || { echo "FAIL scenario 9: missing justfile should skip"; exit 1; }
 printf '%s' "$reason" | grep -qi "justfile" || { echo "FAIL scenario 9: skip reason should name the missing justfile, got: $reason"; exit 1; }
 
+reset_gh_pause; reset_trust_cache
+echo "  scenario 9b: trust_denial_reason — only rc=1 may say 'no push access'..."
+# The phrase lives here so consumers cannot flatten it. Every non-zero used to
+# be written up as "no push access" at each call site, which is a claim only a
+# DEFINITIVE answer supports — so rc=3 published it about people whose access
+# was merely unverifiable, including a repo's own owner (#278).
+# Columns: rc|must contain|must NOT contain
+DENIAL_MATRIX=(
+    "1|no push access|could not be verified"
+    "2|could not be verified|read-only access"
+    "3|read-only access to cncorp/plow|@"
+)
+for row in "${DENIAL_MATRIX[@]}"; do
+    IFS='|' read -r drc dwant dnope <<<"$row"
+    got=$(trust_denial_reason "$drc" "cncorp/plow")
+    printf '%s' "$got" | grep -qF "$dwant" \
+        || { echo "FAIL scenario 9b [rc=$drc]: expected to contain '$dwant', got: $got"; exit 1; }
+    printf '%s' "$got" | grep -qF "$dnope" \
+        && { echo "FAIL scenario 9b [rc=$drc]: must not contain '$dnope', got: $got"; exit 1; } || true
+done
+# rc=3 must not flatten on the ONE path that reaches the PR itself — this
+# string is rendered into the review's `not run (...)` test summary.
+reason=$(just_test_skip_reason "/repo/justfile" false "$(trust_denial_reason 3 "cncorp/plow")")
+printf '%s' "$reason" | grep -qF "no push access" \
+    && { echo "FAIL scenario 9b: the author-visible test summary still claims 'no push access' on an unverifiable verdict, got: $reason"; exit 1; } || true
+# ...while the default (no denial passed) keeps the rc=1 wording verbatim, so
+# every existing caller reads exactly as before.
+printf '%s' "$(just_test_skip_reason "/repo/justfile" false)" | grep -qF "untrusted author (no push access)" \
+    || { echo "FAIL scenario 9b: the default skip reason changed for callers that pass no denial"; exit 1; }
+
 
 # --- is_trusted_repo_author caching (#233) ---
 # The lookup was uncached at one live API call per PR per tick per container,
@@ -345,4 +375,4 @@ set -e
 [ "$got" = 1 ] \
     || { echo "FAIL scenario 17: expected rc=1 with no manifest loaded, got rc=$got (a crash here takes down every review on a manifest-less consumer)"; exit 1; }
 
-echo "  PASS (17 scenarios: trust-tristate-matrix[10 rows: 3×trusted/2×untrusted/404/403-transient/403-structural-permanent/5xx/empty], indeterminate-defers-not-trusted, trust-empty, approval-self-skipped, approval-success, approval-failure-fail-loud, just-test run/untrusted-skip/no-justfile, trust-cache hit/non-trusted-never-cached[403+untrusted]/live-bypasses-cache/expired-re-probes/keyed-per-repo-user, allowlist-matrix[11 rows: owner/repo keys, case, prefix+suffix near-miss, empty]+no-API, allowlist-grants-reading-only, allowlist-absent-manifest)"
+echo "  PASS (18 scenarios: trust-tristate-matrix[10 rows: 3×trusted/2×untrusted/404/403-transient/403-structural-permanent/5xx/empty], indeterminate-defers-not-trusted, trust-empty, approval-self-skipped, approval-success, approval-failure-fail-loud, just-test run/untrusted-skip/no-justfile/denial-reason-matrix[3 rows]+no-flatten-on-the-PR-visible-path, trust-cache hit/non-trusted-never-cached[403+untrusted]/live-bypasses-cache/expired-re-probes/keyed-per-repo-user, allowlist-matrix[11 rows: owner/repo keys, case, prefix+suffix near-miss, empty]+no-API, allowlist-grants-reading-only, allowlist-absent-manifest)"

@@ -632,12 +632,12 @@ This request stays open and fires automatically on your next push. To force a wh
             # a false cause there sends them down the same dead end the notice
             # used to. One branch, both consumers.
             if [ "${AUTHOR_TRUST_RC:-}" = 3 ]; then
-                SKIP_REASON="this reviewer's token has read-only access to ${REPO}, so NO ONE's push access is verifiable here; the operator can allowlist @${PR_AUTHOR:-?} in TRUSTED_AUTHORS"
+                SKIP_REASON="$(trust_denial_reason 3 "$REPO") — NO ONE's push access is verifiable here; the operator can allowlist @${PR_AUTHOR:-?} in TRUSTED_AUTHORS"
                 NOTICE_BODY="Not reviewed — this reviewer's GitHub token has only **read** access to this repository, so it cannot verify push access for *anyone* here. GitHub answers the collaborator-permission endpoint with 403 for every subject when the caller lacks push — the repository owner included — so this reflects what the reviewer can see, **not** @${PR_AUTHOR}'s permissions.
 
 Posting \`/${BOT_CMD_PREFIX}-review\` will not unblock it: a maintainer's vouch is checked the same way and hits the same 403. The reviewer's operator can unblock it by adding the author to \`TRUSTED_AUTHORS\` in the reviewer's manifest, which admits the PR for reading only — the PR's code is still never executed."
             else
-                SKIP_REASON="author @${PR_AUTHOR:-?} has no push access; a maintainer can comment /${BOT_CMD_PREFIX}-review"
+                SKIP_REASON="author @${PR_AUTHOR:-?}: $(trust_denial_reason "${AUTHOR_TRUST_RC:-1}"); a maintainer can comment /${BOT_CMD_PREFIX}-review"
                 NOTICE_BODY="Not reviewed — @${PR_AUTHOR} does not have push access to this repository, so this reviewer will not read or run the PR.
 
 A maintainer with push access can unblock it by posting \`/${BOT_CMD_PREFIX}-review\` as the **first line** of a comment (any framing after it is kept and shapes the review). The review then runs against the diff only; the PR's code is still never executed."
