@@ -250,9 +250,12 @@ refresh_queue() {
             AUTHOR_ADMISSIBLE=true
         else
             is_trusted_repo_author "$REPO" "$PR_AUTHOR"; AUTHOR_TRUST_RC=$?
-            # Tri-state (lib/auth.sh): 0 trusted, 1 untrusted, 2 INDETERMINATE. An
-            # indeterminate result must never collapse to "untrusted" — that would
-            # drop a genuinely-trusted author's PR on a throttled lookup.
+            # lib/auth.sh owns the code contract. A RETRYABLE non-answer (2)
+            # must never collapse to "untrusted" — that would drop a genuinely-
+            # trusted author's PR on a throttled lookup. `-eq 2`, not `-ge 2`:
+            # the PERMANENT non-answer (3) has nothing to wait for, so it falls
+            # through to the not-admissible line below rather than deferring
+            # forever — which is the deadlock #275 filed.
             if [ "$AUTHOR_TRUST_RC" -eq 2 ]; then
                 log "$PR_ID: trust check deferred — API error ($PR_AUTHOR); retrying next tick"
                 continue
@@ -346,9 +349,14 @@ refresh_queue() {
                     # Trigger comments are body-filtered and rare.
                     is_trusted_repo_author_live "$REPO" "$TRIGGER_USER"; TRIGGER_TRUST_RC=$?
                     if [ "$TRIGGER_TRUST_RC" -eq 2 ]; then
-                        # Indeterminate → defer this PR: don't run without the
-                        # trusted trigger prose and advance the cutoff past it
+                        # RETRYABLE non-answer → defer this PR: don't run without
+                        # the trusted trigger prose and advance the cutoff past it
                         # (dropping it). Trigger stays unconsumed → retried next tick.
+                        # Deliberately not rc=3: on a repo this token can't query
+                        # at all, "retried next tick" never ends, and the unconsumed
+                        # trigger also pins FORCE_REVIEW so the PR can't even reach
+                        # the inactivity path (#275). That one honors the trigger
+                        # below and simply stages no prose.
                         log "$PR_ID: trigger from @$TRIGGER_USER — trust check deferred (API error); retrying next tick"
                         continue
                     fi
@@ -364,7 +372,10 @@ refresh_queue() {
                         # so drop the body — the note must not become requester framing.
                         case "$TRIGGER_BODY" in *"$BOT_AUTO_TRIGGER_MARKER"*) TRIGGER_BODY="" ;; esac
                     else
-                        log "$PR_ID: trigger from @$TRIGGER_USER — not staging trigger-comment.md (no push access)"
+                        # Covers rc=1 and rc=3 alike — "no VERIFIED push access"
+                        # rather than "no push access", because on a read-only
+                        # repo the answer is unobtainable, not negative (#275).
+                        log "$PR_ID: trigger from @$TRIGGER_USER — not staging trigger-comment.md (no verified push access)"
                     fi
                 fi
             fi
@@ -572,6 +583,12 @@ This request stays open and fires automatically on your next push. To force a wh
                 # also WATERMARKS, so one 403 would suppress a genuinely-vouched
                 # PR until its next updatedAt event, silently, with the notice
                 # already posted.
+                #
+                # rc=3 is excluded on purpose. This flag DEFERS, and on a repo
+                # the token cannot query, no vouch is ever verifiable — so
+                # setting it would retry forever instead of taking the honest
+                # permanent skip below (#275). TRUSTED_AUTHORS is the mechanism
+                # for admitting those repos, and it short-circuits above.
                 [ "$_cand_rc" -eq 2 ] && VOUCH_INDETERMINATE=true
             # Distinct logins so one user repeating the command costs one call.
             #

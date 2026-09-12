@@ -34,8 +34,25 @@
 #   0 — trusted        : clean 200 + a push role (admin/write/maintain)
 #   1 — untrusted      : DEFINITIVELY not — clean 200 + non-push role, or a
 #                        404 non-collaborator (also: empty user)
-#   2 — indeterminate  : couldn't verify — 403/5xx/network, or any non-zero
-#                        gh exit that isn't a clean "not a collaborator"
+#   2 — unverifiable, RETRYABLE — a transient 403 (rate limit), 5xx, network,
+#                        an active fleet pause, or any other non-zero gh exit
+#   3 — unverifiable, PERMANENT  — the structural 403: this token cannot query
+#                        this repo's collaborators AT ALL, for any subject, so
+#                        no amount of waiting will produce an answer (#275)
+#
+# 2 and 3 are both NON-ANSWERS. Callers group them by the question they are
+# actually asking, and the two groupings differ:
+#
+#   "Should I wait?"  groups 3 with 1 — there is nothing to wait for. Deferring
+#                     on 3 is the permanent deadlock #275 filed: the trigger is
+#                     never consumed and never expires.
+#   "Did we verify?"  groups 3 with 2 — neither established push access. A
+#                     caller that reports COMPLETENESS (lib/pr-comments.sh)
+#                     must count both, or it renders a thread as complete when
+#                     it silently dropped the one reply that was in it.
+#
+# Collapsing 3 into 1 loses the second distinction; collapsing it into 2
+# restores the deadlock. That is why it is its own code rather than either.
 # Callers that only branch trusted/untrusted treat 2 as falsy → fail closed.
 # rc=2 is never a verdict, so a caller that branches on it explicitly picks one
 # of three dispositions — DEFER (an unverifiable lookup must not drop a trusted
@@ -124,6 +141,14 @@ is_trusted_repo_author_live() {
         # failure (403 rate-limit, 5xx, network) → indeterminate, defer.
         case "$err" in
             *"HTTP 404"*|*"Not Found"*) return 1 ;;
+            # The PERMANENT non-answer (rc=3 above). GitHub refuses this
+            # endpoint to any caller without push on the repo, whatever the
+            # subject — the repo OWNER included — so it can never clear by
+            # waiting. Read as retryable it deadlocked every re-review trigger
+            # on a repo onboarded via TRUSTED_AUTHORS (#275). Disjoint by
+            # wording from the rate-limit 403 (#233), which is genuinely
+            # retryable — GH_API_RATE_LIMIT_RE in lib/gh-retry.sh owns that one.
+            *"Must have push access to view collaborator permission"*) return 3 ;;
         esac
         return 2
     fi
