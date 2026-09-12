@@ -599,4 +599,16 @@ GIT_TEST_ASSUME_DIFFERENT_OWNER=1 \
 assert_tracked_file_copy "scenario 16: subtree file" "nous/hermes-gateway-platforms" \
     "util.py" "$TMPDIR/foo/pkg/util.py"
 
-echo "  ok: sibling materialization whitelist-gated, redirect-safe, idempotent, committed-blobs-only, symlink-safe, fail-fast, snap-sha-pinned, path-traversal-safe, different-owner-safe, subtree-scoped, foreign-owned-subtree-safe"
+# --- scenario 17: git_safe_root terminates on every path shape --------
+# `${d%/*}` cannot shorten a path with no separator, so a relative
+# SOURCE_PATHS entry once spun the walk forever — a hang the worker only
+# reaps at its outer timeout, burning the PR's whole review budget. A
+# bounded assertion, because the regression's signature is "never
+# returns": without the timeout this test would hang the suite too.
+echo "  scenario 17: git_safe_root terminates on every path shape..."
+for probe in somedir a/b "" / /nonexistent/x/y; do
+    timeout 5 bash -c ". $SCRIPT_DIR/git-safe-root.sh; git_safe_root \"\$1\"" _ "$probe" >/dev/null 2>&1
+    [ $? -eq 124 ] && { echo "FAIL (scenario 17): git_safe_root hung on '$probe'"; exit 1; }
+done
+
+echo "  ok: sibling materialization whitelist-gated, redirect-safe, idempotent, committed-blobs-only, symlink-safe, fail-fast, snap-sha-pinned, path-traversal-safe, different-owner-safe, subtree-scoped, foreign-owned-subtree-safe, walk-terminates"

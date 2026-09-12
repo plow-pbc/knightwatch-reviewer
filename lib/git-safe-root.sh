@@ -21,6 +21,13 @@ git_safe_root() {
     local d="$1"
     while [ -n "$d" ] && [ "$d" != "/" ]; do
         [ -e "$d/.git" ] && { printf '%s\n' "$d"; return 0; }
+        # `${d%/*}` cannot shorten a path with no separator left, so a relative
+        # SOURCE_PATHS entry ("somedir") would spin here forever — a hang the
+        # worker only reaps at its outer timeout, burning the PR's whole budget.
+        # Break on no progress rather than special-casing relative input: it
+        # covers every non-shortening shape, and falls through to the loud
+        # fallback below.
+        [ "$d" = "${d%/*}" ] && break
         d="${d%/*}"
     done
     # No .git above it: not a checkout. Echo the input so the caller's own git
