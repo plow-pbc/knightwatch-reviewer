@@ -134,7 +134,7 @@ refresh_queue() {
     # 0-eligible case — one writer, not two copies of the same empty write.
     local PR_JSON REPO PR_NUM PR_TITLE PR_BRANCH PR_SHA PR_ID
     local PR_AUTHOR AUTHOR_TRUST_RC AUTHOR_ADMISSIBLE REQUESTER_TRUSTED _cand _cand_rc
-    local VOUCH_INDETERMINATE NOTICED_ALREADY NOTICE_ERR REQUESTER_LOGIN
+    local VOUCH_INDETERMINATE NOTICED_ALREADY NOTICE_ERR NOTICE_BODY REQUESTER_LOGIN
     local TICK_FETCHED_AT_ISO REPO_SLUG_FOR_GATE KNOWN_SHA
     local FORCE_REVIEW FORCE_WHOLE_PR TRIGGER_USER TRIGGER_BODY
     local REVIEWED_AT_ISO COMMENTS_JSON WHOLE_TRIGGER INCREMENTAL_TRIGGER
@@ -653,11 +653,35 @@ This request stays open and fires automatically on your next push. To force a wh
                         # the branch watermarks regardless, so a cause-free line would
                         # leave an undeliverable notice undiagnosable.
                         NOTICE_ERR=$(mktemp)
+                        # Two different facts, so two different notices. The
+                        # default says the author HAS no push access, which is
+                        # only knowable from a definitive answer (rc=1). On a
+                        # repo this token has read-only, the answer is rc=3 —
+                        # we did not learn anything about the author — and
+                        # stating it anyway published a false claim about a
+                        # named person on their own repository: @Tiagohbello,
+                        # who OWNS plow-founder-agent, was told he lacks push
+                        # access to it (#275's endpoint, seen live on PR #5).
+                        #
+                        # The remedy line is the half that actually costs time.
+                        # A maintainer's vouch is trust-checked the same way and
+                        # hits the same 403, so on these repos the default text
+                        # sends the author to an unblock path that CANNOT work —
+                        # #275's "no in-repo escape hatch". The real unblock is
+                        # operator-side, so say that instead of inviting a
+                        # round-trip that ends where it started.
+                        if [ "${AUTHOR_TRUST_RC:-}" = 3 ]; then
+                            NOTICE_BODY="Not reviewed — this reviewer's GitHub token has only **read** access to this repository, so it cannot verify push access for *anyone* here. GitHub answers the collaborator-permission endpoint with 403 for every subject when the caller lacks push — the repository owner included — so this reflects what the reviewer can see, **not** @${PR_AUTHOR}'s permissions.
+
+Posting \`/${BOT_CMD_PREFIX}-review\` will not unblock it: a maintainer's vouch is checked the same way and hits the same 403. The reviewer's operator can unblock it by adding the author to \`TRUSTED_AUTHORS\` in the reviewer's manifest, which admits the PR for reading only — the PR's code is still never executed."
+                        else
+                            NOTICE_BODY="Not reviewed — @${PR_AUTHOR} does not have push access to this repository, so this reviewer will not read or run the PR.
+
+A maintainer with push access can unblock it by posting \`/${BOT_CMD_PREFIX}-review\` as the **first line** of a comment (any framing after it is kept and shapes the review). The review then runs against the diff only; the PR's code is still never executed."
+                        fi
                         gh api "repos/$REPO/issues/$PR_NUM/comments" --method POST \
                             -f body="${BOT_AUTO_POST_MARKER}${UNTRUSTED_NOTICE_MARKER}
-Not reviewed — @${PR_AUTHOR} does not have push access to this repository, so this reviewer will not read or run the PR.
-
-A maintainer with push access can unblock it by posting \`/${BOT_CMD_PREFIX}-review\` as the **first line** of a comment (any framing after it is kept and shapes the review). The review then runs against the diff only; the PR's code is still never executed." >/dev/null 2>"$NOTICE_ERR" \
+${NOTICE_BODY}" >/dev/null 2>"$NOTICE_ERR" \
                             || log "$PR_ID: could not post the no-push-access notice: $(tr '\n' ' ' < "$NOTICE_ERR" 2>/dev/null | head -c 400)"
                         rm -f "$NOTICE_ERR"
                     fi
