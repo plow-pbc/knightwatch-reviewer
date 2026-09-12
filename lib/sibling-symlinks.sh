@@ -42,6 +42,12 @@
 #    review rounds 1-4 (Bug-Class-Recurrence; the structural shape
 #    that eliminates the class is "committed git blobs only,
 #    materialization either succeeds completely or aborts the review").
+#
+#    A SOURCE_PATHS value may be a SUBDIRECTORY of a git repo rather
+#    than its root. `ls-tree -r` then scopes to that subtree and emits
+#    subtree-relative paths, which is how an upstream framework's peer
+#    set is declared without materializing its whole tree into every
+#    per-PR workdir. Citations become <slug>/<subtree-relative-path>.
 
 # materialize_sibling_symlinks <workdir> <source_paths_var_name> <included_slug>...
 #
@@ -164,7 +170,13 @@ materialize_sibling_symlinks() {
                     ;;
             esac
             mkdir -p "$target/$(dirname "$rel")"
-            if ! git -c safe.directory="$src" -C "$src" show "$snap_sha:$rel" > "$target/$rel" 2>/dev/null; then
+            # `./` makes the path cwd-relative. `ls-tree -r` from a subdirectory
+            # emits subtree-relative paths, but `<rev>:<path>` is repo-ROOT-relative
+            # without the prefix — so a subtree source (an upstream framework's peer
+            # set, declared instead of its whole 2M-LOC tree) fails every blob read.
+            # At a repo root the two spellings are identical, so this is safe for
+            # every existing sibling.
+            if ! git -c safe.directory="$src" -C "$src" show "$snap_sha:./$rel" > "$target/$rel" 2>/dev/null; then
                 rm -f "$list_file"
                 echo "materialize_sibling_symlinks: git show $snap_sha:$rel failed for $slug" >&2
                 return 1

@@ -556,4 +556,38 @@ GIT_TEST_ASSUME_DIFFERENT_OWNER=1 materialize_sibling_symlinks "$WORKDIR" SOURCE
     || { echo "FAIL: materialize should succeed under different-owner git"; exit 1; }
 assert_tracked_file_copy "scenario 14: foo/main.py" "acme/foo" "main.py" "$TMPDIR/foo/main.py"
 
-echo "  ok: sibling materialization whitelist-gated, redirect-safe, idempotent, committed-blobs-only, symlink-safe, fail-fast, snap-sha-pinned, path-traversal-safe, different-owner-safe"
+# --- scenario 15: a SOURCE_PATHS value that is a SUBDIRECTORY --------
+# An upstream framework is too large to materialize whole (Hermes is
+# ~2M LOC / 11,119 tracked paths), so its peer set is declared as a
+# subtree: SOURCE_PATHS points at <repo>/sub/tree rather than <repo>.
+# `git -C <subdir> ls-tree -r` already scopes to the subtree and emits
+# subtree-relative paths; `git show <sha>:<path>` needs the `./` prefix
+# to resolve cwd-relative rather than repo-root-relative. Without it the
+# helper returns non-zero and the review aborts.
+echo "  scenario 15: SOURCE_PATHS value is a subdirectory → subtree-only..."
+SUBREPO="$TMPDIR/upstream"
+init_git_repo "$SUBREPO"
+mkdir -p "$SUBREPO/gateway/platforms/discord" "$SUBREPO/unrelated"
+echo "adapter-src"  > "$SUBREPO/gateway/platforms/discord/adapter.py"
+echo "contract-doc" > "$SUBREPO/gateway/platforms/ADDING_A_PLATFORM.md"
+echo "not-peer-set" > "$SUBREPO/unrelated/huge.py"
+git -C "$SUBREPO" add -A
+git -C "$SUBREPO" commit -qm "upstream fixture"
+
+declare -A SUB_PATHS=( ["nous/hermes-gateway-platforms"]="$SUBREPO/gateway/platforms" )
+materialize_sibling_symlinks "$WORKDIR" SUB_PATHS "nous/hermes-gateway-platforms" \
+    || { echo "FAIL (scenario 15): subtree source failed to materialize"; exit 1; }
+
+assert_tracked_file_copy "scenario 15: adapter" "nous/hermes-gateway-platforms" \
+    "discord/adapter.py" "$SUBREPO/gateway/platforms/discord/adapter.py"
+assert_tracked_file_copy "scenario 15: contract doc" "nous/hermes-gateway-platforms" \
+    "ADDING_A_PLATFORM.md" "$SUBREPO/gateway/platforms/ADDING_A_PLATFORM.md"
+
+# The subtree is the WHOLE corpus: nothing outside it may appear, or a
+# "peer set" declaration would quietly drag in the entire framework.
+[ -e "$WORKDIR/.siblings/nous/hermes-gateway-platforms/unrelated" ] \
+    && { echo "FAIL (scenario 15): content outside the declared subtree was materialized"; exit 1; }
+[ -e "$WORKDIR/.siblings/nous/hermes-gateway-platforms/gateway" ] \
+    && { echo "FAIL (scenario 15): paths are repo-root-relative, not subtree-relative"; exit 1; }
+
+echo "  ok: sibling materialization whitelist-gated, redirect-safe, idempotent, committed-blobs-only, symlink-safe, fail-fast, snap-sha-pinned, path-traversal-safe, different-owner-safe, subtree-scoped"
