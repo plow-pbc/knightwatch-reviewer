@@ -70,6 +70,28 @@ declare -A KID_PATHS=(
 # kid-index dir (e.g. <repo>-kid) while SOURCE_PATHS points at the
 # repo source checkout where greppable code actually lives. Empty /
 # unset = exclude that repo from the search surface.
+#
+# A value may be a SUBDIRECTORY of a git checkout, not only its root.
+# That is how an UPSTREAM FRAMEWORK enters the corpus: a repo that
+# extends a framework is reviewed against peers and consumers, which
+# answers "what does this break?" but never "did upstream already solve
+# this?". Declare the framework's peer set as a subtree so the reviewer
+# reads the extension contract and the framework's own plugins without
+# materializing its whole tree into every per-PR workdir:
+#
+#   ["NousResearch/hermes-gateway-platforms"]="$HOME/services/kwr-repos/hermes-upstream/gateway/platforms"
+#   ["NousResearch/hermes-platform-adapters"]="$HOME/services/kwr-repos/hermes-upstream/plugins/platforms"
+#
+# The slug is the CITATION PREFIX, so name it for the subtree it holds
+# rather than the repo — a review quoting `.../gateway/platforms/base.py`
+# should not cite it as if it lived at the repo root.
+#
+# The repo then opts in by listing those slugs in its own
+# .knightwatch/siblings (base-branch-read, so a PR cannot widen its own
+# corpus). Upstream mirrors are FORKS, and org-sync discovers with
+# `gh repo list --source`, which excludes forks by definition — so an
+# upstream mirror is always operator-staged and is NOT auto-refreshed.
+# Re-pull it when the framework moves.
 
 declare -A SOURCE_PATHS=(
     ["your-org/example-repo"]="$HOME/Hacking/example-repo"
