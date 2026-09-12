@@ -161,13 +161,23 @@ printf '%s' "$DOC" | grep -qF 'does NOT mean nobody answered' || {
 # The bug this fixture exists for: with the SOLE participant unverifiable and no
 # operator comment, the thread filters to empty — and the sentinel would report
 # that as "nobody commented".
+#
+# Once per NON-ANSWER code, because each is guaranteed on some repo and they
+# arrive by different doors: rc=2 under an active fleet pause (#233), rc=3 on a
+# repo this token has only READ on (#275) — where the structural 403 makes EVERY
+# participant answer 3, the repo owner included. lib/auth.sh groups them as
+# "did we verify?"; this is the caller that has to ask that question, so a code
+# landing on the untrusted side here is the silent-drop regression, not a nit.
 SOLE_JSON='[{"user":{"login":"pr-author"},"created_at":"2026-05-01T08:00:00Z","body":"Re Probe 2: already fixed, please re-check."}]'
 fetch_issue_comments() { printf '%s' "$SOLE_JSON"; }
-SOLE_DOC=$(BOT_USER=srosro fetch_pr_comments "cncorp/plow" 1 2>/dev/null)
-[ "$SOLE_DOC" = "(no PR comments)" ] && {
-    echo "FAIL fixture 5: a thread emptied by an UNVERIFIABLE participant reported as 'no comments' — the next review reads an existing reply as silence"; exit 1; }
-printf '%s' "$SOLE_DOC" | grep -qF 'INCOMPLETE' || {
-    echo "FAIL fixture 5: the emptied thread did not say it was incomplete"; printf '%s\n' "$SOLE_DOC"; exit 1; }
+is_trusted_repo_author_live() { return "$NONANSWER_RC"; }
+for NONANSWER_RC in 2 3; do
+    SOLE_DOC=$(BOT_USER=srosro fetch_pr_comments "cncorp/plow" 1 2>/dev/null)
+    [ "$SOLE_DOC" = "(no PR comments)" ] && {
+        echo "FAIL fixture 5 [rc=$NONANSWER_RC]: a thread emptied by an UNVERIFIABLE participant reported as 'no comments' — the next review reads an existing reply as silence"; exit 1; }
+    printf '%s' "$SOLE_DOC" | grep -qF 'INCOMPLETE' || {
+        echo "FAIL fixture 5 [rc=$NONANSWER_RC]: the emptied thread did not say it was incomplete"; printf '%s\n' "$SOLE_DOC"; exit 1; }
+done
 
 # A COMPLETE thread must stay quiet, or the notice is noise.
 fetch_issue_comments() { printf '%s' "$PARTIAL_JSON"; }

@@ -364,7 +364,10 @@ refresh_queue() {
                         # so drop the body — the note must not become requester framing.
                         case "$TRIGGER_BODY" in *"$BOT_AUTO_TRIGGER_MARKER"*) TRIGGER_BODY="" ;; esac
                     else
-                        log "$PR_ID: trigger from @$TRIGGER_USER — not staging trigger-comment.md (no push access)"
+                        # Covers rc=1 and rc=3 alike — "no VERIFIED push access"
+                        # rather than "no push access", because on a read-only
+                        # repo the answer is unobtainable, not negative (#275).
+                        log "$PR_ID: trigger from @$TRIGGER_USER — not staging trigger-comment.md (no verified push access)"
                     fi
                 fi
             fi

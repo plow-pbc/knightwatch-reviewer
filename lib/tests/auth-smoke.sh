@@ -79,7 +79,10 @@ reset_state() {
 # --- is_trusted_repo_author: tri-state by exit code ---
 #   0 = trusted (clean 200 + push role)
 #   1 = definitively untrusted (clean 200 + non-push role, OR a 404)
-#   2 = indeterminate (403 / 5xx / network — defer, never mislabel as untrusted)
+#   2 = unverifiable, RETRYABLE (rate-limit 403 / 5xx / network — defer, never
+#       mislabel as untrusted)
+#   3 = unverifiable, PERMANENT (structural 403 — this token cannot query the
+#       repo's collaborators at all, so deferring would never terminate)
 # Parametrized matrix: "label|MODE|ROLE|expected_rc" (no padding — fields are
 # split on the bare delimiter). MODE drives the gh stub above.
 # GH_API_RETRY_MAX=1 keeps the 5xx case from sleeping/retrying.
@@ -99,7 +102,7 @@ TRUST_MATRIX=(
     "clean-200 read (read)|role|read|1"
     "404 non-collaborator|404||1"
     "403 rate-limit (transient)|403||2"
-    "403 structural (caller lacks push)|403-structural||1"
+    "403 structural (caller lacks push)|403-structural||3"
     "5xx server error|5xx||2"
     "empty (network drop)|empty||2"
 )
@@ -342,4 +345,4 @@ set -e
 [ "$got" = 1 ] \
     || { echo "FAIL scenario 17: expected rc=1 with no manifest loaded, got rc=$got (a crash here takes down every review on a manifest-less consumer)"; exit 1; }
 
-echo "  PASS (17 scenarios: trust-tristate-matrix[10 rows: 3×trusted/2×untrusted/404/403-transient/403-structural/5xx/empty], indeterminate-defers-not-trusted, trust-empty, approval-self-skipped, approval-success, approval-failure-fail-loud, just-test run/untrusted-skip/no-justfile, trust-cache hit/non-trusted-never-cached[403+untrusted]/live-bypasses-cache/expired-re-probes/keyed-per-repo-user, allowlist-matrix[11 rows: owner/repo keys, case, prefix+suffix near-miss, empty]+no-API, allowlist-grants-reading-only, allowlist-absent-manifest)"
+echo "  PASS (17 scenarios: trust-tristate-matrix[10 rows: 3×trusted/2×untrusted/404/403-transient/403-structural-permanent/5xx/empty], indeterminate-defers-not-trusted, trust-empty, approval-self-skipped, approval-success, approval-failure-fail-loud, just-test run/untrusted-skip/no-justfile, trust-cache hit/non-trusted-never-cached[403+untrusted]/live-bypasses-cache/expired-re-probes/keyed-per-repo-user, allowlist-matrix[11 rows: owner/repo keys, case, prefix+suffix near-miss, empty]+no-API, allowlist-grants-reading-only, allowlist-absent-manifest)"
