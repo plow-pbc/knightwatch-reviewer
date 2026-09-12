@@ -563,31 +563,23 @@ assert_tracked_file_copy "scenario 14: foo/main.py" "acme/foo" "main.py" "$TMPDI
 # `git -C <subdir> ls-tree -r` already scopes to the subtree and emits
 # subtree-relative paths; `git show <sha>:<path>` needs the `./` prefix
 # to resolve cwd-relative rather than repo-root-relative. Without it the
-# helper returns non-zero and the review aborts.
+# helper returns non-zero on the first blob and the review aborts.
+# Reuses the `foo` fixture's `pkg/` rather than building a second repo:
+# it is already a subtree of a git checkout, and it carries a gitignored
+# `__pycache__/` that a bespoke fixture would not, so the mode/ignore
+# filters are exercised through the subtree path for free.
 echo "  scenario 15: SOURCE_PATHS value is a subdirectory → subtree-only..."
-SUBREPO="$TMPDIR/upstream"
-init_git_repo "$SUBREPO"
-mkdir -p "$SUBREPO/gateway/platforms/discord" "$SUBREPO/unrelated"
-echo "adapter-src"  > "$SUBREPO/gateway/platforms/discord/adapter.py"
-echo "contract-doc" > "$SUBREPO/gateway/platforms/ADDING_A_PLATFORM.md"
-echo "not-peer-set" > "$SUBREPO/unrelated/huge.py"
-git -C "$SUBREPO" add -A
-git -C "$SUBREPO" commit -qm "upstream fixture"
-
-declare -A SUB_PATHS=( ["nous/hermes-gateway-platforms"]="$SUBREPO/gateway/platforms" )
+declare -A SUB_PATHS=( ["nous/hermes-gateway-platforms"]="$TMPDIR/foo/pkg" )
 materialize_sibling_symlinks "$WORKDIR" SUB_PATHS "nous/hermes-gateway-platforms" \
     || { echo "FAIL (scenario 15): subtree source failed to materialize"; exit 1; }
-
-assert_tracked_file_copy "scenario 15: adapter" "nous/hermes-gateway-platforms" \
-    "discord/adapter.py" "$SUBREPO/gateway/platforms/discord/adapter.py"
-assert_tracked_file_copy "scenario 15: contract doc" "nous/hermes-gateway-platforms" \
-    "ADDING_A_PLATFORM.md" "$SUBREPO/gateway/platforms/ADDING_A_PLATFORM.md"
-
-# The subtree is the WHOLE corpus: nothing outside it may appear, or a
-# "peer set" declaration would quietly drag in the entire framework.
-[ -e "$WORKDIR/.siblings/nous/hermes-gateway-platforms/unrelated" ] \
-    && { echo "FAIL (scenario 15): content outside the declared subtree was materialized"; exit 1; }
-[ -e "$WORKDIR/.siblings/nous/hermes-gateway-platforms/gateway" ] \
-    && { echo "FAIL (scenario 15): paths are repo-root-relative, not subtree-relative"; exit 1; }
+assert_tracked_file_copy "scenario 15: subtree file" "nous/hermes-gateway-platforms" \
+    "util.py" "$TMPDIR/foo/pkg/util.py"
+# The subtree is the WHOLE corpus: `main.py` sits above it, a `pkg/`
+# prefix would mean paths came out repo-root-relative, and `__pycache__`
+# proves the gitignore filter still applies through the subtree path.
+for absent in main.py pkg __pycache__; do
+    [ -e "$WORKDIR/.siblings/nous/hermes-gateway-platforms/$absent" ] \
+        && { echo "FAIL (scenario 15): '$absent' must not appear in a subtree materialization"; exit 1; }
+done
 
 echo "  ok: sibling materialization whitelist-gated, redirect-safe, idempotent, committed-blobs-only, symlink-safe, fail-fast, snap-sha-pinned, path-traversal-safe, different-owner-safe, subtree-scoped"
