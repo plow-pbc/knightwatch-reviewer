@@ -582,4 +582,33 @@ for absent in main.py pkg __pycache__; do
         && { echo "FAIL (scenario 15): '$absent' must not appear in a subtree materialization"; exit 1; }
 done
 
-echo "  ok: sibling materialization whitelist-gated, redirect-safe, idempotent, committed-blobs-only, symlink-safe, fail-fast, snap-sha-pinned, path-traversal-safe, different-owner-safe, subtree-scoped"
+# --- scenario 16: a FOREIGN-OWNED subtree (the production shape) -----
+# Scenario 14 covers a foreign-owned repo ROOT; scenario 15 covers a
+# subtree owned by us. Production is both at once — the reviewer runs as
+# root against a uid-1000 mount, with SOURCE_PATHS naming a subtree — and
+# that combination is what neither covered. git checks dubious ownership
+# against the REPOSITORY ROOT, so scoping `-c safe.directory` to the
+# subtree leaves the root unexempted and every call fails; the reviewer
+# then classified every upstream subtree `missing` while the same paths
+# worked on the host as their owner. See lib/git-safe-root.sh.
+echo "  scenario 16: foreign-owned SUBTREE → still materialized..."
+declare -A SUB_OWNED=( ["nous/hermes-gateway-platforms"]="$TMPDIR/foo/pkg" )
+GIT_TEST_ASSUME_DIFFERENT_OWNER=1 \
+    materialize_sibling_symlinks "$WORKDIR" SUB_OWNED "nous/hermes-gateway-platforms" \
+    || { echo "FAIL (scenario 16): foreign-owned subtree failed to materialize"; exit 1; }
+assert_tracked_file_copy "scenario 16: subtree file" "nous/hermes-gateway-platforms" \
+    "util.py" "$TMPDIR/foo/pkg/util.py"
+
+# --- scenario 17: git_safe_root terminates on every path shape --------
+# `${d%/*}` cannot shorten a path with no separator, so a relative
+# SOURCE_PATHS entry once spun the walk forever — a hang the worker only
+# reaps at its outer timeout, burning the PR's whole review budget. A
+# bounded assertion, because the regression's signature is "never
+# returns": without the timeout this test would hang the suite too.
+echo "  scenario 17: git_safe_root terminates on every path shape..."
+for probe in somedir a/b "" / /nonexistent/x/y; do
+    timeout 5 bash -c ". $SCRIPT_DIR/git-safe-root.sh; git_safe_root \"\$1\"" _ "$probe" >/dev/null 2>&1
+    [ $? -eq 124 ] && { echo "FAIL (scenario 17): git_safe_root hung on '$probe'"; exit 1; }
+done
+
+echo "  ok: sibling materialization whitelist-gated, redirect-safe, idempotent, committed-blobs-only, symlink-safe, fail-fast, snap-sha-pinned, path-traversal-safe, different-owner-safe, subtree-scoped, foreign-owned-subtree-safe, walk-terminates"

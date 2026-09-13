@@ -49,6 +49,9 @@
 #    set is declared without materializing its whole tree into every
 #    per-PR workdir. Citations become <slug>/<subtree-relative-path>.
 
+# shellcheck source=git-safe-root.sh
+. "$(dirname "${BASH_SOURCE[0]}")/git-safe-root.sh"
+
 # materialize_sibling_symlinks <workdir> <source_paths_var_name> <included_slug>...
 #
 #   workdir            absolute path to the per-PR workdir
@@ -65,7 +68,7 @@ materialize_sibling_symlinks() {
     local workdir="$1"
     local -n _src_paths="$2"
     shift 2
-    local slug src target
+    local slug src src_root target
 
     # Wipe whatever .siblings/ shipped in the PR checkout. `rm -rf`
     # removes symlinks as symlinks (it does not follow them as long as
@@ -129,15 +132,18 @@ materialize_sibling_symlinks() {
         # materialization a single coherent snapshot. PR #37 review 5
         # finding 1 (BCR — 5th instance of silent-coverage-loss).
         # -c safe.directory: the sibling mount is owned by another uid (see
-        # lib/search-roots.sh); scoped to this path on every call below.
-        if ! snap_sha=$(git -c safe.directory="$src" -C "$src" rev-parse HEAD 2>/dev/null); then
+        # lib/search-roots.sh); scoped to this repo on every call below. It must
+        # name the REPOSITORY ROOT, not $src — for a subtree source those differ,
+        # and git checks ownership of the root (see lib/git-safe-root.sh).
+        src_root=$(git_safe_root "$src")
+        if ! snap_sha=$(git -c safe.directory="$src_root" -C "$src" rev-parse HEAD 2>/dev/null); then
             echo "materialize_sibling_symlinks: git rev-parse HEAD failed for $slug ($src)" >&2
             return 1
         fi
 
         # Capture to tempfile (NUL-safe + status-checkable).
         list_file=$(mktemp -t kw-sib-XXXXXX) || return 1
-        if ! git -c safe.directory="$src" -C "$src" ls-tree -r -z "$snap_sha" > "$list_file" 2>/dev/null; then
+        if ! git -c safe.directory="$src_root" -C "$src" ls-tree -r -z "$snap_sha" > "$list_file" 2>/dev/null; then
             rm -f "$list_file"
             echo "materialize_sibling_symlinks: git ls-tree -r $snap_sha failed for $slug ($src)" >&2
             return 1
@@ -176,7 +182,7 @@ materialize_sibling_symlinks() {
             # set, declared instead of its whole 2M-LOC tree) fails every blob read.
             # At a repo root the two spellings are identical, so this is safe for
             # every existing sibling.
-            if ! git -c safe.directory="$src" -C "$src" show "$snap_sha:./$rel" > "$target/$rel" 2>/dev/null; then
+            if ! git -c safe.directory="$src_root" -C "$src" show "$snap_sha:./$rel" > "$target/$rel" 2>/dev/null; then
                 rm -f "$list_file"
                 echo "materialize_sibling_symlinks: git show $snap_sha:$rel failed for $slug" >&2
                 return 1
