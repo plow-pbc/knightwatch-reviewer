@@ -1148,13 +1148,10 @@ KID_FLAG="$STATE_DIR/kid-last-failure"
 # so a reader learns WHY the cross-repo DRY signal is missing.
 KID_RAN=false
 KID_DETAIL=""
-# Per-repo kid index path. KID_PATHS was loaded at file scope via the
-# tracked-repos.sh loader (Bash arrays don't survive the process
-# boundary between review.sh and this worker; the loader pre-declares
-# KID_PATHS empty so the lookup is safe under `set -u` even if
-# repos.conf is absent in a test sandbox).
-KID_PROJECT_PATH="${KID_PATHS[$REPO]:-}"
-if [ -n "$KID_PROJECT_PATH" ] && [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -n "$KID_INPUT_DIFF" ] && [ -f "${KWR_CLONE_ROOT:-}/knightwatch-kid/scripts/kid_dry_check.py" ]; then
+# Per-repo kid index path, resolved by the tracked-repos.sh loader. Never empty:
+# a repo with no index at its path lands on "index not built" below.
+KID_PROJECT_PATH=$(kid_path_for "$REPO")
+if [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -n "$KID_INPUT_DIFF" ] && [ -f "${KWR_CLONE_ROOT:-}/knightwatch-kid/scripts/kid_dry_check.py" ]; then
     # The index is mounted read-only (host kid-refresh owns it), but ChromaDB's
     # sqlite needs write access even for a query (WAL). Query a throwaway copy in
     # a per-container writable dir: cp is cheap (~0.2s, page-cached), keeps each
@@ -1224,9 +1221,6 @@ if [ -n "$KID_PROJECT_PATH" ] && [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -n "
         rm -f "$KID_STDERR"
     fi
     rm -rf "$KID_QUERY_DIR"
-elif [ -z "$KID_PROJECT_PATH" ]; then
-    KID_DETAIL="no KID_PATHS entry"
-    log "$PR_ID: no KID_PATHS entry for $REPO — skipping prior-art lookup"
 # Test the kid ENTRYPOINT's reachability, not `-z KWR_CLONE_ROOT`: tracked-repos.sh
 # defaults KWR_CLONE_ROOT unconditionally, so an unset test can never fire and this
 # misconfig used to fall through to the "index not yet built" message below —

@@ -121,12 +121,18 @@ CONF
 out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; echo \"REPOS=\${REPOS[0]}\"")
 [ "$out" = "REPOS=acme/foo" ] || { echo "FAIL B3: loader output: $out (expected repos.conf to win)"; exit 1; }
 
-echo "  B4: lookup of an unknown REPO returns empty, not a set-u error..."
-# Catches the regression where the worker's KID_PROJECT_PATH lookup
-# crashed with "unbound variable" because KID_PATHS wasn't pre-declared.
-rm -f "$SAND_STATE/repos.conf" "$SAND_STATE/config.env"
-out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; REPO=cncorp/nonexistent; echo \"v=[\${KID_PATHS[\$REPO]:-}]\"" 2>&1)
-[ "$out" = "v=[]" ] || { echo "FAIL B4: loader output: $out"; exit 1; }
+echo "  B4: kid_path_for resolves an ORGS-covered repo absent from REPOS to the convention path..."
+# The worker reviews every repo in an ORGS owner, but only REPOS is enumerated
+# into KID_PATHS — so an org-covered repo lost prior-art despite a built index.
+# A manual KID_PATHS entry still wins.
+rm -f "$SAND_STATE/config.env"
+cat > "$SAND_STATE/repos.conf" <<'CONF'
+ORGS=(acme)
+declare -A KID_PATHS=([acme/manual]=/var/manual)
+CONF
+out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; echo \"org=\$(kid_path_for acme/unlisted) manual=\$(kid_path_for acme/manual)\"" 2>&1)
+[ "$out" = "org=$HOME/services/kwr-repos/unlisted manual=/var/manual" ] || { echo "FAIL B4: loader output: $out"; exit 1; }
+rm -f "$SAND_STATE/repos.conf"
 
 # require_tracked_targets — the startup guard shared by the PR-enumeration
 # entry scripts (review.sh / poll-pr-actions.sh).
