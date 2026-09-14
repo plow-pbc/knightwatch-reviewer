@@ -30,7 +30,7 @@
 # and every non-archived open PR in it is reviewed — new repos included, no
 # per-repo manifest edit. REPOS is only for PARTIAL orgs (review just specific
 # repos, e.g. some-org/one-repo) and for optional explicit KID_PATHS/SOURCE_PATHS
-# wiring (kid-prior-art + cross-repo grep, which stay per-repo opt-in).
+# wiring (a KID_PATHS override for kid-prior-art; cross-repo grep stays opt-in).
 #
 # To add a partial-org repo (or wire KID/source for one): append a line to
 # REPOS and a corresponding entry in each of the two maps below (KID_PATHS,
@@ -49,8 +49,9 @@
 # gets the org default. See lib/knightwatch-config.sh.
 #
 # KID_PATHS does double duty:
-#   - lib/review-one-pr.sh consults it for kid-prior-art lookups
-#     (silently skips when the path has no .keepitdry index).
+#   - lib/review-one-pr.sh consults it for kid-prior-art lookups. It is
+#     an override: any reviewed repo, ORGS-covered included, defaults to
+#     $KWR_CLONE_ROOT/<name> (lib/tracked-repos.sh kid_path_for).
 #   - install.sh renders it into pr-reviewer-kid-refresh.service's
 #     ReadWritePaths as `<path>` (full root) via @KID_RW_PATHS@ so
 #     the hourly refresher can git-pull + re-index.

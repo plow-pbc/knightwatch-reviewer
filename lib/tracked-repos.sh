@@ -158,15 +158,14 @@ require_repos() {
 # (`export KWR_CLONE_ROOT=...`) or config.env if needed.
 KWR_CLONE_ROOT="${KWR_CLONE_ROOT:-$HOME/services/kwr-repos}"
 
-# Convention-default KID_PATHS for REPOS that lack a manual override.
-# Manual KID_PATHS entries in repos.conf are sourced first (above) so
-# they win on collision — this loop only fills the unset keys with the
-# convention path. Auto-managed repos no longer embed their KID_PATHS
-# value in repos.conf.auto; the convention is the source of truth,
-# computed exactly once here.
+# kid_path_for OWNER/REPO — the repo's kid index root: its manual KID_PATHS
+# entry (sourced above, so it wins), else the $KWR_CLONE_ROOT convention. The
+# single owner of that convention. The loop materializes it for REPOS, which the
+# host timers iterate; the worker calls it for the repo under review, because an
+# ORGS-covered repo is never enumerated into REPOS in the container manifest.
+kid_path_for() { printf '%s' "${KID_PATHS[$1]:-$KWR_CLONE_ROOT/${1#*/}}"; }
 for _full in "${REPOS[@]}"; do
-    [ -n "${KID_PATHS[$_full]:-}" ] && continue
-    KID_PATHS[$_full]="$KWR_CLONE_ROOT/${_full#*/}"
+    KID_PATHS[$_full]=$(kid_path_for "$_full")
 done
 unset _full
 
