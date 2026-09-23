@@ -14,19 +14,75 @@ the gate is blind to accounts that burn a week's quota inside a day.
 """
 
 import argparse
+import datetime
 import json
+import math
 import os
 import sys
 import time
 from glob import glob
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 WINDOW_H = 168.0          # codex weekly window
 WINDOW_MINUTES = 10080    # ...as codex reports it; the block must say so, not be assumed
 MAX_ROLLOUTS = 200        # bounded scan: newest N by mtime under the date dirs
 WINDOW_TOL_S = 3600       # resets_at jitters by seconds within one window
+DEFAULT_TIMEZONE = "America/Los_Angeles"
+DEFAULT_WEEKEND_FACTOR = 0.2
+DEFAULT_RESUME_PCT = 87.0
 
 
-def decide(used, resets_at, now, pct, min_elapsed_h, pause_h):
+def _weighted_segments(start, end, timezone, weekend_factor):
+    """Yield (start, end, weight) segments split at local midnights."""
+    if not 0 < weekend_factor <= 1:
+        raise ValueError("KWR_THROTTLE_WEEKEND_FACTOR must be > 0 and <= 1")
+    tz = ZoneInfo(timezone)
+    cursor = float(start)
+    while cursor < end:
+        local = datetime.datetime.fromtimestamp(cursor, tz)
+        midnight = datetime.datetime.combine(
+            local.date() + datetime.timedelta(days=1),
+            datetime.time(),
+            tzinfo=tz,
+        ).timestamp()
+        segment_end = min(float(end), midnight)
+        factor = weekend_factor if local.weekday() >= 5 else 1.0
+        yield cursor, segment_end, factor
+        cursor = segment_end
+
+
+def _weighted_hours(start, end, timezone, weekend_factor):
+    """Effective hours in [start, end), split at local-day boundaries."""
+    return sum((segment_end - segment_start) * factor / 3600.0
+               for segment_start, segment_end, factor in
+               _weighted_segments(start, end, timezone, weekend_factor))
+
+
+def _epoch_at_weighted_hours(start, end, target_h, timezone, weekend_factor):
+    """First epoch whose effective elapsed time reaches target_h."""
+    if target_h <= 0:
+        return int(start)
+    remaining = target_h
+    for segment_start, segment_end, factor in _weighted_segments(
+            start, end, timezone, weekend_factor):
+        segment_h = (segment_end - segment_start) * factor / 3600.0
+        if remaining <= segment_h:
+            return min(int(end), math.ceil(
+                segment_start + remaining * 3600.0 / factor))
+        remaining -= segment_h
+    return int(end)
+
+
+def _projection(used, resets_at, now, timezone, weekend_factor):
+    window_start = resets_at - WINDOW_H * 3600.0
+    elapsed = _weighted_hours(window_start, now, timezone, weekend_factor)
+    total = _weighted_hours(window_start, resets_at, timezone, weekend_factor)
+    projected = used * total / elapsed if elapsed > 0 else None
+    return window_start, elapsed, total, projected
+
+
+def decide(used, resets_at, now, pct, min_elapsed_h, resume_pct,
+           timezone, weekend_factor):
     """Epoch to throttle until, or None to keep claiming.
 
     Fails open on a disabled threshold and on a reading whose window already
@@ -37,13 +93,23 @@ def decide(used, resets_at, now, pct, min_elapsed_h, pause_h):
         return None
     if resets_at <= now:
         return None
-    elapsed = WINDOW_H - (resets_at - now) / 3600.0
+    if not 0 < resume_pct < pct:
+        raise ValueError("KWR_THROTTLE_RESUME_PCT must be > 0 and below KWR_THROTTLE_PCT")
+    elapsed_wall = WINDOW_H - (resets_at - now) / 3600.0
+    window_start, elapsed, total, projected = _projection(
+        used, resets_at, now, timezone, weekend_factor)
     fire = used >= pct
-    if not fire and elapsed >= min_elapsed_h and elapsed > 0:
-        fire = used * WINDOW_H / elapsed >= pct
+    if not fire and elapsed_wall >= min_elapsed_h and projected is not None:
+        fire = projected >= pct
     if not fire:
         return None
-    return int(min(now + pause_h * 3600.0, resets_at))
+    # Actual usage cannot fall during a quota window. Once it reaches the
+    # resume line, only the reset can restore headroom.
+    if used >= resume_pct:
+        return int(resets_at)
+    resume_elapsed = used * total / resume_pct
+    return max(int(now), _epoch_at_weighted_hours(
+        window_start, resets_at, resume_elapsed, timezone, weekend_factor))
 
 
 def _weekly(rec):
@@ -109,7 +175,7 @@ def latest_snapshot(codex_home):
             "resets_at": max(r for _, r in window)}
 
 
-def account_state(pool_dir, account, now):
+def account_state(pool_dir, account, now, timezone, weekend_factor):
     """One account's quota line for the operator table.
 
     `used` is reported ONLY when the snapshot describes the window that is
@@ -150,8 +216,10 @@ def account_state(pool_dir, account, now):
     if resets_at <= now:
         return {"account": account, "state": state,
                 "note": "stale: window ended " + _stamp(resets_at)}
-    elapsed = WINDOW_H - (resets_at - now) / 3600.0
-    if elapsed <= 0:
+    elapsed_wall = WINDOW_H - (resets_at - now) / 3600.0
+    _, elapsed, _, projected = _projection(
+        used, resets_at, now, timezone, weekend_factor)
+    if projected is None:
         # A snapshot taken as the window opens sits at elapsed == 0 exactly
         # (used_percent reads 0.0% there), and dividing by it would raise --
         # taking out the whole table, not just this row. decide() guards the
@@ -159,7 +227,7 @@ def account_state(pool_dir, account, now):
         return {"account": account, "state": state,
                 "note": "window just opened"}
     return {"account": account, "state": state, "used": used,
-            "elapsed": elapsed, "projected": used * WINDOW_H / elapsed,
+            "elapsed": elapsed_wall, "projected": projected,
             "resets_at": resets_at}
 
 
@@ -198,16 +266,24 @@ def main(argv=None):
 
     if args.mode == "status":
         now = args.now if args.now is not None else int(time.time())
-        for account in sorted(os.listdir(args.pool_dir)):
-            if not os.path.isdir(os.path.join(args.pool_dir, account)):
-                continue
-            r = account_state(args.pool_dir, account, now)
-            if "used" in r:
-                print(f"{r['account']:<4}{r['used']:>6.0f}%{r['elapsed']:>7.0f}h"
-                      f"{r['projected']:>10.0f}%  {r['state']}")
-            else:
-                print(f"{r['account']:<4}{'—':>6} {'—':>6}  {'—':>9}  "
-                      f"{r['state']} ({r['note']})")
+        try:
+            timezone = os.environ.get("KWR_THROTTLE_TIMEZONE", DEFAULT_TIMEZONE)
+            weekend_factor = float(os.environ.get(
+                "KWR_THROTTLE_WEEKEND_FACTOR", DEFAULT_WEEKEND_FACTOR))
+            for account in sorted(os.listdir(args.pool_dir)):
+                if not os.path.isdir(os.path.join(args.pool_dir, account)):
+                    continue
+                r = account_state(
+                    args.pool_dir, account, now, timezone, weekend_factor)
+                if "used" in r:
+                    print(f"{r['account']:<4}{r['used']:>6.0f}%{r['elapsed']:>7.0f}h"
+                          f"{r['projected']:>10.0f}%  {r['state']}")
+                else:
+                    print(f"{r['account']:<4}{'—':>6} {'—':>6}  {'—':>9}  "
+                          f"{r['state']} ({r['note']})")
+        except (ValueError, TypeError, ZoneInfoNotFoundError) as exc:
+            sys.stderr.write(f"invalid quota throttle configuration: {exc}\n")
+            return 2
         return 0
 
     # decide -- always non-throttling on failure, but only SILENT when the
@@ -224,13 +300,20 @@ def main(argv=None):
     except (OSError, ValueError, TypeError, KeyError) as exc:
         sys.stderr.write(f"unreadable usage snapshot {args.usage}: {exc}\n")
         return 2
-    until = decide(
-        used, resets_at,
-        args.now if args.now is not None else int(time.time()),
-        float(os.environ.get("KWR_THROTTLE_PCT", 90)),
-        float(os.environ.get("KWR_THROTTLE_MIN_ELAPSED_H", 24)),
-        float(os.environ.get("KWR_THROTTLE_PAUSE_H", 24)),
-    )
+    try:
+        until = decide(
+            used, resets_at,
+            args.now if args.now is not None else int(time.time()),
+            float(os.environ.get("KWR_THROTTLE_PCT", 90)),
+            float(os.environ.get("KWR_THROTTLE_MIN_ELAPSED_H", 24)),
+            float(os.environ.get("KWR_THROTTLE_RESUME_PCT", DEFAULT_RESUME_PCT)),
+            os.environ.get("KWR_THROTTLE_TIMEZONE", DEFAULT_TIMEZONE),
+            float(os.environ.get(
+                "KWR_THROTTLE_WEEKEND_FACTOR", DEFAULT_WEEKEND_FACTOR)),
+        )
+    except (ValueError, TypeError, ZoneInfoNotFoundError) as exc:
+        sys.stderr.write(f"invalid quota throttle configuration: {exc}\n")
+        return 2
     if until is not None:
         print(until)
     return 0
