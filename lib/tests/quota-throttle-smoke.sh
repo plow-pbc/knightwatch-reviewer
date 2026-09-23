@@ -29,36 +29,31 @@ d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
 week_tue=1788850800
 week_reset=1789196400
 weighted_resume=1788902640
-mkusage "$d/u.json" 32.222222222 "$week_reset"
-got=$(decide "$d/u.json" "$week_tue")
-[ "$got" = "$weighted_resume" ] \
-    || fail "weekend-weighted projection did not resume at Tue 14:24 PDT: expected '$weighted_resume', got '$got'"
 
 # A Mon→Mon window at Friday 00:00 has 96 weekday hours behind it and only
 # Friday + a 0.2-weight weekend ahead. 55% used projects to 74.25%, not the
 # uniform clock's 96.25%, so upcoming quiet weekend capacity is not reserved.
 fri_now=1789110000
 mon_reset=1789369200
-mkusage "$d/u.json" 55.0 "$mon_reset"
-[ -z "$(decide "$d/u.json" "$fri_now")" ] \
-    || fail "an upcoming 0.2-weight weekend was projected like two weekdays"
 
 # --- Generic decision table. Every row is the same arrange/act (write a
 #     snapshot, run decide, compare stdout), so it stays one matrix.
 r=$(( NOW + (168-67)*H ))
 r12=$(( NOW + (168-12)*H ))
 DECIDE_CASES=(
-  "projection under the line does not|28.0|$r|-|"
-  "gate blocks a huge projection before 24h|20.0|$r12|-|"
-  "absolute trigger pauses through the reset|93.0|$r12|-|$r12"
-  "rolled window is ignored, not trusted|100.0|$(( NOW - 10 ))|-|"
-  "KWR_THROTTLE_PCT=0 disables the throttle|99.0|$r|0|"
+  "weekend-weighted projection resumes at Tue 14:24 PDT|32.222222222|$week_tue|$week_reset|-|$weighted_resume"
+  "an upcoming 0.2-weight weekend is not projected like two weekdays|55.0|$fri_now|$mon_reset|-|"
+  "projection under the line does not|28.0|$NOW|$r|-|"
+  "gate blocks a huge projection before 24h|20.0|$NOW|$r12|-|"
+  "absolute trigger pauses through the reset|93.0|$NOW|$r12|-|$r12"
+  "rolled window is ignored, not trusted|100.0|$NOW|$(( NOW - 10 ))|-|"
+  "KWR_THROTTLE_PCT=0 disables the throttle|99.0|$NOW|$r|0|"
 )
 for row in "${DECIDE_CASES[@]}"; do
-    IFS='|' read -r name used reset pct want <<<"$row"
+    IFS='|' read -r name used at reset pct want <<<"$row"
     mkusage "$d/u.json" "$used" "$reset"
-    if [ "$pct" = - ]; then got=$(decide "$d/u.json")
-    else got=$(KWR_THROTTLE_PCT="$pct" decide "$d/u.json"); fi
+    if [ "$pct" = - ]; then got=$(decide "$d/u.json" "$at")
+    else got=$(KWR_THROTTLE_PCT="$pct" decide "$d/u.json" "$at"); fi
     [ "$got" = "$want" ] || fail "$name: expected '$want', got '$got'"
 done
 
