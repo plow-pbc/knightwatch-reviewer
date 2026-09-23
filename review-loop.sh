@@ -53,7 +53,8 @@ export REVIEWER_LIB_DIR="$(pwd)/lib" PROMPTS_DIR="$(pwd)/prompts" STATE_DIR="$_K
 # explicit disable would silently keep throttling at the default. Exported by NAME
 # only -- an unset var stays unset rather than being handed a value here, which
 # keeps quota_throttle.py the single source of the defaults.
-export KWR_THROTTLE_PCT KWR_THROTTLE_MIN_ELAPSED_H KWR_THROTTLE_PAUSE_H
+export KWR_THROTTLE_PCT KWR_THROTTLE_MIN_ELAPSED_H
+export KWR_THROTTLE_WEEKEND_FACTOR KWR_THROTTLE_RESUME_PCT KWR_THROTTLE_TIMEZONE
 unset _KWR_STATE_DIR
 # Shared logger (timestamp + [w<WORKER_ID>] tag). LOG_FILE is unset here —
 # review.sh sets it later — so log() falls back to stdout-only, which is what

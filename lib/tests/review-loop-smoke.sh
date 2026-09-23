@@ -223,6 +223,32 @@ run_loop_once >/dev/null 2>&1 || true
 [ -e "$d/called" ] || fail "loop did not claim with the throttle disabled"
 rm -rf "$d"
 
+# 4g. The weighted-clock knobs have the same subprocess boundary. Pin all
+#     three to unmistakable non-defaults and let a probe module record what the
+#     child actually inherited; parsing review-loop.sh would miss an export
+#     that was later shadowed or unset.
+make_ready_sandbox
+cat > "$d/lib/quota_throttle.py" <<'PY'
+import os
+with open("throttle-env.seen", "w") as fh:
+    for name in ("KWR_THROTTLE_WEEKEND_FACTOR", "KWR_THROTTLE_RESUME_PCT",
+                 "KWR_THROTTLE_TIMEZONE"):
+        fh.write(f"{name}={os.environ.get(name)}\n")
+PY
+cat >> "$d/config.env" <<'CFG'
+KWR_THROTTLE_WEEKEND_FACTOR=0.37
+KWR_THROTTLE_RESUME_PCT=84
+KWR_THROTTLE_TIMEZONE=Pacific/Auckland
+CFG
+run_loop_once >/dev/null 2>&1 || true
+grep -q '^KWR_THROTTLE_WEEKEND_FACTOR=0.37$' "$d/throttle-env.seen" \
+    || fail "KWR_THROTTLE_WEEKEND_FACTOR from config.env did not reach quota_throttle.py"
+grep -q '^KWR_THROTTLE_RESUME_PCT=84$' "$d/throttle-env.seen" \
+    || fail "KWR_THROTTLE_RESUME_PCT from config.env did not reach quota_throttle.py"
+grep -q '^KWR_THROTTLE_TIMEZONE=Pacific/Auckland$' "$d/throttle-env.seen" \
+    || fail "KWR_THROTTLE_TIMEZONE from config.env did not reach quota_throttle.py"
+rm -rf "$d"
+
 # 5. Auth offline: a fatal auth error takes the worker offline until re-login.
 #    While the marker's recorded auth.json mtime still matches the live file,
 #    review-loop never claims; a re-login (newer auth.json mtime) clears the

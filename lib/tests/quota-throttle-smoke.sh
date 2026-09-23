@@ -2,11 +2,11 @@
 # Smoke for lib/quota_throttle.py — the preemptive weekly-quota throttle.
 #
 # Covers the contracts that decide whether an account keeps claiming PRs:
-# (1) the projection trigger and its >=24h confidence gate, (2) the absolute
-# trigger that catches accounts which burn a week's quota before the gate opens,
-# (3) the pause is capped at the window reset, (4) every fail-open path, and
-# (5) `record` selects by max resets_at, because real rollouts interleave
-# readings from an already-expired window.
+# (1) projection uses observed burn over a weekday/weekend-weighted clock,
+# (2) projected throttles resume when that weighted clock catches up rather
+# than after a fixed pause, (3) the >=24 wall-hour confidence gate and absolute
+# trigger remain, (4) every fail-open path, and (5) `record` selects by max
+# resets_at, because real rollouts interleave readings from an expired window.
 set -euo pipefail
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/lib/quota_throttle.py"
 [ -f "$SRC" ] || { echo "FAIL: quota_throttle.py not found at $SRC" >&2; exit 1; }
@@ -17,22 +17,40 @@ H=3600
 # usage.json fixture: $1=out $2=used $3=resets_at
 mkusage() { printf '{"used_percent": %s, "resets_at": %s}\n' "$2" "$3" > "$1"; }
 # decide with a pinned clock; prints the epoch or nothing
-decide() { python3 "$SRC" decide --usage "$1" --now "$NOW"; }
+decide() { python3 "$SRC" decide --usage "$1" --now "${2:-$NOW}"; }
 
 d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
 
-# --- Decision table. Every row is the same arrange/act (write a snapshot,
-#     run decide, compare stdout), so they belong in one matrix rather than
-#     seven near-identical blocks. elapsed = 168h - (resets_at - NOW).
-r=$(( NOW + (168-67)*H ))     # elapsed 67h -> line sits at 90*67/168 = 35.9% used
-r12=$(( NOW + (168-12)*H ))   # elapsed 12h -> inside the confidence gate
-r6=$(( NOW + 6*H ))           # reset sooner than the 24h pause length
+# --- Weighted decision behavior. The fixture window is Sat Sep 5 00:00 PDT
+#     through Sat Sep 12 00:00 PDT. By Tue 00:00, 72 wall hours but only
+#     33.6 effective hours elapsed: 48 weekend hours at 0.2 + Monday's 24.
+#     32.222...% used projects to 124%; the 87% resume line catches up at
+#     exactly 48 effective hours, Tue 14:24 PDT.
+week_tue=1788850800
+week_reset=1789196400
+weighted_resume=1788902640
+mkusage "$d/u.json" 32.222222222 "$week_reset"
+got=$(decide "$d/u.json" "$week_tue")
+[ "$got" = "$weighted_resume" ] \
+    || fail "weekend-weighted projection did not resume at Tue 14:24 PDT: expected '$weighted_resume', got '$got'"
+
+# A Mon→Mon window at Friday 00:00 has 96 weekday hours behind it and only
+# Friday + a 0.2-weight weekend ahead. 55% used projects to 74.25%, not the
+# uniform clock's 96.25%, so upcoming quiet weekend capacity is not reserved.
+fri_now=1789110000
+mon_reset=1789369200
+mkusage "$d/u.json" 55.0 "$mon_reset"
+[ -z "$(decide "$d/u.json" "$fri_now")" ] \
+    || fail "an upcoming 0.2-weight weekend was projected like two weekdays"
+
+# --- Generic decision table. Every row is the same arrange/act (write a
+#     snapshot, run decide, compare stdout), so it stays one matrix.
+r=$(( NOW + (168-67)*H ))
+r12=$(( NOW + (168-12)*H ))
 DECIDE_CASES=(
-  "projection over the line fires|53.0|$r|-|$(( NOW + 24*H ))"
   "projection under the line does not|28.0|$r|-|"
   "gate blocks a huge projection before 24h|20.0|$r12|-|"
-  "absolute trigger fires inside the gate|93.0|$r12|-|$(( NOW + 24*H ))"
-  "pause is capped at the window reset|95.0|$r6|-|$r6"
+  "absolute trigger pauses through the reset|93.0|$r12|-|$r12"
   "rolled window is ignored, not trusted|100.0|$(( NOW - 10 ))|-|"
   "KWR_THROTTLE_PCT=0 disables the throttle|99.0|$r|0|"
 )
@@ -61,6 +79,19 @@ bad_out=$(python3 "$SRC" decide --usage "$d/bad.json" --now "$NOW" 2>/dev/null) 
 bad_err=$(python3 "$SRC" decide --usage "$d/bad.json" --now "$NOW" 2>&1 >/dev/null || true)
 printf '%s' "$bad_err" | grep -q 'unreadable usage snapshot' \
     || fail "a corrupt usage file produced no stderr diagnostic; got: $bad_err"
+
+# Invalid policy configuration follows the same fail-open-but-loud contract:
+# no pause epoch on stdout, a non-zero status, and an operator-sized message
+# rather than a Python traceback.
+mkusage "$d/u.json" 32.222222222 "$week_reset"
+if bad_cfg=$(KWR_THROTTLE_TIMEZONE=Mars/Olympus_Mons \
+    decide "$d/u.json" "$week_tue" 2>&1); then
+    fail "an invalid throttle timezone exited 0 — indistinguishable from under quota"
+fi
+printf '%s' "$bad_cfg" | grep -q '^invalid quota throttle configuration:' \
+    || fail "invalid throttle configuration had no concise diagnostic; got: $bad_cfg"
+printf '%s' "$bad_cfg" | grep -q 'Traceback' \
+    && fail "invalid throttle configuration leaked a Python traceback: $bad_cfg"
 mkusage "$d/u.json" 99.0 "$r"
 [ -z "$(KWR_THROTTLE_PCT=0 decide "$d/u.json")" ] || fail "KWR_THROTTLE_PCT=0 did not disable the throttle"
 
@@ -164,6 +195,18 @@ printf '%s' "$out" | grep -E '^4 ' | grep -q 'unreadable snapshot' \
 printf '%s' "$out" | grep -qE '^1 +22%' \
     || fail "one unreadable snapshot took out the rest of the table; got: $out"
 rm -rf "$pool"
+
+# The operator table and the decision path must use one projection model. At
+# Tuesday 00:00 this window's weighted projection is 124% (not the uniform
+# clock's 75%), while the elapsed column deliberately remains wall time.
+weighted_pool=$(mktemp -d)
+mkdir -p "$weighted_pool/1"
+printf '{"used_percent": 32.222222222, "resets_at": %s}\n' "$week_reset" \
+    > "$weighted_pool/1/usage.json"
+out=$(python3 "$SRC" status --pool-dir "$weighted_pool" --now "$week_tue")
+printf '%s' "$out" | grep -qE '^1 +32% +72h +124%' \
+    || fail "status did not use the weighted projection used by decide; got: $out"
+rm -rf "$weighted_pool"
 
 # --- pool_status renders a throttled account distinctly from a hard cap, so
 #     the author-facing paused comment shows the real reason for the wait.
