@@ -32,12 +32,11 @@ DEFAULT_WEEKEND_FACTOR = 0.2
 DEFAULT_RESUME_PCT = 87.0
 
 
-def _weighted_hours(start, end, timezone, weekend_factor):
-    """Effective hours in [start, end), split at local-day boundaries."""
+def _weighted_segments(start, end, timezone, weekend_factor):
+    """Yield (start, end, weight) segments split at local midnights."""
     if not 0 < weekend_factor <= 1:
         raise ValueError("KWR_THROTTLE_WEEKEND_FACTOR must be > 0 and <= 1")
     tz = ZoneInfo(timezone)
-    total = 0.0
     cursor = float(start)
     while cursor < end:
         local = datetime.datetime.fromtimestamp(cursor, tz)
@@ -48,32 +47,29 @@ def _weighted_hours(start, end, timezone, weekend_factor):
         ).timestamp()
         segment_end = min(float(end), midnight)
         factor = weekend_factor if local.weekday() >= 5 else 1.0
-        total += (segment_end - cursor) * factor / 3600.0
+        yield cursor, segment_end, factor
         cursor = segment_end
-    return total
+
+
+def _weighted_hours(start, end, timezone, weekend_factor):
+    """Effective hours in [start, end), split at local-day boundaries."""
+    return sum((segment_end - segment_start) * factor / 3600.0
+               for segment_start, segment_end, factor in
+               _weighted_segments(start, end, timezone, weekend_factor))
 
 
 def _epoch_at_weighted_hours(start, end, target_h, timezone, weekend_factor):
     """First epoch whose effective elapsed time reaches target_h."""
     if target_h <= 0:
         return int(start)
-    tz = ZoneInfo(timezone)
-    cursor = float(start)
     remaining = target_h
-    while cursor < end:
-        local = datetime.datetime.fromtimestamp(cursor, tz)
-        midnight = datetime.datetime.combine(
-            local.date() + datetime.timedelta(days=1),
-            datetime.time(),
-            tzinfo=tz,
-        ).timestamp()
-        segment_end = min(float(end), midnight)
-        factor = weekend_factor if local.weekday() >= 5 else 1.0
-        segment_h = (segment_end - cursor) * factor / 3600.0
+    for segment_start, segment_end, factor in _weighted_segments(
+            start, end, timezone, weekend_factor):
+        segment_h = (segment_end - segment_start) * factor / 3600.0
         if remaining <= segment_h:
-            return min(int(end), math.ceil(cursor + remaining * 3600.0 / factor))
+            return min(int(end), math.ceil(
+                segment_start + remaining * 3600.0 / factor))
         remaining -= segment_h
-        cursor = segment_end
     return int(end)
 
 
