@@ -1,7 +1,7 @@
 #!/bin/bash
 # Container entrypoint: replace the systemd 2-min timer with an in-process
 # poll loop. Waits for the dind sidecar's daemon, then runs review.sh
-# (MAX_CONCURRENT=1 per container) every POLL_SECS. N containers = N
+# (one foreground review per tick) every POLL_SECS. N containers = N
 # concurrent reviews across N accounts; the shared per-PR flock keeps two
 # containers off the same PR.
 set -uo pipefail
@@ -68,15 +68,6 @@ POLL_SECS="${POLL_SECS:-30}"
 # runs ~once/ENUMERATE_SECS instead of once/POLL_SECS/container — that's what
 # cuts the GraphQL burn. New PRs are discovered within one window.
 export ENUMERATE_SECS="${ENUMERATE_SECS:-60}"
-export MAX_CONCURRENT=1
-# Block each tick until its dispatched worker finishes (review.sh honors this),
-# so one container/account runs at most ONE review at a time. Without it, the
-# poll loop's next tick starts while the prior detached worker is still running
-# and one account ends up driving multiple concurrent reviews.
-export WAIT_FOR_WORKERS=1
-# Sentinel so review.sh can re-pin the one-review-per-account contract AFTER it
-# sources config.env (which could otherwise override MAX_CONCURRENT/WAIT_FOR_WORKERS).
-export REVIEWER_CONTAINER_MODE=1
 # Run PR-controlled `just test` as this unprivileged user (created in the image)
 # so a hostile test recipe can't read /root/.codex or the reviewer's tokens —
 # see run_just_test in lib/run-dir.sh.

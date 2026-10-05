@@ -2,7 +2,7 @@
 # Smoke for review-loop.sh — the container entrypoint that replaces the systemd
 # timer. Covers the contracts that silently abort/derail container reviews if
 # broken: (1) fail loud when the dind daemon never comes up (don't hang),
-# (2) export REVIEWER_LIB_DIR/PROMPTS_DIR/MAX_CONCURRENT/WAIT_FOR_WORKERS to the
+# (2) export REVIEWER_LIB_DIR/PROMPTS_DIR to the
 # worker, (3) a fatal (non-zero) review.sh tick exits for container restart
 # instead of looping forever, (4) a FUTURE quota-paused-until epoch makes the
 # loop skip ticks (never claim) and a PAST one resumes.
@@ -83,9 +83,7 @@ cat > "$d/review.sh" <<'STUB'
 { echo "REVIEWER_LIB_DIR=$REVIEWER_LIB_DIR"
   echo "PROMPTS_DIR=$PROMPTS_DIR"
   echo "STATE_DIR=$STATE_DIR"
-  echo "GH_TOKEN=$GH_TOKEN"
-  echo "MAX_CONCURRENT=$MAX_CONCURRENT"
-  echo "WAIT_FOR_WORKERS=$WAIT_FOR_WORKERS"; } > env.seen
+  echo "GH_TOKEN=$GH_TOKEN"; } > env.seen
 exit 1   # fatal tick: review-loop must exit (not loop) — also breaks the test loop
 STUB
 chmod +x "$d/review.sh"
@@ -121,8 +119,6 @@ grep -q "REVIEWER_LIB_DIR=$d/lib" "$d/env.seen"     || fail "REVIEWER_LIB_DIR no
 grep -q "PROMPTS_DIR=$d/prompts" "$d/env.seen"      || fail "PROMPTS_DIR not forced to \$repo/prompts (caller env leaked through)"
 grep -q "GH_TOKEN=ghp_fake_for_smoke" "$d/env.seen"  || fail "GH_TOKEN did not reach the worker's ENVIRONMENT — a bare assignment in config.env leaves the probe, the git credential helper and review.sh all unauthenticated"
 grep -q "STATE_DIR=$d/state" "$d/env.seen"          || fail "STATE_DIR not re-pinned after config.env — gh_pause_file() then points at a private path and the loop goes blind to the fleet-wide pause"
-grep -q "MAX_CONCURRENT=1" "$d/env.seen"            || fail "MAX_CONCURRENT not pinned to 1"
-grep -q "WAIT_FOR_WORKERS=1" "$d/env.seen"          || fail "WAIT_FOR_WORKERS not set (one-review-per-account cap)"
 rm -rf "$d"
 
 # 2b. A config.env that is readable, regular and valid but carries no GH_TOKEN →

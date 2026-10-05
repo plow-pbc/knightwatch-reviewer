@@ -1,20 +1,10 @@
 #!/bin/bash
-# Orchestrator: enumerate eligible PRs across all tracked repos and fan out
-# per-PR reviews via lib/review-one-pr.sh. Up to MAX_CONCURRENT reviews run
-# concurrently per service tick. Per-PR locking is handled by the worker.
+# Orchestrator: one tick of the container review loop (review-loop.sh).
+# Refreshes the shared eligible-PR queue when it is stale, then claims and
+# reviews at most ONE PR via lib/review-one-pr.sh (see consume_queue).
 #
-# Shebang note: this entrypoint runs only on the production Linux host
-# under pr-reviewer.service. It deliberately uses /bin/bash (NOT
-# /usr/bin/env bash) because $HOME/.local is writable per
-# ReadWritePaths — a writable-interpreter resolution path. Hard-coding
-# /bin/bash blocks the writable-PATH attack regardless of $PATH order.
-# The systemd unit's Environment=PATH puts system dirs FIRST and trails
-# the writable user dirs, so user-installed tools (codex via nvm-managed
-# per-version bin, pipx packages in ~/.local/bin) remain reachable without prepending the
-# writable dirs in front of system tools. Do NOT re-add an
-# `export PATH=$HOME/.local/bin:...` here — that would let an attacker
-# place ~/.local/bin/timeout (or gh, git, awk, …) and have it shadow
-# the system tool when this script invokes the command by name.
+# Shebang note: deliberately /bin/bash, NOT /usr/bin/env bash, so a writable
+# directory early on $PATH can't substitute the interpreter.
 
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/orchestrator.log}"
@@ -26,7 +16,6 @@ WORKDIRS_DIR="${WORKDIRS_DIR:-$STATE_DIR/workdirs}"
 # the latency cost outweighed the quota saving. Authors wanting an immediate
 # re-review use /<bot>-review (FORCE_REVIEW bypasses this gate).
 STABLE_SECS="${STABLE_SECS:-3600}"
-MAX_CONCURRENT="${MAX_CONCURRENT:-4}"
 
 # Tracked-repo manifest (REPOS array + KID_PATHS assoc array). Single
 # source of truth at repos.conf — adding a repo only edits one file.
@@ -42,11 +31,6 @@ REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 # smoke tests and the production symlink ($HOME/.pr-reviewer/lib).
 . "$REVIEWER_LIB_DIR/bootstrap.sh"
 require_tracked_targets
-# Container entrypoint (review-loop.sh) pins one in-flight review per account.
-# Re-assert AFTER config.env is sourced (above, via bootstrap → tracked-repos.sh)
-# so a stray legacy MAX_CONCURRENT/WAIT_FOR_WORKERS in config.env can't silently
-# break the container contract. The host/systemd path leaves the sentinel unset.
-if [ -n "${REVIEWER_CONTAINER_MODE:-}" ]; then MAX_CONCURRENT=1; WAIT_FOR_WORKERS=1; fi
 . "$REVIEWER_LIB_DIR/locking.sh"
 # run-dir.sh exposes the latest_author_visible_review_* projection family
 # — the single source of truth for "what did we last review?" state. The
@@ -117,7 +101,6 @@ WORKER_TIMEOUT="${WORKER_TIMEOUT:-90m}"
 # hard kill. (Codex setsid's into its own session and escapes timeout's
 # process-group signal entirely — that residual is accepted, not fixed here.)
 WORKER_KILL_AFTER="${WORKER_KILL_AFTER:-30s}"
-log "Fan-out: max $MAX_CONCURRENT concurrent, per-worker timeout $WORKER_TIMEOUT (kill-after $WORKER_KILL_AFTER)"
 
 # refresh_queue — enumerate open PRs, run per-PR eligibility, and write
 # the eligible-PR specs to the shared queue. Called by the elected
@@ -731,60 +714,23 @@ ${NOTICE_BODY}" >/dev/null 2>"$NOTICE_ERR" \
     log "Refreshed queue: ${#specs[@]} eligible PR(s)"
 }
 
-# consume_queue — read eligible-PR specs from the shared queue, probe the
-# per-PR flock to skip in-flight PRs, and dispatch a worker per claimed PR.
+# consume_queue — claim ONE eligible spec from the shared queue and review it
+# in the foreground, then return; the next tick re-reads the queue.
 #
-# INVARIANT (why no KNOWN_SHA re-check here): specs carry the eligibility
-# decided at refresh time; consume trusts them and only probes the in-flight
-# lock. This is safe ONLY while the effective tick interval exceeds
-# ENUMERATE_SECS, so a completed review's spec is always dropped by the next
-# refresh before any container could re-consume it. Both deployments hold this:
-# the container loop sets WAIT_FOR_WORKERS (interval = review duration, minutes)
-# and the systemd timer fires every 2m — each ≫ ENUMERATE_SECS (60s). If that
-# floor is ever raised past the tick interval, a forced (/${BOT_CMD_PREFIX}-review)
-# spec whose review finishes sub-window could be consumed twice (the worker
-# re-reviews via `gh pr diff`); the worker self-lock dedups concurrent claims
-# but not a serial re-consume, so add a KNOWN_SHA re-check here before doing so.
+# One claim per tick is load-bearing, not a throughput knob: specs are a
+# snapshot, and a review takes minutes. Walking on to a second spec after a
+# worker returns would trust a snapshot that went stale DURING that review —
+# a forced (/${BOT_CMD_PREFIX}-review) spec another container already served
+# reads as claimable again (free lock, trigger still in the old snapshot) and
+# gets a duplicate whole-PR review (#288). Returning keeps every claim within
+# ENUMERATE_SECS of a refresh. Per-account stop-states (auth/quota/throttle/
+# GitHub pause) are review-loop.sh's top-of-tick gates.
 consume_queue() {
-    local specs spec REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR
-    local TRIGGER_USER TRIGGER_BODY TICK_FETCHED_AT_ISO TRIGGER_FILE
-    local active=0 dispatched=0 worker_secs
-    specs=$(read_queue_specs "$STATE_DIR")
+    local spec REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR
+    local TRIGGER_USER TRIGGER_BODY TICK_FETCHED_AT_ISO TRIGGER_FILE=""
     while IFS= read -r spec; do
         [ -n "$spec" ] || continue
         REPO=$(jq -r '.repo' <<<"$spec");          PR_NUM=$(jq -r '.pr_num' <<<"$spec")
-        PR_SHA=$(jq -r '.sha' <<<"$spec");          PR_BRANCH=$(jq -r '.branch' <<<"$spec")
-        PR_TITLE=$(jq -r '.title' <<<"$spec");      FORCE_WHOLE_PR=$(jq -r '.force_whole_pr' <<<"$spec")
-        TRIGGER_USER=$(jq -r '.trigger_user' <<<"$spec"); TRIGGER_BODY=$(jq -r '.trigger_body' <<<"$spec")
-        REQUESTER_LOGIN=$(jq -r '.requester_login // empty' <<<"$spec")
-        TICK_FETCHED_AT_ISO=$(jq -r '.tick_at' <<<"$spec"); TRIGGER_FILE=""
-
-        # Throttle to MAX_CONCURRENT in-flight workers per tick.
-        while [ "$active" -ge "$MAX_CONCURRENT" ]; do wait -n || true; active=$((active - 1)); done
-
-        # Container mode: a worker that just drained may have hit a codex cap or
-        # a fatally invalid token — stop claiming for this tick either way, so a
-        # capped/offline account doesn't keep claiming + aborting later queued
-        # PRs before the loop's top-of-tick check arms the longer pause/offline.
-        if [ -n "${REVIEWER_CONTAINER_MODE:-}" ]; then
-            # Fatal auth dominates quota (matches review-loop.sh / review-one-pr.sh):
-            # a 401-on-refresh never yields a usage cap, so auth-offline must win.
-            if auth_offline_active; then
-                log "codex auth invalid — stopping further claims this tick (worker offline until re-login)"
-                break
-            elif quota_active; then
-                log "codex quota hit — stopping further claims this tick (paused until the reset window)"
-                break
-            fi
-        fi
-        # Same seam, GitHub side — and NOT container-gated: a worker just drained
-        # may have stamped the shared rate-limit pause, and the host path spends
-        # the same PAT. Without this the dispatcher keeps claiming queued PRs whose
-        # workers each re-hit the throttle before the next top-of-tick gate.
-        if gh_pause_active; then
-            log "github rate-limited — stopping further claims this tick"
-            break
-        fi
 
         # PROBE the per-PR flock: skip PRs already in-flight on another
         # container so N containers spread across N different PRs instead of
@@ -796,30 +742,32 @@ consume_queue() {
         fi
         release_pr_lock
 
-        # Materialize the trigger-comment file locally (was inline in the
-        # old dispatcher). TMPDIR is pinned to $STATE_DIR/tmp by tracked-repos.sh.
+        PR_SHA=$(jq -r '.sha' <<<"$spec");          PR_BRANCH=$(jq -r '.branch' <<<"$spec")
+        PR_TITLE=$(jq -r '.title' <<<"$spec");      FORCE_WHOLE_PR=$(jq -r '.force_whole_pr' <<<"$spec")
+        TRIGGER_USER=$(jq -r '.trigger_user' <<<"$spec"); TRIGGER_BODY=$(jq -r '.trigger_body' <<<"$spec")
+        REQUESTER_LOGIN=$(jq -r '.requester_login // empty' <<<"$spec")
+        TICK_FETCHED_AT_ISO=$(jq -r '.tick_at' <<<"$spec")
+
+        # Materialize the trigger-comment file locally. TMPDIR is pinned to
+        # $STATE_DIR/tmp by tracked-repos.sh.
         if [ -n "$TRIGGER_BODY" ]; then
             TRIGGER_FILE=$(mktemp "$TMPDIR/pr-review-trigger.XXXXXX")
             printf 'Comment by @%s:\n\n%s\n' "$TRIGGER_USER" "$TRIGGER_BODY" > "$TRIGGER_FILE"
         fi
 
-        worker_secs=$(timeout_duration_seconds "$WORKER_TIMEOUT")
+        log "Dispatched 1 worker: $REPO#$PR_NUM (timeout $WORKER_TIMEOUT, kill-after $WORKER_KILL_AFTER)"
+        # </dev/null: the worker runs inside this read loop, so it would
+        # otherwise inherit (and could drain) the spec stream on stdin.
         TRIGGER_COMMENT_FILE="$TRIGGER_FILE" \
         DISPATCHER_TICK_AT="$TICK_FETCHED_AT_ISO" \
         REVIEWER_LIB_DIR="$REVIEWER_LIB_DIR" \
-        WORKER_DEADLINE_EPOCH="$(( $(date +%s) + worker_secs ))" \
+        WORKER_DEADLINE_EPOCH="$(( $(date +%s) + $(timeout_duration_seconds "$WORKER_TIMEOUT") ))" \
             timeout -k "$WORKER_KILL_AFTER" "$WORKER_TIMEOUT" "$REVIEWER_LIB_DIR/review-one-pr.sh" \
             "$REPO" "$PR_NUM" "$PR_SHA" "$PR_BRANCH" "$PR_TITLE" "$FORCE_WHOLE_PR" \
-            "$REQUESTER_LOGIN" &
-        active=$((active + 1)); dispatched=$((dispatched + 1))
-    done < <(jq -c '.[]' <<<"$specs")
-
-    if [ "$dispatched" -eq 0 ]; then
-        log "No PRs claimed this tick"
-    else
-        log "Fan-out: dispatched $dispatched worker(s) (detached, running in background)"
-    fi
-    if [ -n "${WAIT_FOR_WORKERS:-}" ]; then wait; fi
+            "$REQUESTER_LOGIN" </dev/null || true
+        return 0
+    done < <(read_queue_specs "$STATE_DIR" | jq -c '.[]')
+    log "No PRs claimed this tick"
 }
 
 # Refresh the queue on a plain time floor: once per ENUMERATE_SECS, globally,
