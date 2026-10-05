@@ -13,6 +13,7 @@
 #      is the only refresh trigger; idle discovers new PRs on it, not before).
 #   H. One claim per tick — two eligible, lock-free specs → exactly one
 #      dispatch; the rest of a snapshot is never trusted after a review (#288).
+#   H2. No claim from a stale queue — losing the refresh election claims nothing.
 #   G. Aging order — the refreshed queue is served oldest-waiting first: the
 #      PR whose updatedAt is older heads the queue regardless of the order the
 #      enumeration returned it in (#247, #253).
@@ -160,5 +161,19 @@ ENUMERATE_SECS=999 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
 n=$(grep -c '^WORKER_DISPATCHED ' "$LOG_FILE" 2>/dev/null || true)
 [ "${n:-0}" -eq 1 ] || { echo "FAIL H: expected exactly 1 dispatch per tick, got ${n:-0}"; cat "$LOG_FILE"; exit 1; }
 echo "  OK H"
+
+# --- H2. never claim from a stale queue: another container holds the refresh
+#        election (its enumerate is still running), so this tick must claim
+#        nothing rather than serve specs the in-flight refresh may drop. ---
+echo "  H2: stale queue + lost election → no dispatch..."
+write_queue "$STATE_DIR" "$STALE_TS" "$TWO_SPECS"
+exec {enum_fd}>"$STATE_DIR/locks/__enumerator"
+flock -n "$enum_fd" || { echo "FAIL H2: could not hold the enumerator lock"; exit 1; }
+: > "$LOG_FILE"
+ENUMERATE_SECS=60 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
+exec {enum_fd}>&-
+n=$(grep -c '^WORKER_DISPATCHED ' "$LOG_FILE" 2>/dev/null || true)
+[ "${n:-0}" -eq 0 ] || { echo "FAIL H2: claimed from a stale queue while another container was refreshing (got ${n:-0} dispatches)"; cat "$LOG_FILE"; exit 1; }
+echo "  OK H2"
 
 echo "ALL PASS: queue-distribute-smoke.sh"

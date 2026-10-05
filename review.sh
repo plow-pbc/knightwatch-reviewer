@@ -718,12 +718,12 @@ ${NOTICE_BODY}" >/dev/null 2>"$NOTICE_ERR" \
 # worker returns would trust a snapshot that went stale DURING that review —
 # a forced (/${BOT_CMD_PREFIX}-review) spec another container already served
 # reads as claimable again (free lock, trigger still in the old snapshot) and
-# gets a duplicate whole-PR review (#288). Returning is enough while reviews
-# outlast ENUMERATE_SECS (60s; the fastest posted review runs ~2m):
-# refresh_queue skips in-flight PRs, so any snapshot newer than this claim
-# omits the spec, and every tick refreshes a snapshot older than the floor
-# before it claims. A worker that exits inside the floor (an early error or
-# skip) can be re-claimed from the same snapshot — a retry, not a second post.
+# gets a duplicate whole-PR review (#288). With claims taken only from a queue
+# younger than ENUMERATE_SECS (the caller skips a stale one), a re-claim needs
+# a review that finishes inside that window: any newer snapshot omits the spec,
+# since refresh_queue sees the PR's lock held or its trigger served. Reviews
+# run ~2m+; a worker exiting inside the 60s floor (an early error or skip) can
+# be re-claimed from the same snapshot — a retry, not a second post.
 # Per-account stop-states (auth/quota/throttle/GitHub pause) are
 # review-loop.sh's top-of-tick gates.
 consume_queue() {
@@ -789,5 +789,8 @@ if queue_needs_refresh "$STATE_DIR" "$ENUMERATE_SECS" "$NOW_EPOCH" \
     fi
     release_enumerator_lock
 fi
+# Never claim from a stale queue — another container's refresh is still running
+# (we lost the election) or ours failed. See consume_queue for why.
+queue_needs_refresh "$STATE_DIR" "$ENUMERATE_SECS" "$(date +%s)" && exit 0
 consume_queue
 exit 0
