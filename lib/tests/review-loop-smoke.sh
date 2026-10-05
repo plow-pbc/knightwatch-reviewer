@@ -163,6 +163,11 @@ for row in "auth-offline|pool/solo/auth-offline|stat -c %Y codex/auth.json" \
     ( cd "$d" && eval "$producer" ) > "$d/state/$rel"
     run_loop_once >/dev/null 2>&1 || true
     [ ! -e "$d/called" ] || fail "review-loop ran review.sh while $label (should skip the tick)"
+    # Resume control, as in case 4: the same sandbox ticks once the marker is
+    # gone — otherwise the skip above could be a tick that never got that far.
+    rm -f "$d/state/$rel"
+    run_loop_once >/dev/null 2>&1 || true
+    [ -e "$d/called" ] || fail "review-loop did not tick after the $label marker was cleared (skip assertion was vacuous)"
     rm -rf "$d"
 done
 
