@@ -152,6 +152,20 @@ run_loop_once >/dev/null 2>&1 || true
 [ -e "$d/called" ] || fail "review-loop skipped the tick with a PAST quota epoch (should resume)"
 rm -rf "$d"
 
+# 4a. The other two stop-states a worker can trip — fatal auth (marker at the
+#     live auth.json mtime) and the fleet-wide GitHub pause — also skip the
+#     tick. review.sh claims at most one PR per tick, so these top-of-tick
+#     gates are the ONLY thing between a tripped stop-state and the next claim.
+for row in "auth-offline|pool/solo/auth-offline|stat -c %Y codex/auth.json" \
+           "github-paused|gh-rate-limited-until|echo \$(( \$(date +%s) + 3600 ))"; do
+    IFS='|' read -r label rel producer <<<"$row"
+    make_ready_sandbox
+    ( cd "$d" && eval "$producer" ) > "$d/state/$rel"
+    run_loop_once >/dev/null 2>&1 || true
+    [ ! -e "$d/called" ] || fail "review-loop ran review.sh while $label (should skip the tick)"
+    rm -rf "$d"
+done
+
 # 4b. Weekly-quota throttle: a FUTURE throttle epoch skips ticks, and an
 #     expired one resumes -- the same shape as the hard cap above, but a
 #     SEPARATE file, because the hard cap's file has a single writer and a
