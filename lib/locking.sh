@@ -6,14 +6,8 @@
 # moves the lock dir back to /tmp (the pre-fix bug) would only need
 # updating in one place, and the smoke would catch it directly.
 #
-# Why $STATE_DIR/locks and not /tmp: pr-reviewer.service runs with
-# PrivateTmp=yes. With detached workers (KillMode=process), each
-# oneshot invocation gets its own private /tmp namespace; a worker
-# from tick N keeps its private-tmp lock file while tick N+1's new
-# orchestrator + workers see a fresh /tmp — same path, different
-# actual file across ticks, lock fails to gate the race. $STATE_DIR
-# is real fs (declared in the unit's ReadWritePaths) and shared
-# across every tick.
+# Why $STATE_DIR/locks and not /tmp: the lock must gate workers in
+# every reviewer container, and $STATE_DIR is the one volume they share.
 
 # pr_lock_slug REPO PR_NUM — canonical per-PR lock identity. Every stage that
 # flocks a PR (enumerator in-flight guard, consumer probe, worker lifetime lock)
@@ -45,8 +39,8 @@ acquire_pr_lock() {
 # release_pr_lock — drop the per-PR flock acquired by acquire_pr_lock so a
 # later acquirer can take it within the same process. Mirror of
 # release_just_test_lock. Used by review.sh's consumer to PROBE whether a PR
-# is in-flight on another container (acquire → release) before forking the
-# worker, which re-acquires the lock for the review's lifetime.
+# is in-flight on another container (acquire → release) before dispatching
+# the worker, which re-acquires the lock for the review's lifetime.
 release_pr_lock() {
     [ -n "${PR_LOCK_FD:-}" ] || return 0
     exec {PR_LOCK_FD}>&-

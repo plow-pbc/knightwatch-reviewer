@@ -252,7 +252,7 @@ fi
 STUB
 chmod +x "$HOME/.local/bin/gh"
 
-# Stub `flock` and `timeout` ONLY when missing — review.sh's fan-out uses
+# Stub `flock` and `timeout` ONLY when missing — review.sh's dispatch uses
 # `timeout -k ...` and lib/locking.sh uses `flock -n FD`, both real production
 # deps. On Linux the `command -v` gates inside the helpers find /usr/bin/* and
 # skip the stubs, so `just test` keeps proving the real wiring. On macOS dev the
@@ -1550,9 +1550,6 @@ for row in "${EXTRACTOR_MATRIX[@]}"; do
         "$ereq" "$ementon" > "$MOCK_COMMENTS_FILE"
     MOCK_PR_UPDATED_AT="2026-08-10T12:45:00Z" MOCK_TRUSTED_USERS="$BOT_USER someuser" \
         MOCK_PR_AUTHOR="someuser" run_orchestrator
-    # count_dispatches FIRST: the trigger_file= token is written by the DETACHED
-    # worker after the orchestrator exits, so a synchronous grep races it. This
-    # is the same reason count_dispatches exists at all.
     ed=$(count_dispatches)
     [ "$ed" -eq 1 ] \
         || { echo "FAIL RT6b [$elabel]: expected 1 dispatch, got $ed"; cat "$LOG_FILE"; exit 1; }

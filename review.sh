@@ -75,23 +75,19 @@ mkdir -p "$STATE_DIR" "$REPOS_DIR" "$WORKDIRS_DIR" "$STATE_DIR/locks"
 
 # Fail loud at the dispatcher level if the worker script is missing
 # or not executable. Catches the catastrophic class of dispatch failures
-# (broken install, accidental chmod -x, deleted symlink) before fan-out.
+# (broken install, accidental chmod -x, deleted symlink) before dispatch.
 # Checked HERE — before per-PR enumeration — so a doomed-to-abort run
 # never materializes a trigger-comment tempfile under $STATE_DIR/tmp
 # that no worker would clean up.
 if [[ ! -x "$REVIEWER_LIB_DIR/review-one-pr.sh" ]]; then
-    log "FATAL: $REVIEWER_LIB_DIR/review-one-pr.sh missing or not executable — aborting fan-out"
+    log "FATAL: $REVIEWER_LIB_DIR/review-one-pr.sh missing or not executable — aborting dispatch"
     exit 1
 fi
 
 # ---------- enumerate-once (election) + distribute ----------
-# Per-worker timeout. With detached workers (KillMode=process), the
-# service-level TimeoutStartSec=90min no longer bounds worker runtime
-# (orchestrator returns before workers complete). A wedged Codex phase
-# could hold the per-PR flock indefinitely, blocking all future
-# /srosro-update-review for that PR. `timeout 90m` re-establishes the
-# pre-detach ceiling at the worker level; the worker exits, the flock
-# releases, and the next tick can re-dispatch.
+# Per-worker timeout. A wedged Codex phase would otherwise hold the per-PR
+# flock — and this container's one foreground tick — indefinitely. At the
+# ceiling the worker exits, the flock releases, and the next tick re-dispatches.
 WORKER_TIMEOUT="${WORKER_TIMEOUT:-90m}"
 # Grace before SIGKILL: `timeout` sends SIGTERM at WORKER_TIMEOUT, then SIGKILL
 # WORKER_KILL_AFTER later. Without -k, a worker (or same-group child) that
