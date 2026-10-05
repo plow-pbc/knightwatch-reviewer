@@ -11,6 +11,9 @@
 #      floor regardless of queue/lock state (the removed AND-gate starved here).
 #   E. Floor cadence — empty queue: fresh→no refetch, stale→refetch (the floor
 #      is the only refresh trigger; idle discovers new PRs on it, not before).
+#   H. One claim per tick — two eligible, lock-free specs → exactly one
+#      dispatch; the rest of a snapshot is never trusted after a review (#288).
+#   H2. No claim from a stale queue — losing the refresh election claims nothing.
 #   G. Aging order — the refreshed queue is served oldest-waiting first: the
 #      PR whose updatedAt is older heads the queue regardless of the order the
 #      enumeration returned it in (#247, #253).
@@ -73,25 +76,6 @@ TWO_SPECS='[
 
 run_review(){ : > "$LOG_FILE"; "$@" bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true; }
 gh_enumerate_calls(){ local n; n=$(grep -cE '^(pr list|api graphql)' "$GH_LOG" 2>/dev/null || true); echo "${n:-0}"; }
-# wait_dispatched — poll LOG_FILE until the number of WORKER_DISPATCHED lines
-# matches the synchronous "dispatched N worker(s)" promise (up to ~5s).
-# Workers are detached (background), so the dispatch line may arrive after
-# review.sh exits. This mirrors the count_dispatches pattern in
-# orchestrator-skip-smoke.sh.
-wait_dispatched() {
-    local promised actual
-    promised=$(grep -oE 'dispatched [0-9]+ worker' "$LOG_FILE" 2>/dev/null \
-                  | grep -oE '[0-9]+' | tail -1 || true)
-    promised="${promised:-0}"
-    if [ "$promised" -eq 0 ]; then return; fi
-    for _ in $(seq 1 50); do
-        actual=$(grep -c '^WORKER_DISPATCHED ' "$LOG_FILE" 2>/dev/null || true)
-        actual="${actual:-0}"
-        [ "$actual" -ge "$promised" ] && return
-        sleep 0.1
-    done
-}
-
 STALE_TS="$(( $(date +%s) - 120 ))"   # 120s ago → stale at ENUMERATE_SECS=60
 
 # --- A. freshness skip (default ENUMERATE_SECS=60) ---
@@ -125,7 +109,6 @@ exec {pr1_fd}>"$STATE_DIR/locks/cncorp_plow__1"
 flock -n "$pr1_fd" || { echo "FAIL C: could not hold PR1 lock"; exit 1; }
 : > "$LOG_FILE"
 ENUMERATE_SECS=999 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true   # fresh queue, consume only
-wait_dispatched
 exec {pr1_fd}>&-   # release PR1
 grep -q 'WORKER_DISPATCHED repo=cncorp/plow-content pr=2' "$LOG_FILE" || { echo "FAIL C: PR2 not dispatched"; cat "$LOG_FILE"; exit 1; }
 grep -q 'WORKER_DISPATCHED repo=cncorp/plow pr=1' "$LOG_FILE" && { echo "FAIL C: PR1 dispatched despite held lock"; cat "$LOG_FILE"; exit 1; }
@@ -168,78 +151,29 @@ head_repo=$(jq -r '.specs[0].repo' "$STATE_DIR/queue.json")
 [ "$head_repo" = "cncorp/plow-content" ] || { echo "FAIL G: expected the older PR (cncorp/plow-content) at the head of the queue, got $head_repo"; jq . "$STATE_DIR/queue.json"; exit 1; }
 echo "  OK G"
 
-# --- F / F3. mid-tick claim-stop, one runner over two stop-states -------------
-# A worker that trips a stop-state must stop review.sh claiming the REST of the
-# queue on the SAME tick, not just on the next loop tick — otherwise a capped or
-# throttled account spin-aborts every queued PR. The two cases differ only in
-# which sentinel the worker writes, the env it runs under, and the log it emits,
-# so they share a runner rather than two near-identical copies. (F2 below stays
-# separate: it asserts PRECEDENCE between two sentinels, not the stop itself.)
-#
-# Row: label | worker sentinel line | extra env | expected log | sentinel path
-#   fatal-auth: container mode pins MAX_CONCURRENT=1, which is what makes the
-#               `wait -n` throttle block until the worker's write lands.
-#   github:     runs in HOST mode deliberately — the pause gate is NOT
-#               container-gated, since the host path spends the same PAT — so it
-#               passes MAX_CONCURRENT=1 explicitly to get the same barrier.
-F_LOCAL_STATE="$TMPDIR_BASE/local-state"; mkdir -p "$F_LOCAL_STATE"
-F_POOL="$STATE_DIR/pool/solo"; mkdir -p "$F_POOL"   # review-loop's registration, done test-side
-claim_stop_cases=(
-  "fatal-auth|mark_auth_offline|REVIEWER_CONTAINER_MODE=1|auth invalid.*stopping further claims this tick|$F_POOL/auth-offline"
-  "github|printf '%s\\n' \"\$(( \$(date +%s) + 300 ))\" > \"\$(gh_pause_file)\"|MAX_CONCURRENT=1|github rate-limited — stopping further claims this tick|$STATE_DIR/gh-rate-limited-until"
-)
-for case in "${claim_stop_cases[@]}"; do
-    IFS='|' read -r label sentinel extra_env log_re sentinel_path <<< "$case"
-    echo "  $label: worker trips the stop-state → no further claims this tick..."
-    rm -f "$STATE_DIR/queue.json" "$F_POOL/auth-offline" "$F_POOL/quota-paused-until" "$STATE_DIR/gh-rate-limited-until"
-    cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<WORKER
-#!/bin/bash
-echo "WORKER_DISPATCHED repo=\$1 pr=\$2 sha=\$3" >> "\$LOG_FILE"
-. "\$REVIEWER_LIB_DIR/state-io.sh"
-$sentinel
-WORKER
-    chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
-    write_queue "$STATE_DIR" "$(date +%s)" "$TWO_SPECS"   # both PRs eligible, locks free
-    : > "$LOG_FILE"
-    env LOCAL_STATE_DIR="$F_LOCAL_STATE" $extra_env ENUMERATE_SECS=999 \
-        bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
-    wait_dispatched
-    # Precondition: if the sentinel never landed the assertion below would pass
-    # for the wrong reason (nothing to stop on).
-    [ -s "$sentinel_path" ] || { echo "FAIL $label: sentinel $sentinel_path not written — claim-stop assertion would be vacuous"; cat "$LOG_FILE"; exit 1; }
-    n=$(grep -c '^WORKER_DISPATCHED ' "$LOG_FILE" 2>/dev/null || true); n="${n:-0}"
-    [ "$n" -eq 1 ] || { echo "FAIL $label: expected exactly 1 dispatch (claim-stop), got $n"; cat "$LOG_FILE"; exit 1; }
-    grep -qE "$log_re" "$LOG_FILE" || { echo "FAIL $label: missing same-tick claim-stop log"; cat "$LOG_FILE"; exit 1; }
-    echo "  OK $label"
-done
-rm -f "$STATE_DIR/gh-rate-limited-until"
-
-# --- F2. both sentinels at once: fatal-auth must DOMINATE an active quota pause
-#        in review.sh's same-tick gate (the precedence locked across
-#        review-loop.sh / review-one-pr.sh — a 401-on-refresh never yields a usage
-#        cap). Worker dispatches, sets a future quota pause AND marks auth offline;
-#        assert the auth-invalid stop log wins and the quota log never fires. ---
-echo "  F2: both auth-offline + quota-paused → fatal-auth wins the gate..."
-rm -f "$STATE_DIR/queue.json" "$F_POOL/auth-offline" "$F_POOL/quota-paused-until"
-cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<'WORKER'
-#!/bin/bash
-echo "WORKER_DISPATCHED repo=$1 pr=$2 sha=$3" >> "$LOG_FILE"
-. "$REVIEWER_LIB_DIR/state-io.sh"
-printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$(quota_pause_file)"   # active quota pause
-mark_auth_offline                                                  # AND fatal auth, same tick
-WORKER
-chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
+# --- H. one claim per tick: both specs eligible and lock-free, yet a tick
+#        reviews exactly one. A second claim would come from a snapshot that
+#        went stale during the first review — the duplicate-review bug (#288). ---
+echo "  H: one claim per tick — two free specs → exactly 1 dispatch..."
 write_queue "$STATE_DIR" "$(date +%s)" "$TWO_SPECS"
 : > "$LOG_FILE"
-LOCAL_STATE_DIR="$F_LOCAL_STATE" REVIEWER_CONTAINER_MODE=1 ENUMERATE_SECS=999 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
-wait_dispatched
-# Precondition: the quota pause must actually be established + in the future, else
-# the negative quota assertion below passes vacuously (auth breaks first, so quota
-# is never evaluated) — a broken quota-write would give false "dominated an active
-# pause" confidence. Mirrors scenario F's auth-offline existence check.
-[ -s "$F_POOL/quota-paused-until" ] || { echo "FAIL F2: quota pause not established — precedence assertion would be vacuous"; cat "$LOG_FILE"; exit 1; }
-grep -qE 'auth invalid.*stopping further claims this tick' "$LOG_FILE" || { echo "FAIL F2: auth-invalid stop log must win when both sentinels are set"; cat "$LOG_FILE"; exit 1; }
-grep -qE 'quota hit.*stopping further claims this tick' "$LOG_FILE" && { echo "FAIL F2: quota log fired — fatal-auth must dominate an active quota pause"; cat "$LOG_FILE"; exit 1; }
-echo "  OK F2"
+ENUMERATE_SECS=999 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
+n=$(grep -c '^WORKER_DISPATCHED ' "$LOG_FILE" 2>/dev/null || true)
+[ "${n:-0}" -eq 1 ] || { echo "FAIL H: expected exactly 1 dispatch per tick, got ${n:-0}"; cat "$LOG_FILE"; exit 1; }
+echo "  OK H"
+
+# --- H2. never claim from a stale queue: another container holds the refresh
+#        election (its enumerate is still running), so this tick must claim
+#        nothing rather than serve specs the in-flight refresh may drop. ---
+echo "  H2: stale queue + lost election → no dispatch..."
+write_queue "$STATE_DIR" "$STALE_TS" "$TWO_SPECS"
+exec {enum_fd}>"$STATE_DIR/locks/__enumerator"
+flock -n "$enum_fd" || { echo "FAIL H2: could not hold the enumerator lock"; exit 1; }
+: > "$LOG_FILE"
+ENUMERATE_SECS=60 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
+exec {enum_fd}>&-
+n=$(grep -c '^WORKER_DISPATCHED ' "$LOG_FILE" 2>/dev/null || true)
+[ "${n:-0}" -eq 0 ] || { echo "FAIL H2: claimed from a stale queue while another container was refreshing (got ${n:-0} dispatches)"; cat "$LOG_FILE"; exit 1; }
+echo "  OK H2"
 
 echo "ALL PASS: queue-distribute-smoke.sh"

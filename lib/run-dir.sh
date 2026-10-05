@@ -345,8 +345,8 @@ reap_test_user_processes() {
 # half-removed tree. Both gated on this worker still HOLDING a forked job: the
 # reap sweeps a shared account, so ungated it kills a sibling PR's live run on
 # every worker exit. run_just_test's is equally broad, safe only because a
-# container pins MAX_CONCURRENT=1 (review-loop.sh) — one review, one test, per
-# PID namespace; above 1 both call sites are unsafe.
+# container runs one foreground review per tick (review.sh consume_queue) — one
+# review, one test, per PID namespace; concurrent reviews would make both unsafe.
 cleanup_test_clone() {
     if [ -n "${TEST_JOB_PID:-}" ]; then
         kill -0 "$TEST_JOB_PID" 2>/dev/null && {
