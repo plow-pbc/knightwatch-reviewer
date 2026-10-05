@@ -722,9 +722,11 @@ ${NOTICE_BODY}" >/dev/null 2>"$NOTICE_ERR" \
 # worker returns would trust a snapshot that went stale DURING that review —
 # a forced (/${BOT_CMD_PREFIX}-review) spec another container already served
 # reads as claimable again (free lock, trigger still in the old snapshot) and
-# gets a duplicate whole-PR review (#288). Returning keeps every claim within
-# ENUMERATE_SECS of a refresh. Per-account stop-states (auth/quota/throttle/
-# GitHub pause) are review-loop.sh's top-of-tick gates.
+# gets a duplicate whole-PR review (#288). Returning is enough because
+# refresh_queue skips in-flight PRs: any snapshot newer than this claim omits
+# the spec, and one is always taken before the review ends (the refresh floor,
+# ENUMERATE_SECS, is shorter than any review). Per-account stop-states
+# (auth/quota/throttle/GitHub pause) are review-loop.sh's top-of-tick gates.
 consume_queue() {
     local spec REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR
     local TRIGGER_USER TRIGGER_BODY TICK_FETCHED_AT_ISO TRIGGER_FILE=""
