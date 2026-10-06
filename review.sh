@@ -728,7 +728,7 @@ ${NOTICE_BODY}" >/dev/null 2>"$NOTICE_ERR" \
 # review-loop.sh's top-of-tick gates.
 consume_queue() {
     local spec REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR
-    local TRIGGER_USER TRIGGER_BODY TICK_FETCHED_AT_ISO TRIGGER_FILE=""
+    local TRIGGER_USER TRIGGER_BODY TICK_FETCHED_AT_ISO QUEUED_SINCE TRIGGER_FILE=""
     while IFS= read -r spec; do
         [ -n "$spec" ] || continue
         REPO=$(jq -r '.repo' <<<"$spec");          PR_NUM=$(jq -r '.pr_num' <<<"$spec")
@@ -748,6 +748,7 @@ consume_queue() {
         TRIGGER_USER=$(jq -r '.trigger_user' <<<"$spec"); TRIGGER_BODY=$(jq -r '.trigger_body' <<<"$spec")
         REQUESTER_LOGIN=$(jq -r '.requester_login // empty' <<<"$spec")
         TICK_FETCHED_AT_ISO=$(jq -r '.tick_at' <<<"$spec")
+        QUEUED_SINCE=$(jq -r '.since // empty' <<<"$spec")
 
         # Materialize the trigger-comment file locally. TMPDIR is pinned to
         # $STATE_DIR/tmp by tracked-repos.sh.
@@ -761,6 +762,7 @@ consume_queue() {
         # otherwise inherit (and could drain) the spec stream on stdin.
         TRIGGER_COMMENT_FILE="$TRIGGER_FILE" \
         DISPATCHER_TICK_AT="$TICK_FETCHED_AT_ISO" \
+        DISPATCHER_QUEUED_SINCE="$QUEUED_SINCE" \
         REVIEWER_LIB_DIR="$REVIEWER_LIB_DIR" \
         WORKER_DEADLINE_EPOCH="$(( $(date +%s) + $(timeout_duration_seconds "$WORKER_TIMEOUT") ))" \
             timeout -k "$WORKER_KILL_AFTER" "$WORKER_TIMEOUT" "$REVIEWER_LIB_DIR/review-one-pr.sh" \

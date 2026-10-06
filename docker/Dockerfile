@@ -32,7 +32,7 @@ ARG COMPOSE_VERSION=5.1.4
 # shell. plow CI runs jq 1.7 (ubuntu noble); match it so the reviewer runs what
 # plow is actually tested against.
 ARG JQ_VERSION=1.7.1
-ARG CODEX_CLI_VERSION=0.144.1
+ARG CODEX_CLI_VERSION=0.160.1
 
 # System deps a reviewed repo's `just test` shells out to. The May-2026
 # containerization (#103) + host-reviewer retirement (#119) moved test execution
