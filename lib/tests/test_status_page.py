@@ -1,4 +1,5 @@
 """Tests for the status page: collector, model builder, renderer."""
+import fcntl
 import json
 import os
 import sys
@@ -53,8 +54,13 @@ class TestCollect(unittest.TestCase):
         _w(runs / run_name("o/r", 11, NOW - 60) / "meta.json", {"repo": "o/r", "pr_num": 11})
         _w(runs / run_name("o/r", 11, NOW - 60) / "timings.json", "{corrupt")             # corrupt timings
         (runs / "not-a-run-dir").mkdir()
+        _w(runs / run_name("o/r", 12, NOW - 60) / "meta.json", {"repo": "o/r", "pr_num": 12})  # running: lock held
+        _w(self.shared / "locks" / "o_r__12", "")
+        self.held = os.open(self.shared / "locks" / "o_r__12", os.O_RDONLY)
+        fcntl.flock(self.held, fcntl.LOCK_EX)
 
     def tearDown(self):
+        os.close(self.held)
         self.tmp.cleanup()
 
     def snap(self):
@@ -74,7 +80,8 @@ class TestCollect(unittest.TestCase):
 
     def test_runs_window_and_malformed_dirs(self):
         runs = {r["pr"]: r for r in self.snap()["runs"]}
-        self.assertEqual(sorted(runs), [7, 11])   # 8 too old; 9/10 no usable meta; junk name skipped
+        self.assertEqual(sorted(runs), [7, 11, 12])   # 8 too old; 9/10 no usable meta; junk name skipped
+        self.assertEqual([runs[p]["live"] for p in (7, 11, 12)], [False, False, True])  # only a held lock is live
         self.assertEqual(runs[7]["span"], {"intent": [0, 14], "security": [14, 136]})
         self.assertEqual(runs[7]["skipped"], ["consumers"])
         self.assertEqual(runs[11]["span"], {})
@@ -83,15 +90,14 @@ class TestCollect(unittest.TestCase):
         self.assertEqual(self.snap()["queue"]["specs"][0]["pr_num"], 1)
 
 
-def run(pr, age, repo="o/r", total=450, finished=True, span=None, queued=None):
+def run(pr, age, repo="o/r", total=450, finished=True, span=None, queued=None, live=False):
     return {"t": NOW - age, "repo": repo, "pr": pr, "title": f"pr {pr}", "status": "completed" if finished else None,
-            "finished_at": "z" if finished else None, "queued_since": queued, "total": total if finished else None,
+            "finished_at": "z" if finished else None, "live": live, "queued_since": queued, "total": total if finished else None,
             "span": span or {"intent": [0, 14], "security": [14, 136], "aggregator": [246, 436]}, "skipped": []}
 
 
 def src(runs, **over):
     base = {"snapshot": {"collected_at": NOW, "accounts": [], "queue": {"specs": []}, "runs": runs},
-            "fleet_started": NOW - 1500,
             "bakeoff": {"specs": {"security": {"n": 10, "pub": 4, "app": 3}}, "critiques": [], "rows": 10, "crit": 0, "loved": 0},
             "prompt_changed": {"security": NOW - 86400},
             "gh": {"core": {"limit": 5000, "remaining": 900, "reset": NOW + 60}, "graphql": {"limit": 5000, "remaining": 4998, "reset": NOW + 60}},
@@ -101,13 +107,13 @@ def src(runs, **over):
 
 
 class TestBuild(unittest.TestCase):
-    def test_inflight_excludes_restart_orphans_and_stale_and_keeps_newest_per_pr(self):
-        runs = [run(1, 2100, finished=False),                 # started before the fleet restart: orphan
-                run(2, 600, finished=False), run(2, 300, finished=False),  # same PR twice: newest wins
+    def test_inflight_is_a_held_lock_and_keeps_newest_per_pr(self):
+        runs = [run(1, 2100, finished=False),                 # killed (restart or crash): its lock died with it
+                run(2, 600, finished=False, live=True), run(2, 300, finished=False, live=True),  # newest wins
                 run(3, 120, finished=True),                   # finished
-                run(4, 1400, finished=False),                 # after restart, under 90 min
-                run(5, 600, finished=False), run(5, 300)]     # a killed run superseded by a finished one
-        s = src(runs, fleet_started=NOW - 1500)
+                run(4, 1400, finished=False, live=True),      # running long
+                run(5, 600, finished=False, live=True), run(5, 300)]  # a killed run superseded by a finished one
+        s = src(runs)
         s["snapshot"]["queue"]["specs"] = [{"repo": "o/r", "pr_num": p, "title": "t", "since": "2026-10-01T00:00:00Z"} for p in (4, 6)]
         m = status_page.build(s, {}, NOW)
         self.assertEqual([(f["pr"], round(f["age"])) for f in m["inflight"]], [(4, 1400), (2, 300)])
@@ -129,7 +135,7 @@ class TestBuild(unittest.TestCase):
         self.assertEqual([c["pr"] for c in m["feedback"]["unaddressed"]], [1])
 
     def test_red_rules(self):
-        s = src([run(3, 120), run(4, 1400, finished=False)],
+        s = src([run(3, 120), run(4, 1400, finished=False, live=True)],
                 repos=[{"repo": "o/r", "kid": "stale"}, {"repo": "o/fresh", "kid": "fresh"}, {"repo": "o/unindexed", "clone": False}])
         del s["bakeoff"]
         s["snapshot"]["queue"] = {"specs": [{"repo": "o/r", "pr_num": 5, "title": "t", "since": "2026-10-01T00:00:00Z"}]}
@@ -175,9 +181,25 @@ class TestBuild(unittest.TestCase):
         self.assertEqual(m["errors"], {"gh": "CalledProcessError: gh exited 4"})
 
 
+class TestRepoHealth(unittest.TestCase):
+    def test_kid_marker_reason(self):
+        with TemporaryDirectory() as root:
+            for name, marker in (("refreshing", "reason=refreshing\nindexed=abc"), ("failed", "reason=index-failed\n"), ("fresh", None)):
+                kid = Path(root, name, ".keepitdry")
+                kid.mkdir(parents=True)
+                Path(root, name, ".git").mkdir()
+                (kid / ".indexed-sha").write_text("abc")
+                if marker:
+                    (kid / ".stale").write_text(marker)
+            rows = status_page.source_repos([run(1, 60, repo=f"o/{n}") for n in ("refreshing", "failed", "fresh")], root)
+            m = status_page.build(src([], repos=rows), {}, NOW)
+        self.assertEqual({r["repo"]: (r["kid"], r["red"]) for r in m["repos"]},
+                         {"o/refreshing": ("refreshing", False), "o/failed": ("stale", True), "o/fresh": ("fresh", False)})
+
+
 class TestRender(unittest.TestCase):
     def test_hostile_title_is_inert(self):
-        s = src([run(1, 600, finished=False)], fleet_started=NOW - 1500)
+        s = src([run(1, 600, finished=False, live=True)])
         s["snapshot"]["runs"][0]["title"] = '</script><img src=x onerror=alert(1)>'
         html = status_page.render(status_page.build(s, {}, NOW))
         self.assertNotIn("</script><img", html)
@@ -185,7 +207,7 @@ class TestRender(unittest.TestCase):
 
     def test_main_isolates_a_failed_source_and_exits_nonzero(self):
         with TemporaryDirectory() as out, unittest.mock.patch.object(status_page, "source_gh", side_effect=RuntimeError("gh: not logged in")), \
-             unittest.mock.patch.object(status_page, "gather_snapshot", return_value=(src([])["snapshot"], NOW - 1500)), \
+             unittest.mock.patch.object(status_page, "gather_snapshot", return_value=src([])["snapshot"]), \
              unittest.mock.patch.object(status_page, "source_bakeoff", return_value=src([])["bakeoff"]), \
              unittest.mock.patch.object(status_page, "source_prompt_changed", return_value={}), \
              unittest.mock.patch.object(status_page, "source_repos", return_value=[]):

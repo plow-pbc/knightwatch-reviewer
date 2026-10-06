@@ -19,7 +19,6 @@ REPO_DIR = LIB.parent
 PROJECT = "knightwatch-reviewer"
 
 DAY = 86400
-WORKER_CEILING_S = 90 * 60
 STUCK_FACTOR = 3
 QUEUE_RED_S = 3600
 QUEUE_STALL_S = 1800
@@ -55,14 +54,13 @@ def _anatomy(runs, bakeoff, now):
             "specs": bakeoff["specs"] if bakeoff else None}
 
 
-def _inflight(runs, fleet_started, total50, now):
+def _inflight(runs, total50, now):
     newest = {}   # newest run per PR first, so a finished rerun retires an older killed one
     for r in runs:
         k = (r["repo"], r["pr"])
         if k not in newest or r["t"] > newest[k]["t"]:
             newest[k] = r
-    live = [r for r in newest.values()
-            if not r["finished_at"] and now - r["t"] <= WORKER_CEILING_S and r["t"] >= fleet_started]
+    live = [r for r in newest.values() if r["live"]]   # a killed run's lock dies with its worker
     return [{"repo": r["repo"], "pr": r["pr"], "title": r["title"], "age": now - r["t"], "done": sorted(r["span"]),
              "stuck": bool(total50) and now - r["t"] > STUCK_FACTOR * total50}
             for r in sorted(live, key=lambda r: r["t"])]
@@ -122,8 +120,7 @@ def build(src, errors, now):
     snap, bake = src.get("snapshot"), src.get("bakeoff")
     runs = snap["runs"] if snap else []
     anatomy = _anatomy(runs, bake, now) if snap else None
-    inflight = (_inflight(runs, src["fleet_started"], anatomy["total50"], now)
-                if snap and "fleet_started" in src else None)
+    inflight = _inflight(runs, anatomy["total50"], now) if snap else None
     accounts = None
     queue = None
     if snap:
@@ -166,16 +163,13 @@ def _run(*cmd, **kw):
 
 
 def gather_snapshot():
-    """(snapshot, oldest running reviewer's start epoch) — one docker round per tick."""
+    """The fleet's /shared snapshot, collected inside a running reviewer."""
     names = sorted(n for n in _run("docker", "ps", "--filter", f"label=com.docker.compose.project={PROJECT}",
                                    "--format", "{{.Names}}").split() if n.startswith(f"{PROJECT}-reviewer-"))
     if not names:
         raise RuntimeError("no running reviewer container")
-    started = min(_epoch(s.strip()[:19] + "Z") for s in
-                  _run("docker", "inspect", "--format", "{{.State.StartedAt}}", *names).splitlines())
     with open(LIB / "status_collect.py") as script:
-        snap = json.loads(_run("docker", "exec", "-i", names[0], "python3", "-", stdin=script))
-    return snap, started
+        return json.loads(_run("docker", "exec", "-i", names[0], "python3", "-", stdin=script))
 
 
 def source_bakeoff(db):
@@ -216,8 +210,12 @@ def source_repos(runs, clone_root):
                 return subprocess.run(["git", "-C", str(clone), "cat-file", "-e", f"HEAD:{p}"],
                                       capture_output=True).returncode == 0
             kid = clone / ".keepitdry"
+            # plow-kid-refresh marks a healthy in-progress index "refreshing": amber, not a failure.
+            marker = kid / ".stale"
+            reason = marker.read_text().partition("\n")[0].removeprefix("reason=") if marker.exists() else ""
             row.update(review_md=has("REVIEW.md"), siblings=has(".knightwatch/siblings"),
-                       kid="stale" if (kid / ".stale").exists() else "fresh" if (kid / ".indexed-sha").exists() else "none")
+                       kid="refreshing" if reason == "refreshing" else "stale" if reason
+                       else "fresh" if (kid / ".indexed-sha").exists() else "none")
         rows.append(row)
     return rows
 
@@ -250,9 +248,9 @@ def main(argv=None):
             errors[name] = f"{type(exc).__name__}: {exc}"
             return None
 
-    got = attempt("snapshot", gather_snapshot)
-    if got:
-        src["snapshot"], src["fleet_started"] = got
+    snap = attempt("snapshot", gather_snapshot)
+    if snap:
+        src["snapshot"] = snap
     for name, fn in (("bakeoff", lambda: source_bakeoff(args.bakeoff_db)), ("gh", source_gh)):
         val = attempt(name, fn)
         if val is not None:

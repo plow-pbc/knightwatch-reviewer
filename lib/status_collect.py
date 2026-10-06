@@ -4,6 +4,7 @@ Runs INSIDE a reviewer container — the kwr_claims volume is root-only on the
 host — piped over stdin by status_page.py (`docker exec -i <c> python3 -`), so
 page changes never need an image rebuild. Prints one JSON document.
 """
+import fcntl
 import json
 import os
 import sys
@@ -53,7 +54,23 @@ def account_row(pool, account, now, tz, weekend):
     return row
 
 
-def run_record(path, t):
+def pr_locked(locks, repo, pr):
+    """True while a worker holds the PR's lock (lib/locking.sh): the same
+    non-blocking acquire-and-release probe the dispatcher runs every tick."""
+    try:
+        fd = os.open(locks / f"{repo.replace('/', '_')}__{pr}", os.O_RDONLY)
+    except FileNotFoundError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return False
+    except BlockingIOError:
+        return True
+    finally:
+        os.close(fd)
+
+
+def run_record(path, t, locks):
     meta = _json(path / "meta.json")
     if not isinstance(meta, dict):
         return None
@@ -64,6 +81,7 @@ def run_record(path, t):
     skipped = path / "_skipped_angles.txt"
     return {"t": t, "repo": meta.get("repo"), "pr": meta.get("pr_num"), "title": meta.get("title"),
             "status": meta.get("status"), "finished_at": meta.get("finished_at"),
+            "live": not meta.get("finished_at") and pr_locked(locks, meta.get("repo", ""), meta.get("pr_num")),
             "queued_since": meta.get("queued_since"),
             "total": (meta.get("timings") or {}).get("total"),
             "span": {k: [round(v["start"] - t0), round(v["end"] - t0)] for k, v in nodes.items()},
@@ -77,7 +95,7 @@ def collect(shared, now, tz, weekend):
         t = run_epoch(p.name)
         if t is None or now - t > WINDOW_S:
             continue
-        rec = run_record(p, t)
+        rec = run_record(p, t, shared / "locks")
         if rec:
             runs.append(rec)
     accounts = sorted((a for a in os.listdir(pool) if (pool / a).is_dir()), key=lambda a: (len(a), a))
