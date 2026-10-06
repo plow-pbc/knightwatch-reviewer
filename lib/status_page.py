@@ -31,6 +31,12 @@ MIN_WEEK_RUNS = 30
 GATE_RED = 0.25
 DELTA_WEEKS = 4
 DELTA_FLAG_PT = 2
+# $/1M tokens (input, cached input, output): OpenAI standard-tier, short-context
+# rates (developers.openai.com/api/docs/pricing). Codex's 258K window never
+# reaches the >272K long-context tier. An unlisted model is reported as unpriced.
+PRICES = {"gpt-5.4-mini": (0.75, 0.075, 4.5), "gpt-5.5": (5, 0.5, 30), "gpt-5.6-luna": (0.2, 0.02, 1.2),
+          "gpt-5.6-sol": (4, 0.4, 20), "gpt-5.6-terra": (2, 0.2, 12), "gpt-6-luna": (0.1, 0.01, 0.5),
+          "gpt-6-sol": (2, 0.2, 10), "gpt-6.1-sol": (2, 0.1, 10)}
 
 
 def _epoch(iso):
@@ -73,6 +79,29 @@ def _edit_delta(weeks, edits, now):
     change = round(after - before, 1)
     return {"last": datetime.fromtimestamp(edit, timezone.utc).date().isoformat(), "before": before, "after": after,
             "change": change, "flag": "up" if change > DELTA_FLAG_PT else "down" if change < -DELTA_FLAG_PT else None}
+
+
+def _scale(wins, days, now):
+    """Header strip: the last 28 days and the 28 before, tokens and API-rate cost by day, reviews from runs."""
+    def sum_days(lo, hi):
+        t = {"input": 0, "cached": 0, "output": 0, "cost": 0.0, "unpriced": 0}
+        for d, models in days.items():
+            if not lo <= datetime.fromisoformat(d).replace(tzinfo=timezone.utc).timestamp() < hi:
+                continue
+            for model, (inp, cached, out, _) in models.items():
+                t["input"] += inp
+                t["cached"] += cached
+                t["output"] += out
+                if model in PRICES:
+                    pin, pc, pout = PRICES[model]
+                    t["cost"] += ((inp - cached) * pin + cached * pc + out * pout) / 1e6
+                else:
+                    t["unpriced"] += inp + out
+        return t
+    # Token days are UTC dates, so their windows end with today.
+    end = datetime.fromtimestamp(now, timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).timestamp() + DAY
+    return {"runs": wins, "tokens": None if days is None else
+            {"cur": sum_days(end - 28 * DAY, end), "prev": sum_days(end - 56 * DAY, end - 28 * DAY)}}
 
 
 def _specialists(bake, edits, anatomy, now):
@@ -234,7 +263,8 @@ def build(src, errors, now):
                  "repos30": len({r["repo"] for r in runs}), "queued": len(queue["specs"]),
                  "inflight": len(inflight) if inflight is not None else None,
                  "working": sum(a["level"] != "red" for a in accounts), "fleet": len(accounts)}
-    m = {"generated_at": now, "errors": errors, "tiles": tiles, "anatomy": anatomy, "inflight": inflight,
+    scale = _scale(snap and snap.get("windows"), src.get("tokens"), now)
+    m = {"generated_at": now, "errors": errors, "tiles": tiles, "scale": scale, "anatomy": anatomy, "inflight": inflight,
          "queue": queue, "accounts": accounts, "image": snap["image"] if snap else None, "gh": gh, "slow": _slow(runs, now) if snap else None,
          "feedback": feedback, "specialists": specialists, "repos": repos}
     m["attention"] = _attention(m)
@@ -281,6 +311,63 @@ def source_prompt_edits(specs):
     return out
 
 
+def _rollout_usage(path):
+    """(model, final cumulative token usage) of one codex rollout, else None."""
+    def usage(lines):
+        for line in reversed(lines):
+            if b'"token_count"' not in line:
+                continue
+            try:
+                return json.loads(line)["payload"]["info"]["total_token_usage"]
+            except (ValueError, KeyError, TypeError):   # a cut first line, or tool text naming the event
+                continue
+        return None
+    model = None
+    with open(path, "rb") as fh:
+        for line in fh:
+            if b'"turn_context"' in line:
+                model = json.loads(line)["payload"].get("model")
+                break
+        size = fh.seek(0, os.SEEK_END)
+        fh.seek(max(0, size - 65536))
+        u = usage(fh.read().splitlines())
+        if u is None and size > 65536:   # a long final tool output can push the last count out of the tail
+            fh.seek(0)
+            u = usage(fh.read().splitlines())
+    return u and (model, u)
+
+
+def source_tokens(codex_root, cache_path, now):
+    """{day: {model: [input, cached, output, sessions]}} over every account's codex rollouts.
+
+    Days older than two are settled (a review is capped at 90m), so they come
+    from cache_path; only the last few day dirs are rescanned each build."""
+    if not Path(codex_root).is_dir():
+        raise FileNotFoundError(f"codex root {codex_root}")
+    try:
+        days = json.loads(cache_path.read_text())
+    except FileNotFoundError:
+        days = {}
+    settled = (datetime.fromtimestamp(now, timezone.utc).date() - timedelta(days=2)).isoformat()
+    days = {d: v for d, v in days.items() if d < settled}
+    cached = set(days)
+    for daydir in Path(codex_root).glob("codex-account-*/sessions/*/*/*"):
+        day = "-".join(daydir.parts[-3:])
+        if day in cached:
+            continue
+        for f in daydir.glob("rollout-*.jsonl"):
+            got = _rollout_usage(f)
+            if not got:
+                continue
+            model, u = got
+            row = days.setdefault(day, {}).setdefault(model or "unknown", [0, 0, 0, 0])
+            for i, k in enumerate(("input_tokens", "cached_input_tokens", "output_tokens")):
+                row[i] += u.get(k, 0)
+            row[3] += 1
+    _write(cache_path, json.dumps({d: v for d, v in days.items() if d < settled}))
+    return days
+
+
 def source_gh():
     return json.loads(_run("gh", "api", "rate_limit"))["resources"]
 
@@ -325,6 +412,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out", type=Path, default=Path.home() / "pages/knightwatch")
     ap.add_argument("--clone-root", default=str(Path.home() / "services/kwr-repos"))
+    ap.add_argument("--codex-root", default=str(Path.home() / "services/knightwatch-reviewer/docker/secrets"))
+    ap.add_argument("--token-cache", type=Path, default=Path.home() / ".cache/knightwatch-token-days.json")
     ap.add_argument("--bakeoff-db", default=str(Path.home() / ".pr-reviewer/bakeoff.db"))
     args = ap.parse_args(argv)
     now, src, errors = time.time(), {}, {}
@@ -341,7 +430,8 @@ def main(argv=None):
     snap = attempt("snapshot", gather_snapshot)
     if snap:
         src["snapshot"] = snap
-    for name, fn in (("bakeoff", lambda: source_bakeoff(args.bakeoff_db)), ("gh", source_gh)):
+    for name, fn in (("bakeoff", lambda: source_bakeoff(args.bakeoff_db)), ("gh", source_gh),
+                     ("tokens", lambda: source_tokens(args.codex_root, args.token_cache, now))):
         val = attempt(name, fn)
         if val is not None:
             src[name] = val

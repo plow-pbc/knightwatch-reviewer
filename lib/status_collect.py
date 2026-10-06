@@ -96,12 +96,42 @@ def image():
     return {"os": os_name, "models": [pipeline.DEFAULT_MODEL, pipeline.CRITIC_MODEL]}
 
 
+AGG_OUT = "agents/aggregator/output.md"
+
+
+def verdict(run_dir):
+    """The aggregator's closing VERDICT line (prompts/aggregator.md), else None."""
+    tail = (run_dir / AGG_OUT).read_text().splitlines()[-10:]
+    return next((ln for ln in reversed(tail) if ln.startswith("VERDICT:")), None)
+
+
+def windows(names, runs_dir, now):
+    """Reviews that reached a final review (most run dirs are aborted rounds), PRs,
+    and each PR's latest verdict, for the last 28 days and the 28 days before."""
+    out = {}
+    for key, lo in (("cur", now - 28 * 86400), ("prev", now - 56 * 86400)):
+        hi = lo + 28 * 86400
+        done = [(n, t) for n, t in names if lo <= t < hi and (runs_dir / n / AGG_OUT).exists()]
+        latest = {}
+        for name, t in done:
+            pr = tuple(name.split("__")[:2])
+            latest[pr] = max(latest.get(pr, (0, "")), (t, name))
+        verdicts = [v for v in (verdict(runs_dir / n) for _, n in latest.values()) if v]
+        out[key] = {"reviews": len(done), "prs": len(latest), "verdicts": len(verdicts),
+                    "approved": sum(v.startswith("VERDICT: APPROVE") for v in verdicts)}
+    return out
+
+
 def collect(shared, now, tz, weekend):
     pool = shared / "pool"
-    runs = []
+    runs, names = [], []
     for p in (shared / "runs").iterdir():
         t = run_epoch(p.name)
-        if t is None or now - t > WINDOW_S:
+        if t is None:
+            continue
+        if now - t < 56 * 86400:
+            names.append((p.name, t))
+        if now - t > WINDOW_S:
             continue
         rec = run_record(p, t, shared / "locks")
         if rec:
@@ -111,7 +141,8 @@ def collect(shared, now, tz, weekend):
             "accounts": [account_row(pool, a, now, tz, weekend) for a in accounts],
             "queue": _json(shared / "queue.json") or {"specs": []},
             "image": image(),
-            "runs": runs}
+            "runs": runs,
+            "windows": windows(names, shared / "runs", now)}
 
 
 def main():
