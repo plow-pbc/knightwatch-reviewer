@@ -58,7 +58,7 @@ flowchart TB
         mom["momentum<br/>(re-review only)"]
     end
 
-    S --> agg["aggregator<br/>merge · dedupe · rank"]
+    ksec & kdi & karchref & kcd & kshp & ktst & kcons & mom --> agg["aggregator<br/>merge · dedupe · rank"]
     tg --> agg
     agg --> out([Posted review:<br/>VERDICT + ranked Probes])
 ```
