@@ -166,6 +166,10 @@ class TestBuild(unittest.TestCase):
         s2["prompt_edits"] = {"security": [[edit_before, "tune"]], "tests": []}
         rows2 = {r["name"]: r for r in status_page.build(s2, {}, NOW)["specialists"]["rows"]}
         self.assertIsNone(rows2["security"]["delta"])  # only incomplete week after edit
+        # A Monday edit at 18:54 excludes its own week from "after": that week's runs started on the old prompt
+        s3 = src([], bakeoff=b)
+        s3["prompt_edits"] = {"security": [[datetime(2026, 9, 7, 18, 54, tzinfo=timezone.utc).timestamp(), "tune"]]}
+        self.assertEqual(status_page.build(s3, {}, NOW)["specialists"]["rows"][0]["delta"]["after"], 100.0)  # 2026-09-14 only
 
     def test_zones_split_at_the_median_specialist(self):
         dur_acted = {"fast-good": (90, 30), "slow-good": (300, 30), "fast-bad": (90, 5), "slow-bad": (300, 5), "mid": (150, 20)}

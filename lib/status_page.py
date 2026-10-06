@@ -52,25 +52,24 @@ def _pct(a, b):
 
 
 def _edit_delta(weeks, edits, now):
-    """Edited-later yield in the DELTA_WEEKS full weeks after the newest prompt edit vs. before it.
-    Only counts complete weeks: a week w counts when date.fromisoformat(w[0]) + 7 days <= today (UTC)."""
+    """Edited-later yield over the DELTA_WEEKS complete weeks wholly after the newest prompt edit vs. wholly before it."""
     if not edits:
         return None
-    day = datetime.fromtimestamp(edits[0][0], timezone.utc).date()
-    today = datetime.fromtimestamp(now, timezone.utc).date()
+    edit = edits[0][0]
 
-    def is_complete(w):
-        return datetime.fromisoformat(w[0]).date() + timedelta(days=7) <= today
+    def bounds(w):
+        start = datetime.fromisoformat(w[0]).replace(tzinfo=timezone.utc).timestamp()
+        return start, start + 7 * DAY
 
     def rate(ws):
         return _pct(sum(w[2] for w in ws), sum(w[1] for w in ws))
-    before = rate([w for w in weeks if is_complete(w) and datetime.fromisoformat(w[0]).date() + timedelta(days=7) <= day][-DELTA_WEEKS:])
-    after = rate([w for w in weeks if is_complete(w) and w[0] >= day.isoformat()][:DELTA_WEEKS])
+    before = rate([w for w in weeks if bounds(w)[1] <= edit][-DELTA_WEEKS:])
+    after = rate([w for w in weeks if bounds(w)[0] >= edit and bounds(w)[1] <= now][:DELTA_WEEKS])
     if before is None or after is None:
         return None
     change = round(after - before, 1)
-    return {"last": day.isoformat(), "before": before, "after": after, "change": change,
-            "flag": "up" if change > DELTA_FLAG_PT else "down" if change < -DELTA_FLAG_PT else None}
+    return {"last": datetime.fromtimestamp(edit, timezone.utc).date().isoformat(), "before": before, "after": after,
+            "change": change, "flag": "up" if change > DELTA_FLAG_PT else "down" if change < -DELTA_FLAG_PT else None}
 
 
 def _specialists(bake, edits, anatomy, now):
