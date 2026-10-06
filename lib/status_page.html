@@ -109,7 +109,7 @@ panel('live',D.inflight,['snapshot'],F=>F.length?F.map(f=>{const done=ORDER.filt
  <span class="lva">${f.stuck?pill('bad',`${dur(f.age)} · likely stuck`):`${dur(f.age)} running`} · ${done}/${ORDER.length} stages</span></div>
  <div class="chips">${ORDER.map(([k,c])=>chip(k,c,f.done.includes(k))).join('')}</div></div>`}).join(''):'<div class="small">No reviews in progress.</div>');
 // queue (oldest first; the model sets late past 1h, red only when no review has started in 30m)
-panel('queue',D.queue,['snapshot'],Q=>Q.specs.length?`<table><tr><th>PR</th><th class="n">waiting</th></tr>${Q.specs.map((q,i)=>`<tr><td>${prLink(q.repo,q.pr)} <span class="small">${esc(q.title)}</span></td><td class="n">${i===0&&Q.red?pill('bad',dur(q.wait)):i===0&&Q.late?`<span title="reviews are still starting: the fleet is busy, no action">${pill('warnp',dur(q.wait))}</span>`:dur(q.wait)}</td></tr>`).join('')}</table>`
+panel('queue',D.queue,['snapshot'],Q=>Q.specs.length?`<table><tr><th>PR</th><th class="n">waiting</th></tr>${Q.specs.map((q,i)=>`<tr><td>${prLink(q.repo,q.pr)} <span class="small">${esc(q.title)}</span></td><td class="n">${i===0&&Q.red?pill('bad',dur(q.wait)):i===0&&Q.late?`<span title="over 1h: the fleet is busy or pacing; the reviewer panel shows which">${pill('warnp',dur(q.wait))}</span>`:dur(q.wait)}</td></tr>`).join('')}</table>`
  :`<p>${pill('ok','Empty')} Every requested review has been picked up.</p><p class="small">A PR is claimed within one 60-second enumeration tick of its review request while a reviewer is free.</p>`);
 // gh
 panel('gh',D.gh,['gh'],G=>`<table><tr><th>bucket</th><th>remaining</th><th></th><th class="n">resets in</th></tr>${['core','graphql'].map(k=>{const b=G[k];
