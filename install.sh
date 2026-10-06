@@ -258,6 +258,7 @@ fi
 . "$REPO_DIR/lib/tracked-repos.sh"
 exec 9>&-   # release the org-sync lock — the remaining systemd render is install-local
 mkdir -p "$KWR_CLONE_ROOT"
+mkdir -p "$HOME/pages/knightwatch"   # status-page unit's ReadWritePaths must exist at namespace setup
 
 # Dedupe + sort for stable rendering across runs so cmp-based idempotency
 # doesn't trigger spurious copies when bash hashing reorders the assoc
