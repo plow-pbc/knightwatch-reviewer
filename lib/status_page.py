@@ -22,6 +22,7 @@ DAY = 86400
 WORKER_CEILING_S = 90 * 60
 STUCK_FACTOR = 3
 QUEUE_RED_S = 3600
+PACING = ("throttled", "quota-paused")
 GH_RED = 0.2
 
 
@@ -80,7 +81,7 @@ def _slow(runs, now, n=5, min_reviews=3):
 def _level(a):
     if a["status"] in ("offline", "not running"):
         return "red"
-    if a["status"] in ("throttled", "quota-paused") or a["over"]:
+    if a["status"] in PACING:
         return "amber"
     return "ok"
 
@@ -122,13 +123,20 @@ def build(src, errors, now):
     anatomy = _anatomy(runs, bake, now) if snap else None
     inflight = (_inflight(runs, src["fleet_started"], anatomy["total50"], now)
                 if snap and "fleet_started" in src else None)
+    accounts = None
     queue = None
     if snap:
+        accounts = [{**a, "over": (a.get("projected") or 0) > 100} for a in snap["accounts"]]
+        accounts = [{**a, "level": _level(a)} for a in accounts]
         # queue.json is a per-window snapshot, so it can still list a PR a worker has since claimed.
         running = {(f["repo"], f["pr"]) for f in inflight or []}
         specs = [{"repo": s["repo"], "pr": s["pr_num"], "title": s["title"], "wait": now - _epoch(s["since"])}
                  for s in snap["queue"]["specs"] if (s["repo"], s["pr_num"]) not in running]
-        queue = {"specs": sorted(specs, key=lambda s: -s["wait"]), "red": any(s["wait"] > QUEUE_RED_S for s in specs)}
+        late = any(s["wait"] > QUEUE_RED_S for s in specs)
+        # A long wait while accounts pace their codex quota is the fleet working as designed (amber);
+        # only an unexplained one is red.
+        queue = {"specs": sorted(specs, key=lambda s: -s["wait"]), "late": late,
+                 "red": late and not any(a["status"] in PACING for a in accounts)}
     feedback = None
     if bake and "prompt_changed" in src:
         changed = src["prompt_changed"]
@@ -136,10 +144,6 @@ def build(src, errors, now):
                     "unaddressed": [c for c in bake["critiques"] if c["ran_at_epoch"] > (changed.get(c["spec"]) or 0)]}
     gh = ({k: {**src["gh"][k], "red": src["gh"][k]["remaining"] / src["gh"][k]["limit"] < GH_RED}
            for k in ("core", "graphql")} if "gh" in src else None)
-    accounts = None
-    if snap:
-        accounts = [{**a, "over": (a.get("projected") or 0) > 100} for a in snap["accounts"]]
-        accounts = [{**a, "level": _level(a)} for a in accounts]
     repos = [{**r, "red": r.get("kid") == "stale"} for r in src["repos"]] if "repos" in src else None
     tiles = None
     if snap:

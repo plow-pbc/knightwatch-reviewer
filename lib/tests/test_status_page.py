@@ -137,11 +137,10 @@ class TestBuild(unittest.TestCase):
             {"account": "1", "status": "offline", "tick_age": 5, "state": "", "note": "x"},
             {"account": "2", "status": "active", "tick_age": 5, "state": "", "used": 50.0, "projected": 130.0, "resets_at": NOW + 9},
             {"account": "3", "status": "active", "tick_age": 5, "state": "", "used": 10.0, "projected": 40.0, "resets_at": NOW + 9},
-            {"account": "4", "status": "not running", "tick_age": 9000, "state": "", "note": "x"},
-            {"account": "5", "status": "throttled", "tick_age": 5, "state": "", "note": "x"}]
+            {"account": "4", "status": "not running", "tick_age": 9000, "state": "", "note": "x"}]
         m = status_page.build(s, {"bakeoff": "OperationalError: database is locked"}, NOW)
         self.assertTrue(m["queue"]["red"])
-        self.assertEqual([a["level"] for a in m["accounts"]], ["red", "amber", "ok", "red", "amber"])
+        self.assertEqual([a["level"] for a in m["accounts"]], ["red", "ok", "ok", "red"])  # projection >100% colors its own cell, not the status
         self.assertTrue(m["gh"]["core"]["red"])               # 900/5000 = 18%
         self.assertFalse(m["gh"]["graphql"]["red"])
         self.assertEqual([r["red"] for r in m["repos"]], [True, False, False])  # no clone is neutral, not red
@@ -152,6 +151,17 @@ class TestBuild(unittest.TestCase):
                           ("In progress", "o/r#4"), ("Repo config", "o/r")])
         self.assertEqual(m["attention"][1]["action"], "codex re-login for reviewer-1 (operator)")
         self.assertTrue(all(a["action"] for a in m["attention"]))
+
+    def test_late_queue_is_red_only_when_no_account_is_pacing(self):
+        for status, red in (("active", True), ("throttled", False)):
+            with self.subTest(status=status):
+                s = src([])
+                s["snapshot"]["queue"] = {"specs": [{"repo": "o/r", "pr_num": 5, "title": "t", "since": "2026-10-01T00:00:00Z"}]}
+                s["snapshot"]["accounts"] = [{"account": "1", "status": status, "tick_age": 5, "state": "", "note": "x"}]
+                m = status_page.build(s, {}, NOW)
+                self.assertTrue(m["queue"]["late"])
+                self.assertEqual(m["queue"]["red"], red)
+                self.assertEqual(any(a["panel"] == "Queue" for a in m["attention"]), red)
 
     def test_failed_source_nulls_only_its_panels(self):
         s = src([run(1, 3600)])
