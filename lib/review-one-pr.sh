@@ -782,7 +782,8 @@ if ! jq -n \
         --arg workdir "$WORKDIRS_DIR/${REPO_SLUG_FOR_RUN}__${PR_NUM}" \
         --arg started_at "$REVIEW_START_ISO" \
         --arg queued_since "${DISPATCHER_QUEUED_SINCE:-}" \
-        '{repo: $repo, pr_id: $pr_id, pr_num: $pr_num, sha: $sha, branch: $branch, base_ref: $base_ref, title: $title, force_whole_pr: ($force_whole_pr == "true"), workdir: $workdir, started_at: $started_at, queued_since: $queued_since}' \
+        --arg worker "${WORKER_ID:-}" \
+        '{repo: $repo, pr_id: $pr_id, pr_num: $pr_num, sha: $sha, branch: $branch, base_ref: $base_ref, title: $title, force_whole_pr: ($force_whole_pr == "true"), workdir: $workdir, started_at: $started_at, queued_since: $queued_since, worker: $worker}' \
         > "$RUN_DIR/meta.json"; then
     log "$PR_ID: failed to write $RUN_DIR/meta.json — aborting"
     rm -rf "$REPO_DIR"

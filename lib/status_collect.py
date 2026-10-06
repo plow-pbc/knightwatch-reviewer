@@ -82,10 +82,18 @@ def run_record(path, t, locks):
     return {"t": t, "repo": meta.get("repo"), "pr": meta.get("pr_num"), "title": meta.get("title"),
             "status": meta.get("status"), "finished_at": meta.get("finished_at"),
             "live": not meta.get("finished_at") and pr_locked(locks, meta.get("repo", ""), meta.get("pr_num")),
-            "queued_since": meta.get("queued_since"),
+            "queued_since": meta.get("queued_since"), "worker": meta.get("worker"),
             "total": (meta.get("timings") or {}).get("total"),
             "span": {k: [round(v["start"] - t0), round(v["end"] - t0)] for k, v in nodes.items()},
             "skipped": skipped.read_text().split() if skipped.exists() else []}
+
+
+def image():
+    """What every reviewer runs: one image, so the collecting container speaks for the fleet."""
+    import pipeline
+    with open("/etc/os-release") as f:
+        os_name = dict(line.rstrip("\n").split("=", 1) for line in f if "=" in line)["PRETTY_NAME"].strip('"')
+    return {"os": os_name, "models": [pipeline.DEFAULT_MODEL, pipeline.CRITIC_MODEL]}
 
 
 AGG_OUT = "agents/aggregator/output.md"
@@ -132,6 +140,7 @@ def collect(shared, now, tz, weekend):
     return {"collected_at": now,
             "accounts": [account_row(pool, a, now, tz, weekend) for a in accounts],
             "queue": _json(shared / "queue.json") or {"specs": []},
+            "image": image(),
             "runs": runs,
             "windows": windows(names, shared / "runs", now)}
 

@@ -23,7 +23,7 @@ details{margin-top:10px;color:var(--text2);font-size:12px}summary{cursor:pointer
 .stats{display:flex;gap:10px 24px;flex-wrap:wrap;margin:0 0 16px;color:var(--text2);font-size:12px}.stats b{color:var(--text);font-size:16px;font-variant-numeric:tabular-nums}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}@media(max-width:800px){.grid2{grid-template-columns:1fr}}
 .grid2 .card{margin-bottom:0}
-.card:has(#live:empty,#queue:empty) .heading{margin-bottom:0}.card:has(#queue:empty) .heading>.meta{display:none}
+.card:has(#queue:empty) .heading{margin-bottom:0}.card:has(#queue:empty) .heading>.meta{display:none}
 table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);font-size:13px}
 th{color:var(--text2);font-weight:550;font-size:12px}td.n,th.n{text-align:right}.scroll{overflow-x:auto}
 .pill{display:inline-flex;align-items:center;gap:4px;font-size:12px;padding:1px 8px;border-radius:99px;white-space:nowrap}
@@ -45,11 +45,15 @@ button:focus-visible,summary:focus-visible,a:focus-visible{outline:2px solid var
 .axis{position:relative;height:36px;font-size:10.5px;color:var(--muted)}.axis span{position:absolute;bottom:0;transform:translateX(-50%)}.axis .finish{top:0;bottom:auto;transform:translateX(-100%);white-space:nowrap;color:var(--text2);border-right:2px dashed var(--text2);padding-right:5px}
 .endmark{position:absolute;top:-2px;bottom:-2px;border-left:2px dashed var(--text2)}
 .critx{grid-column:2/-1;font-size:12px;padding:0 0 8px;color:var(--text2)}
-.lv{padding:8px 0;border-top:1px solid var(--line)}.lvh{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;font-size:13px}.lvh .small{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.lva{font-size:12px;color:var(--text2);white-space:nowrap}.chips{display:flex;gap:4px;flex-wrap:wrap;margin-top:6px}
-.chip{font-size:11.5px;padding:2px 8px;border-radius:99px;border:1px dashed var(--line);color:var(--muted)}
-.chip.setup,.chip.spec,.chip.syn{border-style:solid;color:#fff;font-weight:600}.chip.setup{background:var(--muted);border-color:var(--muted)}.chip.spec{background:var(--accent);border-color:var(--accent)}.chip.syn{background:var(--syn);border-color:var(--syn)}
-.chip.skipped{border-style:solid;text-decoration:line-through}
+.fleet{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,200px),1fr));gap:12px}
+.box{min-width:0;background:var(--raised);border:1px solid var(--line);border-top:3px solid var(--good);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:8px;font-size:12.5px}
+.box.amber{border-top-color:var(--warn)}.box.red{border-top-color:var(--crit);background:var(--crit-bg)}.box.none{border-top-color:var(--muted)}
+.bh{display:flex;justify-content:space-between;align-items:center;gap:6px}.bh h3{font-size:14px;margin:0;white-space:nowrap}
+.ell{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.job{display:flex;flex-direction:column;gap:4px;padding-top:8px;border-top:1px solid var(--line)}
+.jh{display:flex;justify-content:space-between;gap:6px;align-items:baseline}.lva{font-size:12px;color:var(--text2);white-space:nowrap}
+.strip{display:grid;grid-template-columns:repeat(12,1fr);gap:2px}.strip i{height:6px;border-radius:2px;background:var(--line)}
+.strip i.setup{background:var(--text2)}.strip i.spec{background:var(--accent)}.strip i.syn{background:var(--syn)}.strip i.skipped{background:none;outline:1px dashed var(--line);outline-offset:-1px}
+.foot{margin-top:auto;padding-top:6px;border-top:1px solid var(--line);font-size:11px;color:var(--muted);display:flex;flex-direction:column;gap:1px}
 .st,.axis,.hd,td.n,.n{font-family:var(--mono)}h1{letter-spacing:.02em}
 .seg.crit{background:var(--crit)}
 svg{width:100%;height:auto;display:block;font:11px system-ui,sans-serif}svg text{fill:var(--text)}svg .m{fill:var(--muted)}svg .b{font-weight:650}
@@ -65,12 +69,9 @@ svg .edit line{stroke:var(--accent);stroke-dasharray:2 2;opacity:.45}svg .edit t
 <section class="card att" id="att"></section>
 <dialog id="dlg"><h2 id="dlg-t"></h2><pre id="dlg-cmd"></pre><form method="dialog" class="dlg-btns"><button type="button" class="primary" id="dlg-copy">Copy</button><button>Close</button></form></dialog>
 <nav class="overview" id="overview" aria-label="Current status"></nav>
-<div class="grid2">
-<section class="card" id="running"><div class="heading"><h2>Running <span class="meta" id="running-count"></span></h2></div><div id="live"></div></section>
+<section class="card" id="fleet"><div class="heading"><h2>Reviewers <span class="meta" id="running-count"></span></h2><span class="meta">Codex weekly limits</span></div><div class="fleet" id="acc"></div>
+<details><summary>About capacity</summary><p>Each box is one reviewer container and its Codex account. The bar is weekly usage; → is the forecast at reset using weekday demand, above 100% meaning demand exceeds the weekly allowance. Pacing and quota pauses are automatic and resume at reset. Login failures and missing heartbeats need action.</p><p>The strip under a running review is its stages in order: gray setup, blue specialists, green final review; dashed means skipped.</p></details></section>
 <section class="card" id="waiting"><div class="heading"><h2>Waiting <span class="meta" id="waiting-count"></span></h2><span class="meta">Oldest first</span></div><div id="queue"></div></section>
-</div>
-<section class="card" id="reviewers"><div class="heading"><h2>Reviewers</h2><span class="meta">Codex weekly limits</span></div><div class="scroll" id="acc"></div>
-<details><summary>About capacity</summary><p>Pacing and quota pauses are automatic. Paused accounts resume at reset. Login failures and missing heartbeats need action.</p><p>Forecast estimates usage at reset using weekday demand. Above 100% means demand exceeds the weekly allowance.</p></details></section>
 <section class="card"><div class="heading"><h2>GitHub limits</h2><span class="meta">Remaining</span></div><div class="scroll" id="gh"></div></section>
 <section class="card"><div class="heading"><h2>Review timing</h2><span class="meta">Median · 7d</span></div><div class="stats" id="stats"></div><div id="anatomy"></div>
 <details><summary>About these metrics</summary><p>Bars show each stage's median start and finish; their overlap shows parallel work. Duration labels are median stage durations. The finish marker includes setup and posting.</p><p>Runs, skips, gated and gap cover 7 days. Specialist finding and edited-later rates are in the Specialists card below.</p><p>Gated is how often a stage was the last to finish before the final review started; red stages gated at least 25% of the runs they ran in. Gap is the median time between a stage finishing and the final review starting; it is not free delay, because later stages may depend on it.</p><p>Running reviews are flagged after 3× the median. Queue waits over 1h are long; a queue is stalled only when no review has started in 30m and an active reviewer is free.</p></details></section>
@@ -120,10 +121,10 @@ $('att').onclick=e=>{const b=e.target.closest('.item');if(!b)return;const a=D.at
 $('dlg-copy').onclick=()=>{getSelection().selectAllChildren($('dlg-cmd'));$('dlg-copy').textContent=document.execCommand('copy')?'Copied':'Press ⌘C'};
 // Operational counts stay above historical metrics; pacing is distinct from active.
 const T=D.tiles;
-panel('overview',T,['snapshot'],T=>`<a href="#running"><b>${T.inflight}</b> running</a><a href="#waiting"><b>${T.queued}</b> waiting</a>`+
+panel('overview',T,['snapshot'],T=>`<a href="#fleet"><b>${T.inflight}</b> running</a><a href="#waiting"><b>${T.queued}</b> waiting</a>`+
  [['active','active'],['throttled','pacing'],['quota-paused','paused'],['offline','offline'],['not running','no heartbeat']].map(([s,l])=>{
- const n=D.accounts.filter(a=>a.status===s).length;return n?`<a href="#reviewers"><b>${n}</b> ${l}</a>`:''}).join(''));
-$('running-count').textContent=D.inflight==null?'· —':`· ${D.inflight.length}`;
+ const n=D.accounts.filter(a=>a.status===s).length;return n?`<a href="#fleet"><b>${n}</b> ${l}</a>`:''}).join(''));
+$('running-count').textContent=D.inflight==null?'· —':`· ${D.inflight.length} running`;
 $('waiting-count').textContent=D.queue==null?'· —':`· ${D.queue.specs.length}`;
 panel('stats',T,['snapshot'],T=>`<span><b>${T.reviews7}</b> review runs · 7d</span><span><b>${dur(T.total50)}</b> median review</span><span><b>${T.repos30}</b> repos · 30d</span>`);
 // anatomy timeline
@@ -185,25 +186,27 @@ panel('funnel',D.specialists,['bakeoff'],S=>{const mx=Math.max(1,...S.rows.map(r
  return S.rows.map(r=>`<div class="fn"><div><b>${esc(nm(r.name))}</b><br><span class="small n">${r.n} runs</span></div>
   <div class="fbar"><i class="f" style="width:${100*r.found/mx}%"></i><i class="a${r.zone==='cut'||r.zone==='noise'?' lo':''}" style="width:${100*r.edited/mx}%"></i></div>
   <div class="st">${r.found}% with findings<br><b>${r.edited}% edited later</b> · ${r.edited_of_found??'—'}% of found</div></div>`).join('')});
-// in progress
-const chip=(k,c,on,skip)=>`<span class="chip ${on?c:skip?'skipped':''}" title="${on?'Done':skip?'Skipped':'Pending'}">${on?'✓ ':skip?'− ':'○ '}${LABELS[k]}</span>`;
-panel('live',D.inflight,['snapshot'],F=>F.length?`<div class="small">✓ Done · ○ Pending · − Skipped</div>`+F.map(f=>{const done=ORDER.filter(([k])=>f.done.includes(k)).length;
- return `<div class="lv"><div class="lvh">${prLink(f.repo,f.pr)} <span class="small">${esc(f.title)}</span>
- <span class="lva">${f.stuck?pill('bad',`${dur(f.age)} · possibly stuck`):`${dur(f.age)} running`} · ${done} stages done</span></div>
- <div class="chips">${ORDER.map(([k,c])=>chip(k,c,f.done.includes(k),f.skipped.includes(k))).join('')}</div></div>`}).join(''):'');
 // queue (oldest first; the model sets late past 1h, red only when no review has started in 30m)
 panel('queue',D.queue,['snapshot'],Q=>Q.specs.length?`<div class="scroll"><table><tr><th>PR</th><th class="n">Wait</th></tr>${Q.specs.map((q,i)=>`<tr><td>${prLink(q.repo,q.pr)} <span class="small">${esc(q.title)}</span></td><td class="n">${i===0&&Q.red?pill('bad',`${dur(q.wait)} · stalled`):i===0&&Q.late?pill('warnp',`${dur(q.wait)} · long wait`):dur(q.wait)}</td></tr>`).join('')}</table></div>`
  :'');
 // gh
 panel('gh',D.gh,['gh'],G=>`<table><tr><th>API</th><th>Remaining</th><th></th><th class="n">Reset in</th></tr>${['core','graphql'].map(k=>{const b=G[k];
  return `<tr><td>${k}</td><td>${b.remaining.toLocaleString()} / ${b.limit.toLocaleString()} ${b.red?pill('bad','low'):''}</td><td><div class="bar"><i style="width:${100*b.remaining/b.limit}%"></i></div></td><td class="n">${dur(b.reset-D.generated_at)}</td></tr>`}).join('')}</table>`);
-// accounts
+// fleet: one box per reviewer container, its running reviews inside
 const ST={active:'Active',throttled:'Pacing','quota-paused':'Paused',offline:'Login required','not running':'No heartbeat'};
 const LV={ok:'ok',amber:'warnp',red:'bad'};
-panel('acc',D.accounts,['snapshot'],acc=>`<table><tr><th>Reviewer</th><th>Status</th><th class="n">Heartbeat</th><th>Used</th><th class="n">Forecast</th><th class="n">Reset in</th></tr>${acc.map(a=>
- `<tr><td>${esc(a.account)}</td><td>${pill(LV[a.level],ST[a.status]||a.status)}</td><td class="n">${dur(a.tick_age)} ago</td>
- <td>${a.used!=null?`<div style="display:flex;gap:8px;align-items:center"><div class="bar" style="flex:1"><i style="width:${a.used}%"></i></div>${Math.round(a.used)}%</div>`:`<span class="none">${esc(a.note||'no reading')}</span>`}</td>
- <td class="n">${a.projected!=null?(a.over?pill('warnp',Math.round(a.projected)+'%'):Math.round(a.projected)+'%'):'—'}</td><td class="n">${a.resets_at&&a.resets_at>now?dur(a.resets_at-now):'—'}</td></tr>`).join('')}</table>`);
+const job=f=>`<div class="job"><div class="jh">${prLink(f.repo,f.pr)}<span class="lva">${f.stuck?pill('bad',`${dur(f.age)} · stuck?`):dur(f.age)}</span></div>
+ <div class="small ell" title="${esc(f.title)}">${esc(f.title)}</div>
+ <div class="strip">${ORDER.map(([k,c])=>`<i class="${f.done.includes(k)?c:f.skipped.includes(k)?'skipped':''}" title="${LABELS[k]} · ${f.done.includes(k)?'done':f.skipped.includes(k)?'skipped':'pending'}"></i>`).join('')}</div>
+ <div class="small">${ORDER.filter(([k])=>f.done.includes(k)).length}/${ORDER.length} stages</div></div>`;
+const foot=D.image?`<div class="foot"><span>${esc(D.image.os)}</span><span>Codex · ${esc(D.image.models.join(' + '))}</span></div>`:'';
+panel('acc',D.accounts,['snapshot'],acc=>{const F=D.inflight||[],ids=new Set(acc.map(a=>a.account)),orphans=F.filter(f=>!ids.has(f.worker));
+ return acc.map(a=>{const mine=F.filter(f=>f.worker===a.account);
+  return `<div class="box ${a.level==='ok'?'':a.level}"><div class="bh"><h3>Reviewer ${esc(a.account)}</h3>${pill(LV[a.level],ST[a.status]||a.status)}</div>
+  ${a.used!=null?`<div style="display:flex;gap:8px;align-items:center"><div class="bar" style="flex:1;min-width:0"><i style="width:${a.used}%"></i></div><span class="n">${Math.round(a.used)}%${a.projected!=null?` → ${a.over?pill('warnp',Math.round(a.projected)+'%'):Math.round(a.projected)+'%'}`:''}</span></div>`:`<span class="none">${esc(a.note||'no reading')}</span>`}
+  <div class="small">${a.resets_at&&a.resets_at>now?`resets in ${dur(a.resets_at-now)} · `:''}heartbeat ${dur(a.tick_age)} ago</div>
+  ${mine.length?mine.map(job).join(''):`<div class="job none">${a.status==='active'?'Idle':'Not reviewing'}</div>`}${foot}</div>`}).join('')
+ +(orphans.length?`<div class="box none"><div class="bh"><h3>Unassigned</h3></div><div class="small">Running on no reviewer listed above.</div>${orphans.map(job).join('')}</div>`:'')});
 // slow
 panel('slow',D.slow,['snapshot'],S=>{const mx=Math.max(1,...S.map(s=>s.p50));
  return S.length?`<table><tr><th>Repo</th><th></th><th class="n">Review</th><th class="n">Queue wait</th><th class="n">Runs</th></tr>${S.map(s=>`<tr><td>${esc(s.repo)}</td><td style="width:30%"><div class="bar"><i style="width:${100*s.p50/mx}%"></i></div></td><td class="n">${dur(s.p50)}</td><td class="n">${dur(s.wait50)}</td><td class="n">${s.n}</td></tr>`).join('')}</table>`:'<span class="none">No repos with ≥3 completed runs</span>'});
