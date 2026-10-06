@@ -54,7 +54,7 @@ a{color:var(--accent)}.small{font-size:12px;color:var(--text2)}.finding{border-l
 <div id="anatomy"></div>
 <h2 style="margin-top:18px">In progress now</h2><p class="sub">Each review currently running. Filled chips are finished stages, dashed are still pending. A review running more than 3× the median is flagged as likely stuck.</p><div id="live"></div></section>
 <div class="grid2">
-<section class="card"><h2>Queue</h2><p class="sub">PRs waiting for a reviewer, oldest first. Red if the oldest wait passes 1h with no reviewer pacing its quota; amber if pacing explains it.</p><div id="queue"></div></section>
+<section class="card"><h2>Queue</h2><p class="sub">PRs waiting for a reviewer, oldest first. Amber past 1h while reviews keep starting (busy); red if nothing has started in 30m (stalled).</p><div id="queue"></div></section>
 <section class="card"><h2>GitHub API quota</h2><p class="sub">Live <code>/rate_limit</code>. Red under 20%.</p><div id="gh"></div></section>
 </div>
 <section class="card"><h2>Reviewer containers &amp; codex accounts</h2><p class="sub">One row per reviewer container. Projection uses the weekday-weighted demand model and shows where usage lands at the weekly reset. Amber means the fleet is pacing itself: no action.</p><div class="scroll" id="acc"></div></section>
@@ -108,8 +108,8 @@ panel('live',D.inflight,['snapshot'],F=>F.length?F.map(f=>{const done=ORDER.filt
  return `<div class="lv"><div class="lvh">${prLink(f.repo,f.pr)} <span class="small">${esc(f.title)}</span>
  <span class="lva">${f.stuck?pill('bad',`${dur(f.age)} · likely stuck`):`${dur(f.age)} running`} · ${done}/${ORDER.length} stages</span></div>
  <div class="chips">${ORDER.map(([k,c])=>chip(k,c,f.done.includes(k))).join('')}</div></div>`}).join(''):'<div class="small">No reviews in progress.</div>');
-// queue (oldest first; the model sets late past 1h, red only when no account is pacing)
-panel('queue',D.queue,['snapshot'],Q=>Q.specs.length?`<table><tr><th>PR</th><th class="n">waiting</th></tr>${Q.specs.map((q,i)=>`<tr><td>${prLink(q.repo,q.pr)} <span class="small">${esc(q.title)}</span></td><td class="n">${i===0&&Q.red?pill('bad',dur(q.wait)):i===0&&Q.late?`<span title="reviewers are pacing codex quota, no action">${pill('warnp',dur(q.wait))}</span>`:dur(q.wait)}</td></tr>`).join('')}</table>`
+// queue (oldest first; the model sets late past 1h, red only when no review has started in 30m)
+panel('queue',D.queue,['snapshot'],Q=>Q.specs.length?`<table><tr><th>PR</th><th class="n">waiting</th></tr>${Q.specs.map((q,i)=>`<tr><td>${prLink(q.repo,q.pr)} <span class="small">${esc(q.title)}</span></td><td class="n">${i===0&&Q.red?pill('bad',dur(q.wait)):i===0&&Q.late?`<span title="reviews are still starting: the fleet is busy, no action">${pill('warnp',dur(q.wait))}</span>`:dur(q.wait)}</td></tr>`).join('')}</table>`
  :`<p>${pill('ok','Empty')} Every requested review has been picked up.</p><p class="small">A PR is claimed within one 60-second enumeration tick of its review request while a reviewer is free.</p>`);
 // gh
 panel('gh',D.gh,['gh'],G=>`<table><tr><th>bucket</th><th>remaining</th><th></th><th class="n">resets in</th></tr>${['core','graphql'].map(k=>{const b=G[k];

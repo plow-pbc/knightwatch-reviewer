@@ -22,6 +22,7 @@ DAY = 86400
 WORKER_CEILING_S = 90 * 60
 STUCK_FACTOR = 3
 QUEUE_RED_S = 3600
+QUEUE_STALL_S = 1800
 PACING = ("throttled", "quota-paused")
 GH_RED = 0.2
 
@@ -100,8 +101,8 @@ def _attention(m):
                         f"check why reviewer-{a['account']} stopped and restart it (operator)"))
     if m["queue"] and m["queue"]["red"]:
         q = max(m["queue"]["specs"], key=lambda s: s["wait"])
-        out.append(("Queue", f"{q['repo']}#{q['pr']} has waited {_dur(q['wait'])} for a reviewer",
-                    "check the reviewer containers panel: offline or not-running reviewers shrink capacity (operator)"))
+        out.append(("Queue", f"{q['repo']}#{q['pr']} has waited {_dur(q['wait'])} and no review has started in {_dur(m['queue']['idle'])}",
+                    "the fleet has stopped claiming: check the reviewer containers panel and `docker compose logs` (operator)"))
     for k, b in (m["gh"] or {}).items():
         if b["red"]:
             out.append(("GitHub quota", f"{k} quota at {round(100 * b['remaining'] / b['limit'])}%",
@@ -133,10 +134,10 @@ def build(src, errors, now):
         specs = [{"repo": s["repo"], "pr": s["pr_num"], "title": s["title"], "wait": now - _epoch(s["since"])}
                  for s in snap["queue"]["specs"] if (s["repo"], s["pr_num"]) not in running]
         late = any(s["wait"] > QUEUE_RED_S for s in specs)
-        # A long wait while accounts pace their codex quota is the fleet working as designed (amber);
-        # only an unexplained one is red.
+        # A long wait while reviews keep starting is load (amber); red only when nothing is being claimed.
+        idle = now - max((r["t"] for r in runs), default=0)
         queue = {"specs": sorted(specs, key=lambda s: -s["wait"]), "late": late,
-                 "red": late and not any(a["status"] in PACING for a in accounts)}
+                 "idle": idle, "red": late and idle > QUEUE_STALL_S}
     feedback = None
     if bake and "prompt_changed" in src:
         changed = src["prompt_changed"]
