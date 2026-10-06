@@ -51,16 +51,21 @@ def _pct(a, b):
     return round(100 * a / b, 1) if b else None
 
 
-def _edit_delta(weeks, edits):
-    """Edited-later yield in the DELTA_WEEKS full weeks after the newest prompt edit vs. before it."""
+def _edit_delta(weeks, edits, now):
+    """Edited-later yield in the DELTA_WEEKS full weeks after the newest prompt edit vs. before it.
+    Only counts complete weeks: a week w counts when date.fromisoformat(w[0]) + 7 days <= today (UTC)."""
     if not edits:
         return None
     day = datetime.fromtimestamp(edits[0][0], timezone.utc).date()
+    today = datetime.fromtimestamp(now, timezone.utc).date()
+
+    def is_complete(w):
+        return datetime.fromisoformat(w[0]).date() + timedelta(days=7) <= today
 
     def rate(ws):
         return _pct(sum(w[2] for w in ws), sum(w[1] for w in ws))
-    before = rate([w for w in weeks if datetime.fromisoformat(w[0]).date() + timedelta(days=7) <= day][-DELTA_WEEKS:])
-    after = rate([w for w in weeks if w[0] >= day.isoformat()][:DELTA_WEEKS])
+    before = rate([w for w in weeks if is_complete(w) and datetime.fromisoformat(w[0]).date() + timedelta(days=7) <= day][-DELTA_WEEKS:])
+    after = rate([w for w in weeks if is_complete(w) and w[0] >= day.isoformat()][:DELTA_WEEKS])
     if before is None or after is None:
         return None
     change = round(after - before, 1)
@@ -68,7 +73,7 @@ def _edit_delta(weeks, edits):
             "flag": "up" if change > DELTA_FLAG_PT else "down" if change < -DELTA_FLAG_PT else None}
 
 
-def _specialists(bake, edits, anatomy):
+def _specialists(bake, edits, anatomy, now):
     nodes = anatomy["nodes"] if anatomy else {}
     rows = []
     for name, c in bake["specs"].items():
@@ -77,7 +82,7 @@ def _specialists(bake, edits, anatomy):
         rows.append({"name": name, "n": c["n"], "found": _pct(c["pub"], c["n"]), "edited": _pct(c["after"], c["n"]),
                      "edited_of_found": _pct(c["after"], c["pub"]), "p50": nodes.get(name, {}).get("p50"),
                      "yield_weekly": [[w, _pct(a, n)] for w, n, a in weeks if n >= MIN_WEEK_RUNS],
-                     "edits": es, "delta": _edit_delta(weeks, es)})
+                     "edits": es, "delta": _edit_delta(weeks, es, now)})
     timed = [r for r in rows if r["p50"] is not None]
     axes = ({"yield": statistics.median(r["edited"] for r in timed), "runtime": statistics.median(r["p50"] for r in timed)}
             if timed else None)
@@ -211,7 +216,7 @@ def build(src, errors, now):
         last = {s: e[0][0] for s, e in src["prompt_edits"].items() if e}
         feedback = {"rows": bake["rows"], "crit": bake["crit"], "loved": bake["loved"],
                     "unaddressed": [c for c in bake["critiques"] if c["ran_at_epoch"] > last.get(c["spec"], 0)]}
-    specialists = _specialists(bake, src.get("prompt_edits"), anatomy) if bake else None
+    specialists = _specialists(bake, src.get("prompt_edits"), anatomy, now) if bake else None
     gh = ({k: {**src["gh"][k], "red": src["gh"][k]["remaining"] / src["gh"][k]["limit"] < GH_RED}
            for k in ("core", "graphql")} if "gh" in src else None)
     repos = [{**r, "red": r.get("kid") == "stale"} for r in src["repos"]] if "repos" in src else None

@@ -156,6 +156,16 @@ class TestBuild(unittest.TestCase):
                 self.assertEqual([w for w, _ in rows["security"]["yield_weekly"]],
                                  ["2026-08-17", "2026-08-24", "2026-08-31", "2026-09-07"])
                 self.assertEqual(rows["security"]["edits"], None if edits is None else edits["security"])
+        # Edit in the week before NOW's week; only "after" week is NOW's own (in-progress) — delta is None
+        edit_before = datetime(2026, 9, 25, 12, tzinfo=timezone.utc).timestamp()  # Thursday, week before NOW's week
+        b2 = src([])["bakeoff"]
+        b2["specs"] = {"security": {"n": 100, "pub": 40, "after": 10}}
+        b2["weekly"] = {"security": [["2026-09-07", 100, 5], ["2026-09-14", 100, 5],
+                                     ["2026-09-21", 100, 8], ["2026-09-28", 100, 15]]}  # 2026-09-28 is incomplete (NOW is 2026-10-03 Sat, week ends 2026-10-05)
+        s2 = src([], bakeoff=b2)
+        s2["prompt_edits"] = {"security": [[edit_before, "tune"]], "tests": []}
+        rows2 = {r["name"]: r for r in status_page.build(s2, {}, NOW)["specialists"]["rows"]}
+        self.assertIsNone(rows2["security"]["delta"])  # only incomplete week after edit
 
     def test_zones_split_at_the_median_specialist(self):
         dur_acted = {"fast-good": (90, 30), "slow-good": (300, 30), "fast-bad": (90, 5), "slow-bad": (300, 5), "mid": (150, 20)}
