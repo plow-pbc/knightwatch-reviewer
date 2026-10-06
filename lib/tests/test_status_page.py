@@ -105,7 +105,8 @@ class TestBuild(unittest.TestCase):
         runs = [run(1, 2100, finished=False),                 # started before the fleet restart: orphan
                 run(2, 600, finished=False), run(2, 300, finished=False),  # same PR twice: newest wins
                 run(3, 120, finished=True),                   # finished
-                run(4, 1400, finished=False)]                 # after restart, under 90 min
+                run(4, 1400, finished=False),                 # after restart, under 90 min
+                run(5, 600, finished=False), run(5, 300)]     # a killed run superseded by a finished one
         s = src(runs, fleet_started=NOW - 1500)
         s["snapshot"]["queue"]["specs"] = [{"repo": "o/r", "pr_num": p, "title": "t", "since": "2026-10-01T00:00:00Z"} for p in (4, 6)]
         m = status_page.build(s, {}, NOW)

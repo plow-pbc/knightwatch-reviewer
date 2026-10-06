@@ -54,16 +54,16 @@ def _anatomy(runs, bakeoff, now):
 
 
 def _inflight(runs, fleet_started, total50, now):
-    newest = {}
+    newest = {}   # newest run per PR first, so a finished rerun retires an older killed one
     for r in runs:
-        if r["finished_at"] or now - r["t"] > WORKER_CEILING_S or r["t"] < fleet_started:
-            continue
         k = (r["repo"], r["pr"])
         if k not in newest or r["t"] > newest[k]["t"]:
             newest[k] = r
+    live = [r for r in newest.values()
+            if not r["finished_at"] and now - r["t"] <= WORKER_CEILING_S and r["t"] >= fleet_started]
     return [{"repo": r["repo"], "pr": r["pr"], "title": r["title"], "age": now - r["t"], "done": sorted(r["span"]),
              "stuck": bool(total50) and now - r["t"] > STUCK_FACTOR * total50}
-            for r in sorted(newest.values(), key=lambda r: r["t"])]
+            for r in sorted(live, key=lambda r: r["t"])]
 
 
 def _slow(runs, now, n=5, min_reviews=3):
