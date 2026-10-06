@@ -450,13 +450,13 @@ class TestRunCodex(unittest.TestCase):
     @patch("pipeline.subprocess.Popen")
     def test_codex_argv_pins_model_per_kind(self, mock_popen):
         """Per-kind model routing must reach codex (regression fence): the
-        critic pass runs on the cheap/fast gpt-5.6-luna tier; specialists,
-        standalones, and the aggregator all run on the flagship gpt-5.6-sol."""
+        critic pass runs on the cheap/fast gpt-6-luna tier; specialists,
+        standalones, and the aggregator all run on the flagship gpt-6.1-sol."""
         cases = {
-            "intent": "model=gpt-5.6-sol",
-            "security": "model=gpt-5.6-sol",
-            "aggregator": "model=gpt-5.6-sol",
-            "critic-security": "model=gpt-5.6-luna",
+            "intent": "model=gpt-6.1-sol",
+            "security": "model=gpt-6.1-sol",
+            "aggregator": "model=gpt-6.1-sol",
+            "critic-security": "model=gpt-6-luna",
         }
         for name, model_pin in cases.items():
             with self.subTest(name=name):
@@ -2278,7 +2278,7 @@ class TestPipelineCLI(unittest.TestCase):
 
         # Fake codex on PATH. Mirrors the real argv shape:
         #   codex exec -C <repo> --dangerously-bypass-approvals-and-sandbox \
-        #     -c model=gpt-5.6-sol -c model_reasoning_effort=high -o <out> <prompt>
+        #     -c model=gpt-6.1-sol -c model_reasoning_effort=high -o <out> <prompt>
         # Picks output by agent dir name (the parent of the -o target).
         self.fake_bin = root / "fakebin"
         self.fake_bin.mkdir()
