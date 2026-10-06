@@ -18,10 +18,26 @@ Reasonable. But that's a hardening note, not a finding that would stop the merge
 
 The bug isn't visible in any single file. It only shows up when you stitch shell startup + the migration engine builder + the infra env config + the location of the IAM hook. That's the kind of catch knightwatch is designed for.
 
-Two more, from the public [`tkmx-client`](https://github.com/srosro/tkmx-client) reporter:
+### A 131-line PR, four rounds, four bugs that would have shipped
 
-- **[#19 — legacy daemons would silently stop after `git pull`](https://github.com/srosro/tkmx-client/pull/19#issuecomment-4357873121)**. Deleting `reporter/report.js` and pointing new installs at `dist/reporter/report.js` would leave already-installed launchd/systemd units calling the removed path, because the documented update path is `git pull && npm install` and that doesn't rerun `install-service`. Caught by stitching the diff against the install script, the README's update instructions, and the systemd/launchd unit `ExecStart=` that reaches into the source tree.
-- **[#19 — recurring schema-ownership drift](https://github.com/srosro/tkmx-client/pull/19#issuecomment-4358179972)**. Flagged the third instance of the same DTO-ownership class — each new consumer re-deriving usage shapes from `agentsview` rather than one neutral seam — and asked for a refactor at the right level instead of another local patch. Fixed by extracting `reporter/usage.ts` as the single owner.
+[plow-openclaw-agent#18](https://github.com/plow-pbc/plow-openclaw-agent/pull/18) let an agent image boot a variant's own background program next to the gateway — a 24-line `variant.ts`, easy to approve. Each review round found a different way it would break; the author confirmed every one, and the PR converged clean on round four.
+
+1. **[Every published image dies at boot.](https://github.com/plow-pbc/plow-openclaw-agent/pull/18#issuecomment-5797725764)** `main.ts` imports `variant.js`, but `build.ts` compiles an explicit source list that never included it. Tests run from source, so they pass. `build.ts` wasn't in the diff.
+2. **Shutdown hangs with the agent unreachable.** The variant was spawned outside `startGateway`'s child registry, so SIGTERM never reaches it and a long-running variant keeps PID 1 alive after the gateway is gone.
+3. **[The fix for #2 took the gateway down.](https://github.com/plow-pbc/plow-openclaw-agent/pull/18#issuecomment-5797897115)** The shared close handler called `stop()` for any child, so a variant finishing normally killed the owner's agent — against the "non-fatal" contract the PR documents.
+4. **[Image validation would run real product work.](https://github.com/plow-pbc/plow-openclaw-agent/pull/18#issuecomment-5798289984)** `boot/probe.ts` — also outside the diff — calls `startGateway()`, whose new default now spawned the variant, so pre-deploy validation would run the builder's worker.
+
+### A green suite, because the fake agreed with the bug
+
+From a private repo, quoted as posted. The agent moved Gmail parsing to raw MIME (on knightwatch's own earlier recommendation), but requested `format=raw` from `users.threads.get` — Gmail only supports it on `messages.get`. It also taught the local Gmail twin to serve thread-raw, and a unit test pinned the invalid URL.
+
+> **[blocking]** Gmail's `users.threads.get` does not support `format=raw`, so every reply and every non-empty inbound poll reaches an invalid provider request and returns `email_line_gmail_input_error`; the twin's thread-raw emulation masks the production failure.
+
+The author checked Gmail's discovery document and replied:
+
+> the read path **could never have worked in production for a single thread** … the twin had been taught to serve thread-raw, **and** `test_fetch_thread_requests_raw_and_parses_the_message` asserted that exact invalid URL. The fiction was pinned on both sides at once, so a green suite was evidence of nothing.
+
+An invented API, plus a test double and a test written to agree with it, is one of the most common ways AI-written code ships broken.
 
 ## How it works
 
