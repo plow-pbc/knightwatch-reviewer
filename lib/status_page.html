@@ -12,7 +12,10 @@ h1{font-size:20px;margin:0}h2{font-size:15px;margin:0}.sub{color:var(--text2);fo
 .stale{display:none;background:var(--crit);color:#fff;padding:8px 12px;border-radius:8px;margin-bottom:12px;font-weight:600}
 header{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
 .att{margin-top:14px}.att .item{display:flex;gap:6px 12px;align-items:baseline;flex-wrap:wrap;padding:10px 0;border-top:1px solid var(--line);font-size:13px}
-.att .item:first-of-type{border-top:0}.att .item>b{overflow-wrap:anywhere}.att .item details{margin:0 0 0 auto;max-width:100%;font-size:12.5px}
+.att .item{width:100%;font:inherit;color:inherit;background:none;border-left:0;border-right:0;border-bottom:0;text-align:left;cursor:pointer}.att .item:first-of-type{border-top:0}.att .item:hover b{color:var(--accent)}.att .item>b{overflow-wrap:anywhere}.att .item::after{content:"Run ›";margin-left:auto;color:var(--accent);font-size:12.5px}
+dialog{width:min(640px,calc(100vw - 32px));border:1px solid var(--line);border-radius:12px;background:var(--surface);color:var(--text);padding:16px}dialog::backdrop{background:#0008}
+dialog pre{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12.5px;margin:12px 0}
+.dlg-btns{display:flex;gap:8px;justify-content:flex-end}.dlg-btns button{font:inherit;padding:5px 14px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--text);cursor:pointer}.dlg-btns .primary{background:var(--accent);border-color:var(--accent);color:#fff}
 .overview{display:flex;gap:8px 20px;flex-wrap:wrap;margin:0 0 16px;font-variant-numeric:tabular-nums}.overview a{color:inherit;text-decoration:none}.overview a:hover{text-decoration:underline}
 .card{min-width:0;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
 .heading{display:flex;gap:8px;align-items:baseline;justify-content:space-between;margin-bottom:12px}.meta{font-size:12px;color:var(--text2);font-weight:400}
@@ -51,6 +54,7 @@ button:focus-visible,summary:focus-visible,a:focus-visible{outline:2px solid var
 <div class="stale" id="stale"></div>
 <header><h1>Knightwatch</h1><details><summary id="gen"></summary><p id="snapshot"></p><p>Snapshots every 2 min. Reload to update.</p></details></header>
 <section class="card att" id="att"></section>
+<dialog id="dlg"><h2 id="dlg-t"></h2><pre id="dlg-cmd"></pre><form method="dialog" class="dlg-btns"><button type="button" class="primary" id="dlg-copy">Copy</button><button>Close</button></form></dialog>
 <nav class="overview" id="overview" aria-label="Current status"></nav>
 <div class="grid2">
 <section class="card" id="running"><div class="heading"><h2>Running <span class="meta" id="running-count"></span></h2></div><div id="live"></div></section>
@@ -83,8 +87,11 @@ const freshness=()=>{const age=Math.max(0,Date.now()/1000-D.generated_at);$('gen
  $('stale').style.display=age>600?'block':'none';$('stale').textContent=age>600?`Data stale · ${dur(age)} old. Reload for the latest snapshot.`:''};
 freshness();setInterval(freshness,30000);
 // needs attention: every red condition, each with its action
-$('att').innerHTML=D.attention.length?`<h2>${pill('bad',`${D.attention.length} action${D.attention.length>1?'s':''} needed`)}</h2>${D.attention.map(a=>`<div class="item"><b>${esc(a.panel)}</b><span>${esc(a.text)}</span><details><summary>${a.text==='Login required'?'Login instructions':'Details'}</summary><p>${esc(a.action)}</p></details></div>`).join('')}`
- :`<h2>${pill('ok','No action needed')}</h2>`;
+$('att').innerHTML=D.attention.length?`<h2>${pill('bad',`${D.attention.length} action${D.attention.length>1?'s':''} needed`)}</h2>${D.attention.map((a,i)=>`<button class="item" data-i="${i}"><b>${esc(a.panel)}</b><span>${esc(a.text)}</span></button>`).join('')}`
+:`<h2>${pill('ok','No action needed')}</h2>`;
+$('att').onclick=e=>{const b=e.target.closest('.item');if(!b)return;const a=D.attention[b.dataset.i];$('dlg-t').textContent=`${a.panel} · ${a.text}`;$('dlg-cmd').textContent=a.cmd;$('dlg-copy').textContent='Copy';$('dlg').showModal()};
+// http on the tailnet is not a secure context, so navigator.clipboard is absent: select + execCommand instead.
+$('dlg-copy').onclick=()=>{getSelection().selectAllChildren($('dlg-cmd'));$('dlg-copy').textContent=document.execCommand('copy')?'Copied':'Press ⌘C'};
 // Operational counts stay above historical metrics; pacing is distinct from active.
 const T=D.tiles;
 panel('overview',T,['snapshot'],T=>`<a href="#running"><b>${T.inflight}</b> running</a><a href="#waiting"><b>${T.queued}</b> waiting</a>`+

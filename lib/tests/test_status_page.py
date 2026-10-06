@@ -160,7 +160,7 @@ class TestBuild(unittest.TestCase):
         # Every red thing, and only red things, lands in "needs attention" with an action.
         self.assertEqual([a["panel"] for a in m["attention"]],
                          ["bakeoff", "Reviewer 1", "Reviewer 4", "GitHub core", "o/r#4", "o/r"])
-        self.assertTrue(all(a["action"] for a in m["attention"]))
+        self.assertTrue(all(a["cmd"].startswith("ssh ") for a in m["attention"]))
 
     def test_late_queue_is_red_only_when_the_fleet_stopped_claiming(self):
         for last_start, status, live, red in ((600, "active", False, False),     # busy: reviews still starting

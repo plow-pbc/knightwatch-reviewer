@@ -4,8 +4,11 @@ build() turns collected sources into the page model: every number and every
 red/amber rule lives here so it is testable; status_page.html only draws it.
 """
 import argparse
+import getpass
 import json
 import os
+import shlex
+import socket
 import sqlite3
 import statistics
 import subprocess
@@ -85,35 +88,40 @@ def _level(a):
     return "ok"
 
 
+def _ssh(cmd, tty=False):
+    """A command the operator pastes from their laptop: the page's host runs everything."""
+    return f"ssh{' -t' if tty else ''} {getpass.getuser()}@{socket.gethostname()} {shlex.quote(cmd)}"
+
+
 def _attention(m):
-    """One {"panel","text","action"} per RED condition. Amber (auto-pacing,
+    """One {"panel","text","cmd"} per RED condition. Amber (auto-pacing,
     projection over 100%) is the system handling itself, so it never lands here."""
-    out = [(name, "Data unavailable",
-            f"{msg}. Check journalctl -u pr-reviewer-status-page.") for name, msg in m["errors"].items()]
+    compose = f"cd {shlex.quote(str(REPO_DIR))} && docker compose logs"
+    out = [(name, "Data unavailable", _ssh("journalctl -u pr-reviewer-status-page -n 50"))
+           for name in m["errors"]]
     for a in m["accounts"] or []:
+        c = f"{PROJECT}-reviewer-{a['account']}-1"
         if a["status"] == "offline":
             out.append((f"Reviewer {a['account']}", "Login required",
-                        f"On wakeup, run docker exec -it {PROJECT}-reviewer-{a['account']}-1 codex login --device-auth. No restart needed."))
+                        _ssh(f"docker exec -it {c} codex login --device-auth", tty=True)))
         elif a["status"] == "not running":
             out.append((f"Reviewer {a['account']}", f"No heartbeat · {_dur(a['tick_age'])}",
-                        f"Inspect reviewer-{a['account']} logs before restarting."))
+                        _ssh(f"docker logs --tail 100 {c}")))
     if m["queue"] and m["queue"]["red"]:
         q = max(m["queue"]["specs"], key=lambda s: s["wait"])
-        out.append(("Queue", f"Stalled · oldest wait {_dur(q['wait'])}",
-                    f"{q['repo']}#{q['pr']}: no review started in {_dur(m['queue']['idle'])}. Inspect docker compose logs."))
+        out.append(("Queue", f"Stalled · oldest wait {_dur(q['wait'])}", _ssh(f"{compose} --tail 200")))
     for k, b in (m["gh"] or {}).items():
         if b["red"]:
             out.append((f"GitHub {k}", f"{round(100 * b['remaining'] / b['limit'])}% remaining",
-                        "Find the heavy API caller before quota runs out."))
+                        _ssh("sort ~/.pr-reviewer/gh-call-tally | uniq -c | sort -nr | head")))
     for f in m["inflight"] or []:
         if f["stuck"]:
-            out.append((f"{f['repo']}#{f['pr']}", f"Possibly stuck · {_dur(f['age'])}",
-                        "Inspect the run directory; stop the worker only if it is hung."))
+            pr = f"{f['repo']}#{f['pr']}"
+            out.append((pr, f"Possibly stuck · {_dur(f['age'])}", _ssh(f"{compose} --since 3h | grep -F {shlex.quote(pr)}")))
     for r in m["repos"] or []:
         if r["red"]:
-            out.append((r["repo"], "Prior-art index stale",
-                        "Inspect journalctl -u pr-reviewer-kid-refresh."))
-    return [{"panel": p, "text": t, "action": a} for p, t, a in out]
+            out.append((r["repo"], "Prior-art index stale", _ssh("journalctl -u pr-reviewer-kid-refresh -n 100")))
+    return [{"panel": p, "text": t, "cmd": c} for p, t, c in out]
 
 
 def build(src, errors, now):
