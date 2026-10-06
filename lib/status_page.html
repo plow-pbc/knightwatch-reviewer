@@ -99,7 +99,7 @@ panel('anatomy',D.anatomy,['snapshot'],A=>{const N=A.nodes,SP=A.specs||{},SK=A.s
   for(const [k,desc] of items){const n=N[k]||{},p=SP[k],cs=crit.filter(c=>c.spec===k);const ran=n.n||0,sk=SK[k]||0;
    rows+=`<div class="row" onclick="document.getElementById('cx-${k}').classList.toggle('open')"><div class="nm">${k}${cs.length?pill('warnp',cs.length):''}${desc?`<small title="${desc}">ⓘ</small>`:''}</div>
    <div class="trk" style="${tick}">${n.n?bar(cls,n.s50,n.e50,dur(n.p50)):''}<div class="endmark" style="left:${X(tot)}%"></div></div>
-   <div class="st${p?'':' dim'}">${p?pct(p.pub,p.n):'—'}</div><div class="st${p?'':' dim'}">${p?pct(p.app,p.pub):'—'}</div><div class="st">${ran}</div><div class="st${sk?'':' dim'}">${sk?pct(sk,ran+sk):'—'}</div></div>
+   <div class="st${p?'':' dim'}">${p?pct(p.pub,p.n):'—'}</div><div class="st${p?'':' dim'}">${p?pct(p.after,p.pub):'—'}</div><div class="st">${ran}</div><div class="st${sk?'':' dim'}">${sk?pct(sk,ran+sk):'—'}</div></div>
    <div class="critx" id="cx-${k}">${desc?`<div class="small">${desc}.</div>`:''}${p?(cs.length?cs.map(c=>`${prLink(c.repo,c.pr)} critiqued ${ymd(c.ran_at_epoch)}, after the prompt last changed`).join('<br>'):'<span class="none">No unaddressed critiques.</span>'):''}</div>`}}
  return `<div class="legend">${GROUPS.map(g=>`<span><i class="seg ${g[2]}" style="position:static;display:inline-block;padding:0"></i>${g[0]}</span>`).join('')}<span><i style="border-left:2px dashed var(--text2);width:0;height:10px"></i>median review finishes (${dur(A.total50)}, incl. setup &amp; posting)</span></div><div class="tl"><div class="tlg">${rows}</div></div>`});
 // in progress

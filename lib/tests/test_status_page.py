@@ -98,7 +98,7 @@ def run(pr, age, repo="o/r", total=450, finished=True, span=None, queued=None, l
 
 def src(runs, **over):
     base = {"snapshot": {"collected_at": NOW, "accounts": [], "queue": {"specs": []}, "runs": runs},
-            "bakeoff": {"specs": {"security": {"n": 10, "pub": 4, "app": 3}}, "critiques": [], "rows": 10, "crit": 0, "loved": 0},
+            "bakeoff": {"specs": {"security": {"n": 10, "pub": 4, "after": 3}}, "critiques": [], "rows": 10, "crit": 0, "loved": 0},
             "prompt_changed": {"security": NOW - 86400},
             "gh": {"core": {"limit": 5000, "remaining": 900, "reset": NOW + 60}, "graphql": {"limit": 5000, "remaining": 4998, "reset": NOW + 60}},
             "repos": []}
@@ -160,11 +160,12 @@ class TestBuild(unittest.TestCase):
         self.assertTrue(all(a["action"] for a in m["attention"]))
 
     def test_late_queue_is_red_only_when_the_fleet_stopped_claiming(self):
-        for last_start, status, red in ((600, "active", False),      # busy: reviews still starting
-                                        (3600, "active", True),      # stalled with capacity to spare
-                                        (3600, "throttled", False)):  # stalled because every account paces
-            with self.subTest(last_start=last_start, status=status):
-                s = src([run(1, last_start)])
+        for last_start, status, live, red in ((600, "active", False, False),     # busy: reviews still starting
+                                              (3600, "active", False, True),     # stalled with capacity to spare
+                                              (3600, "active", True, False),     # its one reviewer is mid-review
+                                              (3600, "throttled", False, False)):  # every account paces
+            with self.subTest(last_start=last_start, status=status, live=live):
+                s = src([run(1, last_start, finished=not live, live=live)])
                 s["snapshot"]["accounts"] = [{"account": "1", "status": status, "tick_age": 5, "state": "", "note": "x"}]
                 s["snapshot"]["queue"] = {"specs": [{"repo": "o/r", "pr_num": 5, "title": "t", "since": "2026-10-01T00:00:00Z"}]}
                 m = status_page.build(s, {}, NOW)

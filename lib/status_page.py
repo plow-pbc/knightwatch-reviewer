@@ -131,11 +131,11 @@ def build(src, errors, now):
         specs = [{"repo": s["repo"], "pr": s["pr_num"], "title": s["title"], "wait": now - _epoch(s["since"])}
                  for s in snap["queue"]["specs"] if (s["repo"], s["pr_num"]) not in running]
         late = any(s["wait"] > QUEUE_RED_S for s in specs)
-        # A long wait while reviews keep starting, or while every account paces, is the fleet working
-        # (amber); red only when an active account exists yet nothing has been claimed.
+        # A long wait while reviews keep starting, every free reviewer is busy, or every account paces
+        # is the fleet working (amber); red only when an active reviewer sits idle and nothing is claimed.
         idle = now - max((r["t"] for r in runs), default=0)
         queue = {"specs": sorted(specs, key=lambda s: -s["wait"]), "late": late, "idle": idle,
-                 "red": late and idle > QUEUE_STALL_S and any(a["status"] == "active" for a in accounts)}
+                 "red": late and idle > QUEUE_STALL_S and sum(a["status"] == "active" for a in accounts) > len(inflight)}
     feedback = None
     if bake and "prompt_changed" in src:
         changed = src["prompt_changed"]
@@ -174,8 +174,8 @@ def gather_snapshot():
 
 def source_bakeoff(db):
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-    specs = {s: {"n": n, "pub": p, "app": a} for s, n, p, a in con.execute(
-        "SELECT specialist, count(*), sum(published), sum(applied) FROM specialist_runs "
+    specs = {s: {"n": n, "pub": p, "after": a} for s, n, p, a in con.execute(
+        "SELECT specialist, count(*), sum(published), sum(edited_after) FROM specialist_runs "
         "WHERE ran_at > datetime('now','-30 days') AND specialist NOT LIKE 'screened-%' "
         "AND specialist != 'aggregator' GROUP BY 1")}
     critiques = [{"repo": r, "pr": p, "spec": s, "ran_at_epoch": _epoch(t)} for r, p, s, t in con.execute(
