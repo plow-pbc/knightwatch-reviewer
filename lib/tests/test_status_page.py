@@ -154,9 +154,12 @@ class TestBuild(unittest.TestCase):
         self.assertTrue(all(a["action"] for a in m["attention"]))
 
     def test_late_queue_is_red_only_when_the_fleet_stopped_claiming(self):
-        for last_start, red in ((600, False), (3600, True)):   # a review started 10m vs 60m ago
-            with self.subTest(last_start=last_start):
+        for last_start, status, red in ((600, "active", False),      # busy: reviews still starting
+                                        (3600, "active", True),      # stalled with capacity to spare
+                                        (3600, "throttled", False)):  # stalled because every account paces
+            with self.subTest(last_start=last_start, status=status):
                 s = src([run(1, last_start)])
+                s["snapshot"]["accounts"] = [{"account": "1", "status": status, "tick_age": 5, "state": "", "note": "x"}]
                 s["snapshot"]["queue"] = {"specs": [{"repo": "o/r", "pr_num": 5, "title": "t", "since": "2026-10-01T00:00:00Z"}]}
                 m = status_page.build(s, {}, NOW)
                 self.assertTrue(m["queue"]["late"])

@@ -134,10 +134,11 @@ def build(src, errors, now):
         specs = [{"repo": s["repo"], "pr": s["pr_num"], "title": s["title"], "wait": now - _epoch(s["since"])}
                  for s in snap["queue"]["specs"] if (s["repo"], s["pr_num"]) not in running]
         late = any(s["wait"] > QUEUE_RED_S for s in specs)
-        # A long wait while reviews keep starting is load (amber); red only when nothing is being claimed.
+        # A long wait while reviews keep starting, or while every account paces, is the fleet working
+        # (amber); red only when an active account exists yet nothing has been claimed.
         idle = now - max((r["t"] for r in runs), default=0)
-        queue = {"specs": sorted(specs, key=lambda s: -s["wait"]), "late": late,
-                 "idle": idle, "red": late and idle > QUEUE_STALL_S}
+        queue = {"specs": sorted(specs, key=lambda s: -s["wait"]), "late": late, "idle": idle,
+                 "red": late and idle > QUEUE_STALL_S and any(a["status"] == "active" for a in accounts)}
     feedback = None
     if bake and "prompt_changed" in src:
         changed = src["prompt_changed"]

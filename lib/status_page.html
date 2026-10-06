@@ -54,7 +54,7 @@ a{color:var(--accent)}.small{font-size:12px;color:var(--text2)}.finding{border-l
 <div id="anatomy"></div>
 <h2 style="margin-top:18px">In progress now</h2><p class="sub">Each review currently running. Filled chips are finished stages, dashed are still pending. A review running more than 3× the median is flagged as likely stuck.</p><div id="live"></div></section>
 <div class="grid2">
-<section class="card"><h2>Queue</h2><p class="sub">PRs waiting for a reviewer, oldest first. Amber past 1h while reviews keep starting (busy); red if nothing has started in 30m (stalled).</p><div id="queue"></div></section>
+<section class="card"><h2>Queue</h2><p class="sub">PRs waiting for a reviewer, oldest first. Amber past 1h while reviews keep starting (busy); red if nothing has started in 30m while a reviewer is active (stalled).</p><div id="queue"></div></section>
 <section class="card"><h2>GitHub API quota</h2><p class="sub">Live <code>/rate_limit</code>. Red under 20%.</p><div id="gh"></div></section>
 </div>
 <section class="card"><h2>Reviewer containers &amp; codex accounts</h2><p class="sub">One row per reviewer container. Projection uses the weekday-weighted demand model and shows where usage lands at the weekly reset. Amber means the fleet is pacing itself: no action.</p><div class="scroll" id="acc"></div></section>
