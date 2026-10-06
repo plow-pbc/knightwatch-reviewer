@@ -184,17 +184,19 @@ class TestBuild(unittest.TestCase):
 class TestRepoHealth(unittest.TestCase):
     def test_kid_marker_reason(self):
         with TemporaryDirectory() as root:
-            for name, marker in (("refreshing", "reason=refreshing\nindexed=abc"), ("failed", "reason=index-failed\n"), ("fresh", None)):
+            for name, marker in (("refreshing", "reason=refreshing\nindexed=abc"), ("failed", "reason=index-failed\n"),
+                                 ("bare", ""), ("fresh", None)):
                 kid = Path(root, name, ".keepitdry")
                 kid.mkdir(parents=True)
                 Path(root, name, ".git").mkdir()
                 (kid / ".indexed-sha").write_text("abc")
                 if marker:
                     (kid / ".stale").write_text(marker)
-            rows = status_page.source_repos([run(1, 60, repo=f"o/{n}") for n in ("refreshing", "failed", "fresh")], root)
+            rows = status_page.source_repos([run(1, 60, repo=f"o/{n}") for n in ("refreshing", "failed", "bare", "fresh")], root)
             m = status_page.build(src([], repos=rows), {}, NOW)
         self.assertEqual({r["repo"]: (r["kid"], r["red"]) for r in m["repos"]},
-                         {"o/refreshing": ("refreshing", False), "o/failed": ("stale", True), "o/fresh": ("fresh", False)})
+                         {"o/refreshing": ("refreshing", False), "o/failed": ("stale", True),
+                          "o/bare": ("stale", True), "o/fresh": ("fresh", False)})
 
 
 class TestRender(unittest.TestCase):

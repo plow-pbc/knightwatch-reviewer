@@ -211,10 +211,12 @@ def source_repos(runs, clone_root):
                                       capture_output=True).returncode == 0
             kid = clone / ".keepitdry"
             # plow-kid-refresh marks a healthy in-progress index "refreshing": amber, not a failure.
-            marker = kid / ".stale"
-            reason = marker.read_text().partition("\n")[0].removeprefix("reason=") if marker.exists() else ""
+            try:   # read, don't stat: kid-refresh deletes the marker when an index completes
+                marker = (kid / ".stale").read_text().partition("\n")[0]
+            except FileNotFoundError:
+                marker = None
             row.update(review_md=has("REVIEW.md"), siblings=has(".knightwatch/siblings"),
-                       kid="refreshing" if reason == "refreshing" else "stale" if reason
+                       kid="refreshing" if marker == "reason=refreshing" else "stale" if marker is not None
                        else "fresh" if (kid / ".indexed-sha").exists() else "none")
         rows.append(row)
     return rows
