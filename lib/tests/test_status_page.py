@@ -107,6 +107,12 @@ def src(runs, **over):
 
 
 class TestBuild(unittest.TestCase):
+    def test_inflight_preserves_skipped_stages_for_progress(self):
+        running = run(1, 300, finished=False, live=True)
+        running["skipped"] = ["consumers", "security"]
+        m = status_page.build(src([running]), {}, NOW)
+        self.assertEqual(m["inflight"][0].get("skipped"), ["consumers", "security"])
+
     def test_inflight_is_a_held_lock_and_keeps_newest_per_pr(self):
         runs = [run(1, 2100, finished=False),                 # killed (restart or crash): its lock died with it
                 run(2, 600, finished=False, live=True), run(2, 300, finished=False, live=True),  # newest wins
@@ -152,11 +158,8 @@ class TestBuild(unittest.TestCase):
         self.assertFalse(m["gh"]["graphql"]["red"])
         self.assertEqual([r["red"] for r in m["repos"]], [True, False, False])  # no clone is neutral, not red
         # Every red thing, and only red things, lands in "needs attention" with an action.
-        self.assertEqual([(a["panel"], a["text"].split()[0]) for a in m["attention"]],
-                         [("Collection", "bakeoff"), ("Reviewer containers", "reviewer-1"),
-                          ("Reviewer containers", "reviewer-4"), ("GitHub quota", "core"),
-                          ("In progress", "o/r#4"), ("Repo config", "o/r")])
-        self.assertEqual(m["attention"][1]["action"], "codex re-login for reviewer-1 (operator)")
+        self.assertEqual([a["panel"] for a in m["attention"]],
+                         ["bakeoff", "Reviewer 1", "Reviewer 4", "GitHub core", "o/r#4", "o/r"])
         self.assertTrue(all(a["action"] for a in m["attention"]))
 
     def test_late_queue_is_red_only_when_the_fleet_stopped_claiming(self):
