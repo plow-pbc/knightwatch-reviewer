@@ -330,7 +330,7 @@ class TestRender(unittest.TestCase):
              unittest.mock.patch.object(status_page, "source_bakeoff", return_value=src([])["bakeoff"]), \
              unittest.mock.patch.object(status_page, "source_prompt_edits", return_value={}), \
              unittest.mock.patch.object(status_page, "source_repos", return_value=[]):
-            rc = status_page.main(["--out", out])
+            rc = status_page.main(["--out", out, "--codex-root", out, "--token-cache", str(Path(out, "days.json"))])
             model = json.loads(Path(out, "status.json").read_text())
             html = Path(out, "index.html").read_text()
         self.assertEqual(rc, 1)

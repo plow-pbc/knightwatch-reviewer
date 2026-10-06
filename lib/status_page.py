@@ -413,7 +413,7 @@ def main(argv=None):
     ap.add_argument("--out", type=Path, default=Path.home() / "pages/knightwatch")
     ap.add_argument("--clone-root", default=str(Path.home() / "services/kwr-repos"))
     ap.add_argument("--codex-root", default=str(Path.home() / "services/knightwatch-reviewer/docker/secrets"))
-    ap.add_argument("--token-cache", type=Path, default=Path.home() / ".pr-reviewer/token-days.json")
+    ap.add_argument("--token-cache", type=Path, default=Path.home() / ".cache/knightwatch-token-days.json")
     ap.add_argument("--bakeoff-db", default=str(Path.home() / ".pr-reviewer/bakeoff.db"))
     args = ap.parse_args(argv)
     now, src, errors = time.time(), {}, {}
