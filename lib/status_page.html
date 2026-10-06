@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Knightwatch Status</title>
+<style>
+:root{color-scheme:light;--bg:#f4f4f2;--surface:#fcfcfb;--line:#e2e1dc;--text:#0b0b0b;--text2:#52514e;--muted:#8a8984;--accent:#2a78d6;
+--good:#0ca30c;--warn:#fab219;--crit:#d03b3b;--good-bg:#0ca30c14;--warn-bg:#fab21922;--crit-bg:#d03b3b14}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--bg:#111110;--surface:#1a1a19;--line:#2e2e2c;--text:#fff;--text2:#c3c2b7;--muted:#8a8984;--accent:#3987e5;--good-bg:#0ca30c22;--warn-bg:#fab21922;--crit-bg:#d03b3b26}}
+:root[data-theme="dark"]{color-scheme:dark;--bg:#111110;--surface:#1a1a19;--line:#2e2e2c;--text:#fff;--text2:#c3c2b7;--muted:#8a8984;--accent:#3987e5;--good-bg:#0ca30c22;--warn-bg:#fab21922;--crit-bg:#d03b3b26}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:1180px;margin:0 auto;padding:20px 16px 48px}
+h1{font-size:20px;margin:0}h2{font-size:15px;margin:0 0 4px}.sub{color:var(--text2);font-size:12.5px;margin:0 0 12px}
+.stale{display:none;background:var(--crit);color:#fff;padding:8px 12px;border-radius:8px;margin-bottom:12px;font-weight:600}
+header{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
+.att{margin-top:14px}.att .item{display:grid;grid-template-columns:150px 1fr;gap:4px 12px;padding:6px 0;border-top:1px solid var(--line);font-size:13px}
+.att .item:first-of-type{border-top:0}.att .act{grid-column:2;color:var(--text2);font-size:12.5px}@media(max-width:600px){.att .item{grid-template-columns:1fr}.att .act{grid-column:1}}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:0 0 18px}
+.tile{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px}
+.tile .v{font-size:26px;font-weight:650;font-variant-numeric:tabular-nums}.tile .l{color:var(--text2);font-size:12px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}@media(max-width:800px){.grid2{grid-template-columns:1fr}}
+.grid2 .card{margin-bottom:0}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);font-size:13px}
+th{color:var(--text2);font-weight:550;font-size:12px}td.n,th.n{text-align:right}.scroll{overflow-x:auto}
+.pill{display:inline-flex;align-items:center;gap:4px;font-size:12px;padding:1px 8px;border-radius:99px;white-space:nowrap}
+.ok{background:var(--good-bg)}.ok::before{content:"●";color:var(--good)}.warnp{background:var(--warn-bg)}.warnp::before{content:"▲";color:var(--warn)}
+.bad{background:var(--crit-bg)}.bad::before{content:"✕";color:var(--crit);font-weight:700}.none{color:var(--muted)}
+.bar{height:6px;background:var(--line);border-radius:3px;overflow:hidden;min-width:80px}.bar>i{display:block;height:100%;border-radius:3px;background:var(--accent)}
+a{color:var(--accent)}.small{font-size:12px;color:var(--text2)}.finding{border-left:3px solid var(--line);padding:6px 10px;background:var(--bg);border-radius:0 6px 6px 0;margin-top:10px;font-size:12.5px}
+.tl{overflow-x:auto;margin-top:6px}.tlg{min-width:820px;display:grid;grid-template-columns:170px 1fr 64px 64px 54px 54px;column-gap:12px;align-items:center}
+.tlg .hd{font-size:11px;color:var(--text2);text-align:right;padding-bottom:4px}
+.grp{grid-column:1/-1;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--text2);padding:12px 0 4px;border-top:1px solid var(--line);display:flex;gap:8px;align-items:center}
+.grp em{font-style:normal;text-transform:none;letter-spacing:0;color:var(--muted)}
+.nm{font-weight:600;font-size:13px;padding:5px 0;display:flex;gap:6px;align-items:center}.nm small{font-weight:400;color:var(--muted);font-size:11px}
+.trk{position:relative;height:22px;background:repeating-linear-gradient(90deg,var(--line) 0 1px,transparent 1px 100%);background-size:var(--tick) 100%}
+.seg{position:absolute;top:4px;height:14px;border-radius:4px;display:flex;align-items:center;padding:0 6px;font-size:11px;color:#fff;font-weight:600;white-space:nowrap;min-width:4px}
+.seg.setup{background:#8a8984}.seg.spec{background:var(--accent)}.seg.syn{background:#1baf7a}
+.outlbl{position:absolute;top:3px;font-size:11px;font-weight:600;color:var(--text2)}
+.st{text-align:right;font-size:12.5px;font-variant-numeric:tabular-nums}.st.dim{color:var(--muted)}
+.row{display:contents;cursor:pointer}.row:hover .nm{color:var(--accent)}
+.axis{position:relative;height:16px;font-size:10.5px;color:var(--muted)}.axis span{position:absolute;transform:translateX(-50%)}
+.endmark{position:absolute;top:-2px;bottom:-2px;border-left:2px dashed var(--text2)}
+.critx{grid-column:2/-1;font-size:12px;padding:0 0 6px;display:none}.critx.open{display:block}
+.legend{display:flex;gap:14px;font-size:12px;color:var(--text2);flex-wrap:wrap;margin-top:6px}.legend i{display:inline-block;width:12px;height:8px;border-radius:2px;margin-right:5px;vertical-align:middle}
+.lv{padding:8px 0;border-top:1px solid var(--line)}.lvh{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;font-size:13px}.lvh .small{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lva{font-size:12px;color:var(--text2);white-space:nowrap}.chips{display:flex;gap:4px;flex-wrap:wrap;margin-top:6px}
+.chip{font-size:11.5px;padding:2px 8px;border-radius:99px;border:1px dashed var(--line);color:var(--muted)}
+.chip.setup,.chip.spec,.chip.syn{border-style:solid;color:#fff;font-weight:600}.chip.setup{background:#8a8984;border-color:#8a8984}.chip.spec{background:var(--accent);border-color:var(--accent)}.chip.syn{background:#1baf7a;border-color:#1baf7a}
+</style></head><body><main>
+<div class="stale" id="stale"></div>
+<header><div><h1>Knightwatch status</h1><div class="sub" id="gen"></div></div><div class="small">Private · tailnet only</div></header>
+<section class="card att" id="att"></section>
+<div class="tiles" id="tiles"></div>
+<section class="card"><h2>Anatomy of a review</h2><p class="sub">Where the time goes in a typical review. Bars are each stage's median start and finish, measured from the start of the review, over the last 7 days. Specialist stats cover 30 days. Click a specialist to see feedback nobody has acted on.</p>
+<div id="anatomy"></div>
+<h2 style="margin-top:18px">In progress now</h2><p class="sub">Each review currently running. Filled chips are finished stages, dashed are still pending. A review running more than 3× the median is flagged as likely stuck.</p><div id="live"></div></section>
+<div class="grid2">
+<section class="card"><h2>Queue</h2><p class="sub">PRs waiting for a reviewer, oldest first. Amber past 1h while reviews keep starting (busy); red if nothing has started in 30m while a reviewer is active (stalled).</p><div id="queue"></div></section>
+<section class="card"><h2>GitHub API quota</h2><p class="sub">Live <code>/rate_limit</code>. Red under 20%.</p><div id="gh"></div></section>
+</div>
+<section class="card"><h2>Reviewer containers &amp; codex accounts</h2><p class="sub">One row per reviewer container. Projection uses the weekday-weighted demand model and shows where usage lands at the weekly reset. Amber means the fleet is pacing itself: no action.</p><div class="scroll" id="acc"></div></section>
+<div class="grid2">
+<section class="card"><h2>Slowest 5 repos</h2><p class="sub">Median end-to-end review time and queue wait, last 7 days (≥3 reviews).</p><div id="slow"></div></section>
+<section class="card"><h2>Feedback health</h2><p class="sub">Explicit reviewer feedback via <code>/srosro-props</code> · <code>/srosro-critique</code>.</p><div id="fb"></div></section>
+</div>
+<section class="card"><h2>Repo config health</h2><p class="sub">Repos reviewed in the last 30 days. REVIEW.md and <code>.knightwatch/siblings</code> read at the default branch of the deploy clone; KID = keepitdry prior-art index.</p><div class="scroll" id="repos"></div></section>
+</main>
+<script id="data" type="application/json">__DATA__</script>
+<script>
+const D=JSON.parse(document.getElementById('data').textContent);const now=Date.now()/1000;
+const $=id=>document.getElementById(id);const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const dur=s=>s==null?'—':s<90?`${Math.round(s)}s`:s<5400?`${Math.round(s/60)}m`:s<172800?`${(s/3600).toFixed(1)}h`:`${Math.round(s/86400)}d`;
+const pct=(a,b)=>b?Math.round(100*a/b)+'%':'—';const pill=(cls,t)=>`<span class="pill ${cls}">${esc(t)}</span>`;
+const prLink=(r,n)=>`<a href="https://github.com/${esc(r)}/pull/${esc(n)}">${esc(String(r).split('/')[1])}#${esc(n)}</a>`;
+const ymd=e=>new Date(e*1000).toISOString().slice(0,10);
+// A failed source draws its panel as a red card naming the error; every other panel still draws.
+const panel=(id,data,sources,draw)=>{$(id).innerHTML=data==null?`${pill('bad','collection failed')} <span class="small">${esc(sources.map(s=>D.errors[s]).filter(Boolean).join('; '))}</span>`:draw(data)};
+const age=now-D.generated_at;$('gen').textContent=`Snapshot ${new Date(D.generated_at*1000).toLocaleString()} · regenerated every 2 min`;
+if(age>600){$('stale').style.display='block';$('stale').textContent=`Snapshot is ${dur(age)} old: the status timer may have stopped.`}
+// needs attention: every red condition, each with its action
+$('att').innerHTML=D.attention.length?`<h2>${pill('bad',`${D.attention.length} need${D.attention.length>1?'':'s'} attention`)}</h2>${D.attention.map(a=>`<div class="item"><b>${esc(a.panel)}</b><div>${esc(a.text)}</div><div class="act">→ ${esc(a.action)}</div></div>`).join('')}`
+ :`<h2>${pill('ok','Nothing needs you')}</h2><div class="small">Every reviewer, queue and quota check is green. Amber items below are the fleet pacing itself: no action.</div>`;
+// tiles
+const T=D.tiles,core=D.gh&&D.gh.core;
+panel('tiles',T,['snapshot'],T=>[[T.reviews7,'reviews · last 7 days'],[dur(T.total50),'median time to review'],[T.repos30,'repos reviewed · 30 days'],[`${T.queued} / ${T.inflight??'—'}`,'queued / in progress'],
+ [`${T.working}/${T.fleet}`,'reviewer containers working'],[core?pct(core.remaining,core.limit):'—','GitHub core quota left'],[D.feedback?D.feedback.unaddressed.length:'—','unaddressed critiques']]
+ .map(([v,l])=>`<div class="tile"><div class="v">${esc(v)}</div><div class="l">${esc(l)}</div></div>`).join(''));
+// anatomy timeline
+const GROUPS=[['Setup','runs first, alone','setup',[['intent','reads the PR, infers what it is for'],['dead-code-search','finds what the PR orphans'],['momentum','reads the review history'],['test-gate','waits for the repo\'s test outcome']]],
+ ['Specialists','in parallel; each finding re-checked by a critic','spec',[['security'],['data-integrity'],['architecture-refined'],['contract-drift'],['tests'],['shape'],['consumers','starts once the size screen clears']]],
+ ['Synthesis','','syn',[['aggregator','dedupes, ranks, writes one comment']]]];
+const ORDER=GROUPS.flatMap(g=>g[3].map(i=>[i[0],g[2]]));
+const crit=D.feedback?D.feedback.unaddressed:[];
+panel('anatomy',D.anatomy,['snapshot'],A=>{const N=A.nodes,SP=A.specs||{},SK=A.skip7,tot=A.total50||0;
+ const MAX=Math.ceil(Math.max(tot,...Object.values(N).map(n=>n.e50||0))/60+1)*60;const X=s=>100*Math.min(s,MAX)/MAX;const tick=`--tick:${100*60/MAX}%`;
+ const bar=(cls,s,e,label)=>{const w=Math.max(.8,X(e)-X(s));const out=w<9;
+  return `<div class="seg ${cls}" style="left:${X(s)}%;width:${w}%" title="${label}">${out?'':label}</div>${out?`<span class="outlbl" style="left:calc(${X(s)+w}% + 6px)">${label}</span>`:''}`};
+ let rows=`<div></div><div class="axis">${Array.from({length:MAX/60+1},(_,i)=>`<span style="left:${X(i*60)}%">${i}m</span>`).join('')}</div><div class="hd">found something</div><div class="hd">files touched after</div><div class="hd">ran 7d</div><div class="hd">size-gate skip</div>`;
+ for(const [g,gd,cls,items] of GROUPS){rows+=`<div class="grp">${g}${gd?` <em>· ${gd}</em>`:''}</div>`;
+  for(const [k,desc] of items){const n=N[k]||{},p=SP[k],cs=crit.filter(c=>c.spec===k);const ran=n.n||0,sk=SK[k]||0;
+   rows+=`<div class="row" onclick="document.getElementById('cx-${k}').classList.toggle('open')"><div class="nm">${k}${cs.length?pill('warnp',cs.length):''}${desc?`<small title="${desc}">ⓘ</small>`:''}</div>
+   <div class="trk" style="${tick}">${n.n?bar(cls,n.s50,n.e50,dur(n.p50)):''}<div class="endmark" style="left:${X(tot)}%"></div></div>
+   <div class="st${p?'':' dim'}">${p?pct(p.pub,p.n):'—'}</div><div class="st${p?'':' dim'}">${p?pct(p.after,p.pub):'—'}</div><div class="st">${ran}</div><div class="st${sk?'':' dim'}">${sk?pct(sk,ran+sk):'—'}</div></div>
+   <div class="critx" id="cx-${k}">${desc?`<div class="small">${desc}.</div>`:''}${p?(cs.length?cs.map(c=>`${prLink(c.repo,c.pr)} critiqued ${ymd(c.ran_at_epoch)}, after the prompt last changed`).join('<br>'):'<span class="none">No unaddressed critiques.</span>'):''}</div>`}}
+ return `<div class="legend">${GROUPS.map(g=>`<span><i class="seg ${g[2]}" style="position:static;display:inline-block;padding:0"></i>${g[0]}</span>`).join('')}<span><i style="border-left:2px dashed var(--text2);width:0;height:10px"></i>median review finishes (${dur(A.total50)}, incl. setup &amp; posting)</span></div><div class="tl"><div class="tlg">${rows}</div></div>`});
+// in progress
+const chip=(k,c,on)=>`<span class="chip ${on?c:''}" title="${k}${on?' ✓':' pending'}">${on?'✓ ':''}${k}</span>`;
+panel('live',D.inflight,['snapshot'],F=>F.length?F.map(f=>{const done=ORDER.filter(([k])=>f.done.includes(k)).length;
+ return `<div class="lv"><div class="lvh">${prLink(f.repo,f.pr)} <span class="small">${esc(f.title)}</span>
+ <span class="lva">${f.stuck?pill('bad',`${dur(f.age)} · likely stuck`):`${dur(f.age)} running`} · ${done}/${ORDER.length} stages</span></div>
+ <div class="chips">${ORDER.map(([k,c])=>chip(k,c,f.done.includes(k))).join('')}</div></div>`}).join(''):'<div class="small">No reviews in progress.</div>');
+// queue (oldest first; the model sets late past 1h, red only when no review has started in 30m)
+panel('queue',D.queue,['snapshot'],Q=>Q.specs.length?`<table><tr><th>PR</th><th class="n">waiting</th></tr>${Q.specs.map((q,i)=>`<tr><td>${prLink(q.repo,q.pr)} <span class="small">${esc(q.title)}</span></td><td class="n">${i===0&&Q.red?pill('bad',dur(q.wait)):i===0&&Q.late?`<span title="over 1h: the fleet is busy or pacing; the reviewer panel shows which">${pill('warnp',dur(q.wait))}</span>`:dur(q.wait)}</td></tr>`).join('')}</table>`
+ :`<p>${pill('ok','Empty')} Every requested review has been picked up.</p><p class="small">A PR is claimed within one 60-second enumeration tick of its review request while a reviewer is free.</p>`);
+// gh
+panel('gh',D.gh,['gh'],G=>`<table><tr><th>bucket</th><th>remaining</th><th></th><th class="n">resets in</th></tr>${['core','graphql'].map(k=>{const b=G[k];
+ return `<tr><td>${k}</td><td>${b.remaining.toLocaleString()} / ${b.limit.toLocaleString()} ${b.red?pill('bad','low'):''}</td><td><div class="bar"><i style="width:${100*b.remaining/b.limit}%"></i></div></td><td class="n">${dur(b.reset-D.generated_at)}</td></tr>`}).join('')}</table>`);
+// accounts
+const ST={active:'active',throttled:'throttled: pacing automatically, no action','quota-paused':'quota-paused: resumes at reset, no action',offline:'offline: codex re-login needed','not running':'not running'};
+const LV={ok:'ok',amber:'warnp',red:'bad'};
+panel('acc',D.accounts,['snapshot'],acc=>`<table><tr><th>reviewer</th><th>state</th><th class="n">last tick</th><th>codex used this week</th><th class="n">projected at reset</th><th class="n">resets</th></tr>${acc.map(a=>
+ `<tr><td>reviewer-${esc(a.account)}</td><td>${pill(LV[a.level],ST[a.status]||a.status)}</td><td class="n">${dur(a.tick_age)} ago</td>
+ <td>${a.used!=null?`<div style="display:flex;gap:8px;align-items:center"><div class="bar" style="flex:1"><i style="width:${a.used}%"></i></div>${Math.round(a.used)}%</div>`:`<span class="none">${esc(a.note||'no reading')}</span>`}</td>
+ <td class="n">${a.projected!=null?(a.over?`<span title="pacing automatically, no action">${pill('warnp',Math.round(a.projected)+'%')}</span>`:Math.round(a.projected)+'%'):'—'}</td><td class="n">${a.resets_at&&a.resets_at>now?dur(a.resets_at-now):'—'}</td></tr>`).join('')}</table>`);
+// slow
+panel('slow',D.slow,['snapshot'],S=>{const mx=Math.max(1,...S.map(s=>s.p50));
+ return `<table><tr><th>repo</th><th></th><th class="n">p50</th><th class="n">queue wait p50</th><th class="n">reviews</th></tr>${S.map(s=>`<tr><td>${esc(s.repo)}</td><td style="width:30%"><div class="bar"><i style="width:${100*s.p50/mx}%"></i></div></td><td class="n">${dur(s.p50)}</td><td class="n">${dur(s.wait50)}</td><td class="n">${s.n}</td></tr>`).join('')}</table>`});
+// feedback
+panel('fb',D.feedback,['bakeoff','prompt_changed'],F=>`<table><tr><td>specialist verdicts recorded (since May)</td><td class="n">${F.rows.toLocaleString()}</td></tr><tr><td>/srosro-critique</td><td class="n">${F.crit}</td></tr><tr><td>/srosro-props</td><td class="n">${F.loved}</td></tr><tr><td>unaddressed (critique newer than the prompt)</td><td class="n">${F.unaddressed.length}</td></tr></table>
+<div class="finding"><b>Design finding:</b> people almost never use the explicit feedback commands. Real pushback happens in plain replies to review comments (for example, a babysit agent declining a finding as YAGNI), and nothing records those yet. "Unaddressed feedback" stays near zero until those replies are captured.</div>`);
+// repos
+panel('repos',D.repos,['snapshot','repos'],R=>`<table><tr><th>repo</th><th class="n">reviews (30d)</th><th class="n">last review</th><th>REVIEW.md</th><th>siblings</th><th>KID</th></tr>${R.map(r=>`<tr><td>${esc(r.repo)}</td><td class="n">${r.reviews30}</td><td class="n">${dur(now-r.last)} ago</td>
+${r.clone?`<td>${r.review_md?pill('ok','own'):'<span class="none">org default</span>'}</td><td>${r.siblings?pill('ok','defined'):'<span class="none">all tracked repos</span>'}</td><td>${r.red?pill('bad','stale'):r.kid==='refreshing'?pill('warnp','refreshing'):r.kid==='fresh'?pill('ok','fresh'):'<span class="none">no index</span>'}</td>`:'<td colspan="3"><span class="none">not indexed locally</span></td>'}</tr>`).join('')}</table>`);
+</script></body></html>

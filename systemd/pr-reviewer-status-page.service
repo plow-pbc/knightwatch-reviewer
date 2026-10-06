@@ -1,0 +1,33 @@
+[Unit]
+Description=Knightwatch status page — regenerate ~/pages/knightwatch (every 2 minutes)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=odio
+Group=odio
+WorkingDirectory=/home/odio/.pr-reviewer
+Environment=HOME=/home/odio
+# System dirs only: python3, docker, gh and git all resolve from /usr/bin, and no
+# user dir means nothing writable is ever searched (see pr-reviewer-bakeoff.service).
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Python, not a .sh: lib/ is already symlinked into ~/.pr-reviewer by install.sh.
+ExecStart=/usr/bin/python3 /home/odio/.pr-reviewer/lib/status_page.py
+TimeoutStartSec=5min
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pr-reviewer-status-page
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectHome=read-only
+# ~/.local exclusion rationale: see pr-reviewer-bakeoff.service.
+# Writes only the served page, plus gh's cache/config.
+ReadWritePaths=/home/odio/pages/knightwatch /home/odio/.cache /home/odio/.config
+
+[Install]
+WantedBy=multi-user.target

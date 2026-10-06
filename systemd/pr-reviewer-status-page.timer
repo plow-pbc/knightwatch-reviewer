@@ -1,0 +1,11 @@
+[Unit]
+Description=Knightwatch status page (every 2 minutes)
+
+[Timer]
+OnCalendar=*-*-* *:1/2:00
+Persistent=false
+AccuracySec=10s
+Unit=pr-reviewer-status-page.service
+
+[Install]
+WantedBy=timers.target
