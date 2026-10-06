@@ -56,15 +56,15 @@ def _active_specialists(diff_loc: int | None) -> tuple[list[str], list[str]]:
 
 # Per-kind codex model routing. The critic pass runs once per specialist
 # (doubling the specialist fan-out) and mostly resolves yes/no against evidence
-# the specialist already cited, so it runs on the cheap/fast gpt-5.6-luna
-# tier; every other agent uses the flagship gpt-5.6-sol.
-DEFAULT_MODEL = "gpt-5.6-sol"
-CRITIC_MODEL = "gpt-5.6-luna"
+# the specialist already cited, so it runs on the cheap/fast gpt-6-luna
+# tier; every other agent uses the flagship gpt-6.1-sol.
+DEFAULT_MODEL = "gpt-6.1-sol"
+CRITIC_MODEL = "gpt-6-luna"
 
 
 def model_for(name: str) -> str:
-    """The codex model for an agent `name`: cheap gpt-5.6-luna for the critic
-    pass, flagship gpt-5.6-sol for specialists, standalones, and the aggregator."""
+    """The codex model for an agent `name`: cheap gpt-6-luna for the critic
+    pass, flagship gpt-6.1-sol for specialists, standalones, and the aggregator."""
     return CRITIC_MODEL if name.startswith("critic-") else DEFAULT_MODEL
 
 
