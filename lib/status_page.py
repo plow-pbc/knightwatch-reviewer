@@ -138,7 +138,7 @@ def _inflight(runs, total50, now):
         if k not in newest or r["t"] > newest[k]["t"]:
             newest[k] = r
     live = [r for r in newest.values() if r["live"]]   # a killed run's lock dies with its worker
-    return [{"repo": r["repo"], "pr": r["pr"], "title": r["title"], "age": now - r["t"], "done": sorted(r["span"]), "skipped": r["skipped"],
+    return [{"repo": r["repo"], "pr": r["pr"], "worker": r["worker"], "title": r["title"], "age": now - r["t"], "done": sorted(r["span"]), "skipped": r["skipped"],
              "stuck": bool(total50) and now - r["t"] > STUCK_FACTOR * total50}
             for r in sorted(live, key=lambda r: r["t"])]
 
@@ -235,7 +235,7 @@ def build(src, errors, now):
                  "inflight": len(inflight) if inflight is not None else None,
                  "working": sum(a["level"] != "red" for a in accounts), "fleet": len(accounts)}
     m = {"generated_at": now, "errors": errors, "tiles": tiles, "anatomy": anatomy, "inflight": inflight,
-         "queue": queue, "accounts": accounts, "gh": gh, "slow": _slow(runs, now) if snap else None,
+         "queue": queue, "accounts": accounts, "image": snap["image"] if snap else None, "gh": gh, "slow": _slow(runs, now) if snap else None,
          "feedback": feedback, "specialists": specialists, "repos": repos}
     m["attention"] = _attention(m)
     return m

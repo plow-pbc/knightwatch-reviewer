@@ -55,7 +55,7 @@ class TestCollect(unittest.TestCase):
         _w(runs / run_name("o/r", 11, NOW - 60) / "meta.json", {"repo": "o/r", "pr_num": 11})
         _w(runs / run_name("o/r", 11, NOW - 60) / "timings.json", "{corrupt")             # corrupt timings
         (runs / "not-a-run-dir").mkdir()
-        _w(runs / run_name("o/r", 12, NOW - 60) / "meta.json", {"repo": "o/r", "pr_num": 12})  # running: lock held
+        _w(runs / run_name("o/r", 12, NOW - 60) / "meta.json", {"repo": "o/r", "pr_num": 12, "worker": "3"})  # running: lock held
         _w(self.shared / "locks" / "o_r__12", "")
         self.held = os.open(self.shared / "locks" / "o_r__12", os.O_RDONLY)
         fcntl.flock(self.held, fcntl.LOCK_EX)
@@ -87,18 +87,25 @@ class TestCollect(unittest.TestCase):
         self.assertEqual(runs[7]["skipped"], ["consumers"])
         self.assertEqual(runs[11]["span"], {})
 
+    def test_running_review_names_its_worker_and_the_image_its_os_and_models(self):
+        snap = self.snap()
+        self.assertEqual({r["pr"]: r["worker"] for r in snap["runs"]}[12], "3")
+        self.assertTrue(snap["image"]["os"])
+        self.assertIn("gpt-6.1-sol", snap["image"]["models"])
+
     def test_queue_passthrough(self):
         self.assertEqual(self.snap()["queue"]["specs"][0]["pr_num"], 1)
 
 
-def run(pr, age, repo="o/r", total=450, finished=True, span=None, queued=None, live=False):
+def run(pr, age, repo="o/r", total=450, finished=True, span=None, queued=None, live=False, worker=None):
     return {"t": NOW - age, "repo": repo, "pr": pr, "title": f"pr {pr}", "status": "completed" if finished else None,
-            "finished_at": "z" if finished else None, "live": live, "queued_since": queued, "total": total if finished else None,
+            "finished_at": "z" if finished else None, "live": live, "queued_since": queued, "worker": worker, "total": total if finished else None,
             "span": span or {"intent": [0, 14], "security": [14, 136], "aggregator": [246, 436]}, "skipped": []}
 
 
 def src(runs, **over):
-    base = {"snapshot": {"collected_at": NOW, "accounts": [], "queue": {"specs": []}, "runs": runs},
+    base = {"snapshot": {"collected_at": NOW, "accounts": [], "queue": {"specs": []}, "runs": runs,
+                         "image": {"os": "Debian GNU/Linux 12 (bookworm)", "models": ["gpt-6.1-sol", "gpt-6-luna"]}},
             "bakeoff": {"specs": {"security": {"n": 10, "pub": 4, "after": 3}}, "weekly": {}, "critiques": [], "rows": 10, "crit": 0, "loved": 0},
             "prompt_edits": {"security": [[NOW - 86400, "tune security"]]},
             "gh": {"core": {"limit": 5000, "remaining": 900, "reset": NOW + 60}, "graphql": {"limit": 5000, "remaining": 4998, "reset": NOW + 60}},
@@ -111,8 +118,11 @@ class TestBuild(unittest.TestCase):
     def test_inflight_preserves_skipped_stages_for_progress(self):
         running = run(1, 300, finished=False, live=True)
         running["skipped"] = ["consumers", "security"]
+        running["worker"] = "3"
         m = status_page.build(src([running]), {}, NOW)
         self.assertEqual(m["inflight"][0].get("skipped"), ["consumers", "security"])
+        self.assertEqual(m["inflight"][0]["worker"], "3")   # places the review in its reviewer's box
+        self.assertEqual(m["image"]["os"], "Debian GNU/Linux 12 (bookworm)")
 
     def test_inflight_is_a_held_lock_and_keeps_newest_per_pr(self):
         runs = [run(1, 2100, finished=False),                 # killed (restart or crash): its lock died with it
