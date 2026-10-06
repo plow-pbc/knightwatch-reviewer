@@ -2,10 +2,8 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Knightwatch Status</title>
 <style>
-:root{color-scheme:light;--bg:#f4f4f2;--surface:#fcfcfb;--line:#e2e1dc;--text:#0b0b0b;--text2:#52514e;--muted:#8a8984;--accent:#2a78d6;
---good:#0ca30c;--warn:#fab219;--crit:#d03b3b;--good-bg:#0ca30c14;--warn-bg:#fab21922;--crit-bg:#d03b3b14}
-@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--bg:#111110;--surface:#1a1a19;--line:#2e2e2c;--text:#fff;--text2:#c3c2b7;--muted:#8a8984;--accent:#3987e5;--good-bg:#0ca30c22;--warn-bg:#fab21922;--crit-bg:#d03b3b26}}
-:root[data-theme="dark"]{color-scheme:dark;--bg:#111110;--surface:#1a1a19;--line:#2e2e2c;--text:#fff;--text2:#c3c2b7;--muted:#8a8984;--accent:#3987e5;--good-bg:#0ca30c22;--warn-bg:#fab21922;--crit-bg:#d03b3b26}
+:root{color-scheme:dark;--bg:#0b0e13;--surface:#12161d;--raised:#181d26;--line:#252c37;--text:#e6edf3;--text2:#9aa5b1;--muted:#6b7682;--accent:#4c9aff;--syn:#2fbf9b;
+--good:#3fb950;--warn:#d29922;--crit:#f85149;--good-bg:#3fb9501f;--warn-bg:#d299222b;--crit-bg:#f8514926;--mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
 main{max-width:1180px;margin:0 auto;padding:20px 16px 48px}
 h1{font-size:20px;margin:0}h2{font-size:15px;margin:0}.sub{color:var(--text2);font-size:12.5px;margin:8px 0}
@@ -38,7 +36,7 @@ a{color:var(--accent)}.small{font-size:12px;color:var(--text2)}
 button:focus-visible,summary:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
 .trk{position:relative;height:22px;background:repeating-linear-gradient(90deg,var(--line) 0 1px,transparent 1px 100%);background-size:var(--tick) 100%}
 .seg{position:absolute;top:4px;height:14px;border-radius:4px;display:flex;align-items:center;padding:0 6px;font-size:11px;color:#fff;font-weight:600;white-space:nowrap;min-width:4px}
-.seg.setup{background:#8a8984}.seg.spec{background:var(--accent)}.seg.syn{background:#1baf7a}
+.seg.setup{background:var(--muted)}.seg.spec{background:var(--accent)}.seg.syn{background:var(--syn)}
 .outlbl{position:absolute;top:3px;font-size:11px;font-weight:600;color:var(--text2)}
 .st{text-align:right;font-size:12.5px;font-variant-numeric:tabular-nums}.st.dim{color:var(--muted)}
 .row{display:contents}
@@ -48,8 +46,16 @@ button:focus-visible,summary:focus-visible,a:focus-visible{outline:2px solid var
 .lv{padding:8px 0;border-top:1px solid var(--line)}.lvh{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;font-size:13px}.lvh .small{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .lva{font-size:12px;color:var(--text2);white-space:nowrap}.chips{display:flex;gap:4px;flex-wrap:wrap;margin-top:6px}
 .chip{font-size:11.5px;padding:2px 8px;border-radius:99px;border:1px dashed var(--line);color:var(--muted)}
-.chip.setup,.chip.spec,.chip.syn{border-style:solid;color:#fff;font-weight:600}.chip.setup{background:#8a8984;border-color:#8a8984}.chip.spec{background:var(--accent);border-color:var(--accent)}.chip.syn{background:#1baf7a;border-color:#1baf7a}
+.chip.setup,.chip.spec,.chip.syn{border-style:solid;color:#fff;font-weight:600}.chip.setup{background:var(--muted);border-color:var(--muted)}.chip.spec{background:var(--accent);border-color:var(--accent)}.chip.syn{background:var(--syn);border-color:var(--syn)}
 .chip.skipped{border-style:solid;text-decoration:line-through}
+.st,.axis,.hd,td.n,.n{font-family:var(--mono)}h1{letter-spacing:.02em}
+.seg.crit{background:var(--crit)}
+svg{width:100%;height:auto;display:block;font:11px system-ui,sans-serif}svg text{fill:var(--text)}svg .m{fill:var(--muted)}svg .b{font-weight:650}
+svg .n{font-family:var(--mono)}svg .gl{stroke:var(--line)}svg .up{fill:var(--good)}svg .down{fill:var(--crit)}
+svg .edit line{stroke:var(--accent);stroke-dasharray:2 2;opacity:.45}svg .edit text{fill:var(--accent);font-size:10px;cursor:help}
+.fn{display:grid;grid-template-columns:120px 1fr 150px;gap:10px;align-items:center;padding:4px 0}
+.fbar{position:relative;height:22px;background:var(--raised);border-radius:3px}.fbar i{position:absolute;left:0;border-radius:3px}
+.fbar .f{top:2px;bottom:2px;background:var(--accent);opacity:.35}.fbar .a{top:6px;bottom:6px;background:var(--syn)}.fbar .a.lo{background:var(--crit)}
 </style></head><body><main>
 <div class="stale" id="stale"></div>
 <header><h1>Knightwatch</h1><details><summary id="gen"></summary><p id="snapshot"></p><p>Snapshots every 2 min. Reload to update.</p></details></header>
@@ -64,7 +70,10 @@ button:focus-visible,summary:focus-visible,a:focus-visible{outline:2px solid var
 <details><summary>About capacity</summary><p>Pacing and quota pauses are automatic. Paused accounts resume at reset. Login failures and missing heartbeats need action.</p><p>Forecast estimates usage at reset using weekday demand. Above 100% means demand exceeds the weekly allowance.</p></details></section>
 <section class="card"><div class="heading"><h2>GitHub limits</h2><span class="meta">Remaining</span></div><div class="scroll" id="gh"></div></section>
 <section class="card"><div class="heading"><h2>Review timing</h2><span class="meta">Median · 7d</span></div><div class="stats" id="stats"></div><div id="anatomy"></div>
-<details><summary>About these metrics</summary><p>Bars show each stage's median start and finish; their overlap shows parallel work. Duration labels are median stage durations. The finish marker includes setup and posting.</p><p>Runs and skips cover 7 days. Finding and later-edit rates cover 30 days: reviews with a published finding / specialist runs, then reviews with a later edit to a cited file / reviews with a finding. Later edits do not prove a finding was fixed.</p><p>Running reviews are flagged after 3× the median. Queue waits over 1h are long; a queue is stalled only when no review has started in 30m and an active reviewer is free.</p></details></section>
+<details><summary>About these metrics</summary><p>Bars show each stage's median start and finish; their overlap shows parallel work. Duration labels are median stage durations. The finish marker includes setup and posting.</p><p>Runs, skips, gated and gap cover 7 days. Specialist finding and edited-later rates are in the Specialists card below.</p><p>Gated is how often a stage was the last to finish before the final review started; red stages gated at least 25% of the runs they ran in. Gap is the median time between a stage finishing and the final review starting; it is not free delay, because later stages may depend on it.</p><p>Running reviews are flagged after 3× the median. Queue waits over 1h are long; a queue is stalled only when no review has started in 30m and an active reviewer is free.</p></details></section>
+<section class="card"><div class="heading"><h2>Specialists</h2><span class="meta">Edited later · weekly</span></div><div id="trend"></div>
+<div class="grid2" style="margin:16px 0 0"><div><h2>Value vs. cost</h2><div id="value"></div></div><div><h2>Funnel</h2><div id="funnel"></div></div></div>
+<details><summary>About these metrics</summary><p>Edited later = specialist runs whose published finding was followed by an edit to a cited file, over all runs. Later edits do not prove a finding was fixed. Weeks with fewer than 30 runs are not drawn. ◆ marks a prompt update; hover for the commit. Δ compares the 4 weeks after the last prompt update with the 4 weeks before. Prompt updates are dated by commit, which can precede deployment.</p><p>Value vs. cost plots 30-day edited-later rate against 7-day median runtime; bubble size is runs, and the dashed lines are the median specialist. In the funnel, a short blue bar is a timid prompt and a long blue bar over a short green one is noise.</p></details></section>
 <div class="grid2">
 <section class="card"><div class="heading"><h2>Slowest repos</h2><span class="meta">Median · 7d · ≥3 runs</span></div><div class="scroll" id="slow"></div></section>
 <section class="card"><div class="heading"><h2>Recorded feedback</h2></div><div id="fb"></div></section>
@@ -108,18 +117,57 @@ const LABELS={'intent':'Intent','dead-code-search':'Dead code','momentum':'Revie
 const ORDER=GROUPS.flatMap(g=>g[2].map(i=>[i[0],g[1]]));
 const crit=D.feedback?D.feedback.unaddressed:[];
 const toggleStage=b=>{const x=$(b.getAttribute('aria-controls'));x.hidden=!x.hidden;b.setAttribute('aria-expanded',String(!x.hidden))};
-panel('anatomy',D.anatomy,['snapshot'],A=>{const N=A.nodes,SP=A.specs||{},SK=A.skip7,tot=A.total50||0;
+panel('anatomy',D.anatomy,['snapshot'],A=>{const N=A.nodes,SK=A.skip7,tot=A.total50||0;
  const MAX=Math.ceil(Math.max(tot,...Object.values(N).map(n=>n.e50||0))/60+1)*60;const X=s=>100*Math.min(s,MAX)/MAX;const tick=`--tick:${100*60/MAX}%`;
  const bar=(cls,s,e,label)=>{const w=Math.max(.8,X(e)-X(s));const out=w<9;
   return `<div class="seg ${cls}" style="left:${X(s)}%;width:${w}%" title="${label}">${out?'':label}</div>${out?`<span class="outlbl" style="left:calc(${X(s)+w}% + 6px)">${label}</span>`:''}`};
- let rows=`<div></div><div class="axis">${Array.from({length:MAX/60+1},(_,i)=>`<span style="left:${X(i*60)}%">${i}m</span>`).join('')}${A.total50!=null?`<span class="finish" style="left:${X(tot)}%">${dur(tot)} · finish</span>`:''}</div><div class="hd">Reviews with findings<br>30d</div><div class="hd">Files edited later<br>30d</div><div class="hd">Runs<br>7d</div><div class="hd">Skipped<br>7d</div>`;
+ let rows=`<div></div><div class="axis">${Array.from({length:MAX/60+1},(_,i)=>`<span style="left:${X(i*60)}%">${i}m</span>`).join('')}${A.total50!=null?`<span class="finish" style="left:${X(tot)}%">${dur(tot)} · finish</span>`:''}</div><div class="hd">Gated<br>7d</div><div class="hd">Gap<br>7d</div><div class="hd">Runs<br>7d</div><div class="hd">Skipped<br>7d</div>`;
  for(const [g,cls,items] of GROUPS){rows+=`<div class="grp">${g}</div>`;
-  for(const [k,desc] of items){const n=N[k]||{},p=SP[k],cs=crit.filter(c=>c.spec===k);const ran=n.n||0,sk=SK[k]||0;
+  for(const [k,desc] of items){const n=N[k]||{},cs=crit.filter(c=>c.spec===k);const ran=n.n||0,sk=SK[k]||0;
    rows+=`<div class="row"><button type="button" class="nm" aria-expanded="false" aria-controls="cx-${k}" onclick="toggleStage(this)">${LABELS[k]}${cs.length?pill('warnp',cs.length):''}</button>
-   <div class="trk" style="${tick}">${n.n?bar(cls,n.s50,n.e50,dur(n.p50)):''}${A.total50!=null?`<div class="endmark" style="left:${X(tot)}%"></div>`:''}</div>
-   <div class="st${p?'':' dim'}">${p?pct(p.pub,p.n):'—'}</div><div class="st${p?'':' dim'}">${p?pct(p.after,p.pub):'—'}</div><div class="st">${ran}</div><div class="st${sk?'':' dim'}">${sk?pct(sk,ran+sk):'—'}</div></div>
+   <div class="trk" style="${tick}">${n.n?bar(n.critical?'crit':cls,n.s50,n.e50,dur(n.p50)):''}${A.total50!=null?`<div class="endmark" style="left:${X(tot)}%"></div>`:''}</div>
+   <div class="st${ran&&k!=='aggregator'?'':' dim'}">${ran&&k!=='aggregator'?Math.round(100*n.gate)+'%':'—'}</div><div class="st${n.slack50!=null?'':' dim'}">${dur(n.slack50)}</div><div class="st">${ran}</div><div class="st${sk?'':' dim'}">${sk?pct(sk,ran+sk):'—'}</div></div>
    <div class="critx" id="cx-${k}" hidden>${desc?`<div>${desc}</div>`:''}${D.feedback?(cs.length?cs.map(c=>`${prLink(c.repo,c.pr)} · critique ${ymd(c.ran_at_epoch)} · since prompt update`).join('<br>'):'No critiques since prompt update.'):'Feedback unavailable.'}</div>`}}
  return `<div class="tl"><div class="tlg">${rows}</div></div>`});
+// Specialists: S4 trend & prompt edits, S1 value vs cost, S3 funnel
+const tx=(x,y,t,a='')=>`<text x="${x}" y="${y}" ${a}>${esc(t)}</text>`;
+const poly=(pts,c)=>pts.length?`<polyline fill="none" stroke="${c}" stroke-width="1.6" points="${pts.map(p=>p.join(',')).join(' ')}"/>`:'';
+const day=s=>Date.parse(s)/1000,nm=k=>LABELS[k]||k;
+panel('trend',D.specialists,['bakeoff'],S=>{const RT=D.anatomy?D.anatomy.runtime_weekly:{};
+ const YM=Math.max(1,...S.rows.flatMap(r=>r.yield_weekly.map(w=>w[1]))),RM=Math.max(1,...Object.values(RT).flatMap(a=>a.map(w=>w[1])));
+ const t0=Math.min(...S.rows.flatMap(r=>r.yield_weekly.map(w=>day(w[0])))),t1=D.generated_at,r0=t1-30*86400;
+ if(!isFinite(t0))return '<div class="small">No week has 30 runs yet.</div>';
+ const YX=t=>170+(t-t0)/(t1-t0)*470,TX=t=>800+Math.max(0,t-r0)/(t1-r0)*130,H=16+S.rows.length*42;
+ let g=[['EDITED LATER · WEEKLY',170],['30D',660],['Δ PROMPT',715],['RUNTIME · 30D',800],['7D',948]].map(([t,x])=>tx(x,9,t,'class="m n"')).join('');
+ for(let d=new Date(t0*1000);;){d=new Date(Date.UTC(d.getUTCFullYear(),d.getUTCMonth()+1,1));const m=d/1000;if(m>=t1)break;
+  g+=`<line x1="${YX(m)}" x2="${YX(m)}" y1="14" y2="${H}" class="gl"/>`+tx(YX(m)+3,H+10,d.toLocaleString('en',{month:'short',timeZone:'UTC'}),'class="m n"')}
+ S.rows.forEach((r,i)=>{const y0=16+i*42,base=y0+32,ys=v=>base-v/YM*32;
+  g+=tx(0,y0+22,nm(r.name),'class="b"')+`<line x1="170" x2="640" y1="${base}" y2="${base}" class="gl"/><line x1="800" x2="930" y1="${base}" y2="${base}" class="gl"/>`;
+  (r.edits||[]).filter(e=>e[0]>=t0).forEach(([t,subj])=>{g+=`<g class="edit"><title>${esc(ymd(t)+' · '+subj)}</title><line x1="${YX(t)}" x2="${YX(t)}" y1="${y0+6}" y2="${base}"/>${tx(YX(t)-4,y0+6,'◆')}</g>`});
+  g+=poly(r.yield_weekly.map(([w,p])=>[YX(day(w)),ys(p)]),'var(--syn)')+tx(660,y0+24,r.edited+'%','class="b n"');
+  const d=r.delta;g+=d?tx(715,y0+18,(d.change>0?'▲ +':d.change<0?'▼ ':'')+d.change+'pt',`class="b n ${d.flag||'m'}"`)+tx(715,y0+31,'since '+d.last.slice(5),'class="m n"')
+   :tx(715,y0+24,r.edits?'—':'unavailable','class="m n"');
+  if(!D.anatomy&&i===0)g+=tx(800,y0+14,'runtime unavailable: '+(D.errors.snapshot||''),'class="m n" font-size="9"');
+  g+=poly((RT[r.name]||[]).map(([w,p])=>[TX(day(w)),base-p/RM*32]),'var(--accent)');
+  if(r.p50!=null)g+=tx(948,y0+24,dur(r.p50),'class="b n"')});
+ return `<div class="scroll"><svg viewBox="0 0 1000 ${H+14}" style="min-width:760px">${g}</svg></div>`});
+const ZC={keep:'var(--good)',worth:'var(--accent)',noise:'var(--warn)',cut:'var(--crit)'};
+panel('value',D.specialists&&D.anatomy?D.specialists:null,['bakeoff','snapshot'],S=>{const A=S.axes,R=S.rows.filter(r=>r.zone);
+ if(!A)return '<div class="small">No completed review in the last 7 days.</div>';
+ const x0=Math.min(...R.map(r=>r.p50))*.85,x1=Math.max(...R.map(r=>r.p50))*1.1,y1=Math.max(...R.map(r=>r.edited))*1.2;
+ const X=v=>60+(v-x0)/(x1-x0)*430,Y=v=>290-v/y1*265,xm=X(A.runtime),ym=Y(A.yield);
+ let g=[[60,25,xm,ym,'keep'],[xm,25,490,ym,'worth'],[60,ym,xm,290,'noise'],[xm,ym,490,290,'cut']].map(([a,b,c,d,z])=>
+  `<rect x="${a}" y="${b}" width="${c-a}" height="${d-b}" fill="${ZC[z]}" opacity=".06"/>`+tx(a+6,z==='keep'||z==='worth'?b+14:d-6,{keep:'KEEP',worth:'WORTH THE WAIT',noise:'CHEAP NOISE',cut:'CUT CANDIDATE'}[z],'class="m n" font-size="9.5"')).join('');
+ g+=`<line x1="${xm}" x2="${xm}" y1="25" y2="290" class="gl" stroke-dasharray="3 3"/><line x1="60" x2="490" y1="${ym}" y2="${ym}" class="gl" stroke-dasharray="3 3"/>`;
+ g+=`<line x1="60" x2="490" y1="290" y2="290" class="gl"/>`+[A.runtime,x1].map(v=>tx(X(v),305,dur(v),'class="m n" text-anchor="middle"')).join('')+[0,A.yield].map(v=>tx(52,Y(v)+4,Math.round(v)+'%','class="m n" text-anchor="end"')).join('');
+ g+=tx(275,322,'median runtime (7d) →','class="m" text-anchor="middle"')+tx(14,160,'edited later (30d) →','class="m" text-anchor="middle" transform="rotate(-90 14 160)"');
+ for(const r of R){const x=X(r.p50),y=Y(r.edited),rad=4+Math.sqrt(r.n)/6,L=x>380,a=`x="${L?x-rad-4:x+rad+4}" text-anchor="${L?'end':'start'}"`;
+  g+=`<circle cx="${x}" cy="${y}" r="${rad}" fill="${ZC[r.zone]}" fill-opacity=".25" stroke="${ZC[r.zone]}" stroke-width="1.5"/>`+`<text ${a} y="${y+4}" class="b">${esc(nm(r.name))}</text><text ${a} y="${y+17}" class="m n" font-size="10">${r.edited}% · ${dur(r.p50)}</text>`}
+ return `<svg viewBox="0 0 520 330">${g}</svg>`});
+panel('funnel',D.specialists,['bakeoff'],S=>{const mx=Math.max(1,...S.rows.map(r=>r.found||0));
+ return S.rows.map(r=>`<div class="fn"><div><b>${esc(nm(r.name))}</b><br><span class="small n">${r.n} runs</span></div>
+  <div class="fbar"><i class="f" style="width:${100*r.found/mx}%"></i><i class="a${r.zone==='cut'||r.zone==='noise'?' lo':''}" style="width:${100*r.edited/mx}%"></i></div>
+  <div class="st">${r.found}% with findings<br><b>${r.edited}% edited later</b> · ${r.edited_of_found??'—'}% of found</div></div>`).join('')});
 // in progress
 const chip=(k,c,on,skip)=>`<span class="chip ${on?c:skip?'skipped':''}" title="${on?'Done':skip?'Skipped':'Pending'}">${on?'✓ ':skip?'− ':'○ '}${LABELS[k]}</span>`;
 panel('live',D.inflight,['snapshot'],F=>F.length?`<div class="small">✓ Done · ○ Pending · − Skipped</div>`+F.map(f=>{const done=ORDER.filter(([k])=>f.done.includes(k)).length;
@@ -143,7 +191,7 @@ panel('acc',D.accounts,['snapshot'],acc=>`<table><tr><th>Reviewer</th><th>Status
 panel('slow',D.slow,['snapshot'],S=>{const mx=Math.max(1,...S.map(s=>s.p50));
  return S.length?`<table><tr><th>Repo</th><th></th><th class="n">Review</th><th class="n">Queue wait</th><th class="n">Runs</th></tr>${S.map(s=>`<tr><td>${esc(s.repo)}</td><td style="width:30%"><div class="bar"><i style="width:${100*s.p50/mx}%"></i></div></td><td class="n">${dur(s.p50)}</td><td class="n">${dur(s.wait50)}</td><td class="n">${s.n}</td></tr>`).join('')}</table>`:'<span class="none">No repos with ≥3 completed runs</span>'});
 // feedback
-panel('fb',D.feedback,['bakeoff','prompt_changed'],F=>`<table><tr><td>Critiques</td><td class="n">${F.crit}</td></tr><tr><td>Props</td><td class="n">${F.loved}</td></tr><tr><td>Critiques since prompt update</td><td class="n">${F.unaddressed.length}</td></tr></table>
+panel('fb',D.feedback,['bakeoff','prompt_edits'],F=>`<table><tr><td>Critiques</td><td class="n">${F.crit}</td></tr><tr><td>Props</td><td class="n">${F.loved}</td></tr><tr><td>Critiques since prompt update</td><td class="n">${F.unaddressed.length}</td></tr></table>
 <p class="sub">Slash commands only. Replies aren't tracked.</p><details><summary>Recording details</summary><p>${F.rows.toLocaleString()} specialist verdicts recorded since May. Feedback uses /srosro-critique and /srosro-props. “Since prompt update” compares each critique with its specialist's latest prompt change.</p></details>`);
 // repos
 panel('repos',D.repos,['snapshot','repos'],R=>R.length?`<table><tr><th>Repo</th><th class="n">Runs · 30d</th><th class="n">Latest run</th><th>REVIEW.md</th><th>Sibling scope</th><th>Prior-art index</th></tr>${R.map(r=>`<tr><td>${esc(r.repo)}</td><td class="n">${r.reviews30}</td><td class="n">${dur(now-r.last)} ago</td>

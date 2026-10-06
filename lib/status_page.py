@@ -14,7 +14,7 @@ import statistics
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 LIB = Path(__file__).resolve().parent
@@ -27,6 +27,10 @@ QUEUE_RED_S = 3600
 QUEUE_STALL_S = 1800
 PACING = ("throttled", "quota-paused")
 GH_RED = 0.2
+MIN_WEEK_RUNS = 30
+GATE_RED = 0.25
+DELTA_WEEKS = 4
+DELTA_FLAG_PT = 2
 
 
 def _epoch(iso):
@@ -41,20 +45,90 @@ def _dur(s):
     return f"{round(s)}s" if s < 90 else f"{round(s / 60)}m" if s < 5400 else f"{s / 3600:.1f}h"
 
 
-def _anatomy(runs, bakeoff, now):
+def _monday(epoch):
+    d = datetime.fromtimestamp(epoch, timezone.utc).date()
+    return (d - timedelta(days=d.weekday())).isoformat()
+
+
+def _pct(a, b):
+    return round(100 * a / b, 1) if b else None
+
+
+def _edit_delta(weeks, edits, now):
+    """Edited-later yield over the DELTA_WEEKS complete weeks wholly after the newest prompt edit vs. wholly before it."""
+    if not edits:
+        return None
+    edit = edits[0][0]
+
+    def bounds(w):
+        start = datetime.fromisoformat(w[0]).replace(tzinfo=timezone.utc).timestamp()
+        return start, start + 7 * DAY
+
+    def rate(ws):
+        return _pct(sum(w[2] for w in ws), sum(w[1] for w in ws))
+    before = rate([w for w in weeks if bounds(w)[1] <= edit][-DELTA_WEEKS:])
+    after = rate([w for w in weeks if bounds(w)[0] >= edit and bounds(w)[1] <= now][:DELTA_WEEKS])
+    if before is None or after is None:
+        return None
+    change = round(after - before, 1)
+    return {"last": datetime.fromtimestamp(edit, timezone.utc).date().isoformat(), "before": before, "after": after,
+            "change": change, "flag": "up" if change > DELTA_FLAG_PT else "down" if change < -DELTA_FLAG_PT else None}
+
+
+def _specialists(bake, edits, anatomy, now):
+    nodes = anatomy["nodes"] if anatomy else {}
+    rows = []
+    for name, c in bake["specs"].items():
+        weeks = bake["weekly"].get(name, [])
+        es = None if edits is None else edits.get(name, [])
+        rows.append({"name": name, "n": c["n"], "found": _pct(c["pub"], c["n"]), "edited": _pct(c["after"], c["n"]),
+                     "edited_of_found": _pct(c["after"], c["pub"]), "p50": nodes.get(name, {}).get("p50"),
+                     "yield_weekly": [[w, _pct(a, n)] for w, n, a in weeks if n >= MIN_WEEK_RUNS],
+                     "edits": es, "delta": _edit_delta(weeks, es, now)})
+    timed = [r for r in rows if r["p50"] is not None]
+    axes = ({"yield": statistics.median(r["edited"] for r in timed), "runtime": statistics.median(r["p50"] for r in timed)}
+            if timed else None)
+    for r in rows:
+        fast = axes and r["p50"] is not None and r["p50"] < axes["runtime"]
+        r["zone"] = (None if not axes or r["p50"] is None else
+                     ("keep" if fast else "worth") if r["edited"] >= axes["yield"] else ("noise" if fast else "cut"))
+    return {"rows": sorted(rows, key=lambda r: -r["edited"]), "axes": axes}
+
+
+def _anatomy(runs, now):
     done = [r for r in runs if now - r["t"] < 7 * DAY and r["status"] == "completed" and r["total"]]
-    names = {k for r in done for k in r["span"]}
-    nodes = {k: {"s50": _p50([r["span"][k][0] for r in done if k in r["span"]]),
-                 "e50": _p50([r["span"][k][1] for r in done if k in r["span"]]),
-                 "p50": _p50([r["span"][k][1] - r["span"][k][0] for r in done if k in r["span"]]),
-                 "n": sum(k in r["span"] for r in done)} for k in names}
+    gates, slack = {}, {}
+    for r in done:
+        agg = r["span"].get("aggregator")
+        if not agg:
+            continue
+        # The gate is whichever stage finished last before the aggregator could start.
+        before = {k: v for k, v in r["span"].items() if k != "aggregator" and v[1] <= agg[0]}
+        if before:
+            g = max(before, key=lambda k: before[k][1])
+            gates[g] = gates.get(g, 0) + 1
+        for k, v in before.items():
+            slack.setdefault(k, []).append(agg[0] - v[1])
+    nodes = {}
+    for k in {k for r in done for k in r["span"]}:
+        ran = [r["span"][k] for r in done if k in r["span"]]
+        gate = gates.get(k, 0) / len(ran)
+        nodes[k] = {"s50": _p50([s for s, _ in ran]), "e50": _p50([e for _, e in ran]), "p50": _p50([e - s for s, e in ran]),
+                    "n": len(ran), "gate": gate, "slack50": _p50(slack.get(k, [])), "critical": gate >= GATE_RED}
     skip7 = {}
     for r in runs:
         if now - r["t"] < 7 * DAY:
             for a in r["skipped"]:
                 skip7[a] = skip7.get(a, 0) + 1
+    weekly = {}
+    for r in runs:
+        if r["status"] == "completed":
+            for k, (s, e) in r["span"].items():
+                weekly.setdefault(k, {}).setdefault(_monday(r["t"]), []).append(e - s)
+    runtime_weekly = {k: [[w, _p50(xs)] for w, xs in sorted(ws.items()) if len(xs) >= MIN_WEEK_RUNS]
+                      for k, ws in weekly.items()}
     return {"nodes": nodes, "skip7": skip7, "total50": _p50([r["total"] for r in done]),
-            "specs": bakeoff["specs"] if bakeoff else None}
+            "runtime_weekly": {k: v for k, v in runtime_weekly.items() if v}}
 
 
 def _inflight(runs, total50, now):
@@ -127,7 +201,7 @@ def _attention(m):
 def build(src, errors, now):
     snap, bake = src.get("snapshot"), src.get("bakeoff")
     runs = snap["runs"] if snap else []
-    anatomy = _anatomy(runs, bake, now) if snap else None
+    anatomy = _anatomy(runs, now) if snap else None
     inflight = _inflight(runs, anatomy["total50"], now) if snap else None
     accounts = None
     queue = None
@@ -145,10 +219,11 @@ def build(src, errors, now):
         queue = {"specs": sorted(specs, key=lambda s: -s["wait"]), "late": late, "idle": idle,
                  "red": late and idle > QUEUE_STALL_S and sum(a["status"] == "active" for a in accounts) > len(inflight)}
     feedback = None
-    if bake and "prompt_changed" in src:
-        changed = src["prompt_changed"]
+    if bake and "prompt_edits" in src:
+        last = {s: e[0][0] for s, e in src["prompt_edits"].items() if e}
         feedback = {"rows": bake["rows"], "crit": bake["crit"], "loved": bake["loved"],
-                    "unaddressed": [c for c in bake["critiques"] if c["ran_at_epoch"] > (changed.get(c["spec"]) or 0)]}
+                    "unaddressed": [c for c in bake["critiques"] if c["ran_at_epoch"] > last.get(c["spec"], 0)]}
+    specialists = _specialists(bake, src.get("prompt_edits"), anatomy, now) if bake else None
     gh = ({k: {**src["gh"][k], "red": src["gh"][k]["remaining"] / src["gh"][k]["limit"] < GH_RED}
            for k in ("core", "graphql")} if "gh" in src else None)
     repos = [{**r, "red": r.get("kid") == "stale"} for r in src["repos"]] if "repos" in src else None
@@ -161,7 +236,7 @@ def build(src, errors, now):
                  "working": sum(a["level"] != "red" for a in accounts), "fleet": len(accounts)}
     m = {"generated_at": now, "errors": errors, "tiles": tiles, "anatomy": anatomy, "inflight": inflight,
          "queue": queue, "accounts": accounts, "gh": gh, "slow": _slow(runs, now) if snap else None,
-         "feedback": feedback, "repos": repos}
+         "feedback": feedback, "specialists": specialists, "repos": repos}
     m["attention"] = _attention(m)
     return m
 
@@ -190,14 +265,19 @@ def source_bakeoff(db):
         "SELECT repo, pr_number, specialist, ran_at FROM specialist_runs WHERE critiqued = 1")]
     rows, crit, loved = con.execute(
         "SELECT count(*), coalesce(sum(critiqued),0), coalesce(sum(loved_positive),0) FROM specialist_runs").fetchone()
-    return {"specs": specs, "critiques": critiques, "rows": rows, "crit": crit, "loved": loved}
+    weekly = {}
+    for s, w, n, a in con.execute(
+            "SELECT specialist, date(ran_at, '-6 days', 'weekday 1'), count(*), sum(edited_after) FROM specialist_runs "
+            "WHERE specialist NOT LIKE 'screened-%' AND specialist != 'aggregator' GROUP BY 1, 2 ORDER BY 1, 2"):
+        weekly.setdefault(s, []).append([w, n, a])
+    return {"specs": specs, "weekly": weekly, "critiques": critiques, "rows": rows, "crit": crit, "loved": loved}
 
 
-def source_prompt_changed(specs):
+def source_prompt_edits(specs):
     out = {}
     for s in specs:
-        ct = _run("git", "-C", str(REPO_DIR), "log", "-1", "--format=%ct", "--", f"prompts/specialists/{s}.md").strip()
-        out[s] = float(ct) if ct else None
+        log = _run("git", "-C", str(REPO_DIR), "log", "--format=%ct%x09%s", "--", f"prompts/specialists/{s}.md")
+        out[s] = [[float(ct), subj] for ct, _, subj in (line.partition("\t") for line in log.splitlines())]
     return out
 
 
@@ -266,9 +346,9 @@ def main(argv=None):
         if val is not None:
             src[name] = val
     if "bakeoff" in src:
-        val = attempt("prompt_changed", lambda: source_prompt_changed(src["bakeoff"]["specs"]))
+        val = attempt("prompt_edits", lambda: source_prompt_edits(src["bakeoff"]["specs"]))
         if val is not None:
-            src["prompt_changed"] = val
+            src["prompt_edits"] = val
     if "snapshot" in src:
         val = attempt("repos", lambda: source_repos(src["snapshot"]["runs"], args.clone_root))
         if val is not None:
