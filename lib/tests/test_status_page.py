@@ -9,6 +9,7 @@ from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import status_collect  # noqa: E402
+import status_page  # noqa: E402
 
 NOW = 1_791_000_000.0
 
@@ -79,3 +80,78 @@ class TestCollect(unittest.TestCase):
 
     def test_queue_passthrough(self):
         self.assertEqual(self.snap()["queue"]["specs"][0]["pr_num"], 1)
+
+
+def run(pr, age, repo="o/r", total=450, finished=True, span=None, queued=None):
+    return {"t": NOW - age, "repo": repo, "pr": pr, "title": f"pr {pr}", "status": "completed" if finished else None,
+            "finished_at": "z" if finished else None, "queued_since": queued, "total": total if finished else None,
+            "span": span or {"intent": [0, 14], "security": [14, 136], "aggregator": [246, 436]}, "skipped": []}
+
+
+def src(runs, **over):
+    base = {"snapshot": {"collected_at": NOW, "accounts": [], "queue": {"specs": []}, "runs": runs},
+            "fleet_started": NOW - 1500,
+            "bakeoff": {"specs": {"security": {"n": 10, "pub": 4, "app": 3}}, "critiques": [], "rows": 10, "crit": 0, "loved": 0},
+            "prompt_changed": {"security": NOW - 86400},
+            "gh": {"core": {"limit": 5000, "remaining": 900, "reset": NOW + 60}, "graphql": {"limit": 5000, "remaining": 4998, "reset": NOW + 60}},
+            "repos": []}
+    base.update(over)
+    return base
+
+
+class TestBuild(unittest.TestCase):
+    def test_inflight_excludes_restart_orphans_and_stale_and_keeps_newest_per_pr(self):
+        runs = [run(1, 2100, finished=False),                 # started before the fleet restart: orphan
+                run(2, 600, finished=False), run(2, 300, finished=False),  # same PR twice: newest wins
+                run(3, 120, finished=True),                   # finished
+                run(4, 1400, finished=False)]                 # after restart, under 90 min
+        m = status_page.build(src(runs, fleet_started=NOW - 1500), {}, NOW)
+        self.assertEqual([(f["pr"], round(f["age"])) for f in m["inflight"]], [(4, 1400), (2, 300)])
+        self.assertTrue(m["inflight"][0]["stuck"])            # 1400s > 3 × 450s median
+        self.assertFalse(m["inflight"][1]["stuck"])
+
+    def test_slowest_five_order_and_min_reviews(self):
+        runs = [run(i, 3600, repo=f"o/r{k}", total=100 * k) for k in range(1, 8) for i in range(3)]
+        runs += [run(99, 3600, repo="o/two-only", total=99999)] * 2
+        slow = status_page.build(src(runs), {}, NOW)["slow"]
+        self.assertEqual([s["repo"] for s in slow], ["o/r7", "o/r6", "o/r5", "o/r4", "o/r3"])
+
+    def test_unaddressed_critique_is_one_newer_than_the_prompt(self):
+        b = src([])["bakeoff"]
+        b["critiques"] = [{"repo": "o/r", "pr": 1, "spec": "security", "ran_at_epoch": NOW - 3600},
+                          {"repo": "o/r", "pr": 2, "spec": "security", "ran_at_epoch": NOW - 2 * 86400}]
+        m = status_page.build(src([], bakeoff=b), {}, NOW)
+        self.assertEqual([c["pr"] for c in m["feedback"]["unaddressed"]], [1])
+
+    def test_red_rules(self):
+        s = src([run(3, 120), run(4, 1400, finished=False)],
+                repos=[{"repo": "o/r", "kid": "stale"}, {"repo": "o/fresh", "kid": "fresh"}, {"repo": "o/unindexed", "clone": False}])
+        del s["bakeoff"]
+        s["snapshot"]["queue"] = {"specs": [{"repo": "o/r", "pr_num": 5, "title": "t", "since": "2026-10-01T00:00:00Z"}]}
+        s["snapshot"]["accounts"] = [
+            {"account": "1", "status": "offline", "tick_age": 5, "state": "", "note": "x"},
+            {"account": "2", "status": "active", "tick_age": 5, "state": "", "used": 50.0, "projected": 130.0, "resets_at": NOW + 9},
+            {"account": "3", "status": "active", "tick_age": 5, "state": "", "used": 10.0, "projected": 40.0, "resets_at": NOW + 9},
+            {"account": "4", "status": "not running", "tick_age": 9000, "state": "", "note": "x"},
+            {"account": "5", "status": "throttled", "tick_age": 5, "state": "", "note": "x"}]
+        m = status_page.build(s, {"bakeoff": "OperationalError: database is locked"}, NOW)
+        self.assertTrue(m["queue"]["red"])
+        self.assertEqual([a["level"] for a in m["accounts"]], ["red", "amber", "ok", "red", "amber"])
+        self.assertTrue(m["gh"]["core"]["red"])               # 900/5000 = 18%
+        self.assertFalse(m["gh"]["graphql"]["red"])
+        self.assertEqual([r["red"] for r in m["repos"]], [True, False, False])  # no clone is neutral, not red
+        # Every red thing, and only red things, lands in "needs attention" with an action.
+        self.assertEqual([(a["panel"], a["text"].split()[0]) for a in m["attention"]],
+                         [("Collection", "bakeoff"), ("Reviewer containers", "reviewer-1"),
+                          ("Reviewer containers", "reviewer-4"), ("Queue", "o/r#5"), ("GitHub quota", "core"),
+                          ("In progress", "o/r#4"), ("Repo config", "o/r")])
+        self.assertEqual(m["attention"][1]["action"], "codex re-login for reviewer-1 (operator)")
+        self.assertTrue(all(a["action"] for a in m["attention"]))
+
+    def test_failed_source_nulls_only_its_panels(self):
+        s = src([run(1, 3600)])
+        del s["gh"]
+        m = status_page.build(s, {"gh": "CalledProcessError: gh exited 4"}, NOW)
+        self.assertIsNone(m["gh"])
+        self.assertIsNotNone(m["anatomy"])
+        self.assertEqual(m["errors"], {"gh": "CalledProcessError: gh exited 4"})
