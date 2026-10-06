@@ -61,7 +61,7 @@ def _inflight(runs, total50, now):
         if k not in newest or r["t"] > newest[k]["t"]:
             newest[k] = r
     live = [r for r in newest.values() if r["live"]]   # a killed run's lock dies with its worker
-    return [{"repo": r["repo"], "pr": r["pr"], "title": r["title"], "age": now - r["t"], "done": sorted(r["span"]),
+    return [{"repo": r["repo"], "pr": r["pr"], "title": r["title"], "age": now - r["t"], "done": sorted(r["span"]), "skipped": r["skipped"],
              "stuck": bool(total50) and now - r["t"] > STUCK_FACTOR * total50}
             for r in sorted(live, key=lambda r: r["t"])]
 
@@ -88,31 +88,31 @@ def _level(a):
 def _attention(m):
     """One {"panel","text","action"} per RED condition. Amber (auto-pacing,
     projection over 100%) is the system handling itself, so it never lands here."""
-    out = [("Collection", f"{name} collection failed: {msg}",
-            "check `journalctl -u pr-reviewer-status-page` (operator)") for name, msg in m["errors"].items()]
+    out = [(name, "Data unavailable",
+            f"{msg}. Check journalctl -u pr-reviewer-status-page.") for name, msg in m["errors"].items()]
     for a in m["accounts"] or []:
         if a["status"] == "offline":
-            out.append(("Reviewer containers", f"reviewer-{a['account']} is offline: its codex login expired",
-                        f"codex re-login for reviewer-{a['account']} (operator)"))
+            out.append((f"Reviewer {a['account']}", "Login required",
+                        f"On wakeup, run docker exec -it {PROJECT}-reviewer-{a['account']}-1 codex login --device-auth. No restart needed."))
         elif a["status"] == "not running":
-            out.append(("Reviewer containers", f"reviewer-{a['account']} has not ticked for {_dur(a['tick_age'])}",
-                        f"check why reviewer-{a['account']} stopped and restart it (operator)"))
+            out.append((f"Reviewer {a['account']}", f"No heartbeat · {_dur(a['tick_age'])}",
+                        f"Inspect reviewer-{a['account']} logs before restarting."))
     if m["queue"] and m["queue"]["red"]:
         q = max(m["queue"]["specs"], key=lambda s: s["wait"])
-        out.append(("Queue", f"{q['repo']}#{q['pr']} has waited {_dur(q['wait'])} and no review has started in {_dur(m['queue']['idle'])}",
-                    "the fleet has stopped claiming: check the reviewer containers panel and `docker compose logs` (operator)"))
+        out.append(("Queue", f"Stalled · oldest wait {_dur(q['wait'])}",
+                    f"{q['repo']}#{q['pr']}: no review started in {_dur(m['queue']['idle'])}. Inspect docker compose logs."))
     for k, b in (m["gh"] or {}).items():
         if b["red"]:
-            out.append(("GitHub quota", f"{k} quota at {round(100 * b['remaining'] / b['limit'])}%",
-                        "reviews stall at zero: find the heavy caller before the next window (operator)"))
+            out.append((f"GitHub {k}", f"{round(100 * b['remaining'] / b['limit'])}% remaining",
+                        "Find the heavy API caller before quota runs out."))
     for f in m["inflight"] or []:
         if f["stuck"]:
-            out.append(("In progress", f"{f['repo']}#{f['pr']} has run {_dur(f['age'])}, likely stuck",
-                        "inspect its run dir and kill the worker if it is hung (operator)"))
+            out.append((f"{f['repo']}#{f['pr']}", f"Possibly stuck · {_dur(f['age'])}",
+                        "Inspect the run directory; stop the worker only if it is hung."))
     for r in m["repos"] or []:
         if r["red"]:
-            out.append(("Repo config", f"{r['repo']} keepitdry index is stale",
-                        "check `journalctl -u pr-reviewer-kid-refresh` for why the refresh fails (operator)"))
+            out.append((r["repo"], "Prior-art index stale",
+                        "Inspect journalctl -u pr-reviewer-kid-refresh."))
     return [{"panel": p, "text": t, "action": a} for p, t, a in out]
 
 
