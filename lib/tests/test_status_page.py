@@ -11,6 +11,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import pipeline  # noqa: E402
 import status_collect  # noqa: E402
 import status_page  # noqa: E402
 
@@ -91,7 +92,7 @@ class TestCollect(unittest.TestCase):
         snap = self.snap()
         self.assertEqual({r["pr"]: r["worker"] for r in snap["runs"]}[12], "3")
         self.assertTrue(snap["image"]["os"])
-        self.assertIn("gpt-6.1-sol", snap["image"]["models"])
+        self.assertEqual(snap["image"]["models"], [pipeline.DEFAULT_MODEL, pipeline.CRITIC_MODEL])
 
     def test_queue_passthrough(self):
         self.assertEqual(self.snap()["queue"]["specs"][0]["pr_num"], 1)
