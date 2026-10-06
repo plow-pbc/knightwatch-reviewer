@@ -224,6 +224,11 @@ def _attention(m):
     for r in m["repos"] or []:
         if r["red"]:
             out.append((r["repo"], "Prior-art index stale", _ssh("journalctl -u pr-reviewer-kid-refresh -n 100")))
+        # An allowlist exclusion is intended; a sibling missing from this host is a gap.
+        gaps = [u[0] for u in r.get("unsearched") or [] if u[1] == "missing"]
+        if gaps:
+            out.append((r["repo"], f"{len(gaps)} sibling{'s' * (len(gaps) > 1)} not searched",
+                        _ssh(f"grep -n -A60 SOURCE_PATHS {shlex.quote(str(REPO_DIR / 'docker/secrets/manifest/repos.conf'))}")))
     return [{"panel": p, "text": t, "cmd": c} for p, t, c in out]
 
 
@@ -373,13 +378,16 @@ def source_gh():
 
 
 def source_repos(runs, clone_root):
-    last = {}
-    for r in runs:
-        last[r["repo"]] = max(last.get(r["repo"], 0), r["t"])
+    last, unsearched = {}, {}
+    for r in sorted(runs, key=lambda r: r["t"]):
+        last[r["repo"]] = r["t"]
+        if r.get("unsearched") is not None:
+            unsearched[r["repo"]] = r["unsearched"]
     rows = []
     for repo, t in sorted(last.items(), key=lambda kv: -kv[1]):
         clone = Path(clone_root) / repo.split("/")[1]
-        row = {"repo": repo, "last": t, "reviews30": sum(r["repo"] == repo for r in runs), "clone": (clone / ".git").exists()}
+        row = {"repo": repo, "last": t, "reviews30": sum(r["repo"] == repo for r in runs), "clone": (clone / ".git").exists(),
+               "unsearched": unsearched.get(repo)}
         if row["clone"]:
             def has(p):
                 return subprocess.run(["git", "-C", str(clone), "cat-file", "-e", f"HEAD:{p}"],
