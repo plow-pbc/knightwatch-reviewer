@@ -51,30 +51,28 @@ A timer polls tracked repos for new or updated PRs. For each, it runs a dependen
 Every run records per-stage wall-clock in `meta.json.timings` and logs one `timing …` line, so review latency is a `jq` query.
 
 ```mermaid
-flowchart TB
+flowchart LR
     PR([PR opened or updated]) --> jt & intent & dcs
 
     jt["just test<br/>(own clone, background)"] --> tg[(test-results.md)]
     intent[intent<br/>infer end-user goal] --> ii[(inferred-intent.md)]
     dcs[dead-code-search<br/>static + LLM evidence] --> dc[(dead-code.md)]
 
-    ii --> sec & di & archref & cd & shp & tst & cons & mom
-    dc --> cons
-    tg --> tst
+    tg & ii & dc --> S
 
-    subgraph S[specialists — start as soon as their inputs exist; each chains to a per-angle critic; ≤4 codex calls in flight]
-        direction LR
-        sec[security] --> ksec[critic]
-        di[data-integrity] --> kdi[critic]
-        archref["architecture-refined"] --> karchref[critic]
-        cd["contract-drift"] --> kcd[critic]
-        shp[shape] --> kshp[critic]
-        tst[tests] --> ktst[critic]
-        cons[consumers] --> kcons[critic]
+    subgraph S[specialists → per-angle critic · start once inputs exist · ≤4 codex in flight]
+        direction TB
+        sec[security → critic]
+        di[data-integrity → critic]
+        archref[architecture-refined → critic]
+        cd[contract-drift → critic]
+        shp[shape → critic]
+        tst["tests → critic<br/>(+ test-results)"]
+        cons["consumers → critic<br/>(+ dead-code)"]
         mom["momentum<br/>(re-review only)"]
     end
 
-    ksec & kdi & karchref & kcd & kshp & ktst & kcons & mom --> agg["aggregator<br/>merge · dedupe · rank"]
+    S --> agg["aggregator<br/>merge · dedupe · rank"]
     tg --> agg
     agg --> out([Posted review:<br/>VERDICT + ranked Probes])
 ```
