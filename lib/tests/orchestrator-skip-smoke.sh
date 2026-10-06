@@ -283,7 +283,7 @@ cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<'WORKER'
 #!/bin/bash
 # Args from review.sh: REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR
 # TRIGGER_COMMENT_FILE comes through as an env var.
-echo "WORKER_DISPATCHED repo=$1 pr=$2 sha=$3 force_whole=$6 trigger_file=${TRIGGER_COMMENT_FILE:-} dispatcher_tick=${DISPATCHER_TICK_AT:-}" >> "$LOG_FILE"
+echo "WORKER_DISPATCHED repo=$1 pr=$2 sha=$3 force_whole=$6 trigger_file=${TRIGGER_COMMENT_FILE:-} dispatcher_tick=${DISPATCHER_TICK_AT:-} queued_since=${DISPATCHER_QUEUED_SINCE:-}" >> "$LOG_FILE"
 WORKER
 chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
 
@@ -963,7 +963,7 @@ echo "  scenario 13: /srosro-update-review on page 2 of comments — page-2 pagi
 # under timeout) left it in non-default state.
 cat > "$REVIEWER_LIB_DIR/review-one-pr.sh" <<'WORKER'
 #!/bin/bash
-echo "WORKER_DISPATCHED repo=$1 pr=$2 sha=$3 force_whole=$6 trigger_file=${TRIGGER_COMMENT_FILE:-} dispatcher_tick=${DISPATCHER_TICK_AT:-}" >> "$LOG_FILE"
+echo "WORKER_DISPATCHED repo=$1 pr=$2 sha=$3 force_whole=$6 trigger_file=${TRIGGER_COMMENT_FILE:-} dispatcher_tick=${DISPATCHER_TICK_AT:-} queued_since=${DISPATCHER_QUEUED_SINCE:-}" >> "$LOG_FILE"
 WORKER
 chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
 
@@ -1158,6 +1158,11 @@ if ! grep -qE 'dispatcher_tick=20[0-9][0-9]-[01][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5
     echo "FAIL scenario 19 (slash-cutoff regression): expected dispatcher_tick=<ISO8601> in WORKER_DISPATCHED, got:"
     grep 'WORKER_DISPATCHED' "$LOG_FILE" || true
     echo "review.sh must pass DISPATCHER_TICK_AT (captured per-PR before fetch + dispatch) to the worker so meta.json.started_at is stamped from the dispatcher's tick-fetch time, not the worker's process-entry time."
+    exit 1
+fi
+# The spec's since (the trigger's created_at) reaches the worker as queue-wait start.
+if ! grep -q "queued_since=2026-04-30T16:00:00Z" "$LOG_FILE"; then
+    echo "FAIL scenario 19: review.sh must pass the spec's since to the worker as DISPATCHER_QUEUED_SINCE so meta.json.queued_since records queue wait."
     exit 1
 fi
 
