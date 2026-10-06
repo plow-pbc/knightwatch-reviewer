@@ -611,11 +611,12 @@ LOG_FILE="$TMP/log22" GH_QUOTA_REPORT_SECS=300 \
     || fail "scenario 22: a second report inside the interval emitted anyway"
 
 echo "  scenario 22b: the report names spend the tally never saw (another client on the same token)..."
-# Scenario 22 left a mark at core=4977. 4 tallied calls, 77 spent → 73 untallied.
+# Scenario 22 left a mark at core=4977. 4 REST calls, 77 spent → 73 untallied;
+# the porcelain and graphql calls spend the other bucket and must not count.
 # The next row starts a new window (different reset), where a delta is meaningless;
 # the last plants a non-numeric mark, which must never reach $(( )).
 SPEND_MATRIX=(
-    "same-window|4900	$((NOW + 1200))|core spent 77 since last report, 4 tallied, 73 untallied"
+    "same-window|4900	$((NOW + 1200))|core spent 77 since last report, 4 tallied REST, 73 untallied"
     "new-window|4990	$((NOW + 4800))|@ABSENT@"
     "planted|4980	$((NOW + 4800))|@ABSENT@"
 )
@@ -623,6 +624,7 @@ for row in "${SPEND_MATRIX[@]}"; do
     IFS='|' read -r label core want <<<"$row"
     [ "$label" = planted ] && { : > "$(gh_tally_file)"; echo '#mark a[$(touch $TMP/pwned)] 1' >> "$(gh_tally_file)"; }
     for _ in 1 2 3 4; do gh_tally_call api repos/o/r/pulls/1; done
+    gh_tally_call pr view 1; gh_tally_call api graphql -f query=x
     rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log22b"
     LOG_FILE="$TMP/log22b" GH_QUOTA_REPORT_SECS=0 \
         GH_SHIM_BUCKETS="$core	4775	$((NOW + 1200))	5000	5000" gh_quota_report

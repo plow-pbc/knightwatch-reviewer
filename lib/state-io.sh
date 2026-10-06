@@ -320,11 +320,13 @@ gh_quota_report() {
     # 401s, so gh_note_rate_limit's drain never fires either), a 5xx spell, a
     # partition. Costs only attribution on an interval whose report was going to
     # be silent anyway.
-    # The previous report's `#mark <core_rem> <core_reset>` and the call count
+    # The previous report's `#mark <core_rem> <core_reset>` and the core calls
     # since, read just before the drain — racing appends cost a sample or two.
     # Digits-only match: the containers can write this file, and the fields reach $(( )).
+    # Core = `gh api` REST shapes, which carry no space; porcelain (`pr view`,
+    # `pr list`) and `graphql` spend the other bucket.
     mark=$(grep -m1 -E '^#mark [0-9]+ [0-9]+$' "$tally" 2>/dev/null) || true
-    tallied=$(grep -vc '^#' "$tally" 2>/dev/null) || true
+    tallied=$(grep -cvE '^#| |^graphql$' "$tally" 2>/dev/null) || true
     top=$(gh_top_callers 3)
     # A failed probe earns no log line, but the stamp above already moved so a
     # flapping API cannot turn this into a per-tick storm of its own.
@@ -345,7 +347,7 @@ gh_quota_report() {
     # Each bucket carries ITS OWN reset. A single countdown sourced from core was
     # printed after both, so a graphql-low warning handed the operator core's
     # recovery time — the wrong number for the bucket that is actually depleted.
-    log "[gh-quota] core=${GH_BUCKET_CORE_REM}/${GH_BUCKET_CORE_LIM} (${core_pct}%, resets in $(( (GH_BUCKET_CORE_RESET - now + 59) / 60 ))m) graphql=${GH_BUCKET_GQL_REM}/${GH_BUCKET_GQL_LIM} (${gql_pct}%, resets in $(( (GH_BUCKET_GQL_RESET - now + 59) / 60 ))m)${spent:+ — core spent ${spent} since last report, ${tallied:-0} tallied, $(( spent - ${tallied:-0} )) untallied (other clients on this token, or --paginate pages)}${top:+ — top callers: $top}"
+    log "[gh-quota] core=${GH_BUCKET_CORE_REM}/${GH_BUCKET_CORE_LIM} (${core_pct}%, resets in $(( (GH_BUCKET_CORE_RESET - now + 59) / 60 ))m) graphql=${GH_BUCKET_GQL_REM}/${GH_BUCKET_GQL_LIM} (${gql_pct}%, resets in $(( (GH_BUCKET_GQL_RESET - now + 59) / 60 ))m)${spent:+ — core spent ${spent} since last report, ${tallied:-0} tallied REST, $(( spent - ${tallied:-0} )) untallied (other clients on this token, or --paginate pages)}${top:+ — top callers: $top}"
     # Warn on EITHER bucket: GraphQL is the loaded one here (gh pr view per
     # worker, gh pr list per repo — lib/gh-retry.sh), so a core-only gate could
     # watch it drain in silence. Headroom cannot predict a SECONDARY limit —
