@@ -6,6 +6,7 @@ import sys
 import time
 import unittest
 import unittest.mock
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -98,8 +99,8 @@ def run(pr, age, repo="o/r", total=450, finished=True, span=None, queued=None, l
 
 def src(runs, **over):
     base = {"snapshot": {"collected_at": NOW, "accounts": [], "queue": {"specs": []}, "runs": runs},
-            "bakeoff": {"specs": {"security": {"n": 10, "pub": 4, "after": 3}}, "critiques": [], "rows": 10, "crit": 0, "loved": 0},
-            "prompt_changed": {"security": NOW - 86400},
+            "bakeoff": {"specs": {"security": {"n": 10, "pub": 4, "after": 3}}, "weekly": {}, "critiques": [], "rows": 10, "crit": 0, "loved": 0},
+            "prompt_edits": {"security": [[NOW - 86400, "tune security"]]},
             "gh": {"core": {"limit": 5000, "remaining": 900, "reset": NOW + 60}, "graphql": {"limit": 5000, "remaining": 4998, "reset": NOW + 60}},
             "repos": []}
     base.update(over)
@@ -133,6 +134,42 @@ class TestBuild(unittest.TestCase):
         slow = status_page.build(src(runs), {}, NOW)["slow"]
         self.assertEqual([s["repo"] for s in slow], ["o/r7", "o/r6", "o/r5", "o/r4", "o/r3"])
 
+    def test_prompt_edit_delta_and_thin_weeks(self):
+        edit = datetime(2026, 9, 3, 12, tzinfo=timezone.utc).timestamp()   # a Thursday
+        b = src([])["bakeoff"]
+        b["specs"] = {"security": {"n": 400, "pub": 100, "after": 40}, "tests": {"n": 100, "pub": 50, "after": 10}}
+        b["weekly"] = {"security": [["2026-08-17", 100, 10], ["2026-08-24", 100, 10],
+                                    ["2026-08-31", 100, 90],                 # the edit's own week: in neither side
+                                    ["2026-09-07", 100, 20], ["2026-09-14", 5, 5]]}  # thin week: counted, not drawn
+        for edits, sec_delta in (({"security": [[edit, "tune"], [edit - 9e6, "older"]], "tests": []},
+                                  {"last": "2026-09-03", "before": 10.0, "after": 23.8, "change": 13.8, "flag": "up"}),
+                                 (None, None)):                              # git source failed
+            with self.subTest(edits=edits is not None):
+                s = src([], bakeoff=b)
+                if edits is None:
+                    del s["prompt_edits"]
+                else:
+                    s["prompt_edits"] = edits
+                rows = {r["name"]: r for r in status_page.build(s, {}, NOW)["specialists"]["rows"]}
+                self.assertEqual(rows["security"]["delta"], sec_delta)
+                self.assertIsNone(rows["tests"]["delta"])                    # no edit inside the data
+                self.assertEqual([w for w, _ in rows["security"]["yield_weekly"]],
+                                 ["2026-08-17", "2026-08-24", "2026-08-31", "2026-09-07"])
+                self.assertEqual(rows["security"]["edits"], None if edits is None else edits["security"])
+
+    def test_zones_split_at_the_median_specialist(self):
+        dur_acted = {"fast-good": (90, 30), "slow-good": (300, 30), "fast-bad": (90, 5), "slow-bad": (300, 5), "mid": (150, 20)}
+        b = src([])["bakeoff"]
+        b["specs"] = {k: {"n": 100, "pub": 40, "after": a} for k, (_, a) in dur_acted.items()}
+        span = {k: [0, d] for k, (d, _) in dur_acted.items()} | {"aggregator": [300, 400]}
+        sp = status_page.build(src([run(1, 3600, span=span)], bakeoff=b), {}, NOW)["specialists"]
+        self.assertEqual(sp["axes"], {"yield": 20.0, "runtime": 150})
+        self.assertEqual({r["name"]: r["zone"] for r in sp["rows"]},
+                         {"fast-good": "keep", "slow-good": "worth", "fast-bad": "noise", "slow-bad": "cut", "mid": "worth"})
+        self.assertEqual([r["name"] for r in sp["rows"]][:2], ["fast-good", "slow-good"])   # sorted by acted-on yield
+        r = sp["rows"][0]
+        self.assertEqual((r["found"], r["edited"], r["edited_of_found"]), (40.0, 30.0, 75.0))
+
     def test_unaddressed_critique_is_one_newer_than_the_prompt(self):
         b = src([])["bakeoff"]
         b["critiques"] = [{"repo": "o/r", "pr": 1, "spec": "security", "ran_at_epoch": NOW - 3600},
@@ -152,6 +189,8 @@ class TestBuild(unittest.TestCase):
             {"account": "4", "status": "not running", "tick_age": 9000, "state": "", "note": "x"},
             {"account": "5", "status": "throttled", "tick_age": 5, "state": "", "note": "x"}]
         m = status_page.build(s, {"bakeoff": "OperationalError: database is locked"}, NOW)
+        self.assertIsNone(m["specialists"])                   # bakeoff failed: only its panels blank
+        self.assertIsNotNone(m["anatomy"])
         self.assertFalse(m["queue"]["red"])                   # late, but reviews are still starting
         self.assertEqual([a["level"] for a in m["accounts"]], ["red", "ok", "ok", "red", "amber"])  # projection >100% colors its own cell, not the status
         self.assertTrue(m["gh"]["core"]["red"])               # 900/5000 = 18%
@@ -183,6 +222,12 @@ class TestBuild(unittest.TestCase):
         self.assertIsNone(m["gh"])
         self.assertIsNotNone(m["anatomy"])
         self.assertEqual(m["errors"], {"gh": "CalledProcessError: gh exited 4"})
+        s2 = src([])
+        del s2["snapshot"]
+        m2 = status_page.build(s2, {"snapshot": "RuntimeError: no running reviewer container"}, NOW)
+        self.assertIsNone(m2["anatomy"])
+        self.assertEqual([(r["name"], r["p50"], r["zone"]) for r in m2["specialists"]["rows"]], [("security", None, None)])
+        self.assertIsNone(m2["specialists"]["axes"])
 
     def test_critical_path_gate_share_and_slack(self):
         a = {"intent": [0, 10], "security": [10, 100], "consumers": [50, 300], "aggregator": [300, 400]}
@@ -230,7 +275,7 @@ class TestRender(unittest.TestCase):
         with TemporaryDirectory() as out, unittest.mock.patch.object(status_page, "source_gh", side_effect=RuntimeError("gh: not logged in")), \
              unittest.mock.patch.object(status_page, "gather_snapshot", return_value=src([])["snapshot"]), \
              unittest.mock.patch.object(status_page, "source_bakeoff", return_value=src([])["bakeoff"]), \
-             unittest.mock.patch.object(status_page, "source_prompt_changed", return_value={}), \
+             unittest.mock.patch.object(status_page, "source_prompt_edits", return_value={}), \
              unittest.mock.patch.object(status_page, "source_repos", return_value=[]):
             rc = status_page.main(["--out", out])
             model = json.loads(Path(out, "status.json").read_text())

@@ -26,6 +26,8 @@ PACING = ("throttled", "quota-paused")
 GH_RED = 0.2
 MIN_WEEK_RUNS = 30
 GATE_RED = 0.25
+DELTA_WEEKS = 4
+DELTA_FLAG_PT = 2
 
 
 def _epoch(iso):
@@ -43,6 +45,47 @@ def _dur(s):
 def _monday(epoch):
     d = datetime.fromtimestamp(epoch, timezone.utc).date()
     return (d - timedelta(days=d.weekday())).isoformat()
+
+
+def _pct(a, b):
+    return round(100 * a / b, 1) if b else None
+
+
+def _edit_delta(weeks, edits):
+    """Acted-on yield in the DELTA_WEEKS full weeks after the newest prompt edit vs. before it."""
+    if not edits:
+        return None
+    day = datetime.fromtimestamp(edits[0][0], timezone.utc).date()
+
+    def rate(ws):
+        return _pct(sum(w[2] for w in ws), sum(w[1] for w in ws))
+    before = rate([w for w in weeks if datetime.fromisoformat(w[0]).date() + timedelta(days=7) <= day][-DELTA_WEEKS:])
+    after = rate([w for w in weeks if w[0] >= day.isoformat()][:DELTA_WEEKS])
+    if before is None or after is None:
+        return None
+    change = round(after - before, 1)
+    return {"last": day.isoformat(), "before": before, "after": after, "change": change,
+            "flag": "up" if change > DELTA_FLAG_PT else "down" if change < -DELTA_FLAG_PT else None}
+
+
+def _specialists(bake, edits, anatomy):
+    nodes = anatomy["nodes"] if anatomy else {}
+    rows = []
+    for name, c in bake["specs"].items():
+        weeks = bake["weekly"].get(name, [])
+        es = None if edits is None else edits.get(name, [])
+        rows.append({"name": name, "n": c["n"], "found": _pct(c["pub"], c["n"]), "edited": _pct(c["after"], c["n"]),
+                     "edited_of_found": _pct(c["after"], c["pub"]), "p50": nodes.get(name, {}).get("p50"),
+                     "yield_weekly": [[w, _pct(a, n)] for w, n, a in weeks if n >= MIN_WEEK_RUNS],
+                     "edits": es, "delta": _edit_delta(weeks, es)})
+    timed = [r for r in rows if r["p50"] is not None]
+    axes = ({"yield": statistics.median(r["edited"] for r in timed), "runtime": statistics.median(r["p50"] for r in timed)}
+            if timed else None)
+    for r in rows:
+        fast = axes and r["p50"] is not None and r["p50"] < axes["runtime"]
+        r["zone"] = (None if not axes or r["p50"] is None else
+                     ("keep" if fast else "worth") if r["edited"] >= axes["yield"] else ("noise" if fast else "cut"))
+    return {"rows": sorted(rows, key=lambda r: -r["edited"]), "axes": axes}
 
 
 def _anatomy(runs, now):
@@ -164,10 +207,11 @@ def build(src, errors, now):
         queue = {"specs": sorted(specs, key=lambda s: -s["wait"]), "late": late, "idle": idle,
                  "red": late and idle > QUEUE_STALL_S and sum(a["status"] == "active" for a in accounts) > len(inflight)}
     feedback = None
-    if bake and "prompt_changed" in src:
-        changed = src["prompt_changed"]
+    if bake and "prompt_edits" in src:
+        last = {s: e[0][0] for s, e in src["prompt_edits"].items() if e}
         feedback = {"rows": bake["rows"], "crit": bake["crit"], "loved": bake["loved"],
-                    "unaddressed": [c for c in bake["critiques"] if c["ran_at_epoch"] > (changed.get(c["spec"]) or 0)]}
+                    "unaddressed": [c for c in bake["critiques"] if c["ran_at_epoch"] > last.get(c["spec"], 0)]}
+    specialists = _specialists(bake, src.get("prompt_edits"), anatomy) if bake else None
     gh = ({k: {**src["gh"][k], "red": src["gh"][k]["remaining"] / src["gh"][k]["limit"] < GH_RED}
            for k in ("core", "graphql")} if "gh" in src else None)
     repos = [{**r, "red": r.get("kid") == "stale"} for r in src["repos"]] if "repos" in src else None
@@ -180,7 +224,7 @@ def build(src, errors, now):
                  "working": sum(a["level"] != "red" for a in accounts), "fleet": len(accounts)}
     m = {"generated_at": now, "errors": errors, "tiles": tiles, "anatomy": anatomy, "inflight": inflight,
          "queue": queue, "accounts": accounts, "gh": gh, "slow": _slow(runs, now) if snap else None,
-         "feedback": feedback, "repos": repos}
+         "feedback": feedback, "specialists": specialists, "repos": repos}
     m["attention"] = _attention(m)
     return m
 
@@ -209,14 +253,19 @@ def source_bakeoff(db):
         "SELECT repo, pr_number, specialist, ran_at FROM specialist_runs WHERE critiqued = 1")]
     rows, crit, loved = con.execute(
         "SELECT count(*), coalesce(sum(critiqued),0), coalesce(sum(loved_positive),0) FROM specialist_runs").fetchone()
-    return {"specs": specs, "critiques": critiques, "rows": rows, "crit": crit, "loved": loved}
+    weekly = {}
+    for s, w, n, a in con.execute(
+            "SELECT specialist, date(ran_at, '-6 days', 'weekday 1'), count(*), sum(edited_after) FROM specialist_runs "
+            "WHERE specialist NOT LIKE 'screened-%' AND specialist != 'aggregator' GROUP BY 1, 2 ORDER BY 1, 2"):
+        weekly.setdefault(s, []).append([w, n, a])
+    return {"specs": specs, "weekly": weekly, "critiques": critiques, "rows": rows, "crit": crit, "loved": loved}
 
 
-def source_prompt_changed(specs):
+def source_prompt_edits(specs):
     out = {}
     for s in specs:
-        ct = _run("git", "-C", str(REPO_DIR), "log", "-1", "--format=%ct", "--", f"prompts/specialists/{s}.md").strip()
-        out[s] = float(ct) if ct else None
+        log = _run("git", "-C", str(REPO_DIR), "log", "--format=%ct%x09%s", "--", f"prompts/specialists/{s}.md")
+        out[s] = [[float(ct), subj] for ct, _, subj in (line.partition("\t") for line in log.splitlines())]
     return out
 
 
@@ -285,9 +334,9 @@ def main(argv=None):
         if val is not None:
             src[name] = val
     if "bakeoff" in src:
-        val = attempt("prompt_changed", lambda: source_prompt_changed(src["bakeoff"]["specs"]))
+        val = attempt("prompt_edits", lambda: source_prompt_edits(src["bakeoff"]["specs"]))
         if val is not None:
-            src["prompt_changed"] = val
+            src["prompt_edits"] = val
     if "snapshot" in src:
         val = attempt("repos", lambda: source_repos(src["snapshot"]["runs"], args.clone_root))
         if val is not None:
