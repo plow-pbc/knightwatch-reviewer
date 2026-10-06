@@ -190,7 +190,7 @@ class TestRepoHealth(unittest.TestCase):
                 kid.mkdir(parents=True)
                 Path(root, name, ".git").mkdir()
                 (kid / ".indexed-sha").write_text("abc")
-                if marker:
+                if marker is not None:
                     (kid / ".stale").write_text(marker)
             rows = status_page.source_repos([run(1, 60, repo=f"o/{n}") for n in ("refreshing", "failed", "bare", "fresh")], root)
             m = status_page.build(src([], repos=rows), {}, NOW)
