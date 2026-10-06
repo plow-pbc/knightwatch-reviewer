@@ -4,6 +4,7 @@ import os
 import sys
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -105,8 +106,11 @@ class TestBuild(unittest.TestCase):
                 run(2, 600, finished=False), run(2, 300, finished=False),  # same PR twice: newest wins
                 run(3, 120, finished=True),                   # finished
                 run(4, 1400, finished=False)]                 # after restart, under 90 min
-        m = status_page.build(src(runs, fleet_started=NOW - 1500), {}, NOW)
+        s = src(runs, fleet_started=NOW - 1500)
+        s["snapshot"]["queue"]["specs"] = [{"repo": "o/r", "pr_num": p, "title": "t", "since": "2026-10-01T00:00:00Z"} for p in (4, 6)]
+        m = status_page.build(s, {}, NOW)
         self.assertEqual([(f["pr"], round(f["age"])) for f in m["inflight"]], [(4, 1400), (2, 300)])
+        self.assertEqual([q["pr"] for q in m["queue"]["specs"]], [6])   # a claimed PR left in the queue snapshot isn't waiting
         self.assertTrue(m["inflight"][0]["stuck"])            # 1400s > 3 × 450s median
         self.assertFalse(m["inflight"][1]["stuck"])
 
@@ -155,3 +159,26 @@ class TestBuild(unittest.TestCase):
         self.assertIsNone(m["gh"])
         self.assertIsNotNone(m["anatomy"])
         self.assertEqual(m["errors"], {"gh": "CalledProcessError: gh exited 4"})
+
+
+class TestRender(unittest.TestCase):
+    def test_hostile_title_is_inert(self):
+        s = src([run(1, 600, finished=False)], fleet_started=NOW - 1500)
+        s["snapshot"]["runs"][0]["title"] = '</script><img src=x onerror=alert(1)>'
+        html = status_page.render(status_page.build(s, {}, NOW))
+        self.assertNotIn("</script><img", html)
+        self.assertEqual(html.count("</script>"), html.count("<script"))  # only the page's own tags close
+
+    def test_main_isolates_a_failed_source_and_exits_nonzero(self):
+        with TemporaryDirectory() as out, unittest.mock.patch.object(status_page, "source_gh", side_effect=RuntimeError("gh: not logged in")), \
+             unittest.mock.patch.object(status_page, "gather_snapshot", return_value=(src([])["snapshot"], NOW - 1500)), \
+             unittest.mock.patch.object(status_page, "source_bakeoff", return_value=src([])["bakeoff"]), \
+             unittest.mock.patch.object(status_page, "source_prompt_changed", return_value={}), \
+             unittest.mock.patch.object(status_page, "source_repos", return_value=[]):
+            rc = status_page.main(["--out", out])
+            model = json.loads(Path(out, "status.json").read_text())
+            html = Path(out, "index.html").read_text()
+        self.assertEqual(rc, 1)
+        self.assertIsNone(model["gh"])
+        self.assertIsNotNone(model["tiles"])
+        self.assertIn("RuntimeError: gh: not logged in", html)

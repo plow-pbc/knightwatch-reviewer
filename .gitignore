@@ -20,6 +20,7 @@ eggs/
 lib/*
 !lib/*.sh
 !lib/*.py
+!lib/*.html
 !lib/tests/
 !lib/tests/*.sh
 !lib/tests/*.py
