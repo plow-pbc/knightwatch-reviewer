@@ -189,7 +189,7 @@ panel('acc',D.accounts,['snapshot'],acc=>{const F=D.inflight||[],ids=new Set(acc
   ${a.used!=null?`<div style="display:flex;gap:8px;align-items:center"><div class="bar" style="flex:1;min-width:0"><i style="width:${a.used}%"></i></div><span class="n">${Math.round(a.used)}%${a.projected!=null?` → ${a.over?pill('warnp',Math.round(a.projected)+'%'):Math.round(a.projected)+'%'}`:''}</span></div>`:`<span class="none">${esc(a.note||'no reading')}</span>`}
   <div class="small">${a.resets_at&&a.resets_at>now?`resets in ${dur(a.resets_at-now)} · `:''}heartbeat ${dur(a.tick_age)} ago</div>
   ${mine.length?mine.map(job).join(''):`<div class="job none">${a.status==='active'?'Idle':'Not reviewing'}</div>`}${foot}</div>`}).join('')
- +(orphans.length?`<div class="box none"><div class="bh"><h3>Unassigned</h3></div><div class="small">Started before reviews recorded their reviewer.</div>${orphans.map(job).join('')}</div>`:'')});
+ +(orphans.length?`<div class="box none"><div class="bh"><h3>Unassigned</h3></div><div class="small">Running on no reviewer listed above.</div>${orphans.map(job).join('')}</div>`:'')});
 // slow
 panel('slow',D.slow,['snapshot'],S=>{const mx=Math.max(1,...S.map(s=>s.p50));
  return S.length?`<table><tr><th>Repo</th><th></th><th class="n">Review</th><th class="n">Queue wait</th><th class="n">Runs</th></tr>${S.map(s=>`<tr><td>${esc(s.repo)}</td><td style="width:30%"><div class="bar"><i style="width:${100*s.p50/mx}%"></i></div></td><td class="n">${dur(s.p50)}</td><td class="n">${dur(s.wait50)}</td><td class="n">${s.n}</td></tr>`).join('')}</table>`:'<span class="none">No repos with ≥3 completed runs</span>'});
