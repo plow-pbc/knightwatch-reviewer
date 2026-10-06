@@ -274,7 +274,9 @@ class TestTokens(unittest.TestCase):
     def rollout(self, root, acct, day, model, inp, cached, out):
         lines = [{"type": "session_meta", "payload": {}}, {"type": "turn_context", "payload": {"model": model}},
                  {"type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {
-                     "input_tokens": inp, "cached_input_tokens": cached, "output_tokens": out}}}}]
+                     "input_tokens": inp, "cached_input_tokens": cached, "output_tokens": out}}}},
+                 # trailing tool output that names the event must not be read as usage, nor hide the real count
+                 {"type": "response_item", "payload": {"output": '"token_count" "total_token_usage" ' + "x" * 70000}}]
         _w(root / f"codex-account-{acct}/sessions/{day}/rollout-{acct}-{inp}.jsonl", "\n".join(map(json.dumps, lines)))
 
     def test_tokens_and_api_cost_by_window_across_accounts_and_cache(self):

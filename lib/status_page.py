@@ -313,6 +313,15 @@ def source_prompt_edits(specs):
 
 def _rollout_usage(path):
     """(model, final cumulative token usage) of one codex rollout, else None."""
+    def usage(lines):
+        for line in reversed(lines):
+            if b'"token_count"' not in line:
+                continue
+            try:
+                return json.loads(line)["payload"]["info"]["total_token_usage"]
+            except (ValueError, KeyError, TypeError):   # a cut first line, or tool text naming the event
+                continue
+        return None
     model = None
     with open(path, "rb") as fh:
         for line in fh:
@@ -321,13 +330,11 @@ def _rollout_usage(path):
                 break
         size = fh.seek(0, os.SEEK_END)
         fh.seek(max(0, size - 65536))
-        for line in reversed(fh.read().splitlines()):
-            if b'"total_token_usage"' in line:
-                try:
-                    return model, json.loads(line)["payload"]["info"]["total_token_usage"]
-                except ValueError:   # the tail window can cut the first line
-                    continue
-    return None
+        u = usage(fh.read().splitlines())
+        if u is None and size > 65536:   # a long final tool output can push the last count out of the tail
+            fh.seek(0)
+            u = usage(fh.read().splitlines())
+    return u and (model, u)
 
 
 def source_tokens(codex_root, cache_path, now):
@@ -335,6 +342,8 @@ def source_tokens(codex_root, cache_path, now):
 
     Days older than two are settled (a review is capped at 90m), so they come
     from cache_path; only the last few day dirs are rescanned each build."""
+    if not Path(codex_root).is_dir():
+        raise FileNotFoundError(f"codex root {codex_root}")
     try:
         days = json.loads(cache_path.read_text())
     except FileNotFoundError:
