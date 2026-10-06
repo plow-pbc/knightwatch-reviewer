@@ -11,7 +11,7 @@ import statistics
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 LIB = Path(__file__).resolve().parent
@@ -24,6 +24,8 @@ QUEUE_RED_S = 3600
 QUEUE_STALL_S = 1800
 PACING = ("throttled", "quota-paused")
 GH_RED = 0.2
+MIN_WEEK_RUNS = 30
+GATE_RED = 0.25
 
 
 def _epoch(iso):
@@ -38,20 +40,45 @@ def _dur(s):
     return f"{round(s)}s" if s < 90 else f"{round(s / 60)}m" if s < 5400 else f"{s / 3600:.1f}h"
 
 
-def _anatomy(runs, bakeoff, now):
+def _monday(epoch):
+    d = datetime.fromtimestamp(epoch, timezone.utc).date()
+    return (d - timedelta(days=d.weekday())).isoformat()
+
+
+def _anatomy(runs, now):
     done = [r for r in runs if now - r["t"] < 7 * DAY and r["status"] == "completed" and r["total"]]
-    names = {k for r in done for k in r["span"]}
-    nodes = {k: {"s50": _p50([r["span"][k][0] for r in done if k in r["span"]]),
-                 "e50": _p50([r["span"][k][1] for r in done if k in r["span"]]),
-                 "p50": _p50([r["span"][k][1] - r["span"][k][0] for r in done if k in r["span"]]),
-                 "n": sum(k in r["span"] for r in done)} for k in names}
+    gates, slack = {}, {}
+    for r in done:
+        agg = r["span"].get("aggregator")
+        if not agg:
+            continue
+        # The gate is whichever stage finished last before the aggregator could start.
+        before = {k: v for k, v in r["span"].items() if k != "aggregator" and v[1] <= agg[0]}
+        if before:
+            g = max(before, key=lambda k: before[k][1])
+            gates[g] = gates.get(g, 0) + 1
+        for k, v in before.items():
+            slack.setdefault(k, []).append(agg[0] - v[1])
+    nodes = {}
+    for k in {k for r in done for k in r["span"]}:
+        ran = [r["span"][k] for r in done if k in r["span"]]
+        gate = gates.get(k, 0) / len(ran)
+        nodes[k] = {"s50": _p50([s for s, _ in ran]), "e50": _p50([e for _, e in ran]), "p50": _p50([e - s for s, e in ran]),
+                    "n": len(ran), "gate": gate, "slack50": _p50(slack.get(k, [])), "critical": gate >= GATE_RED}
     skip7 = {}
     for r in runs:
         if now - r["t"] < 7 * DAY:
             for a in r["skipped"]:
                 skip7[a] = skip7.get(a, 0) + 1
+    weekly = {}
+    for r in runs:
+        if r["status"] == "completed":
+            for k, (s, e) in r["span"].items():
+                weekly.setdefault(k, {}).setdefault(_monday(r["t"]), []).append(e - s)
+    runtime_weekly = {k: [[w, _p50(xs)] for w, xs in sorted(ws.items()) if len(xs) >= MIN_WEEK_RUNS]
+                      for k, ws in weekly.items()}
     return {"nodes": nodes, "skip7": skip7, "total50": _p50([r["total"] for r in done]),
-            "specs": bakeoff["specs"] if bakeoff else None}
+            "runtime_weekly": {k: v for k, v in runtime_weekly.items() if v}}
 
 
 def _inflight(runs, total50, now):
@@ -119,7 +146,7 @@ def _attention(m):
 def build(src, errors, now):
     snap, bake = src.get("snapshot"), src.get("bakeoff")
     runs = snap["runs"] if snap else []
-    anatomy = _anatomy(runs, bake, now) if snap else None
+    anatomy = _anatomy(runs, now) if snap else None
     inflight = _inflight(runs, anatomy["total50"], now) if snap else None
     accounts = None
     queue = None

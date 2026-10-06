@@ -184,6 +184,21 @@ class TestBuild(unittest.TestCase):
         self.assertIsNotNone(m["anatomy"])
         self.assertEqual(m["errors"], {"gh": "CalledProcessError: gh exited 4"})
 
+    def test_critical_path_gate_share_and_slack(self):
+        a = {"intent": [0, 10], "security": [10, 100], "consumers": [50, 300], "aggregator": [300, 400]}
+        b = {"intent": [0, 10], "security": [10, 200], "momentum": [5, 260], "aggregator": [210, 400]}
+        killed = {"intent": [0, 10], "security": [10, 90]}              # aggregator never started
+        m = status_page.build(src([run(1, 3600, span=a), run(2, 3600, span=b), run(3, 3600, span=b),
+                                   run(4, 3600, span=killed)]), {}, NOW)
+        n = m["anatomy"]["nodes"]
+        self.assertEqual(n["consumers"]["gate"], 1.0)          # gated the one run it ran in; runs that skipped it don't dilute it
+        self.assertEqual(n["security"]["gate"], 0.5)           # gated runs 2 and 3 of the 4 it ran in (incl. the killed one)
+        self.assertEqual(n["momentum"]["gate"], 0)             # ends after the aggregator started: never the gate
+        self.assertEqual(n["intent"]["gate"], 0)
+        self.assertEqual(sorted(k for k, v in n.items() if v["critical"]), ["consumers", "security"])
+        self.assertEqual(n["security"]["slack50"], 10)         # 200, 10, 10 → median 10
+        self.assertEqual(m["anatomy"]["runtime_weekly"], {})   # 4 runs < MIN_WEEK_RUNS: no point drawn
+
 
 class TestRepoHealth(unittest.TestCase):
     def test_kid_marker_reason(self):
