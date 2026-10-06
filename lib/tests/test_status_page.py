@@ -166,7 +166,7 @@ class TestBuild(unittest.TestCase):
         self.assertEqual(sp["axes"], {"yield": 20.0, "runtime": 150})
         self.assertEqual({r["name"]: r["zone"] for r in sp["rows"]},
                          {"fast-good": "keep", "slow-good": "worth", "fast-bad": "noise", "slow-bad": "cut", "mid": "worth"})
-        self.assertEqual([r["name"] for r in sp["rows"]][:2], ["fast-good", "slow-good"])   # sorted by acted-on yield
+        self.assertEqual([r["name"] for r in sp["rows"]][:2], ["fast-good", "slow-good"])   # sorted by edited-later yield
         r = sp["rows"][0]
         self.assertEqual((r["found"], r["edited"], r["edited_of_found"]), (40.0, 30.0, 75.0))
 

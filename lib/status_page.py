@@ -52,7 +52,7 @@ def _pct(a, b):
 
 
 def _edit_delta(weeks, edits):
-    """Acted-on yield in the DELTA_WEEKS full weeks after the newest prompt edit vs. before it."""
+    """Edited-later yield in the DELTA_WEEKS full weeks after the newest prompt edit vs. before it."""
     if not edits:
         return None
     day = datetime.fromtimestamp(edits[0][0], timezone.utc).date()
