@@ -49,6 +49,11 @@ class TestCollect(unittest.TestCase):
         _w(good / "timings.json", {"intent": {"start": 100.0, "end": 114.0, "rc": 0},
                                    "security": {"start": 114.0, "end": 236.0, "rc": 0}})
         _w(good / "_skipped_angles.txt", "consumers\n")
+        _w(good / "agents/aggregator/output.md", "## Review\nVERDICT: APPROVE\n")
+        _w(runs / run_name("o/r", 7, NOW - 10 * 86400) / "agents/aggregator/output.md", "VERDICT: COMMENT\n")
+        _w(runs / run_name("o/r", 7, NOW - 30 * 86400) / "agents/aggregator/output.md", "VERDICT: APPROVE\n")
+        _w(runs / run_name("o/r", 20, NOW - 40 * 86400) / "agents/aggregator/output.md", "VERDICT: COMMENT\n")
+        _w(runs / run_name("o/r", 21, NOW - 60 * 86400) / "agents/aggregator/output.md", "VERDICT: APPROVE\n")
         _w(runs / run_name("o/r", 8, NOW - 31 * 86400) / "meta.json", {"repo": "o/r"})  # outside 30d
         (runs / run_name("o/r", 9, NOW - 60)).mkdir()                                     # no meta.json
         _w(runs / run_name("o/r", 10, NOW - 60) / "meta.json", "{corrupt")                # corrupt meta
@@ -86,6 +91,12 @@ class TestCollect(unittest.TestCase):
         self.assertEqual(runs[7]["span"], {"intent": [0, 14], "security": [14, 136]})
         self.assertEqual(runs[7]["skipped"], ["consumers"])
         self.assertEqual(runs[11]["span"], {})
+
+    def test_windows_count_final_reviews_and_latest_verdict_per_pr(self):
+        # Aborted rounds (no aggregator output) aren't reviews. Last 28d: PR 7's latest round approves.
+        # Prior 28d: PR 7 approved, PR 20 commented. PR 21 is older than both windows.
+        self.assertEqual(self.snap()["windows"], {"cur": {"reviews": 2, "prs": 1, "verdicts": 1, "approved": 1},
+                                                  "prev": {"reviews": 2, "prs": 2, "verdicts": 2, "approved": 1}})
 
     def test_queue_passthrough(self):
         self.assertEqual(self.snap()["queue"]["specs"][0]["pr_num"], 1)
@@ -257,6 +268,32 @@ class TestBuild(unittest.TestCase):
         self.assertEqual(sorted(k for k, v in n.items() if v["critical"]), ["consumers", "security"])
         self.assertEqual(n["security"]["slack50"], 10)         # 200, 10, 10 → median 10
         self.assertEqual(m["anatomy"]["runtime_weekly"], {})   # 4 runs < MIN_WEEK_RUNS: no point drawn
+
+
+class TestTokens(unittest.TestCase):
+    def rollout(self, root, acct, day, model, inp, cached, out):
+        lines = [{"type": "session_meta", "payload": {}}, {"type": "turn_context", "payload": {"model": model}},
+                 {"type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {
+                     "input_tokens": inp, "cached_input_tokens": cached, "output_tokens": out}}}}]
+        _w(root / f"codex-account-{acct}/sessions/{day}/rollout-{acct}-{inp}.jsonl", "\n".join(map(json.dumps, lines)))
+
+    def test_tokens_and_api_cost_by_window_across_accounts_and_cache(self):
+        with TemporaryDirectory() as tmp:
+            root, cache = Path(tmp), Path(tmp) / "days.json"
+            prev = time.strftime("%Y/%m/%d", time.gmtime(NOW - 40 * 86400))
+            old = time.strftime("%Y/%m/%d", time.gmtime(NOW - 20 * 86400))
+            self.rollout(root, "a", old, "gpt-5.6-sol", 1_000_000, 900_000, 10_000)
+            self.rollout(root, "b", old, "gpt-5.6-sol", 2_000_000, 1_000_000, 0)
+            self.rollout(root, "a", time.strftime("%Y/%m/%d", time.gmtime(NOW)), "gpt-x", 500, 0, 5)
+            self.rollout(root, "a", prev, "gpt-5.5", 7, 0, 0)
+            self.rollout(root, "a", time.strftime("%Y/%m/%d", time.gmtime(NOW - 90 * 86400)), "gpt-5.5", 9, 0, 0)
+            for _ in range(2):   # second build reads settled days from cache
+                tok = status_page._scale(None, status_page.source_tokens(root, cache, NOW), NOW)["tokens"]
+                self.assertEqual((tok["cur"]["input"], tok["cur"]["cached"]), (3_000_500, 1_900_000))
+                # sol: 1.1M uncached × $4 + 1.9M cached × $0.40 + 10k out × $20; gpt-x has no price.
+                self.assertAlmostEqual(tok["cur"]["cost"], 4.4 + 0.76 + 0.2)
+                self.assertEqual(tok["cur"]["unpriced"], 505)
+                self.assertEqual(tok["prev"]["input"], 7)
 
 
 class TestRepoHealth(unittest.TestCase):
