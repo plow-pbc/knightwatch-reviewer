@@ -107,8 +107,10 @@ OUT=$(stage_search_roots "acme/self" "$SELF_REPO" "origin/main")
 REPOS=("${saved_repos[@]}")
 assert_contains "scenario 1: header full" "# coverage: full" "$OUT"
 assert_contains "scenario 1: foo included" "acme/foo included .siblings/acme/foo" "$OUT"
-# bar is in REPOS + SOURCE_PATHS but NOT in .knightwatch/siblings → must NOT appear
-assert_not_contains "scenario 1: bar excluded by allowlist" "acme/bar" "$OUT"
+# bar is in REPOS + SOURCE_PATHS but NOT in .knightwatch/siblings → named as an allowlist
+# exclusion (the review header and status page report it), never searched, not a gap.
+assert_contains "scenario 1: bar named as excluded by allowlist" "acme/bar excluded allowlist" "$OUT"
+assert_not_contains "scenario 1: bar never searched" "acme/bar included" "$OUT"
 
 # --- scenario 2: .knightwatch/siblings absent → fall back to REPOS ---
 echo "  scenario 2: fallback to REPOS when .knightwatch absent..."
@@ -128,7 +130,7 @@ acme/qux")
 OUT=$(stage_search_roots "acme/self" "$SELF_REPO" "origin/main")
 assert_contains "scenario 3: header partial" "# coverage: partial" "$OUT"
 assert_contains "scenario 3: foo included" "acme/foo included .siblings/acme/foo" "$OUT"
-assert_contains "scenario 3: qux missing" "acme/qux missing" "$OUT"
+assert_contains "scenario 3: qux missing, with why" "acme/qux missing no-checkout" "$OUT"
 
 # --- scenario 4: empty .knightwatch/siblings → no siblings ---
 echo "  scenario 4: empty .knightwatch/siblings → no siblings..."
@@ -145,7 +147,8 @@ acme/foo
 ")
 OUT=$(stage_search_roots "acme/self" "$SELF_REPO" "origin/main")
 assert_contains "scenario 5: foo included" "acme/foo included .siblings/acme/foo" "$OUT"
-assert_not_contains "scenario 5: bar not included" "acme/bar" "$OUT"
+assert_not_contains "scenario 5: bar not included" "acme/bar included" "$OUT"
+assert_contains "scenario 5: bar named as excluded" "acme/bar excluded allowlist" "$OUT"
 
 # --- scenario 6: declared sibling without SOURCE_PATHS entry ----------
 # Bot Finding 1 PR #29: a declared sibling that the operator hasn't
@@ -158,7 +161,7 @@ acme/never-configured")
 OUT=$(stage_search_roots "acme/self" "$SELF_REPO" "origin/main")
 assert_contains "scenario 6: header partial" "# coverage: partial" "$OUT"
 assert_contains "scenario 6: foo included" "acme/foo included .siblings/acme/foo" "$OUT"
-assert_contains "scenario 6: never-configured missing" "acme/never-configured missing" "$OUT"
+assert_contains "scenario 6: never-configured missing, with why" "acme/never-configured missing no-source-path" "$OUT"
 
 # --- scenario 7: knightwatch-config ERROR propagates as non-zero rc ---
 # When read_knightwatch_file returns ERROR (rc 2 — bad base ref), the
@@ -195,7 +198,7 @@ OUT=$(stage_search_roots "acme/self" "$SELF_REPO" "origin/main")
 REPOS=("${saved_repos[@]}")
 assert_contains "scenario 8: header partial" "# coverage: partial" "$OUT"
 assert_contains "scenario 8: foo included"    "acme/foo included .siblings/acme/foo" "$OUT"
-assert_contains "scenario 8: notgit missing"  "acme/notgit missing" "$OUT"
+assert_contains "scenario 8: notgit missing"  "acme/notgit missing no-checkout" "$OUT"
 # Critically — must NOT mark notgit as included. That's the bug.
 if printf '%s' "$OUT" | grep -q "acme/notgit included"; then
     echo "FAIL: scenario 8 — non-git source classified as included; coverage will misreport"

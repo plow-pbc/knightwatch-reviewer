@@ -327,6 +327,22 @@ class TestRepoHealth(unittest.TestCase):
                           "o/bare": ("stale", True), "o/fresh": ("fresh", False)})
 
 
+    def test_unsearched_siblings_come_from_the_latest_run_and_only_gaps_need_attention(self):
+        with TemporaryDirectory() as root:
+            older, newer = Path(root, "older"), Path(root, "newer")
+            for d, roots in ((older, "# coverage: full\no/a included .siblings/o/a\n"),
+                             (newer, "# coverage: partial — included=1 missing=1\no/a included .siblings/o/a\n"
+                                     "o/b missing no-source-path\no/c excluded allowlist\n")):
+                d.mkdir()
+                (d / "meta.json").write_text(json.dumps({"repo": "o/r", "pr_num": 1, "status": "completed", "finished_at": "z"}))
+                (d / "search-roots.md").write_text(roots)
+            runs = [status_collect.run_record(older, NOW - 600, Path(root)), status_collect.run_record(newer, NOW - 60, Path(root))]
+            m = status_page.build(src([], repos=status_page.source_repos(runs, root)), {}, NOW)
+        self.assertEqual(m["repos"][0]["unsearched"], [["o/b", "missing", "no-source-path"], ["o/c", "excluded", "allowlist"]])
+        # The missing source path is a gap; the allowlist exclusion is intended and stays off the list.
+        self.assertEqual([(a["panel"], a["text"]) for a in m["attention"] if a["panel"] == "o/r"], [("o/r", "1 sibling not searched")])
+
+
 class TestRender(unittest.TestCase):
     def test_hostile_title_is_inert(self):
         s = src([run(1, 600, finished=False, live=True)])
