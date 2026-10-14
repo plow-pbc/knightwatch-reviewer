@@ -31,6 +31,7 @@ REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 require_repos
 REPLIES_SEEN_FILE="${REPLIES_SEEN_FILE:-$STATE_DIR/replies-seen.json}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/learn.log}"
+LEARN_CURSOR_FILE="${LEARN_CURSOR_FILE:-$STATE_DIR/learn-cursor.json}"
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
 CODE_CONFIG_REPO="$HOME/services/code-config"
 GUIDANCE_PATH="claude/COMMENT_REVIEW_MISTAKES.md"
@@ -97,21 +98,8 @@ persist_guidance() {
 
 [ -f "$REPLIES_SEEN_FILE" ] || echo '{}' > "$REPLIES_SEEN_FILE"
 
-# Opt-in signal: comment body must contain the literal `/srosro-memorize`
-# slash command (case-insensitive). The bot's own review footer mentions
-# this command but BOT_USER posts hit the LAST_OUR_TS branch above and
-# never reach this check, so the footer can't self-trigger.
-# `case`, not `printf | grep -qiF`: grep -q exits on first match while printf
-# may still be writing, and this file sets pipefail — the resulting SIGPIPE
-# (141) reads as "not a memorize request", silently dropping the lesson on a
-# long comment. Same trap as poll-pr-actions.sh's marker filter. Lowercased
-# rather than -i so the match stays case-insensitive.
-is_memorize_request() {
-    case "${1,,}" in *"/${BOT_CMD_PREFIX,,}-memorize"*) return 0 ;; *) return 1 ;; esac
-}
-
 # Honor the GitHub rate-limit pause, like review-loop.sh and poll-pr-actions.sh.
-# This poller is a PRODUCER of that pause too (fetch_issue_comments routes
+# This poller is a PRODUCER of that pause too (its comments fetch routes
 # through the gh seam), so an ungated tick would keep calling the throttled PAT
 # it just told the other host timers to back off from.
 if gh_pause_active; then
@@ -131,97 +119,86 @@ ACK_DONE_FILE=$(mktemp)
 ACK_PAUSED=0
 trap 'rm -f "$REPLIES_META_FILE" "$ACK_DONE_FILE"' EXIT
 
+# Incremental walk: one repo-wide comments call per repo, from the start of the
+# last complete walk. A full per-PR rescan outgrew its 15-minute timeout and was
+# killed mid-walk every tick, so nothing was ever learned. `since` filters on
+# updated_at, so an edited request resurfaces — replies-seen dedups it.
+WALK_STARTED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+SINCE=$(seen_get "$LEARN_CURSOR_FILE" since)
+[ -n "$SINCE" ] || SINCE=$(date -u -d '30 days ago' +%Y-%m-%dT%H:%M:%SZ)
+# Set when this tick may have missed a request a retry could still catch. The
+# cursor then stays put, and the next tick re-reads the same window.
+CURSOR_HOLD=0
+advance_cursor() {
+    if [ "$CURSOR_HOLD" -eq 0 ]; then
+        seen_set_value "$LEARN_CURSOR_FILE" since "$WALK_STARTED" || log "WARNING — cursor write failed; next tick re-reads from $SINCE"
+    else
+        log "cursor held at $SINCE — a fetch, trust lookup or ACK was stopped this tick"
+    fi
+}
+
+# A request is a PR comment whose first line is the command — the same anchored
+# `asks` the approve and review selectors use. Every bot post leads with the
+# auto-post marker (lib/bootstrap.sh), so the review footer that mentions this
+# command never matches, and neither does a quote-reply of it. That is what
+# lets the operator's own unmarked comments under BOT_USER count.
+MEMORIZE_JQ="$JQ_FIRSTLINE"'add // [] | .[]
+    | select(.html_url | test("/pull/[0-9]+#"))
+    | select((.body // "") | asks($cmd))
+    | {id, user: .user.login, body, pr: (.html_url | capture("/pull/(?<n>[0-9]+)#").n)}'
+
 for REPO in "${REPOS[@]}"; do
     # Mid-tick pause: a wrapped call in an earlier repo may have stamped it, and
     # the outer gate only guards the next tick.
     if gh_pause_active; then
         log "github rate-limited mid-tick — stopping the memorize walk here"
+        CURSOR_HOLD=1
         break
     fi
-    # Same fail-loud-then-skip pattern as the comments fetch below: an
-    # outage on `gh pr list` shouldn't look like "this repo had no PRs"
-    # in the operator's journal.
-    PR_LIST=$(gh pr list --repo "$REPO" --json number --state all --limit 200 2>/dev/null | jq -r '.[].number') || {
-        log "$REPO: pr list failed — skipping this repo for this tick"
+    ERR_FILE=$(mktemp)
+    REQUESTS=$(gh api --paginate "repos/${REPO}/issues/comments?since=${SINCE}" 2>"$ERR_FILE" \
+        | jq -s -c --arg cmd "${BOT_CMD_PREFIX}-memorize" "$MEMORIZE_JQ") || {
+        log "$REPO: comments fetch failed — $(tr '\n' ' ' < "$ERR_FILE" | head -c 400)"
+        rm -f "$ERR_FILE"
+        CURSOR_HOLD=1
         continue
     }
+    rm -f "$ERR_FILE"
 
-    for PR_NUM in $PR_LIST; do
-        # Pagination correctness lives in lib/gh-comments.sh (shared with
-        # review.sh + poll-pr-actions.sh) so any future caller of
-        # this endpoint can't reinvent the bug. On fetch failure, log
-        # loud + skip this PR for this tick rather than silently treating
-        # "API broken" as "no comments".
-        COMMENTS=$(fetch_issue_comments "$REPO" "$PR_NUM") || {
-            log "$REPO#$PR_NUM: comments fetch failed — skipping this PR for this tick"
+    while IFS= read -r REQ; do
+        [ -n "$REQ" ] || continue
+        USER=$(jq -r '.user' <<< "$REQ")
+        PR_NUM=$(jq -r '.pr' <<< "$REQ")
+        ID=$(jq -r '.id' <<< "$REQ")
+        is_bot_account "$USER" && continue
+        # Trust gate: only push-access collaborators can mutate the rule list.
+        # LIVE (#233): /memorize mutates the shared rule corpus and pushes it,
+        # so it shapes every future review — no cached verdict. rc captured, not
+        # collapsed to a boolean: the log has to name WHY
+        # (lib/auth.sh::trust_denial_reason), and rc 2 (lookup failed) is the
+        # one a retry can change.
+        is_trusted_repo_author_live "$REPO" "$USER"; MEMO_RC=$?
+        if [ "$MEMO_RC" -ne 0 ]; then
+            log "${REPO}#${PR_NUM}: /${BOT_CMD_PREFIX}-memorize from @${USER} ignored ($(trust_denial_reason "$MEMO_RC" "$REPO"))"
+            [ "$MEMO_RC" -eq 2 ] && CURSOR_HOLD=1
             continue
-        }
-
-        OUR_COMMENT_IDS=()
-        while IFS= read -r COMMENT; do
-            ID=$(echo "$COMMENT" | jq -r '.id')
-            USER=$(echo "$COMMENT" | jq -r '.user.login')
-            [ "$USER" = "$BOT_USER" ] && OUR_COMMENT_IDS+=("$ID")
-        done < <(echo "$COMMENTS" | jq -c '.[]')
-
-        [ ${#OUR_COMMENT_IDS[@]} -eq 0 ] && continue
-
-        LAST_OUR_TS=0
-        while IFS= read -r COMMENT; do
-            USER=$(echo "$COMMENT" | jq -r '.user.login')
-            BODY=$(echo "$COMMENT" | jq -r '.body')
-            ID=$(echo "$COMMENT" | jq -r '.id')
-            CREATED=$(echo "$COMMENT" | jq -r '.created_at')
-            # Portable ISO→epoch via jq's fromdateiso8601 — already invoked
-            # per-iteration above, so zero new process startup cost. (Earlier
-            # python3 fix shipped per-comment subprocess; bot caught the
-            # cost on PR #47 R32 and pointed at the jq-native one-liner.)
-            TS=$(jq -nr --arg ts "$CREATED" '$ts | fromdateiso8601' 2>/dev/null || echo 0)
-
-            if [ "$USER" = "$BOT_USER" ]; then
-                LAST_OUR_TS=$TS
-            elif [ "$LAST_OUR_TS" -gt 0 ] && [ "$TS" -gt "$LAST_OUR_TS" ]; then
-                # Defensive: trust gate below would catch most bots (no
-                # push access), but keep the explicit *[bot]/Copilot
-                # filter as a cheap pre-check before the API call.
-                is_bot_account "$USER" && continue
-                # Cheap body filter first — skip the trust API call for
-                # any reply that isn't an explicit memorize request.
-                if ! is_memorize_request "$BODY"; then
-                    continue
-                fi
-                # Trust gate: only push-access collaborators can mutate
-                # the rule list. Drive-by commenters can post
-                # /srosro-memorize all they want; we ignore them. Logged
-                # at info so misuse is visible.
-                # LIVE (#233): /memorize mutates the shared rule corpus and
-                # pushes it, so it shapes every future review. Memorize
-                # comments are rare — no volume argument for a cached verdict.
-                # rc captured, not collapsed to a boolean: the log has to name
-                # WHY, and "no push access" is only one of the three reasons a
-                # non-zero comes back (lib/auth.sh::trust_denial_reason).
-                is_trusted_repo_author_live "$REPO" "$USER"; MEMO_RC=$?
-                if [ "$MEMO_RC" -ne 0 ]; then
-                    log "${REPO}#${PR_NUM}: /${BOT_CMD_PREFIX}-memorize from @${USER} ignored ($(trust_denial_reason "$MEMO_RC" "$REPO"))"
-                    continue
-                fi
-                REPLY_KEY="${REPO}#${PR_NUM}#${ID}"
-                if [ -z "$(seen_get "$REPLIES_SEEN_FILE" "$REPLY_KEY")" ]; then
-                    REPLIES+="--- Memorize request [${REPLY_KEY}] by @${USER} on ${REPO} PR #${PR_NUM} ---"$'\n'
-                    REPLIES+="$BODY"$'\n\n'
-                    jq -c --null-input \
-                        --arg k "$REPLY_KEY" --arg r "$REPO" --arg p "$PR_NUM" --arg u "$USER" \
-                        '{key:$k, repo:$r, pr:$p, user:$u}' >> "$REPLIES_META_FILE"
-                fi
-            fi
-        done < <(echo "$COMMENTS" | jq -c '.[]')
-    done
+        fi
+        REPLY_KEY="${REPO}#${PR_NUM}#${ID}"
+        if [ -z "$(seen_get "$REPLIES_SEEN_FILE" "$REPLY_KEY")" ]; then
+            REPLIES+="--- Memorize request [${REPLY_KEY}] by @${USER} on ${REPO} PR #${PR_NUM} ---"$'\n'
+            REPLIES+="$(jq -r '.body' <<< "$REQ")"$'\n\n'
+            jq -c --null-input \
+                --arg k "$REPLY_KEY" --arg r "$REPO" --arg p "$PR_NUM" --arg u "$USER" \
+                '{key:$k, repo:$r, pr:$p, user:$u}' >> "$REPLIES_META_FILE"
+        fi
+    done <<< "$REQUESTS"
 done
 
 if [ -z "$REPLIES" ]; then
     # A previous tick may have committed successfully while its push failed.
     # Retry that remote half even when there is no new feedback to process.
     persist_guidance
+    advance_cursor
     log "no new /${BOT_CMD_PREFIX}-memorize requests"
     exit 0
 fi
@@ -231,7 +208,7 @@ log "signals: memorize_requests=$REPLY_COUNT — updating mistakes list..."
 
 MISTAKES=$(cat "$CLAUDE_DIR/COMMENT_REVIEW_MISTAKES.md")
 
-PROMPT="You maintain a ranked top-48 list of review-calibration rules based on EXPLICIT, OPT-IN feedback. Each new signal is a comment containing \`/${BOT_CMD_PREFIX}-memorize\` posted by a trusted (push-access) human collaborator after a bot review on the same PR — they're explicitly asking the bot to remember a lesson. This list is rewritten end-to-end on each update — it is not append-only. Your default action is to make the SMALLEST possible change that captures new signal; over-writing the whole list for one datapoint is a failure mode.
+PROMPT="You maintain a ranked top-48 list of review-calibration rules based on EXPLICIT, OPT-IN feedback. Each new signal is a comment containing \`/${BOT_CMD_PREFIX}-memorize\` posted by a trusted (push-access) human collaborator on a reviewed PR — they're explicitly asking the bot to remember a lesson. This list is rewritten end-to-end on each update — it is not append-only. Your default action is to make the SMALLEST possible change that captures new signal; over-writing the whole list for one datapoint is a failure mode.
 
 INPUTS:
 - The current \`COMMENT_REVIEW_MISTAKES.md\` (the list you are editing)
@@ -399,7 +376,8 @@ while IFS= read -r META; do
         log "$KEY: WARNING — seen_set failed AFTER posting ACK; next tick may re-learn from this request and post a duplicate ACK"
     fi
 done < "$REPLIES_META_FILE"
-
+[ "$ACK_PAUSED" -eq 1 ] && CURSOR_HOLD=1
+advance_cursor
 
 # Commit only the learner-owned file and synchronize any locally pending commit.
 # Unrelated operator changes elsewhere in code-config retain their index state.

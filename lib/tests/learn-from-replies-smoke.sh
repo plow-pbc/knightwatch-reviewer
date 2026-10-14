@@ -43,13 +43,13 @@ mkdir -p "$HOME/.local/bin"
 # stub resolves.
 export PATH="$HOME/.local/bin:$PATH"
 
-export STUB_PR_LIST_LOG="$STATE_DIR/gh-pr-list.log"
+export STUB_API_LOG="$STATE_DIR/gh-api.log"
 export MOCK_COMMENTS_FILE="$TMPDIR/comments.json"
 echo "[]" > "$MOCK_COMMENTS_FILE"
 
 # Stub gh — same shape as approve-from-replies-smoke.sh's stub. Records
-# pr-list calls so override scenarios can assert. Returns a PR only for
-# the smoke's "test-org/probe-repo".
+# comments-endpoint calls (repo + since) so scenarios can assert which repos
+# were walked and from which cursor.
 cat > "$HOME/.local/bin/gh" <<'STUB'
 #!/bin/bash
 if [ "$1" = "pr" ] && [ "$2" = "comment" ]; then
@@ -67,26 +67,10 @@ if [ "$1" = "pr" ] && [ "$2" = "comment" ]; then
     [ -n "${MOCK_SIBLING_STAMPS_PAUSE:-}" ] \
         && printf '%s\n' "$(( $(date +%s) + 300 ))" > "$STATE_DIR/gh-rate-limited-until"
     exit 0
-elif [ "$1" = "pr" ] && [ "$2" = "list" ]; then
-    repo=""
-    for ((i=1; i<=$#; i++)); do
-        if [ "${!i}" = "--repo" ]; then
-            j=$((i+1))
-            repo="${!j}"
-            break
-        fi
-    done
-    echo "PR_LIST repo=$repo" >> "${STUB_PR_LIST_LOG:-/dev/null}"
-    if [ "$repo" = "test-org/probe-repo" ]; then
-        # `gh pr list --json number --state all --limit 200` is the call.
-        echo '[{"number":1}]'
-    else
-        echo '[]'
-    fi
 elif [ "$1" = "api" ]; then
     # MOCK_GH_API_FAIL=1 simulates an API outage on the comments fetch.
     # The script's pipefail-aware `gh api ... | jq` should surface this
-    # as a pipeline failure, log it, and skip the PR.
+    # as a pipeline failure, log it, and skip the repo.
     if [ -n "${MOCK_GH_API_FAIL:-}" ]; then
         echo "API down" >&2
         exit 1
@@ -99,7 +83,8 @@ elif [ "$1" = "api" ]; then
             repos/*)    endpoint="$arg" ;;
         esac
     done
-    if [[ "$endpoint" == */issues/*/comments* ]]; then
+    if [[ "$endpoint" == */issues/comments\?since=* ]]; then
+        echo "API ${endpoint}" >> "${STUB_API_LOG:-/dev/null}"
         # When --paginate is set AND a page-2 fixture exists, emit both
         # pages back-to-back. `gh api --paginate` produces N JSON arrays
         # concatenated; the script's `| jq -s 'add // []'` slurps and
@@ -168,7 +153,7 @@ REPOS=("test-org/probe-repo")
 CONF
 
 run_learn() {
-    : > "$STUB_PR_LIST_LOG"
+    : > "$STUB_API_LOG"
     : > "$LOG_FILE"
     # The author-trust verdict cache (#233) is stop-state: a warm entry answers
     # WITHOUT probing, so a scenario asserting a probe branch would exercise the
@@ -177,14 +162,22 @@ run_learn() {
     bash "$PROJECT_ROOT/learn-from-replies.sh" >/dev/null 2>&1 || true
 }
 
+# comment ID LOGIN BODY CREATED → one repo-wide issue-comment object on PR #1.
+comment() {
+    jq -cn --argjson id "$1" --arg u "$2" --arg b "$3" --arg t "$4" \
+        '{id: $id, user: {login: $u}, body: $b, created_at: $t, updated_at: $t,
+          html_url: "https://github.com/test-org/probe-repo/pull/1#issuecomment-\($id)"}'
+}
+comments() { jq -cs . ; }
+
 # Scenario 1: empty comments + REPOS override honored.
 echo "  scenario 1: empty comments — early exit, REPOS override observed..."
 run_learn
 grep -q "no new /srosro-memorize requests" "$LOG_FILE" || { echo "FAIL scenario 1: expected early-exit log line"; cat "$LOG_FILE"; exit 1; }
-grep -q "PR_LIST repo=test-org/probe-repo" "$STUB_PR_LIST_LOG" || { echo "FAIL scenario 1: REPOS override not honored (expected to poll test-org/probe-repo)"; cat "$STUB_PR_LIST_LOG"; exit 1; }
-if grep -q "PR_LIST repo=cncorp/plow" "$STUB_PR_LIST_LOG"; then
+grep -q "API repos/test-org/probe-repo/issues/comments" "$STUB_API_LOG" || { echo "FAIL scenario 1: REPOS override not honored (expected to poll test-org/probe-repo)"; cat "$STUB_API_LOG"; exit 1; }
+if grep -q "API repos/cncorp/plow/" "$STUB_API_LOG"; then
     echo "FAIL scenario 1 (REPOS-override regression): polled hardcoded cncorp/plow — config.env override was clobbered"
-    cat "$STUB_PR_LIST_LOG"
+    cat "$STUB_API_LOG"
     exit 1
 fi
 
@@ -195,10 +188,8 @@ echo "  scenario 2: untrusted /srosro-memorize — ignored with log..."
 NOW_ISO=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 # Portable epoch→ISO — `date -u -d "@<epoch>"` is GNU-only. python3 fixes both.
 EARLIER_ISO=$(python3 -c "import datetime; print(datetime.datetime.fromtimestamp($(($(date +%s) - 60)), tz=datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))")
-# The script requires a prior comment from BOT_USER (srosro) to anchor
-# "after a bot review" sequencing. Then a later comment from a non-
-# trusted user containing /srosro-memorize.
-printf '[{"id":900,"created_at":"%s","user":{"login":"srosro"},"body":"%s\\nbot review"},{"id":901,"created_at":"%s","user":{"login":"stranger"},"body":"/srosro-memorize don'"'"'t require imports cleanup"}]\n' "$EARLIER_ISO" "$BOT_AUTO_POST_MARKER" "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+{ comment 900 srosro "$BOT_AUTO_POST_MARKER"$'\n'"bot review" "$EARLIER_ISO"
+  comment 901 stranger "/srosro-memorize don't require imports cleanup" "$NOW_ISO"; } | comments > "$MOCK_COMMENTS_FILE"
 run_learn
 grep -q "/srosro-memorize from @stranger ignored (no push access)" "$LOG_FILE" || { echo "FAIL scenario 2: expected trust-gate ignore log for @stranger"; cat "$LOG_FILE"; exit 1; }
 grep -q "no new /srosro-memorize requests" "$LOG_FILE" || { echo "FAIL scenario 2: untrusted request should not have been collected"; cat "$LOG_FILE"; exit 1; }
@@ -213,24 +204,22 @@ echo "  scenario 3: /srosro-memorize on page 2 — pagination merges both pages.
 # Portable epoch→ISO — `date -u -d "@<epoch>"` is GNU-only. python3 fixes both.
 EARLIER_ISO=$(python3 -c "import datetime; print(datetime.datetime.fromtimestamp($(($(date +%s) - 60)), tz=datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))")
 NOW_ISO=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Page 1: bot's auto-post anchoring LAST_OUR_TS.
-printf '[{"id":920,"created_at":"%s","user":{"login":"srosro"},"body":"%s\\nbot review"}]\n' "$EARLIER_ISO" "$BOT_AUTO_POST_MARKER" > "$MOCK_COMMENTS_FILE"
-# Page 2: untrusted /srosro-memorize.
+comment 920 srosro "$BOT_AUTO_POST_MARKER"$'\n'"bot review" "$EARLIER_ISO" | comments > "$MOCK_COMMENTS_FILE"
 export MOCK_COMMENTS_FILE_PAGE2="$TMPDIR/comments-page2.json"
-printf '[{"id":921,"created_at":"%s","user":{"login":"stranger"},"body":"/srosro-memorize page-two reply"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE_PAGE2"
+comment 921 stranger "/srosro-memorize page-two reply" "$NOW_ISO" | comments > "$MOCK_COMMENTS_FILE_PAGE2"
 run_learn
 grep -q "/srosro-memorize from @stranger ignored (no push access)" "$LOG_FILE" || { echo "FAIL scenario 3 (single-page-fetch regression): expected page-2 /srosro-memorize to be observed and trust-gate-ignored"; cat "$LOG_FILE"; exit 1; }
 unset MOCK_COMMENTS_FILE_PAGE2
 rm -f "$TMPDIR/comments-page2.json"
 
 # Scenario 4: gh api fetch failure — pipefail surfaces the failure, the
-# script logs the boundary error and skips that PR. Without pipefail (or
+# script logs the boundary error and skips that repo. Without pipefail (or
 # without the `|| { log; continue }` wrapper) the failed fetch would
 # silently produce [] from jq and the run would look successful.
 echo "  scenario 4: gh api comments fetch fails — log + skip (pipefail wins)..."
 echo "[]" > "$MOCK_COMMENTS_FILE"
 MOCK_GH_API_FAIL=1 run_learn
-grep -q "comments fetch failed — skipping this PR for this tick" "$LOG_FILE" || { echo "FAIL scenario 4: expected fail-loud log line on gh api failure"; cat "$LOG_FILE"; exit 1; }
+grep -q "test-org/probe-repo: comments fetch failed — API down" "$LOG_FILE" || { echo "FAIL scenario 4: expected fail-loud log line on gh api failure"; cat "$LOG_FILE"; exit 1; }
 export STUB_ACK_LOG="$STATE_DIR/gh-ack.log"
 TRUSTED_NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 TRUSTED_EARLIER=$(python3 -c "import datetime; print(datetime.datetime.fromtimestamp($(($(date +%s) - 120)), tz=datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))")
@@ -239,10 +228,9 @@ seed_two_requests() {
     echo '{}' > "$REPLIES_SEEN_FILE"
     rm -f "$STATE_DIR/gh-rate-limited-until"
     unset MOCK_COMMENTS_FILE_PAGE2
-    # A bot auto-post must come FIRST and be older: the collector skips a repo
-    # with no bot comment, and only counts requests newer than the bot's last one.
-    printf '[{"id":929,"created_at":"%s","user":{"login":"srosro"},"body":"%s\\nbot review"},{"id":930,"created_at":"%s","user":{"login":"trusteduser"},"body":"/srosro-memorize first lesson"},{"id":931,"created_at":"%s","user":{"login":"trusteduser"},"body":"/srosro-memorize second lesson"}]\n' \
-        "$TRUSTED_EARLIER" "$BOT_AUTO_POST_MARKER" "$TRUSTED_NOW" "$TRUSTED_NOW" > "$MOCK_COMMENTS_FILE"
+    { comment 929 srosro "$BOT_AUTO_POST_MARKER"$'\n'"bot review" "$TRUSTED_EARLIER"
+      comment 930 trusteduser "/srosro-memorize first lesson" "$TRUSTED_NOW"
+      comment 931 trusteduser "/srosro-memorize second lesson" "$TRUSTED_NOW"; } | comments > "$MOCK_COMMENTS_FILE"
 }
 ACKS_TWO='<ACK key="test-org/probe-repo#1#930">noted one</ACK>
 <ACK key="test-org/probe-repo#1#931">noted two</ACK>'
@@ -327,4 +315,30 @@ run_learn
 [ "$(git -C "$CODE_CONFIG_FIXTURE" rev-parse HEAD)" != "$(git --git-dir="$CODE_CONFIG_REMOTE" rev-parse refs/heads/main)" ] \
     || { echo "FAIL scenario 8: operator's later local commit was published by the learner"; git -C "$CODE_CONFIG_FIXTURE" log --oneline --decorate -4; exit 1; }
 
-echo "  PASS (8 scenarios: REPOS-override-observed, untrusted-memorize-ignored, page-2-paginated, gh-api-failure-fail-loud, acks-throttled-then-recovered-and-seen, pause-mid-batch-per-key-retention, code-config-guidance-committed, pending-push-retried)"
+echo "  scenario 9: operator's own request counts; bot footer and quote-reply do not..."
+: > "$STUB_ACK_LOG"
+echo '{}' > "$REPLIES_SEEN_FILE"
+{ comment 940 srosro "$BOT_AUTO_POST_MARKER"$'\n'"review body"$'\n'"\`/srosro-memorize <feedback>\` — teach a lesson" "$TRUSTED_EARLIER"
+  comment 941 trusteduser "> \`/srosro-memorize <feedback>\` — teach a lesson"$'\n\n'"agreed, thanks" "$TRUSTED_NOW"
+  comment 942 srosro "/srosro-memorize operator lesson" "$TRUSTED_NOW"; } | comments > "$MOCK_COMMENTS_FILE"
+MOCK_TRUSTED_USERS="srosro trusteduser" MOCK_CODEX_ACKS='<ACK key="test-org/probe-repo#1#942">noted</ACK>' run_learn
+grep -q "memorize_requests=1 " "$LOG_FILE" \
+    || { echo "FAIL scenario 9: expected exactly the operator's request (942) — bot footer or quote-reply leaked in, or the operator was skipped as the bot"; cat "$LOG_FILE"; exit 1; }
+[ "$(jq -r 'keys | join(",")' "$REPLIES_SEEN_FILE")" = "test-org/probe-repo#1#942" ] \
+    || { echo "FAIL scenario 9: wrong request learned"; cat "$REPLIES_SEEN_FILE"; exit 1; }
+
+echo "  scenario 10: cursor holds across a failed fetch, advances after a clean walk..."
+CURSOR_FILE="$STATE_DIR/learn-cursor.json"
+OLD_CURSOR="2026-01-01T00:00:00Z"
+jq -n --arg s "$OLD_CURSOR" '{since: $s}' > "$CURSOR_FILE"
+echo "[]" > "$MOCK_COMMENTS_FILE"
+MOCK_GH_API_FAIL=1 run_learn
+[ "$(jq -r .since "$CURSOR_FILE")" = "$OLD_CURSOR" ] \
+    || { echo "FAIL scenario 10: cursor advanced past a window whose fetch failed — requests in it are never read"; cat "$CURSOR_FILE"; exit 1; }
+run_learn
+grep -q "since=$OLD_CURSOR" "$STUB_API_LOG" \
+    || { echo "FAIL scenario 10: retry tick did not re-read from the held cursor"; cat "$STUB_API_LOG"; exit 1; }
+[ "$(jq -r .since "$CURSOR_FILE")" \> "$OLD_CURSOR" ] \
+    || { echo "FAIL scenario 10: cursor did not advance after a clean walk — every tick re-reads the same window"; cat "$CURSOR_FILE"; exit 1; }
+
+echo "  PASS (10 scenarios: REPOS-override-observed, untrusted-memorize-ignored, page-2-paginated, gh-api-failure-fail-loud, acks-throttled-then-recovered-and-seen, pause-mid-batch-per-key-retention, code-config-guidance-committed, pending-push-retried, operator-request-counts-footer-and-quote-do-not, cursor-held-on-failure-advanced-on-success)"
