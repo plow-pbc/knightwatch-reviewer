@@ -379,8 +379,6 @@ def _terminal_err_line(err_file: Path, peel_footer: bool = True) -> str:
     integer) after it, so peel only that known suffix. Never scan the whole
     stream: reflected PR content must not spoof a real failure into a
     soft-degrade or a retry."""
-    if not err_file.exists():
-        return ""
     lines = [ln for ln in err_file.read_text(errors="replace").splitlines() if ln.strip()]
     if (
         peel_footer
