@@ -161,6 +161,13 @@ _CODEX_RATE_LIMIT_RE = re.compile(
     r"exceeded retry limit.{0,40}\b429\b",
     re.IGNORECASE | re.DOTALL,
 )
+# A 429 is often per-call, not account-wide: during OpenAI's 2026-10-14
+# elevated-error window ~65% of specialist calls 429'd in ~60ms while intent and
+# sibling angles on the same account succeeded, so aborting the run on any one
+# 429 failed aiworthusing#143 63 times in 3h. run_codex retries such a call once
+# after this pause, then a still-429'd ANGLE degrades via rc=124 like a capacity
+# bounce; intent / aggregator 429s keep the abort + account-pause above.
+RATE_LIMIT_RETRY_SEC = 30
 # Codex prints this when the chosen model is momentarily oversubscribed server-
 # side — a PER-CALL transient (one specialist bounces while its siblings on the
 # same account succeed), NOT an account-wide cap/auth/429. So it must degrade
@@ -366,6 +373,25 @@ def _wait_with_watchdog(
         return 124, reason, retryable
 
 
+def _terminal_err_line(err_file: Path, peel_footer: bool = True) -> str:
+    """Codex's terminal diagnostic: the last non-empty stderr line. Current
+    builds may append an exact two-line accounting footer ("tokens used" + an
+    integer) after it, so peel only that known suffix. Never scan the whole
+    stream: reflected PR content must not spoof a real failure into a
+    soft-degrade or a retry."""
+    if not err_file.exists():
+        return ""
+    lines = [ln for ln in err_file.read_text(errors="replace").splitlines() if ln.strip()]
+    if (
+        peel_footer
+        and len(lines) >= 3
+        and lines[-2] == "tokens used"
+        and _CODEX_TOKEN_COUNT_RE.fullmatch(lines[-1])
+    ):
+        return lines[-3]
+    return lines[-1] if lines else ""
+
+
 def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
               effort: str = "high") -> int:
     """Wrap one `codex exec` invocation. Writes prompt.txt/output.md/log.txt
@@ -376,7 +402,9 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
     _wait_with_watchdog), retries codex exactly once: log.txt is archived
     to log.attempt1.txt and any half-written output.md is unlinked first.
     Non-retryable kills (hard-cap, late-stale, worker-budget-exhausted)
-    and two-in-a-row hangs return 124 so the run's degrade/abort path fires."""
+    and two-in-a-row hangs return 124 so the run's degrade/abort path fires.
+    A codex 429 (terminal stderr line) also gets that one retry, after
+    RATE_LIMIT_RETRY_SEC."""
     repo = Path(repo_dir)
     agent = Path(agent_dir)
     agent.mkdir(parents=True, exist_ok=True)
@@ -421,7 +449,7 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
                     err_file.rename(agent / "err.attempt1.txt")
                 out_file.unlink(missing_ok=True)
                 with log_file.open("a") as lf:
-                    lf.write(f"[{_ts()}] agent={name} attempt 2 (first hung; see log.attempt1.txt)\n")
+                    lf.write(f"[{_ts()}] agent={name} attempt 2 (see log.attempt1.txt)\n")
             with log_file.open("a") as lf, err_file.open("a") as ef:
                 proc = subprocess.Popen(argv, stdout=lf, stderr=ef, start_new_session=True)
             exit_code, kill_reason, retryable = _wait_with_watchdog(proc, log_file, err_file)
@@ -430,7 +458,10 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
             # "(retrying)" suffix and the break on will_retry, not raw retryable —
             # otherwise the final review-costing kill is mislabeled "(retrying)"
             # and the `grep -c` rate this surfacing exists for double-counts it.
-            will_retry = retryable and attempt == 1
+            rate_limited = exit_code != 0 and bool(
+                _CODEX_RATE_LIMIT_RE.search(_terminal_err_line(err_file))
+            )
+            will_retry = (retryable or rate_limited) and attempt == 1
             if kill_reason is not None:
                 with log_file.open("a") as lf:
                     lf.write(f"[{_ts()}] agent={name} killed: {kill_reason}\n")
@@ -446,6 +477,9 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
                     + (" (retrying)" if will_retry else ""))
             if not will_retry:
                 break
+            if rate_limited:
+                log(f"{name}: codex 429 — retrying once in {RATE_LIMIT_RETRY_SEC}s")
+                time.sleep(RATE_LIMIT_RETRY_SEC)
 
     with log_file.open("a") as lf:
         lf.write(f"[{_ts()}] agent={name} exit={exit_code}\n")
@@ -457,20 +491,8 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
         # placeholder. Stdout (model reasoning) is excluded so PR-
         # controlled output can't spoof a public quota placeholder.
         err_text = err_file.read_text(errors="replace")
-        # Codex normally leaves its terminal diagnostic as the last non-empty
-        # stderr line. Current builds may append an exact two-line accounting
-        # footer ("tokens used" + an integer) after a capacity diagnostic, so
-        # peel only that known suffix. Do not scan the whole stream: reflected
-        # PR content must not spoof an unrelated failure into soft-degrade.
-        err_lines = [ln for ln in err_text.splitlines() if ln.strip()]
-        last_err_line = err_lines[-1] if err_lines else ""
-        capacity_err_line = last_err_line
-        if (
-            len(err_lines) >= 3
-            and err_lines[-2] == "tokens used"
-            and _CODEX_TOKEN_COUNT_RE.fullmatch(err_lines[-1])
-        ):
-            capacity_err_line = err_lines[-3]
+        last_err_line = _terminal_err_line(err_file, peel_footer=False)
+        capacity_err_line = _terminal_err_line(err_file)
         m = _CODEX_QUOTA_RE.search(err_text)
         if m:
             sentinel = agent.parent.parent / "_codex_quota.txt"
@@ -480,6 +502,12 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
             # so review-one-pr.sh takes it OFFLINE until an operator re-login
             # rather than spin-aborting + commenting on every PR.
             (agent.parent.parent / "_codex_auth_fatal.txt").write_text("codex auth invalid\n")
+        elif (_CODEX_RATE_LIMIT_RE.search(capacity_err_line)
+              and (name in SPECIALISTS or name.startswith("critic-"))):
+            # Still 429 after run_codex's in-place retry, on one angle: per-call
+            # (see RATE_LIMIT_RETRY_SEC) — drop this angle, finish the review.
+            log(f"{name}: codex 429 after retry — degrading this angle (per-call transient)")
+            return 124
         elif _CODEX_RATE_LIMIT_RE.search(err_text):
             # Transient 429: codex exhausted its own retries against a rate
             # limit. Not a usage cap (no reset time), not fatal auth — back the
