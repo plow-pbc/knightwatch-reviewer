@@ -20,9 +20,8 @@ BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
 # There is no body-wide "contains this marker" test in any command selector —
 # it was redundant, and it dropped real requests that quoted a bot post (#221).
 #
-# $BOT_USER covers the gap marker-first does not: is_memorize_request
-# (learn-from-replies.sh) matches body-wide and unanchored, so it relies on
-# that file's author filter and ACK defanging instead.
+# learn-from-replies.sh's memorize selector is the same anchored `asks`, so an
+# unmarked comment under $BOT_USER is the operator speaking, not the bot.
 #
 # Body-wide marker tests that remain by design, so a grep hit is not drift:
 # lib/pr-comments.sh's auto-TRIGGER exclusion (that producer leads with the
