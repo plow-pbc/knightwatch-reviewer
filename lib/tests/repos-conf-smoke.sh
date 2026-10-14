@@ -467,13 +467,13 @@ KID_REFRESH_UNIT="$SAND_SYSTEMD2/pr-reviewer-kid-refresh.service"
 # change that left external KID_PATHS checkouts read-only cleared this suite.
 grep -q '^ReadWritePaths=.*/var/operator/custom-checkout' "$KID_REFRESH_UNIT" || { echo "FAIL D.2: kid-refresh ReadWritePaths= is missing operator path /var/operator/custom-checkout (a comment mention does not grant write)"; grep '^ReadWritePaths=' "$KID_REFRESH_UNIT"; exit 1; }
 grep -q "/should/not/appear" "$KID_REFRESH_UNIT" && { echo "FAIL D.2: kid-refresh unit contains template path /should/not/appear — .example was sourced instead of live"; grep '^ReadWritePaths=' "$KID_REFRESH_UNIT"; exit 1; }
-# Auto-manifest render fence: install.sh sources repos.conf.auto via
-# the loader, which drops legacy KID_PATHS values and convention-
-# defaults to $KWR_CLONE_ROOT/<name>. The rendered kid-refresh unit
-# must include the CONVENTION path for auto-tracked repos, NOT the
-# stale legacy value from the auto file.
+# Auto-manifest render fence: the loader convention-defaults auto-tracked
+# repos to $KWR_CLONE_ROOT/<name>, which @KWR_CLONE_ROOT@ already grants —
+# so the enumeration must leave it out, or every org-sync clone drifts the
+# installed unit and forces a sudo re-render on the next deploy.
 expected_auto_path="$SAND_HOME/services/kwr-repos/auto-repo"
-grep -q -- "$expected_auto_path" "$KID_REFRESH_UNIT" || { echo "FAIL D.2 (convention render): kid-refresh unit missing convention path $expected_auto_path — loader didn't drop+default"; grep '^ReadWritePaths=' "$KID_REFRESH_UNIT"; exit 1; }
+grep -q "^ReadWritePaths=.* $SAND_HOME/services/kwr-repos " "$KID_REFRESH_UNIT" || { echo "FAIL D.2 (clone root): kid-refresh ReadWritePaths= is missing clone root $SAND_HOME/services/kwr-repos"; grep '^ReadWritePaths=' "$KID_REFRESH_UNIT"; exit 1; }
+grep -q -- "^ReadWritePaths=.*-$expected_auto_path" "$KID_REFRESH_UNIT" && { echo "FAIL D.2 (clone-root enumeration): $expected_auto_path is enumerated though the clone root covers it"; grep '^ReadWritePaths=' "$KID_REFRESH_UNIT"; exit 1; }
 # Stale-leak fence: the legacy KID_PATHS value from the auto file
 # (`/var/auto/auto-checkout`) must NOT appear in the rendered unit.
 # If it does, the loader's snapshot+drop step in
