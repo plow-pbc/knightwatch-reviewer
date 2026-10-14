@@ -145,8 +145,8 @@ make_install_overlay() {
 # Smoke fixture — divergent from repos.conf.example so install.sh skips
 # the bootstrap-exit guard. Confined to the overlay so it never lands
 # in $PROJECT_ROOT.
-REPOS=("smoke-org/smoke-repo")
-declare -A KID_PATHS=(["smoke-org/smoke-repo"]="$HOME/Hacking/smoke-checkout")
+REPOS=("smoke-org/smoke-repo" "smoke-org/auto-repo")
+declare -A KID_PATHS=(["smoke-org/smoke-repo"]="$HOME/Hacking/smoke-checkout" ["smoke-org/auto-repo"]="$HOME/services/kwr-repos/auto-repo")
 declare -A SOURCE_PATHS=(["smoke-org/smoke-repo"]="$HOME/Hacking/smoke-checkout")
 CONF
 }
@@ -223,10 +223,10 @@ EXPECTED_KID_RW_PATHS=$(
     REPOS=( ); declare -A KID_PATHS=( )
     # shellcheck disable=SC1091
     . "$SHARED_OVERLAY/repos.conf"
-    # Both render shapes prefix paths with `-` so a missing checkout
-    # doesn't fail systemd unit start (matches install.sh).
-    paths=$(printf '%s\n' "${KID_PATHS[@]}" | sort -u | sed 's|^|-|' | tr '\n' ' ')
-    printf '%s' "${paths% }"
+    # Only the manual out-of-clone-root checkout renders, `-`-prefixed so a
+    # missing checkout doesn't fail unit start; the clone-root entry is
+    # covered by @KWR_CLONE_ROOT@ and must not appear (org-sync drift).
+    printf '%s' "-${KID_PATHS[smoke-org/smoke-repo]}"
 )
 # KWR_CLONE_ROOT defaults to $HOME/services/kwr-repos in
 # lib/tracked-repos.sh. The sandboxed HOME is $TMPDIR/home; install.sh

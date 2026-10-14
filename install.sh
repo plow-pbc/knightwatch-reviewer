@@ -262,8 +262,10 @@ mkdir -p "$HOME/pages/knightwatch"   # status-page unit's ReadWritePaths must ex
 
 # Dedupe + sort for stable rendering across runs so cmp-based idempotency
 # doesn't trigger spurious copies when bash hashing reorders the assoc
-# array between runs.
-KID_RW_PATHS=$(printf '%s\n' "${KID_PATHS[@]}" | sort -u | sed 's|^|-|' | tr '\n' ' ')
+# array between runs. Paths under $KWR_CLONE_ROOT are already writable via
+# that root, so they're left out: otherwise every org-sync clone drifts the
+# installed unit and the next deploy needs sudo to re-render it.
+KID_RW_PATHS=$(printf '%s\n' "${KID_PATHS[@]}" | sort -u | awk -v r="$KWR_CLONE_ROOT/" 'NF && index($0, r) != 1 { print "-" $0 }' | tr '\n' ' ')
 KID_RW_PATHS="${KID_RW_PATHS% }"
 
 CHANGED=0
