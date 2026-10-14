@@ -85,6 +85,11 @@ elif [ "$1" = "api" ]; then
     done
     if [[ "$endpoint" == */issues/comments\?since=* ]]; then
         echo "API ${endpoint}" >> "${STUB_API_LOG:-/dev/null}"
+        # MOCK_GH_API_FAIL_REPO → only that repo's fetch fails.
+        if [ -n "${MOCK_GH_API_FAIL_REPO:-}" ] && [[ "$endpoint" == "repos/$MOCK_GH_API_FAIL_REPO/"* ]]; then
+            echo "API down" >&2
+            exit 1
+        fi
         # When --paginate is set AND a page-2 fixture exists, emit both
         # pages back-to-back. `gh api --paginate` produces N JSON arrays
         # concatenated; the script's `| jq -s 'add // []'` slurps and
@@ -327,18 +332,23 @@ grep -q "memorize_requests=1 " "$LOG_FILE" \
 [ "$(jq -r 'keys | join(",")' "$REPLIES_SEEN_FILE")" = "test-org/probe-repo#1#942" ] \
     || { echo "FAIL scenario 9: wrong request learned"; cat "$REPLIES_SEEN_FILE"; exit 1; }
 
-echo "  scenario 10: cursor holds across a failed fetch, advances after a clean walk..."
+echo "  scenario 10: a failing repo holds only its own cursor; a clean walk advances it..."
 CURSOR_FILE="$STATE_DIR/learn-cursor.json"
 OLD_CURSOR="2026-01-01T00:00:00Z"
-jq -n --arg s "$OLD_CURSOR" '{since: $s}' > "$CURSOR_FILE"
+cp "$STATE_DIR/config.env" "$STATE_DIR/config.env.bak"
+echo 'REPOS=("test-org/probe-repo" "test-org/broken-repo")' > "$STATE_DIR/config.env"
+jq -n --arg s "$OLD_CURSOR" '{"test-org/probe-repo": $s, "test-org/broken-repo": $s}' > "$CURSOR_FILE"
 echo "[]" > "$MOCK_COMMENTS_FILE"
-MOCK_GH_API_FAIL=1 run_learn
-[ "$(jq -r .since "$CURSOR_FILE")" = "$OLD_CURSOR" ] \
+MOCK_GH_API_FAIL_REPO="test-org/broken-repo" run_learn
+[ "$(jq -r '."test-org/broken-repo"' "$CURSOR_FILE")" = "$OLD_CURSOR" ] \
     || { echo "FAIL scenario 10: cursor advanced past a window whose fetch failed — requests in it are never read"; cat "$CURSOR_FILE"; exit 1; }
+[ "$(jq -r '."test-org/probe-repo"' "$CURSOR_FILE")" \> "$OLD_CURSOR" ] \
+    || { echo "FAIL scenario 10: a broken sibling held a healthy repo's cursor — its window widens every tick"; cat "$CURSOR_FILE"; exit 1; }
 run_learn
-grep -q "since=$OLD_CURSOR" "$STUB_API_LOG" \
-    || { echo "FAIL scenario 10: retry tick did not re-read from the held cursor"; cat "$STUB_API_LOG"; exit 1; }
-[ "$(jq -r .since "$CURSOR_FILE")" \> "$OLD_CURSOR" ] \
+grep -q "API repos/test-org/broken-repo/issues/comments?since=$OLD_CURSOR" "$STUB_API_LOG" \
+    || { echo "FAIL scenario 10: retry tick did not re-read the failed repo from its held cursor"; cat "$STUB_API_LOG"; exit 1; }
+[ "$(jq -r '."test-org/broken-repo"' "$CURSOR_FILE")" \> "$OLD_CURSOR" ] \
     || { echo "FAIL scenario 10: cursor did not advance after a clean walk — every tick re-reads the same window"; cat "$CURSOR_FILE"; exit 1; }
+mv "$STATE_DIR/config.env.bak" "$STATE_DIR/config.env"
 
-echo "  PASS (10 scenarios: REPOS-override-observed, untrusted-memorize-ignored, page-2-paginated, gh-api-failure-fail-loud, acks-throttled-then-recovered-and-seen, pause-mid-batch-per-key-retention, code-config-guidance-committed, pending-push-retried, operator-request-counts-footer-and-quote-do-not, cursor-held-on-failure-advanced-on-success)"
+echo "  PASS (10 scenarios: REPOS-override-observed, untrusted-memorize-ignored, page-2-paginated, gh-api-failure-fail-loud, acks-throttled-then-recovered-and-seen, pause-mid-batch-per-key-retention, code-config-guidance-committed, pending-push-retried, operator-request-counts-footer-and-quote-do-not, per-repo-cursor-held-on-failure-advanced-on-success)"

@@ -119,22 +119,23 @@ ACK_DONE_FILE=$(mktemp)
 ACK_PAUSED=0
 trap 'rm -f "$REPLIES_META_FILE" "$ACK_DONE_FILE"' EXIT
 
-# Incremental walk: one repo-wide comments call per repo, from the start of the
-# last complete walk. A full per-PR rescan outgrew its 15-minute timeout and was
-# killed mid-walk every tick, so nothing was ever learned. `since` filters on
-# updated_at, so an edited request resurfaces — replies-seen dedups it.
+# Incremental walk: one repo-wide comments call per repo, from that repo's
+# cursor — the start of the last tick that fully read it. A full per-PR rescan
+# outgrew its 15-minute timeout and was killed mid-walk every tick, so nothing
+# was ever learned. `since` filters on updated_at, so an edited request
+# resurfaces — replies-seen dedups it. Per repo, so one broken repo holds only
+# its own window instead of widening everyone's.
 WALK_STARTED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-SINCE=$(seen_get "$LEARN_CURSOR_FILE" since)
-[ -n "$SINCE" ] || SINCE=$(date -u -d '30 days ago' +%Y-%m-%dT%H:%M:%SZ)
-# Set when this tick may have missed a request a retry could still catch. The
-# cursor then stays put, and the next tick re-reads the same window.
-CURSOR_HOLD=0
-advance_cursor() {
-    if [ "$CURSOR_HOLD" -eq 0 ]; then
-        seen_set_value "$LEARN_CURSOR_FILE" since "$WALK_STARTED" || log "WARNING — cursor write failed; next tick re-reads from $SINCE"
-    else
-        log "cursor held at $SINCE — a fetch, trust lookup or ACK was stopped this tick"
-    fi
+DEFAULT_SINCE=$(date -u -d '30 days ago' +%Y-%m-%dT%H:%M:%SZ)
+# Repos read in full this tick. A repo whose fetch, trust lookup or ACK was
+# stopped stays out, so the next tick re-reads its window.
+declare -A READ_OK=()
+advance_cursors() {
+    local repo
+    for repo in "${!READ_OK[@]}"; do
+        seen_set_value "$LEARN_CURSOR_FILE" "$repo" "$WALK_STARTED" \
+            || log "$repo: WARNING — cursor write failed; next tick re-reads its window"
+    done
 }
 
 # A request is a PR comment whose first line is the command — the same anchored
@@ -152,18 +153,18 @@ for REPO in "${REPOS[@]}"; do
     # the outer gate only guards the next tick.
     if gh_pause_active; then
         log "github rate-limited mid-tick — stopping the memorize walk here"
-        CURSOR_HOLD=1
         break
     fi
+    SINCE=$(seen_get "$LEARN_CURSOR_FILE" "$REPO")
     ERR_FILE=$(mktemp)
-    REQUESTS=$(gh api --paginate "repos/${REPO}/issues/comments?since=${SINCE}" 2>"$ERR_FILE" \
-        | jq -s -c --arg cmd "${BOT_CMD_PREFIX}-memorize" "$MEMORIZE_JQ") || {
+    REQUESTS=$(gh api --paginate "repos/${REPO}/issues/comments?since=${SINCE:-$DEFAULT_SINCE}" 2>"$ERR_FILE" \
+        | jq -s -c --arg cmd "${BOT_CMD_PREFIX}-memorize" "$MEMORIZE_JQ" 2>>"$ERR_FILE") || {
         log "$REPO: comments fetch failed — $(tr '\n' ' ' < "$ERR_FILE" | head -c 400)"
         rm -f "$ERR_FILE"
-        CURSOR_HOLD=1
         continue
     }
     rm -f "$ERR_FILE"
+    READ_OK[$REPO]=1
 
     while IFS= read -r REQ; do
         [ -n "$REQ" ] || continue
@@ -180,7 +181,7 @@ for REPO in "${REPOS[@]}"; do
         is_trusted_repo_author_live "$REPO" "$USER"; MEMO_RC=$?
         if [ "$MEMO_RC" -ne 0 ]; then
             log "${REPO}#${PR_NUM}: /${BOT_CMD_PREFIX}-memorize from @${USER} ignored ($(trust_denial_reason "$MEMO_RC" "$REPO"))"
-            [ "$MEMO_RC" -eq 2 ] && CURSOR_HOLD=1
+            [ "$MEMO_RC" -eq 2 ] && unset 'READ_OK[$REPO]'
             continue
         fi
         REPLY_KEY="${REPO}#${PR_NUM}#${ID}"
@@ -198,7 +199,7 @@ if [ -z "$REPLIES" ]; then
     # A previous tick may have committed successfully while its push failed.
     # Retry that remote half even when there is no new feedback to process.
     persist_guidance
-    advance_cursor
+    advance_cursors
     log "no new /${BOT_CMD_PREFIX}-memorize requests"
     exit 0
 fi
@@ -370,14 +371,14 @@ while IFS= read -r META; do
     [ -n "$KEY" ] || continue
     if [ "$ACK_PAUSED" -eq 1 ] && ! grep -qxF "$KEY" "$ACK_DONE_FILE" 2>/dev/null; then
         log "$KEY: ACK stopped by the github rate limit — leaving unseen to retry next tick"
+        unset "READ_OK[$(printf '%s' "$META" | jq -r '.repo')]"
         continue
     fi
     if ! seen_set "$REPLIES_SEEN_FILE" "$KEY"; then
         log "$KEY: WARNING — seen_set failed AFTER posting ACK; next tick may re-learn from this request and post a duplicate ACK"
     fi
 done < "$REPLIES_META_FILE"
-[ "$ACK_PAUSED" -eq 1 ] && CURSOR_HOLD=1
-advance_cursor
+advance_cursors
 
 # Commit only the learner-owned file and synchronize any locally pending commit.
 # Unrelated operator changes elsewhere in code-config retain their index state.
