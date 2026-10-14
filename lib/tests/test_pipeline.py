@@ -23,6 +23,8 @@ def setUpModule():
     # production entrypoint exports it. Set it once so prompt-composition tests
     # mirror that contract. Cases that need a specific value use patch.dict.
     os.environ["REPO_VISIBILITY"] = "private"
+    # run_codex's one in-place 429 retry pauses first; never sleep in the suite.
+    pipeline.RATE_LIMIT_RETRY_SEC = 0
 
 
 def tearDownModule():
@@ -190,7 +192,8 @@ def _make_codex_stub(plan=None, default=(0, "### Probe 1\nstub\n"),
     `default` (with intent + per-angle critic auto-substituted to
     contract-valid output, so orchestrator-level tests don't need to
     spell out every agent). `before_write(name, out_path)` fires pre-write
-    — used by ordering tests."""
+    — used by ordering tests. A list entry is consumed one (exit_code, output)
+    per call, for agents run_codex retries."""
     plan = plan or {}
     def side_effect(argv, **kwargs):
         out_path = Path(argv[argv.index("-o") + 1])
@@ -205,7 +208,7 @@ def _make_codex_stub(plan=None, default=(0, "### Probe 1\nstub\n"),
             # TimeoutExpired, exercising run_codex's killpg branch.
             if entry == "TIMEOUT":
                 return FakePopen(returncode=-signal.SIGKILL, raise_timeout=True)
-            ec, out = entry
+            ec, out = entry.pop(0) if isinstance(entry, list) else entry
         else:
             ec, out = default
             if agent_name == "intent":
@@ -1931,39 +1934,68 @@ class TestRunPipeline(unittest.TestCase):
         )
 
     @patch("pipeline.subprocess.Popen")
-    def test_specialist_capacity_bounce_degrades_like_timeout(self, mock_popen):
-        """A per-call codex 'model at capacity' bounce on one specialist degrades
-        that angle via the rc=124 soft-degrade path and the review COMPLETES — it
-        does not abort the run (Issue B / cncorp-plow#825). Because capacity is
-        per-call (not an account-wide cap/429), it writes NO pause sentinel."""
-        def inject_capacity(name, out_path):
-            if name == "critic-shape":
-                out_path.parent.mkdir(parents=True, exist_ok=True)
-                # Realistic err.txt from the production incident: codex streams
-                # reasoning/tool activity, emits the capacity diagnostic twice,
-                # then appends its terminal token-usage footer. The diagnostic is
-                # still the reason for the non-zero exit.
-                (out_path.parent / "err.txt").write_text(
-                    "tool: inspecting the diff...\n"
-                    + _codex_capacity_with_usage_footer()
+    def test_specialist_per_call_bounce_degrades_like_timeout(self, mock_popen):
+        """A per-call codex bounce on one angle — 'model at capacity' (Issue B /
+        cncorp-plow#825), or a 429 that survives run_codex's one retry
+        (aiworthusing#143, 2026-10-14) — degrades that angle via the rc=124
+        soft-degrade path and the review COMPLETES rather than aborting. Per-call,
+        not account-wide, so it writes NO pause sentinel."""
+        for label, terminal in (
+            # Realistic err.txt from the capacity incident: the diagnostic twice,
+            # then codex's token-usage footer.
+            ("capacity", _codex_capacity_with_usage_footer()),
+            ("429", _codex_rate_limit_line() * 2),
+        ):
+            with self.subTest(bounce=label):
+                self.tearDown()
+                self.setUp()
+                def inject(name, out_path, terminal=terminal):
+                    if name == "critic-shape":
+                        out_path.parent.mkdir(parents=True, exist_ok=True)
+                        (out_path.parent / "err.txt").write_text(
+                            "tool: inspecting the diff...\n" + terminal
+                        )
+                mock_popen.side_effect = _make_codex_stub(
+                    plan={
+                        "intent": (0, "Inferred intent: stub.\n"),
+                        "dead-code-search": (0, "dc\n"),
+                        "shape": (0, "### Probe 1\nreal shape finding\n"),
+                        "critic-shape": (1, ""),  # every attempt bounces; err.txt says why
+                        "aggregator": (0, "# Review\nVERDICT: APPROVE\n"),
+                    },
+                    before_write=inject,
                 )
+                rc = self._run()
+                self.assertEqual(rc, 0)  # degraded + completed, not aborted
+                self.assertIn("shape", (self.run_dir / "_wave_b_timeouts.txt").read_text())
+                self.assertTrue((self.run_dir / "agents" / "aggregator" / "output.md").exists())
+                self.assertFalse((self.run_dir / "_codex_rate_limit.txt").exists())
+                self.assertFalse((self.run_dir / "_codex_quota.txt").exists())
+
+    @patch("pipeline.subprocess.Popen")
+    def test_specialist_429_recovered_by_retry_keeps_the_angle(self, mock_popen):
+        """A specialist whose first call 429s and whose retry succeeds keeps its
+        angle: the review completes with nothing degraded and no pause."""
+        def inject_first_429(name, out_path, seen=set()):
+            if name == "shape" and name not in seen:
+                seen.add(name)
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                (out_path.parent / "err.txt").write_text(_codex_rate_limit_line())
         mock_popen.side_effect = _make_codex_stub(
             plan={
                 "intent": (0, "Inferred intent: stub.\n"),
                 "dead-code-search": (0, "dc\n"),
-                "shape": (0, "### Probe 1\nreal shape finding\n"),
-                "critic-shape": (1, ""),  # exits non-zero; err.txt carries the capacity error
+                "shape": [(1, ""), (0, "### Probe 1\nreal shape finding\n")],
                 "aggregator": (0, "# Review\nVERDICT: APPROVE\n"),
             },
-            before_write=inject_capacity,
+            before_write=inject_first_429,
         )
         rc = self._run()
-        self.assertEqual(rc, 0)  # degraded + completed, not aborted
-        self.assertIn("shape", (self.run_dir / "_wave_b_timeouts.txt").read_text())
-        self.assertTrue((self.run_dir / "agents" / "aggregator" / "output.md").exists())
-        # capacity is per-call → never an account-wide pause sentinel
+        self.assertEqual(rc, 0)
+        self.assertFalse((self.run_dir / "_wave_b_timeouts.txt").exists())
+        self.assertIn("real shape finding",
+                      (self.run_dir / "agents" / "shape" / "output.md").read_text())
         self.assertFalse((self.run_dir / "_codex_rate_limit.txt").exists())
-        self.assertFalse((self.run_dir / "_codex_quota.txt").exists())
 
     @patch("pipeline.subprocess.Popen")
     def test_cyber_refusal_degrades_like_capacity_not_abort(self, mock_popen):
@@ -2001,17 +2033,18 @@ class TestRunPipeline(unittest.TestCase):
 
     @patch("pipeline.subprocess.Popen")
     def test_soft_degrade_phrase_in_pr_reflected_stderr_still_aborts(self, mock_popen):
-        """Spoof guard for BOTH suppress-a-failure phrases (capacity + cyber
-        refusal): a REAL specialist failure (rc=1) must NOT be downgraded to the
+        """Spoof guard for every suppress-a-failure phrase (capacity, cyber
+        refusal, 429): a REAL specialist failure (rc=1) must NOT be downgraded to the
         rc=124 skip path just because reflected PR stderr carries the phrase —
         even as an EXACT crafted line — when it isn't codex's terminal diagnostic.
         Detection keys off the LAST non-empty stderr line (codex's real error
         lands last), so a mid-stream mention + a genuine terminal failure abort.
-        Parametrized over both phrases so each regex's spoof resistance is
+        Parametrized over every phrase so each regex's spoof resistance is
         demonstrated, not inferred from the shared last-line mechanism."""
         for label, reflected in (
             ("capacity", _codex_capacity_with_usage_footer()),
             ("cyber-refusal", _codex_cyber_refusal_lines()),
+            ("429", _codex_rate_limit_line()),
         ):
             with self.subTest(phrase=label):
                 self.tearDown()  # drop the prior case's temp dir …
