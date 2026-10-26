@@ -83,14 +83,14 @@ svg .edit line{stroke:var(--accent);stroke-dasharray:2 2;opacity:.45}svg .edit t
 <section class="card"><div class="heading"><h2>Recorded feedback</h2></div><div id="fb"></div></section>
 </div>
 <section class="card"><div class="heading"><h2>Repo setup</h2><span class="meta">30d</span></div><div class="scroll" id="repos"></div>
-<details><summary>About repo setup</summary><p>REVIEW.md and sibling scope come from the deployed clone. Prior-art index is the keepitdry index. Repos without a local clone show “Not indexed locally”.</p></details></section>
+<details><summary>About repo setup</summary><p>REVIEW.md and sibling scope come from the deployed clone. “Not searched” is the latest review's siblings it could not search: an allowlist exclusion is intended, while a missing source path or checkout is a gap and shows under attention. Prior-art index is the keepitdry index. Repos without a local clone show “Not indexed locally”.</p></details></section>
 </main>
 <script id="data" type="application/json">__DATA__</script>
 <script>
 const D=JSON.parse(document.getElementById('data').textContent);const now=Date.now()/1000;
 const $=id=>document.getElementById(id);const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const dur=s=>s==null?'—':s<90?`${Math.round(s)}s`:s<5400?`${Math.round(s/60)}m`:s<172800?`${(s/3600).toFixed(1)}h`:`${Math.round(s/86400)}d`;
-const pct=(a,b)=>b?Math.round(100*a/b)+'%':'—';const pill=(cls,t)=>`<span class="pill ${cls}">${esc(t)}</span>`;
+const pct=(a,b)=>b?Math.round(100*a/b)+'%':'—';const pill=(cls,t)=>`<span class="pill ${cls}">${esc(t)}</span>`;const notSearched=r=>(r.unsearched||[]).length?`<div class="sub">Not searched: ${esc(r.unsearched.map(u=>`${u[0]} (${(u[2]||u[1]).replace(/-/g,' ')})`).join(', '))}</div>`:'';
 const prLink=(r,n)=>`<a href="https://github.com/${esc(r)}/pull/${esc(n)}">${esc(String(r).split('/')[1])}#${esc(n)}</a>`;
 const ymd=e=>new Date(e*1000).toISOString().slice(0,10);
 // A failed source draws its panel as a red card naming the error; every other panel still draws.
@@ -215,5 +215,5 @@ panel('fb',D.feedback,['bakeoff','prompt_edits'],F=>`<table><tr><td>Critiques</t
 <p class="sub">Slash commands only. Replies aren't tracked.</p><details><summary>Recording details</summary><p>${F.rows.toLocaleString()} specialist verdicts recorded since May. Feedback uses /srosro-critique and /srosro-props. “Since prompt update” compares each critique with its specialist's latest prompt change.</p></details>`);
 // repos
 panel('repos',D.repos,['snapshot','repos'],R=>R.length?`<table><tr><th>Repo</th><th class="n">Runs · 30d</th><th class="n">Latest run</th><th>REVIEW.md</th><th>Sibling scope</th><th>Prior-art index</th></tr>${R.map(r=>`<tr><td>${esc(r.repo)}</td><td class="n">${r.reviews30}</td><td class="n">${dur(now-r.last)} ago</td>
-${r.clone?`<td>${r.review_md?pill('ok','Custom'):'<span class="none">Org default</span>'}</td><td>${r.siblings?pill('ok','Defined'):'<span class="none">All tracked repos</span>'}</td><td>${r.red?pill('bad','Stale'):r.kid==='refreshing'?pill('warnp','Refreshing'):r.kid==='fresh'?pill('ok','Fresh'):'<span class="none">No index</span>'}</td>`:'<td colspan="3"><span class="none">Not indexed locally</span></td>'}</tr>`).join('')}</table>`:'<span class="none">No runs in the last 30 days</span>');
+${r.clone?`<td>${r.review_md?pill('ok','Custom'):'<span class="none">Org default</span>'}</td><td>${r.siblings?pill('ok','Defined'):'<span class="none">All tracked repos</span>'}${notSearched(r)}</td><td>${r.red?pill('bad','Stale'):r.kid==='refreshing'?pill('warnp','Refreshing'):r.kid==='fresh'?pill('ok','Fresh'):'<span class="none">No index</span>'}</td>`:'<td colspan="3"><span class="none">Not indexed locally</span>${notSearched(r)}</td>'}</tr>`).join('')}</table>`:'<span class="none">No runs in the last 30 days</span>');
 </script></body></html>

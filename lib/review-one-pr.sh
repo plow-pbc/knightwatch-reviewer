@@ -1468,6 +1468,8 @@ write_scratch "$REPO_DIR" "previous-review.md" "$PREV_BODY"
 write_scratch "$REPO_DIR" "prior-art.md"       "${PRIOR_ART:-}"
 write_scratch "$REPO_DIR" "dead-code-static.md" "${DEAD_CODE_STATIC:-}"
 write_scratch "$REPO_DIR" "search-roots.md"    "${SEARCH_ROOTS:-}"
+# Kept with the run too: the status page lists each repo's unsearched siblings from it.
+printf '%s\n' "${SEARCH_ROOTS:-}" > "$RUN_DIR/search-roots.md"
 write_scratch "$REPO_DIR" "standards.md"       "$STANDARDS"
 # convention.md — staged HERE (after the redirect-safe reset above), not at
 # detection time, so the .codex-scratch entry survives for the specialists.
@@ -1908,6 +1910,8 @@ if ! KID_NOTE=$(format_kid_note "$KID_RAN" "$KID_DETAIL"); then
     exit 1
 fi
 REVIEW_NOTES+=("$KID_NOTE")
+COVERAGE_NOTE=$(format_coverage_note "${SEARCH_ROOTS:-}" "$REPO_VISIBILITY")
+[ -n "$COVERAGE_NOTE" ] && REVIEW_NOTES+=("$COVERAGE_NOTE")
 # Small-diff lane: angles under their changed-line floor did not run
 # (pipeline.py names them in _skipped_angles.txt; the aggregator screened them).
 SKIPPED_ANGLES_NOTE=$(skipped_angles_note_for_run "$RUN_DIR" "$PR_DIFF_LOC")

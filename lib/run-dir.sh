@@ -620,6 +620,38 @@ format_kid_note() {
     esac
 }
 
+# format_coverage_note SEARCH_ROOTS VISIBILITY
+#
+# The siblings stage_search_roots could not search, as one fragment beside the
+# prior-art note, so a partial cross-repo search shows on the review instead of
+# only in .codex-scratch/search-roots.md. Prints nothing when every sibling in
+# scope was searched. On a public repo the slugs are withheld (a sibling may be
+# private, #258): it counts by reason instead of naming.
+format_coverage_note() {
+    local roots="$1" visibility="$2" slug status reason names="" counts="" n=0
+    local -A by=()
+    while read -r slug status reason _; do
+        case "$status" in missing|excluded) ;; *) continue ;; esac
+        case "$reason" in
+            no-source-path) reason="no source path" ;;
+            allowlist) ;;
+            *) reason="checkout missing" ;;
+        esac
+        names+="${names:+, }\`$slug\` ($reason)"
+        by[$reason]=$(( ${by[$reason]:-0} + 1 ))
+        n=$((n + 1))
+    done <<< "$roots"
+    [ "$n" -eq 0 ] && return 0
+    if [ "$visibility" = public ]; then
+        for reason in "no source path" "checkout missing" "allowlist"; do
+            [ -n "${by[$reason]:-}" ] && counts+="${counts:+, }${by[$reason]} $reason"
+        done
+        printf '🔍 %d sibling repo%s not searched (%s; names withheld on a public repo)' "$n" "$([ "$n" -eq 1 ] || printf s)" "$counts"
+    else
+        printf '🔍 Not searched: %s' "$names"
+    fi
+}
+
 # kid_stale_detail MARKER_FILE
 #
 # Renders the STALE detail from the .keepitdry/.stale marker plow-kid-refresh.sh

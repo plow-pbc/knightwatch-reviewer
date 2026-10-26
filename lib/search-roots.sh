@@ -32,16 +32,23 @@
 #                   --git-dir` must succeed from it, which it does
 #                   inside any checkout.
 #
-#   missing       — slug in SOURCE_PATHS BUT either (a) the checkout
-#                   directory is absent on this host or (b) the
-#                   checkout exists but isn't a git repo (so the
-#                   materializer can't enumerate it). All operator-
-#                   config gaps (not a security boundary).
+#   missing       — not searchable on this host, with the reason:
+#                   no-source-path (no SOURCE_PATHS entry) or no-checkout
+#                   (the directory is absent, or isn't a git repo the
+#                   materializer can enumerate). All operator-config gaps
+#                   (not a security boundary).
+#
+#   excluded      — a tracked repo this repo's .knightwatch/siblings
+#                   leaves out (reason: allowlist). Intended, not a gap,
+#                   so it doesn't count toward the coverage header; it is
+#                   listed so the review header and status page can name
+#                   every repo that wasn't searched, and why.
 #
 # Output format:
 #   # coverage: full | partial | same-repo-only
 #   <repo-slug> included .siblings/<repo-slug>
-#   <repo-slug> missing
+#   <repo-slug> missing no-source-path|no-checkout
+#   <repo-slug> excluded allowlist
 #   ...
 #
 # coverage: full           — every sibling with a SOURCE_PATHS entry has its checkout on disk
@@ -67,7 +74,7 @@ stage_search_roots() {
     # read). The fallback path preserves un-onboarded repos' current
     # behavior. Once every tracked repo has .knightwatch/siblings
     # committed, the fallback can be removed.
-    local siblings=()
+    local siblings=() excluded=""
     sibling_list=$(read_knightwatch_file "$repo_dir" "$base_ref" "siblings")
     case $? in
         0)
@@ -78,6 +85,10 @@ stage_search_roots() {
                 [ -z "$line" ] && continue
                 siblings+=("$line")
             done <<< "$sibling_list"
+            for sibling_repo in "${REPOS[@]}"; do
+                [ "$sibling_repo" = "$repo" ] && continue
+                [[ " ${siblings[*]} " == *" $sibling_repo "* ]] || excluded+="$sibling_repo excluded allowlist"$'\n'
+            done
             ;;
         1)
             # ABSENT: default to all tracked REPOS minus self
@@ -117,8 +128,13 @@ stage_search_roots() {
         # Case (c) is what cncorp/plow#37 review 1 caught — the second
         # half of the BCR finding. Single-owner contract: if it can't
         # be searched, it isn't included.
-        if [ -z "$sibling_path" ] || [ ! -d "$sibling_path" ]; then
-            body+="$sibling_repo missing"$'\n'
+        if [ -z "$sibling_path" ]; then
+            body+="$sibling_repo missing no-source-path"$'\n'
+            missing=$((missing + 1))
+            continue
+        fi
+        if [ ! -d "$sibling_path" ]; then
+            body+="$sibling_repo missing no-checkout"$'\n'
             missing=$((missing + 1))
             continue
         fi
@@ -129,7 +145,7 @@ stage_search_roots() {
         # $sibling_path: for a SUBTREE sibling those differ and git checks the
         # root, so scoping to the subtree left every upstream subtree `missing`.
         if ! git -c safe.directory="$(git_safe_root "$sibling_path")" -C "$sibling_path" rev-parse --git-dir >/dev/null 2>&1; then
-            body+="$sibling_repo missing"$'\n'
+            body+="$sibling_repo missing no-checkout"$'\n'
             missing=$((missing + 1))
             continue
         fi
@@ -148,5 +164,5 @@ stage_search_roots() {
     else
         header="# coverage: partial — included=$included missing=$missing"
     fi
-    printf '%s\n%s' "$header" "$body"
+    printf '%s\n%s%s' "$header" "$body" "$excluded"
 }

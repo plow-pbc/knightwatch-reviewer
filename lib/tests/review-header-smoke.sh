@@ -719,4 +719,27 @@ assert_contains "$result" "✅ Tests passed" "clean-PR tests"
 assert_contains "$result" "✅ Prior-art (KID) checked" "clean-PR kid"
 assert_contains "$result" "✅ Strict typing enforced" "clean-PR strict-typing"
 
-echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 10 tests-note + 5 kid-note + 6 review_is_approval + clean-PR composition + bakeoff-marker pin)"
+# ===== format_coverage_note =====
+# Reads stage_search_roots' own output, so the header and the prompts share one
+# classification. Silent when every sibling in scope was searched; on a public
+# repo it counts by reason and never names a slug (a sibling may be private, #258).
+ROOTS='# coverage: partial — included=1 missing=2
+acme/foo included .siblings/acme/foo
+acme/qux missing no-checkout
+acme/never missing no-source-path
+acme/bar excluded allowlist'
+echo "  format_coverage_note: everything searched → no note..."
+[ -z "$(format_coverage_note "$(printf '# coverage: full\nacme/foo included .siblings/acme/foo')" private)" ] \
+    || { echo "FAIL: format_coverage_note — full coverage must add no note"; exit 1; }
+echo "  format_coverage_note: private repo → names each unsearched sibling and why..."
+got=$(format_coverage_note "$ROOTS" private)
+for want in '`acme/qux` (checkout missing)' '`acme/never` (no source path)' '`acme/bar` (allowlist)'; do
+    assert_contains "$got" "$want" "coverage-note private"
+done
+case "$got" in *acme/foo*) echo "FAIL: format_coverage_note — named a searched sibling"; exit 1 ;; esac
+echo "  format_coverage_note: public repo → counts only, no slug..."
+got=$(format_coverage_note "$ROOTS" public)
+assert_contains "$got" "3 sibling repos not searched (1 no source path, 1 checkout missing, 1 allowlist" "coverage-note public"
+case "$got" in *acme/*) echo "FAIL: format_coverage_note — named a slug on a public repo"; exit 1 ;; esac
+
+echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 10 tests-note + 5 kid-note + 6 review_is_approval + 3 coverage-note + clean-PR composition + bakeoff-marker pin)"
