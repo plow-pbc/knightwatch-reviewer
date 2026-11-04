@@ -25,7 +25,7 @@ tmp=$(mktemp "$AUTH_DIR/.config.json.XXXXXX")
 trap 'rm -f "$tmp"' EXIT
 # The token flows stdin-to-stdin, never through argv or the journal.
 { printf 'AWS:'; AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null \
-    aws ecr-public get-login-password --region us-east-1; } \
+    aws ecr-public get-login-password --region us-east-1 | tr -d '\n'; } \
     | base64 -w0 | jq -Rc '{auths: {"public.ecr.aws": {auth: .}}}' >"$tmp"
 chmod 0644 "$tmp"
 mv -f "$tmp" "$AUTH_DIR/config.json"
