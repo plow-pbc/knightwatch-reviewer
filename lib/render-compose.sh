@@ -113,11 +113,6 @@ GH_TALLY_REF='${HOME}/.pr-reviewer/gh-call-tally'
 [ ! -e "$GH_TALLY_SRC" ] || [ -f "$GH_TALLY_SRC" ] \
     || die "$GH_TALLY_SRC exists but is not a regular file — docker auto-created the bind source as a DIRECTORY, which silently drops every host-side sample. Remove it and re-render: rmdir '$GH_TALLY_SRC'"
 [ -f "$GH_TALLY_SRC" ] || install -m 0644 /dev/null "$GH_TALLY_SRC"
-# The registry-credential dir ecr-public-login.sh refreshes. Pre-created as the
-# operator so docker doesn't auto-create it root-owned, which the host timer
-# could never write — every pull would silently stay anonymous. 0755 so the
-# test user can traverse the read-only bind.
-mkdir -p "$HOME/.pr-reviewer/docker-auth" && chmod 0755 "$HOME/.pr-reviewer/docker-auth"
 [ -f "$GH_PAUSE_SRC" ] \
     || die "$GH_PAUSE_SRC not found (or not a regular file) — it is the single rate-limit pause the host timers and the containers share, and docker would auto-create it as a DIRECTORY, which reads as never-paused. Create it as the operator: install -m 0644 /dev/null $GH_PAUSE_SRC"
 # Worse for the mount sources the loader sources: docker auto-creates a missing

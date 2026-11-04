@@ -162,6 +162,14 @@ for _shared in gh-rate-limited-until gh-call-tally; do
   [ -f "$_shared_path" ] || install -m 0644 /dev/null "$_shared_path"
   chmod 0644 "$_shared_path"
 done
+# The registry-credential dir ecr-public-login.sh refreshes and every reviewer
+# binds read-only. Created here, before the timers are enabled below: the
+# service's ReadWritePaths fails namespace setup on an absent dir, and a
+# docker-auto-created one is root-owned, so the host timer could never write it
+# and every pull would silently stay anonymous. 0755 so the test user can
+# traverse the bind.
+mkdir -p "$INSTALL_DIR/docker-auth"
+chmod 0755 "$INSTALL_DIR/docker-auth"
 for script in "${SCRIPTS[@]}"; do
   src="$REPO_DIR/$script"
   [[ -f "$src" ]] || fail "missing repo script: $src"
