@@ -65,7 +65,7 @@ cat > "$HOME/.local/bin/git" <<'STUB'
 echo "GIT $*" >> "${STUB_GIT_LOG:-/dev/null}"
 case "$1" in
     fetch)        exit "${MOCK_GIT_FETCH_EXIT:-0}" ;;
-    pull)         exit "${MOCK_GIT_PULL_EXIT:-0}" ;;
+    merge-base)   exit "${MOCK_GIT_ANCESTOR_EXIT:-0}" ;;   # --is-ancestor HEAD origin/<branch>
     # Every upstream tip origin/<branch> has held, newest first.
     reflog)       printf '%s\n' ${MOCK_GIT_REMOTE_REFLOG:-} ;;
     symbolic-ref) echo "refs/remotes/origin/${MOCK_GIT_DEFAULT:-main}" ;;
@@ -215,7 +215,7 @@ CONF
 MOCK_GIT_LOCAL_SHA=oldsha MOCK_GIT_REMOTE_SHA=newsha run_refresh
 n=$(count_kid)
 [ "$n" -eq 1 ] || { echo "FAIL scenario 5: expected 1 kid call (incremental), got $n"; cat "$STUB_KID_LOG"; exit 1; }
-grep -q '^GIT pull --ff-only' "$STUB_GIT_LOG" || { echo "FAIL scenario 5: expected 'git pull' before index"; cat "$STUB_GIT_LOG"; exit 1; }
+grep -q '^GIT reset --hard --quiet origin/main$' "$STUB_GIT_LOG" || { echo "FAIL scenario 5: expected the fast-forward before index"; cat "$STUB_GIT_LOG"; exit 1; }
 grep -q "KID index $PROJ" "$STUB_KID_LOG" || { echo "FAIL scenario 5: kid index call shape wrong"; cat "$STUB_KID_LOG"; exit 1; }
 
 # Scenario 6: project dir not writable → skipped with an actionable line, kid
@@ -325,7 +325,7 @@ n=$(count_kid)
 [ ! -e "$STALE" ] || { echo "FAIL scenario 10: leftover .stale survived an index-current sweep"; exit 1; }
 
 echo "  scenario 11: diverged mirror is reported (behind counted), never reset; fetch failure reported too..."
-MOCK_GIT_LOCAL_SHA=aaaaaaaa MOCK_GIT_REMOTE_SHA=bbbbbbbb MOCK_GIT_PULL_EXIT=1 MOCK_GIT_BEHIND=7 run_refresh
+MOCK_GIT_LOCAL_SHA=aaaaaaaa MOCK_GIT_REMOTE_SHA=bbbbbbbb MOCK_GIT_ANCESTOR_EXIT=1 MOCK_GIT_BEHIND=7 run_refresh
 [ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 11: expected exit 1 on a diverged mirror"; exit 1; }
 grep -q '^reason=diverged$' "$STALE" || { echo "FAIL scenario 11: diverged reason"; cat "$STALE"; exit 1; }
 grep -q '^indexed=aaaaaaaa$' "$STALE" || { echo "FAIL scenario 11: indexed sha from .indexed-sha"; cat "$STALE"; exit 1; }
@@ -337,7 +337,7 @@ grep -q '^reason=fetch-failed$' "$STALE" || { echo "FAIL scenario 11: fetch-fail
 
 echo "  scenario 11c: an upstream history rewrite self-heals — the mirror sat on a tip upstream itself published..."
 rm -f "$STALE" "$PROJ/.keepitdry/.indexed-sha"
-MOCK_GIT_LOCAL_SHA=aaaaaaaa MOCK_GIT_REMOTE_SHA=bbbbbbbb MOCK_GIT_PULL_EXIT=1 MOCK_GIT_REMOTE_REFLOG="bbbbbbbb aaaaaaaa" run_refresh
+MOCK_GIT_LOCAL_SHA=aaaaaaaa MOCK_GIT_REMOTE_SHA=bbbbbbbb MOCK_GIT_ANCESTOR_EXIT=1 MOCK_GIT_REMOTE_REFLOG="bbbbbbbb aaaaaaaa" run_refresh
 [ "$REFRESH_RC" -eq 0 ] || { echo "FAIL scenario 11c: a rewritten upstream should self-heal, not redden the unit"; cat "$LOG_FILE"; exit 1; }
 grep -q '^GIT reset --hard --quiet origin/main$' "$STUB_GIT_LOG" || { echo "FAIL scenario 11c: expected a reset to origin/main"; cat "$STUB_GIT_LOG"; exit 1; }
 grep -q 'upstream rewrote' "$LOG_FILE" || { echo "FAIL scenario 11c: expected the rewrite named in the log"; cat "$LOG_FILE"; exit 1; }
