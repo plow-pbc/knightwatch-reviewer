@@ -66,6 +66,8 @@ echo "GIT $*" >> "${STUB_GIT_LOG:-/dev/null}"
 case "$1" in
     fetch)        exit "${MOCK_GIT_FETCH_EXIT:-0}" ;;
     pull)         exit "${MOCK_GIT_PULL_EXIT:-0}" ;;
+    # Every upstream tip origin/<branch> has held, newest first.
+    reflog)       printf '%s\n' ${MOCK_GIT_REMOTE_REFLOG:-} ;;
     symbolic-ref) echo "refs/remotes/origin/${MOCK_GIT_DEFAULT:-main}" ;;
     rev-list)     echo "${MOCK_GIT_BEHIND:-3}" ;;
     # Defaults to one head, so a fetch failure stays a fetch failure. Set
@@ -333,6 +335,16 @@ MOCK_GIT_FETCH_EXIT=1 run_refresh
 [ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 11: expected exit 1 on a fetch failure"; exit 1; }
 grep -q '^reason=fetch-failed$' "$STALE" || { echo "FAIL scenario 11: fetch-failed reason"; cat "$STALE"; exit 1; }
 
+echo "  scenario 11c: an upstream history rewrite self-heals — the mirror sat on a tip upstream itself published..."
+rm -f "$STALE" "$PROJ/.keepitdry/.indexed-sha"
+MOCK_GIT_LOCAL_SHA=aaaaaaaa MOCK_GIT_REMOTE_SHA=bbbbbbbb MOCK_GIT_PULL_EXIT=1 MOCK_GIT_REMOTE_REFLOG="bbbbbbbb aaaaaaaa" run_refresh
+[ "$REFRESH_RC" -eq 0 ] || { echo "FAIL scenario 11c: a rewritten upstream should self-heal, not redden the unit"; cat "$LOG_FILE"; exit 1; }
+grep -q '^GIT reset --hard --quiet origin/main$' "$STUB_GIT_LOG" || { echo "FAIL scenario 11c: expected a reset to origin/main"; cat "$STUB_GIT_LOG"; exit 1; }
+grep -q 'upstream rewrote' "$LOG_FILE" || { echo "FAIL scenario 11c: expected the rewrite named in the log"; cat "$LOG_FILE"; exit 1; }
+[ "$(count_kid)" -eq 1 ] || { echo "FAIL scenario 11c: expected the reset mirror to be re-indexed"; exit 1; }
+[ ! -e "$STALE" ] || { echo "FAIL scenario 11c: .stale should be cleared after the re-index"; cat "$STALE"; exit 1; }
+printf 'reason=fetch-failed\nindexed=never\nbehind=?\nsince=2026-01-01T00:00:00Z\n' > "$STALE"   # 11b expects 11's marker to carry in
+
 echo "  scenario 11b: an upstream with no branches yet is tolerated, not tallied — and clears the marker a prior sweep left..."
 # Deliberately NOT cleared first: scenario 11 just left reason=fetch-failed here,
 # which is exactly the state every pre-fix sweep wrote for an empty repo. The
@@ -352,4 +364,4 @@ MOCK_GIT_DEFAULT=master run_refresh
 grep -q '^GIT fetch origin master' "$STUB_GIT_LOG" || { echo "FAIL scenario 12: expected fetch of origin master"; cat "$STUB_GIT_LOG"; exit 1; }
 grep -q '^GIT rev-parse origin/master' "$STUB_GIT_LOG" || { echo "FAIL scenario 12: expected rev-parse of origin/master"; cat "$STUB_GIT_LOG"; exit 1; }
 
-echo "  PASS (15 scenarios: empty-noop, missing-checkout-tolerated-not-alarmed, bootstrap-on-no-.keepitdry, index-current-is-a-noop, failed-index-retries-next-tick, new-commits-pull-then-index, unwritable-project-skipped-loudly, index-failure-is-not-success, per-repo-timeout-does-not-strand-the-sweep, stale-marker-written-with-since-preserved, marker-write-never-follows-a-committed-symlink, stale-marker-cleared-on-success, diverged-and-fetch-failure-reported-never-reset, empty-upstream-tolerated-and-marker-cleared, default-branch-from-origin-HEAD)"
+echo "  PASS (16 scenarios: empty-noop, missing-checkout-tolerated-not-alarmed, bootstrap-on-no-.keepitdry, index-current-is-a-noop, failed-index-retries-next-tick, new-commits-pull-then-index, unwritable-project-skipped-loudly, index-failure-is-not-success, per-repo-timeout-does-not-strand-the-sweep, stale-marker-written-with-since-preserved, marker-write-never-follows-a-committed-symlink, stale-marker-cleared-on-success, diverged-and-fetch-failure-reported-never-reset, upstream-rewrite-self-heals, empty-upstream-tolerated-and-marker-cleared, default-branch-from-origin-HEAD)"
