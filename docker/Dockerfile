@@ -72,6 +72,20 @@ RUN curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${
 # uv (python tool runner used by plow `just test`)
 RUN curl -fsSL https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 
+# Rust toolchain for Rust repos' `just test` (plow-pbc/swarm: cargo fmt --check,
+# clippy, test — its CI installs stable + rustfmt + clippy). The standalone
+# installer puts plain binaries in /usr/local/bin rather than rustup proxies,
+# which would need RUSTUP_HOME, and the test user runs under `env -i`
+# (lib/run-dir.sh). The base image's gcc covers crates that build C code.
+ARG RUST_VERSION=1.99.1
+ARG RUST_SHA256=231fcae47ee950621374725b5fc3b5441d2fbda2955ac45dd7dc816d8876cfe7
+RUN curl -fsSL "https://static.rust-lang.org/dist/rust-${RUST_VERSION}-x86_64-unknown-linux-gnu.tar.xz" -o /tmp/rust.tar.xz \
+ && echo "${RUST_SHA256}  /tmp/rust.tar.xz" | sha256sum -c - \
+ && mkdir /tmp/rust && tar -xJf /tmp/rust.tar.xz -C /tmp/rust --strip-components=1 \
+ && /tmp/rust/install.sh --prefix=/usr/local \
+      --components=rustc,cargo,rust-std-x86_64-unknown-linux-gnu,rustfmt-preview,clippy-preview \
+ && rm -rf /tmp/rust /tmp/rust.tar.xz
+
 # vulture: invoked by a reviewed repo's .knightwatch/dead-code.sh (the dead-code
 # static pre-pass). install.sh installs it on the host; the container was
 # missing it, so the pre-pass exit-127'd (`xargs: vulture: No such file`) and the
