@@ -79,13 +79,17 @@ def run_record(path, t, locks):
              if isinstance(v, dict) and "start" in v and "end" in v}
     t0 = min((v["start"] for v in nodes.values()), default=0)
     skipped = path / "_skipped_angles.txt"
+    roots = path / "search-roots.md"   # stage_search_roots' classification, kept by the worker
     return {"t": t, "repo": meta.get("repo"), "pr": meta.get("pr_num"), "title": meta.get("title"),
             "status": meta.get("status"), "finished_at": meta.get("finished_at"),
             "live": not meta.get("finished_at") and pr_locked(locks, meta.get("repo", ""), meta.get("pr_num")),
             "queued_since": meta.get("queued_since"), "worker": meta.get("worker"),
             "total": (meta.get("timings") or {}).get("total"),
             "span": {k: [round(v["start"] - t0), round(v["end"] - t0)] for k, v in nodes.items()},
-            "skipped": skipped.read_text().split() if skipped.exists() else []}
+            "skipped": skipped.read_text().split() if skipped.exists() else [],
+            # [slug, missing|excluded, reason] per sibling it could not search; None when the run kept no file.
+            "unsearched": [w[:3] for w in map(str.split, roots.read_text().splitlines())
+                           if len(w) >= 2 and w[1] in ("missing", "excluded")] if roots.exists() else None}
 
 
 def image():
