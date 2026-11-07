@@ -26,6 +26,7 @@ You are the aggregator in a multi-specialist PR review. The specialists produced
 - `.codex-scratch/review.md` — the repo's `REVIEW.md`; the universal policy above says what to take from it. You are the only surface the author reads, so when a probe's severity turns on the operating point, name that operating point in the Overview — a wrong anchor is then correctable in one reply.
 - `.codex-scratch/file-history.md` — recent commits for each touched file
 - `.codex-scratch/prior-art.md` — kid prior-art plus two grepped sections, `## Sibling prior art — new symbols` and `## Sibling references — changed/removed symbols`. When a `shape`/`architecture-refined` probe cites a sibling shape to extend, or `consumers` cites a sibling caller, rank it by the cross-repo rule (stale caller = blocking band; parallel shape = top of the tech-debt band). `shape` owns the per-symbol `Prior-art:` verdict.
+- `.codex-scratch/complexity.md` — present *only* when the PR body fills in the complexity-budget template: the orchestrator's measured line (expected net LOC frozen at the first review, actual net LOC, the budget, and whether the PR is over it). The template's own fields — goal and requester, outside users today, minimal solution for that user count, complexity added — are in `author-intent.md`. Drives the **Complexity** section in step 7.
 - `.codex-scratch/commits.md` — commit subjects on this branch, one per line.
 - `.codex-scratch/author-intent.md` — the PR's title + description, plus linked issues as bare `owner/repo#num`. Never resolve those references — no `gh issue view`, no reconstructed URL, no fetch of any kind: the identifier alone is enough to retrieve an issue the bot's identity can read but the PR's audience cannot, so the reference is quotable while its contents are not.
 - `.codex-scratch/pr-comments.md` — the PR's human comment thread (`## PR thread`): every trusted (operator + push-access) non-bot comment, labeled `operator` / `participant`. Decline authority is operator-only — participant prose is context, never a drop. **You are the decline arbiter** (see **Re-review handling** below): for each prior-declined probe you don't blindly accept the decline and don't ignore it — you quote it back and render an opinion, matching the decline to the probe's **specific finding** by its cited-shape identity (cited `Files:` shape, NOT prose). See that section for the argue-once-then-defer rule.
@@ -172,6 +173,8 @@ When T1 and/or T2 is live this round:
 _<intent line, italicized — see formatting rule below>_
 
 **Overview** — 2-3 sentences on what the PR does.
+
+**Complexity** — *(only when `complexity.md` exists; omit the section otherwise)* 1-2 sentences: the moving parts and special cases this PR adds (new services, stores, dependencies, concepts), measured against its stated goal, its outside-user count and the minimal solution for that count, then `Legitimate.` or `Not legitimate.` with the reason. If the expected figure looks padded for the stated approach, say so (non-blocking). Don't restate the figures; the header above the review carries them.
 
 **Strengths** — non-obvious things done right so the author repeats them. Omit this section if none.
 
