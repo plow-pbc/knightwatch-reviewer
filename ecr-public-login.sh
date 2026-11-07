@@ -11,7 +11,10 @@
 # Written to a DIRECTORY bind (not a file bind) so the temp+rename below swaps
 # the file the containers see.
 set -euo pipefail
-PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# ~/.local/bin first: the user-local AWS CLI v2 (installer --install-dir
+# ~/.local/aws-cli --bin-dir ~/.local/bin). A snap aws can't run under the
+# unit's NoNewPrivileges/ProtectHome/PrivateTmp — snap-confine refuses.
+PATH=$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 REPO_DIR="$(dirname "$(readlink -f "$0")")"
 KEY_FILE="${ECR_PUBLIC_ENV:-$REPO_DIR/docker/secrets/ecr-public.env}"
 AUTH_DIR="${DOCKER_AUTH_DIR:-$HOME/.pr-reviewer/docker-auth}"
