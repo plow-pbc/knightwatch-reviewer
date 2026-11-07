@@ -1648,6 +1648,32 @@ else
 fi
 write_scratch "$REPO_DIR" "author-intent.md" "$(build_author_intent "$PR_INTENT_DATA")"
 
+# Complexity budget, for repos in the operator's own orgs: lib/complexity.py
+# reads the PR template's fields, measures net LOC against the expected figure
+# frozen by the first review, and returns the header note, the over-budget bit
+# (empty when the body lacks the fields) and the marker that freezes the figure.
+# complexity.md hands the aggregator the measured figures for its legitimacy call.
+COMPLEXITY_NOTE="" COMPLEXITY_OVER="" COMPLEXITY_MARKER=""
+if printf '%s\n' "${ORGS[@]}" | grep -qixF "${REPO%%/*}"; then
+    if ! _CX_COMMENTS=$(fetch_issue_comments "$REPO" "$PR_NUM"); then
+        log "$PR_ID: complexity budget needs the PR's comments and the fetch failed — aborting (orchestrator will retry)"
+        rm -rf "$REPO_DIR"
+        exit 1
+    fi
+    read -r _CX_ADDS _CX_DELS < <(_diff_adds_dels "$REPO_DIR" "$BASE_REF_SHA" "$REVIEWED_SHA")
+    if ! _CX=$(python3 "$_LIB_DIR/complexity.py" --actual "$((_CX_ADDS - _CX_DELS))" --bot "$BOT_USER" --sha "$REVIEWED_SHA" \
+            --body <(printf '%s' "$PR_INTENT_DATA" | jq -r '.body // ""') --comments <(printf '%s' "$_CX_COMMENTS")); then
+        log "$PR_ID: lib/complexity.py failed (adds=$_CX_ADDS dels=$_CX_DELS) — aborting (orchestrator will retry)"
+        rm -rf "$REPO_DIR"
+        exit 1
+    fi
+    COMPLEXITY_NOTE=$(jq -r .note <<<"$_CX")
+    COMPLEXITY_OVER=$(jq -r 'if .over == null then "" else .over end' <<<"$_CX")
+    COMPLEXITY_MARKER=$(jq -r .marker <<<"$_CX")
+    log "$PR_ID: $COMPLEXITY_NOTE"
+    [ -n "$COMPLEXITY_OVER" ] && write_scratch "$REPO_DIR" "complexity.md" "$COMPLEXITY_NOTE"
+fi
+
 # Commits narrative for AUTHOR_INTENT — sourced from the local
 # checkout (BASE_REF_SHA..REVIEWED_SHA) rather than PR_DATA.commits.
 # PR_DATA was captured before the canonical fetch + checkout, so a
@@ -1917,6 +1943,7 @@ SKIPPED_ANGLES_NOTE=$(skipped_angles_note_for_run "$RUN_DIR" "$PR_DIFF_LOC")
 # absent + no STRICT_TYPING_CMDS entry) or the checker errored (logged
 # loud above). Both cases are correctly silent in the header.
 [ -n "$STRICT_TYPING_NOTE" ] && REVIEW_NOTES+=("$STRICT_TYPING_NOTE")
+[ -n "$COMPLEXITY_NOTE" ] && REVIEW_NOTES+=("$COMPLEXITY_NOTE")
 log "$PR_ID: review-notes = ${#REVIEW_NOTES[@]} (${REVIEW_NOTES[*]:-none})"
 
 if ! COMMENT_BODY=$(prepend_review_header "$COMMENT_BODY" "${REVIEW_NOTES[@]}"); then
@@ -1936,6 +1963,9 @@ fi
 # the two prefixes can't overlap (one is the other plus "-test").
 COMMENT_BODY=$(scrub_review_paths "$COMMENT_BODY" "$TEST_DIR" SOURCE_PATHS)
 COMMENT_BODY=$(scrub_review_paths "$COMMENT_BODY" "$REPO_DIR" SOURCE_PATHS)
+# The marker goes on the LAST line: lib/complexity.py reads the frozen expected
+# figure only from there, so marker text quoted inside a review can't freeze it.
+[ -n "$COMPLEXITY_MARKER" ] && COMMENT_BODY+=$'\n\n'"$COMPLEXITY_MARKER"
 
 # One `timing` line per review, right before the post — the review's latency
 # breakdown reduced to a single greppable row. Composing first also stamps
@@ -1987,6 +2017,19 @@ if [ -n "$EYES_COMMENT_ID" ]; then
     fi
 else
     log "Posted review on $PR_ID (no placeholder was posted)"
+fi
+
+# needs-sam follows the budget each round: added while over, cleared once back
+# under. A failed label call is logged, not fatal — the review is already up
+# and the next round retries.
+if [ "$COMPLEXITY_OVER" = true ]; then
+    gh label create needs-sam --repo "$REPO" --force --color B60205 \
+            --description "Over its complexity budget: waits for the operator's OK" >/dev/null \
+        && gh pr edit "$PR_NUM" --repo "$REPO" --add-label needs-sam >/dev/null \
+        || log "$PR_ID: adding needs-sam FAILED"
+elif [ "$COMPLEXITY_OVER" = false ] \
+        && gh pr view "$PR_NUM" --repo "$REPO" --json labels --jq '.labels[].name' | grep -qx needs-sam; then
+    gh pr edit "$PR_NUM" --repo "$REPO" --remove-label needs-sam >/dev/null || log "$PR_ID: clearing needs-sam FAILED"
 fi
 
 if review_is_approval "$VERDICT" "$RUN_DIR"; then
