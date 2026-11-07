@@ -154,6 +154,11 @@ case "$SECRETS_ABS" in
     *)            SECRETS_REF="$SECRETS_ABS" ;;
 esac
 
+# One image tag per revision: the deploy builds knightwatch-reviewer:dev-<HEAD>,
+# so a later build can't swap the image under running reviewers, and the boot-time
+# re-render resolves to the image this checkout was deployed with.
+IMAGE="knightwatch-reviewer:dev-$(git -C "$REPO_ROOT" rev-parse HEAD | cut -c1-12)"
+
 # --- render (temp file; only moved into place once fully written) -----------
 TMP="$(mktemp "${OUT}.XXXXXX")"
 trap 'rm -f "$TMP"' EXIT
@@ -217,7 +222,6 @@ x-dind: &dind
 
 # Shared reviewer service contract (everything identical across accounts).
 x-reviewer: &reviewer
-  image: knightwatch-reviewer:dev
   restart: unless-stopped
   mem_limit: 20g
 
@@ -260,6 +264,7 @@ for i in "${!ids[@]}"; do
 
   reviewer-$n:
     <<: *reviewer
+    image: $IMAGE
     network_mode: "service:dind-$n"
     depends_on: [dind-$n]
     environment:
