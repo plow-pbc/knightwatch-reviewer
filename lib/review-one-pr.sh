@@ -1648,13 +1648,13 @@ else
 fi
 write_scratch "$REPO_DIR" "author-intent.md" "$(build_author_intent "$PR_INTENT_DATA")"
 
-# Complexity budget, for repos in the operator's own orgs: lib/complexity.py
+# Complexity budget, for repos owned by a COMPLEXITY_OWNERS entry: lib/complexity.py
 # reads the PR template's fields, measures net LOC against the expected figure
 # frozen by the first review, and returns the header note, the over-budget bit
 # (empty when the body lacks the fields) and the marker that freezes the figure.
 # complexity.md hands the aggregator the measured figures for its legitimacy call.
 COMPLEXITY_NOTE="" COMPLEXITY_OVER="" COMPLEXITY_MARKER=""
-if printf '%s\n' "${ORGS[@]}" | grep -qixF "${REPO%%/*}"; then
+if printf '%s\n' "${COMPLEXITY_OWNERS[@]}" | grep -qixF "${REPO%%/*}"; then
     if ! _CX_COMMENTS=$(fetch_issue_comments "$REPO" "$PR_NUM"); then
         log "$PR_ID: complexity budget needs the PR's comments and the fetch failed — aborting (orchestrator will retry)"
         rm -rf "$REPO_DIR"

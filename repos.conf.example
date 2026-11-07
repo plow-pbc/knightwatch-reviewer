@@ -116,6 +116,11 @@ declare -A SOURCE_PATHS=(
 #   e.g. ORGS=(your-org)   # review every repo in your-org
 ORGS=()
 
+# Owners whose PRs get the complexity-budget card and the needs-sam label: only
+# the ones you own, never a collaborator's account that happens to sit in ORGS.
+#   e.g. COMPLEXITY_OWNERS=(your-org)
+COMPLEXITY_OWNERS=()
+
 # Authors whose PRs are reviewed even without push access — the operator's
 # STANDING VOUCH, made once here instead of a per-PR /<prefix>-review comment
 # from a maintainer.
