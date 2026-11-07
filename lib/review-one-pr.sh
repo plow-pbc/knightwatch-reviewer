@@ -2026,13 +2026,13 @@ if [ "$COMPLEXITY_OVER" = true ]; then
     gh label create needs-sam --repo "$REPO" --force --color B60205 \
             --description "Over its complexity budget: waits for the operator's OK" >/dev/null \
         && gh pr edit "$PR_NUM" --repo "$REPO" --add-label needs-sam >/dev/null \
-        || log "$PR_ID: adding needs-sam FAILED"
+        || { log "$PR_ID: adding needs-sam FAILED — withholding approval so the PR can't merge past the gate"; COMPLEXITY_OVER=unlabeled; }
 elif [ "$COMPLEXITY_OVER" = false ] \
         && gh pr view "$PR_NUM" --repo "$REPO" --json labels --jq '.labels[].name' | grep -qx needs-sam; then
     gh pr edit "$PR_NUM" --repo "$REPO" --remove-label needs-sam >/dev/null || log "$PR_ID: clearing needs-sam FAILED"
 fi
 
-if review_is_approval "$VERDICT" "$RUN_DIR"; then
+if [ "$COMPLEXITY_OVER" != unlabeled ] && review_is_approval "$VERDICT" "$RUN_DIR"; then
     # review_is_approval (lib/run-dir.sh) is the single owner of the approval
     # rule — APPROVE verdict AND full coverage. A partial review (a specialist,
     # possibly security, timed out) falls through to the no-approval else: it's

@@ -32,9 +32,9 @@ def _section(body, heading):
     return None if m is None else _strip_comments(m.group(1)).strip()
 
 
-def _number_after(body, label):
+def _number_after(size, label):
     """The signed integer after `label` on a Size bullet, or None for a blank or `<N>` placeholder."""
-    m = re.search(rf"^[ \t]*[-*][ \t]*{label}[ \t]*(.*)$", _strip_comments(body), re.M | re.I)
+    m = re.search(rf"^[ \t]*[-*][ \t]*{label}[ \t]*(.*)$", size or "", re.M | re.I)
     n = m and NUMBER_RE.match(m.group(1).strip())
     if not n:
         return None
@@ -45,15 +45,16 @@ def _number_after(body, label):
 def parse_body(body):
     body = (body or "").replace("\r\n", "\n")
     missing = [s for s in SECTIONS if not _section(body, s)]
-    expected = _number_after(body, "Expected:")
+    size = _section(body, "Size")
+    expected = _number_after(size, "Expected:")
     if expected is None:
         missing.append("Size: Expected net LOC")
-    return {"missing": missing, "expected": expected, "claimed_actual": _number_after(body, r"At convergence:[ \t]*actual")}
+    return {"missing": missing, "expected": expected, "claimed_actual": _number_after(size, r"At convergence:[ \t]*actual")}
 
 
-def over_budget(actual, expected):
-    # Integer form of actual > expected + 0.4*|expected| + 50, so no rounding decides a PR.
-    return 5 * actual > 5 * expected + 2 * abs(expected) + 250
+def budget(expected):
+    """Largest net LOC within budget: floor(expected + 0.4*|expected| + 50), in integers so no rounding decides a PR."""
+    return (5 * expected + 2 * abs(expected) + 250) // 5
 
 
 def frozen_expected(comments, bot):
@@ -77,11 +78,10 @@ def assess(body, actual, comments, bot, sha):
                         + "; fill in those PR-template fields so the next review can check the budget"}
     frozen = frozen_expected(comments, bot)
     expected = fields["expected"] if frozen is None else frozen
-    over = over_budget(actual, expected)
-    budget = expected + 0.4 * abs(expected) + 50
+    over = actual > budget(expected)
     note = (f"📐 Complexity budget: expected {expected:+d} net LOC"
             f"{' (frozen at the first card)' if frozen is not None else ''}"
-            f" · actual {actual:+d} · budget ≤ {budget:+.0f} — "
+            f" · actual {actual:+d} · budget ≤ {budget(expected):+d} — "
             + ("**over budget**, labeled `needs-sam` until the operator OKs it" if over else "within budget"))
     if frozen is not None and fields["expected"] != frozen:
         note += f" · ⚠️ the body's Expected was edited to {fields['expected']:+d} after the first card"

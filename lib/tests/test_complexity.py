@@ -45,6 +45,7 @@ class TestAssess(unittest.TestCase):
             ("+20", 78, False), ("+20", 79, True),
             ("−500", -250, False), ("-500", -249, True),  # cleanup: delete a bit less than promised
             ("0", 50, False), ("0", 51, True),
+            ("+4", 55, False), ("+4", 56, True),  # 55.6: the displayed budget floors to the last passing LOC
         ]:
             with self.subTest(expected=expected, actual=actual):
                 self.assertEqual(complexity.assess(body(expected), actual, [], "srosro", SHA)["over"], over)
@@ -54,12 +55,16 @@ class TestAssess(unittest.TestCase):
             ("", "Goal, Outside users today, Minimal solution for that user count, Complexity added, Size: Expected net LOC"),
             (body(expected="~<N>"), "Size: Expected net LOC"),
             (body().replace("None.", "<!-- or none -->"), "Complexity added"),
+            (body().replace("## Size", "## Sizing"), "Size: Expected net LOC"),  # an Expected bullet outside Size doesn't count
         ]:
             with self.subTest(missing=missing):
                 r = complexity.assess(text, 10, [], "srosro", SHA)
                 self.assertIsNone(r["over"])
                 self.assertEqual(r["marker"], "")
                 self.assertIn("missing " + missing + ";", r["note"])
+
+    def test_displayed_budget_is_the_last_passing_loc(self):
+        self.assertIn("budget ≤ +55", complexity.assess(body("+4"), 10, [], "srosro", SHA)["note"])
 
     def test_first_card_freezes_expected(self):
         r = complexity.assess(body("+100"), 100, [], "srosro", SHA)
