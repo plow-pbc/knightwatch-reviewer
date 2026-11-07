@@ -70,7 +70,8 @@ for token in "  dind-1:" "  reviewer-1:" "  dind-4:" "  reviewer-4:" \
              "REPOS_CONF_FILE: /shared/manifest/repos.conf" \
              '${HOME}/.pr-reviewer/gh-rate-limited-until:/shared/gh-rate-limited-until' \
              '${HOME}/.pr-reviewer/gh-call-tally:/shared/gh-call-tally' \
-             "external: true" "name: kwr_claims" "GENERATED"; do
+             "external: true" "name: kwr_claims" "GENERATED" \
+             "image: knightwatch-reviewer:dev-$(git -C "$REPO_ROOT" rev-parse HEAD | cut -c1-12)"; do
     grep -qF "$token" "$SANDBOX/out.yml" || fail "render is missing: $token"
 done
 grep -qF codex-account-c "$SANDBOX/out.yml" && fail "a commented fleet.conf row was rendered"

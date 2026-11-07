@@ -100,7 +100,7 @@ Runs N reviewer containers on one host, each pinned to its own OpenAI account an
 ```sh
 cp -r docker/secrets.example docker/secrets   # then populate — see docker/secrets.example/README.md
 # fleet.conf comes along with the -r copy above; edit it to list your accounts.
-docker build -f docker/Dockerfile -t knightwatch-reviewer:dev .
+docker build -f docker/Dockerfile -t "knightwatch-reviewer:dev-$(git rev-parse HEAD | cut -c1-12)" .   # the tag lib/render-compose.sh renders
 # Create the EXTERNAL `claims` volume that holds the shared review state (runs/ —
 # the KNOWN_SHA dedup history). It's external (fixed name) so it survives project
 # rename / `docker compose down -v` / prune / re-up from a new dir; a
