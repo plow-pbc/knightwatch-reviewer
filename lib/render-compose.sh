@@ -280,6 +280,7 @@ EOF
       - $SECRETS_REF/repo-env:/root/.kwr/repo-env:ro
       - $SECRETS_REF/claude-standards:/root/.claude:ro
       - \${HOME}/services/kwr-config:/root/.kwr-config:ro
+      - \${HOME}/.pr-reviewer/docker-auth:/etc/kwr/docker-auth:ro   # DOCKER_CONFIG for just test; a DIR bind so ecr-public-login.sh's rename lands
 EOF
     if [ -n "$KID_ROOT" ]; then
         printf '      - %s:/kwr:ro\n' "$KID_ROOT" >>"$TMP"

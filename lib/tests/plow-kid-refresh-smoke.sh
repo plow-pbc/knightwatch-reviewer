@@ -65,7 +65,9 @@ cat > "$HOME/.local/bin/git" <<'STUB'
 echo "GIT $*" >> "${STUB_GIT_LOG:-/dev/null}"
 case "$1" in
     fetch)        exit "${MOCK_GIT_FETCH_EXIT:-0}" ;;
-    pull)         exit "${MOCK_GIT_PULL_EXIT:-0}" ;;
+    merge-base)   exit "${MOCK_GIT_ANCESTOR_EXIT:-0}" ;;   # --is-ancestor HEAD origin/<branch>
+    # Every upstream tip origin/<branch> has held, newest first.
+    reflog)       printf '%s\n' ${MOCK_GIT_REMOTE_REFLOG:-} ;;
     symbolic-ref) echo "refs/remotes/origin/${MOCK_GIT_DEFAULT:-main}" ;;
     rev-list)     echo "${MOCK_GIT_BEHIND:-3}" ;;
     # Defaults to one head, so a fetch failure stays a fetch failure. Set
@@ -213,7 +215,7 @@ CONF
 MOCK_GIT_LOCAL_SHA=oldsha MOCK_GIT_REMOTE_SHA=newsha run_refresh
 n=$(count_kid)
 [ "$n" -eq 1 ] || { echo "FAIL scenario 5: expected 1 kid call (incremental), got $n"; cat "$STUB_KID_LOG"; exit 1; }
-grep -q '^GIT pull --ff-only' "$STUB_GIT_LOG" || { echo "FAIL scenario 5: expected 'git pull' before index"; cat "$STUB_GIT_LOG"; exit 1; }
+grep -q '^GIT reset --hard --quiet origin/main$' "$STUB_GIT_LOG" || { echo "FAIL scenario 5: expected the fast-forward before index"; cat "$STUB_GIT_LOG"; exit 1; }
 grep -q "KID index $PROJ" "$STUB_KID_LOG" || { echo "FAIL scenario 5: kid index call shape wrong"; cat "$STUB_KID_LOG"; exit 1; }
 
 # Scenario 6: project dir not writable → skipped with an actionable line, kid
@@ -323,7 +325,7 @@ n=$(count_kid)
 [ ! -e "$STALE" ] || { echo "FAIL scenario 10: leftover .stale survived an index-current sweep"; exit 1; }
 
 echo "  scenario 11: diverged mirror is reported (behind counted), never reset; fetch failure reported too..."
-MOCK_GIT_LOCAL_SHA=aaaaaaaa MOCK_GIT_REMOTE_SHA=bbbbbbbb MOCK_GIT_PULL_EXIT=1 MOCK_GIT_BEHIND=7 run_refresh
+MOCK_GIT_LOCAL_SHA=aaaaaaaa MOCK_GIT_REMOTE_SHA=bbbbbbbb MOCK_GIT_ANCESTOR_EXIT=1 MOCK_GIT_BEHIND=7 run_refresh
 [ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 11: expected exit 1 on a diverged mirror"; exit 1; }
 grep -q '^reason=diverged$' "$STALE" || { echo "FAIL scenario 11: diverged reason"; cat "$STALE"; exit 1; }
 grep -q '^indexed=aaaaaaaa$' "$STALE" || { echo "FAIL scenario 11: indexed sha from .indexed-sha"; cat "$STALE"; exit 1; }
@@ -332,6 +334,16 @@ grep -q '^GIT reset' "$STUB_GIT_LOG" && { echo "FAIL scenario 11: refresh must n
 MOCK_GIT_FETCH_EXIT=1 run_refresh
 [ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 11: expected exit 1 on a fetch failure"; exit 1; }
 grep -q '^reason=fetch-failed$' "$STALE" || { echo "FAIL scenario 11: fetch-failed reason"; cat "$STALE"; exit 1; }
+
+echo "  scenario 11c: an upstream history rewrite self-heals — the mirror sat on a tip upstream itself published..."
+rm -f "$STALE" "$PROJ/.keepitdry/.indexed-sha"
+MOCK_GIT_LOCAL_SHA=aaaaaaaa MOCK_GIT_REMOTE_SHA=bbbbbbbb MOCK_GIT_ANCESTOR_EXIT=1 MOCK_GIT_REMOTE_REFLOG="bbbbbbbb aaaaaaaa" run_refresh
+[ "$REFRESH_RC" -eq 0 ] || { echo "FAIL scenario 11c: a rewritten upstream should self-heal, not redden the unit"; cat "$LOG_FILE"; exit 1; }
+grep -q '^GIT reset --hard --quiet origin/main$' "$STUB_GIT_LOG" || { echo "FAIL scenario 11c: expected a reset to origin/main"; cat "$STUB_GIT_LOG"; exit 1; }
+grep -q 'upstream rewrote' "$LOG_FILE" || { echo "FAIL scenario 11c: expected the rewrite named in the log"; cat "$LOG_FILE"; exit 1; }
+[ "$(count_kid)" -eq 1 ] || { echo "FAIL scenario 11c: expected the reset mirror to be re-indexed"; exit 1; }
+[ ! -e "$STALE" ] || { echo "FAIL scenario 11c: .stale should be cleared after the re-index"; cat "$STALE"; exit 1; }
+printf 'reason=fetch-failed\nindexed=never\nbehind=?\nsince=2026-01-01T00:00:00Z\n' > "$STALE"   # 11b expects 11's marker to carry in
 
 echo "  scenario 11b: an upstream with no branches yet is tolerated, not tallied — and clears the marker a prior sweep left..."
 # Deliberately NOT cleared first: scenario 11 just left reason=fetch-failed here,
@@ -352,4 +364,4 @@ MOCK_GIT_DEFAULT=master run_refresh
 grep -q '^GIT fetch origin master' "$STUB_GIT_LOG" || { echo "FAIL scenario 12: expected fetch of origin master"; cat "$STUB_GIT_LOG"; exit 1; }
 grep -q '^GIT rev-parse origin/master' "$STUB_GIT_LOG" || { echo "FAIL scenario 12: expected rev-parse of origin/master"; cat "$STUB_GIT_LOG"; exit 1; }
 
-echo "  PASS (15 scenarios: empty-noop, missing-checkout-tolerated-not-alarmed, bootstrap-on-no-.keepitdry, index-current-is-a-noop, failed-index-retries-next-tick, new-commits-pull-then-index, unwritable-project-skipped-loudly, index-failure-is-not-success, per-repo-timeout-does-not-strand-the-sweep, stale-marker-written-with-since-preserved, marker-write-never-follows-a-committed-symlink, stale-marker-cleared-on-success, diverged-and-fetch-failure-reported-never-reset, empty-upstream-tolerated-and-marker-cleared, default-branch-from-origin-HEAD)"
+echo "  PASS (16 scenarios: empty-noop, missing-checkout-tolerated-not-alarmed, bootstrap-on-no-.keepitdry, index-current-is-a-noop, failed-index-retries-next-tick, new-commits-pull-then-index, unwritable-project-skipped-loudly, index-failure-is-not-success, per-repo-timeout-does-not-strand-the-sweep, stale-marker-written-with-since-preserved, marker-write-never-follows-a-committed-symlink, stale-marker-cleared-on-success, diverged-and-fetch-failure-reported-never-reset, upstream-rewrite-self-heals, empty-upstream-tolerated-and-marker-cleared, default-branch-from-origin-HEAD)"

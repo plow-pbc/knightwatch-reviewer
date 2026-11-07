@@ -162,6 +162,14 @@ for _shared in gh-rate-limited-until gh-call-tally; do
   [ -f "$_shared_path" ] || install -m 0644 /dev/null "$_shared_path"
   chmod 0644 "$_shared_path"
 done
+# The registry-credential dir ecr-public-login.sh refreshes and every reviewer
+# binds read-only. Created here, before the timers are enabled below: the
+# service's ReadWritePaths fails namespace setup on an absent dir, and a
+# docker-auto-created one is root-owned, so the host timer could never write it
+# and every pull would silently stay anonymous. 0755 so the test user can
+# traverse the bind.
+mkdir -p "$INSTALL_DIR/docker-auth"
+chmod 0755 "$INSTALL_DIR/docker-auth"
 for script in "${SCRIPTS[@]}"; do
   src="$REPO_DIR/$script"
   [[ -f "$src" ]] || fail "missing repo script: $src"
@@ -262,8 +270,10 @@ mkdir -p "$HOME/pages/knightwatch"   # status-page unit's ReadWritePaths must ex
 
 # Dedupe + sort for stable rendering across runs so cmp-based idempotency
 # doesn't trigger spurious copies when bash hashing reorders the assoc
-# array between runs.
-KID_RW_PATHS=$(printf '%s\n' "${KID_PATHS[@]}" | sort -u | sed 's|^|-|' | tr '\n' ' ')
+# array between runs. Paths under $KWR_CLONE_ROOT are already writable via
+# that root, so they're left out: otherwise every org-sync clone drifts the
+# installed unit and the next deploy needs sudo to re-render it.
+KID_RW_PATHS=$(printf '%s\n' "${KID_PATHS[@]}" | sort -u | awk -v r="$KWR_CLONE_ROOT/" 'NF && index($0, r) != 1 { print "-" $0 }' | tr '\n' ' ')
 KID_RW_PATHS="${KID_RW_PATHS% }"
 
 CHANGED=0

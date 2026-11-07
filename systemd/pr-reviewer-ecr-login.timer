@@ -1,0 +1,11 @@
+[Unit]
+Description=Knightwatch reviewer public.ecr.aws credential refresh (every 6h; the token lives 12h)
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=6h
+Persistent=false
+Unit=pr-reviewer-ecr-login.service
+
+[Install]
+WantedBy=timers.target

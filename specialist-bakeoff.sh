@@ -187,9 +187,21 @@ for repo in "${REPOS[@]}"; do
     # next run. Each consumer still applies its own floor and other predicates.
     comments_capped=$(printf '%s' "$comments_json" | jq --arg c "$window_ceiling" '[.[] | select(.created_at <= $c)]')
 
-    trusted_set=$(gh api --paginate "repos/$repo/collaborators?affiliation=direct" 2>>"$LOG_FILE" \
-        | jq -rs '[.[][]] | map(select(.permissions.push == true) | .login) | .[]') \
-        || { log "WARN: gh api collaborators failed for $repo, skipping"; fetch_failures=$((fetch_failures + 1)); repo_failures=$((repo_failures + 1)); continue; }
+    # GitHub refuses the collaborator list to any caller without push on the
+    # repo — permanently, so it is not a fetch failure. With nobody provably
+    # trusted, the repo's reviews still count and its human feedback doesn't.
+    collab_err=$(mktemp)
+    if ! trusted_set=$(gh api --paginate "repos/$repo/collaborators?affiliation=direct" 2>"$collab_err" \
+        | jq -rs '[.[][]] | map(select(.permissions.push == true) | .login) | .[]'); then
+        cat "$collab_err" >>"$LOG_FILE"
+        if ! grep -q "Must have push access to view repository collaborators" "$collab_err"; then
+            rm -f "$collab_err"
+            log "WARN: gh api collaborators failed for $repo, skipping"; fetch_failures=$((fetch_failures + 1)); repo_failures=$((repo_failures + 1)); continue
+        fi
+        log "no push access to $repo — walking its reviews without human feedback"
+        trusted_set=""
+    fi
+    rm -f "$collab_err"
 
     declare -A pr_paths_cache=()
     declare -A pr_files_cache=()

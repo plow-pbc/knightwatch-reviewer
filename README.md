@@ -18,10 +18,26 @@ Reasonable. But that's a hardening note, not a finding that would stop the merge
 
 The bug isn't visible in any single file. It only shows up when you stitch shell startup + the migration engine builder + the infra env config + the location of the IAM hook. That's the kind of catch knightwatch is designed for.
 
-Two more, from the public [`tkmx-client`](https://github.com/srosro/tkmx-client) reporter:
+### A 131-line PR, four rounds, four bugs that would have shipped
 
-- **[#19 — legacy daemons would silently stop after `git pull`](https://github.com/srosro/tkmx-client/pull/19#issuecomment-4357873121)**. Deleting `reporter/report.js` and pointing new installs at `dist/reporter/report.js` would leave already-installed launchd/systemd units calling the removed path, because the documented update path is `git pull && npm install` and that doesn't rerun `install-service`. Caught by stitching the diff against the install script, the README's update instructions, and the systemd/launchd unit `ExecStart=` that reaches into the source tree.
-- **[#19 — recurring schema-ownership drift](https://github.com/srosro/tkmx-client/pull/19#issuecomment-4358179972)**. Flagged the third instance of the same DTO-ownership class — each new consumer re-deriving usage shapes from `agentsview` rather than one neutral seam — and asked for a refactor at the right level instead of another local patch. Fixed by extracting `reporter/usage.ts` as the single owner.
+[plow-openclaw-agent#18](https://github.com/plow-pbc/plow-openclaw-agent/pull/18) let an agent image boot a variant's own background program next to the gateway — a 24-line `variant.ts`, easy to approve. Each review round found a different way it would break; the author confirmed every one, and the PR converged clean on round four.
+
+1. **[Every published image dies at boot.](https://github.com/plow-pbc/plow-openclaw-agent/pull/18#issuecomment-5797725764)** `main.ts` imports `variant.js`, but `build.ts` compiles an explicit source list that never included it. Tests run from source, so they pass. `build.ts` wasn't in the diff.
+2. **Shutdown hangs with the agent unreachable.** The variant was spawned outside `startGateway`'s child registry, so SIGTERM never reaches it and a long-running variant keeps PID 1 alive after the gateway is gone.
+3. **[The fix for #2 took the gateway down.](https://github.com/plow-pbc/plow-openclaw-agent/pull/18#issuecomment-5797897115)** The shared close handler called `stop()` for any child, so a variant finishing normally killed the owner's agent — against the "non-fatal" contract the PR documents.
+4. **[Image validation would run real product work.](https://github.com/plow-pbc/plow-openclaw-agent/pull/18#issuecomment-5798289984)** `boot/probe.ts` — also outside the diff — calls `startGateway()`, whose new default now spawned the variant, so pre-deploy validation would run the builder's worker.
+
+### A green suite, because the fake agreed with the bug
+
+From a private repo, quoted as posted. The agent moved Gmail parsing to raw MIME (on knightwatch's own earlier recommendation), but requested `format=raw` from `users.threads.get` — Gmail only supports it on `messages.get`. It also taught the local Gmail twin to serve thread-raw, and a unit test pinned the invalid URL.
+
+> **[blocking]** Gmail's `users.threads.get` does not support `format=raw`, so every reply and every non-empty inbound poll reaches an invalid provider request and returns `email_line_gmail_input_error`; the twin's thread-raw emulation masks the production failure.
+
+The author checked Gmail's discovery document and replied:
+
+> the read path **could never have worked in production for a single thread** … the twin had been taught to serve thread-raw, **and** `test_fetch_thread_requests_raw_and_parses_the_message` asserted that exact invalid URL. The fiction was pinned on both sides at once, so a green suite was evidence of nothing.
+
+An invented API, plus a test double and a test written to agree with it, is one of the most common ways AI-written code ships broken.
 
 ## How it works
 
@@ -35,26 +51,24 @@ A timer polls tracked repos for new or updated PRs. For each, it runs a dependen
 Every run records per-stage wall-clock in `meta.json.timings` and logs one `timing …` line, so review latency is a `jq` query.
 
 ```mermaid
-flowchart TB
+flowchart LR
     PR([PR opened or updated]) --> jt & intent & dcs
 
     jt["just test<br/>(own clone, background)"] --> tg[(test-results.md)]
     intent[intent<br/>infer end-user goal] --> ii[(inferred-intent.md)]
     dcs[dead-code-search<br/>static + LLM evidence] --> dc[(dead-code.md)]
 
-    ii --> sec & di & archref & cd & shp & tst & cons & mom
-    dc --> cons
-    tg --> tst
+    tg & ii & dc --> S
 
-    subgraph S[specialists — start as soon as their inputs exist; each chains to a per-angle critic; ≤4 codex calls in flight]
-        direction LR
-        sec[security] --> ksec[critic]
-        di[data-integrity] --> kdi[critic]
-        archref["architecture-refined"] --> karchref[critic]
-        cd["contract-drift"] --> kcd[critic]
-        shp[shape] --> kshp[critic]
-        tst[tests] --> ktst[critic]
-        cons[consumers] --> kcons[critic]
+    subgraph S[specialists → per-angle critic · start once inputs exist · ≤4 codex in flight]
+        direction TB
+        sec[security → critic]
+        di[data-integrity → critic]
+        archref[architecture-refined → critic]
+        cd[contract-drift → critic]
+        shp[shape → critic]
+        tst["tests → critic<br/>(+ test-results)"]
+        cons["consumers → critic<br/>(+ dead-code)"]
         mom["momentum<br/>(re-review only)"]
     end
 
@@ -213,9 +227,9 @@ The list is operator-owned by construction: it lives in the reviewer's manifest,
 
 A DRY pre-pass: before the specialists run, `lib/review-one-pr.sh` runs [`kid`](https://github.com/srosro/knightwatch-kid) (`keepitdry`) against a semantic index of your canonical code and surfaces existing code similar to each new block, so the reviewer can flag duplication. It runs for every reviewed repo — `ORGS`-covered ones included — whose index exists at `$KWR_CLONE_ROOT/<name>`; a `KID_PATHS` entry overrides that path.
 
-Indices are built host-side (the `kid-refresh` timer indexes `KWR_CLONE_ROOT/<repo>` into `<repo>/.keepitdry`) and consumed **read-only** by the containers. To enable it: set `KID_ROOT` in `docker/secrets/config.env` to your kid **clone root** — the dir holding `knightwatch-kid/scripts/` and, by convention, the per-repo `.keepitdry` indices — then set `KID_PATHS`, `KID_OLLAMA_URL`, and `KID_EMBED_MODEL` in `docker/secrets/`, and re-run `just fleet` to render the `/kwr` bind mount into every unit. An index that lives *outside* the clone root needs its own mount: list its **host path** in `KID_EXTRA_MOUNTS` (space-separated, each rendered read-only on every unit) — e.g. `KID_EXTRA_MOUNTS=/home/odio/Hacking/plow-kid` with `["plow-pbc/plow"]="/home/odio/Hacking/plow-kid"`. Each extra index is deliberately mounted at the **same path inside the container as on the host**, so that one `KID_PATHS` value is valid in *both* manifests: the repo-root `repos.conf` (host timers — `plow-kid-refresh.sh` git-pulls + re-indexes each value as a checkout, `install.sh` grants it in the kid-refresh unit's `ReadWritePaths`) and `docker/secrets/manifest/repos.conf` (the containers' query path). A split host/container path would silently force those two same-named files to diverge on that key. Because ChromaDB's sqlite needs write access even for a query, the worker copies the read-only index into a per-container scratch dir before querying. Pin the mounted `knightwatch-kid` clone to the same commit as the image's `kid` binary to avoid script/binary skew.
+Indices are built host-side (the `kid-refresh` timer indexes `KWR_CLONE_ROOT/<repo>` into `<repo>/.keepitdry`) and consumed **read-only** by the containers. To enable it: set `KID_ROOT` in `docker/secrets/config.env` to your kid **clone root** — the dir holding `knightwatch-kid/scripts/` and, by convention, the per-repo `.keepitdry` indices — then set `KID_PATHS`, `KID_OLLAMA_URL`, and `KID_EMBED_MODEL` in `docker/secrets/`, and re-run `just fleet` to render the `/kwr` bind mount into every unit. An index that lives *outside* the clone root needs its own mount: list its **host path** in `KID_EXTRA_MOUNTS` (space-separated, each rendered read-only on every unit) — e.g. `KID_EXTRA_MOUNTS=/home/odio/Hacking/plow-kid` with `["plow-pbc/plow"]="/home/odio/Hacking/plow-kid"`. Each extra index is deliberately mounted at the **same path inside the container as on the host**, so that one `KID_PATHS` value is valid in *both* manifests: the repo-root `repos.conf` (host timers — `plow-kid-refresh.sh` updates + re-indexes each value as a checkout, `install.sh` grants it in the kid-refresh unit's `ReadWritePaths`) and `docker/secrets/manifest/repos.conf` (the containers' query path). A split host/container path would silently force those two same-named files to diverge on that key. Because ChromaDB's sqlite needs write access even for a query, the worker copies the read-only index into a per-container scratch dir before querying. Pin the mounted `knightwatch-kid` clone to the same commit as the image's `kid` binary to avoid script/binary skew.
 
-The refresh marks a repo it could not bring up to date with `<repo>/.keepitdry/.stale` (`reason=`, `indexed=`, `behind=`, `since=`) and exits non-zero, so `systemctl status pr-reviewer-kid-refresh` is red until it recovers. Reviews on that repo post `⚠️ Prior-art (KID) STALE — index at <sha>, N commits behind for D days (<reason>)` in the header; a review that could not run the lookup at all posts `🔍 Prior-art (KID) unavailable — <cause>`. A review whose cross-repo search left siblings out says so the same way: `🔍 Not searched: <slug> (no source path | checkout missing | allowlist), …` — on a public repo only the counts by reason, never the names — and the status page's Repo setup card lists each repo's unsearched siblings from its latest review, with a missing source path or checkout raised as an attention item (an allowlist exclusion is intended, so it isn't). `reason=diverged` means the mirror's default branch has no fast-forward to `origin/` — in practice an upstream history rewrite (a force-push, a re-rooted or re-cut branch), not a commit made in the mirror; the refresh never resets a mirror, so fix it by hand (`git -C <mirror> reset --hard origin/<branch>` once you have confirmed the ahead-commits are reachable from some remote ref). A repo whose upstream has no branches yet is skipped instead: there is no index to be behind, so it neither marks stale nor reddens the unit, and it starts indexing on the repo's first push. Alongside kid, `lib/prior-art-grep.sh` appends a deterministic grep of the diff's new and changed symbols across the materialized siblings to `prior-art.md` (no tokens; needs only `SOURCE_PATHS`).
+The refresh marks a repo it could not bring up to date with `<repo>/.keepitdry/.stale` (`reason=`, `indexed=`, `behind=`, `since=`) and exits non-zero, so `systemctl status pr-reviewer-kid-refresh` is red until it recovers. Reviews on that repo post `⚠️ Prior-art (KID) STALE — index at <sha>, N commits behind for D days (<reason>)` in the header; a review that could not run the lookup at all posts `🔍 Prior-art (KID) unavailable — <cause>`. A review whose cross-repo search left siblings out says so the same way: `🔍 Not searched: <slug> (no source path | checkout missing | allowlist), …` — on a public repo only the counts by reason, never the names — and the status page's Repo setup card lists each repo's unsearched siblings from its latest review, with a missing source path or checkout raised as an attention item (an allowlist exclusion is intended, so it isn't). An upstream history rewrite (a force-push, a re-rooted or re-cut branch) heals itself: when the fast-forward fails but the mirror's HEAD is a tip `origin/<branch>` once held (it's in that ref's reflog), the refresh resets to the new upstream and re-indexes. `reason=diverged` means HEAD is a commit upstream never published, so the refresh leaves it alone. Investigate before resetting by hand (`git -C <mirror> reset --hard origin/<branch>`). A repo whose upstream has no branches yet is skipped instead: there is no index to be behind, so it neither marks stale nor reddens the unit, and it starts indexing on the repo's first push. Alongside kid, `lib/prior-art-grep.sh` appends a deterministic grep of the diff's new and changed symbols across the materialized siblings to `prior-art.md` (no tokens; needs only `SOURCE_PATHS`).
 
 ### Upstream peer sets
 

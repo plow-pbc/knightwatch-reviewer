@@ -427,6 +427,7 @@ run_just_test() {
         timeout -k "$test_kill_after" "$test_timeout" \
             runuser -u "$REVIEWER_TEST_USER" -- \
             env -i PATH="$PATH" HOME="/home/$REVIEWER_TEST_USER" DOCKER_HOST="$DOCKER_HOST" \
+                DOCKER_CONFIG=/etc/kwr/docker-auth \
                 XDG_CACHE_HOME="$scenario_shared" \
                 UV_CACHE_DIR="/home/$REVIEWER_TEST_USER/.cache/uv" \
                 PIP_CACHE_DIR="/home/$REVIEWER_TEST_USER/.cache/pip" \

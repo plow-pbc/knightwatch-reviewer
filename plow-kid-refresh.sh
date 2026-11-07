@@ -150,14 +150,23 @@ for NAME in "${!KID_PATHS[@]}"; do
     REMOTE=$(git rev-parse "origin/$BRANCH" 2>/dev/null)
 
     if [ "$LOCAL" != "$REMOTE" ]; then
-        log "$NAME: new commits ${LOCAL:0:7} → ${REMOTE:0:7}, pulling"
-        if ! git pull --ff-only --quiet 2>>"$LOG_FILE"; then
+        log "$NAME: new commits ${LOCAL:0:7} → ${REMOTE:0:7}, updating"
+        if git merge-base --is-ancestor HEAD "origin/$BRANCH" 2>/dev/null; then
+            :   # a fast-forward
+        elif git reflog show --format=%H "refs/remotes/origin/$BRANCH" 2>/dev/null | grep -qxF "$LOCAL"; then
+            # HEAD is a tip upstream once published, so the mirror holds nothing
+            # of its own: upstream rewrote its history (a force-push, a rollback,
+            # a repointed remote). A mirror follows the manifest's upstream; a
+            # repointed remote's old commits are for whoever repoints it to archive.
+            log "$NAME: upstream rewrote origin/$BRANCH (${LOCAL:0:7} is a tip it published) — resetting mirror to ${REMOTE:0:7}"
+        else
             # A mirror nobody should commit to has local commits. Never reset it
             # from a timer — name it and let the operator look.
-            log "$NAME: git pull --ff-only failed — mirror diverged from origin/$BRANCH; not resetting"
+            log "$NAME: mirror diverged from origin/$BRANCH (${LOCAL:0:7} was never published upstream); not resetting"
             mark_stale "$PROJECT" diverged
             continue
         fi
+        git reset --hard --quiet "origin/$BRANCH" 2>>"$LOG_FILE" || { mark_stale "$PROJECT" diverged; continue; }
     fi
 
     # Index iff the index is not already built from this exact commit.

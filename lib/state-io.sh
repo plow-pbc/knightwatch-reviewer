@@ -250,7 +250,7 @@ gh_tally_call() {
 gh_top_callers() {
     local n="${1:-3}" out
     [ -s "$(gh_tally_file)" ] || return 0
-    out=$(sort "$(gh_tally_file)" 2>/dev/null | uniq -c | sort -rn | head -n "$n" \
+    out=$(grep -v '^#' "$(gh_tally_file)" 2>/dev/null | sort | uniq -c | sort -rn | head -n "$n" \
         | awk '{c=$1; $1=""; sub(/^ +/,""); printf "%s%s=%d", sep, $0, c; sep=", "}')
     : > "$(gh_tally_file)" 2>/dev/null || true
     printf '%s' "$out"
@@ -304,7 +304,8 @@ gh_bucket_txt() { [ "${1:--1}" -ge 0 ] 2>/dev/null && printf '%s' "$1" || printf
 # here. The check-then-write is deliberately unlocked: two workers racing emit one
 # duplicate line, which is cheaper than a lock on a path every tick crosses.
 gh_quota_report() {
-    local now interval last top core_pct gql_pct
+    local now interval last top core_pct gql_pct mark tallied spent=''
+    local tally; tally=$(gh_tally_file)
     now=$(date +%s); interval="${GH_QUOTA_REPORT_SECS:-300}"
     last=$(head -n1 "$(gh_quota_stamp_file)" 2>/dev/null || echo 0)
     case "$last" in ''|*[!0-9]*) last=0 ;; esac
@@ -319,17 +320,34 @@ gh_quota_report() {
     # 401s, so gh_note_rate_limit's drain never fires either), a 5xx spell, a
     # partition. Costs only attribution on an interval whose report was going to
     # be silent anyway.
+    # The previous report's `#mark <core_rem> <core_reset>` and the core calls
+    # since, read just before the drain — racing appends cost a sample or two.
+    # Digits-only match: the containers can write this file, and the fields reach $(( )).
+    # Core = `gh api` REST shapes, which carry no space; porcelain (`pr view`,
+    # `pr list`) and `graphql` spend the other bucket.
+    mark=$(grep -m1 -E '^#mark [0-9]+ [0-9]+$' "$tally" 2>/dev/null) || true
+    tallied=$(grep -cvE '^#| |^graphql$' "$tally" 2>/dev/null) || true
     top=$(gh_top_callers 3)
     # A failed probe earns no log line, but the stamp above already moved so a
     # flapping API cannot turn this into a per-tick storm of its own.
     gh_probe_buckets || return 0
     [ "$GH_BUCKET_CORE_LIM" -gt 0 ] && [ "$GH_BUCKET_GQL_LIM" -gt 0 ] || return 0
+    # Attribution for spend the tally cannot see. The PAT's 5000/hr is the
+    # operator's own user budget, shared with every `gh` they or their agents run
+    # on any host, so the bucket can empty while the tally stays quiet (Oct 6: a
+    # 4,300-call research scrape from another machine paused the fleet 25m). The
+    # mark is folded into the shared tally rather than the per-half stamp, so
+    # whichever half reports next measures from whichever half reported last.
+    # Same reset window only — across a reset the delta is meaningless.
+    set -- $mark
+    [ "${3:-}" = "$GH_BUCKET_CORE_RESET" ] && spent=$(( $2 - GH_BUCKET_CORE_REM ))
+    printf '#mark %s %s\n' "$GH_BUCKET_CORE_REM" "$GH_BUCKET_CORE_RESET" >> "$tally" 2>/dev/null || true
     core_pct=$(( GH_BUCKET_CORE_REM * 100 / GH_BUCKET_CORE_LIM ))
     gql_pct=$(( GH_BUCKET_GQL_REM * 100 / GH_BUCKET_GQL_LIM ))
     # Each bucket carries ITS OWN reset. A single countdown sourced from core was
     # printed after both, so a graphql-low warning handed the operator core's
     # recovery time — the wrong number for the bucket that is actually depleted.
-    log "[gh-quota] core=${GH_BUCKET_CORE_REM}/${GH_BUCKET_CORE_LIM} (${core_pct}%, resets in $(( (GH_BUCKET_CORE_RESET - now + 59) / 60 ))m) graphql=${GH_BUCKET_GQL_REM}/${GH_BUCKET_GQL_LIM} (${gql_pct}%, resets in $(( (GH_BUCKET_GQL_RESET - now + 59) / 60 ))m)${top:+ — top callers: $top}"
+    log "[gh-quota] core=${GH_BUCKET_CORE_REM}/${GH_BUCKET_CORE_LIM} (${core_pct}%, resets in $(( (GH_BUCKET_CORE_RESET - now + 59) / 60 ))m) graphql=${GH_BUCKET_GQL_REM}/${GH_BUCKET_GQL_LIM} (${gql_pct}%, resets in $(( (GH_BUCKET_GQL_RESET - now + 59) / 60 ))m)${spent:+ — core spent ${spent} since last report, ${tallied:-0} tallied REST, $(( spent - ${tallied:-0} )) untallied (other clients on this token, or --paginate pages)}${top:+ — top callers: $top}"
     # Warn on EITHER bucket: GraphQL is the loaded one here (gh pr view per
     # worker, gh pr list per repo — lib/gh-retry.sh), so a core-only gate could
     # watch it drain in silence. Headroom cannot predict a SECONDARY limit —

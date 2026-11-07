@@ -602,13 +602,40 @@ grep -q '\[gh-quota\] core=4977/5000 (99%, resets in 20m) graphql=4775/5000 (95%
     || fail "scenario 22: no per-bucket headroom line — operators cannot see the budget: $(cat "$TMP/log22")"
 grep -q 'top callers: repos/\*/\*/collaborators/\*/permission=2' "$TMP/log22" \
     || fail "scenario 22: headroom without attribution is the whack-a-mole this replaces: $(cat "$TMP/log22")"
-[ ! -s "$(gh_tally_file)" ] || fail "scenario 22: tally not consumed — counts would accumulate across reports"
+! grep -qv '^#' "$(gh_tally_file)" || fail "scenario 22: tally not consumed — counts would accumulate across reports"
 # Second call inside the interval must stay silent, or six containers ticking
 # every 30s would each emit and drown the log they exist to clarify.
 LOG_FILE="$TMP/log22" GH_QUOTA_REPORT_SECS=300 \
     GH_SHIM_BUCKETS="4977	$((NOW + 1200))	4775	$((NOW + 1200))	5000	5000" gh_quota_report
 [ "$(grep -c '\[gh-quota\] core=' "$TMP/log22")" = 1 ] \
     || fail "scenario 22: a second report inside the interval emitted anyway"
+
+echo "  scenario 22b: the report names spend the tally never saw (another client on the same token)..."
+# Scenario 22 left a mark at core=4977. 4 REST calls, 77 spent → 73 untallied;
+# the porcelain and graphql calls spend the other bucket and must not count.
+# The next row starts a new window (different reset), where a delta is meaningless;
+# the last plants a non-numeric mark, which must never reach $(( )).
+SPEND_MATRIX=(
+    "same-window|4900	$((NOW + 1200))|core spent 77 since last report, 4 tallied REST, 73 untallied"
+    "new-window|4990	$((NOW + 4800))|@ABSENT@"
+    "planted|4980	$((NOW + 4800))|@ABSENT@"
+)
+for row in "${SPEND_MATRIX[@]}"; do
+    IFS='|' read -r label core want <<<"$row"
+    [ "$label" = planted ] && { : > "$(gh_tally_file)"; echo '#mark a[$(touch $TMP/pwned)] 1' >> "$(gh_tally_file)"; }
+    for _ in 1 2 3 4; do gh_tally_call api repos/o/r/pulls/1; done
+    gh_tally_call pr view 1; gh_tally_call api graphql -f query=x
+    rm -f "$(gh_quota_stamp_file)"; : > "$TMP/log22b"
+    LOG_FILE="$TMP/log22b" GH_QUOTA_REPORT_SECS=0 \
+        GH_SHIM_BUCKETS="$core	4775	$((NOW + 1200))	5000	5000" gh_quota_report
+    if [ "$want" = "@ABSENT@" ]; then
+        grep -q 'core spent' "$TMP/log22b" && fail "scenario 22b [$label]: reported a delta it cannot know: $(cat "$TMP/log22b")"
+    else
+        grep -qF -- "$want" "$TMP/log22b" || fail "scenario 22b [$label]: expected '$want' in: $(cat "$TMP/log22b")"
+    fi
+done
+[ ! -e "$TMP/pwned" ] || fail "scenario 22b: a planted mark executed inside \$(( ))"
+: > "$(gh_tally_file)"
 
 echo "  scenario 23: the warning fires on EITHER bucket, and stays quiet when both are healthy..."
 # One table: same setup, one bucket tuple per row. GraphQL is the loaded bucket
@@ -756,7 +783,7 @@ grep -qa '\[gh-quota\] core=4977/5000' "$DIAG_LOG" \
     || fail "scenario 28b: the report never reached the saved descriptor — it has to land in the journal, not only in LOG_FILE: $(cat "$DIAG_LOG")"
 # Drained, and this attempt tallied in its place: the seeded sample is gone and
 # only the call just made remains.
-[ "$(cat "$(gh_tally_file)")" = 'repos/*/*/pulls/*' ] \
+[ "$(grep -v '^#' "$(gh_tally_file)")" = 'repos/*/*/pulls/*' ] \
     || fail "scenario 28b: the window was not consumed-then-refilled by this attempt — got: $(cat "$(gh_tally_file)")"
 # And on the SUCCESS path it must stay out of gh's stdout, which IS the API result
 # every caller captures (`perm=$(gh_api_retry …)`). Only the >&GH_DIAG_FD redirect

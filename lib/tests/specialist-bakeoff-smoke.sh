@@ -150,6 +150,11 @@ if [ "$1" = "api" ]; then
         if [ -n "$paginate" ] && [ -s "${MOCK_COMMENTS_FILE_PAGE2:-/dev/null}" ]; then
             cat "$MOCK_COMMENTS_FILE_PAGE2"
         fi
+    elif [[ "$endpoint" == */collaborators* ]] && [ -n "${MOCK_GH_COLLAB_NO_PUSH:-}" ]; then
+        # GitHub's verbatim refusal to a caller without push on the repo.
+        printf '{"message":"Must have push access to view repository collaborators.","status":"403"}\n'
+        echo "gh: Must have push access to view repository collaborators. (HTTP 403)" >&2
+        exit 1
     elif [[ "$endpoint" == */collaborators* ]]; then
         printf '[{"login":"trusted-human","permissions":{"push":true}},{"login":"untrusted-user","permissions":{"push":false}}]\n'
     elif [[ "$endpoint" == */pulls/*/commits* ]] && [ -n "${MOCK_GH_PULLS_COMMITS_FAIL:-}" ]; then
@@ -451,6 +456,27 @@ fi
 if ! grep -q "PARTIAL RUN" "$LOG_FILE" 2>/dev/null; then
     echo "FAIL scenario 4: expected PARTIAL RUN in log"
     cat "$LOG_FILE"
+    exit 1
+fi
+
+# ---- scenario 4b: no push access → collaborators 403 is permanent, not PARTIAL ----
+echo "    scenario 4b: collaborators 403 (no push access) → reviews still walked, run completes..."
+# A public repo tracked without push access (a manual REPOS entry) can never
+# list its collaborators. Counting that as a fetch failure left every nightly
+# run PARTIAL and the scorecard frozen.
+rm -f "$DB_FILE"
+build_bot_review 90 41 "$(hours_ago 480)" aggregator \
+    '1. [blocking] [from: aggregator] Foo.' \
+    | jq -s '.' > "$MOCK_COMMENTS_FILE"
+echo "SENTINEL" > "$OUT_FILE"
+MOCK_GH_COLLAB_NO_PUSH=1 run_driver || {
+    echo "FAIL scenario 4b: a permanent no-push-access 403 must not fail the run"
+    cat "$STDOUT_CAP"
+    exit 1
+}
+if ! grep -q '^| aggregator ' "$OUT_FILE"; then
+    echo "FAIL scenario 4b: the repo's bot review should still be walked and rendered"
+    cat "$OUT_FILE"
     exit 1
 fi
 
