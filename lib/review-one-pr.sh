@@ -1978,6 +1978,22 @@ log "$PR_ID: $(jq -r --arg specialists "${BAKEOFF_SPECIALISTS%,aggregator}" '
     "timing setup=\(.setup)s test=\(.test)s(queue \(.test_queue)s) intent=\(d("intent"))s dead-code=\(d("dead-code-search"))s specialists=\(span($specialists | split(",")))s aggregator=\(d("aggregator"))s total=\(.total)s"
 ' "$RUN_DIR/timings.json")"
 
+# needs-sam follows the budget each round: added while over, cleared once back
+# under. Reconciled BEFORE the post and fatal on failure: a posted review marks
+# this SHA reviewed, so a label miss after it would never be retried.
+if [ "$COMPLEXITY_OVER" = true ]; then
+    gh label create needs-sam --repo "$REPO" --force --color B60205 \
+            --description "Over its complexity budget: waits for the operator's OK" >/dev/null \
+        && gh pr edit "$PR_NUM" --repo "$REPO" --add-label needs-sam >/dev/null
+elif [ "$COMPLEXITY_OVER" = false ]; then
+    _CX_LABELED=$(gh pr view "$PR_NUM" --repo "$REPO" --json labels --jq 'any(.labels[]; .name == "needs-sam")') \
+        && { [ "$_CX_LABELED" = false ] || gh pr edit "$PR_NUM" --repo "$REPO" --remove-label needs-sam >/dev/null; }
+fi || {
+    log "$PR_ID: reconciling needs-sam FAILED — not posting (next tick will retry)"
+    rm -rf "$REPO_DIR"
+    exit 1
+}
+
 # The fleet's heaviest WRITE, and GitHub's secondary limits are driven mainly by
 # content creation — so it is the call most likely to 403. As a bare `gh` it was
 # the one call that could not stamp the pause, and a throttled post meant the next
@@ -2019,20 +2035,7 @@ else
     log "Posted review on $PR_ID (no placeholder was posted)"
 fi
 
-# needs-sam follows the budget each round: added while over, cleared once back
-# under. A failed label call is logged, not fatal — the review is already up
-# and the next round retries.
-if [ "$COMPLEXITY_OVER" = true ]; then
-    gh label create needs-sam --repo "$REPO" --force --color B60205 \
-            --description "Over its complexity budget: waits for the operator's OK" >/dev/null \
-        && gh pr edit "$PR_NUM" --repo "$REPO" --add-label needs-sam >/dev/null \
-        || { log "$PR_ID: adding needs-sam FAILED — withholding approval so the PR can't merge past the gate"; COMPLEXITY_OVER=unlabeled; }
-elif [ "$COMPLEXITY_OVER" = false ] \
-        && gh pr view "$PR_NUM" --repo "$REPO" --json labels --jq '.labels[].name' | grep -qx needs-sam; then
-    gh pr edit "$PR_NUM" --repo "$REPO" --remove-label needs-sam >/dev/null || log "$PR_ID: clearing needs-sam FAILED"
-fi
-
-if [ "$COMPLEXITY_OVER" != unlabeled ] && review_is_approval "$VERDICT" "$RUN_DIR"; then
+if review_is_approval "$VERDICT" "$RUN_DIR"; then
     # review_is_approval (lib/run-dir.sh) is the single owner of the approval
     # rule — APPROVE verdict AND full coverage. A partial review (a specialist,
     # possibly security, timed out) falls through to the no-approval else: it's
