@@ -81,7 +81,9 @@ uv tool install 'vulture==2.16' >/dev/null
 
 # --- 0. Bootstrap repos.conf from .example on a fresh clone -----------------
 # repos.conf is per-operator and gitignored; the tracked template lives at
-# repos.conf.example. On first run we copy the template into place and
+# repos.conf.example. The manifest is the one the reviewer containers mount
+# (lib/render-compose.sh, same SECRETS_DIR default), so the host timers and
+# the fleet read one file. On first run we copy the template into place and
 # exit — the placeholder REPOS would otherwise enable systemd timers that
 # spin on `gh pr list --repo your-org/example-repo`, wasting API quota and
 # polluting logs until the operator edits the file. Fail-fast at the
@@ -95,16 +97,18 @@ uv tool install 'vulture==2.16' >/dev/null
 #      operator hitting "already configured" silently is the bug.
 info "NOTE: this installs the auxiliary host timers (bake-off, org-sync, learn, poll [merged /srosro-approve + re-request], kid-refresh). The review loop itself runs in the containerized multi-account fleet — see README.md § Containerized (multi-account) deployment and docker-compose.yml."
 
-if [[ ! -f "$REPO_DIR/repos.conf" ]]; then
-    [[ -f "$REPO_DIR/repos.conf.example" ]] || fail "neither repos.conf nor repos.conf.example present at $REPO_DIR"
-    cp "$REPO_DIR/repos.conf.example" "$REPO_DIR/repos.conf"
-    info "bootstrapped repos.conf from repos.conf.example"
-    info "edit $REPO_DIR/repos.conf to track real repos, then re-run ./install.sh — exiting now without enabling timers on the placeholder manifest"
+MANIFEST="${SECRETS_DIR:-$REPO_DIR/docker/secrets}/manifest/repos.conf"
+if [[ ! -f "$MANIFEST" ]]; then
+    [[ -f "$REPO_DIR/repos.conf.example" ]] || fail "neither $MANIFEST nor repos.conf.example present"
+    mkdir -p "$(dirname "$MANIFEST")"
+    cp "$REPO_DIR/repos.conf.example" "$MANIFEST"
+    info "bootstrapped $MANIFEST from repos.conf.example"
+    info "edit $MANIFEST to track real repos, then re-run ./install.sh — exiting now without enabling timers on the placeholder manifest"
     exit 0
 fi
-if [[ -f "$REPO_DIR/repos.conf.example" ]] && cmp -s "$REPO_DIR/repos.conf" "$REPO_DIR/repos.conf.example"; then
-    info "$REPO_DIR/repos.conf is byte-for-byte identical to repos.conf.example — placeholder manifest, not edited yet"
-    info "edit $REPO_DIR/repos.conf to track real repos, then re-run ./install.sh — exiting now without enabling timers on the placeholder manifest"
+if [[ -f "$REPO_DIR/repos.conf.example" ]] && cmp -s "$MANIFEST" "$REPO_DIR/repos.conf.example"; then
+    info "$MANIFEST is byte-for-byte identical to repos.conf.example — placeholder manifest, not edited yet"
+    info "edit $MANIFEST to track real repos, then re-run ./install.sh — exiting now without enabling timers on the placeholder manifest"
     exit 0
 fi
 
@@ -131,7 +135,6 @@ mapfile -t SCRIPTS < <(list_execstart_shell_scripts "$REPO_DIR" "${service_units
 [[ ${#SCRIPTS[@]} -ge 1 ]] || fail "no scripts discovered from ExecStart= directives — check systemd/*.service shape"
 
 DIRS=(lib docs prompts)
-CONFIG_FILES=(repos.conf)
 
 # 0700, healed on every run. The shared files below are 0644 owned by the
 # operator, which already covers both writers (the host timers run as that
@@ -180,12 +183,8 @@ for d in "${DIRS[@]}"; do
   [[ -d "$src" ]] || fail "missing repo dir: $src"
   ln -snf "$src" "$INSTALL_DIR/$d"
 done
-for f in "${CONFIG_FILES[@]}"; do
-  src="$REPO_DIR/$f"
-  [[ -f "$src" ]] || fail "missing repo config file: $src"
-  ln -snf "$src" "$INSTALL_DIR/$f"
-done
-ok "symlinked ${#SCRIPTS[@]} scripts + ${#DIRS[@]} dirs + ${#CONFIG_FILES[@]} config file(s) into $INSTALL_DIR"
+ln -snf "$MANIFEST" "$INSTALL_DIR/repos.conf"
+ok "symlinked ${#SCRIPTS[@]} scripts + ${#DIRS[@]} dirs + repos.conf into $INSTALL_DIR"
 
 # --- 2. systemd units -------------------------------------------------------
 shopt -s nullglob

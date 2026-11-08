@@ -94,7 +94,7 @@ write_uv_stub "$STUB_BIN"
 # script itself doesn't manipulate PATH (no privilege-escalation seam),
 # so test interception is the test's responsibility.
 run_install() {
-    PATH="$STUB_BIN:$PATH" bash "$@" >/dev/null 2>&1
+    SECRETS_DIR="$(dirname "$1")/secrets" PATH="$STUB_BIN:$PATH" bash "$@" >/dev/null 2>&1
 }
 
 # Count helpers — read $STUB_LOG for assertions. grep -c prints the
@@ -123,12 +123,12 @@ mapfile -t PROD_SCRIPTS < <(list_execstart_shell_scripts "$PROJECT_ROOT" "$PROJE
 [[ ${#PROD_SCRIPTS[@]} -ge 1 ]] || { echo "FAIL setup: no scripts discovered from production unit files"; exit 1; }
 
 # All scenarios run install.sh from a temp overlay (symlinks of the
-# project tree + a divergent repos.conf written into the overlay only),
+# project tree + a divergent manifest under the overlay's own SECRETS_DIR),
 # never against $PROJECT_ROOT directly. The boundary rule: tests must
 # never write to a path that real install.sh treats as live operator
-# config. $PROJECT_ROOT/repos.conf is gitignored but install.sh treats
-# it as the operator's manifest; a smoke fixture written there leaks
-# into a subsequent direct ./install.sh invocation.
+# config. $PROJECT_ROOT/docker/secrets/manifest/repos.conf is gitignored but
+# install.sh treats it as the operator's manifest; a smoke fixture written
+# there leaks into a subsequent direct ./install.sh invocation.
 #
 # Helper: build an overlay containing a divergent repos.conf install.sh
 # will accept (i.e., not byte-identical to .example, so it skips the
@@ -138,10 +138,10 @@ make_install_overlay() {
     mkdir -p "$overlay"
     for entry in "$PROJECT_ROOT"/*; do
         local name="$(basename "$entry")"
-        [ "$name" = "repos.conf" ] && continue   # tests own this in the overlay
         ln -snf "$entry" "$overlay/$name"
     done
-    cat > "$overlay/repos.conf" <<'CONF'
+    mkdir -p "$overlay/secrets/manifest"
+    cat > "$overlay/secrets/manifest/repos.conf" <<'CONF'
 # Smoke fixture — divergent from repos.conf.example so install.sh skips
 # the bootstrap-exit guard. Confined to the overlay so it never lands
 # in $PROJECT_ROOT.
@@ -222,7 +222,7 @@ DIR_MODE=$(stat -c '%a' "$INSTALL_DIR" 2>/dev/null || echo missing)
 EXPECTED_KID_RW_PATHS=$(
     REPOS=( ); declare -A KID_PATHS=( )
     # shellcheck disable=SC1091
-    . "$SHARED_OVERLAY/repos.conf"
+    . "$SHARED_OVERLAY/secrets/manifest/repos.conf"
     # Only the manual out-of-clone-root checkout renders, `-`-prefixed so a
     # missing checkout doesn't fail unit start; the clone-root entry is
     # covered by @KWR_CLONE_ROOT@ and must not appear (org-sync drift).
@@ -529,7 +529,7 @@ for _ in $(seq 1 100); do if [ -e "$TMPDIR/s8-lock-held" ]; then break; fi; slee
 # set +e to capture install's non-zero rc — under set -e the assignment from a
 # failing command substitution would abort the suite before $? is read.
 set +e
-s8_out=$(ORG_SYNC_LOCK_WAIT=1 PATH="$STUB_BIN:$PATH" bash "$COLD_OVERLAY/install.sh" 2>&1)
+s8_out=$(ORG_SYNC_LOCK_WAIT=1 SECRETS_DIR="$COLD_OVERLAY/secrets" PATH="$STUB_BIN:$PATH" bash "$COLD_OVERLAY/install.sh" 2>&1)
 s8_rc=$?
 set -e
 kill "$s8_holder" 2>/dev/null || true; wait "$s8_holder" 2>/dev/null || true
