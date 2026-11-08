@@ -40,8 +40,8 @@ LOADER="$PROJECT_ROOT/lib/tracked-repos.sh"
 # an operator's tracked-repo list would land in their next commit. Pin
 # the fence with check-ignore so the smoke surfaces a regression
 # directly instead of waiting for a leak in the wild.
-echo "  A0: /repos.conf is gitignored at the repo root..."
-git -C "$PROJECT_ROOT" check-ignore -q repos.conf || { echo "FAIL A0: $PROJECT_ROOT/repos.conf is not gitignored — operator manifest privacy fence missing"; exit 1; }
+echo "  A0: docker/secrets/manifest/repos.conf is gitignored..."
+git -C "$PROJECT_ROOT" check-ignore -q docker/secrets/manifest/repos.conf || { echo "FAIL A0: $PROJECT_ROOT/docker/secrets/manifest/repos.conf is not gitignored — operator manifest privacy fence missing"; exit 1; }
 
 # ----- Contract A: canonical manifest shape (template) --------------------
 # Source the tracked .example template — the live repos.conf is
@@ -352,16 +352,14 @@ chmod +x "$SAND_HOME/.local/bin/sudo" "$SAND_HOME/.local/bin/systemctl"
 . "$SCRIPT_DIR/tests/uv-stub.sh"
 write_uv_stub "$SAND_HOME/.local/bin"
 
-# Symlink-overlay of $PROJECT_ROOT, omitting any pre-existing repos.conf.
-# Keeps the smoke from touching the operator's working tree and lets
-# each scenario decide whether the live file is present.
+# Symlink-overlay of $PROJECT_ROOT with its own SECRETS_DIR (passed by
+# run_overlay_install), so the manifest each scenario writes lands in the
+# overlay, never in the operator's docker/secrets.
 make_overlay() {
     local overlay="$1"
-    mkdir -p "$overlay"
+    mkdir -p "$overlay/secrets/manifest"
     for entry in "$PROJECT_ROOT"/*; do
-        name="$(basename "$entry")"
-        [ "$name" = "repos.conf" ] && continue
-        ln -snf "$entry" "$overlay/$name"
+        ln -snf "$entry" "$overlay/$(basename "$entry")"
     done
 }
 
@@ -376,6 +374,7 @@ run_overlay_install() {
         HOME="$SAND_HOME" \
             PATH="$SAND_HOME/.local/bin:$PATH" \
             INSTALL_DIR="$install_dir" \
+            SECRETS_DIR="$overlay/secrets" \
             SYSTEMD_DIR="$systemd_dir" \
             ./install.sh > /dev/null
     )
@@ -388,10 +387,10 @@ SAND_INSTALL1="$TMPDIR/install-fresh"
 SAND_SYSTEMD1="$TMPDIR/systemd-fresh"
 mkdir -p "$SAND_INSTALL1" "$SAND_SYSTEMD1"
 make_overlay "$OVERLAY1"
-[ ! -e "$OVERLAY1/repos.conf" ] || { echo "FAIL D.1 setup: overlay already has repos.conf"; exit 1; }
+[ ! -e "$OVERLAY1/secrets/manifest/repos.conf" ] || { echo "FAIL D.1 setup: overlay already has repos.conf"; exit 1; }
 run_overlay_install "$OVERLAY1" "$SAND_INSTALL1" "$SAND_SYSTEMD1"
-[ -f "$OVERLAY1/repos.conf" ] || { echo "FAIL D.1: overlay repos.conf not created by bootstrap"; exit 1; }
-cmp -s "$OVERLAY1/repos.conf" "$OVERLAY1/repos.conf.example" || { echo "FAIL D.1: bootstrapped repos.conf does not match .example byte-for-byte"; exit 1; }
+[ -f "$OVERLAY1/secrets/manifest/repos.conf" ] || { echo "FAIL D.1: overlay repos.conf not created by bootstrap"; exit 1; }
+cmp -s "$OVERLAY1/secrets/manifest/repos.conf" "$OVERLAY1/repos.conf.example" || { echo "FAIL D.1: bootstrapped repos.conf does not match .example byte-for-byte"; exit 1; }
 # Early-exit boundary: install.sh must NOT reach the symlink stage on bootstrap.
 if [ -e "$SAND_INSTALL1/repos.conf" ]; then
     echo "FAIL D.1: install.sh continued past bootstrap exit — repos.conf delivered into INSTALL_DIR"
@@ -426,7 +425,7 @@ declare -A KID_PATHS=(["template-org/template-repo"]="/should/not/appear")
 declare -A SOURCE_PATHS=(["template-org/template-repo"]="/should/not/appear")
 CONF
 # Operator's live file with paths that must survive install.sh untouched.
-cat > "$OVERLAY2/repos.conf" <<'CONF'
+cat > "$OVERLAY2/secrets/manifest/repos.conf" <<'CONF'
 REPOS=("custom-org/custom-repo")
 declare -A KID_PATHS=(["custom-org/custom-repo"]="/var/operator/custom-checkout")
 declare -A SOURCE_PATHS=(["custom-org/custom-repo"]="/var/operator/custom-checkout")
@@ -444,16 +443,16 @@ cat > "$SAND_INSTALL2/repos.conf.auto" <<'CONF'
 REPOS+=("auto-org/auto-repo")
 KID_PATHS["auto-org/auto-repo"]="${KID_PATHS["auto-org/auto-repo"]:-/var/auto/auto-checkout}"
 CONF
-LIVE_BEFORE=$(sha1sum "$OVERLAY2/repos.conf" | awk '{print $1}')
+LIVE_BEFORE=$(sha1sum "$OVERLAY2/secrets/manifest/repos.conf" | awk '{print $1}')
 run_overlay_install "$OVERLAY2" "$SAND_INSTALL2" "$SAND_SYSTEMD2"
 # Symlink delivery
 LINK="$SAND_INSTALL2/repos.conf"
 [ -L "$LINK" ] || { echo "FAIL D.2: $LINK is not a symlink"; ls -la "$SAND_INSTALL2"; exit 1; }
 TARGET="$(readlink -f "$LINK")"
-EXPECTED="$(readlink -f "$OVERLAY2/repos.conf")"
+EXPECTED="$(readlink -f "$OVERLAY2/secrets/manifest/repos.conf")"
 [ "$TARGET" = "$EXPECTED" ] || { echo "FAIL D.2: symlink resolves to $TARGET, expected $EXPECTED"; exit 1; }
 # Preservation: live file's bytes are unchanged
-LIVE_AFTER=$(sha1sum "$OVERLAY2/repos.conf" | awk '{print $1}')
+LIVE_AFTER=$(sha1sum "$OVERLAY2/secrets/manifest/repos.conf" | awk '{print $1}')
 [ "$LIVE_BEFORE" = "$LIVE_AFTER" ] || { echo "FAIL D.2: install.sh modified the operator's repos.conf (sha changed $LIVE_BEFORE → $LIVE_AFTER)"; exit 1; }
 # Render-from-live: rendered kid-refresh unit's ReadWritePaths derives from
 # the live file, not the template. If install.sh sourced .example by
@@ -487,7 +486,7 @@ SAND_INSTALL3="$TMPDIR/install-rawcopy"
 SAND_SYSTEMD3="$TMPDIR/systemd-rawcopy"
 mkdir -p "$SAND_INSTALL3" "$SAND_SYSTEMD3"
 make_overlay "$OVERLAY3"
-cp "$OVERLAY3/repos.conf.example" "$OVERLAY3/repos.conf"
+cp "$OVERLAY3/repos.conf.example" "$OVERLAY3/secrets/manifest/repos.conf"
 run_overlay_install "$OVERLAY3" "$SAND_INSTALL3" "$SAND_SYSTEMD3"
 if [ -e "$SAND_INSTALL3/repos.conf" ]; then
     echo "FAIL D.3: install.sh accepted byte-for-byte template copy as configured — repos.conf was symlinked into INSTALL_DIR"
