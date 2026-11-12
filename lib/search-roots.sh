@@ -39,7 +39,8 @@
 #                   (not a security boundary).
 #
 #   excluded      — a tracked repo this repo's .knightwatch/siblings
-#                   leaves out (reason: allowlist). Intended, not a gap,
+#                   leaves out (reason: allowlist), or one the operator
+#                   set to "" in SOURCE_PATHS (reason: operator). Intended, not a gap,
 #                   so it doesn't count toward the coverage header; it is
 #                   listed so the review header and status page can name
 #                   every repo that wasn't searched, and why.
@@ -48,7 +49,7 @@
 #   # coverage: full | partial | same-repo-only
 #   <repo-slug> included .siblings/<repo-slug>
 #   <repo-slug> missing no-source-path|no-checkout
-#   <repo-slug> excluded allowlist
+#   <repo-slug> excluded allowlist|operator
 #   ...
 #
 # coverage: full           — every sibling with a SOURCE_PATHS entry has its checkout on disk
@@ -109,6 +110,12 @@ stage_search_roots() {
 
     for sibling_repo in "${siblings[@]}"; do
         [ "$sibling_repo" = "$repo" ] && continue
+        # A key set to "" is the operator excluding that repo from search on
+        # purpose (no clone to grep, or not ours to expose) — not a gap.
+        if [ -n "${SOURCE_PATHS[$sibling_repo]+set}" ] && [ -z "${SOURCE_PATHS[$sibling_repo]}" ]; then
+            excluded+="$sibling_repo excluded operator"$'\n'
+            continue
+        fi
         sibling_path="${SOURCE_PATHS[$sibling_repo]:-}"
         # Three ways a declared sibling can be unavailable, all classified
         # as `missing` so the user sees them in coverage instead of as

@@ -635,7 +635,7 @@ format_coverage_note() {
         case "$status" in missing|excluded) ;; *) continue ;; esac
         case "$reason" in
             no-source-path) reason="no source path" ;;
-            allowlist) ;;
+            allowlist|operator) ;;
             *) reason="checkout missing" ;;
         esac
         names+="${names:+, }\`$slug\` ($reason)"
@@ -644,7 +644,7 @@ format_coverage_note() {
     done <<< "$roots"
     [ "$n" -eq 0 ] && return 0
     if [ "$visibility" = public ]; then
-        for reason in "no source path" "checkout missing" "allowlist"; do
+        for reason in "no source path" "checkout missing" "allowlist" "operator"; do
             [ -n "${by[$reason]:-}" ] && counts+="${counts:+, }${by[$reason]} $reason"
         done
         printf '🔍 %d sibling repo%s not searched (%s; names withheld on a public repo)' "$n" "$([ "$n" -eq 1 ] || printf s)" "$counts"
