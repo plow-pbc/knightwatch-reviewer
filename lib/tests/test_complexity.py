@@ -63,6 +63,26 @@ class TestAssess(unittest.TestCase):
                 self.assertEqual(r["marker"], "")
                 self.assertIn("missing " + missing + ";", r["note"])
 
+    def test_fields_written_as_bold_lead_ins_count(self):
+        lead_ins = """Summary paragraph.
+
+**Goal:** track complexity.
+**Outside users today:** 0 — internal tooling
+**Minimal solution for that user count:** one markdown file.
+**Complexity added**: none.
+"""
+        # (Size as written, expected, claimed actual) — the shapes PR authors use in place of the ## Size bullets.
+        for size, expected, claimed in [
+            ("**Size:** Expected net LOC ~+30. At convergence: +36 net, 0 deleted.", 30, 36),
+            ("**Size:** Expected net LOC ~+20 (one file).\n**At convergence:** +16 net (+17/−1).", 20, 16),
+            ("- **Size:** Expected: ~−40 net LOC", -40, None),
+        ]:
+            with self.subTest(size=size):
+                fields = complexity.parse_body(lead_ins + size + "\n\n**User experience impact:** none.\n")
+                self.assertEqual(fields, {"missing": [], "expected": expected, "claimed_actual": claimed})
+        self.assertEqual(complexity.parse_body(lead_ins.replace("track complexity.", "") + "**Size:** Expected net LOC ~<N>")["missing"],
+                         ["Goal", "Size: Expected net LOC"])
+
     def test_displayed_budget_is_the_last_passing_loc(self):
         self.assertIn("budget ≤ +55", complexity.assess(body("+4"), 10, [], "srosro", SHA)["note"])
 
