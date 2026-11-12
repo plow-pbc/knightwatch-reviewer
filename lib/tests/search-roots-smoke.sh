@@ -116,10 +116,13 @@ assert_not_contains "scenario 1: bar never searched" "acme/bar included" "$OUT"
 echo "  scenario 2: fallback to REPOS when .knightwatch absent..."
 SELF_REPO=$(make_self_repo no)
 saved_repos=("${REPOS[@]}")
-REPOS=("acme/self" "acme/foo" "acme/bar")
+# acme/optout is set to "" in SOURCE_PATHS: the operator excluding it, not a gap.
+SOURCE_PATHS["acme/optout"]=""
+REPOS=("acme/self" "acme/foo" "acme/bar" "acme/optout")
 OUT=$(stage_search_roots "acme/self" "$SELF_REPO" "origin/main")
 REPOS=("${saved_repos[@]}")
 assert_contains "scenario 2: header full" "# coverage: full" "$OUT"
+assert_contains "scenario 2: optout excluded by operator" "acme/optout excluded operator" "$OUT"
 assert_contains "scenario 2: foo included" "acme/foo included .siblings/acme/foo" "$OUT"
 assert_contains "scenario 2: bar included" "acme/bar included .siblings/acme/bar" "$OUT"
 
