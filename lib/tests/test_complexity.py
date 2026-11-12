@@ -78,7 +78,9 @@ class TestAssess(unittest.TestCase):
             ("- **Size:** Expected: ~−40 net LOC", -40, None),
         ]:
             with self.subTest(size=size):
-                fields = complexity.parse_body(lead_ins + size + "\n\n**User experience impact:** none.\n")
+                # The template's empty headings left above the lead-ins don't hide them.
+                template = "## Goal\n<!-- Business case. -->\n\n## Size\n- Expected: ~<N> net LOC\n\n"
+                fields = complexity.parse_body(template + lead_ins + size + "\n\n**User experience impact:** none.\n")
                 self.assertEqual(fields, {"missing": [], "expected": expected, "claimed_actual": claimed})
         self.assertEqual(complexity.parse_body(lead_ins.replace("track complexity.", "") + "**Size:** Expected net LOC ~<N>")["missing"],
                          ["Goal", "Size: Expected net LOC"])

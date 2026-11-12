@@ -33,11 +33,16 @@ def _lead_in(field):
 
 
 def _section(body, field):
-    """A field's text, under `## field` up to the next H2 or after a `**field:**` lead-in up to the
-    next field, heading or blank line; None when the field is absent."""
-    m = (re.search(rf"^##[ \t]+{re.escape(field)}[ \t]*$(.*?)(?=^##[ \t]|\Z)", body, re.M | re.S)
-         or re.search(rf"{_lead_in(re.escape(field))}(.*?)(?={_lead_in(ANY_FIELD)}|^#|^[ \t]*$|\Z)", body, re.M | re.S))
-    return None if m is None else _strip_comments(m.group(1)).replace("**", "").strip()
+    """A field's text, after a `**field:**` lead-in up to the next field, heading or blank line, else
+    under `## field` up to the next H2; None when neither has text. The lead-in is tried first because
+    a template heading left in the body still carries its placeholder bullets."""
+    for pattern in (rf"{_lead_in(re.escape(field))}(.*?)(?={_lead_in(ANY_FIELD)}|^#|^[ \t]*$|\Z)",
+                    rf"^##[ \t]+{re.escape(field)}[ \t]*$(.*?)(?=^##[ \t]|\Z)"):
+        m = re.search(pattern, body, re.M | re.S)
+        text = m and _strip_comments(m.group(1)).replace("**", "").strip()
+        if text:
+            return text
+    return None
 
 
 def _number_after(size, label):
