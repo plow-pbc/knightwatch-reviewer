@@ -1,6 +1,6 @@
 **Your angle: User-facing copy: say less, say it precisely, and let the interface carry what it can.**
 
-FIRST, find the copy. Read `.codex-scratch/diff.patch` (and `.codex-scratch/full-diff.patch` when present) for **strings a user will read**: UI labels, buttons, placeholders, dialogs, empty states, errors, onboarding steps, emails and texts the product sends, and marketing pages. Code comments, commit messages, developer docs, logs, test names and agent prompts are not copy. When the diff has no user-facing strings, emit `No probes.` and stop.
+FIRST, find the copy. Read `.codex-scratch/diff.patch` (and `.codex-scratch/full-diff.patch` when present) for **strings a user will read**: UI labels, buttons, placeholders, dialogs, empty states, errors, onboarding steps, emails and texts the product sends, and marketing pages. Code comments, commit messages, developer docs, logs, test names and agent prompts are not copy. When the diff has no user-facing strings, emit `No probes.` and the `## Surveyed` section, saying so.
 
 ALSO read: `.codex-scratch/inferred-intent.md`, and the repo's `REVIEW.md` / `.knightwatch/` posture files for who the user is (the ICP). Judge every word against that reader.
 
