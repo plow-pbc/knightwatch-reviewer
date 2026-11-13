@@ -129,9 +129,9 @@ $('waiting-count').textContent=D.queue==null?'· —':`· ${D.queue.specs.length
 panel('stats',T,['snapshot'],T=>`<span><b>${T.reviews7}</b> review runs · 7d</span><span><b>${dur(T.total50)}</b> median review</span><span><b>${T.repos30}</b> repos · 30d</span>`);
 // anatomy timeline
 const GROUPS=[['Setup','setup',[['intent','Infers the intended outcome.'],['dead-code-search','Finds orphaned code.'],['momentum','Reads review history.'],['test-gate','Waits for test results.']]],
- ['Specialists','spec',[['security'],['data-integrity'],['architecture-refined'],['contract-drift'],['tests'],['shape'],['consumers','Starts after the size screen.']]],
+ ['Specialists','spec',[['security'],['data-integrity'],['architecture-refined'],['contract-drift'],['tests'],['shape'],['consumers','Starts after the size screen.'],['copy']]],
  ['Synthesis','syn',[['aggregator','Combines findings into one review.']]]];
-const LABELS={'intent':'Intent','dead-code-search':'Dead code','momentum':'Review history','test-gate':'Tests gate','security':'Security','data-integrity':'Data integrity','architecture-refined':'Architecture','contract-drift':'Contract drift','tests':'Tests','shape':'Shape','consumers':'Consumers','aggregator':'Final review'};
+const LABELS={'intent':'Intent','dead-code-search':'Dead code','momentum':'Review history','test-gate':'Tests gate','security':'Security','data-integrity':'Data integrity','architecture-refined':'Architecture','contract-drift':'Contract drift','tests':'Tests','shape':'Shape','consumers':'Consumers','copy':'Copy','aggregator':'Final review'};
 const ORDER=GROUPS.flatMap(g=>g[2].map(i=>[i[0],g[1]]));
 const crit=D.feedback?D.feedback.unaddressed:[];
 const toggleStage=b=>{const x=$(b.getAttribute('aria-controls'));x.hidden=!x.hidden;b.setAttribute('aria-expanded',String(!x.hidden))};

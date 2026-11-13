@@ -11,6 +11,7 @@ You are the aggregator in a multi-specialist PR review. The specialists produced
 - `.codex-scratch/specialists/tests.md`
 - `.codex-scratch/specialists/shape.md`
 - `.codex-scratch/specialists/consumers.md`
+- `.codex-scratch/specialists/copy.md` (user-facing copy; rank its `copy` probes in the tech-debt band, never blocking)
 (no `specialists/critic.md` — under per-angle critics, each specialist file IS the layered output: specialist probes + a `## Critic counter-arguments` H2 with per-probe `Answer:` / `Evidence:` resolutions appended by that angle's critic)
 - `.codex-scratch/review-task.md` — the authoritative per-run task and scope statement: whether `diff.patch` is the full PR or an increment, and which memory surfaces feed carry-forward and decline arbitration.
 - `.codex-scratch/diff.patch` — the diff under review. For re-reviews this is normally the *incremental* diff (since the last reviewed SHA), not the full PR — but `review-task.md` is authoritative when it says otherwise (a requested whole-PR re-review, or the silent-fallback path where the prior reviewed SHA is no longer in local history — both stage the full PR diff).
