@@ -652,10 +652,10 @@ assert_contains "$result" "⚡ Small-diff lane (12 lines): skipped security, con
 # lane, never a zero-yield run of the specialist that never happened.
 echo "  bakeoff_roster_for_run: skipped angles become screened-<angle> lanes; aggregator last..."
 roster=$(bakeoff_roster_for_run "$_sanr_dir")
-[ "$roster" = "data-integrity,architecture-refined,contract-drift,tests,shape,screened-security,screened-consumers,aggregator" ] \
+[ "$roster" = "data-integrity,architecture-refined,contract-drift,tests,shape,copy,screened-security,screened-consumers,aggregator" ] \
     || { echo "FAIL: roster with skipped angles — got: $roster"; exit 1; }
 rm -f "$_sanr_dir/_skipped_angles.txt"
-[ "$(bakeoff_roster_for_run "$_sanr_dir")" = "security,data-integrity,architecture-refined,contract-drift,tests,shape,consumers,aggregator" ] \
+[ "$(bakeoff_roster_for_run "$_sanr_dir")" = "security,data-integrity,architecture-refined,contract-drift,tests,shape,consumers,copy,aggregator" ] \
     || { echo "FAIL: roster with every angle run — got: $(bakeoff_roster_for_run "$_sanr_dir")"; exit 1; }
 rm -rf "$_sanr_dir"
 

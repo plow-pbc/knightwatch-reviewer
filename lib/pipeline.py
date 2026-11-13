@@ -39,9 +39,10 @@ def _reasoning_effort(diff_loc: int) -> str:
 # consumers never below 200. shape stays on at every size — its "parallel
 # pattern at instance one" question is a small-diff phenomenon. Re-derive
 # from the bakeoff once sibling search + KID have been live for two weeks.
+# copy stays on at every size too: a one-word label is a whole copy change.
 SPECIALIST_MIN_LOC = {
     "security": 20, "data-integrity": 20, "architecture-refined": 50,
-    "contract-drift": 0, "tests": 20, "shape": 0, "consumers": 200,
+    "contract-drift": 0, "tests": 20, "shape": 0, "consumers": 200, "copy": 0,
 }
 SPECIALISTS = tuple(SPECIALIST_MIN_LOC)
 

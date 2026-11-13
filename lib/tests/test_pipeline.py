@@ -260,16 +260,16 @@ class TestActiveSpecialists(unittest.TestCase):
 
     def test_floors_partition_by_loc(self):
         every = ["security", "data-integrity", "architecture-refined",
-                 "contract-drift", "tests", "shape", "consumers"]
+                 "contract-drift", "tests", "shape", "consumers", "copy"]
         cases = {
             None: (every, []),
-            0:    (["contract-drift", "shape"],
+            0:    (["contract-drift", "shape", "copy"],
                    ["security", "data-integrity", "architecture-refined", "tests", "consumers"]),
-            19:   (["contract-drift", "shape"],
+            19:   (["contract-drift", "shape", "copy"],
                    ["security", "data-integrity", "architecture-refined", "tests", "consumers"]),
-            20:   (["security", "data-integrity", "contract-drift", "tests", "shape"],
+            20:   (["security", "data-integrity", "contract-drift", "tests", "shape", "copy"],
                    ["architecture-refined", "consumers"]),
-            50:   (["security", "data-integrity", "architecture-refined", "contract-drift", "tests", "shape"],
+            50:   (["security", "data-integrity", "architecture-refined", "contract-drift", "tests", "shape", "copy"],
                    ["consumers"]),
             200:  (every, []),
         }
@@ -1508,7 +1508,7 @@ class TestRunPipeline(unittest.TestCase):
         with patch.dict(os.environ, {"PR_DIFF_LOC": "12"}):
             self.assertEqual(self._run(), 0)
         ran = {s for s in pipeline.SPECIALISTS if (self.run_dir / "agents" / s / "output.md").exists()}
-        self.assertEqual(ran, {"contract-drift", "shape"})
+        self.assertEqual(ran, {"contract-drift", "shape", "copy"})
         skipped = ["security", "data-integrity", "architecture-refined", "tests", "consumers"]
         for s in skipped:
             self.assertFalse((self.run_dir / "agents" / f"critic-{s}").exists(), s)
