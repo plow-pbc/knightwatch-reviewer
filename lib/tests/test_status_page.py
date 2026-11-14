@@ -344,6 +344,12 @@ class TestRepoHealth(unittest.TestCase):
 
 
 class TestRender(unittest.TestCase):
+    def test_repo_without_clone_interpolates_not_searched_details(self):
+        template = Path(__file__).resolve().parent.parent.joinpath("status_page.html").read_text()
+        row = '<td colspan="3"><span class="none">Not indexed locally</span>${notSearched(r)}</td>'
+        self.assertNotIn(f":'{row}'", template)
+        self.assertIn(f":`{row}`", template)
+
     def test_hostile_title_is_inert(self):
         s = src([run(1, 600, finished=False, live=True)])
         s["snapshot"]["runs"][0]["title"] = '</script><img src=x onerror=alert(1)>'
