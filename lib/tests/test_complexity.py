@@ -123,20 +123,18 @@ class TestAssess(unittest.TestCase):
                       complexity.assess(body(actual="+40"), 90, [], "srosro", SHA)["note"])
         self.assertNotIn("claims", complexity.assess(body(actual="+90"), 90, [], "srosro", SHA)["note"])
 
-    def test_model_estimate_binds_and_renders_ask_and_sketch(self):
-        text = body("+500").replace("## Goal", "## Requested by\nPriority ref; customer said: ship the retry button.\n\n## Goal")
-        r = complexity.assess(text, 300, [], "srosro", SHA, 100, "Add the existing button to the failure view.")
-        self.assertTrue(r["over"])
-        self.assertEqual((r["source"], r["model_expected"]), ("model", 100))
-        self.assertIn("Quoted ask: Priority ref; customer said: ship the retry button.", r["note"])
-        self.assertIn("Smaller fix (+100 net LOC): Add the existing button", r["note"])
-
-    def test_model_estimate_covers_prs_that_predate_the_template(self):
-        old_body = "## Summary\n\nCapture crash logs with one helper.\n\n## Test plan\n\nManual.\n"
-        r = complexity.assess(old_body, 300, [], "srosro", SHA, 100, "Add one logging helper.")
-        self.assertTrue(r["over"])
-        self.assertEqual(r["source"], "model")
-        self.assertIn("Quoted ask: Capture crash logs with one helper.", r["note"])
+    def test_model_scope_card_for_current_and_legacy_templates(self):
+        requested = body("+500").replace(
+            "## Goal", "## Requested by\nPriority ref; customer said: ship the retry button.\n\n## Goal")
+        legacy = "## Summary\n\nCapture crash logs with one helper.\n\n## Test plan\n\nManual.\n"
+        for text, ask in ((requested, "Priority ref; customer said: ship the retry button."),
+                          (legacy, "Capture crash logs with one helper.")):
+            with self.subTest(ask=ask):
+                r = complexity.assess(text, 300, [], "srosro", SHA, 100, "Add one existing helper.")
+                self.assertTrue(r["over"])
+                self.assertEqual((r["source"], r["model_expected"]), ("model", 100))
+                self.assertIn("Quoted ask: " + ask, r["note"])
+                self.assertIn("Smaller fix (+100 net LOC): Add one existing helper", r["note"])
 
     def test_quoted_ask_is_bounded_to_fit_the_review_comment(self):
         text = body("+500").replace("Track complexity.", "x" * 600)

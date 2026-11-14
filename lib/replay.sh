@@ -74,6 +74,7 @@ jq -n \
 # pipeline gh-posting step is deliberately skipped — we only want the rendered review.
 . "$LIB_DIR/state-io.sh"
 . "$LIB_DIR/gh-retry.sh"   # gh_retry — replay spends the same PAT as the fleet
+. "$LIB_DIR/gh-comments.sh"
 . "$LIB_DIR/run-dir.sh"
 . "$LIB_DIR/scratch.sh"
 . "$LIB_DIR/knightwatch-config.sh"
@@ -218,8 +219,7 @@ if printf '%s\n' "${COMPLEXITY_OWNERS[@]}" | grep -qixF "${REPO%%/*}"; then
         | awk '$1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ {a += $1; d += $2} END {print a-d+0}' \
         > "$RUN_DIR/inputs/complexity-actual.txt"
     printf '%s' "$REPLAY_PR_META" | jq -r '.body // ""' > "$RUN_DIR/inputs/complexity-body.md"
-    gh api --paginate --slurp "repos/$REPO/issues/$PR/comments" | jq 'add' \
-        > "$RUN_DIR/inputs/complexity-comments.json"
+    fetch_issue_comments "$REPO" "$PR" > "$RUN_DIR/inputs/complexity-comments.json"
     jq -n --argjson actual "$(cat "$RUN_DIR/inputs/complexity-actual.txt")" \
         --arg bot "${BOT_USER:-srosro}" --arg sha "$SHA" \
         '{actual: $actual, bot: $bot, sha: $sha}' > "$RUN_DIR/inputs/complexity-meta.json"
