@@ -2505,6 +2505,19 @@ class TestRealPromptsCompose(unittest.TestCase):
         self.assertNotIn("INSERT_VOICE_HERE", out, "voice stitch failed")
         self.assertIn("owner/repo#42", out, "PR_ID substitution failed")
 
+    def test_intent_keeps_trusted_trigger_above_author_ask(self):
+        out = pipeline.build_prompt(
+            kind="standalone", agent="intent",
+            prompts_dir=str(self.real_prompts),
+            pr_id="owner/repo#42", pr_title="Add X",
+            pr_url="https://example/pull/42", pr_author="alice",
+        )
+        trigger_rule = "the trusted trigger comment wins"
+        author_rule = "start with the customer and employee asks"
+        self.assertIn(trigger_rule, out)
+        self.assertIn(author_rule, out)
+        self.assertLess(out.index(trigger_rule), out.index(author_rule))
+
     def test_specialist_compose_against_real_prompts(self):
         """common-header.md + each specialist's body file must compose without error."""
         for specialist in pipeline.SPECIALISTS:
