@@ -81,6 +81,10 @@ assert_grep "intent cap should override hypothetical-drop handling" \
     "cap overrides both" prompts/critic.md
 assert_grep "intent cap should classify validation as a guard" \
     "including validation or type narrowing" prompts/critic.md
+assert_grep "intent cap should keep technically true guard probes" \
+    'resolve it as `Answer: yes` and `Severity if yes: low`' prompts/critic.md
+assert_grep "intent cap should not affirm unsupported probes" \
+    'False or unsupported probes still resolve as `Answer: no`' prompts/critic.md
 assert_grep "critic.md should retain outsider-path security severity" \
     "outsider-reachable path" prompts/critic.md
 assert_grep "intent should treat Spirit as input, not authority" \
