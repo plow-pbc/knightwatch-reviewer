@@ -59,6 +59,12 @@
 # shellcheck source=git-safe-root.sh
 . "$(dirname "${BASH_SOURCE[0]}")/git-safe-root.sh"
 
+source_path_searchable() {
+    local path="$1"
+    [ -d "$path" ] &&
+        git -c safe.directory="$(git_safe_root "$path")" -C "$path" rev-parse --git-dir >/dev/null 2>&1
+}
+
 stage_search_roots() {
     local repo="$1" repo_dir="$2" base_ref="$3"
     local sibling_repo sibling_path
@@ -140,18 +146,13 @@ stage_search_roots() {
             missing=$((missing + 1))
             continue
         fi
-        if [ ! -d "$sibling_path" ]; then
-            body+="$sibling_repo missing no-checkout"$'\n'
-            missing=$((missing + 1))
-            continue
-        fi
         # The sibling mount is read-only and operator-owned; the reviewer runs
         # as root, so git's dubious-ownership check (2.35+) rejects it. Scope the
         # exemption to this one repo — never global, never '*', which would
         # also cover PR clones. It names the REPOSITORY ROOT rather than
         # $sibling_path: for a SUBTREE sibling those differ and git checks the
         # root, so scoping to the subtree left every upstream subtree `missing`.
-        if ! git -c safe.directory="$(git_safe_root "$sibling_path")" -C "$sibling_path" rev-parse --git-dir >/dev/null 2>&1; then
+        if ! source_path_searchable "$sibling_path"; then
             body+="$sibling_repo missing no-checkout"$'\n'
             missing=$((missing + 1))
             continue

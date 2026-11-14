@@ -7,6 +7,7 @@ page changes never need an image rebuild. Prints one JSON document.
 import fcntl
 import json
 import os
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -16,6 +17,25 @@ WINDOW_S = 30 * 86400
 # pool_status's threshold (lib/state-io.sh): a tick blocks on an in-flight
 # review up to the 90m worker ceiling, so only >2h of silence means gone.
 NOT_RUNNING_S = 7200
+
+
+def resolved_sources():
+    """Current SOURCE_PATHS entries that are searchable or intentionally excluded."""
+    helper = os.environ.get("SOURCE_PATH_SEARCHABLE_SH")
+    helper = helper if helper is not None else '. "$REVIEWER_LIB_DIR/search-roots.sh"'
+    script = '. "$REVIEWER_LIB_DIR/git-safe-root.sh"\n' + helper + r'''
+set -euo pipefail
+. "$REVIEWER_LIB_DIR/tracked-repos.sh"
+for repo in "${!SOURCE_PATHS[@]}"; do
+    path="${SOURCE_PATHS[$repo]}"
+    if [ -z "$path" ] || source_path_searchable "$path"; then
+        printf '%s\n' "$repo"
+    fi
+done
+'''
+    env = {**os.environ, "REVIEWER_LIB_DIR": os.environ.get("REVIEWER_LIB_DIR", "/app/lib")}
+    result = subprocess.run(["bash", "-c", script], check=True, capture_output=True, text=True, env=env)
+    return sorted(result.stdout.splitlines())
 
 
 def run_epoch(name):
@@ -154,7 +174,9 @@ def main():
     import quota_throttle
     tz = os.environ.get("KWR_THROTTLE_TIMEZONE", quota_throttle.DEFAULT_TIMEZONE)
     weekend = float(os.environ.get("KWR_THROTTLE_WEEKEND_FACTOR", quota_throttle.DEFAULT_WEEKEND_FACTOR))
-    json.dump(collect(Path(os.environ.get("STATE_DIR", "/shared")), time.time(), tz, weekend), sys.stdout)
+    snapshot = collect(Path(os.environ.get("STATE_DIR", "/shared")), time.time(), tz, weekend)
+    snapshot["resolved_sources"] = resolved_sources()
+    json.dump(snapshot, sys.stdout)
 
 
 if __name__ == "__main__":
