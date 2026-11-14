@@ -374,6 +374,15 @@ class TestRepoHealth(unittest.TestCase):
 
 
 class TestRender(unittest.TestCase):
+    def test_snapshot_streams_current_source_readiness_helper(self):
+        responses = ["knightwatch-reviewer-reviewer-1-1\n",
+                     "source_path_searchable () { return 0; }\n", json.dumps({"ok": True})]
+        with unittest.mock.patch.object(status_page, "_run", side_effect=responses) as run:
+            self.assertEqual(status_page.gather_snapshot(), {"ok": True})
+
+        docker_exec = run.call_args_list[-1].args
+        self.assertIn("SOURCE_PATH_SEARCHABLE_SH=source_path_searchable () { return 0; }\n", docker_exec)
+
     def test_repo_without_clone_interpolates_not_searched_details(self):
         template = Path(__file__).resolve().parent.parent.joinpath("status_page.html").read_text()
         row = '<td colspan="3"><span class="none">Not indexed locally</span>${notSearched(r)}</td>'

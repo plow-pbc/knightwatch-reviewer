@@ -21,10 +21,11 @@ NOT_RUNNING_S = 7200
 
 def resolved_sources():
     """Current SOURCE_PATHS entries that are searchable or intentionally excluded."""
-    script = r'''
+    helper = os.environ.get("SOURCE_PATH_SEARCHABLE_SH")
+    helper = helper if helper is not None else '. "$REVIEWER_LIB_DIR/search-roots.sh"'
+    script = '. "$REVIEWER_LIB_DIR/git-safe-root.sh"\n' + helper + r'''
 set -euo pipefail
 . "$REVIEWER_LIB_DIR/tracked-repos.sh"
-. "$REVIEWER_LIB_DIR/search-roots.sh"
 for repo in "${!SOURCE_PATHS[@]}"; do
     path="${SOURCE_PATHS[$repo]}"
     if [ -z "$path" ] || source_path_searchable "$path"; then

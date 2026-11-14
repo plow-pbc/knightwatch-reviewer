@@ -287,8 +287,11 @@ def gather_snapshot():
                                    "--format", "{{.Names}}").split() if n.startswith(f"{PROJECT}-reviewer-"))
     if not names:
         raise RuntimeError("no running reviewer container")
+    helper = _run("bash", "-c", '. "$1"; declare -f source_path_searchable',
+                  "bash", str(LIB / "search-roots.sh"))
     with open(LIB / "status_collect.py") as script:
-        return json.loads(_run("docker", "exec", "-i", names[0], "python3", "-", stdin=script))
+        return json.loads(_run("docker", "exec", "-i", "-e", f"SOURCE_PATH_SEARCHABLE_SH={helper}",
+                               names[0], "python3", "-", stdin=script))
 
 
 def source_bakeoff(db):
