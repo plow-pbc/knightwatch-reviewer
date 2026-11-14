@@ -2,6 +2,7 @@
 import fcntl
 import json
 import os
+import subprocess
 import sys
 import time
 import unittest
@@ -107,6 +108,25 @@ class TestCollect(unittest.TestCase):
 
     def test_queue_passthrough(self):
         self.assertEqual(self.snap()["queue"]["specs"][0]["pr_num"], 1)
+
+    def test_resolved_sources_reflect_current_searchability_and_operator_exclusions(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checkout = root / "checkout"
+            subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+            manifest = root / "repos.conf"
+            manifest.write_text(
+                "declare -A SOURCE_PATHS=("
+                f'["o/searchable"]={json.dumps(str(checkout))} '
+                '["o/excluded"]="" '
+                f'["o/missing"]={json.dumps(str(root / "missing"))})\n'
+            )
+            env = {"STATE_DIR": str(root), "REPOS_CONF_FILE": str(manifest),
+                   "REVIEWER_LIB_DIR": str(Path(status_collect.__file__).parent), "KWR_CONFIG_REPO": ""}
+            with unittest.mock.patch.dict(os.environ, env):
+                resolved = status_collect.resolved_sources()
+
+        self.assertEqual(resolved, ["o/excluded", "o/searchable"])
 
 
 def run(pr, age, repo="o/r", total=450, finished=True, span=None, queued=None, live=False, worker=None):
@@ -341,6 +361,16 @@ class TestRepoHealth(unittest.TestCase):
         self.assertEqual(m["repos"][0]["unsearched"], [["o/b", "missing", "no-source-path"], ["o/c", "excluded", "allowlist"]])
         # The missing source path is a gap; the allowlist exclusion is intended and stays off the list.
         self.assertEqual([(a["panel"], a["text"]) for a in m["attention"] if a["panel"] == "o/r"], [("o/r", "1 sibling not searched")])
+
+    def test_current_source_config_clears_historical_gap_without_rewriting_history(self):
+        unsearched = [["o/b", "missing", "no-source-path"]]
+        s = src([], repos=[{"repo": "o/r", "unsearched": unsearched}])
+        s["snapshot"]["resolved_sources"] = ["o/b"]
+
+        m = status_page.build(s, {}, NOW)
+
+        self.assertEqual(m["repos"][0]["unsearched"], unsearched)
+        self.assertEqual([a for a in m["attention"] if a["panel"] == "o/r"], [])
 
 
 class TestRender(unittest.TestCase):

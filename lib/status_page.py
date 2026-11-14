@@ -196,7 +196,7 @@ def _ssh(cmd, tty=False):
     return f"ssh{' -t' if tty else ''} {getpass.getuser()}@{socket.gethostname()} {shlex.quote(cmd)}"
 
 
-def _attention(m):
+def _attention(m, resolved_sources):
     """One {"panel","text","cmd"} per RED condition. Amber (auto-pacing,
     projection over 100%) is the system handling itself, so it never lands here."""
     compose = f"cd {shlex.quote(str(REPO_DIR))} && docker compose logs"
@@ -224,8 +224,9 @@ def _attention(m):
     for r in m["repos"] or []:
         if r["red"]:
             out.append((r["repo"], "Prior-art index stale", _ssh("journalctl -u pr-reviewer-kid-refresh -n 100")))
-        # An allowlist exclusion is intended; a sibling missing from this host is a gap.
-        gaps = [u[0] for u in r.get("unsearched") or [] if u[1] == "missing"]
+        # Historical run coverage stays visible in the repo row; attention follows today's config.
+        gaps = [u[0] for u in r.get("unsearched") or []
+                if u[1] == "missing" and u[0] not in resolved_sources]
         if gaps:
             out.append((r["repo"], f"{len(gaps)} sibling{'s' * (len(gaps) > 1)} not searched",
                         _ssh(f"grep -n -A60 SOURCE_PATHS {shlex.quote(str(REPO_DIR / 'docker/secrets/manifest/repos.conf'))}")))
@@ -272,7 +273,7 @@ def build(src, errors, now):
     m = {"generated_at": now, "errors": errors, "tiles": tiles, "scale": scale, "anatomy": anatomy, "inflight": inflight,
          "queue": queue, "accounts": accounts, "image": snap["image"] if snap else None, "gh": gh, "slow": _slow(runs, now) if snap else None,
          "feedback": feedback, "specialists": specialists, "repos": repos}
-    m["attention"] = _attention(m)
+    m["attention"] = _attention(m, set(snap.get("resolved_sources", [])) if snap else set())
     return m
 
 
