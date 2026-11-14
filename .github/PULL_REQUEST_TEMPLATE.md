@@ -18,7 +18,10 @@ description — summarize deltas in the score table instead.
 <!-- Business case. -->
 
 ## Requested by
-<!-- Priority ref and the requester's ask in their own words. For customer asks, quote only words already safe to publish; otherwise name the employee role and quote their ask. -->
+<!-- Priority ref plus the customer's and employee requester's own words. Quote only words already safe to publish. -->
+
+## Spirit
+<!-- In one line, what is the requester trying to accomplish? The reviewer derives the final intent independently. -->
 
 ## Outside users today
 <!-- People outside the company actively using this software or infra, e.g. "1-5 (design partners)", or "0 — internal tooling". -->
