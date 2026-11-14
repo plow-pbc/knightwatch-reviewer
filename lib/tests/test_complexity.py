@@ -107,6 +107,10 @@ class TestAssess(unittest.TestCase):
         self.assertIn("edited to +1000", later["note"])
         self.assertIn("expected=100 ", later["marker"])
 
+        removed = complexity.assess("", 500, [card(100)], "srosro", SHA, 200, "Smaller fix.")
+        self.assertTrue(removed["over"])
+        self.assertIn("Expected was removed", removed["note"])
+
     def test_only_the_bots_trailing_marker_freezes(self):
         quoted = {"user": {"login": "srosro"},
                   "body": f"<!-- knightwatch-reviewer:complexity expected=9999 sha={SHA} -->\nquoted, not trailing"}
@@ -133,6 +137,12 @@ class TestAssess(unittest.TestCase):
         self.assertTrue(r["over"])
         self.assertEqual(r["source"], "model")
         self.assertIn("Quoted ask: Capture crash logs with one helper.", r["note"])
+
+    def test_quoted_ask_is_bounded_to_fit_the_review_comment(self):
+        text = body("+500").replace("Track complexity.", "x" * 600)
+        r = complexity.assess(text, 300, [], "srosro", SHA, 100, "One helper.")
+        self.assertIn("Quoted ask: " + "x" * complexity.MAX_SCOPE_TEXT, r["note"])
+        self.assertNotIn("x" * (complexity.MAX_SCOPE_TEXT + 1), r["note"])
 
     def test_second_round_reuses_model_estimate_and_sketch(self):
         first = complexity.assess(body("+500"), 300, [], "srosro", SHA, 100, "Reuse the existing route.")

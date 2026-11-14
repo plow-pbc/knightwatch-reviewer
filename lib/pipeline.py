@@ -888,7 +888,7 @@ def _validate_scope_estimate(intent_out: Path) -> tuple[int, str]:
     sketch = sketches[0].removeprefix("Smaller fix sketch: ").strip()
     if not match or not sketch:
         raise ValueError("intent output has a malformed minimal-fix estimate or empty sketch")
-    return int(match.group(1)), sketch
+    return int(match.group(1)), sketch[:complexity.MAX_SCOPE_TEXT]
 
 
 def _run_standalone(

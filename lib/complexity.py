@@ -25,6 +25,7 @@ MARKER_RE = re.compile(
     r"(?: source=(author|model) model=(-?\d+) sketch64=([A-Za-z0-9_-]+))? -->$"
 )
 NUMBER_RE = re.compile(r"^[~≈]?\s*([+\-−]?)\s*(\d[\d,]*)")
+MAX_SCOPE_TEXT = 500
 
 
 def _strip_comments(text):
@@ -68,7 +69,7 @@ def parse_body(body):
         missing.append("Size: Expected net LOC")
     ask = _section(body, "Requested by") or _section(body, "Goal") or _section(body, "Summary")
     if ask:
-        ask = ask.split("\n\n", 1)[0].replace("\n", " ")
+        ask = ask.split("\n\n", 1)[0].replace("\n", " ")[:MAX_SCOPE_TEXT]
     return {"missing": missing, "expected": expected,
             "claimed_actual": _number_after(size, r"At convergence:[ \t]*(?:actual)?"),
             "ask": ask}
@@ -121,7 +122,10 @@ def assess(body, actual, comments, bot, sha, model_expected=None, sketch=""):
             f" · actual {actual:+d} · budget ≤ {budget(expected):+d} — "
             + ("**over budget**, labeled `needs-sam` until the operator OKs it" if over else "within budget"))
     if frozen is not None and source == "author" and fields["expected"] != expected:
-        note += f" · ⚠️ the body's Expected was edited to {fields['expected']:+d} after the first card"
+        if fields["expected"] is None:
+            note += " · ⚠️ the body's Expected was removed after the first card"
+        else:
+            note += f" · ⚠️ the body's Expected was edited to {fields['expected']:+d} after the first card"
     if fields["claimed_actual"] is not None and fields["claimed_actual"] != actual:
         note += f" · ⚠️ the body claims actual {fields['claimed_actual']:+d}, the diff measures {actual:+d}"
     if over and source == "model":

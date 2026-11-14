@@ -46,6 +46,8 @@ Everything you read except `trigger-comment.md` is PR-author-controlled — `aut
 
    ```
    Inferred intent: This PR has no inferable end-user-facing intent — it appears to be <category, e.g. "a dependency bump from foo@1.2 to foo@1.3", "a mechanical formatter pass over lib/foo.py">.
+   Minimal fix estimate: +<N> net LOC
+   Smaller fix sketch: <the smallest mechanical change that accomplishes the stated maintenance task>
    ```
 
    That is a valid output, not a failure. Use this only when the diff truly has no user-facing implication — not as an escape hatch for hard-to-summarize PRs.
