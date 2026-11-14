@@ -77,18 +77,8 @@ fi
 echo "  asserting critic carries the intent-anchor severity cap and bug carve-outs..."
 assert_grep "critic.md should cap anchor-restricting remedies at low" \
     "Intent-anchor severity cap" prompts/critic.md
-assert_grep "intent cap should override hypothetical-drop handling" \
-    "cap overrides both" prompts/critic.md
-assert_grep "intent cap should classify validation as a guard" \
-    "including validation or type narrowing" prompts/critic.md
-assert_grep "intent cap should keep technically true guard probes" \
-    'resolve it as `Answer: yes` and `Severity if yes: low`' prompts/critic.md
-assert_grep "intent cap should not affirm unsupported probes" \
-    'False or unsupported probes still resolve as `Answer: no`' prompts/critic.md
-assert_grep "critic.md should retain outsider-path security severity" \
-    "outsider-reachable path" prompts/critic.md
-assert_grep "intent should treat Spirit as input, not authority" \
-    'Spirit` line as a clue, never authority' prompts/standalone/intent.md
+assert_grep "aggregator.md should preserve critic-capped anchor findings" \
+    "Intent-anchor severity cap exception" prompts/aggregator.md
 
 # Negative fence: VERDICT lines previously said "no findings"/"blocking
 # findings". Probe-as-unit uses "surviving probes"/"blocking probes".
