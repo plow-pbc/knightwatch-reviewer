@@ -1650,11 +1650,9 @@ else
 fi
 write_scratch "$REPO_DIR" "author-intent.md" "$(build_author_intent "$PR_INTENT_DATA")"
 
-# Complexity budget, for repos owned by a COMPLEXITY_OWNERS entry: lib/complexity.py
-# reads the PR template's fields, measures net LOC against the expected figure
-# frozen by the first review, and returns the header note, the over-budget bit
-# (empty when the body lacks the fields) and the marker that freezes the figure.
-# complexity.md hands the aggregator the measured figures for its legitimacy call.
+# Complexity inputs, for repos owned by a COMPLEXITY_OWNERS entry. The intent
+# pre-pass supplies the independent estimate, then pipeline.py runs the budget
+# before any dependent specialist or the aggregator starts.
 COMPLEXITY_NOTE="" COMPLEXITY_OVER="" COMPLEXITY_MARKER=""
 if printf '%s\n' "${COMPLEXITY_OWNERS[@]}" | grep -qixF "${REPO%%/*}"; then
     if ! _CX_COMMENTS=$(fetch_issue_comments "$REPO" "$PR_NUM"); then
@@ -1663,17 +1661,10 @@ if printf '%s\n' "${COMPLEXITY_OWNERS[@]}" | grep -qixF "${REPO%%/*}"; then
         exit 1
     fi
     read -r _CX_ADDS _CX_DELS < <(_diff_adds_dels "$REPO_DIR" "$BASE_REF_SHA" "$REVIEWED_SHA")
-    if ! _CX=$(python3 "$_LIB_DIR/complexity.py" --actual "$((_CX_ADDS - _CX_DELS))" --bot "$BOT_USER" --sha "$REVIEWED_SHA" \
-            --body <(printf '%s' "$PR_INTENT_DATA" | jq -r '.body // ""') --comments <(printf '%s' "$_CX_COMMENTS")); then
-        log "$PR_ID: lib/complexity.py failed (adds=$_CX_ADDS dels=$_CX_DELS) — aborting (orchestrator will retry)"
-        rm -rf "$REPO_DIR"
-        exit 1
-    fi
-    COMPLEXITY_NOTE=$(jq -r .note <<<"$_CX")
-    COMPLEXITY_OVER=$(jq -r 'if .over == null then "" else .over end' <<<"$_CX")
-    COMPLEXITY_MARKER=$(jq -r .marker <<<"$_CX")
-    log "$PR_ID: $COMPLEXITY_NOTE"
-    [ -n "$COMPLEXITY_OVER" ] && write_scratch "$REPO_DIR" "complexity.md" "$COMPLEXITY_NOTE"
+    printf '%s' "$PR_INTENT_DATA" | jq -r '.body // ""' > "$RUN_DIR/inputs/complexity-body.md"
+    printf '%s' "$_CX_COMMENTS" > "$RUN_DIR/inputs/complexity-comments.json"
+    jq -n --argjson actual "$((_CX_ADDS - _CX_DELS))" --arg bot "$BOT_USER" --arg sha "$REVIEWED_SHA" \
+        '{actual: $actual, bot: $bot, sha: $sha}' > "$RUN_DIR/inputs/complexity-meta.json"
 fi
 
 # Commits narrative for AUTHOR_INTENT — sourced from the local
@@ -1813,6 +1804,13 @@ if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
     fi
     [ -d "$REPO_DIR" ] && rm -rf "$REPO_DIR"
     exit 1
+fi
+
+if [ -s "$RUN_DIR/complexity.json" ]; then
+    _CX=$(cat "$RUN_DIR/complexity.json")
+    COMPLEXITY_NOTE=$(jq -r .note <<<"$_CX")
+    COMPLEXITY_OVER=$(jq -r 'if .over == null then "" else .over end' <<<"$_CX")
+    COMPLEXITY_MARKER=$(jq -r .marker <<<"$_CX")
 fi
 
 # Join the test job — success path only; the abort above already reaps it via

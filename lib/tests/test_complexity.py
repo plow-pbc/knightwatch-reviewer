@@ -37,6 +37,12 @@ def card(expected, login="srosro"):
             "body": f"review text\n<!-- knightwatch-reviewer:complexity expected={expected} sha={SHA} -->\n"}
 
 
+def model_card(expected, model, sketch, source="model", login="srosro"):
+    encoded = complexity.base64.urlsafe_b64encode(sketch.encode()).decode().rstrip("=")
+    return {"user": {"login": login},
+            "body": f"review text\n<!-- knightwatch-reviewer:complexity expected={expected} sha={SHA} source={source} model={model} sketch64={encoded} -->\n"}
+
+
 class TestAssess(unittest.TestCase):
     def test_budget_gate(self):
         # (expected, actual, over): Sam's rule, actual > expected + 0.4*|expected| + 50.
@@ -81,7 +87,8 @@ class TestAssess(unittest.TestCase):
                 # The template's empty headings left above the lead-ins don't hide them.
                 template = "## Goal\n<!-- Business case. -->\n\n## Size\n- Expected: ~<N> net LOC\n\n"
                 fields = complexity.parse_body(template + lead_ins + size + "\n\n**User experience impact:** none.\n")
-                self.assertEqual(fields, {"missing": [], "expected": expected, "claimed_actual": claimed})
+                self.assertEqual(fields, {"missing": [], "expected": expected, "claimed_actual": claimed,
+                                          "ask": "track complexity."})
         self.assertEqual(complexity.parse_body(lead_ins.replace("track complexity.", "") + "**Size:** Expected net LOC ~<N>")["missing"],
                          ["Goal", "Size: Expected net LOC"])
 
@@ -111,6 +118,31 @@ class TestAssess(unittest.TestCase):
         self.assertIn("the body claims actual +40, the diff measures +90",
                       complexity.assess(body(actual="+40"), 90, [], "srosro", SHA)["note"])
         self.assertNotIn("claims", complexity.assess(body(actual="+90"), 90, [], "srosro", SHA)["note"])
+
+    def test_model_estimate_binds_and_renders_ask_and_sketch(self):
+        text = body("+500").replace("## Goal", "## Requested by\nPriority ref; customer said: ship the retry button.\n\n## Goal")
+        r = complexity.assess(text, 300, [], "srosro", SHA, 100, "Add the existing button to the failure view.")
+        self.assertTrue(r["over"])
+        self.assertEqual((r["source"], r["model_expected"]), ("model", 100))
+        self.assertIn("Quoted ask: Priority ref; customer said: ship the retry button.", r["note"])
+        self.assertIn("Smaller fix (+100 net LOC): Add the existing button", r["note"])
+
+    def test_model_estimate_covers_prs_that_predate_the_template(self):
+        old_body = "## Summary\n\nCapture crash logs with one helper.\n\n## Test plan\n\nManual.\n"
+        r = complexity.assess(old_body, 300, [], "srosro", SHA, 100, "Add one logging helper.")
+        self.assertTrue(r["over"])
+        self.assertEqual(r["source"], "model")
+        self.assertIn("Quoted ask: Capture crash logs with one helper.", r["note"])
+
+    def test_second_round_reuses_model_estimate_and_sketch(self):
+        first = complexity.assess(body("+500"), 300, [], "srosro", SHA, 100, "Reuse the existing route.")
+        later = complexity.assess(body("+900"), 300,
+                                  [model_card(100, 100, "Reuse the existing route.")],
+                                  "srosro", SHA, 700, "Build a new service.")
+        self.assertEqual((later["model_expected"], later["sketch"]), (100, "Reuse the existing route."))
+        self.assertTrue(later["over"])
+        self.assertNotIn("Expected was edited", later["note"])
+        self.assertEqual(later["marker"], first["marker"])
 
 
 if __name__ == "__main__":

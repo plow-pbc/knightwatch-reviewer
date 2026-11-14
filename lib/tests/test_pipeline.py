@@ -1685,6 +1685,31 @@ class TestRunPipeline(unittest.TestCase):
         self.assertEqual(staged, "Inferred intent: ship X.\n")
 
     @patch("pipeline.subprocess.Popen")
+    def test_intent_estimate_feeds_complexity_before_aggregator(self, mock_popen):
+        inputs = self.run_dir / "inputs"
+        inputs.mkdir(exist_ok=True)
+        (inputs / "complexity-body.md").write_text(
+            "## Goal\nShip retry.\n\n## Outside users today\n1\n\n"
+            "## Minimal solution for that user count\nOne button.\n\n"
+            "## Complexity added\nNone.\n\n## Size\n- Expected: +500 net LOC\n"
+        )
+        (inputs / "complexity-comments.json").write_text("[]\n")
+        (inputs / "complexity-meta.json").write_text(
+            json.dumps({"actual": 300, "bot": "bot", "sha": "abc123"}) + "\n"
+        )
+        mock_popen.side_effect = _make_codex_stub({
+            "intent": (0, "Inferred intent: ship retry.\nMinimal fix estimate: +100 net LOC\n"
+                          "Smaller fix sketch: Wire the existing button to retry.\n"),
+            "aggregator": (0, "# Review\nVERDICT: APPROVE\n"),
+        })
+        self.assertEqual(self._run(), 0)
+        result = json.loads((self.run_dir / "complexity.json").read_text())
+        self.assertTrue(result["over"])
+        self.assertEqual(result["model_expected"], 100)
+        self.assertIn("Smaller fix (+100 net LOC)",
+                      (self.repo_dir / ".codex-scratch" / "complexity.md").read_text())
+
+    @patch("pipeline.subprocess.Popen")
     def test_wave_a_runs_intent_and_dead_code_in_parallel(self, mock_popen):
         """intent + dead-code-search must run concurrently. Use
         threading.Barrier(2): both stubs wait at the barrier — if they

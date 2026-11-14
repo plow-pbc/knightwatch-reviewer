@@ -15,7 +15,10 @@ description — summarize deltas in the score table instead.
 <!-- In a public repo, name requesters and users by role only (e.g. "a design partner"), never by name or company, and give user counts as a range (e.g. "1-5"). -->
 
 ## Goal
-<!-- Business case. Requested by: <user, or "nobody — internal"> -->
+<!-- Business case. -->
+
+## Requested by
+<!-- Priority ref and the requester's ask in their own words. For customer asks, quote only words already safe to publish; otherwise name the employee role and quote their ask. -->
 
 ## Outside users today
 <!-- People outside the company actively using this software or infra, e.g. "1-5 (design partners)", or "0 — internal tooling". -->

@@ -78,6 +78,8 @@ jq -n \
 . "$LIB_DIR/scratch.sh"
 . "$LIB_DIR/knightwatch-config.sh"
 . "$LIB_DIR/conventions.sh"
+STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
+. "$LIB_DIR/tracked-repos.sh"
 # Pipeline shape (intent ∥ dead-code-search ∥ just-test gate → the SPECIALISTS
 # as their inputs land, each → critic; ∥ momentum on re-review → aggregator) is
 # implemented in lib/pipeline.py.
@@ -211,6 +213,18 @@ REVIEW_MD=$(resolve_review_md "$REPO_DIR" "origin/$BASE_REF") && REVIEW_MD_RC=0 
     && { echo "replay: error reading REVIEW.md from origin/$BASE_REF — aborting" >&2; exit 1; }
 write_scratch "$REPO_DIR" "review.md" "$REVIEW_MD"
 
+if printf '%s\n' "${COMPLEXITY_OWNERS[@]}" | grep -qixF "${REPO%%/*}"; then
+    git -C "$REPO_DIR" diff --numstat "origin/$BASE_REF...$SHA" \
+        | awk '$1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ {a += $1; d += $2} END {print a-d+0}' \
+        > "$RUN_DIR/inputs/complexity-actual.txt"
+    printf '%s' "$REPLAY_PR_META" | jq -r '.body // ""' > "$RUN_DIR/inputs/complexity-body.md"
+    gh api --paginate --slurp "repos/$REPO/issues/$PR/comments" | jq 'add' \
+        > "$RUN_DIR/inputs/complexity-comments.json"
+    jq -n --argjson actual "$(cat "$RUN_DIR/inputs/complexity-actual.txt")" \
+        --arg bot "${BOT_USER:-srosro}" --arg sha "$SHA" \
+        '{actual: $actual, bot: $bot, sha: $sha}' > "$RUN_DIR/inputs/complexity-meta.json"
+fi
+
 
 # Convention detection + staging mirrors production (review-one-pr.sh) via the
 # SAME shared resolver (resolve_binding/stage_convention, lib/conventions.sh) — no
@@ -317,6 +331,10 @@ fi
 # replayed run whose specialists timed out doesn't read as full coverage.
 TIMEOUT_NOTE=$(timeout_note_for_run "$RUN_DIR")
 [ -n "$TIMEOUT_NOTE" ] && REVIEW_NOTES+=("$TIMEOUT_NOTE")
+if [ -s "$RUN_DIR/complexity.json" ]; then
+    REVIEW_NOTES+=("$(jq -r .note "$RUN_DIR/complexity.json")")
+    cp "$RUN_DIR/complexity.json" "$OUT/complexity.json"
+fi
 
 AGG_BODY=$(cat "$AGG_OUT_FILE")
 STITCHED=$(prepend_review_header "$AGG_BODY" "${REVIEW_NOTES[@]}")
