@@ -2512,10 +2512,13 @@ class TestRealPromptsCompose(unittest.TestCase):
             pr_id="owner/repo#42", pr_title="Add X",
             pr_url="https://example/pull/42", pr_author="alice",
         )
+        trigger_condition = "explicitly frames or revises the intended end-user-facing goal"
         trigger_rule = "the trusted trigger comment wins"
         author_rule = "start with the customer and employee asks"
+        self.assertIn(trigger_condition, out)
         self.assertIn(trigger_rule, out)
         self.assertIn(author_rule, out)
+        self.assertLess(out.index(trigger_condition), out.index(trigger_rule))
         self.assertLess(out.index(trigger_rule), out.index(author_rule))
 
     def test_specialist_compose_against_real_prompts(self):
