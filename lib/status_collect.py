@@ -24,10 +24,10 @@ def resolved_sources():
     script = r'''
 set -euo pipefail
 . "$REVIEWER_LIB_DIR/tracked-repos.sh"
-. "$REVIEWER_LIB_DIR/git-safe-root.sh"
+. "$REVIEWER_LIB_DIR/search-roots.sh"
 for repo in "${!SOURCE_PATHS[@]}"; do
     path="${SOURCE_PATHS[$repo]}"
-    if [ -z "$path" ] || { [ -d "$path" ] && git -c safe.directory="$(git_safe_root "$path")" -C "$path" rev-parse --git-dir >/dev/null 2>&1; }; then
+    if [ -z "$path" ] || source_path_searchable "$path"; then
         printf '%s\n' "$repo"
     fi
 done
