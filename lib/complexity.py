@@ -3,7 +3,7 @@
 
 The PR body states an expected net LOC. The first review freezes that figure in
 an invisible marker on the bot's comment, so a later edit to the body can't
-move the budget. A PR is over budget, and needs the operator's OK, when
+move the budget. A PR is over budget, and needs its author's OK, when
 
     actual > expected + 0.4 * |expected| + 50
 
@@ -82,7 +82,7 @@ def frozen_expected(comments, bot):
     return None
 
 
-def assess(body, actual, comments, bot, sha):
+def assess(body, actual, comments, bot, sha, author):
     fields = parse_body(body)
     if fields["missing"]:
         return {"over": None, "marker": "",
@@ -95,7 +95,7 @@ def assess(body, actual, comments, bot, sha):
     note = (f"📐 Complexity budget: expected {expected:+d} net LOC"
             f"{' (frozen at the first card)' if frozen is not None else ''}"
             f" · actual {actual:+d} · budget ≤ {budget(expected):+d} — "
-            + ("**over budget**, labeled `needs-sam` until the operator OKs it" if over else "within budget"))
+            + (f"**over budget**, labeled `needs-owner-ok` until @{author} OKs it" if over else "within budget"))
     if frozen is not None and fields["expected"] != frozen:
         note += f" · ⚠️ the body's Expected was edited to {fields['expected']:+d} after the first card"
     if fields["claimed_actual"] is not None and fields["claimed_actual"] != actual:
@@ -111,9 +111,10 @@ def main(argv):
     p.add_argument("--actual", required=True, type=int, help="net LOC of the PR diff (additions - deletions)")
     p.add_argument("--bot", required=True, help="login whose comments carry the frozen expected figure")
     p.add_argument("--sha", required=True, help="head SHA under review")
+    p.add_argument("--author", required=True, help="PR author's login: the person whose OK an over-budget PR waits for")
     a = p.parse_args(argv)
     with open(a.body) as b, open(a.comments) as c:
-        print(json.dumps(assess(b.read(), a.actual, json.load(c), a.bot, a.sha)))
+        print(json.dumps(assess(b.read(), a.actual, json.load(c), a.bot, a.sha, a.author)))
 
 
 if __name__ == "__main__":
