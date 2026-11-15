@@ -1663,7 +1663,7 @@ if printf '%s\n' "${COMPLEXITY_OWNERS[@]}" | grep -qixF "${REPO%%/*}"; then
         exit 1
     fi
     read -r _CX_ADDS _CX_DELS < <(_diff_adds_dels "$REPO_DIR" "$BASE_REF_SHA" "$REVIEWED_SHA")
-    if ! _CX=$(python3 "$_LIB_DIR/complexity.py" --actual "$((_CX_ADDS - _CX_DELS))" --bot "$BOT_USER" --sha "$REVIEWED_SHA" \
+    if ! _CX=$(python3 "$_LIB_DIR/complexity.py" --actual "$((_CX_ADDS - _CX_DELS))" --bot "$BOT_USER" --sha "$REVIEWED_SHA" --author "$PR_AUTHOR" \
             --body <(printf '%s' "$PR_INTENT_DATA" | jq -r '.body // ""') --comments <(printf '%s' "$_CX_COMMENTS")); then
         log "$PR_ID: lib/complexity.py failed (adds=$_CX_ADDS dels=$_CX_DELS) — aborting (orchestrator will retry)"
         rm -rf "$REPO_DIR"
@@ -1982,18 +1982,18 @@ log "$PR_ID: $(jq -r --arg specialists "${BAKEOFF_SPECIALISTS%,aggregator}" '
     "timing setup=\(.setup)s test=\(.test)s(queue \(.test_queue)s) intent=\(d("intent"))s dead-code=\(d("dead-code-search"))s specialists=\(span($specialists | split(",")))s aggregator=\(d("aggregator"))s total=\(.total)s"
 ' "$RUN_DIR/timings.json")"
 
-# needs-sam follows the budget each round: added while over, cleared once back
+# needs-owner-ok follows the budget each round: added while over, cleared once back
 # under. Reconciled BEFORE the post and fatal on failure: a posted review marks
 # this SHA reviewed, so a label miss after it would never be retried.
 if [ "$COMPLEXITY_OVER" = true ]; then
-    gh label create needs-sam --repo "$REPO" --force --color B60205 \
-            --description "Over its complexity budget: waits for the operator's OK" >/dev/null \
-        && gh pr edit "$PR_NUM" --repo "$REPO" --add-label needs-sam >/dev/null
+    gh label create needs-owner-ok --repo "$REPO" --force --color B60205 \
+            --description "Over its complexity budget: waits for the PR author's OK" >/dev/null \
+        && gh pr edit "$PR_NUM" --repo "$REPO" --add-label needs-owner-ok >/dev/null
 elif [ "$COMPLEXITY_OVER" = false ]; then
-    _CX_LABELED=$(gh pr view "$PR_NUM" --repo "$REPO" --json labels --jq 'any(.labels[]; .name == "needs-sam")') \
-        && { [ "$_CX_LABELED" = false ] || gh pr edit "$PR_NUM" --repo "$REPO" --remove-label needs-sam >/dev/null; }
+    _CX_LABELED=$(gh pr view "$PR_NUM" --repo "$REPO" --json labels --jq 'any(.labels[]; .name == "needs-owner-ok")') \
+        && { [ "$_CX_LABELED" = false ] || gh pr edit "$PR_NUM" --repo "$REPO" --remove-label needs-owner-ok >/dev/null; }
 fi || {
-    log "$PR_ID: reconciling needs-sam FAILED — not posting (next tick will retry)"
+    log "$PR_ID: reconciling needs-owner-ok FAILED — not posting (next tick will retry)"
     rm -rf "$REPO_DIR"
     exit 1
 }
