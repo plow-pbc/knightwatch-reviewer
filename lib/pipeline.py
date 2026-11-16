@@ -877,6 +877,16 @@ def _validate_intent(intent_out: Path) -> str:
     return matches[0]
 
 
+def _frozen_intent(path: Path, current: str) -> str:
+    """Reuse the first author-visible round's intent when one was staged."""
+    if not path.exists() or path.stat().st_size == 0:
+        return current
+    frozen = path.read_text().rstrip("\n")
+    if len(frozen) > 2000 or "\n" in frozen or not frozen.startswith("Inferred intent: "):
+        raise ValueError("frozen intent must be one 'Inferred intent: ' line")
+    return frozen
+
+
 def _validate_scope_estimate(intent_out: Path) -> tuple[int, str]:
     """Return the model's minimal net-LOC estimate and one-line sketch."""
     lines = intent_out.read_text().splitlines()
@@ -1003,7 +1013,8 @@ def run_pipeline(
         if rc != 0:
             return rc
         try:
-            intent_text = _validate_intent(run / "agents" / "intent" / "output.md")
+            current_intent = _validate_intent(run / "agents" / "intent" / "output.md")
+            intent_text = _frozen_intent(run / "inputs" / "intent-anchor.md", current_intent)
         except ValueError as e:
             log(f"{pr_id}: {e} — aborting")
             return 4
@@ -1011,6 +1022,7 @@ def run_pipeline(
         # this file verbatim into a public PR comment, and the raw output is
         # derived from PR-author-controlled inputs.
         _stage_scratch(scratch / "inferred-intent.md", (intent_text + "\n").encode())
+        (run / "intent-anchor.md").write_text(intent_text + "\n")
         log(f"{pr_id}: {intent_text}")
         complexity_meta = run / "inputs" / "complexity-meta.json"
         if complexity_meta.exists():

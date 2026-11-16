@@ -1543,8 +1543,9 @@ class TestRunPipeline(unittest.TestCase):
     @patch("pipeline.subprocess.Popen")
     def test_re_review_runs_momentum(self, mock_popen):
         (self.run_dir / "inputs" / "previous-review.md").write_text("prior review body\n")
+        (self.run_dir / "inputs" / "intent-anchor.md").write_text("Inferred intent: let users retry.\n")
         mock_popen.side_effect = _make_codex_stub({
-            "intent": (0, "Inferred intent: stub.\n"),
+            "intent": (0, "Inferred intent: add retries plus an admin policy.\n"),
             "dead-code-search": (0, "dc\n"),
             "momentum": (0, "momentum body\n"),
             "aggregator": (0, "# Review\nVERDICT: APPROVE\n"),
@@ -1552,6 +1553,10 @@ class TestRunPipeline(unittest.TestCase):
         rc = self._run()
         self.assertEqual(rc, 0)
         self.assertTrue((self.run_dir / "agents" / "momentum" / "output.md").exists())
+        self.assertEqual((self.repo_dir / ".codex-scratch" / "inferred-intent.md").read_text(),
+                         "Inferred intent: let users retry.\n")
+        self.assertEqual((self.run_dir / "intent-anchor.md").read_text(),
+                         "Inferred intent: let users retry.\n")
 
     @patch("pipeline.subprocess.Popen")
     def test_reasoning_effort_scales_with_pr_diff_loc(self, mock_popen):
@@ -1683,6 +1688,7 @@ class TestRunPipeline(unittest.TestCase):
         self.assertEqual(rc, 0)
         staged = (self.repo_dir / ".codex-scratch" / "inferred-intent.md").read_text()
         self.assertEqual(staged, "Inferred intent: ship X.\n")
+        self.assertEqual((self.run_dir / "intent-anchor.md").read_text(), staged)
 
     @patch("pipeline.subprocess.Popen")
     def test_intent_estimate_feeds_complexity_before_aggregator(self, mock_popen):

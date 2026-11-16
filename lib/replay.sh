@@ -3,7 +3,7 @@
 #
 # Usage:
 #   ./lib/replay.sh --repo OWNER/REPO --pr N --sha SHA \
-#                   [--prompts DIR] [--output-dir PATH]
+#                   [--prompts DIR] [--output-dir PATH] [--intent-anchor FILE]
 #
 # Trust boundary — read before running:
 #   This tool runs OUTSIDE the production systemd lockbox. It clones the
@@ -23,13 +23,14 @@ set -euo pipefail
 LIB_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$LIB_DIR/replay-paths.sh"
 
-REPO=""; PR=""; SHA=""; OUT=""
+REPO=""; PR=""; SHA=""; OUT=""; INTENT_ANCHOR=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --repo) REPO="$2"; shift 2 ;;
         --pr) PR="$2"; shift 2 ;;
         --sha) SHA="$2"; shift 2 ;;
         --output-dir) OUT="$2"; shift 2 ;;
+        --intent-anchor) INTENT_ANCHOR="$2"; shift 2 ;;
         --prompts)
             # Pass through as the PROMPTS_DIR env var consumed by
             # lib/pipeline.py (intent + specialists + critic + aggregator).
@@ -43,9 +44,10 @@ while [ $# -gt 0 ]; do
 done
 
 [ -n "$REPO" ] && [ -n "$PR" ] && [ -n "$SHA" ] || {
-    echo "usage: $0 --repo OWNER/REPO --pr N --sha SHA [--prompts DIR] [--output-dir PATH]" >&2
+    echo "usage: $0 --repo OWNER/REPO --pr N --sha SHA [--prompts DIR] [--output-dir PATH] [--intent-anchor FILE]" >&2
     exit 2
 }
+[ -z "$INTENT_ANCHOR" ] || [ -f "$INTENT_ANCHOR" ] || { echo "intent anchor not found: $INTENT_ANCHOR" >&2; exit 2; }
 # Default OUT includes a prompt-set slug so back-to-back A/B runs against
 # the same repo/PR/SHA don't clobber each other's manifest.json /
 # aggregator-output.md / agents/. Operator-supplied --output-dir is
@@ -177,6 +179,10 @@ write_scratch "$REPO_DIR" "author-intent.md" "$(build_author_intent "$REPLAY_PR_
 # real first-review signal (matches review-task.md's stated contract).
 write_scratch "$REPO_DIR" "previous-review.md" ""
 write_scratch "$REPO_DIR" "prior-reviews.md" ""
+if [ -n "$INTENT_ANCHOR" ]; then
+    write_scratch "$REPO_DIR" "previous-review.md" "(replay: later round using the supplied first-round intent anchor)"
+    write_scratch "$REPO_DIR" "intent-anchor.md" "$(cat "$INTENT_ANCHOR")"
+fi
 # Replay diffs are always the full PR diff — stage an accurate scope
 # statement, not the generic sentinel (review-task.md is authoritative
 # for diff scope in common-header/aggregator).
@@ -335,6 +341,7 @@ if [ -s "$RUN_DIR/complexity.json" ]; then
     REVIEW_NOTES+=("$(jq -r .note "$RUN_DIR/complexity.json")")
     cp "$RUN_DIR/complexity.json" "$OUT/complexity.json"
 fi
+cp "$RUN_DIR/intent-anchor.md" "$OUT/intent-anchor.md"
 
 AGG_BODY=$(cat "$AGG_OUT_FILE")
 STITCHED=$(prepend_review_header "$AGG_BODY" "${REVIEW_NOTES[@]}")
