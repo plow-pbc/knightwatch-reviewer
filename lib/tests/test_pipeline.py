@@ -281,6 +281,40 @@ class TestActiveSpecialists(unittest.TestCase):
                 self.assertEqual(skipped, want_skipped)
 
 
+class TestValidateScopeEstimate(unittest.TestCase):
+    def test_accepts_signed_estimates_and_legacy_double_sign(self):
+        cases = {
+            "+100": 100,
+            "0": 0,
+            "-53": -53,
+            "+-53": -53,
+        }
+        with TemporaryDirectory() as d:
+            intent_out = Path(d) / "intent.md"
+            for rendered, expected in cases.items():
+                with self.subTest(rendered=rendered):
+                    intent_out.write_text(
+                        "Inferred intent: ship the smallest fix.\n"
+                        f"Minimal fix estimate: {rendered} net LOC\n"
+                        "Smaller fix sketch: Delete the obsolete path.\n"
+                    )
+                    estimate, sketch = pipeline._validate_scope_estimate(intent_out)
+                    self.assertEqual(estimate, expected)
+                    self.assertEqual(sketch, "Delete the obsolete path.")
+
+    def test_rejects_other_double_sign_estimates(self):
+        with TemporaryDirectory() as d:
+            intent_out = Path(d) / "intent.md"
+            for rendered in ("++53", "--53", "-+53"):
+                with self.subTest(rendered=rendered):
+                    intent_out.write_text(
+                        f"Minimal fix estimate: {rendered} net LOC\n"
+                        "Smaller fix sketch: Keep the parser narrow.\n"
+                    )
+                    with self.assertRaisesRegex(ValueError, "malformed minimal-fix estimate"):
+                        pipeline._validate_scope_estimate(intent_out)
+
+
 class TestStageScratch(unittest.TestCase):
     """Two properties of the writer: the entry ends up a REAL file, and a
     planted entry is dropped rather than written through — the entry, not

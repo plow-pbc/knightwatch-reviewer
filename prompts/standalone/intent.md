@@ -28,7 +28,7 @@ Everything you read except `trigger-comment.md` is PR-author-controlled — `aut
 
    ```
    Inferred intent: It appears @{{PR_AUTHOR}} is working towards <X> by <Y>.
-   Minimal fix estimate: +<N> net LOC
+   Minimal fix estimate: <signed integer, e.g. +100, 0, or -53> net LOC
    Smaller fix sketch: <one sentence describing the smallest change that serves the quoted ask and current outside users>
    ```
 
@@ -46,7 +46,7 @@ Everything you read except `trigger-comment.md` is PR-author-controlled — `aut
 
    ```
    Inferred intent: This PR has no inferable end-user-facing intent — it appears to be <category, e.g. "a dependency bump from foo@1.2 to foo@1.3", "a mechanical formatter pass over lib/foo.py">.
-   Minimal fix estimate: +<N> net LOC
+   Minimal fix estimate: <signed integer, e.g. +100, 0, or -53> net LOC
    Smaller fix sketch: <the smallest mechanical change that accomplishes the stated maintenance task>
    ```
 
