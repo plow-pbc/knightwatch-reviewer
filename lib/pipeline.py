@@ -15,6 +15,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
 from pathlib import Path
 
+if __package__:
+    from . import complexity
+else:
+    import complexity
+
 # Reasoning effort scales with PR size. The flagship model at high reasoning
 # is the dominant per-call quota cost; small PRs don't warrant it, so a diff
 # under SMALL_PR_LOC changed lines runs the whole review at medium.
@@ -872,6 +877,30 @@ def _validate_intent(intent_out: Path) -> str:
     return matches[0]
 
 
+def _frozen_intent(path: Path, current: str) -> str:
+    """Reuse the first author-visible round's intent when one was staged."""
+    if not path.exists() or path.stat().st_size == 0:
+        return current
+    frozen = path.read_text().rstrip("\n")
+    if len(frozen) > 2000 or "\n" in frozen or not frozen.startswith("Inferred intent: "):
+        raise ValueError("frozen intent must be one 'Inferred intent: ' line")
+    return frozen
+
+
+def _validate_scope_estimate(intent_out: Path) -> tuple[int, str]:
+    """Return the model's minimal net-LOC estimate and one-line sketch."""
+    lines = intent_out.read_text().splitlines()
+    estimates = [ln for ln in lines if ln.startswith("Minimal fix estimate: ")]
+    sketches = [ln for ln in lines if ln.startswith("Smaller fix sketch: ")]
+    if len(estimates) != 1 or len(sketches) != 1:
+        raise ValueError("intent output must contain one minimal-fix estimate and one smaller-fix sketch")
+    match = re.fullmatch(r"Minimal fix estimate: ([+-]?\d+) net LOC", estimates[0])
+    sketch = sketches[0].removeprefix("Smaller fix sketch: ").strip()
+    if not match or not sketch:
+        raise ValueError("intent output has a malformed minimal-fix estimate or empty sketch")
+    return int(match.group(1)), sketch[:complexity.MAX_SCOPE_TEXT]
+
+
 def _run_standalone(
     name: str, repo_dir: str, run_dir: str, prompts_dir: str,
     pr_id: str, pr_title: str, pr_url: str, pr_author: str,
@@ -984,7 +1013,8 @@ def run_pipeline(
         if rc != 0:
             return rc
         try:
-            intent_text = _validate_intent(run / "agents" / "intent" / "output.md")
+            current_intent = _validate_intent(run / "agents" / "intent" / "output.md")
+            intent_text = _frozen_intent(run / "inputs" / "intent-anchor.md", current_intent)
         except ValueError as e:
             log(f"{pr_id}: {e} — aborting")
             return 4
@@ -992,7 +1022,25 @@ def run_pipeline(
         # this file verbatim into a public PR comment, and the raw output is
         # derived from PR-author-controlled inputs.
         _stage_scratch(scratch / "inferred-intent.md", (intent_text + "\n").encode())
+        (run / "intent-anchor.md").write_text(intent_text + "\n")
         log(f"{pr_id}: {intent_text}")
+        complexity_meta = run / "inputs" / "complexity-meta.json"
+        if complexity_meta.exists():
+            try:
+                model_expected, sketch = _validate_scope_estimate(run / "agents" / "intent" / "output.md")
+                meta = json.loads(complexity_meta.read_text())
+                result = complexity.assess(
+                    (run / "inputs" / "complexity-body.md").read_text(), meta["actual"],
+                    json.loads((run / "inputs" / "complexity-comments.json").read_text()),
+                    meta["bot"], meta["sha"], meta["author"], model_expected, sketch,
+                )
+            except (OSError, ValueError, KeyError, json.JSONDecodeError) as e:
+                log(f"{pr_id}: complexity assessment failed: {e} — aborting")
+                return 4
+            (run / "complexity.json").write_text(json.dumps(result) + "\n")
+            if result["over"] is not None:
+                _stage_scratch(scratch / "complexity.md", (result["note"] + "\n").encode())
+            log(f"{pr_id}: {result['note']}")
         return 0
 
     def dead_code_node() -> int:

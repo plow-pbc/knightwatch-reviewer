@@ -931,6 +931,14 @@ latest_author_visible_review() {
     [ -n "$latest" ] && cat "$latest/agents/aggregator/output.md" 2>/dev/null
 }
 
+# latest_author_visible_intent <state_dir> <repo_slug> <pr_num> <current_run_dir>
+#   stdout: the intent anchor saved by the latest author-visible prior round.
+latest_author_visible_intent() {
+    local latest
+    latest=$(_latest_author_visible_run_dir "$1" "$2" "$3" "$4")
+    [ -n "$latest" ] && cat "$latest/intent-anchor.md" 2>/dev/null
+}
+
 # _latest_author_visible_run_dir — internal: returns the path of the
 # most recent author-visible run dir (or empty if none). Single owner
 # of the "last one wins" selection so body/sha/approved helpers can't

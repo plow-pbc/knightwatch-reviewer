@@ -871,8 +871,8 @@ PR_DIFF_LOC=$(changed_lines "$BASE_REF_SHA...$REVIEWED_SHA")
 log "$PR_ID: full PR diff size = ${#FULL_PR_DIFF} bytes, ${PR_DIFF_LOC} changed lines"
 KID_INPUT_DIFF="$FULL_PR_DIFF"
 
-# All four "what did the author see last?" values (body, sha, approved,
-# started_at) source from runs/ via the latest_author_visible_review_*
+# All five "what did the author see last?" values (body, intent, sha,
+# approved, started_at) source from runs/ via the latest_author_visible_*
 # helpers — the single source of truth for prior-author-visible-round
 # state. The orchestrator's KNOWN_SHA gate, the slash-command cutoff,
 # prior-reviews.md, and the LOC-trend table all consume the same
@@ -883,6 +883,7 @@ KID_INPUT_DIFF="$FULL_PR_DIFF"
 # PREV_BODY then drives previous-review.md to be empty, which the
 # momentum gate uses as its "first review, skip momentum" signal.
 PREV_BODY=$(latest_author_visible_review "$STATE_DIR" "$REPO_SLUG_FOR_RUN" "$PR_NUM" "$RUN_DIR")
+PREV_INTENT=$(latest_author_visible_intent "$STATE_DIR" "$REPO_SLUG_FOR_RUN" "$PR_NUM" "$RUN_DIR")
 KNOWN_SHA=$(latest_author_visible_review_sha "$STATE_DIR" "$REPO_SLUG_FOR_RUN" "$PR_NUM" "$RUN_DIR")
 PREV_APPROVED=$(latest_author_visible_review_approved "$STATE_DIR" "$REPO_SLUG_FOR_RUN" "$PR_NUM" "$RUN_DIR")
 
@@ -1465,6 +1466,7 @@ rm -rf "$REPO_DIR/.codex-scratch"
 mkdir -p "$REPO_DIR/.codex-scratch"
 write_scratch "$REPO_DIR" "diff.patch"         "$KID_INPUT_DIFF"
 write_scratch "$REPO_DIR" "previous-review.md" "$PREV_BODY"
+[ -n "$PREV_INTENT" ] && write_scratch "$REPO_DIR" "intent-anchor.md" "$PREV_INTENT"
 write_scratch "$REPO_DIR" "prior-art.md"       "${PRIOR_ART:-}"
 write_scratch "$REPO_DIR" "dead-code-static.md" "${DEAD_CODE_STATIC:-}"
 write_scratch "$REPO_DIR" "search-roots.md"    "${SEARCH_ROOTS:-}"
@@ -1650,11 +1652,9 @@ else
 fi
 write_scratch "$REPO_DIR" "author-intent.md" "$(build_author_intent "$PR_INTENT_DATA")"
 
-# Complexity budget, for repos owned by a COMPLEXITY_OWNERS entry: lib/complexity.py
-# reads the PR template's fields, measures net LOC against the expected figure
-# frozen by the first review, and returns the header note, the over-budget bit
-# (empty when the body lacks the fields) and the marker that freezes the figure.
-# complexity.md hands the aggregator the measured figures for its legitimacy call.
+# Complexity inputs, for repos owned by a COMPLEXITY_OWNERS entry. The intent
+# pre-pass supplies the independent estimate, then pipeline.py runs the budget
+# before any dependent specialist or the aggregator starts.
 COMPLEXITY_NOTE="" COMPLEXITY_OVER="" COMPLEXITY_MARKER=""
 if printf '%s\n' "${COMPLEXITY_OWNERS[@]}" | grep -qixF "${REPO%%/*}"; then
     if ! _CX_COMMENTS=$(fetch_issue_comments "$REPO" "$PR_NUM"); then
@@ -1663,17 +1663,11 @@ if printf '%s\n' "${COMPLEXITY_OWNERS[@]}" | grep -qixF "${REPO%%/*}"; then
         exit 1
     fi
     read -r _CX_ADDS _CX_DELS < <(_diff_adds_dels "$REPO_DIR" "$BASE_REF_SHA" "$REVIEWED_SHA")
-    if ! _CX=$(python3 "$_LIB_DIR/complexity.py" --actual "$((_CX_ADDS - _CX_DELS))" --bot "$BOT_USER" --sha "$REVIEWED_SHA" --author "$PR_AUTHOR" \
-            --body <(printf '%s' "$PR_INTENT_DATA" | jq -r '.body // ""') --comments <(printf '%s' "$_CX_COMMENTS")); then
-        log "$PR_ID: lib/complexity.py failed (adds=$_CX_ADDS dels=$_CX_DELS) — aborting (orchestrator will retry)"
-        rm -rf "$REPO_DIR"
-        exit 1
-    fi
-    COMPLEXITY_NOTE=$(jq -r .note <<<"$_CX")
-    COMPLEXITY_OVER=$(jq -r 'if .over == null then "" else .over end' <<<"$_CX")
-    COMPLEXITY_MARKER=$(jq -r .marker <<<"$_CX")
-    log "$PR_ID: $COMPLEXITY_NOTE"
-    [ -n "$COMPLEXITY_OVER" ] && write_scratch "$REPO_DIR" "complexity.md" "$COMPLEXITY_NOTE"
+    printf '%s' "$PR_INTENT_DATA" | jq -r '.body // ""' > "$RUN_DIR/inputs/complexity-body.md"
+    printf '%s' "$_CX_COMMENTS" > "$RUN_DIR/inputs/complexity-comments.json"
+    jq -n --argjson actual "$((_CX_ADDS - _CX_DELS))" --arg bot "$BOT_USER" --arg sha "$REVIEWED_SHA" \
+        --arg author "$PR_AUTHOR" '{actual: $actual, bot: $bot, sha: $sha, author: $author}' \
+        > "$RUN_DIR/inputs/complexity-meta.json"
 fi
 
 # Commits narrative for AUTHOR_INTENT — sourced from the local
@@ -1813,6 +1807,13 @@ if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
     fi
     [ -d "$REPO_DIR" ] && rm -rf "$REPO_DIR"
     exit 1
+fi
+
+if [ -s "$RUN_DIR/complexity.json" ]; then
+    _CX=$(cat "$RUN_DIR/complexity.json")
+    COMPLEXITY_NOTE=$(jq -r .note <<<"$_CX")
+    COMPLEXITY_OVER=$(jq -r 'if .over == null then "" else .over end' <<<"$_CX")
+    COMPLEXITY_MARKER=$(jq -r .marker <<<"$_CX")
 fi
 
 # Join the test job — success path only; the abort above already reaps it via
