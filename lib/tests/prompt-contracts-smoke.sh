@@ -74,6 +74,12 @@ if grep -qF "have surfaced findings" prompts/critic.md; then
     exit 1
 fi
 
+echo "  asserting critic carries the intent-anchor severity cap and bug carve-outs..."
+assert_grep "critic.md should cap anchor-restricting remedies at low" \
+    "Intent-anchor severity cap" prompts/critic.md
+assert_grep "aggregator.md should preserve critic-capped anchor findings" \
+    "Intent-anchor severity cap exception" prompts/aggregator.md
+
 # Negative fence: VERDICT lines previously said "no findings"/"blocking
 # findings". Probe-as-unit uses "surviving probes"/"blocking probes".
 echo "  asserting aggregator.md VERDICT lines use probe vocabulary..."

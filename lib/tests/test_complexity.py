@@ -37,6 +37,12 @@ def card(expected, login="srosro"):
             "body": f"review text\n<!-- knightwatch-reviewer:complexity expected={expected} sha={SHA} -->\n"}
 
 
+def model_card(expected, model, sketch, source="model", login="srosro"):
+    encoded = complexity.base64.urlsafe_b64encode(sketch.encode()).decode().rstrip("=")
+    return {"user": {"login": login},
+            "body": f"review text\n<!-- knightwatch-reviewer:complexity expected={expected} sha={SHA} source={source} model={model} sketch64={encoded} -->\n"}
+
+
 class TestAssess(unittest.TestCase):
     def test_budget_gate(self):
         # (expected, actual, over): Sam's rule, actual > expected + 0.4*|expected| + 50.
@@ -81,7 +87,8 @@ class TestAssess(unittest.TestCase):
                 # The template's empty headings left above the lead-ins don't hide them.
                 template = "## Goal\n<!-- Business case. -->\n\n## Size\n- Expected: ~<N> net LOC\n\n"
                 fields = complexity.parse_body(template + lead_ins + size + "\n\n**User experience impact:** none.\n")
-                self.assertEqual(fields, {"missing": [], "expected": expected, "claimed_actual": claimed})
+                self.assertEqual(fields, {"missing": [], "expected": expected, "claimed_actual": claimed,
+                                          "ask": "track complexity."})
         self.assertEqual(complexity.parse_body(lead_ins.replace("track complexity.", "") + "**Size:** Expected net LOC ~<N>")["missing"],
                          ["Goal", "Size: Expected net LOC"])
 
@@ -101,6 +108,10 @@ class TestAssess(unittest.TestCase):
         self.assertIn("**over budget**, labeled `needs-owner-ok` until @patrick OKs it", later["note"])
         self.assertIn("expected=100 ", later["marker"])
 
+        removed = complexity.assess("", 500, [card(100)], "srosro", SHA, "patrick", 200, "Smaller fix.")
+        self.assertTrue(removed["over"])
+        self.assertIn("Expected was removed", removed["note"])
+
     def test_only_the_bots_trailing_marker_freezes(self):
         quoted = {"user": {"login": "srosro"},
                   "body": f"<!-- knightwatch-reviewer:complexity expected=9999 sha={SHA} -->\nquoted, not trailing"}
@@ -112,6 +123,36 @@ class TestAssess(unittest.TestCase):
         self.assertIn("the body claims actual +40, the diff measures +90",
                       complexity.assess(body(actual="+40"), 90, [], "srosro", SHA, "patrick")["note"])
         self.assertNotIn("claims", complexity.assess(body(actual="+90"), 90, [], "srosro", SHA, "patrick")["note"])
+
+    def test_model_scope_card_for_current_and_legacy_templates(self):
+        requested = body("+500").replace(
+            "## Goal", "## Requested by\nPriority ref; customer said: ship the retry button.\n\n## Goal")
+        legacy = "## Summary\n\nCapture crash logs with one helper.\n\n## Test plan\n\nManual.\n"
+        for text, ask in ((requested, "Priority ref; customer said: ship the retry button."),
+                          (legacy, "Capture crash logs with one helper.")):
+            with self.subTest(ask=ask):
+                r = complexity.assess(text, 300, [], "srosro", SHA, "patrick", 100, "Add one existing helper.")
+                self.assertTrue(r["over"])
+                self.assertEqual((r["source"], r["model_expected"]), ("model", 100))
+                self.assertIn("labeled `needs-owner-ok` until @patrick OKs it", r["note"])
+                self.assertIn("Quoted ask: " + ask, r["note"])
+                self.assertIn("Smaller fix (+100 net LOC): Add one existing helper", r["note"])
+
+    def test_quoted_ask_is_bounded_to_fit_the_review_comment(self):
+        text = body("+500").replace("Track complexity.", "x" * 600)
+        r = complexity.assess(text, 300, [], "srosro", SHA, "patrick", 100, "One helper.")
+        self.assertIn("Quoted ask: " + "x" * complexity.MAX_SCOPE_TEXT, r["note"])
+        self.assertNotIn("x" * (complexity.MAX_SCOPE_TEXT + 1), r["note"])
+
+    def test_second_round_reuses_model_estimate_and_sketch(self):
+        first = complexity.assess(body("+500"), 300, [], "srosro", SHA, "patrick", 100, "Reuse the existing route.")
+        later = complexity.assess(body("+900"), 300,
+                                  [model_card(100, 100, "Reuse the existing route.")],
+                                  "srosro", SHA, "patrick", 700, "Build a new service.")
+        self.assertEqual((later["model_expected"], later["sketch"]), (100, "Reuse the existing route."))
+        self.assertTrue(later["over"])
+        self.assertNotIn("Expected was edited", later["note"])
+        self.assertEqual(later["marker"], first["marker"])
 
 
 if __name__ == "__main__":

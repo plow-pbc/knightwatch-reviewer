@@ -358,6 +358,7 @@ TS_PR=801
 ts_current=$(make_run "$REPO_SLUG" "$TS_PR" "20260429T120000000Z" "ggggggg" "## current run for started_at test")
 ts_run_a=$(make_run "$REPO_SLUG" "$TS_PR" "20260429T100000000Z" "1111112" "## ts review one")
 ts_run_b=$(make_run "$REPO_SLUG" "$TS_PR" "20260429T110000000Z" "2222223" "## ts review two")
+printf 'Inferred intent: keep the first-round goal.\n' > "$ts_run_b/intent-anchor.md"
 # Stamp distinct started_at values; the LATEST run (ts_run_b) wins.
 jq --arg s "2026-04-29T10:00:00Z" '. + {started_at: $s}' \
    "$ts_run_a/meta.json" > "$ts_run_a/meta.json.tmp" && mv "$ts_run_a/meta.json.tmp" "$ts_run_a/meta.json"
@@ -366,6 +367,13 @@ jq --arg s "2026-04-29T11:00:00Z" '. + {started_at: $s}' \
 result=$(latest_author_visible_review_started_at "$TMPDIR/state" "$REPO_SLUG" "$TS_PR" "$ts_current")
 if [ "$result" != "2026-04-29T11:00:00Z" ]; then
     echo "FAIL: scenario 11 — expected latest run's started_at (2026-04-29T11:00:00Z), got: '$result'"
+    exit 1
+fi
+
+echo "  scenario 11a: latest_author_visible_intent returns the latest round's anchor..."
+result=$(latest_author_visible_intent "$TMPDIR/state" "$REPO_SLUG" "$TS_PR" "$ts_current")
+if [ "$result" != "Inferred intent: keep the first-round goal." ]; then
+    echo "FAIL: scenario 11a — expected latest run's frozen intent, got: '$result'"
     exit 1
 fi
 
@@ -381,4 +389,4 @@ if [ -n "$result" ]; then
     exit 1
 fi
 
-echo "  PASS (19 scenarios: no-runs, self-excluded, chronological-prior, aborted-skipped, no-meta-skipped, posted-but-aborted-INCLUDED, legacy-completed-no-posted-at-INCLUDED, foreign-pr-filtered, latest-author-visible-review, latest-empty-on-first-review, sha-reviewed_sha-precedence, sha-falls-back-to-sha, approved-APPROVE-true, approved-APPROVE-pending-true, approved-COMMENT-false, approved-partial-coverage-false, no-prior-empty, started_at-latest-wins, started_at-empty-no-prior)"
+echo "  PASS (20 scenarios: no-runs, self-excluded, chronological-prior, aborted-skipped, no-meta-skipped, posted-but-aborted-INCLUDED, legacy-completed-no-posted-at-INCLUDED, foreign-pr-filtered, latest-author-visible-review, latest-empty-on-first-review, sha-reviewed_sha-precedence, sha-falls-back-to-sha, approved-APPROVE-true, approved-APPROVE-pending-true, approved-COMMENT-false, approved-partial-coverage-false, no-prior-empty, started_at-latest-wins, intent-anchor-latest-wins, started_at-empty-no-prior)"

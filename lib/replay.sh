@@ -3,7 +3,7 @@
 #
 # Usage:
 #   ./lib/replay.sh --repo OWNER/REPO --pr N --sha SHA \
-#                   [--prompts DIR] [--output-dir PATH]
+#                   [--prompts DIR] [--output-dir PATH] [--intent-anchor FILE]
 #
 # Trust boundary — read before running:
 #   This tool runs OUTSIDE the production systemd lockbox. It clones the
@@ -23,13 +23,14 @@ set -euo pipefail
 LIB_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$LIB_DIR/replay-paths.sh"
 
-REPO=""; PR=""; SHA=""; OUT=""
+REPO=""; PR=""; SHA=""; OUT=""; INTENT_ANCHOR=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --repo) REPO="$2"; shift 2 ;;
         --pr) PR="$2"; shift 2 ;;
         --sha) SHA="$2"; shift 2 ;;
         --output-dir) OUT="$2"; shift 2 ;;
+        --intent-anchor) INTENT_ANCHOR="$2"; shift 2 ;;
         --prompts)
             # Pass through as the PROMPTS_DIR env var consumed by
             # lib/pipeline.py (intent + specialists + critic + aggregator).
@@ -43,9 +44,10 @@ while [ $# -gt 0 ]; do
 done
 
 [ -n "$REPO" ] && [ -n "$PR" ] && [ -n "$SHA" ] || {
-    echo "usage: $0 --repo OWNER/REPO --pr N --sha SHA [--prompts DIR] [--output-dir PATH]" >&2
+    echo "usage: $0 --repo OWNER/REPO --pr N --sha SHA [--prompts DIR] [--output-dir PATH] [--intent-anchor FILE]" >&2
     exit 2
 }
+[ -z "$INTENT_ANCHOR" ] || [ -f "$INTENT_ANCHOR" ] || { echo "intent anchor not found: $INTENT_ANCHOR" >&2; exit 2; }
 # Default OUT includes a prompt-set slug so back-to-back A/B runs against
 # the same repo/PR/SHA don't clobber each other's manifest.json /
 # aggregator-output.md / agents/. Operator-supplied --output-dir is
@@ -74,10 +76,13 @@ jq -n \
 # pipeline gh-posting step is deliberately skipped — we only want the rendered review.
 . "$LIB_DIR/state-io.sh"
 . "$LIB_DIR/gh-retry.sh"   # gh_retry — replay spends the same PAT as the fleet
+. "$LIB_DIR/gh-comments.sh"
 . "$LIB_DIR/run-dir.sh"
 . "$LIB_DIR/scratch.sh"
 . "$LIB_DIR/knightwatch-config.sh"
 . "$LIB_DIR/conventions.sh"
+STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
+. "$LIB_DIR/tracked-repos.sh"
 # Pipeline shape (intent ∥ dead-code-search ∥ just-test gate → the SPECIALISTS
 # as their inputs land, each → critic; ∥ momentum on re-review → aggregator) is
 # implemented in lib/pipeline.py.
@@ -174,6 +179,10 @@ write_scratch "$REPO_DIR" "author-intent.md" "$(build_author_intent "$REPLAY_PR_
 # real first-review signal (matches review-task.md's stated contract).
 write_scratch "$REPO_DIR" "previous-review.md" ""
 write_scratch "$REPO_DIR" "prior-reviews.md" ""
+if [ -n "$INTENT_ANCHOR" ]; then
+    write_scratch "$REPO_DIR" "previous-review.md" "(replay: later round using the supplied first-round intent anchor)"
+    write_scratch "$REPO_DIR" "intent-anchor.md" "$(cat "$INTENT_ANCHOR")"
+fi
 # Replay diffs are always the full PR diff — stage an accurate scope
 # statement, not the generic sentinel (review-task.md is authoritative
 # for diff scope in common-header/aggregator).
@@ -210,6 +219,17 @@ REVIEW_MD=$(resolve_review_md "$REPO_DIR" "origin/$BASE_REF") && REVIEW_MD_RC=0 
 [ "$REVIEW_MD_RC" = 2 ] \
     && { echo "replay: error reading REVIEW.md from origin/$BASE_REF — aborting" >&2; exit 1; }
 write_scratch "$REPO_DIR" "review.md" "$REVIEW_MD"
+
+if printf '%s\n' "${COMPLEXITY_OWNERS[@]}" | grep -qixF "${REPO%%/*}"; then
+    git -C "$REPO_DIR" diff --numstat "origin/$BASE_REF...$SHA" \
+        | awk '$1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ {a += $1; d += $2} END {print a-d+0}' \
+        > "$RUN_DIR/inputs/complexity-actual.txt"
+    printf '%s' "$REPLAY_PR_META" | jq -r '.body // ""' > "$RUN_DIR/inputs/complexity-body.md"
+    fetch_issue_comments "$REPO" "$PR" > "$RUN_DIR/inputs/complexity-comments.json"
+    jq -n --argjson actual "$(cat "$RUN_DIR/inputs/complexity-actual.txt")" \
+        --arg bot "${BOT_USER:-srosro}" --arg sha "$SHA" \
+        '{actual: $actual, bot: $bot, sha: $sha}' > "$RUN_DIR/inputs/complexity-meta.json"
+fi
 
 
 # Convention detection + staging mirrors production (review-one-pr.sh) via the
@@ -317,6 +337,11 @@ fi
 # replayed run whose specialists timed out doesn't read as full coverage.
 TIMEOUT_NOTE=$(timeout_note_for_run "$RUN_DIR")
 [ -n "$TIMEOUT_NOTE" ] && REVIEW_NOTES+=("$TIMEOUT_NOTE")
+if [ -s "$RUN_DIR/complexity.json" ]; then
+    REVIEW_NOTES+=("$(jq -r .note "$RUN_DIR/complexity.json")")
+    cp "$RUN_DIR/complexity.json" "$OUT/complexity.json"
+fi
+cp "$RUN_DIR/intent-anchor.md" "$OUT/intent-anchor.md"
 
 AGG_BODY=$(cat "$AGG_OUT_FILE")
 STITCHED=$(prepend_review_header "$AGG_BODY" "${REVIEW_NOTES[@]}")
