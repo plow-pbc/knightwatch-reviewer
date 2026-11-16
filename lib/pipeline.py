@@ -894,11 +894,14 @@ def _validate_scope_estimate(intent_out: Path) -> tuple[int, str]:
     sketches = [ln for ln in lines if ln.startswith("Smaller fix sketch: ")]
     if len(estimates) != 1 or len(sketches) != 1:
         raise ValueError("intent output must contain one minimal-fix estimate and one smaller-fix sketch")
-    match = re.fullmatch(r"Minimal fix estimate: ([+-]?\d+) net LOC", estimates[0])
+    match = re.fullmatch(r"Minimal fix estimate: ((?:\+-|[+-]?)\d+) net LOC", estimates[0])
     sketch = sketches[0].removeprefix("Smaller fix sketch: ").strip()
     if not match or not sketch:
         raise ValueError("intent output has a malformed minimal-fix estimate or empty sketch")
-    return int(match.group(1)), sketch[:complexity.MAX_SCOPE_TEXT]
+    rendered = match.group(1)
+    if rendered.startswith("+-"):
+        rendered = rendered[1:]
+    return int(rendered), sketch[:complexity.MAX_SCOPE_TEXT]
 
 
 def _run_standalone(
