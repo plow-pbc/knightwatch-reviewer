@@ -227,8 +227,8 @@ if printf '%s\n' "${COMPLEXITY_OWNERS[@]}" | grep -qixF "${REPO%%/*}"; then
     printf '%s' "$REPLAY_PR_META" | jq -r '.body // ""' > "$RUN_DIR/inputs/complexity-body.md"
     fetch_issue_comments "$REPO" "$PR" > "$RUN_DIR/inputs/complexity-comments.json"
     jq -n --argjson actual "$(cat "$RUN_DIR/inputs/complexity-actual.txt")" \
-        --arg bot "${BOT_USER:-srosro}" --arg sha "$SHA" \
-        '{actual: $actual, bot: $bot, sha: $sha}' > "$RUN_DIR/inputs/complexity-meta.json"
+        --arg bot "${BOT_USER:-srosro}" --arg sha "$SHA" --arg author "$PR_AUTHOR" \
+        '{actual: $actual, bot: $bot, sha: $sha, author: $author}' > "$RUN_DIR/inputs/complexity-meta.json"
 fi
 
 

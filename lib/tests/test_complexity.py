@@ -37,12 +37,6 @@ def card(expected, login="srosro"):
             "body": f"review text\n<!-- knightwatch-reviewer:complexity expected={expected} sha={SHA} -->\n"}
 
 
-def model_card(expected, model, sketch, source="model", login="srosro"):
-    encoded = complexity.base64.urlsafe_b64encode(sketch.encode()).decode().rstrip("=")
-    return {"user": {"login": login},
-            "body": f"review text\n<!-- knightwatch-reviewer:complexity expected={expected} sha={SHA} source={source} model={model} sketch64={encoded} -->\n"}
-
-
 class TestAssess(unittest.TestCase):
     def test_budget_gate(self):
         # (expected, actual, over): Sam's rule, actual > expected + 0.4*|expected| + 50.
@@ -147,7 +141,7 @@ class TestAssess(unittest.TestCase):
     def test_second_round_reuses_model_estimate_and_sketch(self):
         first = complexity.assess(body("+500"), 300, [], "srosro", SHA, "patrick", 100, "Reuse the existing route.")
         later = complexity.assess(body("+900"), 300,
-                                  [model_card(100, 100, "Reuse the existing route.")],
+                                  [{"user": {"login": "srosro"}, "body": first["marker"]}],
                                   "srosro", SHA, "patrick", 700, "Build a new service.")
         self.assertEqual((later["model_expected"], later["sketch"]), (100, "Reuse the existing route."))
         self.assertTrue(later["over"])
