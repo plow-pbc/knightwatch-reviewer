@@ -35,65 +35,25 @@ run_worker() {
         test-org/probe-repo 1 deadbeef feat/test "Asset preflight" false maintainer \
         >/dev/null 2>&1
 }
+fail() { echo "FAIL: $*"; exit 1; }
 
-echo "  scenario: missing prompt asset aborts before GitHub access..."
-STATE_PROMPT="$TEST_TMP/state-prompt"
-if run_worker "$STATE_PROMPT" env \
-    REVIEWER_LIB_DIR="$PROJECT_ROOT/lib" \
-    PROMPTS_DIR="$TEST_TMP/missing-prompts"; then
-    echo "FAIL: missing prompt directory returned success"
-    exit 1
-fi
-if [ -e "$STATE_PROMPT/gh-called" ]; then
-    echo "FAIL: worker called GitHub before validating prompt assets"
-    exit 1
-fi
-if ! grep -q "probe-schema.md missing" "$STATE_PROMPT/orchestrator.log"; then
-    echo "FAIL: missing prompt asset was not identified in the log"
-    cat "$STATE_PROMPT/orchestrator.log" 2>/dev/null || true
-    exit 1
-fi
-
-echo "  scenario: missing pipeline prompt aborts before GitHub access..."
 FIXTURE_PROMPTS="$TEST_TMP/prompts"
 cp -R "$PROJECT_ROOT/prompts" "$FIXTURE_PROMPTS"
 rm "$FIXTURE_PROMPTS/policy.md"
-STATE_POLICY="$TEST_TMP/state-policy"
-if run_worker "$STATE_POLICY" env \
-    REVIEWER_LIB_DIR="$PROJECT_ROOT/lib" \
-    PROMPTS_DIR="$FIXTURE_PROMPTS"; then
-    echo "FAIL: incomplete prompt tree returned success"
-    exit 1
-fi
-if [ -e "$STATE_POLICY/gh-called" ]; then
-    echo "FAIL: worker called GitHub before validating the complete prompt tree"
-    exit 1
-fi
-if ! grep -q "policy.md missing" "$STATE_POLICY/orchestrator.log"; then
-    echo "FAIL: missing pipeline prompt was not identified in the log"
-    cat "$STATE_POLICY/orchestrator.log" 2>/dev/null || true
-    exit 1
-fi
-
-echo "  scenario: missing strict-typing checker aborts before GitHub access..."
 FIXTURE_LIB="$TEST_TMP/lib"
 cp -R "$PROJECT_ROOT/lib" "$FIXTURE_LIB"
 rm "$FIXTURE_LIB/checks/python-strict-typing.sh"
-STATE_CHECKER="$TEST_TMP/state-checker"
-if run_worker "$STATE_CHECKER" env \
-    REVIEWER_LIB_DIR="$FIXTURE_LIB" \
-    PROMPTS_DIR="$PROJECT_ROOT/prompts"; then
-    echo "FAIL: missing strict-typing checker returned success"
-    exit 1
-fi
-if [ -e "$STATE_CHECKER/gh-called" ]; then
-    echo "FAIL: worker called GitHub before validating strict-typing checkers"
-    exit 1
-fi
-if ! grep -q "python-strict-typing.sh missing" "$STATE_CHECKER/orchestrator.log"; then
-    echo "FAIL: missing strict-typing checker was not identified in the log"
-    cat "$STATE_CHECKER/orchestrator.log" 2>/dev/null || true
-    exit 1
-fi
+
+assert_preflight_failure() {
+    local name="$1" lib="$2" prompts="$3" asset="$4" state="$TEST_TMP/state-$1"
+    echo "  scenario: missing $name aborts before GitHub access..."
+    if run_worker "$state" env REVIEWER_LIB_DIR="$lib" PROMPTS_DIR="$prompts"; then fail "missing $name returned success"; fi
+    [ ! -e "$state/gh-called" ] || fail "worker accessed GitHub before validating $name"
+    grep -q "$asset missing" "$state/orchestrator.log" || fail "missing $name was not identified in the log"
+}
+
+assert_preflight_failure "prompt directory" "$PROJECT_ROOT/lib" "$TEST_TMP/missing-prompts" "probe-schema.md"
+assert_preflight_failure "pipeline prompt" "$PROJECT_ROOT/lib" "$FIXTURE_PROMPTS" "policy.md"
+assert_preflight_failure "strict-typing checker" "$FIXTURE_LIB" "$PROJECT_ROOT/prompts" "python-strict-typing.sh"
 
 echo "  PASS (complete prompt and checker assets fail closed before GitHub access)"

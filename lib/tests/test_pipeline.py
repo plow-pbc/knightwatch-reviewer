@@ -485,11 +485,7 @@ class TestRunCodex(unittest.TestCase):
         self.assertIn("agent=intent exit=0", (agent_dir / "log.txt").read_text())
 
     def test_codex_does_not_wait_for_an_inherited_stdin_pipe(self):
-        """A manual worker launched by ``docker compose exec -T`` inherits an
-        open stdin pipe. Codex appends piped stdin to an argv prompt, so the
-        wrapper must detach stdin or the CLI waits for EOF before contacting
-        the model. Exercise the real subprocess boundary with a fake codex
-        that performs that same read before writing its output artifact."""
+        """Codex must not wait for EOF on a worker's inherited open pipe."""
         fake_bin = Path(self.tmp.name) / "bin"
         fake_bin.mkdir()
         fake_codex = fake_bin / "codex"
@@ -532,13 +528,9 @@ class TestRunCodex(unittest.TestCase):
         finally:
             if proc.stdin is not None:
                 proc.stdin.close()
+                proc.stdin = None
 
-        stdout = proc.stdout.read() if proc.stdout is not None else ""
-        stderr = proc.stderr.read() if proc.stderr is not None else ""
-        if proc.stdout is not None:
-            proc.stdout.close()
-        if proc.stderr is not None:
-            proc.stderr.close()
+        stdout, stderr = proc.communicate()
         self.assertEqual(proc.returncode, 0, stdout + stderr)
         self.assertEqual(
             (agent_dir / "output.md").read_text(),
