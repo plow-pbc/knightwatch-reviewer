@@ -353,13 +353,23 @@ class TestRepoHealth(unittest.TestCase):
         self.assertTrue(two["clone"])
         self.assertTrue(two["review_md"])
 
+    def test_short_checkout_without_origin_is_not_attributed_to_repo(self):
+        with TemporaryDirectory() as root:
+            subprocess.run(["git", "init", "-q", str(Path(root, "r"))], check=True)
+
+            rows = status_page.source_repos([run(1, 60, repo="o/r")], root)
+
+        self.assertFalse(rows[0]["clone"])
+
     def test_kid_marker_reason(self):
         with TemporaryDirectory() as root:
             for name, marker in (("refreshing", "reason=refreshing\nindexed=abc"), ("failed", "reason=index-failed\n"),
                                  ("bare", ""), ("fresh", None)):
                 kid = Path(root, name, ".keepitdry")
                 kid.mkdir(parents=True)
-                Path(root, name, ".git").mkdir()
+                subprocess.run(["git", "init", "-q", str(Path(root, name))], check=True)
+                subprocess.run(["git", "-C", str(Path(root, name)), "remote", "add", "origin",
+                                f"git@github.com:o/{name}.git"], check=True)
                 (kid / ".indexed-sha").write_text("abc")
                 if marker is not None:
                     (kid / ".stale").write_text(marker)
