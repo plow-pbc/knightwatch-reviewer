@@ -388,9 +388,24 @@ def source_repos(runs, clone_root):
         if r.get("unsearched") is not None:
             unsearched[r["repo"]] = r["unsearched"]
     rows = []
+
+    def origin_url(clone):
+        result = subprocess.run(["git", "-C", str(clone), "remote", "get-url", "origin"],
+                                capture_output=True, text=True)
+        return None if result.returncode else result.stdout.strip()
+
+    def origin_matches(url, repo):
+        return url in (f"git@github.com:{repo}.git", f"git@github.com:{repo}",
+                       f"https://github.com/{repo}.git", f"https://github.com/{repo}")
+
     for repo, t in sorted(last.items(), key=lambda kv: -kv[1]):
         clone = Path(clone_root) / repo.split("/")[1]
-        row = {"repo": repo, "last": t, "reviews30": sum(r["repo"] == repo for r in runs), "clone": (clone / ".git").exists(),
+        url = origin_url(clone) if (clone / ".git").exists() else None
+        qualified = url is not None and not origin_matches(url, repo)
+        if qualified:
+            clone = Path(clone_root) / repo
+        clone_exists = (clone / ".git").exists() and (not qualified or origin_matches(origin_url(clone), repo))
+        row = {"repo": repo, "last": t, "reviews30": sum(r["repo"] == repo for r in runs), "clone": clone_exists,
                "unsearched": unsearched.get(repo)}
         if row["clone"]:
             def has(p):

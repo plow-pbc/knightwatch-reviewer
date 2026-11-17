@@ -552,5 +552,22 @@ n=$(count_gh "repo clone")
 [ "$n" -eq 0 ] || { echo "FAIL scenario 15: expected 0 clones while rate-limited, got $n"; exit 1; }
 grep -q 'github rate-limited — skipping org sync' "$LOG_FILE" || { echo "FAIL scenario 15: expected the rate-limit skip log line"; cat "$LOG_FILE"; exit 1; }
 
+# --- Scenario 18: same basename in two orgs ----------------------------------
+# The convention path stays short for the first owner. A second repository with
+# the same basename must use an owner-qualified fallback instead of making every
+# later hourly sweep fail on the first checkout's valid origin.
+echo "  scenario 18: cross-org basename collision — both repos cloned and indexed..."
+write_baseline_conf '"one" "two"'
+rm -rf "$HOME/services/kwr-repos/shared" "$HOME/services/kwr-repos/two"
+rm -f "$AUTO_CONF"
+MOCK_GH_LIST_one="shared" MOCK_GH_LIST_two="shared" run_sync \
+    || { echo "FAIL scenario 18: org-sync exited non-zero"; cat "$LOG_FILE"; exit 1; }
+[ -d "$HOME/services/kwr-repos/shared/.git" ] || { echo "FAIL scenario 18: first owner clone missing"; exit 1; }
+[ -d "$HOME/services/kwr-repos/two/shared/.git" ] || { echo "FAIL scenario 18: collision fallback clone missing"; exit 1; }
+[ "$(resolved_kid_path one/shared)" = "$HOME/services/kwr-repos/shared" ] \
+    || { echo "FAIL scenario 18: first owner KID path changed"; exit 1; }
+[ "$(resolved_kid_path two/shared)" = "$HOME/services/kwr-repos/two/shared" ] \
+    || { echo "FAIL scenario 18: second owner KID path did not follow collision fallback"; exit 1; }
 
-echo "  PASS (17 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, clone-failure-no-mutation, one-bad-mirror-does-not-strand-sweep, skipped-repo-dropped-not-carried-forward, lock-held-defers, kwr-config-overlay, broken-config-fail-loud, repos-conf-file-override, rate-limit-skips-tick)"
+
+echo "  PASS (18 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, clone-failure-no-mutation, one-bad-mirror-does-not-strand-sweep, skipped-repo-dropped-not-carried-forward, lock-held-defers, kwr-config-overlay, broken-config-fail-loud, repos-conf-file-override, rate-limit-skips-tick, cross-org-basename-collision)"

@@ -162,12 +162,43 @@ require_repos() {
 # (`export KWR_CLONE_ROOT=...`) or config.env if needed.
 KWR_CLONE_ROOT="${KWR_CLONE_ROOT:-$HOME/services/kwr-repos}"
 
+_repo_origin_matches() {
+    case "$1" in
+        "git@github.com:$2.git"|"git@github.com:$2"|"https://github.com/$2.git"|"https://github.com/$2") return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Keep the established short path unless another tracked repository with the
+# same basename already owns it. Only that proven collision gets an
+# owner-qualified path; an unrelated or spoofed origin stays on the short path
+# so org-sync's fail-loud validation still catches it.
+repo_clone_path() {
+    local full="$1" name="${1#*/}" base url other
+    shift
+    local -a candidates=("$@")
+    [ "${#candidates[@]}" -gt 0 ] || candidates=("${REPOS[@]}")
+    base="$KWR_CLONE_ROOT/$name"
+    if [ -d "$base/.git" ] && url=$(git -C "$base" remote get-url origin 2>/dev/null) \
+        && ! _repo_origin_matches "$url" "$full"; then
+        for other in "${candidates[@]}"; do
+            [ "$other" != "$full" ] || continue
+            [ "${other#*/}" = "$name" ] || continue
+            if _repo_origin_matches "$url" "$other"; then
+                printf '%s' "$KWR_CLONE_ROOT/$full"
+                return
+            fi
+        done
+    fi
+    printf '%s' "$base"
+}
+
 # kid_path_for OWNER/REPO — the repo's kid index root: its manual KID_PATHS
 # entry (sourced above, so it wins), else the $KWR_CLONE_ROOT convention. The
 # single owner of that convention. The loop materializes it for REPOS, which the
 # host timers iterate; the worker calls it for the repo under review, because an
 # ORGS-covered repo is never enumerated into REPOS in the container manifest.
-kid_path_for() { printf '%s' "${KID_PATHS[$1]:-$KWR_CLONE_ROOT/${1#*/}}"; }
+kid_path_for() { printf '%s' "${KID_PATHS[$1]:-$(repo_clone_path "$1")}"; }
 for _full in "${REPOS[@]}"; do
     KID_PATHS[$_full]=$(kid_path_for "$_full")
 done

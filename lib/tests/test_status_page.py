@@ -330,6 +330,27 @@ class TestTokens(unittest.TestCase):
 
 
 class TestRepoHealth(unittest.TestCase):
+    def test_owner_qualified_clone_wins_when_basename_belongs_to_another_repo(self):
+        with TemporaryDirectory() as root:
+            base = Path(root, "shared")
+            qualified = Path(root, "two", "shared")
+            for checkout, origin, review in ((base, "one/shared", False), (qualified, "two/shared", True)):
+                subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+                subprocess.run(["git", "-C", str(checkout), "remote", "add", "origin",
+                                f"git@github.com:{origin}.git"], check=True)
+                commit = ["git", "-C", str(checkout), "-c", "user.name=Test", "-c",
+                          "user.email=test@example.com", "commit"]
+                subprocess.run([*commit, "--allow-empty", "-qm", "seed"], check=True)
+                if review:
+                    (checkout / "REVIEW.md").write_text("review\n")
+                    subprocess.run(["git", "-C", str(checkout), "add", "REVIEW.md"], check=True)
+                    subprocess.run([*commit, "-qm", "review"], check=True)
+
+            rows = status_page.source_repos([run(1, 60, repo="two/shared")], root)
+
+        self.assertTrue(rows[0]["clone"])
+        self.assertTrue(rows[0]["review_md"])
+
     def test_kid_marker_reason(self):
         with TemporaryDirectory() as root:
             for name, marker in (("refreshing", "reason=refreshing\nindexed=abc"), ("failed", "reason=index-failed\n"),

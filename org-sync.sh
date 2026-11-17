@@ -172,8 +172,7 @@ skip_repo() {   # $1 = reason
     SKIPPED=$((SKIPPED + 1))
 }
 for full in "${AUTO[@]}"; do
-    name="${full#*/}"
-    dest="$KWR_CLONE_ROOT/$name"
+    dest=$(repo_clone_path "$full" "${AUTO[@]}")
     if [ -d "$dest/.git" ]; then
         if ! url=$(git -C "$dest" remote get-url origin 2>/dev/null); then
             skip_repo "$dest has no origin remote configured"
