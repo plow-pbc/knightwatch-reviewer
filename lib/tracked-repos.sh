@@ -174,27 +174,37 @@ _repo_origin_matches() {
 # owner-qualified path; an unrelated or spoofed origin stays on the short path
 # so org-sync's fail-loud validation still catches it.
 repo_clone_path() {
-    local full="$1" name="${1#*/}" base url other
+    local full="$1" name="${1#*/}" base qualified url qualified_url other
     shift
     local -a candidates=("$@")
     [ "${#candidates[@]}" -gt 0 ] || candidates=("${REPOS[@]}")
     base="$KWR_CLONE_ROOT/$name"
-    if [ -d "$base/.git" ] && url=$(git -C "$base" remote get-url origin 2>/dev/null) \
-        && ! _repo_origin_matches "$url" "$full"; then
-        if [ -d "$KWR_CLONE_ROOT/$full/.git" ] \
-            && url=$(git -C "$KWR_CLONE_ROOT/$full" remote get-url origin 2>/dev/null) \
-            && _repo_origin_matches "$url" "$full"; then
-            printf '%s' "$KWR_CLONE_ROOT/$full"
+    qualified="$KWR_CLONE_ROOT/$full"
+    if [ -d "$base/.git" ]; then
+        url=$(git -C "$base" remote get-url origin 2>/dev/null || true)
+        if _repo_origin_matches "$url" "$full"; then
+            printf '%s' "$base"
+            return
+        fi
+        qualified_url=$(git -C "$qualified" remote get-url origin 2>/dev/null || true)
+        if [ -d "$qualified/.git" ] && _repo_origin_matches "$qualified_url" "$full"; then
+            printf '%s' "$qualified"
             return
         fi
         for other in "${candidates[@]}"; do
             [ "$other" != "$full" ] || continue
             [ "${other#*/}" = "$name" ] || continue
             if _repo_origin_matches "$url" "$other"; then
-                printf '%s' "$KWR_CLONE_ROOT/$full"
+                printf '%s' "$qualified"
                 return
             fi
         done
+    elif [ ! -e "$base" ] && [ -d "$qualified/.git" ]; then
+        qualified_url=$(git -C "$qualified" remote get-url origin 2>/dev/null || true)
+        if _repo_origin_matches "$qualified_url" "$full"; then
+            printf '%s' "$qualified"
+            return
+        fi
     fi
     printf '%s' "$base"
 }
