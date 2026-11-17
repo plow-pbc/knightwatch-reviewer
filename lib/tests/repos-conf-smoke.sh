@@ -136,26 +136,12 @@ rm -f "$SAND_STATE/repos.conf"
 
 echo "  B4-collision-container: owner-qualified paths survive Git's ownership check..."
 COLLISION_ROOT="$TMPDIR/collision-root"
-mkdir -p "$COLLISION_ROOT/shared" "$COLLISION_ROOT/two/shared" "$TMPDIR/safe-git-bin"
+mkdir -p "$COLLISION_ROOT/shared" "$COLLISION_ROOT/two/shared"
 git -C "$COLLISION_ROOT/shared" init -q
 git -C "$COLLISION_ROOT/shared" remote add origin git@github.com:one/shared.git
 git -C "$COLLISION_ROOT/two/shared" init -q
 git -C "$COLLISION_ROOT/two/shared" remote add origin git@github.com:two/shared.git
-REAL_GIT=$(command -v git)
-cat > "$TMPDIR/safe-git-bin/git" <<'STUB'
-#!/usr/bin/env bash
-safe=false
-for arg in "$@"; do
-    case "$arg" in safe.directory=*) safe=true ;; esac
-done
-if [[ " $* " == *" remote get-url origin "* ]] && [ "$safe" = false ]; then
-    echo "fatal: detected dubious ownership in repository" >&2
-    exit 128
-fi
-exec "$REAL_GIT" "$@"
-STUB
-chmod +x "$TMPDIR/safe-git-bin/git"
-out=$(PATH="$TMPDIR/safe-git-bin:$PATH" REAL_GIT="$REAL_GIT" KWR_CLONE_ROOT="$COLLISION_ROOT" \
+out=$(GIT_TEST_ASSUME_DIFFERENT_OWNER=1 KWR_CLONE_ROOT="$COLLISION_ROOT" \
     STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; repo_clone_path two/shared one/shared two/shared" 2>&1)
 [ "$out" = "$COLLISION_ROOT/two/shared" ] || { echo "FAIL B4-collision-container: loader output: $out"; exit 1; }
 
