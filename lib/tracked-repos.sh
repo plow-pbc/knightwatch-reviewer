@@ -180,17 +180,20 @@ repo_clone_path() {
     [ "${#candidates[@]}" -gt 0 ] || candidates=("${REPOS[@]}")
     base="$KWR_CLONE_ROOT/$name"
     qualified="$KWR_CLONE_ROOT/$full"
+    url=""
     if [ -d "$base/.git" ]; then
         url=$(git -C "$base" remote get-url origin 2>/dev/null || true)
         if _repo_origin_matches "$url" "$full"; then
             printf '%s' "$base"
             return
         fi
-        qualified_url=$(git -C "$qualified" remote get-url origin 2>/dev/null || true)
-        if [ -d "$qualified/.git" ] && _repo_origin_matches "$qualified_url" "$full"; then
-            printf '%s' "$qualified"
-            return
-        fi
+    fi
+    qualified_url=$(git -C "$qualified" remote get-url origin 2>/dev/null || true)
+    if [ -d "$qualified/.git" ] && _repo_origin_matches "$qualified_url" "$full"; then
+        printf '%s' "$qualified"
+        return
+    fi
+    if [ -d "$base/.git" ]; then
         for other in "${candidates[@]}"; do
             [ "$other" != "$full" ] || continue
             [ "${other#*/}" = "$name" ] || continue
@@ -199,12 +202,6 @@ repo_clone_path() {
                 return
             fi
         done
-    elif [ ! -e "$base" ] && [ -d "$qualified/.git" ]; then
-        qualified_url=$(git -C "$qualified" remote get-url origin 2>/dev/null || true)
-        if _repo_origin_matches "$qualified_url" "$full"; then
-            printf '%s' "$qualified"
-            return
-        fi
     fi
     printf '%s' "$base"
 }
