@@ -38,6 +38,18 @@ done
     return sorted(result.stdout.splitlines())
 
 
+def tracked_repos():
+    """Current manual and auto repository slugs from the resolved manifest."""
+    script = r'''
+set -euo pipefail
+. "$REVIEWER_LIB_DIR/tracked-repos.sh"
+printf '%s\n' "${REPOS[@]}"
+'''
+    env = {**os.environ, "REVIEWER_LIB_DIR": os.environ.get("REVIEWER_LIB_DIR", "/app/lib")}
+    result = subprocess.run(["bash", "-c", script], check=True, capture_output=True, text=True, env=env)
+    return sorted(result.stdout.splitlines())
+
+
 def run_epoch(name):
     """Epoch encoded in a run-dir name <repo>__<pr>__<ts>__<sha7>, else None."""
     parts = name.split("__")
@@ -176,6 +188,7 @@ def main():
     weekend = float(os.environ.get("KWR_THROTTLE_WEEKEND_FACTOR", quota_throttle.DEFAULT_WEEKEND_FACTOR))
     snapshot = collect(Path(os.environ.get("STATE_DIR", "/shared")), time.time(), tz, weekend)
     snapshot["resolved_sources"] = resolved_sources()
+    snapshot["tracked_repos"] = tracked_repos()
     json.dump(snapshot, sys.stdout)
 
 

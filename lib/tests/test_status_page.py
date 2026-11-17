@@ -116,6 +116,7 @@ class TestCollect(unittest.TestCase):
             subprocess.run(["git", "init", "-q", str(checkout)], check=True)
             manifest = root / "repos.conf"
             manifest.write_text(
+                'REPOS=("o/searchable" "o/excluded")\n'
                 "declare -A SOURCE_PATHS=("
                 f'["o/searchable"]={json.dumps(str(checkout))} '
                 '["o/excluded"]="" '
@@ -125,8 +126,10 @@ class TestCollect(unittest.TestCase):
                    "REVIEWER_LIB_DIR": str(Path(status_collect.__file__).parent), "KWR_CONFIG_REPO": ""}
             with unittest.mock.patch.dict(os.environ, env):
                 resolved = status_collect.resolved_sources()
+                tracked = status_collect.tracked_repos()
 
         self.assertEqual(resolved, ["o/excluded", "o/searchable"])
+        self.assertEqual(tracked, ["o/excluded", "o/searchable"])
 
 
 def run(pr, age, repo="o/r", total=450, finished=True, span=None, queued=None, live=False, worker=None):
@@ -346,8 +349,8 @@ class TestRepoHealth(unittest.TestCase):
                     subprocess.run(["git", "-C", str(checkout), "add", "REVIEW.md"], check=True)
                     subprocess.run([*commit, "-qm", "review"], check=True)
 
-            rows = status_page.source_repos([run(1, 120, repo="one/shared"),
-                                              run(1, 60, repo="two/shared")], root)
+            rows = status_page.source_repos([run(1, 60, repo="two/shared")], root,
+                                            ["one/shared", "two/shared"])
 
         two = next(row for row in rows if row["repo"] == "two/shared")
         self.assertTrue(two["clone"])
