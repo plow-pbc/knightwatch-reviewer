@@ -484,6 +484,67 @@ class TestRunCodex(unittest.TestCase):
         self.assertIn("agent=intent starting", (agent_dir / "log.txt").read_text())
         self.assertIn("agent=intent exit=0", (agent_dir / "log.txt").read_text())
 
+    def test_codex_does_not_wait_for_an_inherited_stdin_pipe(self):
+        """A manual worker launched by ``docker compose exec -T`` inherits an
+        open stdin pipe. Codex appends piped stdin to an argv prompt, so the
+        wrapper must detach stdin or the CLI waits for EOF before contacting
+        the model. Exercise the real subprocess boundary with a fake codex
+        that performs that same read before writing its output artifact."""
+        fake_bin = Path(self.tmp.name) / "bin"
+        fake_bin.mkdir()
+        fake_codex = fake_bin / "codex"
+        fake_codex.write_text(
+            "#!/usr/bin/env python3\n"
+            "import pathlib, sys\n"
+            "sys.stdin.read()\n"
+            "out = pathlib.Path(sys.argv[sys.argv.index('-o') + 1])\n"
+            "out.write_text('Inferred intent: stdin detached.\\n')\n"
+        )
+        fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IXUSR)
+
+        pipeline_dir = Path(pipeline.__file__).resolve().parent
+        agent_dir = self._agent_dir("intent")
+        harness = (
+            "import sys\n"
+            f"sys.path.insert(0, {str(pipeline_dir)!r})\n"
+            "import pipeline\n"
+            "raise SystemExit(pipeline.run_codex(\n"
+            f"    'intent', {str(self.repo_dir)!r}, 'PROMPT', {str(agent_dir)!r}\n"
+            "))\n"
+        )
+        env = os.environ.copy()
+        env["PATH"] = f"{fake_bin}:{env.get('PATH', '')}"
+        proc = subprocess.Popen(
+            [sys.executable, "-c", harness],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            start_new_session=True,
+            text=True,
+        )
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait()
+            self.fail("codex inherited the still-open stdin pipe and waited for EOF")
+        finally:
+            if proc.stdin is not None:
+                proc.stdin.close()
+
+        stdout = proc.stdout.read() if proc.stdout is not None else ""
+        stderr = proc.stderr.read() if proc.stderr is not None else ""
+        if proc.stdout is not None:
+            proc.stdout.close()
+        if proc.stderr is not None:
+            proc.stderr.close()
+        self.assertEqual(proc.returncode, 0, stdout + stderr)
+        self.assertEqual(
+            (agent_dir / "output.md").read_text(),
+            "Inferred intent: stdin detached.\n",
+        )
+
     @patch("pipeline.subprocess.Popen")
     def test_codex_argv_pins_model_per_kind(self, mock_popen):
         """Per-kind model routing must reach codex (regression fence): the
@@ -2406,6 +2467,21 @@ class TestPipelineCLI(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def test_main_defaults_prompts_to_script_tree(self):
+        expected = str(Path(pipeline.__file__).resolve().parent.parent / "prompts")
+        argv = ["pipeline.py", str(self.repo_dir), str(self.run_dir)]
+        env = {
+            "PR_ID": "owner/repo#42",
+            "PR_TITLE": "Add X",
+            "PR_URL": "https://example/pull/42",
+            "PR_AUTHOR": "alice",
+        }
+        with patch.object(sys, "argv", argv), \
+             patch.dict(os.environ, env, clear=True), \
+             patch.object(pipeline, "run_pipeline", return_value=0) as run:
+            self.assertEqual(pipeline.main(), 0)
+        self.assertEqual(run.call_args.kwargs["prompts_dir"], expected)
 
     def test_real_subprocess_first_review(self):
         """Run pipeline.py as a subprocess with a fake codex on PATH.
