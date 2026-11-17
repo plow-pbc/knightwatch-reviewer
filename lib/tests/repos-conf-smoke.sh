@@ -134,6 +134,17 @@ out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; echo \"or
 [ "$out" = "org=$HOME/services/kwr-repos/unlisted manual=/var/manual" ] || { echo "FAIL B4: loader output: $out"; exit 1; }
 rm -f "$SAND_STATE/repos.conf"
 
+echo "  B4-collision-container: owner-qualified paths survive Git's ownership check..."
+COLLISION_ROOT="$TMPDIR/collision-root"
+mkdir -p "$COLLISION_ROOT/shared" "$COLLISION_ROOT/two/shared"
+git -C "$COLLISION_ROOT/shared" init -q
+git -C "$COLLISION_ROOT/shared" remote add origin git@github.com:one/shared.git
+git -C "$COLLISION_ROOT/two/shared" init -q
+git -C "$COLLISION_ROOT/two/shared" remote add origin git@github.com:two/shared.git
+out=$(GIT_TEST_ASSUME_DIFFERENT_OWNER=1 KWR_CLONE_ROOT="$COLLISION_ROOT" \
+    STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; repo_clone_path two/shared one/shared two/shared" 2>&1)
+[ "$out" = "$COLLISION_ROOT/two/shared" ] || { echo "FAIL B4-collision-container: loader output: $out"; exit 1; }
+
 # require_tracked_targets — the startup guard shared by the PR-enumeration
 # entry scripts (review.sh / poll-pr-actions.sh).
 # Locks the contract that a whole-org (ORGS-only, no REPOS) manifest is

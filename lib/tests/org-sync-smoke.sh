@@ -552,5 +552,61 @@ n=$(count_gh "repo clone")
 [ "$n" -eq 0 ] || { echo "FAIL scenario 15: expected 0 clones while rate-limited, got $n"; exit 1; }
 grep -q 'github rate-limited — skipping org sync' "$LOG_FILE" || { echo "FAIL scenario 15: expected the rate-limit skip log line"; cat "$LOG_FILE"; exit 1; }
 
+# --- Scenario 18: same basename in two orgs ----------------------------------
+# The convention path stays short for the first owner. A second repository with
+# the same basename must use an owner-qualified fallback instead of making every
+# later hourly sweep fail on the first checkout's valid origin.
+echo "  scenario 18: cross-org basename collision — both repos cloned and indexed..."
+write_baseline_conf '"one" "two"'
+rm -rf "$HOME/services/kwr-repos/shared" "$HOME/services/kwr-repos/two"
+rm -f "$AUTO_CONF"
+MOCK_GH_LIST_one="shared" MOCK_GH_LIST_two="shared" run_sync \
+    || { echo "FAIL scenario 18: org-sync exited non-zero"; cat "$LOG_FILE"; exit 1; }
+[ -d "$HOME/services/kwr-repos/shared/.git" ] || { echo "FAIL scenario 18: first owner clone missing"; exit 1; }
+[ -d "$HOME/services/kwr-repos/two/shared/.git" ] || { echo "FAIL scenario 18: collision fallback clone missing"; exit 1; }
+[ "$(resolved_kid_path one/shared)" = "$HOME/services/kwr-repos/shared" ] \
+    || { echo "FAIL scenario 18: first owner KID path changed"; exit 1; }
+[ "$(resolved_kid_path two/shared)" = "$HOME/services/kwr-repos/two/shared" ] \
+    || { echo "FAIL scenario 18: second owner KID path did not follow collision fallback"; exit 1; }
 
-echo "  PASS (17 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, clone-failure-no-mutation, one-bad-mirror-does-not-strand-sweep, skipped-repo-dropped-not-carried-forward, lock-held-defers, kwr-config-overlay, broken-config-fail-loud, repos-conf-file-override, rate-limit-skips-tick)"
+# --- Scenario 19: manual owner collides with an auto repo ---------------------
+echo "  scenario 19: manual/auto basename collision — auto repo uses the fallback..."
+cat > "$MANIFEST" <<'CONF'
+REPOS=("one/shared")
+declare -A KID_PATHS=(["one/shared"]="/var/operator/shared")
+declare -A SOURCE_PATHS=(["one/shared"]="/var/operator/shared")
+ORGS=("two")
+CONF
+rm -rf "$HOME/services/kwr-repos/shared" "$HOME/services/kwr-repos/two"
+make_checkout shared git@github.com:one/shared.git
+rm -f "$AUTO_CONF"
+MOCK_GH_LIST_two="shared" run_sync \
+    || { echo "FAIL scenario 19: org-sync exited non-zero"; cat "$LOG_FILE"; exit 1; }
+[ -d "$HOME/services/kwr-repos/two/shared/.git" ] \
+    || { echo "FAIL scenario 19: auto repo collision fallback clone missing"; exit 1; }
+[ "$(resolved_kid_path two/shared)" = "$HOME/services/kwr-repos/two/shared" ] \
+    || { echo "FAIL scenario 19: auto repo KID path did not follow collision fallback"; exit 1; }
+
+# --- Scenarios 20-22: valid qualified checkout reuse --------------------------
+for state in stale-owner absent non-checkout; do
+    echo "  scenarios 20-22: existing qualified checkout is reused with short path $state..."
+    write_baseline_conf '"two"'
+    rm -rf "$HOME/services/kwr-repos/shared" "$HOME/services/kwr-repos/two"
+    case "$state" in
+        stale-owner) make_checkout shared git@github.com:retired/shared.git ;;
+        absent) ;;
+        non-checkout) mkdir -p "$HOME/services/kwr-repos/shared" ;;
+    esac
+    make_checkout two/shared git@github.com:two/shared.git
+    rm -f "$AUTO_CONF"
+    MOCK_GH_LIST_two="shared" run_sync \
+        || { echo "FAIL scenarios 20-22 ($state): org-sync exited non-zero"; cat "$LOG_FILE"; exit 1; }
+    n=$(count_gh "repo clone")
+    [ "$n" -eq 0 ] \
+        || { echo "FAIL scenarios 20-22 ($state): existing qualified checkout was cloned again"; exit 1; }
+    [ "$(resolved_kid_path two/shared)" = "$HOME/services/kwr-repos/two/shared" ] \
+        || { echo "FAIL scenarios 20-22 ($state): KID path did not reuse the qualified checkout"; exit 1; }
+done
+
+
+echo "  PASS (22 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, clone-failure-no-mutation, one-bad-mirror-does-not-strand-sweep, skipped-repo-dropped-not-carried-forward, lock-held-defers, kwr-config-overlay, broken-config-fail-loud, repos-conf-file-override, rate-limit-skips-tick, cross-org-basename-collision, manual-auto-basename-collision, stale-short-owner, absent-short-path, non-checkout-short-path)"

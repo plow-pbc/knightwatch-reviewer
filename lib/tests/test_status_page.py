@@ -116,6 +116,7 @@ class TestCollect(unittest.TestCase):
             subprocess.run(["git", "init", "-q", str(checkout)], check=True)
             manifest = root / "repos.conf"
             manifest.write_text(
+                'REPOS=("o/searchable" "o/excluded")\n'
                 "declare -A SOURCE_PATHS=("
                 f'["o/searchable"]={json.dumps(str(checkout))} '
                 '["o/excluded"]="" '
@@ -330,13 +331,59 @@ class TestTokens(unittest.TestCase):
 
 
 class TestRepoHealth(unittest.TestCase):
+    def test_owner_qualified_clone_wins_when_basename_belongs_to_another_repo(self):
+        with TemporaryDirectory() as root:
+            base = Path(root, "shared")
+            qualified = Path(root, "two", "shared")
+            for checkout, origin, review in ((base, "one/shared", False), (qualified, "two/shared", True)):
+                subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+                subprocess.run(["git", "-C", str(checkout), "remote", "add", "origin",
+                                f"git@github.com:{origin}.git"], check=True)
+                commit = ["git", "-C", str(checkout), "-c", "user.name=Test", "-c",
+                          "user.email=test@example.com", "commit"]
+                subprocess.run([*commit, "--allow-empty", "-qm", "seed"], check=True)
+                if review:
+                    (checkout / "REVIEW.md").write_text("review\n")
+                    subprocess.run(["git", "-C", str(checkout), "add", "REVIEW.md"], check=True)
+                    subprocess.run([*commit, "-qm", "review"], check=True)
+
+            rows = status_page.source_repos([run(1, 60, repo="two/shared")], root)
+
+        two = next(row for row in rows if row["repo"] == "two/shared")
+        self.assertTrue(two["clone"])
+        self.assertTrue(two["review_md"])
+
+    def test_short_checkout_without_origin_is_not_attributed_to_repo(self):
+        with TemporaryDirectory() as root:
+            subprocess.run(["git", "init", "-q", str(Path(root, "r"))], check=True)
+
+            rows = status_page.source_repos([run(1, 60, repo="o/r")], root)
+
+        self.assertFalse(rows[0]["clone"])
+
+    def test_owner_qualified_clone_is_used_without_a_short_checkout(self):
+        for state in ("absent", "non-checkout"):
+            with self.subTest(state=state), TemporaryDirectory() as root:
+                if state == "non-checkout":
+                    Path(root, "r").mkdir()
+                qualified = Path(root, "o", "r")
+                subprocess.run(["git", "init", "-q", str(qualified)], check=True)
+                subprocess.run(["git", "-C", str(qualified), "remote", "add", "origin",
+                                "git@github.com:o/r.git"], check=True)
+
+                rows = status_page.source_repos([run(1, 60, repo="o/r")], root)
+
+                self.assertTrue(rows[0]["clone"])
+
     def test_kid_marker_reason(self):
         with TemporaryDirectory() as root:
             for name, marker in (("refreshing", "reason=refreshing\nindexed=abc"), ("failed", "reason=index-failed\n"),
                                  ("bare", ""), ("fresh", None)):
                 kid = Path(root, name, ".keepitdry")
                 kid.mkdir(parents=True)
-                Path(root, name, ".git").mkdir()
+                subprocess.run(["git", "init", "-q", str(Path(root, name))], check=True)
+                subprocess.run(["git", "-C", str(Path(root, name)), "remote", "add", "origin",
+                                f"git@github.com:o/{name}.git"], check=True)
                 (kid / ".indexed-sha").write_text("abc")
                 if marker is not None:
                     (kid / ".stale").write_text(marker)

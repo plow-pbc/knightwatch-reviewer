@@ -348,7 +348,7 @@ echo "  asserting KWR_CLONE_ROOT single source of truth..."
 assert_grep "lib/tracked-repos.sh should define KWR_CLONE_ROOT" \
     'KWR_CLONE_ROOT=' lib/tracked-repos.sh
 assert_grep "org-sync.sh should derive clone dest from KWR_CLONE_ROOT" \
-    'dest="$KWR_CLONE_ROOT/$name"' org-sync.sh
+    'dest=$(repo_clone_path "$full" "${REPOS[@]}" "${AUTO[@]}")' org-sync.sh
 assert_grep "install.sh should template @KWR_CLONE_ROOT@ into systemd units" \
     '@KWR_CLONE_ROOT@' install.sh
 assert_grep "pr-reviewer-org-sync.service should template ReadWritePaths via @KWR_CLONE_ROOT@" \
