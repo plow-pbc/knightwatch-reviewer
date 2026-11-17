@@ -361,28 +361,19 @@ class TestRepoHealth(unittest.TestCase):
 
         self.assertFalse(rows[0]["clone"])
 
-    def test_owner_qualified_clone_is_used_when_short_checkout_is_absent(self):
-        with TemporaryDirectory() as root:
-            qualified = Path(root, "o", "r")
-            subprocess.run(["git", "init", "-q", str(qualified)], check=True)
-            subprocess.run(["git", "-C", str(qualified), "remote", "add", "origin",
-                            "git@github.com:o/r.git"], check=True)
+    def test_owner_qualified_clone_is_used_without_a_short_checkout(self):
+        for state in ("absent", "non-checkout"):
+            with self.subTest(state=state), TemporaryDirectory() as root:
+                if state == "non-checkout":
+                    Path(root, "r").mkdir()
+                qualified = Path(root, "o", "r")
+                subprocess.run(["git", "init", "-q", str(qualified)], check=True)
+                subprocess.run(["git", "-C", str(qualified), "remote", "add", "origin",
+                                "git@github.com:o/r.git"], check=True)
 
-            rows = status_page.source_repos([run(1, 60, repo="o/r")], root)
+                rows = status_page.source_repos([run(1, 60, repo="o/r")], root)
 
-        self.assertTrue(rows[0]["clone"])
-
-    def test_owner_qualified_clone_is_used_when_short_path_is_not_a_checkout(self):
-        with TemporaryDirectory() as root:
-            Path(root, "r").mkdir()
-            qualified = Path(root, "o", "r")
-            subprocess.run(["git", "init", "-q", str(qualified)], check=True)
-            subprocess.run(["git", "-C", str(qualified), "remote", "add", "origin",
-                            "git@github.com:o/r.git"], check=True)
-
-            rows = status_page.source_repos([run(1, 60, repo="o/r")], root)
-
-        self.assertTrue(rows[0]["clone"])
+                self.assertTrue(rows[0]["clone"])
 
     def test_kid_marker_reason(self):
         with TemporaryDirectory() as root:

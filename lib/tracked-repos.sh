@@ -182,13 +182,13 @@ repo_clone_path() {
     qualified="$KWR_CLONE_ROOT/$full"
     url=""
     if [ -d "$base/.git" ]; then
-        url=$(git -C "$base" remote get-url origin 2>/dev/null || true)
+        url=$(git -c safe.directory="$base" -C "$base" remote get-url origin 2>/dev/null || true)
         if _repo_origin_matches "$url" "$full"; then
             printf '%s' "$base"
             return
         fi
     fi
-    qualified_url=$(git -C "$qualified" remote get-url origin 2>/dev/null || true)
+    qualified_url=$(git -c safe.directory="$qualified" -C "$qualified" remote get-url origin 2>/dev/null || true)
     if [ -d "$qualified/.git" ] && _repo_origin_matches "$qualified_url" "$full"; then
         printf '%s' "$qualified"
         return
