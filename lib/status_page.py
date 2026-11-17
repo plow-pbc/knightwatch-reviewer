@@ -381,14 +381,13 @@ def source_gh():
     return json.loads(_run("gh", "api", "rate_limit"))["resources"]
 
 
-def source_repos(runs, clone_root, tracked_repos=None):
+def source_repos(runs, clone_root):
     last, unsearched = {}, {}
     for r in sorted(runs, key=lambda r: r["t"]):
         last[r["repo"]] = r["t"]
         if r.get("unsearched") is not None:
             unsearched[r["repo"]] = r["unsearched"]
     rows = []
-    collision_candidates = set(tracked_repos if tracked_repos is not None else last)
 
     def origin_url(clone):
         result = subprocess.run(["git", "-C", str(clone), "remote", "get-url", "origin"],
@@ -402,10 +401,7 @@ def source_repos(runs, clone_root, tracked_repos=None):
     for repo, t in sorted(last.items(), key=lambda kv: -kv[1]):
         clone = Path(clone_root) / repo.split("/")[1]
         url = origin_url(clone) if (clone / ".git").exists() else None
-        same_name = [other for other in collision_candidates
-                     if other != repo and other.split("/")[1] == repo.split("/")[1]]
-        qualified = url is not None and not origin_matches(url, repo) and any(
-            origin_matches(url, other) for other in same_name)
+        qualified = url is not None and not origin_matches(url, repo)
         if qualified:
             clone = Path(clone_root) / repo
         clone_exists = (clone / ".git").exists() and (not qualified or origin_matches(origin_url(clone), repo))
@@ -471,8 +467,7 @@ def main(argv=None):
         if val is not None:
             src["prompt_edits"] = val
     if "snapshot" in src:
-        val = attempt("repos", lambda: source_repos(src["snapshot"]["runs"], args.clone_root,
-                                                    src["snapshot"].get("tracked_repos")))
+        val = attempt("repos", lambda: source_repos(src["snapshot"]["runs"], args.clone_root))
         if val is not None:
             src["repos"] = val
     model = build(src, errors, now)

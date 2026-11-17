@@ -181,6 +181,12 @@ repo_clone_path() {
     base="$KWR_CLONE_ROOT/$name"
     if [ -d "$base/.git" ] && url=$(git -C "$base" remote get-url origin 2>/dev/null) \
         && ! _repo_origin_matches "$url" "$full"; then
+        if [ -d "$KWR_CLONE_ROOT/$full/.git" ] \
+            && url=$(git -C "$KWR_CLONE_ROOT/$full" remote get-url origin 2>/dev/null) \
+            && _repo_origin_matches "$url" "$full"; then
+            printf '%s' "$KWR_CLONE_ROOT/$full"
+            return
+        fi
         for other in "${candidates[@]}"; do
             [ "$other" != "$full" ] || continue
             [ "${other#*/}" = "$name" ] || continue
