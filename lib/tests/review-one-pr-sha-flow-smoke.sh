@@ -219,11 +219,14 @@ write_worker_flock_stub_if_missing "$HOME/.local/bin"
 
 write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"
 
-# Stage installed prompts the worker fail-fast-checks for. probe-schema.md
-# is the only one currently required (lib/review-one-pr.sh:962); install.sh
-# would symlink the whole prompts/ dir on a real host.
+# Keep the smoke independent of the operator's Codex installation. Reaching the
+# model pipeline is enough; this shim makes that stage fail immediately.
 mkdir -p "$HOME/.pr-reviewer/prompts"
-cp "$PROJECT_ROOT/prompts/probe-schema.md" "$HOME/.pr-reviewer/prompts/probe-schema.md"
+cat > "$HOME/.local/bin/codex" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+chmod +x "$HOME/.local/bin/codex"
 
 # ---- run the worker ----
 # Pass OLD_PR_SHA as PR_SHA — simulating "this is what the orchestrator

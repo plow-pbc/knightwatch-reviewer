@@ -134,6 +134,7 @@ BOT_PLACEHOLDER_MARKER="${BOT_PLACEHOLDER_MARKER:-<!-- knightwatch-reviewer:plac
 # Source helpers. Prefer REVIEWER_LIB_DIR if caller set it (smoke-test
 # isolation); fall back to the worker's own directory.
 _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
+_LIB_DIR=$(cd "$_LIB_DIR" && pwd -P)
 . "$_LIB_DIR/state-io.sh"
 . "$_LIB_DIR/auth.sh"
 
@@ -176,6 +177,22 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # channel; decline arbitration over those replies is aggregator-owned.
 # (Also sources gh-comments.sh; multi-source is idempotent.)
 . "$_LIB_DIR/pr-comments.sh"
+
+# Resolve deploy assets before reading PR metadata or posting a placeholder.
+# Missing prompts or checker entrypoints mean the reviewer installation is
+# incomplete, so fail closed before performing any GitHub-side work.
+PROMPTS_DIR="${PROMPTS_DIR:-$_LIB_DIR/../prompts}"
+PROBE_SCHEMA_PATH="$PROMPTS_DIR/probe-schema.md"
+if ! _prompt_preflight=$(python3 "$_LIB_DIR/pipeline.py" --preflight-prompts "$PROMPTS_DIR" 2>&1); then
+    log "$PR_ID: prompt preflight failed — $_prompt_preflight — incomplete install — aborting"
+    exit 1
+fi
+for _checker in python-strict-typing.sh typescript-strict-typing.sh; do
+    if [ ! -x "$_LIB_DIR/checks/$_checker" ]; then
+        log "$PR_ID: $_checker missing or not executable at $_LIB_DIR/checks/$_checker — incomplete install — aborting"
+        exit 1
+    fi
+done
 
 # --- requester gate + author trust (BEFORE the per-run dir) --------------
 # This must run before allocate_run_dir: a skipped/deferred review that
@@ -1481,17 +1498,9 @@ write_scratch "$REPO_DIR" "standards.md"       "$STANDARDS"
 [ -n "$CONVENTION_DOC" ] && write_scratch "$REPO_DIR" "convention.md" "$CONVENTION_BODY"
 
 # ---- probe schema ----
-# probe-schema.md ships in prompts/ and is symlinked into ~/.pr-reviewer/prompts
-# at install time. Specialists + per-angle critics + aggregator (Phases 2+)
+# probe-schema.md ships in prompts/. Specialists + per-angle critics + aggregator (Phases 2+)
 # reference .codex-scratch/probe-schema.md as the canonical contract. Missing
-# on disk is fail-fast — same shape as the prompt loader in lib/pipeline.py;
-# a missing prompt means an incomplete deploy, not "operator opted out."
-PROBE_SCHEMA_PATH="${PROMPTS_DIR:-$HOME/.pr-reviewer/prompts}/probe-schema.md"
-if [ ! -f "$PROBE_SCHEMA_PATH" ]; then
-    log "$PR_ID: probe-schema.md missing at $PROBE_SCHEMA_PATH — incomplete install — aborting"
-    rm -rf "$REPO_DIR"
-    exit 1
-fi
+# on disk was rejected by the startup preflight before GitHub access.
 write_scratch "$REPO_DIR" "probe-schema.md" "$(cat "$PROBE_SCHEMA_PATH")"
 
 [ -n "${FULL_PR_DIFF:-}" ] && \
@@ -1719,7 +1728,7 @@ PR_URL="$PR_URL" \
 PR_AUTHOR="$PR_AUTHOR" \
 REPO_VISIBILITY="$REPO_VISIBILITY" \
 PR_DIFF_LOC="$PR_DIFF_LOC" \
-PROMPTS_DIR="${PROMPTS_DIR:-$HOME/.pr-reviewer/prompts}" \
+PROMPTS_DIR="$PROMPTS_DIR" \
 LOG_FILE="$LOG_FILE" \
 OPERATOR_NAME="${OPERATOR_NAME:-Sam}" \
     python3 "$_LIB_DIR/pipeline.py" "$REPO_DIR" "$RUN_DIR"

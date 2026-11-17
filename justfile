@@ -194,6 +194,10 @@ test:
     bash lib/tests/review-one-pr-sha-flow-smoke.sh
 
     echo ""
+    echo "=== review-one-pr asset preflight smoke test ==="
+    bash lib/tests/review-one-pr-asset-preflight-smoke.sh
+
+    echo ""
     echo "=== review-one-pr pull/head precheck smoke test ==="
     bash lib/tests/review-one-pr-pull-head-smoke.sh
 

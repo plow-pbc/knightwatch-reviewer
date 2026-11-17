@@ -50,6 +50,23 @@ SPECIALIST_MIN_LOC = {
     "contract-drift": 0, "tests": 20, "shape": 0, "consumers": 200, "copy": 0,
 }
 SPECIALISTS = tuple(SPECIALIST_MIN_LOC)
+STANDALONE_AGENTS = ("intent", "dead-code-search", "momentum")
+
+
+def missing_prompt_assets(prompts_dir: str) -> list[Path]:
+    """Return every prompt asset the worker or pipeline cannot read."""
+    root = Path(prompts_dir)
+    required = [
+        root / "probe-schema.md",
+        root / "policy.md",
+        root / "common-header.md",
+        root / "critic.md",
+        root / "aggregator.md",
+        root / "voice.md",
+        *(root / "standalone" / f"{agent}.md" for agent in STANDALONE_AGENTS),
+        *(root / "specialists" / f"{agent}.md" for agent in SPECIALISTS),
+    ]
+    return [path for path in required if not path.is_file() or not os.access(path, os.R_OK)]
 
 
 def _active_specialists(diff_loc: int | None) -> tuple[list[str], list[str]]:
@@ -455,7 +472,13 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
                 with log_file.open("a") as lf:
                     lf.write(f"[{_ts()}] agent={name} attempt 2 (see log.attempt1.txt)\n")
             with log_file.open("a") as lf, err_file.open("a") as ef:
-                proc = subprocess.Popen(argv, stdout=lf, stderr=ef, start_new_session=True)
+                proc = subprocess.Popen(
+                    argv,
+                    stdin=subprocess.DEVNULL,
+                    stdout=lf,
+                    stderr=ef,
+                    start_new_session=True,
+                )
             exit_code, kill_reason, retryable = _wait_with_watchdog(proc, log_file, err_file)
             # We retry at most once (attempt 1 → attempt 2); a retryable kill on
             # the final attempt still ends the loop, so gate both the surfaced
@@ -1199,11 +1222,18 @@ def _trace_sigterm_source(signum: int, _frame: object) -> None:
 
 def main() -> int:
     signal.signal(signal.SIGTERM, _trace_sigterm_source)
+    if len(sys.argv) == 3 and sys.argv[1] == "--preflight-prompts":
+        missing = missing_prompt_assets(sys.argv[2])
+        for path in missing:
+            sys.stderr.write(f"{path.name} missing or unreadable at {path}\n")
+        return int(bool(missing))
     if len(sys.argv) != 3:
         sys.stderr.write(f"usage: {sys.argv[0]} REPO_DIR RUN_DIR\n")
         return 2
     repo_dir, run_dir = sys.argv[1], sys.argv[2]
-    prompts_dir = os.environ.get("PROMPTS_DIR", os.path.expanduser("~/.pr-reviewer/prompts"))
+    prompts_dir = os.environ.get(
+        "PROMPTS_DIR", str(Path(__file__).resolve().parent.parent / "prompts")
+    )
     return run_pipeline(
         repo_dir=repo_dir, run_dir=run_dir, prompts_dir=prompts_dir,
         pr_id=os.environ["PR_ID"],
