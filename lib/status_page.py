@@ -401,7 +401,9 @@ def source_repos(runs, clone_root):
     for repo, t in sorted(last.items(), key=lambda kv: -kv[1]):
         clone = Path(clone_root) / repo.split("/")[1]
         url = origin_url(clone) if (clone / ".git").exists() else None
-        qualified = url is not None and not origin_matches(url, repo)
+        same_name = [other for other in last if other != repo and other.split("/")[1] == repo.split("/")[1]]
+        qualified = url is not None and not origin_matches(url, repo) and any(
+            origin_matches(url, other) for other in same_name)
         if qualified:
             clone = Path(clone_root) / repo
         clone_exists = (clone / ".git").exists() and (not qualified or origin_matches(origin_url(clone), repo))

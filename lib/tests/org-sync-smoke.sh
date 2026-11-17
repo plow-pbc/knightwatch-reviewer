@@ -569,5 +569,23 @@ MOCK_GH_LIST_one="shared" MOCK_GH_LIST_two="shared" run_sync \
 [ "$(resolved_kid_path two/shared)" = "$HOME/services/kwr-repos/two/shared" ] \
     || { echo "FAIL scenario 18: second owner KID path did not follow collision fallback"; exit 1; }
 
+# --- Scenario 19: manual owner collides with an auto repo ---------------------
+echo "  scenario 19: manual/auto basename collision — auto repo uses the fallback..."
+cat > "$MANIFEST" <<'CONF'
+REPOS=("one/shared")
+declare -A KID_PATHS=(["one/shared"]="/var/operator/shared")
+declare -A SOURCE_PATHS=(["one/shared"]="/var/operator/shared")
+ORGS=("two")
+CONF
+rm -rf "$HOME/services/kwr-repos/shared" "$HOME/services/kwr-repos/two"
+make_checkout shared git@github.com:one/shared.git
+rm -f "$AUTO_CONF"
+MOCK_GH_LIST_two="shared" run_sync \
+    || { echo "FAIL scenario 19: org-sync exited non-zero"; cat "$LOG_FILE"; exit 1; }
+[ -d "$HOME/services/kwr-repos/two/shared/.git" ] \
+    || { echo "FAIL scenario 19: auto repo collision fallback clone missing"; exit 1; }
+[ "$(resolved_kid_path two/shared)" = "$HOME/services/kwr-repos/two/shared" ] \
+    || { echo "FAIL scenario 19: auto repo KID path did not follow collision fallback"; exit 1; }
 
-echo "  PASS (18 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, clone-failure-no-mutation, one-bad-mirror-does-not-strand-sweep, skipped-repo-dropped-not-carried-forward, lock-held-defers, kwr-config-overlay, broken-config-fail-loud, repos-conf-file-override, rate-limit-skips-tick, cross-org-basename-collision)"
+
+echo "  PASS (19 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, clone-failure-no-mutation, one-bad-mirror-does-not-strand-sweep, skipped-repo-dropped-not-carried-forward, lock-held-defers, kwr-config-overlay, broken-config-fail-loud, repos-conf-file-override, rate-limit-skips-tick, cross-org-basename-collision, manual-auto-basename-collision)"

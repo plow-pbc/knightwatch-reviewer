@@ -346,10 +346,12 @@ class TestRepoHealth(unittest.TestCase):
                     subprocess.run(["git", "-C", str(checkout), "add", "REVIEW.md"], check=True)
                     subprocess.run([*commit, "-qm", "review"], check=True)
 
-            rows = status_page.source_repos([run(1, 60, repo="two/shared")], root)
+            rows = status_page.source_repos([run(1, 120, repo="one/shared"),
+                                              run(1, 60, repo="two/shared")], root)
 
-        self.assertTrue(rows[0]["clone"])
-        self.assertTrue(rows[0]["review_md"])
+        two = next(row for row in rows if row["repo"] == "two/shared")
+        self.assertTrue(two["clone"])
+        self.assertTrue(two["review_md"])
 
     def test_kid_marker_reason(self):
         with TemporaryDirectory() as root:
