@@ -1785,6 +1785,13 @@ case "$POSTED17" in
 esac
 echo "  scenario 17a (path-scrub covers the test clone too) ok"
 
+# A completed review that does not approve leaves `knightwatch` failed on the
+# head it reviewed: pending at the start, then the verdict, on the same SHA.
+if [ "$(cat "$STORE17.statuses" 2>/dev/null)" != "$(printf '%s pending\n%s failure' "$PR_SHA17" "$PR_SHA17")" ]; then
+    echo "FAIL: scenario 17d — expected pending then failure on ${PR_SHA17:0:7}"; cat "$STORE17.statuses" 2>/dev/null; exit 1
+fi
+echo "  scenario 17d (a non-approving review fails the knightwatch status) ok"
+
 # ---- scenario 18: a fail-fast inside the test job still reports an outcome ----
 # run_just_test has `exit 1` fail-fast paths that, now that `just test` runs in
 # a background subshell, exit only THAT subshell — skipping its reporting
