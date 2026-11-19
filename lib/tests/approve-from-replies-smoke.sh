@@ -112,6 +112,7 @@ elif [ "$1" = "pr" ] && [ "$2" = "review" ]; then
     done
     # Use a sentinel to keep the body single-line in the log.
     body_oneline=$(printf '%s' "$body" | tr '\n' '|')
+    echo "headsha2" > "$STUB_ACTIONS_LOG.head"   # a push landing while the approval is in flight
     echo "APPROVE repo=$repo pr=$pr_num body=$body_oneline" >> "$STUB_ACTIONS_LOG"
     # MOCK_SIBLING_STAMPS_PAUSE simulates another host timer stamping the SHARED
     # pause file in the window right after this approve succeeded. The pause file
@@ -122,7 +123,7 @@ elif [ "$1" = "pr" ] && [ "$2" = "review" ]; then
     exit 0   # explicit: a trailing `[ … ] && …` would exit 1 whenever the var is
              # unset, turning every ordinary successful approve into a failure
 elif [ "$1" = "pr" ] && [ "$2" = "view" ]; then
-    echo "headsha1"   # the approved PR's current head (callers pass --jq '.headRefOid')
+    cat "$STUB_ACTIONS_LOG.head" 2>/dev/null || echo "headsha1"   # the PR's current head (callers pass --jq '.headRefOid')
 elif [ "$1" = "api" ] && [[ "$2" == */statuses/* ]]; then
     state=""; for a in "$@"; do case "$a" in state=*) state="${a#state=}" ;; esac; done
     echo "STATUS sha=${2##*/} state=$state" >> "$STUB_ACTIONS_LOG"
@@ -207,6 +208,7 @@ CONF
 
 run_approve() {
     : > "$STUB_ACTIONS_LOG"   # reset action log
+    rm -f "$STUB_ACTIONS_LOG.head"   # each run starts at headsha1
     : > "$STUB_PR_LIST_LOG"   # reset pr-list log so override scenario can assert per-run
     : > "$LOG_FILE"           # reset script log
     # The author-trust verdict cache (#233) is stop-state: a warm entry answers
@@ -241,6 +243,9 @@ printf '[{"id":1001,"created_at":"%s","user":{"login":"someuser"},"body":"/srosr
 run_approve
 n=$(count_approves)
 [ "$n" -eq 1 ] || { echo "FAIL scenario 2: expected 1 approve, got $n"; cat "$STUB_ACTIONS_LOG"; cat "$LOG_FILE"; exit 1; }
+# The success goes on the head as approved, never on a push that lands during it.
+grep -qx 'STATUS sha=headsha1 state=success' "$STUB_ACTIONS_LOG" && ! grep -q 'sha=headsha2' "$STUB_ACTIONS_LOG" \
+    || { echo "FAIL scenario 2: knightwatch=success not pinned to the head read before the approval"; cat "$STUB_ACTIONS_LOG"; exit 1; }
 # Marker must LEAD the body, not merely appear in it. With no body-wide
 # containment filter left, first-line anchoring is the whole self-trigger
 # defense, so "marker is line 1" is a producer-side contract this asserts
