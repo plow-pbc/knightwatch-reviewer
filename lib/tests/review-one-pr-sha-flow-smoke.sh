@@ -1514,11 +1514,21 @@ echo "  scenario: an allowlisted GitHub App's own PR is admitted, whichever logi
 STATE10G="$TMPDIR/state-10g"
 seed_state_dir "$STATE10G"
 git clone -q "$GITHUB_BARE10" "$STATE10G/repos/test-org_probe-repo"
+# A human with push access who shares the App's slug must not lend it that
+# access: the App is admitted to read, and still executes nothing.
+REPO_ENV10G="$TMPDIR/repo-env-10g"
+mkdir -p "$REPO_ENV10G/test-org_probe-repo"
+echo "ANTHROPIC_API_KEY=sk-test-live-fixture" > "$REPO_ENV10G/test-org_probe-repo/.env.test-live"
 GH_STUB_PR_AUTHOR="app/test-app" write_gh_stub "$HOME/.local/bin/gh" "main" "$PR_SHA10"
-MOCK_ALLOWLISTED="test-app" run_worker_in_state "$STATE10G" \
+GH_STUB_TRUSTED_USERS="test-app" MOCK_ALLOWLISTED="test-app" REPO_ENV_DIR="$REPO_ENV10G" run_worker_in_state "$STATE10G" \
     "test-org/probe-repo" "10" "$PR_SHA10" "feat/test" "App PR" "false" "test-app" || true
-find "$STATE10G/runs" -type d -name 'test-org_probe-repo__*__*' | grep -q . \
+RUN_DIR10G=$(find "$STATE10G/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
+[ -n "$RUN_DIR10G" ] \
     || { echo "FAIL: scenario 10g — no run dir; an allowlisted App's own PR was read as a third party's"; exit 1; }
+grep -qE "mirrored [0-9]+ env file\(s\) from canonical" "$RUN_DIR10G/run.log" \
+    && { echo "FAIL: scenario 10g — .env mirror fired for an App on a same-named human's push access"; exit 1; }
+grep -q "skipping .env mirror" "$RUN_DIR10G/run.log" \
+    || { echo "FAIL: scenario 10g — no skip line; the mirror gate did not run, so the absence above proves nothing"; exit 1; }
 
 # ===== Scenario 11: pre-spend stale-head gate — mismatch → abort before specialists =====
 # The ONLY coverage of the pre-spend gate (the decision is inline in the

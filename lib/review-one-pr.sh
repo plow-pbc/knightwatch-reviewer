@@ -210,9 +210,6 @@ done
 PR_DATA=$(gh pr view "$PR_NUM" --repo "$REPO" --json "baseRefName,author,$AUTHOR_INTENT_FIELDS" 2>/dev/null)
 BASE_REF=$(printf '%s' "$PR_DATA" | jq -r '.baseRefName // empty')
 PR_AUTHOR=$(printf '%s' "$PR_DATA" | jq -r '.author.login // empty')
-# gh names a GitHub App author "app/<slug>"; the dispatcher's GraphQL, which
-# passed REQUESTER_LOGIN, names it "<slug>". One shape, so the two compare.
-PR_AUTHOR="${PR_AUTHOR#app/}"
 if [ -z "$BASE_REF" ] || [ -z "$PR_AUTHOR" ]; then
     log "$PR_ID: gh pr view returned no baseRefName / author (PR_DATA=${PR_DATA:0:80}) — aborting before placeholder post"
     exit 1
@@ -253,7 +250,11 @@ fi
 # would keep admitting that PR from the allowlist after losing it — precisely
 # the revocation this re-verification exists to catch.
 is_trusted_repo_author_live "$REPO" "$REQUESTER_LOGIN"; REQUESTER_RC=$?
-if [ "$REQUESTER_RC" -ne 0 ] && [ "$REQUESTER_LOGIN" = "$PR_AUTHOR" ] \
+# `${PR_AUTHOR#app/}`: gh names an App author "app/<slug>", the dispatcher's
+# GraphQL "<slug>". Normalized for this comparison only: PR_AUTHOR keeps the
+# App's own identity, so the execution gate below never reads a same-named
+# human's push access as the App's.
+if [ "$REQUESTER_RC" -ne 0 ] && [ "$REQUESTER_LOGIN" = "${PR_AUTHOR#app/}" ] \
         && is_allowlisted_author "$REPO" "$REQUESTER_LOGIN"; then
     # Ahead of the rc=2 defer on purpose: the allowlist is definitive and needs
     # no API, so a standing-vouched author is still reviewed while the
