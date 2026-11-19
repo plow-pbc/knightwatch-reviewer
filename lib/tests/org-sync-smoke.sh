@@ -207,8 +207,7 @@ command() {
     builtin command "$@"
 }
 ENV
-BASH_ENV="$NO_GH_ENV" run_sync \
-    || { echo "FAIL scenario 1a: disabled discovery acquired an unnecessary gh dependency"; cat "$LOG_FILE"; exit 1; }
+BASH_ENV="$NO_GH_ENV" run_sync || { echo "FAIL scenario 1a: disabled discovery acquired an unnecessary gh dependency"; cat "$LOG_FILE"; exit 1; }
 
 echo "  scenario 1b: empty ORGS + convention-path manual repo — checkout still materialized..."
 cat > "$MANIFEST" <<CONF
@@ -219,8 +218,7 @@ ORGS=()
 CONF
 rm -rf "$HOME/services/kwr-repos/manual-no-org"
 run_sync || { echo "FAIL scenario 1b: org-sync exited non-zero"; cat "$LOG_FILE"; exit 1; }
-[ -d "$HOME/services/kwr-repos/manual-no-org/.git" ] \
-    || { echo "FAIL scenario 1b: empty ORGS bypassed manual materialization"; cat "$STUB_GH_LOG"; exit 1; }
+[ -d "$HOME/services/kwr-repos/manual-no-org/.git" ] || { echo "FAIL scenario 1b: empty ORGS bypassed manual materialization"; cat "$STUB_GH_LOG"; exit 1; }
 [ ! -f "$AUTO_CONF" ] || { echo "FAIL scenario 1b: empty ORGS left an auto manifest"; cat "$AUTO_CONF"; exit 1; }
 
 # --- Scenario 2: discover + clone ---------------------------------------------
@@ -358,10 +356,7 @@ if grep -q 'acme/special' "$AUTO_CONF"; then
     cat "$AUTO_CONF"; exit 1
 fi
 
-# --- Scenario 9b: convention-path manual repo is materialized -----------------
-# A manual REPOS entry can opt into the clone-root convention while keeping an
-# explicit SOURCE_PATHS subtree. It still stays out of the auto manifest, but
-# org-sync owns materializing the checkout that both paths depend on.
+# --- Scenarios 9b-9c: convention-path manual repo -----------------------------
 echo "  scenario 9b: convention-path manual repo — cloned, but not auto-published..."
 cat > "$MANIFEST" <<CONF
 REPOS=("outside/manual")
@@ -372,22 +367,16 @@ CONF
 rm -rf "$HOME/services/kwr-repos/manual"
 rm -f "$AUTO_CONF"
 MOCK_GH_LIST_acme= run_sync || { echo "FAIL scenario 9b: org-sync exited non-zero"; cat "$LOG_FILE"; exit 1; }
-[ -d "$HOME/services/kwr-repos/manual/.git" ] \
-    || { echo "FAIL scenario 9b: convention-path manual repo was not cloned"; cat "$STUB_GH_LOG"; exit 1; }
-if grep -q 'outside/manual' "$AUTO_CONF" 2>/dev/null; then
-    echo "FAIL scenario 9b: manual repo appears in auto file"
-    cat "$AUTO_CONF"; exit 1
-fi
+[ -d "$HOME/services/kwr-repos/manual/.git" ] || { echo "FAIL scenario 9b: convention-path manual repo was not cloned"; cat "$STUB_GH_LOG"; exit 1; }
+if grep -q 'outside/manual' "$AUTO_CONF" 2>/dev/null; then echo "FAIL scenario 9b: manual repo appears in auto file"; cat "$AUTO_CONF"; exit 1; fi
 
 echo "  scenario 9c: bad convention-path manual checkout — sync fails loud without rewriting operator config..."
 git -C "$HOME/services/kwr-repos/manual" remote set-url origin git@github.com:wrong/manual.git
 if MOCK_GH_LIST_acme= run_sync; then
     echo "FAIL scenario 9c: org-sync returned 0 on a bad manual checkout"; cat "$LOG_FILE"; exit 1
 fi
-grep -q 'manual manifest remains configured' "$LOG_FILE" \
-    || { echo "FAIL scenario 9c: log did not distinguish the operator-owned manual entry"; cat "$LOG_FILE"; exit 1; }
-grep -q 'outside/manual' "$MANIFEST" \
-    || { echo "FAIL scenario 9c: org-sync rewrote the operator-owned manifest"; exit 1; }
+grep -q 'manual manifest remains configured' "$LOG_FILE" || { echo "FAIL scenario 9c: log did not distinguish the operator-owned manual entry"; cat "$LOG_FILE"; exit 1; }
+grep -q 'outside/manual' "$MANIFEST" || { echo "FAIL scenario 9c: org-sync rewrote the operator-owned manifest"; exit 1; }
 
 # --- Scenario 10: clone failure aborts before rewrite ------------------------
 # The clone branch is wired to abort on `gh repo clone` failure.
@@ -653,12 +642,9 @@ ORGS=("one")
 CONF
 rm -rf "$HOME/services/kwr-repos/shared" "$HOME/services/kwr-repos/one"
 rm -f "$AUTO_CONF"
-MOCK_GH_LIST_one="shared" run_sync \
-    || { echo "FAIL scenario 19b: org-sync exited non-zero"; cat "$LOG_FILE"; exit 1; }
-[ "$(git -C "$HOME/services/kwr-repos/shared" remote get-url origin)" = "git@github.com:two/shared.git" ] \
-    || { echo "FAIL scenario 19b: auto repo claimed the manual short path"; exit 1; }
-[ -d "$HOME/services/kwr-repos/one/shared/.git" ] \
-    || { echo "FAIL scenario 19b: auto repo did not use the qualified fallback"; exit 1; }
+MOCK_GH_LIST_one="shared" run_sync || { echo "FAIL scenario 19b: org-sync exited non-zero"; cat "$LOG_FILE"; exit 1; }
+[ "$(git -C "$HOME/services/kwr-repos/shared" remote get-url origin)" = "git@github.com:two/shared.git" ] || { echo "FAIL scenario 19b: auto repo claimed the manual short path"; exit 1; }
+[ -d "$HOME/services/kwr-repos/one/shared/.git" ] || { echo "FAIL scenario 19b: auto repo did not use the qualified fallback"; exit 1; }
 
 echo "  scenario 19c: failed manual clone still reserves its destination from auto repos..."
 rm -rf "$HOME/services/kwr-repos/shared" "$HOME/services/kwr-repos/one"
@@ -666,10 +652,8 @@ rm -f "$AUTO_CONF"
 if MOCK_GH_LIST_one="shared" MOCK_GH_CLONE_EXIT_two_shared=1 run_sync; then
     echo "FAIL scenario 19c: sync returned 0 despite the failed manual clone"; exit 1
 fi
-[ ! -e "$HOME/services/kwr-repos/shared" ] \
-    || { echo "FAIL scenario 19c: auto repo claimed the reserved manual short path"; exit 1; }
-[ -d "$HOME/services/kwr-repos/one/shared/.git" ] \
-    || { echo "FAIL scenario 19c: auto repo did not use its qualified fallback"; cat "$STUB_GH_LOG"; exit 1; }
+[ ! -e "$HOME/services/kwr-repos/shared" ] || { echo "FAIL scenario 19c: auto repo claimed the reserved manual short path"; exit 1; }
+[ -d "$HOME/services/kwr-repos/one/shared/.git" ] || { echo "FAIL scenario 19c: auto repo did not use its qualified fallback"; cat "$STUB_GH_LOG"; exit 1; }
 
 # --- Scenarios 20-22: valid qualified checkout reuse --------------------------
 for state in stale-owner absent non-checkout; do
