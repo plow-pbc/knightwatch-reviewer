@@ -121,6 +121,11 @@ elif [ "$1" = "pr" ] && [ "$2" = "review" ]; then
     fi
     exit 0   # explicit: a trailing `[ … ] && …` would exit 1 whenever the var is
              # unset, turning every ordinary successful approve into a failure
+elif [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+    echo "headsha1"   # the approved PR's current head (callers pass --jq '.headRefOid')
+elif [ "$1" = "api" ] && [[ "$2" == */statuses/* ]]; then
+    state=""; for a in "$@"; do case "$a" in state=*) state="${a#state=}" ;; esac; done
+    echo "STATUS sha=${2##*/} state=$state" >> "$STUB_ACTIONS_LOG"
 elif [ "$1" = "api" ]; then
     # MOCK_GH_API_FAIL=1 simulates an API outage on the comments fetch.
     # The script's pipefail-aware `gh api ... | jq` should surface this
@@ -362,6 +367,10 @@ MOCK_FAIL_PR_REVIEW=1 run_approve
 n=$(count_approves)
 [ "$n" -eq 0 ] || { echo "FAIL scenario 10: expected 0 successful approves on failure, got $n"; cat "$STUB_ACTIONS_LOG"; cat "$LOG_FILE"; exit 1; }
 [ -n "$(jq -r '."test-org/probe-repo#1#1010" // empty' "$APPROVES_SEEN_FILE")" ] || { echo "FAIL scenario 10: seen state not marked after failure (would retry on every tick)"; cat "$APPROVES_SEEN_FILE"; cat "$LOG_FILE"; exit 1; }
+# The trusted approve is still the verdict when GitHub refuses the review itself
+# (the bot's own PRs): the head gets knightwatch=success, or a required check
+# would stay at the review's failure after the findings were declined.
+grep -qx 'STATUS sha=headsha1 state=success' "$STUB_ACTIONS_LOG" || { echo "FAIL scenario 10: no knightwatch=success on the head after a trusted approve"; cat "$STUB_ACTIONS_LOG"; exit 1; }
 # Rerun without the fail flag — must NOT retry the previously-failed
 # request. (If marking-seen-on-failure regresses, this rerun would now
 # succeed and we'd see 1 approve.)
