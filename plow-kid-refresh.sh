@@ -146,12 +146,39 @@ for NAME in "${!KID_PATHS[@]}"; do
         continue
     fi
 
-    LOCAL=$(git rev-parse HEAD 2>/dev/null)
+    LOCAL=""
+    UNBORN=false
+    if ! LOCAL=$(git rev-parse HEAD 2>/dev/null); then
+        if ! HEAD_REF=$(git symbolic-ref -q HEAD 2>/dev/null); then
+            log "$NAME: local HEAD is unreadable and not an unborn branch — skipping"
+            mark_stale "$PROJECT" local-head-unreadable
+            continue
+        fi
+        if [ "$HEAD_REF" != "refs/heads/$BRANCH" ]; then
+            log "$NAME: local HEAD targets $HEAD_REF instead of refs/heads/$BRANCH — skipping"
+            mark_stale "$PROJECT" local-head-unreadable
+            continue
+        fi
+        git show-ref --verify --quiet "$HEAD_REF" 2>/dev/null
+        head_ref_status=$?
+        if [ "$head_ref_status" -eq 1 ]; then
+            UNBORN=true
+        else
+            log "$NAME: local HEAD is unreadable and not an unborn branch — skipping"
+            mark_stale "$PROJECT" local-head-unreadable
+            continue
+        fi
+    fi
     REMOTE=$(git rev-parse "origin/$BRANCH" 2>/dev/null)
 
     if [ "$LOCAL" != "$REMOTE" ]; then
         log "$NAME: new commits ${LOCAL:0:7} → ${REMOTE:0:7}, updating"
-        if git merge-base --is-ancestor HEAD "origin/$BRANCH" 2>/dev/null; then
+        if [ "$UNBORN" = true ]; then
+            # A repo cloned before its first push has an unborn HEAD. Once the
+            # first branch appears there is no local history to preserve, so
+            # initialize the mirror from that upstream tip.
+            log "$NAME: upstream gained its first branch — initializing mirror at ${REMOTE:0:7}"
+        elif git merge-base --is-ancestor HEAD "origin/$BRANCH" 2>/dev/null; then
             :   # a fast-forward
         elif git reflog show --format=%H "refs/remotes/origin/$BRANCH" 2>/dev/null | grep -qxF "$LOCAL"; then
             # HEAD is a tip upstream once published, so the mirror holds nothing
