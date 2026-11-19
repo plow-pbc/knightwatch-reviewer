@@ -91,7 +91,9 @@ if [ "${#ORGS[@]}" -eq 0 ]; then
     fi
 fi
 
-command -v gh >/dev/null 2>&1 || { log "FATAL: gh not on PATH"; exit 1; }
+if [ "${#ORGS[@]}" -gt 0 ]; then
+    command -v gh >/dev/null 2>&1 || { log "FATAL: gh not on PATH"; exit 1; }
+fi
 
 # Manual set: source repos.conf alone (without the auto file). Auto
 # entries from a prior tick must not count as manual or they'd never
@@ -197,7 +199,12 @@ skip_repo() {   # $1 = reason
 }
 for full in "${SYNC[@]}"; do
     dest="${MANUAL_DEST[$full]:-}"
-    [ -n "$dest" ] || dest=$(repo_clone_path "$full" "${REPOS[@]}" "${AUTO[@]}")
+    if [ -z "$dest" ]; then
+        dest=$(repo_clone_path "$full" "${REPOS[@]}" "${AUTO[@]}")
+        for reserved in "${MANUAL_DEST[@]}"; do
+            [ "$dest" = "$reserved" ] && dest="$KWR_CLONE_ROOT/$full"
+        done
+    fi
     if [ -d "$dest/.git" ]; then
         if ! url=$(git -C "$dest" remote get-url origin 2>/dev/null); then
             skip_repo "$dest has no origin remote configured"
@@ -221,6 +228,10 @@ for full in "${SYNC[@]}"; do
         skip_repo "$dest exists but is not a git checkout — refusing to clobber"
         continue
     else
+        if ! command -v gh >/dev/null 2>&1; then
+            skip_repo "gh not on PATH; cannot clone $full"
+            continue
+        fi
         log "cloning $full → $dest"
         if ! gh repo clone "$full" "$dest" >>"$LOG_FILE" 2>&1; then
             # gh can leave $dest with partial .git + origin on failure;
