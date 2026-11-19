@@ -332,6 +332,37 @@ if grep -q 'acme/special' "$AUTO_CONF"; then
     cat "$AUTO_CONF"; exit 1
 fi
 
+# --- Scenario 9b: convention-path manual repo is materialized -----------------
+# A manual REPOS entry can opt into the clone-root convention while keeping an
+# explicit SOURCE_PATHS subtree. It still stays out of the auto manifest, but
+# org-sync owns materializing the checkout that both paths depend on.
+echo "  scenario 9b: convention-path manual repo — cloned, but not auto-published..."
+cat > "$MANIFEST" <<CONF
+REPOS=("outside/manual")
+declare -A KID_PATHS=(["outside/manual"]="$HOME/services/kwr-repos/manual")
+declare -A SOURCE_PATHS=(["outside/manual"]="$HOME/services/kwr-repos/manual/subtree")
+ORGS=("acme")
+CONF
+rm -rf "$HOME/services/kwr-repos/manual"
+rm -f "$AUTO_CONF"
+MOCK_GH_LIST_acme= run_sync || { echo "FAIL scenario 9b: org-sync exited non-zero"; cat "$LOG_FILE"; exit 1; }
+[ -d "$HOME/services/kwr-repos/manual/.git" ] \
+    || { echo "FAIL scenario 9b: convention-path manual repo was not cloned"; cat "$STUB_GH_LOG"; exit 1; }
+if grep -q 'outside/manual' "$AUTO_CONF" 2>/dev/null; then
+    echo "FAIL scenario 9b: manual repo appears in auto file"
+    cat "$AUTO_CONF"; exit 1
+fi
+
+echo "  scenario 9c: bad convention-path manual checkout — sync fails loud without rewriting operator config..."
+git -C "$HOME/services/kwr-repos/manual" remote set-url origin git@github.com:wrong/manual.git
+if MOCK_GH_LIST_acme= run_sync; then
+    echo "FAIL scenario 9c: org-sync returned 0 on a bad manual checkout"; cat "$LOG_FILE"; exit 1
+fi
+grep -q 'manual manifest remains configured' "$LOG_FILE" \
+    || { echo "FAIL scenario 9c: log did not distinguish the operator-owned manual entry"; cat "$LOG_FILE"; exit 1; }
+grep -q 'outside/manual' "$MANIFEST" \
+    || { echo "FAIL scenario 9c: org-sync rewrote the operator-owned manifest"; exit 1; }
+
 # --- Scenario 10: clone failure aborts before rewrite ------------------------
 # The clone branch is wired to abort on `gh repo clone` failure.
 # Without this scenario, a regression that swallowed clone errors
@@ -609,4 +640,4 @@ for state in stale-owner absent non-checkout; do
 done
 
 
-echo "  PASS (22 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, clone-failure-no-mutation, one-bad-mirror-does-not-strand-sweep, skipped-repo-dropped-not-carried-forward, lock-held-defers, kwr-config-overlay, broken-config-fail-loud, repos-conf-file-override, rate-limit-skips-tick, cross-org-basename-collision, manual-auto-basename-collision, stale-short-owner, absent-short-path, non-checkout-short-path)"
+echo "  PASS (24 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, convention-manual-cloned, bad-manual-fails-loud, clone-failure-no-mutation, one-bad-mirror-does-not-strand-sweep, skipped-repo-dropped-not-carried-forward, lock-held-defers, kwr-config-overlay, broken-config-fail-loud, repos-conf-file-override, rate-limit-skips-tick, cross-org-basename-collision, manual-auto-basename-collision, stale-short-owner, absent-short-path, non-checkout-short-path)"

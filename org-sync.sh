@@ -1,7 +1,7 @@
 #!/bin/bash
-# Discover GitHub repos in $ORGS, clone any missing ones into
-# $KWR_CLONE_ROOT/<name>, and rewrite $STATE_DIR/repos.conf.auto with
-# the resulting REPOS set. Hourly via pr-reviewer-org-sync.timer.
+# Discover GitHub repos in $ORGS, materialize missing convention-path
+# checkouts, and rewrite $STATE_DIR/repos.conf.auto with the resulting
+# auto-discovered REPOS set. Hourly via pr-reviewer-org-sync.timer.
 #
 # $KWR_CLONE_ROOT is the single source of truth for the auto-clone
 # path convention, defined in lib/tracked-repos.sh and inherited
@@ -151,27 +151,43 @@ if [ "${#AUTO[@]}" -gt 0 ]; then
     mapfile -t AUTO < <(printf '%s\n' "${AUTO[@]}" | sort)
 fi
 
+# Manual repos with an operator-owned KID path stay operator-owned. A manual
+# repo that uses the clone-root convention, however, depends on this sync job
+# to materialize that checkout just like an auto-discovered repo does. It must
+# remain absent from repos.conf.auto so the manual manifest stays authoritative.
+SYNC=("${AUTO[@]}")
+for full in "${!MANUAL[@]}"; do
+    expected=$(repo_clone_path "$full" "${REPOS[@]}" "${AUTO[@]}")
+    [ "${KID_PATHS[$full]:-}" = "$expected" ] && SYNC+=("$full")
+done
+if [ "${#SYNC[@]}" -gt 0 ]; then
+    mapfile -t SYNC < <(printf '%s\n' "${SYNC[@]}" | sort -u)
+fi
+
 mkdir -p "$KWR_CLONE_ROOT"
 
 # Every condition below is a property of ONE mirror, so it skips that repo
 # and keeps sweeping — a single bad mirror must not strand the other 90.
 # The refusals themselves are unchanged; only their blast radius is.
 #
-# A skipped repo is simply not published. This manifest feeds host-side kid
-# prior-art clones, NOT review coverage (that comes from ORGS — see
-# README.md § Review coverage), so dropping a repo whose mirror we just
-# refused to trust stops indexing an untrusted checkout rather than losing
-# any review. The sweep exits non-zero until the mirror is fixed, so the
-# omission is loud, and the next clean sweep restores the entry.
+# A skipped auto repo is not published. A skipped manual repo remains in the
+# operator-owned manifest, which this job never rewrites, but the sweep still
+# exits non-zero until its checkout is fixed. This manifest feeds host-side kid
+# prior-art clones, NOT review coverage (that comes from ORGS — see README.md
+# § Review coverage), so dropping an auto repo does not lose review coverage.
 NEW_CLONES=0
 SKIPPED=0
 KEPT=()
 
 skip_repo() {   # $1 = reason
-    log "WARN: $1 — skipping this repo (not published)"
+    if [ -n "${MANUAL[$full]:-}" ]; then
+        log "WARN: $1 — skipping checkout sync; manual manifest remains configured"
+    else
+        log "WARN: $1 — skipping this repo (not published)"
+    fi
     SKIPPED=$((SKIPPED + 1))
 }
-for full in "${AUTO[@]}"; do
+for full in "${SYNC[@]}"; do
     dest=$(repo_clone_path "$full" "${REPOS[@]}" "${AUTO[@]}")
     if [ -d "$dest/.git" ]; then
         if ! url=$(git -C "$dest" remote get-url origin 2>/dev/null); then
@@ -207,7 +223,7 @@ for full in "${AUTO[@]}"; do
         fi
         NEW_CLONES=$((NEW_CLONES + 1))
     fi
-    KEPT+=("$full")
+    [ -n "${MANUAL[$full]:-}" ] || KEPT+=("$full")
 done
 
 TMP_NEW=$(mktemp)
