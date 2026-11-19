@@ -1,7 +1,7 @@
 #!/bin/bash
-# Discover GitHub repos in $ORGS, clone any missing ones into
-# $KWR_CLONE_ROOT/<name>, and rewrite $STATE_DIR/repos.conf.auto with
-# the resulting REPOS set. Hourly via pr-reviewer-org-sync.timer.
+# Discover GitHub repos in $ORGS, materialize missing convention-path
+# checkouts, and rewrite $STATE_DIR/repos.conf.auto with the resulting
+# auto-discovered REPOS set. Hourly via pr-reviewer-org-sync.timer.
 #
 # $KWR_CLONE_ROOT is the single source of truth for the auto-clone
 # path convention, defined in lib/tracked-repos.sh and inherited
@@ -79,8 +79,9 @@ fi
 
 . "$REVIEWER_LIB_DIR/tracked-repos.sh"
 
-# ORGS empty: truncate any prior auto file so disabling the feature
-# actually drops auto coverage on the next tick.
+# ORGS empty: truncate any prior auto file so disabling discovery actually
+# drops auto coverage on the next tick. Manual convention-path repos still
+# continue below to checkout materialization.
 if [ "${#ORGS[@]}" -eq 0 ]; then
     if [ -f "$AUTO_CONF" ]; then
         log "ORGS empty — removing stale $AUTO_CONF"
@@ -88,10 +89,11 @@ if [ "${#ORGS[@]}" -eq 0 ]; then
     else
         log "ORGS empty + no auto file — nothing to do"
     fi
-    exit 0
 fi
 
-command -v gh >/dev/null 2>&1 || { log "FATAL: gh not on PATH"; exit 1; }
+if [ "${#ORGS[@]}" -gt 0 ]; then
+    command -v gh >/dev/null 2>&1 || { log "FATAL: gh not on PATH"; exit 1; }
+fi
 
 # Manual set: source repos.conf alone (without the auto file). Auto
 # entries from a prior tick must not count as manual or they'd never
@@ -151,28 +153,58 @@ if [ "${#AUTO[@]}" -gt 0 ]; then
     mapfile -t AUTO < <(printf '%s\n' "${AUTO[@]}" | sort)
 fi
 
+# Manual repos with an operator-owned KID path stay operator-owned. Explicit
+# short or owner-qualified paths under the clone root are the two convention
+# destinations; reserve those first so auto repos with the same basename route
+# around them.
+declare -A MANUAL_DEST=()
+MANUAL_SYNC=()
+while IFS= read -r full; do
+    [ -n "$full" ] || continue
+    path="${KID_PATHS[$full]:-}"
+    case "$path" in
+        "$KWR_CLONE_ROOT/${full#*/}"|"$KWR_CLONE_ROOT/$full")
+            MANUAL_DEST[$full]="$path"
+            MANUAL_SYNC+=("$full")
+            ;;
+    esac
+done <<< "$MANUAL_LIST"
+if [ "${#MANUAL_SYNC[@]}" -gt 0 ]; then
+    mapfile -t MANUAL_SYNC < <(printf '%s\n' "${MANUAL_SYNC[@]}" | sort)
+fi
+SYNC=("${MANUAL_SYNC[@]}" "${AUTO[@]}")
+
 mkdir -p "$KWR_CLONE_ROOT"
 
 # Every condition below is a property of ONE mirror, so it skips that repo
 # and keeps sweeping — a single bad mirror must not strand the other 90.
 # The refusals themselves are unchanged; only their blast radius is.
 #
-# A skipped repo is simply not published. This manifest feeds host-side kid
-# prior-art clones, NOT review coverage (that comes from ORGS — see
-# README.md § Review coverage), so dropping a repo whose mirror we just
-# refused to trust stops indexing an untrusted checkout rather than losing
-# any review. The sweep exits non-zero until the mirror is fixed, so the
-# omission is loud, and the next clean sweep restores the entry.
+# A skipped auto repo is not published. A skipped manual repo remains in the
+# operator-owned manifest, which this job never rewrites, but the sweep still
+# exits non-zero until its checkout is fixed. This manifest feeds host-side kid
+# prior-art clones, NOT review coverage (that comes from ORGS — see README.md
+# § Review coverage), so dropping an auto repo does not lose review coverage.
 NEW_CLONES=0
 SKIPPED=0
 KEPT=()
 
 skip_repo() {   # $1 = reason
-    log "WARN: $1 — skipping this repo (not published)"
+    if [ -n "${MANUAL[$full]:-}" ]; then
+        log "WARN: $1 — skipping checkout sync; manual manifest remains configured"
+    else
+        log "WARN: $1 — skipping this repo (not published)"
+    fi
     SKIPPED=$((SKIPPED + 1))
 }
-for full in "${AUTO[@]}"; do
-    dest=$(repo_clone_path "$full" "${REPOS[@]}" "${AUTO[@]}")
+for full in "${SYNC[@]}"; do
+    dest="${MANUAL_DEST[$full]:-}"
+    if [ -z "$dest" ]; then
+        dest=$(repo_clone_path "$full" "${REPOS[@]}" "${AUTO[@]}")
+        for reserved in "${MANUAL_DEST[@]}"; do
+            [ "$dest" = "$reserved" ] && dest="$KWR_CLONE_ROOT/$full"
+        done
+    fi
     if [ -d "$dest/.git" ]; then
         if ! url=$(git -C "$dest" remote get-url origin 2>/dev/null); then
             skip_repo "$dest has no origin remote configured"
@@ -196,6 +228,10 @@ for full in "${AUTO[@]}"; do
         skip_repo "$dest exists but is not a git checkout — refusing to clobber"
         continue
     else
+        if ! command -v gh >/dev/null 2>&1; then
+            skip_repo "gh not on PATH; cannot clone $full"
+            continue
+        fi
         log "cloning $full → $dest"
         if ! gh repo clone "$full" "$dest" >>"$LOG_FILE" 2>&1; then
             # gh can leave $dest with partial .git + origin on failure;
@@ -207,30 +243,32 @@ for full in "${AUTO[@]}"; do
         fi
         NEW_CLONES=$((NEW_CLONES + 1))
     fi
-    KEPT+=("$full")
+    [ -n "${MANUAL[$full]:-}" ] || KEPT+=("$full")
 done
 
-TMP_NEW=$(mktemp)
-trap 'rm -f "$TMP_NEW"' EXIT
-{
-    echo "# Managed by org-sync.sh — regenerated each sync tick. Do NOT"
-    echo "# edit; manual entries belong in repos.conf."
-    echo "#"
-    echo "# Only REPOS+=(\"...\") is emitted here. KID_PATHS values are"
-    echo "# convention-defaulted by lib/tracked-repos.sh from"
-    echo "# \$KWR_CLONE_ROOT after sourcing this file, so the manifest"
-    echo "# never stores stale path strings. SOURCE_PATHS is intentionally"
-    echo "# not emitted either — cross-repo grep stays opt-in."
-    for full in "${KEPT[@]}"; do
-        echo "REPOS+=(\"$full\")"
-    done
-} > "$TMP_NEW"
+if [ "${#ORGS[@]}" -gt 0 ]; then
+    TMP_NEW=$(mktemp)
+    trap 'rm -f "$TMP_NEW"' EXIT
+    {
+        echo "# Managed by org-sync.sh — regenerated each sync tick. Do NOT"
+        echo "# edit; manual entries belong in repos.conf."
+        echo "#"
+        echo "# Only REPOS+=(\"...\") is emitted here. KID_PATHS values are"
+        echo "# convention-defaulted by lib/tracked-repos.sh from"
+        echo "# \$KWR_CLONE_ROOT after sourcing this file, so the manifest"
+        echo "# never stores stale path strings. SOURCE_PATHS is intentionally"
+        echo "# not emitted either — cross-repo grep stays opt-in."
+        for full in "${KEPT[@]}"; do
+            echo "REPOS+=(\"$full\")"
+        done
+    } > "$TMP_NEW"
 
-if [ -f "$AUTO_CONF" ] && cmp -s "$TMP_NEW" "$AUTO_CONF"; then
-    log "no changes (${#KEPT[@]} auto-tracked, ${#MANUAL[@]} manual)"
-else
-    mv "$TMP_NEW" "$AUTO_CONF"
-    log "rewrote $AUTO_CONF: ${#KEPT[@]} auto-tracked, $NEW_CLONES newly cloned"
+    if [ -f "$AUTO_CONF" ] && cmp -s "$TMP_NEW" "$AUTO_CONF"; then
+        log "no changes (${#KEPT[@]} auto-tracked, ${#MANUAL[@]} manual)"
+    else
+        mv "$TMP_NEW" "$AUTO_CONF"
+        log "rewrote $AUTO_CONF: ${#KEPT[@]} auto-tracked, $NEW_CLONES newly cloned"
+    fi
 fi
 
 # Exit non-zero AFTER the rewrite: the repos we could sync are already

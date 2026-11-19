@@ -95,7 +95,9 @@ case "$1 $2" in
         mkdir -p "$dest"
         git -C "$dest" init -q
         git -C "$dest" remote add origin "git@github.com:${full}.git"
-        exit "${MOCK_GH_CLONE_EXIT:-0}"
+        sanitized="${full//[^a-zA-Z0-9]/_}"
+        exit_var="MOCK_GH_CLONE_EXIT_${sanitized}"
+        exit "${!exit_var:-${MOCK_GH_CLONE_EXIT:-0}}"
         ;;
 esac
 exit 0
@@ -196,6 +198,16 @@ run_sync || { echo "FAIL scenario 1: org-sync exited non-zero"; cat "$LOG_FILE";
 [ ! -f "$AUTO_CONF" ] || { echo "FAIL scenario 1: stale auto file not removed"; cat "$AUTO_CONF"; exit 1; }
 n=$(count_gh "repo list")
 [ "$n" -eq 0 ] || { echo "FAIL scenario 1: expected 0 gh repo list calls, got $n"; cat "$STUB_GH_LOG"; exit 1; }
+
+echo "  scenario 1a: empty ORGS + no convention checkout work — gh is not required..."
+NO_GH_ENV="$TMPDIR/no-gh.bash-env"
+cat > "$NO_GH_ENV" <<'ENV'
+command() {
+    if [ "${1:-}" = -v ] && [ "${2:-}" = gh ]; then return 1; fi
+    builtin command "$@"
+}
+ENV
+BASH_ENV="$NO_GH_ENV" run_sync || { echo "FAIL scenario 1a: disabled discovery acquired an unnecessary gh dependency"; cat "$LOG_FILE"; exit 1; }
 
 # --- Scenario 2: discover + clone ---------------------------------------------
 echo "  scenario 2: new repo discovered → cloned, auto file populated, manual preserved..."
@@ -331,6 +343,31 @@ if grep -q 'acme/special' "$AUTO_CONF"; then
     echo "FAIL scenario 9: 'acme/special' appears in auto file — would shadow operator's custom path"
     cat "$AUTO_CONF"; exit 1
 fi
+
+# --- Scenarios 9b-9c: convention-path manual repo -----------------------------
+echo "  scenario 9b: convention-path manual repo — cloned, but not auto-published..."
+for org in "" acme; do
+    cat > "$MANIFEST" <<CONF
+REPOS=("outside/manual")
+declare -A KID_PATHS=(["outside/manual"]="$HOME/services/kwr-repos/manual")
+declare -A SOURCE_PATHS=(["outside/manual"]="$HOME/services/kwr-repos/manual/subtree")
+ORGS=(${org:+"$org"})
+CONF
+    rm -rf "$HOME/services/kwr-repos/manual"
+    rm -f "$AUTO_CONF"
+    MOCK_GH_LIST_acme= run_sync || { echo "FAIL scenario 9b: org-sync exited non-zero"; cat "$LOG_FILE"; exit 1; }
+    [ -d "$HOME/services/kwr-repos/manual/.git" ] || { echo "FAIL scenario 9b: convention-path manual repo was not cloned"; cat "$STUB_GH_LOG"; exit 1; }
+    if grep -q 'outside/manual' "$AUTO_CONF" 2>/dev/null; then echo "FAIL scenario 9b: manual repo appears in auto file"; cat "$AUTO_CONF"; exit 1; fi
+    [ -n "$org" ] || [ ! -f "$AUTO_CONF" ] || { echo "FAIL scenario 9b: empty ORGS left an auto manifest"; cat "$AUTO_CONF"; exit 1; }
+done
+
+echo "  scenario 9c: bad convention-path manual checkout — sync fails loud without rewriting operator config..."
+git -C "$HOME/services/kwr-repos/manual" remote set-url origin git@github.com:wrong/manual.git
+if MOCK_GH_LIST_acme= run_sync; then
+    echo "FAIL scenario 9c: org-sync returned 0 on a bad manual checkout"; cat "$LOG_FILE"; exit 1
+fi
+grep -q 'manual manifest remains configured' "$LOG_FILE" || { echo "FAIL scenario 9c: log did not distinguish the operator-owned manual entry"; cat "$LOG_FILE"; exit 1; }
+grep -q 'outside/manual' "$MANIFEST" || { echo "FAIL scenario 9c: org-sync rewrote the operator-owned manifest"; exit 1; }
 
 # --- Scenario 10: clone failure aborts before rewrite ------------------------
 # The clone branch is wired to abort on `gh repo clone` failure.
@@ -587,6 +624,28 @@ MOCK_GH_LIST_two="shared" run_sync \
 [ "$(resolved_kid_path two/shared)" = "$HOME/services/kwr-repos/two/shared" ] \
     || { echo "FAIL scenario 19: auto repo KID path did not follow collision fallback"; exit 1; }
 
+echo "  scenario 19b: fresh collision — explicit manual short path is reserved before auto clone..."
+cat > "$MANIFEST" <<CONF
+REPOS=("two/shared")
+declare -A KID_PATHS=(["two/shared"]="$HOME/services/kwr-repos/shared")
+declare -A SOURCE_PATHS=(["two/shared"]="$HOME/services/kwr-repos/shared")
+ORGS=("one")
+CONF
+rm -rf "$HOME/services/kwr-repos/shared" "$HOME/services/kwr-repos/one"
+rm -f "$AUTO_CONF"
+MOCK_GH_LIST_one="shared" run_sync || { echo "FAIL scenario 19b: org-sync exited non-zero"; cat "$LOG_FILE"; exit 1; }
+[ "$(git -C "$HOME/services/kwr-repos/shared" remote get-url origin)" = "git@github.com:two/shared.git" ] || { echo "FAIL scenario 19b: auto repo claimed the manual short path"; exit 1; }
+[ -d "$HOME/services/kwr-repos/one/shared/.git" ] || { echo "FAIL scenario 19b: auto repo did not use the qualified fallback"; exit 1; }
+
+echo "  scenario 19c: failed manual clone still reserves its destination from auto repos..."
+rm -rf "$HOME/services/kwr-repos/shared" "$HOME/services/kwr-repos/one"
+rm -f "$AUTO_CONF"
+if MOCK_GH_LIST_one="shared" MOCK_GH_CLONE_EXIT_two_shared=1 run_sync; then
+    echo "FAIL scenario 19c: sync returned 0 despite the failed manual clone"; exit 1
+fi
+[ ! -e "$HOME/services/kwr-repos/shared" ] || { echo "FAIL scenario 19c: auto repo claimed the reserved manual short path"; exit 1; }
+[ -d "$HOME/services/kwr-repos/one/shared/.git" ] || { echo "FAIL scenario 19c: auto repo did not use its qualified fallback"; cat "$STUB_GH_LOG"; exit 1; }
+
 # --- Scenarios 20-22: valid qualified checkout reuse --------------------------
 for state in stale-owner absent non-checkout; do
     echo "  scenarios 20-22: existing qualified checkout is reused with short path $state..."
@@ -609,4 +668,4 @@ for state in stale-owner absent non-checkout; do
 done
 
 
-echo "  PASS (22 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, clone-failure-no-mutation, one-bad-mirror-does-not-strand-sweep, skipped-repo-dropped-not-carried-forward, lock-held-defers, kwr-config-overlay, broken-config-fail-loud, repos-conf-file-override, rate-limit-skips-tick, cross-org-basename-collision, manual-auto-basename-collision, stale-short-owner, absent-short-path, non-checkout-short-path)"
+echo "  PASS (28 scenarios: empty-orgs-truncates-stale, empty-orgs-no-gh, empty-orgs-manual-clone, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, convention-manual-cloned, bad-manual-fails-loud, clone-failure-no-mutation, one-bad-mirror-does-not-strand-sweep, skipped-repo-dropped-not-carried-forward, lock-held-defers, kwr-config-overlay, broken-config-fail-loud, repos-conf-file-override, rate-limit-skips-tick, cross-org-basename-collision, manual-auto-basename-collision, manual-path-reserved, failed-manual-reserves-path, stale-short-owner, absent-short-path, non-checkout-short-path)"
