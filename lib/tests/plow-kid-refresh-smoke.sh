@@ -72,7 +72,7 @@ case "$1" in
     reflog)       printf '%s\n' ${MOCK_GIT_REMOTE_REFLOG:-} ;;
     symbolic-ref)
         if [ "${2:-}" = -q ] && [ "${3:-}" = HEAD ]; then
-            echo "refs/heads/${MOCK_GIT_DEFAULT:-main}"
+            echo "${MOCK_GIT_HEAD_REF:-refs/heads/${MOCK_GIT_DEFAULT:-main}}"
             exit "${MOCK_GIT_HEAD_SYMBOLIC_EXIT:-0}"
         fi
         echo "refs/remotes/origin/${MOCK_GIT_DEFAULT:-main}"
@@ -398,9 +398,16 @@ MOCK_GIT_LOCAL_EXIT=1 MOCK_GIT_HEAD_SYMBOLIC_EXIT=1 MOCK_GIT_SHOW_REF_EXIT=1 MOC
 ! grep -q '^GIT reset' "$STUB_GIT_LOG" || { echo "FAIL scenario 11f: refresh reset after symbolic-ref itself failed"; cat "$STUB_GIT_LOG"; exit 1; }
 grep -q '^reason=local-head-unreadable$' "$STALE" || { echo "FAIL scenario 11f: expected the symbolic HEAD failure in the stale marker"; cat "$STALE"; exit 1; }
 
+echo "  scenario 11g: a missing non-branch HEAD target cannot authorize initialization..."
+rm -f "$STALE" "$PROJ/.keepitdry/.indexed-sha"
+MOCK_GIT_LOCAL_EXIT=1 MOCK_GIT_HEAD_REF=refs/tags/missing MOCK_GIT_SHOW_REF_EXIT=1 MOCK_GIT_REMOTE_SHA=bbbbbbbb run_refresh
+[ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 11g: a non-branch symbolic HEAD was treated as an unborn branch"; cat "$LOG_FILE"; exit 1; }
+! grep -q '^GIT reset' "$STUB_GIT_LOG" || { echo "FAIL scenario 11g: refresh reset after a malformed symbolic HEAD target"; cat "$STUB_GIT_LOG"; exit 1; }
+grep -q '^reason=local-head-unreadable$' "$STALE" || { echo "FAIL scenario 11g: expected the malformed symbolic HEAD in the stale marker"; cat "$STALE"; exit 1; }
+
 echo "  scenario 12: default branch comes from origin/HEAD, not a hardcoded main..."
 MOCK_GIT_DEFAULT=master run_refresh
 grep -q '^GIT fetch origin master' "$STUB_GIT_LOG" || { echo "FAIL scenario 12: expected fetch of origin master"; cat "$STUB_GIT_LOG"; exit 1; }
 grep -q '^GIT rev-parse origin/master' "$STUB_GIT_LOG" || { echo "FAIL scenario 12: expected rev-parse of origin/master"; cat "$STUB_GIT_LOG"; exit 1; }
 
-echo "  PASS (19 scenarios: empty-noop, missing-checkout-tolerated-not-alarmed, bootstrap-on-no-.keepitdry, index-current-is-a-noop, failed-index-retries-next-tick, new-commits-pull-then-index, unwritable-project-skipped-loudly, index-failure-is-not-success, per-repo-timeout-does-not-strand-the-sweep, stale-marker-written-with-since-preserved, marker-write-never-follows-a-committed-symlink, stale-marker-cleared-on-success, diverged-and-fetch-failure-reported-never-reset, upstream-rewrite-self-heals, empty-upstream-tolerated-and-marker-cleared, empty-clone-initializes-on-first-branch, unreadable-local-head-fails-closed, failed-symbolic-head-query-fails-closed, default-branch-from-origin-HEAD)"
+echo "  PASS (20 scenarios: empty-noop, missing-checkout-tolerated-not-alarmed, bootstrap-on-no-.keepitdry, index-current-is-a-noop, failed-index-retries-next-tick, new-commits-pull-then-index, unwritable-project-skipped-loudly, index-failure-is-not-success, per-repo-timeout-does-not-strand-the-sweep, stale-marker-written-with-since-preserved, marker-write-never-follows-a-committed-symlink, stale-marker-cleared-on-success, diverged-and-fetch-failure-reported-never-reset, upstream-rewrite-self-heals, empty-upstream-tolerated-and-marker-cleared, empty-clone-initializes-on-first-branch, unreadable-local-head-fails-closed, failed-symbolic-head-query-fails-closed, non-branch-head-target-fails-closed, default-branch-from-origin-HEAD)"

@@ -154,6 +154,11 @@ for NAME in "${!KID_PATHS[@]}"; do
             mark_stale "$PROJECT" local-head-unreadable
             continue
         fi
+        if [ "$HEAD_REF" != "refs/heads/$BRANCH" ]; then
+            log "$NAME: local HEAD targets $HEAD_REF instead of refs/heads/$BRANCH — skipping"
+            mark_stale "$PROJECT" local-head-unreadable
+            continue
+        fi
         git show-ref --verify --quiet "$HEAD_REF" 2>/dev/null
         head_ref_status=$?
         if [ "$head_ref_status" -eq 1 ]; then
