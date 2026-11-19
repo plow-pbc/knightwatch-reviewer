@@ -122,7 +122,7 @@ case "\$fields" in
         # Opt-in empty result → the BASE_REF/PR_AUTHOR fail-loud guard fires
         # (simulates a gh pr view that returns no usable metadata).
         if [ -n "\${GH_STUB_PRVIEW_EMPTY:-}" ]; then printf '{}\n'; else
-        printf '{"baseRefName":"$base_ref","title":"Test PR","body":"","author":{"login":"test-user"},"closingIssuesReferences":{"nodes":[]}}\n'
+        printf '{"baseRefName":"$base_ref","title":"Test PR","body":"","author":{"login":"${GH_STUB_PR_AUTHOR:-test-user}"},"closingIssuesReferences":{"nodes":[]}}\n'
         fi
         ;;
     *closingIssuesReferences*)
@@ -1481,27 +1481,34 @@ fi
 #         drop the `= "$PR_AUTHOR"` conjunct and this goes red.
 # The stub's PR author is test-user, so the requester arg is what makes these
 # two differ; neither sets GH_STUB_TRUSTED_USERS, so push access is denied.
-echo "  scenario: an allowlisted author is reviewed, and still executes nothing..."
-STATE10E="$TMPDIR/state-10e"
-seed_state_dir "$STATE10E"
-git clone -q "$GITHUB_BARE10" "$STATE10E/repos/test-org_probe-repo"
-REPO_ENV10E="$TMPDIR/repo-env-10e"
-mkdir -p "$REPO_ENV10E/test-org_probe-repo"
-echo "ANTHROPIC_API_KEY=sk-test-live-fixture" > "$REPO_ENV10E/test-org_probe-repo/.env.test-live"
-write_gh_stub "$HOME/.local/bin/gh" "main" "$PR_SHA10"
-MOCK_ALLOWLISTED="test-user" REPO_ENV_DIR="$REPO_ENV10E" run_worker_in_state "$STATE10E" \
-    "test-org/probe-repo" "10" "$PR_SHA10" "feat/test" "Live-cred PR" "false" "test-user" || true
-RUN_DIR10E=$(find "$STATE10E/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
-[ -n "$RUN_DIR10E" ] \
-    || { echo "FAIL: scenario 10e — no run dir; the manifest allowlist did not admit its own author"; [ -f "$STATE10E/orchestrator.log" ] && cat "$STATE10E/orchestrator.log"; exit 1; }
-LOG10E="$RUN_DIR10E/run.log"
-if grep -qE "mirrored [0-9]+ env file\(s\) from canonical" "$LOG10E"; then
-    echo "FAIL: scenario 10e — .env mirror fired for an allowlisted author with no push access; the allowlist grants READING only"
-    tail -n 30 "$LOG10E"
-    exit 1
-fi
-grep -q "skipping .env mirror" "$LOG10E" \
-    || { echo "FAIL: scenario 10e — no skip line; the mirror gate did not run at all, so the absence above proves nothing"; tail -n 30 "$LOG10E"; exit 1; }
+# One table for the allowlisted author's own PR: 10e a human with no push
+# access; 10g a GitHub App, which gh names "app/<slug>" while the dispatcher's
+# requester is "<slug>", beside a same-slug human WITH push access who must
+# lend it nothing. Each row: label | stub PR author | requester | trusted users.
+while IFS='|' read -r label author requester trusted; do
+    echo "  scenario $label: an allowlisted author is reviewed, and still executes nothing..."
+    state="$TMPDIR/state-$label"; env_dir="$TMPDIR/repo-env-$label"
+    seed_state_dir "$state"
+    git clone -q "$GITHUB_BARE10" "$state/repos/test-org_probe-repo" </dev/null
+    mkdir -p "$env_dir/test-org_probe-repo"
+    echo "ANTHROPIC_API_KEY=sk-test-live-fixture" > "$env_dir/test-org_probe-repo/.env.test-live"
+    GH_STUB_PR_AUTHOR="$author" write_gh_stub "$HOME/.local/bin/gh" "main" "$PR_SHA10"
+    GH_STUB_TRUSTED_USERS="$trusted" MOCK_ALLOWLISTED="$requester" REPO_ENV_DIR="$env_dir" run_worker_in_state "$state" \
+        "test-org/probe-repo" "10" "$PR_SHA10" "feat/test" "Live-cred PR" "false" "$requester" </dev/null || true
+    run_dir=$(find "$state/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
+    [ -n "$run_dir" ] \
+        || { echo "FAIL: scenario $label — no run dir; the manifest allowlist did not admit its own author"; [ -f "$state/orchestrator.log" ] && cat "$state/orchestrator.log"; exit 1; }
+    if grep -qE "mirrored [0-9]+ env file\(s\) from canonical" "$run_dir/run.log"; then
+        echo "FAIL: scenario $label — .env mirror fired for an allowlisted author without push access of its own; the allowlist grants READING only"
+        tail -n 30 "$run_dir/run.log"
+        exit 1
+    fi
+    grep -q "skipping .env mirror" "$run_dir/run.log" \
+        || { echo "FAIL: scenario $label — no skip line; the mirror gate did not run at all, so the absence above proves nothing"; tail -n 30 "$run_dir/run.log"; exit 1; }
+done <<'ROWS'
+10e|test-user|test-user|
+10g|app/test-app|test-app|test-app
+ROWS
 
 echo "  scenario: an allowlisted THIRD PARTY does not admit someone else's PR..."
 STATE10F="$TMPDIR/state-10f"
