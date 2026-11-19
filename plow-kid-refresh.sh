@@ -146,12 +146,28 @@ for NAME in "${!KID_PATHS[@]}"; do
         continue
     fi
 
-    LOCAL=$(git rev-parse HEAD 2>/dev/null)
+    LOCAL=""
+    UNBORN=false
+    if ! LOCAL=$(git rev-parse HEAD 2>/dev/null); then
+        HEAD_REF=$(git symbolic-ref -q HEAD 2>/dev/null || true)
+        head_ref_status=128
+        if [ -n "$HEAD_REF" ]; then
+            git show-ref --verify --quiet "$HEAD_REF" 2>/dev/null
+            head_ref_status=$?
+        fi
+        if [ "$head_ref_status" -eq 1 ]; then
+            UNBORN=true
+        else
+            log "$NAME: local HEAD is unreadable and not an unborn branch — skipping"
+            mark_stale "$PROJECT" local-head-unreadable
+            continue
+        fi
+    fi
     REMOTE=$(git rev-parse "origin/$BRANCH" 2>/dev/null)
 
     if [ "$LOCAL" != "$REMOTE" ]; then
         log "$NAME: new commits ${LOCAL:0:7} → ${REMOTE:0:7}, updating"
-        if [ -z "$LOCAL" ]; then
+        if [ "$UNBORN" = true ]; then
             # A repo cloned before its first push has an unborn HEAD. Once the
             # first branch appears there is no local history to preserve, so
             # initialize the mirror from that upstream tip.

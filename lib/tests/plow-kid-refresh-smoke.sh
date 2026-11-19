@@ -70,7 +70,14 @@ case "$1" in
     reset)        printf '%s\n' "${MOCK_GIT_REMOTE_SHA:-aaaaaaaa}" > "$STUB_GIT_HEAD_FILE" ;;
     # Every upstream tip origin/<branch> has held, newest first.
     reflog)       printf '%s\n' ${MOCK_GIT_REMOTE_REFLOG:-} ;;
-    symbolic-ref) echo "refs/remotes/origin/${MOCK_GIT_DEFAULT:-main}" ;;
+    symbolic-ref)
+        if [ "${2:-}" = HEAD ]; then
+            echo "refs/heads/${MOCK_GIT_DEFAULT:-main}"
+            exit "${MOCK_GIT_HEAD_SYMBOLIC_EXIT:-0}"
+        fi
+        echo "refs/remotes/origin/${MOCK_GIT_DEFAULT:-main}"
+        ;;
+    show-ref)     exit "${MOCK_GIT_SHOW_REF_EXIT:-0}" ;;
     rev-list)     echo "${MOCK_GIT_BEHIND:-3}" ;;
     # Defaults to one head, so a fetch failure stays a fetch failure. Set
     # MOCK_GIT_LSREMOTE_OUT= (empty) for a repo with no commits yet, or
@@ -371,15 +378,22 @@ grep -q '^reason=fetch-failed$' "$STALE" || { echo "FAIL scenario 11b: fetch-fai
 
 echo "  scenario 11d: an empty clone initializes when its first branch appears..."
 rm -f "$STALE" "$PROJ/.keepitdry/.indexed-sha"
-MOCK_GIT_LOCAL_EXIT=1 MOCK_GIT_REMOTE_SHA=bbbbbbbb MOCK_GIT_ANCESTOR_EXIT=1 run_refresh
+MOCK_GIT_LOCAL_EXIT=1 MOCK_GIT_SHOW_REF_EXIT=1 MOCK_GIT_REMOTE_SHA=bbbbbbbb MOCK_GIT_ANCESTOR_EXIT=1 run_refresh
 [ "$REFRESH_RC" -eq 0 ] || { echo "FAIL scenario 11d: an unborn mirror should initialize from its first upstream branch"; cat "$LOG_FILE"; exit 1; }
 grep -q '^GIT reset --hard --quiet origin/main$' "$STUB_GIT_LOG" || { echo "FAIL scenario 11d: expected the unborn mirror to initialize at origin/main"; cat "$STUB_GIT_LOG"; exit 1; }
 grep -q 'upstream gained its first branch' "$LOG_FILE" || { echo "FAIL scenario 11d: expected the empty-to-populated transition in the log"; cat "$LOG_FILE"; exit 1; }
 [ "$(count_kid)" -eq 1 ] || { echo "FAIL scenario 11d: expected the initialized mirror to be indexed"; exit 1; }
+
+echo "  scenario 11e: a generic local HEAD failure stays fail-closed..."
+rm -f "$STALE" "$PROJ/.keepitdry/.indexed-sha"
+MOCK_GIT_LOCAL_EXIT=1 MOCK_GIT_SHOW_REF_EXIT=128 MOCK_GIT_REMOTE_SHA=bbbbbbbb run_refresh
+[ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 11e: an unreadable local HEAD was treated as an empty mirror"; cat "$LOG_FILE"; exit 1; }
+! grep -q '^GIT reset' "$STUB_GIT_LOG" || { echo "FAIL scenario 11e: refresh reset a mirror whose local HEAD could not be classified"; cat "$STUB_GIT_LOG"; exit 1; }
+grep -q '^reason=local-head-unreadable$' "$STALE" || { echo "FAIL scenario 11e: expected the local HEAD failure in the stale marker"; cat "$STALE"; exit 1; }
 
 echo "  scenario 12: default branch comes from origin/HEAD, not a hardcoded main..."
 MOCK_GIT_DEFAULT=master run_refresh
 grep -q '^GIT fetch origin master' "$STUB_GIT_LOG" || { echo "FAIL scenario 12: expected fetch of origin master"; cat "$STUB_GIT_LOG"; exit 1; }
 grep -q '^GIT rev-parse origin/master' "$STUB_GIT_LOG" || { echo "FAIL scenario 12: expected rev-parse of origin/master"; cat "$STUB_GIT_LOG"; exit 1; }
 
-echo "  PASS (17 scenarios: empty-noop, missing-checkout-tolerated-not-alarmed, bootstrap-on-no-.keepitdry, index-current-is-a-noop, failed-index-retries-next-tick, new-commits-pull-then-index, unwritable-project-skipped-loudly, index-failure-is-not-success, per-repo-timeout-does-not-strand-the-sweep, stale-marker-written-with-since-preserved, marker-write-never-follows-a-committed-symlink, stale-marker-cleared-on-success, diverged-and-fetch-failure-reported-never-reset, upstream-rewrite-self-heals, empty-upstream-tolerated-and-marker-cleared, empty-clone-initializes-on-first-branch, default-branch-from-origin-HEAD)"
+echo "  PASS (18 scenarios: empty-noop, missing-checkout-tolerated-not-alarmed, bootstrap-on-no-.keepitdry, index-current-is-a-noop, failed-index-retries-next-tick, new-commits-pull-then-index, unwritable-project-skipped-loudly, index-failure-is-not-success, per-repo-timeout-does-not-strand-the-sweep, stale-marker-written-with-since-preserved, marker-write-never-follows-a-committed-symlink, stale-marker-cleared-on-success, diverged-and-fetch-failure-reported-never-reset, upstream-rewrite-self-heals, empty-upstream-tolerated-and-marker-cleared, empty-clone-initializes-on-first-branch, unreadable-local-head-fails-closed, default-branch-from-origin-HEAD)"
