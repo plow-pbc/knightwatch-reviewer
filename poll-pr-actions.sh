@@ -52,7 +52,7 @@ is_approve_request() {
 # Submit gh pr review --approve for any new trusted /<prefix>-approve on the PR.
 approve_check() {
     local REPO="$1" PR_NUM="$2" PR_AUTHOR="$3" BATCHED="${4:-}"
-    local COMMENTS COMMENT BODY ID USER APPROVE_KEY APPROVE_BODY
+    local COMMENTS COMMENT BODY ID USER APPROVE_KEY APPROVE_BODY APPROVED_HEAD
     if [ -n "$BATCHED" ]; then
         # Straight through: the enumeration already emits the REST shape this
         # loop reads, so there is one comment schema rather than a GraphQL one
@@ -123,11 +123,20 @@ Approved on @${USER}'s /${BOT_CMD_PREFIX}-approve request."
         # pause file is shared by every host timer, so a sibling stamping one in
         # the window after a SUCCESSFUL approve would leave the key unseen and
         # the next tick would post a second approve plus a duplicate comment.
+        # The head as approved, read BEFORE the approval: a push landing after it
+        # must not inherit the success.
+        APPROVED_HEAD=$(gh pr view "$PR_NUM" --repo "$REPO" --json headRefOid --jq '.headRefOid') || APPROVED_HEAD=""
         if ! submit_approval "$REPO" "$PR_NUM" "$BOT_USER" "$PR_AUTHOR" "$APPROVE_BODY" \
            && gh_pause_active; then
             log "$APPROVE_KEY: github rate-limited — leaving unseen to retry after the pause"
             continue
         fi
+        # A trusted approve is the verdict even when GitHub refuses the review
+        # itself (the bot's own PRs): without it, a PR converged by declining
+        # findings keeps the review's `failure` and a required check never clears.
+        [ -n "$APPROVED_HEAD" ] \
+            && post_knightwatch_status "$REPO" "$APPROVED_HEAD" success "Approved by @${USER}'s /${BOT_CMD_PREFIX}-approve" \
+            || log "$APPROVE_KEY: knightwatch status not set; re-post /${BOT_CMD_PREFIX}-approve to retry"
         seen_set "$APPROVES_SEEN_FILE" "$APPROVE_KEY" \
             || log "$APPROVE_KEY: WARNING — seen_set failed after approval attempt; next tick may reprocess"
     done < <(echo "$COMMENTS" | jq -c '.[]')

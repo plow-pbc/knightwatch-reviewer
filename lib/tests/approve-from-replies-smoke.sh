@@ -112,6 +112,7 @@ elif [ "$1" = "pr" ] && [ "$2" = "review" ]; then
     done
     # Use a sentinel to keep the body single-line in the log.
     body_oneline=$(printf '%s' "$body" | tr '\n' '|')
+    echo "headsha2" > "$STUB_ACTIONS_LOG.head"   # a push landing while the approval is in flight
     echo "APPROVE repo=$repo pr=$pr_num body=$body_oneline" >> "$STUB_ACTIONS_LOG"
     # MOCK_SIBLING_STAMPS_PAUSE simulates another host timer stamping the SHARED
     # pause file in the window right after this approve succeeded. The pause file
@@ -121,6 +122,11 @@ elif [ "$1" = "pr" ] && [ "$2" = "review" ]; then
     fi
     exit 0   # explicit: a trailing `[ … ] && …` would exit 1 whenever the var is
              # unset, turning every ordinary successful approve into a failure
+elif [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+    cat "$STUB_ACTIONS_LOG.head" 2>/dev/null || echo "headsha1"   # the PR's current head (callers pass --jq '.headRefOid')
+elif [ "$1" = "api" ] && [[ "$2" == */statuses/* ]]; then
+    state=""; for a in "$@"; do case "$a" in state=*) state="${a#state=}" ;; esac; done
+    echo "STATUS sha=${2##*/} state=$state" >> "$STUB_ACTIONS_LOG"
 elif [ "$1" = "api" ]; then
     # MOCK_GH_API_FAIL=1 simulates an API outage on the comments fetch.
     # The script's pipefail-aware `gh api ... | jq` should surface this
@@ -202,6 +208,7 @@ CONF
 
 run_approve() {
     : > "$STUB_ACTIONS_LOG"   # reset action log
+    rm -f "$STUB_ACTIONS_LOG.head"   # each run starts at headsha1
     : > "$STUB_PR_LIST_LOG"   # reset pr-list log so override scenario can assert per-run
     : > "$LOG_FILE"           # reset script log
     # The author-trust verdict cache (#233) is stop-state: a warm entry answers
@@ -236,6 +243,9 @@ printf '[{"id":1001,"created_at":"%s","user":{"login":"someuser"},"body":"/srosr
 run_approve
 n=$(count_approves)
 [ "$n" -eq 1 ] || { echo "FAIL scenario 2: expected 1 approve, got $n"; cat "$STUB_ACTIONS_LOG"; cat "$LOG_FILE"; exit 1; }
+# The success goes on the head as approved, never on a push that lands during it.
+grep -qx 'STATUS sha=headsha1 state=success' "$STUB_ACTIONS_LOG" && ! grep -q 'sha=headsha2' "$STUB_ACTIONS_LOG" \
+    || { echo "FAIL scenario 2: knightwatch=success not pinned to the head read before the approval"; cat "$STUB_ACTIONS_LOG"; exit 1; }
 # Marker must LEAD the body, not merely appear in it. With no body-wide
 # containment filter left, first-line anchoring is the whole self-trigger
 # defense, so "marker is line 1" is a producer-side contract this asserts
@@ -362,6 +372,10 @@ MOCK_FAIL_PR_REVIEW=1 run_approve
 n=$(count_approves)
 [ "$n" -eq 0 ] || { echo "FAIL scenario 10: expected 0 successful approves on failure, got $n"; cat "$STUB_ACTIONS_LOG"; cat "$LOG_FILE"; exit 1; }
 [ -n "$(jq -r '."test-org/probe-repo#1#1010" // empty' "$APPROVES_SEEN_FILE")" ] || { echo "FAIL scenario 10: seen state not marked after failure (would retry on every tick)"; cat "$APPROVES_SEEN_FILE"; cat "$LOG_FILE"; exit 1; }
+# The trusted approve is still the verdict when GitHub refuses the review itself
+# (the bot's own PRs): the head gets knightwatch=success, or a required check
+# would stay at the review's failure after the findings were declined.
+grep -qx 'STATUS sha=headsha1 state=success' "$STUB_ACTIONS_LOG" || { echo "FAIL scenario 10: no knightwatch=success on the head after a trusted approve"; cat "$STUB_ACTIONS_LOG"; exit 1; }
 # Rerun without the fail flag — must NOT retry the previously-failed
 # request. (If marking-seen-on-failure regresses, this rerun would now
 # succeed and we'd see 1 approve.)

@@ -247,6 +247,22 @@ trust_denial_reason() {
 #
 # PR_AUTHOR is passed in (not refetched) so this re-uses the value the
 # worker already fetched once at the top of review-one-pr.sh.
+# Set the `knightwatch` commit status on <sha>, the verdict a branch rule can
+# require. A status write only replaces the latest state, so unlike the create
+# calls gh_retry refuses to repeat, it is retried here: a lost final write would
+# otherwise strand the head at its earlier state, since the reviewed SHA is not
+# reviewed again.
+post_knightwatch_status() {
+    local repo="$1" sha="$2" state="$3" description="$4" attempt
+    for attempt in 1 2 3; do
+        gh api "repos/$repo/statuses/$sha" --method POST -f context=knightwatch \
+            -f state="$state" -f description="$description" >/dev/null 2>&1 && return 0
+        [ "$attempt" -lt 3 ] && sleep "$(( attempt * ${GH_API_RETRY_DELAY:-2} ))"
+    done
+    log "$repo: knightwatch status '$state' on ${sha:0:7} failed after 3 attempts"
+    return 1
+}
+
 submit_approval() {
     local repo="$1" pr_num="$2" bot_user="$3" pr_author="$4" body="$5"
     if [ "$pr_author" = "$bot_user" ]; then
