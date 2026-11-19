@@ -879,7 +879,7 @@ fi
 
 # --- gh api ---
 if [ "\$1" = "api" ]; then
-    endpoint=""; method="GET"; body=""; jqexpr=""
+    endpoint=""; method="GET"; body=""; state=""; jqexpr=""
     args=("\$@"); n=\${#args[@]}
     for ((i=1; i<n; i++)); do
         a="\${args[i]}"
@@ -887,7 +887,8 @@ if [ "\$1" = "api" ]; then
             --method|-X) method="\${args[i+1]}"; ((i++)) ;;
             -f|-F|--raw-field|--field)
                 v="\${args[i+1]}"; ((i++))
-                [ "\${v#body=}" != "\$v" ] && body="\${v#body=}" ;;
+                [ "\${v#body=}" != "\$v" ] && body="\${v#body=}"
+                [ "\${v#state=}" != "\$v" ] && state="\${v#state=}" ;;
             --jq) jqexpr="\${args[i+1]}"; ((i++)) ;;
             --paginate) : ;;
             -*) : ;;
@@ -906,6 +907,7 @@ if [ "\$1" = "api" ]; then
             else
                 result=\$(cat "\$STORE")
             fi ;;
+        */statuses/*) printf '%s %s\n' "\${endpoint##*/}" "\$state" >> "\$STORE.statuses" ;;
         */issues/comments/*)   # patch or delete a single comment
             cid="\${endpoint##*/}"
             if [ "\$method" = "DELETE" ]; then
@@ -966,6 +968,15 @@ if [ "$PLACEHOLDER_COUNT" != "1" ]; then
 fi
 
 echo "  placeholder-reuse anti-spam scenario ok"
+
+# A run that starts reviewing marks the checked-out head pending, so a branch
+# rule requiring `knightwatch` holds the merge until a verdict lands.
+if ! grep -qx "$NEW_PR_SHA pending" "$COMMENT_STORE.statuses" 2>/dev/null; then
+    echo "FAIL: scenario 6 — no pending knightwatch status on the checked-out head ${NEW_PR_SHA:0:7}"
+    cat "$COMMENT_STORE.statuses" 2>/dev/null
+    exit 1
+fi
+echo "  pending-status scenario ok"
 
 
 # ===== Scenario 7: transient codex 429 → short backoff (not hard-abort+retry) =====

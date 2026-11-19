@@ -769,6 +769,17 @@ if [ "$REVIEWED_SHA" != "$PR_SHA" ]; then
     log "$PR_ID: orchestrator enumerated ${PR_SHA:0:7}, worker checked out ${REVIEWED_SHA:0:7} — using checked-out SHA for header + state + meta"
 fi
 
+# The `knightwatch` commit status on the reviewed head, so a branch rule can
+# require the verdict: pending from here, then success or failure when the
+# review posts. An aborted run leaves it pending, which is still "not reviewed".
+# Best-effort: a repo the token can't write statuses to just goes without one.
+post_status() {
+    gh api "repos/$REPO/statuses/$REVIEWED_SHA" --method POST -f context=knightwatch \
+            -f state="$1" -f description="$2" >/dev/null 2>&1 \
+        || log "$PR_ID: knightwatch status '$1' on ${REVIEWED_SHA:0:7} failed (continuing)"
+}
+post_status pending "Review in progress"
+
 # Pin the test clone to the exact same commit codex will read.
 if ! git -C "$TEST_DIR" checkout --detach "$REVIEWED_SHA" --quiet; then
     log "$PR_ID: test-clone checkout of ${REVIEWED_SHA:0:7} failed — aborting"
@@ -2064,8 +2075,10 @@ if review_is_approval "$VERDICT" "$RUN_DIR"; then
     # PR_AUTHOR was fetched at line ~305 — pass it through so submit_approval
     # doesn't re-query GitHub for a value the worker already has.
     submit_approval "$REPO" "$PR_NUM" "$BOT_USER" "$PR_AUTHOR" "$APPROVE_BODY" || true
+    post_status success "Approved: no findings that block merge"
 else
     log "Commented on $PR_ID (no approval)"
+    post_status failure "Not approved: findings, failed tests or partial coverage; see the review"
 fi
 
 # state.json retired: every runtime-decision seam reads runs/ now (KNOWN_SHA
