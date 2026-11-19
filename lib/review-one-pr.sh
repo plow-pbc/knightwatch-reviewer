@@ -210,6 +210,9 @@ done
 PR_DATA=$(gh pr view "$PR_NUM" --repo "$REPO" --json "baseRefName,author,$AUTHOR_INTENT_FIELDS" 2>/dev/null)
 BASE_REF=$(printf '%s' "$PR_DATA" | jq -r '.baseRefName // empty')
 PR_AUTHOR=$(printf '%s' "$PR_DATA" | jq -r '.author.login // empty')
+# gh names a GitHub App author "app/<slug>"; the dispatcher's GraphQL, which
+# passed REQUESTER_LOGIN, names it "<slug>". One shape, so the two compare.
+PR_AUTHOR="${PR_AUTHOR#app/}"
 if [ -z "$BASE_REF" ] || [ -z "$PR_AUTHOR" ]; then
     log "$PR_ID: gh pr view returned no baseRefName / author (PR_DATA=${PR_DATA:0:80}) — aborting before placeholder post"
     exit 1

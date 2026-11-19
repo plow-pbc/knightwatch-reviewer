@@ -122,7 +122,7 @@ case "\$fields" in
         # Opt-in empty result → the BASE_REF/PR_AUTHOR fail-loud guard fires
         # (simulates a gh pr view that returns no usable metadata).
         if [ -n "\${GH_STUB_PRVIEW_EMPTY:-}" ]; then printf '{}\n'; else
-        printf '{"baseRefName":"$base_ref","title":"Test PR","body":"","author":{"login":"test-user"},"closingIssuesReferences":{"nodes":[]}}\n'
+        printf '{"baseRefName":"$base_ref","title":"Test PR","body":"","author":{"login":"${GH_STUB_PR_AUTHOR:-test-user}"},"closingIssuesReferences":{"nodes":[]}}\n'
         fi
         ;;
     *closingIssuesReferences*)
@@ -1506,6 +1506,19 @@ SKIP_EC10F=$?
 assert_no_probe_run_dir "$STATE10F" "scenario 10f — an allowlist entry admitted a THIRD party's PR to sandbox-bypassed reading"
 [ "$SKIP_EC10F" -eq 0 ] \
     || { echo "FAIL: scenario 10f — worker exited $SKIP_EC10F (expected 0 = silent skip); a revoked voucher is 'nobody asked', not a deferral"; exit 1; }
+
+echo "  scenario: an allowlisted GitHub App's own PR is admitted, whichever login shape names it..."
+# gh pr view names an App author "app/<slug>"; the dispatcher's GraphQL names
+# it "<slug>", and passes that as the requester. Same author, so the allowlist
+# must admit it rather than read the two shapes as a third party.
+STATE10G="$TMPDIR/state-10g"
+seed_state_dir "$STATE10G"
+git clone -q "$GITHUB_BARE10" "$STATE10G/repos/test-org_probe-repo"
+GH_STUB_PR_AUTHOR="app/test-app" write_gh_stub "$HOME/.local/bin/gh" "main" "$PR_SHA10"
+MOCK_ALLOWLISTED="test-app" run_worker_in_state "$STATE10G" \
+    "test-org/probe-repo" "10" "$PR_SHA10" "feat/test" "App PR" "false" "test-app" || true
+find "$STATE10G/runs" -type d -name 'test-org_probe-repo__*__*' | grep -q . \
+    || { echo "FAIL: scenario 10g — no run dir; an allowlisted App's own PR was read as a third party's"; exit 1; }
 
 # ===== Scenario 11: pre-spend stale-head gate — mismatch → abort before specialists =====
 # The ONLY coverage of the pre-spend gate (the decision is inline in the
