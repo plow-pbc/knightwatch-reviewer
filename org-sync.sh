@@ -79,8 +79,9 @@ fi
 
 . "$REVIEWER_LIB_DIR/tracked-repos.sh"
 
-# ORGS empty: truncate any prior auto file so disabling the feature
-# actually drops auto coverage on the next tick.
+# ORGS empty: truncate any prior auto file so disabling discovery actually
+# drops auto coverage on the next tick. Manual convention-path repos still
+# continue below to checkout materialization.
 if [ "${#ORGS[@]}" -eq 0 ]; then
     if [ -f "$AUTO_CONF" ]; then
         log "ORGS empty — removing stale $AUTO_CONF"
@@ -88,7 +89,6 @@ if [ "${#ORGS[@]}" -eq 0 ]; then
     else
         log "ORGS empty + no auto file — nothing to do"
     fi
-    exit 0
 fi
 
 command -v gh >/dev/null 2>&1 || { log "FATAL: gh not on PATH"; exit 1; }
@@ -151,18 +151,26 @@ if [ "${#AUTO[@]}" -gt 0 ]; then
     mapfile -t AUTO < <(printf '%s\n' "${AUTO[@]}" | sort)
 fi
 
-# Manual repos with an operator-owned KID path stay operator-owned. A manual
-# repo that uses the clone-root convention, however, depends on this sync job
-# to materialize that checkout just like an auto-discovered repo does. It must
-# remain absent from repos.conf.auto so the manual manifest stays authoritative.
-SYNC=("${AUTO[@]}")
-for full in "${!MANUAL[@]}"; do
-    expected=$(repo_clone_path "$full" "${REPOS[@]}" "${AUTO[@]}")
-    [ "${KID_PATHS[$full]:-}" = "$expected" ] && SYNC+=("$full")
-done
-if [ "${#SYNC[@]}" -gt 0 ]; then
-    mapfile -t SYNC < <(printf '%s\n' "${SYNC[@]}" | sort -u)
+# Manual repos with an operator-owned KID path stay operator-owned. Explicit
+# short or owner-qualified paths under the clone root are the two convention
+# destinations; reserve those first so auto repos with the same basename route
+# around them.
+declare -A MANUAL_DEST=()
+MANUAL_SYNC=()
+while IFS= read -r full; do
+    [ -n "$full" ] || continue
+    path="${KID_PATHS[$full]:-}"
+    case "$path" in
+        "$KWR_CLONE_ROOT/${full#*/}"|"$KWR_CLONE_ROOT/$full")
+            MANUAL_DEST[$full]="$path"
+            MANUAL_SYNC+=("$full")
+            ;;
+    esac
+done <<< "$MANUAL_LIST"
+if [ "${#MANUAL_SYNC[@]}" -gt 0 ]; then
+    mapfile -t MANUAL_SYNC < <(printf '%s\n' "${MANUAL_SYNC[@]}" | sort)
 fi
+SYNC=("${MANUAL_SYNC[@]}" "${AUTO[@]}")
 
 mkdir -p "$KWR_CLONE_ROOT"
 
@@ -188,7 +196,8 @@ skip_repo() {   # $1 = reason
     SKIPPED=$((SKIPPED + 1))
 }
 for full in "${SYNC[@]}"; do
-    dest=$(repo_clone_path "$full" "${REPOS[@]}" "${AUTO[@]}")
+    dest="${MANUAL_DEST[$full]:-}"
+    [ -n "$dest" ] || dest=$(repo_clone_path "$full" "${REPOS[@]}" "${AUTO[@]}")
     if [ -d "$dest/.git" ]; then
         if ! url=$(git -C "$dest" remote get-url origin 2>/dev/null); then
             skip_repo "$dest has no origin remote configured"
@@ -226,27 +235,29 @@ for full in "${SYNC[@]}"; do
     [ -n "${MANUAL[$full]:-}" ] || KEPT+=("$full")
 done
 
-TMP_NEW=$(mktemp)
-trap 'rm -f "$TMP_NEW"' EXIT
-{
-    echo "# Managed by org-sync.sh — regenerated each sync tick. Do NOT"
-    echo "# edit; manual entries belong in repos.conf."
-    echo "#"
-    echo "# Only REPOS+=(\"...\") is emitted here. KID_PATHS values are"
-    echo "# convention-defaulted by lib/tracked-repos.sh from"
-    echo "# \$KWR_CLONE_ROOT after sourcing this file, so the manifest"
-    echo "# never stores stale path strings. SOURCE_PATHS is intentionally"
-    echo "# not emitted either — cross-repo grep stays opt-in."
-    for full in "${KEPT[@]}"; do
-        echo "REPOS+=(\"$full\")"
-    done
-} > "$TMP_NEW"
+if [ "${#ORGS[@]}" -gt 0 ]; then
+    TMP_NEW=$(mktemp)
+    trap 'rm -f "$TMP_NEW"' EXIT
+    {
+        echo "# Managed by org-sync.sh — regenerated each sync tick. Do NOT"
+        echo "# edit; manual entries belong in repos.conf."
+        echo "#"
+        echo "# Only REPOS+=(\"...\") is emitted here. KID_PATHS values are"
+        echo "# convention-defaulted by lib/tracked-repos.sh from"
+        echo "# \$KWR_CLONE_ROOT after sourcing this file, so the manifest"
+        echo "# never stores stale path strings. SOURCE_PATHS is intentionally"
+        echo "# not emitted either — cross-repo grep stays opt-in."
+        for full in "${KEPT[@]}"; do
+            echo "REPOS+=(\"$full\")"
+        done
+    } > "$TMP_NEW"
 
-if [ -f "$AUTO_CONF" ] && cmp -s "$TMP_NEW" "$AUTO_CONF"; then
-    log "no changes (${#KEPT[@]} auto-tracked, ${#MANUAL[@]} manual)"
-else
-    mv "$TMP_NEW" "$AUTO_CONF"
-    log "rewrote $AUTO_CONF: ${#KEPT[@]} auto-tracked, $NEW_CLONES newly cloned"
+    if [ -f "$AUTO_CONF" ] && cmp -s "$TMP_NEW" "$AUTO_CONF"; then
+        log "no changes (${#KEPT[@]} auto-tracked, ${#MANUAL[@]} manual)"
+    else
+        mv "$TMP_NEW" "$AUTO_CONF"
+        log "rewrote $AUTO_CONF: ${#KEPT[@]} auto-tracked, $NEW_CLONES newly cloned"
+    fi
 fi
 
 # Exit non-zero AFTER the rewrite: the repos we could sync are already

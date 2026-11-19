@@ -197,6 +197,19 @@ run_sync || { echo "FAIL scenario 1: org-sync exited non-zero"; cat "$LOG_FILE";
 n=$(count_gh "repo list")
 [ "$n" -eq 0 ] || { echo "FAIL scenario 1: expected 0 gh repo list calls, got $n"; cat "$STUB_GH_LOG"; exit 1; }
 
+echo "  scenario 1b: empty ORGS + convention-path manual repo — checkout still materialized..."
+cat > "$MANIFEST" <<CONF
+REPOS=("outside/manual-no-org")
+declare -A KID_PATHS=(["outside/manual-no-org"]="$HOME/services/kwr-repos/manual-no-org")
+declare -A SOURCE_PATHS=(["outside/manual-no-org"]="$HOME/services/kwr-repos/manual-no-org")
+ORGS=()
+CONF
+rm -rf "$HOME/services/kwr-repos/manual-no-org"
+run_sync || { echo "FAIL scenario 1b: org-sync exited non-zero"; cat "$LOG_FILE"; exit 1; }
+[ -d "$HOME/services/kwr-repos/manual-no-org/.git" ] \
+    || { echo "FAIL scenario 1b: empty ORGS bypassed manual materialization"; cat "$STUB_GH_LOG"; exit 1; }
+[ ! -f "$AUTO_CONF" ] || { echo "FAIL scenario 1b: empty ORGS left an auto manifest"; cat "$AUTO_CONF"; exit 1; }
+
 # --- Scenario 2: discover + clone ---------------------------------------------
 echo "  scenario 2: new repo discovered → cloned, auto file populated, manual preserved..."
 write_baseline_conf '"acme"'
@@ -618,6 +631,22 @@ MOCK_GH_LIST_two="shared" run_sync \
 [ "$(resolved_kid_path two/shared)" = "$HOME/services/kwr-repos/two/shared" ] \
     || { echo "FAIL scenario 19: auto repo KID path did not follow collision fallback"; exit 1; }
 
+echo "  scenario 19b: fresh collision — explicit manual short path is reserved before auto clone..."
+cat > "$MANIFEST" <<CONF
+REPOS=("two/shared")
+declare -A KID_PATHS=(["two/shared"]="$HOME/services/kwr-repos/shared")
+declare -A SOURCE_PATHS=(["two/shared"]="$HOME/services/kwr-repos/shared")
+ORGS=("one")
+CONF
+rm -rf "$HOME/services/kwr-repos/shared" "$HOME/services/kwr-repos/one"
+rm -f "$AUTO_CONF"
+MOCK_GH_LIST_one="shared" run_sync \
+    || { echo "FAIL scenario 19b: org-sync exited non-zero"; cat "$LOG_FILE"; exit 1; }
+[ "$(git -C "$HOME/services/kwr-repos/shared" remote get-url origin)" = "git@github.com:two/shared.git" ] \
+    || { echo "FAIL scenario 19b: auto repo claimed the manual short path"; exit 1; }
+[ -d "$HOME/services/kwr-repos/one/shared/.git" ] \
+    || { echo "FAIL scenario 19b: auto repo did not use the qualified fallback"; exit 1; }
+
 # --- Scenarios 20-22: valid qualified checkout reuse --------------------------
 for state in stale-owner absent non-checkout; do
     echo "  scenarios 20-22: existing qualified checkout is reused with short path $state..."
@@ -640,4 +669,4 @@ for state in stale-owner absent non-checkout; do
 done
 
 
-echo "  PASS (24 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, convention-manual-cloned, bad-manual-fails-loud, clone-failure-no-mutation, one-bad-mirror-does-not-strand-sweep, skipped-repo-dropped-not-carried-forward, lock-held-defers, kwr-config-overlay, broken-config-fail-loud, repos-conf-file-override, rate-limit-skips-tick, cross-org-basename-collision, manual-auto-basename-collision, stale-short-owner, absent-short-path, non-checkout-short-path)"
+echo "  PASS (26 scenarios: empty-orgs-truncates-stale, empty-orgs-manual-clone, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, convention-manual-cloned, bad-manual-fails-loud, clone-failure-no-mutation, one-bad-mirror-does-not-strand-sweep, skipped-repo-dropped-not-carried-forward, lock-held-defers, kwr-config-overlay, broken-config-fail-loud, repos-conf-file-override, rate-limit-skips-tick, cross-org-basename-collision, manual-auto-basename-collision, manual-path-reserved, stale-short-owner, absent-short-path, non-checkout-short-path)"
