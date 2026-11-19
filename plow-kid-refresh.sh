@@ -149,12 +149,13 @@ for NAME in "${!KID_PATHS[@]}"; do
     LOCAL=""
     UNBORN=false
     if ! LOCAL=$(git rev-parse HEAD 2>/dev/null); then
-        HEAD_REF=$(git symbolic-ref -q HEAD 2>/dev/null || true)
-        head_ref_status=128
-        if [ -n "$HEAD_REF" ]; then
-            git show-ref --verify --quiet "$HEAD_REF" 2>/dev/null
-            head_ref_status=$?
+        if ! HEAD_REF=$(git symbolic-ref -q HEAD 2>/dev/null); then
+            log "$NAME: local HEAD is unreadable and not an unborn branch — skipping"
+            mark_stale "$PROJECT" local-head-unreadable
+            continue
         fi
+        git show-ref --verify --quiet "$HEAD_REF" 2>/dev/null
+        head_ref_status=$?
         if [ "$head_ref_status" -eq 1 ]; then
             UNBORN=true
         else
