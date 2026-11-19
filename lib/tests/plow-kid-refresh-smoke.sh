@@ -384,26 +384,20 @@ grep -q '^GIT reset --hard --quiet origin/main$' "$STUB_GIT_LOG" || { echo "FAIL
 grep -q 'upstream gained its first branch' "$LOG_FILE" || { echo "FAIL scenario 11d: expected the empty-to-populated transition in the log"; cat "$LOG_FILE"; exit 1; }
 [ "$(count_kid)" -eq 1 ] || { echo "FAIL scenario 11d: expected the initialized mirror to be indexed"; exit 1; }
 
-echo "  scenario 11e: a generic local HEAD failure stays fail-closed..."
-rm -f "$STALE" "$PROJ/.keepitdry/.indexed-sha"
-MOCK_GIT_LOCAL_EXIT=1 MOCK_GIT_SHOW_REF_EXIT=128 MOCK_GIT_REMOTE_SHA=bbbbbbbb run_refresh
-[ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 11e: an unreadable local HEAD was treated as an empty mirror"; cat "$LOG_FILE"; exit 1; }
-! grep -q '^GIT reset' "$STUB_GIT_LOG" || { echo "FAIL scenario 11e: refresh reset a mirror whose local HEAD could not be classified"; cat "$STUB_GIT_LOG"; exit 1; }
-grep -q '^reason=local-head-unreadable$' "$STALE" || { echo "FAIL scenario 11e: expected the local HEAD failure in the stale marker"; cat "$STALE"; exit 1; }
-
-echo "  scenario 11f: a failed symbolic HEAD query cannot authorize initialization..."
-rm -f "$STALE" "$PROJ/.keepitdry/.indexed-sha"
-MOCK_GIT_LOCAL_EXIT=1 MOCK_GIT_HEAD_SYMBOLIC_EXIT=1 MOCK_GIT_SHOW_REF_EXIT=1 MOCK_GIT_REMOTE_SHA=bbbbbbbb run_refresh
-[ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 11f: a failed symbolic HEAD query was treated as an unborn branch"; cat "$LOG_FILE"; exit 1; }
-! grep -q '^GIT reset' "$STUB_GIT_LOG" || { echo "FAIL scenario 11f: refresh reset after symbolic-ref itself failed"; cat "$STUB_GIT_LOG"; exit 1; }
-grep -q '^reason=local-head-unreadable$' "$STALE" || { echo "FAIL scenario 11f: expected the symbolic HEAD failure in the stale marker"; cat "$STALE"; exit 1; }
-
-echo "  scenario 11g: a missing non-branch HEAD target cannot authorize initialization..."
-rm -f "$STALE" "$PROJ/.keepitdry/.indexed-sha"
-MOCK_GIT_LOCAL_EXIT=1 MOCK_GIT_HEAD_REF=refs/tags/missing MOCK_GIT_SHOW_REF_EXIT=1 MOCK_GIT_REMOTE_SHA=bbbbbbbb run_refresh
-[ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario 11g: a non-branch symbolic HEAD was treated as an unborn branch"; cat "$LOG_FILE"; exit 1; }
-! grep -q '^GIT reset' "$STUB_GIT_LOG" || { echo "FAIL scenario 11g: refresh reset after a malformed symbolic HEAD target"; cat "$STUB_GIT_LOG"; exit 1; }
-grep -q '^reason=local-head-unreadable$' "$STALE" || { echo "FAIL scenario 11g: expected the malformed symbolic HEAD in the stale marker"; cat "$STALE"; exit 1; }
+while IFS='|' read -r scenario description show_status symbolic_status head_ref; do
+    echo "  scenario $scenario: $description..."
+    rm -f "$STALE" "$PROJ/.keepitdry/.indexed-sha"
+    MOCK_GIT_LOCAL_EXIT=1 MOCK_GIT_SHOW_REF_EXIT="$show_status" \
+        MOCK_GIT_HEAD_SYMBOLIC_EXIT="$symbolic_status" MOCK_GIT_HEAD_REF="$head_ref" \
+        MOCK_GIT_REMOTE_SHA=bbbbbbbb run_refresh
+    [ "$REFRESH_RC" -ne 0 ] || { echo "FAIL scenario $scenario: unsafe local HEAD was treated as an unborn branch"; cat "$LOG_FILE"; exit 1; }
+    ! grep -q '^GIT reset' "$STUB_GIT_LOG" || { echo "FAIL scenario $scenario: refresh reset a mirror whose local HEAD could not be classified"; cat "$STUB_GIT_LOG"; exit 1; }
+    grep -q '^reason=local-head-unreadable$' "$STALE" || { echo "FAIL scenario $scenario: expected the local HEAD failure in the stale marker"; cat "$STALE"; exit 1; }
+done <<'HEAD_FAILURE_CASES'
+11e|a generic local HEAD failure stays fail-closed|128|0|refs/heads/main
+11f|a failed symbolic HEAD query cannot authorize initialization|1|1|refs/heads/main
+11g|a missing non-branch HEAD target cannot authorize initialization|1|0|refs/tags/missing
+HEAD_FAILURE_CASES
 
 echo "  scenario 12: default branch comes from origin/HEAD, not a hardcoded main..."
 MOCK_GIT_DEFAULT=master run_refresh
