@@ -209,18 +209,6 @@ command() {
 ENV
 BASH_ENV="$NO_GH_ENV" run_sync || { echo "FAIL scenario 1a: disabled discovery acquired an unnecessary gh dependency"; cat "$LOG_FILE"; exit 1; }
 
-echo "  scenario 1b: empty ORGS + convention-path manual repo — checkout still materialized..."
-cat > "$MANIFEST" <<CONF
-REPOS=("outside/manual-no-org")
-declare -A KID_PATHS=(["outside/manual-no-org"]="$HOME/services/kwr-repos/manual-no-org")
-declare -A SOURCE_PATHS=(["outside/manual-no-org"]="$HOME/services/kwr-repos/manual-no-org")
-ORGS=()
-CONF
-rm -rf "$HOME/services/kwr-repos/manual-no-org"
-run_sync || { echo "FAIL scenario 1b: org-sync exited non-zero"; cat "$LOG_FILE"; exit 1; }
-[ -d "$HOME/services/kwr-repos/manual-no-org/.git" ] || { echo "FAIL scenario 1b: empty ORGS bypassed manual materialization"; cat "$STUB_GH_LOG"; exit 1; }
-[ ! -f "$AUTO_CONF" ] || { echo "FAIL scenario 1b: empty ORGS left an auto manifest"; cat "$AUTO_CONF"; exit 1; }
-
 # --- Scenario 2: discover + clone ---------------------------------------------
 echo "  scenario 2: new repo discovered → cloned, auto file populated, manual preserved..."
 write_baseline_conf '"acme"'
@@ -358,17 +346,20 @@ fi
 
 # --- Scenarios 9b-9c: convention-path manual repo -----------------------------
 echo "  scenario 9b: convention-path manual repo — cloned, but not auto-published..."
-cat > "$MANIFEST" <<CONF
+for org in "" acme; do
+    cat > "$MANIFEST" <<CONF
 REPOS=("outside/manual")
 declare -A KID_PATHS=(["outside/manual"]="$HOME/services/kwr-repos/manual")
 declare -A SOURCE_PATHS=(["outside/manual"]="$HOME/services/kwr-repos/manual/subtree")
-ORGS=("acme")
+ORGS=(${org:+"$org"})
 CONF
-rm -rf "$HOME/services/kwr-repos/manual"
-rm -f "$AUTO_CONF"
-MOCK_GH_LIST_acme= run_sync || { echo "FAIL scenario 9b: org-sync exited non-zero"; cat "$LOG_FILE"; exit 1; }
-[ -d "$HOME/services/kwr-repos/manual/.git" ] || { echo "FAIL scenario 9b: convention-path manual repo was not cloned"; cat "$STUB_GH_LOG"; exit 1; }
-if grep -q 'outside/manual' "$AUTO_CONF" 2>/dev/null; then echo "FAIL scenario 9b: manual repo appears in auto file"; cat "$AUTO_CONF"; exit 1; fi
+    rm -rf "$HOME/services/kwr-repos/manual"
+    rm -f "$AUTO_CONF"
+    MOCK_GH_LIST_acme= run_sync || { echo "FAIL scenario 9b: org-sync exited non-zero"; cat "$LOG_FILE"; exit 1; }
+    [ -d "$HOME/services/kwr-repos/manual/.git" ] || { echo "FAIL scenario 9b: convention-path manual repo was not cloned"; cat "$STUB_GH_LOG"; exit 1; }
+    if grep -q 'outside/manual' "$AUTO_CONF" 2>/dev/null; then echo "FAIL scenario 9b: manual repo appears in auto file"; cat "$AUTO_CONF"; exit 1; fi
+    [ -n "$org" ] || [ ! -f "$AUTO_CONF" ] || { echo "FAIL scenario 9b: empty ORGS left an auto manifest"; cat "$AUTO_CONF"; exit 1; }
+done
 
 echo "  scenario 9c: bad convention-path manual checkout — sync fails loud without rewriting operator config..."
 git -C "$HOME/services/kwr-repos/manual" remote set-url origin git@github.com:wrong/manual.git
