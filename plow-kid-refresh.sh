@@ -151,7 +151,12 @@ for NAME in "${!KID_PATHS[@]}"; do
 
     if [ "$LOCAL" != "$REMOTE" ]; then
         log "$NAME: new commits ${LOCAL:0:7} → ${REMOTE:0:7}, updating"
-        if git merge-base --is-ancestor HEAD "origin/$BRANCH" 2>/dev/null; then
+        if [ -z "$LOCAL" ]; then
+            # A repo cloned before its first push has an unborn HEAD. Once the
+            # first branch appears there is no local history to preserve, so
+            # initialize the mirror from that upstream tip.
+            log "$NAME: upstream gained its first branch — initializing mirror at ${REMOTE:0:7}"
+        elif git merge-base --is-ancestor HEAD "origin/$BRANCH" 2>/dev/null; then
             :   # a fast-forward
         elif git reflog show --format=%H "refs/remotes/origin/$BRANCH" 2>/dev/null | grep -qxF "$LOCAL"; then
             # HEAD is a tip upstream once published, so the mirror holds nothing
