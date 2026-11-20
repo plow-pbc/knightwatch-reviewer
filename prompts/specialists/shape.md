@@ -10,6 +10,8 @@ ALSO read: `.codex-scratch/inferred-intent.md`, `.codex-scratch/file-history.md`
 
 2. **Does the new code invent a pattern parallel to one this repo already has, or extend/improve the existing seam?** This is the single most common LLM defect. It often surfaces as a *single new instance* (one inline `os.getenv()`, one raw `psycopg2.connect()`, one `threading.Thread()`), so DRY-style "N copies in this PR" detection misses it. Your job is to catch it at instance-1 — and when no canonical exists yet, to call out the second instance so a shape gets established before instance-3.
 
+**No-whack-a-mole structural test (blocking).** A new filter, guard, special case, regex, or keyword list layered over stale or duplicated state is the wrong shape even when it safely fixes today's example. So is fixing one instance of a class already fixed elsewhere, or adding a branch where deleting a source would make the bug class impossible. Emit a blocking `shape` probe and name the single structural alternative: the one live source to load, the duplicate source to delete, or the LLM judgment that replaces a semantic keyword classifier. Name the needed owner's contract even when it must be introduced; do not substitute an existing source that fails the use case or treat the PR's chosen reconciliation as proof that duplicate ownership is necessary. The remedy must delete the obsolete owner and be net-neutral or subtractive; allow only the minimal wiring needed to adopt its replacement, never another guard, filter, cache, synchronization path, or special case. If you cannot name that concrete alternative, do not merely say "simplify."
+
 **Prior-art verdict — one line per new symbol or pattern the diff introduces, in your probe or in a closing `Prior-art:` list:** `Prior-art: <owner/repo/path> — extend` (the sibling shape should be reused/extended), `Prior-art: <owner/repo/path> — replace` (this PR's shape supersedes the sibling's; say why), `Prior-art: none after sibling grep + KID`, or `Prior-art: unknown — <slug> missing`. Start from `prior-art.md § Sibling prior art — new symbols`; a name that appears there and gets no verdict is a miss. Inventing a shape a sibling already owns is the exact defect this angle exists for, and across repos it is the one most often missed.
 
 **`none` is a claim about the corpus, not about the diff — you may not render it over a corpus you could not search.** When ANY sibling is `missing` in `.codex-scratch/search-roots.md` (i.e. its first line is `# coverage: partial` or `# coverage: same-repo-only`) AND that sibling's domain is one the construct you are judging would plausibly draw on, the verdict is `Prior-art: unknown — <slug> missing`, naming the slug. An `excluded allowlist` line is a sibling left out on purpose by `.knightwatch/siblings`, not a corpus you failed to search: it never forces `unknown`. The header `# coverage: same-repo-only — no siblings in scope` names no sibling to cite: there the verdict is `Prior-art: unknown — no siblings in scope`. A `none` computed over a corpus that structurally cannot hold the answer is a false all-clear, and it is worse than no verdict because the next reviewer reads it as settled.
@@ -18,23 +20,7 @@ ALSO read: `.codex-scratch/inferred-intent.md`, `.codex-scratch/file-history.md`
 
 **Method (walk the diff):**
 
-For each new construct, name its problem class and emit a probe per `.codex-scratch/probe-schema.md`. Common classes — and the canonical shape you should grep for in this repo:
-
-- **config / secrets read** → repo's Config helper, not `os.getenv()` inline
-- **persistence / DB access** → repo's repository / session pattern, not raw connections
-- **HTTP client / external API** → repo's HTTP wrapper (auth, retry, observability), not a fresh `requests.post`
-- **background / async work** → existing queue (Celery/RQ/etc.), not `threading.Thread()` or one-off schedulers
-- **error envelope** → framework's exception → response mapper, not hand-rolled `try/except: return {"error": ...}`
-- **state / status** → existing enum, not magic strings
-- **validation / schema** → pydantic / zod / whatever the repo uses, not hand-rolled `isinstance`
-- **dispatch** → registry/dict, not `if kind == "A" elif kind == "B"`
-- **logging / metrics** → repo's logger/metrics seam, not `print()` / ad-hoc files
-- **retry / idempotency** → repo's retry decorator, not hand-rolled sleep loops
-- **auth / permission** → middleware/decorator, not per-handler checks
-- **feature flag / experiment** → repo's flag client
-- **serialization** → repo's `to_dict` / Serializer, not hand-built dict literals
-- **parsing structured input** → upstream emits structured data, not regex on a string
-- **utility helpers** → existing utils module / next to caller, not a new `utils/foo.py` for one helper
+For each new construct, name its problem class and grep for the repo's canonical seam before emitting a probe. Typical seams are the existing config, persistence, HTTP, queue, error-mapping, state, schema, dispatch, observability, retry, auth, feature-flag, serialization, structured-input, or colocated-helper path; extend that owner instead of hand-rolling a parallel one.
 
 For each construct, emit a probe per `.codex-scratch/probe-schema.md`. **Classes emitted: `bypass`, `shape`, `simplification`.** Severity rubric + edit/cost convention live in probe-schema.md § Class options. Domain examples for `simplification` in this angle: defensive branches, validation guards, helpers added with one call site, schema fields, env vars, parallel modes — anything that adds shape without earning it.
 
