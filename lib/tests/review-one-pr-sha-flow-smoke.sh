@@ -1386,6 +1386,24 @@ MODE10=$(python3 -c 'import os,stat,sys; print(oct(stat.S_IMODE(os.stat(sys.argv
     exit 1
 }
 
+# A repository-controlled parent symlink must never redirect an operator secret
+# outside the canonical clone.
+STATE10S="$TMPDIR/state-10-symlink"
+seed_state_dir "$STATE10S"
+git clone -q "$GITHUB_BARE10" "$STATE10S/repos/test-org_probe-repo"
+OUTSIDE10S="$TMPDIR/outside-10-symlink"
+mkdir -p "$OUTSIDE10S"
+ln -s "$OUTSIDE10S" "$STATE10S/repos/test-org_probe-repo/api"
+REPO_ENV10S="$TMPDIR/repo-env-10-symlink"
+mkdir -p "$REPO_ENV10S/test-org_probe-repo/api"
+echo "SECRET=must-not-escape" > "$REPO_ENV10S/test-org_probe-repo/api/secret.env"
+REPO_ENV_DIR="$REPO_ENV10S" GH_STUB_PERMISSION_ROLE=write run_worker_in_state "$STATE10S" \
+    "test-org/probe-repo" "10" "$PR_SHA10" "feat/test" "Live-cred PR" "false" "someuser" || true
+[ ! -e "$OUTSIDE10S/secret.env" ] || {
+    echo "FAIL: scenario 10 — repo-env credential followed a canonical parent symlink"
+    exit 1
+}
+
 # Negative case: a seed that can't be written must FAIL LOUD (the probe-3 fix) —
 # abort before the mirror, never run the test with missing/stale creds. Induce a
 # deterministic failure with `mkdir` over a pre-created FILE at the target's
