@@ -29,6 +29,7 @@ else:
 # regardless of size (the single synthesis step is where a premium budget
 # pays off); see its call site in run_pipeline.
 SMALL_PR_LOC = 500
+MAX_CODEX_OUTPUT_BYTES = 1024 * 1024
 
 
 def _reasoning_effort(diff_loc: int) -> str:
@@ -570,19 +571,24 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
                 child_out_file,
                 os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
             )
-            with os.fdopen(fd) as child_output:
+            with os.fdopen(fd, "rb") as child_output:
                 metadata = os.fstat(child_output.fileno())
                 if (not stat.S_ISREG(metadata.st_mode)
                         or metadata.st_uid != child_output_uid
-                        or metadata.st_nlink != 1):
-                    raise OSError("Codex output is not a singly-linked regular file owned by its UID")
+                        or metadata.st_nlink != 1
+                        or metadata.st_size > MAX_CODEX_OUTPUT_BYTES):
+                    raise OSError("Codex output failed type, ownership, link-count, or size validation")
+                output_bytes = child_output.read(MAX_CODEX_OUTPUT_BYTES + 1)
+                if len(output_bytes) > MAX_CODEX_OUTPUT_BYTES:
+                    raise OSError("Codex output exceeded the size limit while being read")
+                output_text = output_bytes.decode("utf-8")
                 output_fd = os.open(
                     out_file,
                     os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                     0o600,
                 )
                 with os.fdopen(output_fd, "w") as trusted_output:
-                    trusted_output.write(child_output.read())
+                    trusted_output.write(output_text)
         except (OSError, UnicodeError) as exc:
             out_file.unlink(missing_ok=True)
             with log_file.open("a") as lf:

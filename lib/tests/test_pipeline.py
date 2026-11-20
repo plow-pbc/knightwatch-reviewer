@@ -611,6 +611,26 @@ class TestRunCodex(unittest.TestCase):
         self.assertFalse((agent_dir / "output.md").exists())
         self.assertIn("rejected unsafe output", (agent_dir / "log.txt").read_text())
 
+    @patch("pipeline.shutil.chown")
+    @patch("pipeline.subprocess.Popen")
+    def test_codex_child_oversized_sparse_output_is_rejected(self, mock_popen, mock_chown):
+        def oversized_output(argv, **kwargs):
+            with open(argv[argv.index("-o") + 1], "wb") as output:
+                output.truncate(pipeline.MAX_CODEX_OUTPUT_BYTES + 1)
+            return FakePopen(returncode=0)
+
+        mock_popen.side_effect = oversized_output
+        with patch.dict(os.environ, {
+            "CODEX_REVIEWER_USER": "codex-reviewer",
+            "CODEX_HOME": "/home/codex-reviewer/.codex",
+        }, clear=False):
+            agent_dir = self._agent_dir("intent")
+            rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(agent_dir))
+
+        self.assertEqual(rc, 3)
+        self.assertFalse((agent_dir / "output.md").exists())
+        self.assertIn("rejected unsafe output", (agent_dir / "log.txt").read_text())
+
     def test_codex_does_not_wait_for_an_inherited_stdin_pipe(self):
         """Codex must not wait for EOF on a worker's inherited open pipe."""
         fake_bin = Path(self.tmp.name) / "bin"
