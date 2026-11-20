@@ -2091,29 +2091,37 @@ class TestRunPipeline(unittest.TestCase):
                 self.assertFalse((self.run_dir / "_codex_quota.txt").exists())
 
     @patch("pipeline.subprocess.Popen")
-    def test_specialist_429_recovered_by_retry_keeps_the_angle(self, mock_popen):
-        """A specialist whose first call 429s and whose retry succeeds keeps its
-        angle: the review completes with nothing degraded and no pause."""
-        def inject_first_429(name, out_path, seen=set()):
-            if name == "shape" and name not in seen:
-                seen.add(name)
-                out_path.parent.mkdir(parents=True, exist_ok=True)
-                (out_path.parent / "err.txt").write_text(_codex_rate_limit_line())
-        mock_popen.side_effect = _make_codex_stub(
-            plan={
-                "intent": (0, "Inferred intent: stub.\n"),
-                "dead-code-search": (0, "dc\n"),
-                "shape": [(1, ""), (0, "### Probe 1\nreal shape finding\n")],
-                "aggregator": (0, "# Review\nVERDICT: APPROVE\n"),
-            },
-            before_write=inject_first_429,
-        )
-        rc = self._run()
-        self.assertEqual(rc, 0)
-        self.assertFalse((self.run_dir / "_wave_b_timeouts.txt").exists())
-        self.assertIn("real shape finding",
-                      (self.run_dir / "agents" / "shape" / "output.md").read_text())
-        self.assertFalse((self.run_dir / "_codex_rate_limit.txt").exists())
+    def test_specialist_bounce_recovered_by_retry_keeps_the_angle(self, mock_popen):
+        """A specialist whose first call bounces (429 or model at capacity) and
+        whose retry succeeds keeps its angle: the review completes with nothing
+        degraded and no pause."""
+        for label, terminal in (
+            ("capacity", _codex_capacity_with_usage_footer()),
+            ("429", _codex_rate_limit_line()),
+        ):
+            with self.subTest(bounce=label):
+                self.tearDown()
+                self.setUp()
+                def inject_first(name, out_path, seen=set(), terminal=terminal):
+                    if name == "shape" and name not in seen:
+                        seen.add(name)
+                        out_path.parent.mkdir(parents=True, exist_ok=True)
+                        (out_path.parent / "err.txt").write_text(terminal)
+                mock_popen.side_effect = _make_codex_stub(
+                    plan={
+                        "intent": (0, "Inferred intent: stub.\n"),
+                        "dead-code-search": (0, "dc\n"),
+                        "shape": [(1, ""), (0, "### Probe 1\nreal shape finding\n")],
+                        "aggregator": (0, "# Review\nVERDICT: APPROVE\n"),
+                    },
+                    before_write=inject_first,
+                )
+                rc = self._run()
+                self.assertEqual(rc, 0)
+                self.assertFalse((self.run_dir / "_wave_b_timeouts.txt").exists())
+                self.assertIn("real shape finding",
+                              (self.run_dir / "agents" / "shape" / "output.md").read_text())
+                self.assertFalse((self.run_dir / "_codex_rate_limit.txt").exists())
 
     @patch("pipeline.subprocess.Popen")
     def test_cyber_refusal_degrades_like_capacity_not_abort(self, mock_popen):
