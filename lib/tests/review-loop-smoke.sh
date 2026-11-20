@@ -33,7 +33,7 @@ make_sandbox() {
     # under $(pwd)/lib, so without this the decide call silently no-ops and the
     # throttle cases below would pass against an unimplemented gate.
     cp "$(dirname "$SRC")/lib/quota_throttle.py" "$d/lib/quota_throttle.py"
-    cp "$(dirname "$SRC")/lib/codex-isolation-probe.sh" "$d/lib/codex-isolation-probe.sh"
+    printf '#!/bin/bash\nexit 0\n' > "$d/lib/codex-isolation-probe.sh"
     chmod +x "$d/lib/codex-isolation-probe.sh"
     printf '#!/bin/bash\nexit 0\n' > "$d/bin/sleep"; chmod +x "$d/bin/sleep"  # noop: don't actually wait
     printf '#!/bin/bash\nexit 0\n' > "$d/bin/chown"; chmod +x "$d/bin/chown"
@@ -78,6 +78,19 @@ printf '#!/bin/bash\nexit 0\n' > "$d/review.sh"; chmod +x "$d/review.sh"
 if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" CONFIG_ENV_FILE="$d/config.env" ./review-loop.sh ) >/dev/null 2>&1; then
     fail "review-loop exited 0 when the dind daemon never came up (should fail loud)"
 fi
+rm -rf "$d"
+
+# 1a. The startup isolation probe is a hard gate: a failed credential-boundary
+# check must stop the loop before it can claim work.
+d=$(make_sandbox)
+printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"; chmod +x "$d/bin/docker"
+printf '#!/bin/bash\nexit 1\n' > "$d/lib/codex-isolation-probe.sh"
+printf '#!/bin/bash\ntouch called\nexit 0\n' > "$d/review.sh"; chmod +x "$d/review.sh"
+if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" \
+        CODEX_HOME="$d/codex" CONFIG_ENV_FILE="$d/config.env" ./review-loop.sh ) >/dev/null 2>&1; then
+    fail "review-loop exited 0 when the isolation probe failed"
+fi
+[ ! -e "$d/called" ] || fail "review-loop claimed work after the isolation probe failed"
 rm -rf "$d"
 
 # 1b. If the Codex OAuth home cannot be handed to the unprivileged reviewer,

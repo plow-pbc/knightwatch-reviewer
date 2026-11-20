@@ -445,19 +445,22 @@ EXPECTED_RESTARTS="${#PROD_TIMERS[@]}"
 # run for each legacy unit.
 LEGACY_UNITS=(pr-reviewer.timer pr-reviewer.service
               pr-reviewer-approve.timer pr-reviewer-approve.service
-              pr-reviewer-re-request.timer pr-reviewer-re-request.service)
+              pr-reviewer-re-request.timer pr-reviewer-re-request.service
+              pr-reviewer-ecr-login.timer pr-reviewer-ecr-login.service)
 echo "  scenario 4: retired host-reviewer + merged-poller units in SYSTEMD_DIR → disabled --now + removed, idempotent once gone..."
 OVERLAY_LEGACY="$TMPDIR/repo-overlay-legacy"
 make_install_overlay "$OVERLAY_LEGACY"
 for legacy in "${LEGACY_UNITS[@]}"; do
     printf '[Unit]\nDescription=stale %s left by a prior install\n' "$legacy" > "$SYSTEMD_DIR/$legacy"
 done
+ln -s "$OVERLAY_LEGACY/ecr-public-login.sh" "$INSTALL_DIR/ecr-public-login.sh"
 : > "$STUB_LOG"
 MOCK_TIMERS_ENABLED=1 run_install "$OVERLAY_LEGACY/install.sh" || { echo "FAIL scenario 4: install.sh exited non-zero"; cat "$STUB_LOG"; exit 1; }
 for legacy in "${LEGACY_UNITS[@]}"; do
     [ "$(count_stub "SYSTEMCTL disable --now $legacy")" = "1" ] || { echo "FAIL scenario 4: expected exactly one 'disable --now $legacy'"; cat "$STUB_LOG"; exit 1; }
     [ ! -f "$SYSTEMD_DIR/$legacy" ] || { echo "FAIL scenario 4: $legacy still in SYSTEMD_DIR after install (rm -f branch did not run)"; exit 1; }
 done
+[ ! -L "$INSTALL_DIR/ecr-public-login.sh" ] || { echo "FAIL scenario 4: retired ECR login script symlink still installed"; exit 1; }
 # Idempotent: a second run with the units already gone disables nothing (branch
 # is guarded by the -f existence check).
 : > "$STUB_LOG"
