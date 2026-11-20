@@ -60,12 +60,15 @@ valid "rendered compose is not a valid compose project"
 for token in "  dind-1:" "  reviewer-1:" "  dind-4:" "  reviewer-4:" \
              'WORKER_ID: "4"' 'network_mode: "service:dind-4"' "depends_on: [dind-4]" \
              "claims:/shared" "reviewer4-local:/local" "dind4-lib:/var/lib/docker" \
-             "./secrets/codex-account-d:/root/.codex" \
+             "./secrets/codex-account-d:/home/codex-reviewer/.codex" \
+             'CODEX_REVIEWER_USER: codex-reviewer' \
+             'CODEX_HOME: /home/codex-reviewer/.codex' \
              "./secrets/manifest:/shared/manifest:ro" \
              "./secrets/config.env:/root/.kwr/config.env:ro" \
              "./secrets/repo-env:/root/.kwr/repo-env:ro" \
              "./secrets/claude-standards:/root/.claude:ro" \
              '${HOME}/services/kwr-config:/root/.kwr-config:ro' \
+             '${HOME}/.pr-reviewer/docker-auth:/home/reviewer-test/.docker:ro' \
              "KWR_CONFIG_DIR: /root/.kwr-config" "REPO_ENV_DIR: /root/.kwr/repo-env" \
              "REPOS_CONF_FILE: /shared/manifest/repos.conf" \
              '${HOME}/.pr-reviewer/gh-rate-limited-until:/shared/gh-rate-limited-until' \

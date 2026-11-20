@@ -484,6 +484,44 @@ class TestRunCodex(unittest.TestCase):
         self.assertIn("agent=intent starting", (agent_dir / "log.txt").read_text())
         self.assertIn("agent=intent exit=0", (agent_dir / "log.txt").read_text())
 
+    @patch("pipeline.shutil.chown")
+    @patch("pipeline.subprocess.Popen")
+    def test_codex_child_drops_privilege_and_receives_no_token_env(self, mock_popen, mock_chown):
+        """PR-controlled model/tool execution gets only its OAuth home, never
+        the trusted worker's GitHub or other token-bearing environment."""
+        mock_popen.side_effect = _make_codex_stub(plan={"intent": (0, "### Probe 1\nstub\n")})
+        inherited = {
+            "CODEX_REVIEWER_USER": "codex-reviewer",
+            "CODEX_HOME": "/home/codex-reviewer/.codex",
+            "HOME": "/root",
+            "GH_TOKEN": "github-write-secret",
+            "GITHUB_TOKEN": "second-secret",
+            "SOME_API_TOKEN": "third-secret",
+        }
+
+        with patch.dict(os.environ, inherited, clear=False):
+            rc = pipeline.run_codex(
+                "intent", str(self.repo_dir), "PROMPT", str(self._agent_dir("intent"))
+            )
+
+        self.assertEqual(rc, 0)
+        kwargs = mock_popen.call_args.kwargs
+        self.assertEqual(kwargs["user"], "codex-reviewer")
+        self.assertEqual(kwargs["group"], "codex-reviewer")
+        self.assertEqual(kwargs["extra_groups"], [])
+        self.assertEqual(kwargs["umask"], 0o077)
+        self.assertEqual(kwargs["env"]["HOME"], "/home/codex-reviewer")
+        self.assertEqual(kwargs["env"]["CODEX_HOME"], "/home/codex-reviewer/.codex")
+        self.assertEqual(kwargs["env"]["GIT_CONFIG_KEY_0"], "safe.directory")
+        self.assertEqual(kwargs["env"]["GIT_CONFIG_VALUE_0"], "*")
+        self.assertFalse(
+            [name for name in kwargs["env"] if "token" in name.casefold()],
+            kwargs["env"],
+        )
+        mock_chown.assert_called_once_with(
+            self._agent_dir("intent"), user="codex-reviewer", group="codex-reviewer"
+        )
+
     def test_codex_does_not_wait_for_an_inherited_stdin_pipe(self):
         """Codex must not wait for EOF on a worker's inherited open pipe."""
         fake_bin = Path(self.tmp.name) / "bin"

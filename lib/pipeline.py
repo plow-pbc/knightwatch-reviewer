@@ -444,6 +444,34 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
     with log_file.open("a") as lf:
         lf.write(f"[{_ts()}] agent={name} starting\n")
 
+    codex_home = os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))
+    child_env = {
+        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        "HOME": str(Path(codex_home).parent),
+        "CODEX_HOME": codex_home,
+        # The trusted parent owns the pre-fetched checkout. Codex may inspect
+        # its Git metadata, but its UID still lacks filesystem write access.
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "safe.directory",
+        "GIT_CONFIG_VALUE_0": "*",
+    }
+    for key in ("LANG", "LC_ALL", "TZ"):
+        if key in os.environ:
+            child_env[key] = os.environ[key]
+    child_user = os.environ.get("CODEX_REVIEWER_USER")
+    privilege_kwargs = {}
+    if child_user:
+        # Codex writes output.md atomically in this directory. The trusted
+        # parent retains ownership of the staged prompt and opened log fds;
+        # only this per-agent output directory crosses the UID boundary.
+        shutil.chown(agent, user=child_user, group=child_user)
+        privilege_kwargs = {
+            "user": child_user,
+            "group": child_user,
+            "extra_groups": [],
+            "umask": 0o077,
+        }
+
     argv = [
         "codex", "exec",
         "-C", str(repo),
@@ -477,7 +505,9 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
                     stdin=subprocess.DEVNULL,
                     stdout=lf,
                     stderr=ef,
+                    env=child_env,
                     start_new_session=True,
+                    **privilege_kwargs,
                 )
             exit_code, kill_reason, retryable = _wait_with_watchdog(proc, log_file, err_file)
             # We retry at most once (attempt 1 → attempt 2); a retryable kill on

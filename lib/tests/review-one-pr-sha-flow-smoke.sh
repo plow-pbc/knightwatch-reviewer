@@ -1664,7 +1664,6 @@ fi
 # (c) Timings (Task 8): meta.json.timings + one `timing` log line.
 echo "  scenario 17: test clone isolation + overlap + timings..."
 RECORD17="$TMPDIR/record-17.txt"; : > "$RECORD17"
-export KWR_SMOKE_RECORD="$RECORD17"
 BARE17="$TMPDIR/github-side-17.git"; WORK17="$TMPDIR/working-17"
 git init -q --bare -b main "$BARE17"
 git clone -q "$BARE17" "$WORK17"
@@ -1672,12 +1671,13 @@ git clone -q "$BARE17" "$WORK17"
     cd "$WORK17"
     git config user.email t@t; git config user.name t; git config commit.gpgsign false
     echo "base" > README.md
+    printf '%s\n' "$RECORD17" > smoke-record-path
     echo "ANTHROPIC_API_KEY=" > .env.example
     # The recipe records: its cwd, whether the mirrored .env is in cwd, and
     # whether it leaked into the codex workdir (cwd minus the -test suffix).
     # It sleeps so the overlap assertion has something to overlap with.
-    printf 'test:\n    #!/usr/bin/env bash\n    sleep 3\n    r="$KWR_SMOKE_RECORD"\n    echo "test_cwd=$PWD" >> "$r"\n    [ -e .env ] && echo "env_in_test_clone=yes" >> "$r" || echo "env_in_test_clone=no" >> "$r"\n    [ -e "${PWD%%-test}/.env" ] && echo "env_in_workdir=yes" >> "$r" || echo "env_in_workdir=no" >> "$r"\n    echo "test_end=$(date +%%s.%%N)" >> "$r"\n    echo "SMOKE-TEST-OUTPUT-MARKER"\n' > justfile
-    git add README.md .env.example justfile
+    printf 'test:\n    #!/usr/bin/env bash\n    sleep 3\n    r=$(cat smoke-record-path)\n    echo "test_cwd=$PWD" >> "$r"\n    [ -e .env ] && echo "env_in_test_clone=yes" >> "$r" || echo "env_in_test_clone=no" >> "$r"\n    [ -e "${PWD%%-test}/.env" ] && echo "env_in_workdir=yes" >> "$r" || echo "env_in_workdir=no" >> "$r"\n    echo "test_end=$(date +%%s.%%N)" >> "$r"\n    echo "SMOKE-TEST-OUTPUT-MARKER"\n' > justfile
+    git add README.md .env.example justfile smoke-record-path
     git commit -qm "init: justfile + .env.example"
     git push -q origin main
     git checkout -qb feat/test
@@ -1707,7 +1707,7 @@ argv = sys.argv
 out = Path(argv[argv.index('-o') + 1]); agent = out.parent.name
 repo = Path(argv[argv.index('-C') + 1])
 staged = (repo / '.codex-scratch' / 'test-results.md')
-with open(os.environ['KWR_SMOKE_RECORD'], 'a') as rec:
+with open((repo / 'smoke-record-path').read_text().strip(), 'a') as rec:
     rec.write(f"agent={agent} start={time.time():.3f} saw_test_results={staged.exists()}\n")
     if agent == 'tests' and staged.exists():
         rec.write(f"tests_saw_marker={'SMOKE-TEST-OUTPUT-MARKER' in staged.read_text()}\n")
@@ -1732,7 +1732,6 @@ chmod +x "$HOME/.local/bin/codex"
 GH_STUB_PERMISSION_ROLE=write run_worker_in_state "$STATE17" \
     "test-org/probe-repo" "1" "$PR_SHA17" "feat/test" "Test PR" "false" "someuser" || true
 rm -f "$HOME/.local/bin/codex"
-unset KWR_SMOKE_RECORD
 RUN17=$(ls -d "$STATE17"/runs/test-org_probe-repo__1__* 2>/dev/null | head -1)
 LOG17="$RUN17/run.log"
 # (a) isolation

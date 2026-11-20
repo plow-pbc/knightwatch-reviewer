@@ -206,7 +206,7 @@ def _attention(m, resolved_sources):
         c = f"{PROJECT}-reviewer-{a['account']}-1"
         if a["status"] == "offline":
             out.append((f"Reviewer {a['account']}", "Login required",
-                        _ssh(f"docker exec -it {c} codex login --device-auth", tty=True)))
+                        _ssh(f"docker exec -it {c} runuser -u codex-reviewer -- env HOME=/home/codex-reviewer CODEX_HOME=/home/codex-reviewer/.codex codex login --device-auth", tty=True)))
         elif a["status"] == "not running":
             out.append((f"Reviewer {a['account']}", f"No heartbeat · {_dur(a['tick_age'])}",
                         _ssh(f"docker logs --tail 100 {c}")))

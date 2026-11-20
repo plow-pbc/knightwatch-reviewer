@@ -36,6 +36,8 @@ cd "$(dirname "$0")"
 # CONFIG_ENV_FILE, so nothing else would dereference it and `set -u` would not
 # catch a config.env value winning.
 _KWR_STATE_DIR="${STATE_DIR:?review-loop.sh requires STATE_DIR from the compose environment}"
+_KWR_CODEX_HOME="${CODEX_HOME:?review-loop.sh requires CODEX_HOME from compose}"
+_KWR_CODEX_REVIEWER_USER="${CODEX_REVIEWER_USER:-codex-reviewer}"
 # The POSTCONDITION is the guard, not a file-shape test: whatever went wrong —
 # absent, a directory, empty, a syntax error above the export, a renamed or
 # unexported variable — the question is whether this shell ended up with the one
@@ -48,6 +50,7 @@ _KWR_STATE_DIR="${STATE_DIR:?review-loop.sh requires STATE_DIR from the compose 
 source "${CONFIG_ENV_FILE:?review-loop.sh requires CONFIG_ENV_FILE from the compose environment}"
 export GH_TOKEN="${GH_TOKEN:?review-loop.sh: no GH_TOKEN after sourcing $CONFIG_ENV_FILE — the quota probe would run unauthenticated and report nothing}"
 export REVIEWER_LIB_DIR="$(pwd)/lib" PROMPTS_DIR="$(pwd)/prompts" STATE_DIR="$_KWR_STATE_DIR"
+export CODEX_HOME="$_KWR_CODEX_HOME" CODEX_REVIEWER_USER="$_KWR_CODEX_REVIEWER_USER"
 # Same reason as GH_TOKEN above: quota_throttle.py runs as a separate process, so
 # a bare `KWR_THROTTLE_PCT=0` in config.env would never reach it and an operator's
 # explicit disable would silently keep throttling at the default. Exported by NAME
@@ -55,7 +58,8 @@ export REVIEWER_LIB_DIR="$(pwd)/lib" PROMPTS_DIR="$(pwd)/prompts" STATE_DIR="$_K
 # keeps quota_throttle.py the single source of the defaults.
 export KWR_THROTTLE_PCT KWR_THROTTLE_MIN_ELAPSED_H
 export KWR_THROTTLE_WEEKEND_FACTOR KWR_THROTTLE_RESUME_PCT KWR_THROTTLE_TIMEZONE
-unset _KWR_STATE_DIR
+unset _KWR_STATE_DIR _KWR_CODEX_HOME _KWR_CODEX_REVIEWER_USER
+
 # Shared logger (timestamp + [w<WORKER_ID>] tag). LOG_FILE is unset here —
 # review.sh sets it later — so log() falls back to stdout-only, which is what
 # the container stream wants anyway.
@@ -69,9 +73,25 @@ POLL_SECS="${POLL_SECS:-30}"
 # cuts the GraphQL burn. New PRs are discovered within one window.
 export ENUMERATE_SECS="${ENUMERATE_SECS:-60}"
 # Run PR-controlled `just test` as this unprivileged user (created in the image)
-# so a hostile test recipe can't read /root/.codex or the reviewer's tokens —
+# so a hostile test recipe can't read Codex OAuth or the reviewer's tokens —
 # see run_just_test in lib/run-dir.sh.
 export REVIEWER_TEST_USER="${REVIEWER_TEST_USER:-reviewer-test}"
+
+# The account bind arrives with host/container ownership from the previous
+# image. Normalize it before any child starts so only the dedicated PR-reading
+# identity can use Codex OAuth; its private home remains the sole traversable
+# credential path for that UID.
+chown -R "$CODEX_REVIEWER_USER:$CODEX_REVIEWER_USER" "$CODEX_HOME" \
+    && chmod 700 "/home/$CODEX_REVIEWER_USER" "$CODEX_HOME" \
+    || { echo "[review-loop] FATAL: cannot isolate $CODEX_HOME for $CODEX_REVIEWER_USER" >&2; exit 1; }
+
+# Prove the actual OS boundary after the trusted token is loaded: the child gets
+# a fresh allowlisted environment and its own UID/home, so root-only GitHub,
+# repo and test-registry credentials stay unavailable even under prompt injection.
+runuser -u "$CODEX_REVIEWER_USER" -- \
+    env -i PATH="$PATH" HOME="/home/$CODEX_REVIEWER_USER" CODEX_HOME="$CODEX_HOME" \
+    "$REVIEWER_LIB_DIR/codex-isolation-probe.sh" \
+    || exit 1
 
 # Block until the dind daemon answers, so the first `just test` doesn't
 # race the sidecar's startup. Fail loud if it never comes up.
@@ -119,9 +139,7 @@ while true; do
     # cap, so without this it would fall through and spin-abort every PR.
     if auth_offline_active; then
         # Container recipe, not the host-side CODEX_HOME one line 64 prints:
-        # by now codex-as-root has rewritten config.toml 600 root-owned in the
-        # bind-mounted account dir, so host-side login dies on EACCES.
-        log "[review-loop] codex auth invalid — worker OFFLINE until re-login (docker compose exec reviewer-${WORKER_ID} codex login --device-auth); skipping tick"
+        log "[review-loop] codex auth invalid — worker OFFLINE until re-login (docker compose exec reviewer-${WORKER_ID} runuser -u $CODEX_REVIEWER_USER -- env HOME=/home/$CODEX_REVIEWER_USER CODEX_HOME=$CODEX_HOME codex login --device-auth); skipping tick"
         sleep "$POLL_SECS"; continue
     fi
     rm -f "$(auth_offline_file)"  # absent or re-logged (newer auth.json); resume claiming

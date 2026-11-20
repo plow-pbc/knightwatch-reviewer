@@ -374,7 +374,7 @@ run_just_test() {
     # Containerized deployment sets REVIEWER_TEST_USER to an unprivileged
     # account. PR-controlled `just test` is the most dangerous code the reviewer
     # runs, so drop to that user with an allowlisted env: it cannot read the
-    # root-owned /root/.codex login (mode 600) or the reviewer's tokens (kept
+    # codex-reviewer's private OAuth home or the reviewer's tokens (kept
     # out of the env passed in). Trusted-author live creds arrive as FILES in
     # repo_dir (the .env mirror in review-one-pr.sh), which the test user reads
     # from disk after the chown — never from the environment. The redirect to
@@ -427,7 +427,7 @@ run_just_test() {
         timeout -k "$test_kill_after" "$test_timeout" \
             runuser -u "$REVIEWER_TEST_USER" -- \
             env -i PATH="$PATH" HOME="/home/$REVIEWER_TEST_USER" DOCKER_HOST="$DOCKER_HOST" \
-                DOCKER_CONFIG=/etc/kwr/docker-auth \
+                DOCKER_CONFIG=/home/reviewer-test/.docker \
                 XDG_CACHE_HOME="$scenario_shared" \
                 UV_CACHE_DIR="/home/$REVIEWER_TEST_USER/.cache/uv" \
                 PIP_CACHE_DIR="/home/$REVIEWER_TEST_USER/.cache/pip" \

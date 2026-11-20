@@ -33,7 +33,12 @@ make_sandbox() {
     # under $(pwd)/lib, so without this the decide call silently no-ops and the
     # throttle cases below would pass against an unimplemented gate.
     cp "$(dirname "$SRC")/lib/quota_throttle.py" "$d/lib/quota_throttle.py"
+    cp "$(dirname "$SRC")/lib/codex-isolation-probe.sh" "$d/lib/codex-isolation-probe.sh"
+    chmod +x "$d/lib/codex-isolation-probe.sh"
     printf '#!/bin/bash\nexit 0\n' > "$d/bin/sleep"; chmod +x "$d/bin/sleep"  # noop: don't actually wait
+    printf '#!/bin/bash\nexit 0\n' > "$d/bin/chown"; chmod +x "$d/bin/chown"
+    printf '#!/bin/bash\nexit 0\n' > "$d/bin/chmod"; chmod +x "$d/bin/chmod"
+    printf '#!/bin/bash\nshift 3\nexec "$@"\n' > "$d/bin/runuser"; chmod +x "$d/bin/runuser"
     # Provisioned codex home. Every case passes CODEX_HOME="$d/codex" so the
     # startup auth guard reads the sandbox, never the operator's real ~/.codex
     # (which would make these cases pass or fail on the host's login state).
@@ -75,6 +80,20 @@ if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR
 fi
 rm -rf "$d"
 
+# 1b. If the Codex OAuth home cannot be handed to the unprivileged reviewer,
+# fail before claiming work. Continuing would silently put Codex back behind a
+# root-only auth file and tempt an operator to restore root execution.
+d=$(make_sandbox)
+printf '#!/bin/bash\nexit 1\n' > "$d/bin/chown"; chmod +x "$d/bin/chown"
+printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"; chmod +x "$d/bin/docker"
+printf '#!/bin/bash\ntouch called\nexit 1\n' > "$d/review.sh"; chmod +x "$d/review.sh"
+if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" \
+        CODEX_HOME="$d/codex" CONFIG_ENV_FILE="$d/config.env" ./review-loop.sh ) >/dev/null 2>&1; then
+    fail "review-loop exited 0 when Codex-home ownership setup failed"
+fi
+[ ! -e "$d/called" ] || fail "review-loop claimed work after Codex-home ownership setup failed"
+rm -rf "$d"
+
 # 2+3. dind ready → worker env is exported; a non-zero review.sh tick exits non-zero.
 d=$(make_sandbox)
 printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"; chmod +x "$d/bin/docker"    # `docker info` succeeds
@@ -83,6 +102,8 @@ cat > "$d/review.sh" <<'STUB'
 { echo "REVIEWER_LIB_DIR=$REVIEWER_LIB_DIR"
   echo "PROMPTS_DIR=$PROMPTS_DIR"
   echo "STATE_DIR=$STATE_DIR"
+  echo "CODEX_HOME=$CODEX_HOME"
+  echo "CODEX_REVIEWER_USER=$CODEX_REVIEWER_USER"
   echo "GH_TOKEN=$GH_TOKEN"; } > env.seen
 exit 1   # fatal tick: review-loop must exit (not loop) — also breaks the test loop
 STUB
@@ -102,6 +123,8 @@ cat >> "$d/config.env" <<'CFG'
 export REVIEWER_LIB_DIR=/bogus/from/config
 export PROMPTS_DIR=/bogus/from/config
 export STATE_DIR=/bogus/from/config
+export CODEX_HOME=/bogus/from/config
+export CODEX_REVIEWER_USER=bogus-user
 # Ends in a valid conditional that evaluates FALSE, which is the shape an
 # operator's own config.env has (`[ -d …plow-kid ] && KID_EXTRA_MOUNTS=…` on a
 # host without that path). `source`'s status is the status of the LAST command in
@@ -119,6 +142,8 @@ grep -q "REVIEWER_LIB_DIR=$d/lib" "$d/env.seen"     || fail "REVIEWER_LIB_DIR no
 grep -q "PROMPTS_DIR=$d/prompts" "$d/env.seen"      || fail "PROMPTS_DIR not forced to \$repo/prompts (caller env leaked through)"
 grep -q "GH_TOKEN=ghp_fake_for_smoke" "$d/env.seen"  || fail "GH_TOKEN did not reach the worker's ENVIRONMENT — a bare assignment in config.env leaves the probe, the git credential helper and review.sh all unauthenticated"
 grep -q "STATE_DIR=$d/state" "$d/env.seen"          || fail "STATE_DIR not re-pinned after config.env — gh_pause_file() then points at a private path and the loop goes blind to the fleet-wide pause"
+grep -q "CODEX_HOME=$d/codex" "$d/env.seen"         || fail "CODEX_HOME not re-pinned after config.env — Codex could be redirected into a privileged credential path"
+grep -q "CODEX_REVIEWER_USER=codex-reviewer" "$d/env.seen" || fail "CODEX_REVIEWER_USER not re-pinned after config.env — the UID drop could be redirected"
 rm -rf "$d"
 
 # 2b. A config.env that is readable, regular and valid but carries no GH_TOKEN →
