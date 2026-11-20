@@ -329,6 +329,20 @@ class TestTokens(unittest.TestCase):
                 self.assertEqual(tok["cur"]["unpriced"], 505)
                 self.assertEqual(tok["prev"]["input"], 7)
 
+    def test_fleet_tokens_merge_private_homes_by_day_and_model(self):
+        day = time.strftime("%Y-%m-%d", time.gmtime(NOW))
+        replies = [json.dumps({day: {"gpt-5.6-sol": [10, 4, 2, 1]}}),
+                   json.dumps({day: {"gpt-5.6-sol": [20, 6, 3, 2], "gpt-x": [1, 0, 1, 1]}})]
+        with unittest.mock.patch.object(status_page, "_reviewer_containers", return_value=["reviewer-1", "reviewer-2"]), \
+             unittest.mock.patch.object(status_page, "_run", side_effect=replies) as run:
+            days = status_page.source_fleet_tokens(NOW)
+
+        self.assertEqual(days[day]["gpt-5.6-sol"], [30, 10, 5, 3])
+        self.assertEqual(days[day]["gpt-x"], [1, 0, 1, 1])
+        for call in run.call_args_list:
+            self.assertEqual(call.args[:2], ("docker", "exec"))
+            self.assertIn("/home/codex-reviewer/.codex", call.args[-1])
+
 
 class TestRepoHealth(unittest.TestCase):
     def test_owner_qualified_clone_wins_when_basename_belongs_to_another_repo(self):
