@@ -424,7 +424,8 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
     to log.attempt1.txt and any half-written output.md is unlinked first.
     Non-retryable kills (hard-cap, late-stale, worker-budget-exhausted)
     and two-in-a-row hangs return 124 so the run's degrade/abort path fires.
-    A codex 429 (terminal stderr line) also gets that one retry, after
+    A codex 429 or model-at-capacity bounce (terminal stderr line) also gets
+    that one retry, after
     RATE_LIMIT_RETRY_SEC."""
     repo = Path(repo_dir)
     agent = Path(agent_dir)
@@ -485,8 +486,10 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
             # "(retrying)" suffix and the break on will_retry, not raw retryable —
             # otherwise the final review-costing kill is mislabeled "(retrying)"
             # and the `grep -c` rate this surfacing exists for double-counts it.
+            terminal_err = _terminal_err_line(err_file)
             rate_limited = exit_code != 0 and bool(
-                _CODEX_RATE_LIMIT_RE.search(_terminal_err_line(err_file))
+                _CODEX_RATE_LIMIT_RE.search(terminal_err)
+                or _CODEX_CAPACITY_RE.search(terminal_err)
             )
             will_retry = (retryable or rate_limited) and attempt == 1
             if kill_reason is not None:
@@ -505,7 +508,7 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
             if not will_retry:
                 break
             if rate_limited:
-                log(f"{name}: codex 429 — retrying once in {RATE_LIMIT_RETRY_SEC}s")
+                log(f"{name}: codex 429/capacity — retrying once in {RATE_LIMIT_RETRY_SEC}s")
                 time.sleep(RATE_LIMIT_RETRY_SEC)
 
     with log_file.open("a") as lf:
