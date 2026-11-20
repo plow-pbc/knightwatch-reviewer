@@ -1379,6 +1379,12 @@ if [ ! -s "$STATE10/repos/test-org_probe-repo/.env.test-live" ]; then
     echo "FAIL: scenario 10 — .env.test-live not present in canonical clone after seed"
     exit 1
 fi
+MODE10=$(python3 -c 'import os,stat,sys; print(oct(stat.S_IMODE(os.stat(sys.argv[1]).st_mode))[2:])' \
+    "$STATE10/repos/test-org_probe-repo/.env.test-live")
+[ "$MODE10" = 600 ] || {
+    echo "FAIL: scenario 10 — canonical repo-env credential mode is $MODE10, expected 600"
+    exit 1
+}
 
 # Negative case: a seed that can't be written must FAIL LOUD (the probe-3 fix) —
 # abort before the mirror, never run the test with missing/stale creds. Induce a

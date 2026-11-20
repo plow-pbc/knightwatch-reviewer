@@ -621,7 +621,8 @@ if [ -d "$repo_env_src" ]; then
         # mkdir/cp failure would count as seeded and let the test run with missing
         # or stale live creds (an opaque downstream ${VAR:?} / scenario failure).
         if ! mkdir -p "$CANONICAL_DIR/$(dirname "$env_rel")" \
-           || ! cp "$env_file" "$CANONICAL_DIR/$env_rel"; then
+           || ! cp "$env_file" "$CANONICAL_DIR/$env_rel" \
+           || ! chmod 600 "$CANONICAL_DIR/$env_rel"; then
             log "$PR_ID: FATAL — repo-env seed of '$env_rel' failed; aborting before the test runs with missing/stale creds"
             exit 1
         fi
@@ -735,6 +736,10 @@ if ! git clone --shared "$CANONICAL_DIR" "$TEST_DIR" --no-single-branch --quiet;
     rm -rf "$REPO_DIR"
     exit 1
 fi
+chmod 700 "$TEST_DIR" || {
+    log "$PR_ID: failed to make test clone private — aborting before credential mirror"
+    exit 1
+}
 
 # Release the canonical lock now; the rest of the worker operates in
 # $REPO_DIR and doesn't touch canonical object state.

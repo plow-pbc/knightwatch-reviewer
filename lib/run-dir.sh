@@ -382,7 +382,9 @@ run_just_test() {
     # log stays root-owned and readable afterwards. The host/systemd path leaves
     # REVIEWER_TEST_USER unset and runs as the operator, unchanged.
     if [ -n "${REVIEWER_TEST_USER:-}" ]; then
-        chown -R "$REVIEWER_TEST_USER" "$repo_dir"
+        chown -R "$REVIEWER_TEST_USER" "$repo_dir" \
+            && chmod 700 "$repo_dir" \
+            || { log "$PR_ID: FATAL — cannot isolate credential-bearing test clone"; exit 1; }
         # Nested-dind shared dir. A reviewed repo's test stack (e.g. plow's
         # test-scenarios) may write a file the test runner shares with a stack
         # container via a host bind mount — but that mount is resolved by the

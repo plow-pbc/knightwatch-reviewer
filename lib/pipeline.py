@@ -435,7 +435,9 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
     # touching any parent-managed path so an upgrade cannot inherit a symlink
     # planted for a privileged write.
     os.chown(agent, os.geteuid(), os.getegid())
-    agent.chmod(0o700)
+    # The child needs search permission to reach its private output directory,
+    # but no write permission on this parent or its trusted artifacts.
+    agent.chmod(0o711)
     prompt_file = agent / "prompt.txt"
     out_file = agent / "output.md"
     child_output_dir = agent / ".codex-output"

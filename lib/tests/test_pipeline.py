@@ -473,6 +473,15 @@ class TestRunCodex(unittest.TestCase):
         resolves to this test's agent."""
         return Path(self.tmp.name) / "agents" / name
 
+    def _run_isolated_codex(self, agent_dir):
+        with patch.dict(os.environ, {
+            "CODEX_REVIEWER_USER": "codex-reviewer",
+            "CODEX_HOME": "/home/codex-reviewer/.codex",
+        }, clear=False):
+            return pipeline.run_codex(
+                "intent", str(self.repo_dir), "PROMPT", str(agent_dir)
+            )
+
     @patch("pipeline.subprocess.Popen")
     def test_success_path_writes_artifacts(self, mock_popen):
         agent_dir = self._agent_dir("intent")
@@ -523,6 +532,9 @@ class TestRunCodex(unittest.TestCase):
             user="codex-reviewer",
             group="codex-reviewer",
         )
+        self.assertEqual(
+            stat.S_IMODE(self._agent_dir("intent").stat().st_mode), 0o711
+        )
 
     @patch("pipeline.shutil.chown")
     @patch("pipeline.subprocess.Popen")
@@ -536,12 +548,8 @@ class TestRunCodex(unittest.TestCase):
             return FakePopen(returncode=0)
 
         mock_popen.side_effect = symlink_output
-        with patch.dict(os.environ, {
-            "CODEX_REVIEWER_USER": "codex-reviewer",
-            "CODEX_HOME": "/home/codex-reviewer/.codex",
-        }, clear=False):
-            agent_dir = self._agent_dir("intent")
-            rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(agent_dir))
+        agent_dir = self._agent_dir("intent")
+        rc = self._run_isolated_codex(agent_dir)
 
         self.assertEqual(rc, 3)
         self.assertEqual(secret.read_text(), "do-not-read")
@@ -556,13 +564,9 @@ class TestRunCodex(unittest.TestCase):
             return FakePopen(returncode=0)
 
         mock_popen.side_effect = fifo_output
-        with patch.dict(os.environ, {
-            "CODEX_REVIEWER_USER": "codex-reviewer",
-            "CODEX_HOME": "/home/codex-reviewer/.codex",
-        }, clear=False):
-            agent_dir = self._agent_dir("intent")
-            started = time.monotonic()
-            rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(agent_dir))
+        agent_dir = self._agent_dir("intent")
+        started = time.monotonic()
+        rc = self._run_isolated_codex(agent_dir)
 
         self.assertEqual(rc, 3)
         self.assertLess(time.monotonic() - started, 1)
@@ -581,11 +585,7 @@ class TestRunCodex(unittest.TestCase):
         secret.write_text("do-not-overwrite")
         (agent_dir / "output.md").symlink_to(secret)
 
-        with patch.dict(os.environ, {
-            "CODEX_REVIEWER_USER": "codex-reviewer",
-            "CODEX_HOME": "/home/codex-reviewer/.codex",
-        }, clear=False):
-            rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(agent_dir))
+        rc = self._run_isolated_codex(agent_dir)
 
         self.assertEqual(rc, 0)
         self.assertEqual(secret.read_text(), "do-not-overwrite")
@@ -600,12 +600,8 @@ class TestRunCodex(unittest.TestCase):
             return FakePopen(returncode=0)
 
         mock_popen.side_effect = invalid_output
-        with patch.dict(os.environ, {
-            "CODEX_REVIEWER_USER": "codex-reviewer",
-            "CODEX_HOME": "/home/codex-reviewer/.codex",
-        }, clear=False):
-            agent_dir = self._agent_dir("intent")
-            rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(agent_dir))
+        agent_dir = self._agent_dir("intent")
+        rc = self._run_isolated_codex(agent_dir)
 
         self.assertEqual(rc, 3)
         self.assertFalse((agent_dir / "output.md").exists())
@@ -620,12 +616,8 @@ class TestRunCodex(unittest.TestCase):
             return FakePopen(returncode=0)
 
         mock_popen.side_effect = oversized_output
-        with patch.dict(os.environ, {
-            "CODEX_REVIEWER_USER": "codex-reviewer",
-            "CODEX_HOME": "/home/codex-reviewer/.codex",
-        }, clear=False):
-            agent_dir = self._agent_dir("intent")
-            rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(agent_dir))
+        agent_dir = self._agent_dir("intent")
+        rc = self._run_isolated_codex(agent_dir)
 
         self.assertEqual(rc, 3)
         self.assertFalse((agent_dir / "output.md").exists())
