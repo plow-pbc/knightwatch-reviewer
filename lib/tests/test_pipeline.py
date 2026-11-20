@@ -548,6 +548,50 @@ class TestRunCodex(unittest.TestCase):
         self.assertFalse((agent_dir / "output.md").exists())
         self.assertIn("rejected unsafe output", (agent_dir / "log.txt").read_text())
 
+    @patch("pipeline.shutil.chown")
+    @patch("pipeline.subprocess.Popen")
+    def test_codex_child_fifo_output_does_not_block_parent(self, mock_popen, mock_chown):
+        def fifo_output(argv, **kwargs):
+            os.mkfifo(argv[argv.index("-o") + 1])
+            return FakePopen(returncode=0)
+
+        mock_popen.side_effect = fifo_output
+        with patch.dict(os.environ, {
+            "CODEX_REVIEWER_USER": "codex-reviewer",
+            "CODEX_HOME": "/home/codex-reviewer/.codex",
+        }, clear=False):
+            agent_dir = self._agent_dir("intent")
+            started = time.monotonic()
+            rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(agent_dir))
+
+        self.assertEqual(rc, 3)
+        self.assertLess(time.monotonic() - started, 1)
+        self.assertFalse((agent_dir / "output.md").exists())
+        self.assertIn("rejected unsafe output", (agent_dir / "log.txt").read_text())
+
+    @patch("pipeline.shutil.chown")
+    @patch("pipeline.subprocess.Popen")
+    def test_legacy_child_owned_agent_symlink_is_reclaimed(self, mock_popen, mock_chown):
+        mock_popen.side_effect = _make_codex_stub(
+            plan={"intent": (0, "safe review output\n")}
+        )
+        agent_dir = self._agent_dir("intent")
+        agent_dir.mkdir(parents=True)
+        secret = Path(self.tmp.name) / "root-secret"
+        secret.write_text("do-not-overwrite")
+        (agent_dir / "output.md").symlink_to(secret)
+
+        with patch.dict(os.environ, {
+            "CODEX_REVIEWER_USER": "codex-reviewer",
+            "CODEX_HOME": "/home/codex-reviewer/.codex",
+        }, clear=False):
+            rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(agent_dir))
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(secret.read_text(), "do-not-overwrite")
+        self.assertEqual((agent_dir / "output.md").read_text(), "safe review output\n")
+        self.assertFalse((agent_dir / "output.md").is_symlink())
+
     def test_codex_does_not_wait_for_an_inherited_stdin_pipe(self):
         """Codex must not wait for EOF on a worker's inherited open pipe."""
         fake_bin = Path(self.tmp.name) / "bin"

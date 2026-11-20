@@ -430,6 +430,11 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
     repo = Path(repo_dir)
     agent = Path(agent_dir)
     agent.mkdir(parents=True, exist_ok=True)
+    # A previous version handed this directory to the child. Reclaim it before
+    # touching any parent-managed path so an upgrade cannot inherit a symlink
+    # planted for a privileged write.
+    os.chown(agent, os.geteuid(), os.getegid())
+    agent.chmod(0o700)
     prompt_file = agent / "prompt.txt"
     out_file = agent / "output.md"
     child_output_dir = agent / ".codex-output"
@@ -442,6 +447,20 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
     # could spoof a public quota placeholder.
     log_file = agent / "log.txt"
     err_file = agent / "err.txt"
+
+    for artifact in (
+        prompt_file, out_file, log_file, err_file,
+        agent / "log.attempt1.txt", agent / "err.attempt1.txt",
+    ):
+        if artifact.is_dir() and not artifact.is_symlink():
+            shutil.rmtree(artifact)
+        else:
+            artifact.unlink(missing_ok=True)
+    if child_output_dir.exists() or child_output_dir.is_symlink():
+        if child_output_dir.is_dir() and not child_output_dir.is_symlink():
+            shutil.rmtree(child_output_dir)
+        else:
+            child_output_dir.unlink()
 
     prompt_file.write_text(prompt)
     with log_file.open("a") as lf:
@@ -547,14 +566,23 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
 
     if exit_code == 0 and child_user:
         try:
-            fd = os.open(child_out_file, os.O_RDONLY | os.O_NOFOLLOW)
+            fd = os.open(
+                child_out_file,
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+            )
             with os.fdopen(fd) as child_output:
                 metadata = os.fstat(child_output.fileno())
                 if (not stat.S_ISREG(metadata.st_mode)
                         or metadata.st_uid != child_output_uid
                         or metadata.st_nlink != 1):
                     raise OSError("Codex output is not a singly-linked regular file owned by its UID")
-                out_file.write_text(child_output.read())
+                output_fd = os.open(
+                    out_file,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                    0o600,
+                )
+                with os.fdopen(output_fd, "w") as trusted_output:
+                    trusted_output.write(child_output.read())
         except OSError as exc:
             with log_file.open("a") as lf:
                 lf.write(f"[{_ts()}] agent={name} rejected unsafe output: {exc}\n")
