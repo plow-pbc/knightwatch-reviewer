@@ -116,9 +116,8 @@ RUN npm install -g "@openai/codex@${CODEX_CLI_VERSION}"
 RUN git config --global credential."https://github.com".helper '!gh auth git-credential'
 
 # Separate unprivileged identities for PR-controlled tests and PR-reading Codex.
-# The split is load-bearing: reviewer-test legitimately receives registry auth,
-# while codex-reviewer receives only its own Codex OAuth home. Both homes are
-# private so neither identity can traverse into the other's credentials.
+# The split is load-bearing: neither identity can traverse into the other's
+# private home or credentials.
 RUN useradd --create-home --uid 10001 reviewer-test \
  && useradd --create-home --uid 10002 codex-reviewer \
  && chmod 700 /home/reviewer-test /home/codex-reviewer

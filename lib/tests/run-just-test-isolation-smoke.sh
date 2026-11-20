@@ -67,6 +67,7 @@ cat > "$d/bin/just" <<'STUB'
 #!/bin/bash
 echo "GH_TOKEN_VISIBLE=${GH_TOKEN:-<unset>}"
 echo "DOCKER_HOST_VISIBLE=${DOCKER_HOST:-<unset>}"
+echo "DOCKER_CONFIG_VISIBLE=${DOCKER_CONFIG:-<unset>}"
 echo "XDG_CACHE_HOME_VISIBLE=${XDG_CACHE_HOME:-<unset>}"
 echo "UV_CACHE_DIR_VISIBLE=${UV_CACHE_DIR:-<unset>}"
 echo "PIP_CACHE_DIR_VISIBLE=${PIP_CACHE_DIR:-<unset>}"
@@ -93,6 +94,7 @@ grep -qE "volume prune .*(-a|--all)" "$d/docker.calls" \
     || fail "named per-PR compose volumes never pruned — -v reclaims only anonymous ones, so db-data leaks GBs per review"
 grep -q "GH_TOKEN_VISIBLE=<unset>" "$d/log"            || fail "GH_TOKEN leaked into the test command env despite the env -i scrub"
 grep -q "DOCKER_HOST_VISIBLE=tcp://127.0.0.1:2375" "$d/log" || fail "DOCKER_HOST not preserved for the dind daemon"
+grep -q "DOCKER_CONFIG_VISIBLE=<unset>" "$d/log" || fail "reviewer-test received registry credentials through DOCKER_CONFIG"
 grep -q "XDG_CACHE_HOME_VISIBLE=$d/sshared" "$d/log" || fail "XDG_CACHE_HOME not steered to the bridge dir (nested-dind scenario token bridge missing)"
 # uv/pip package caches must be redirected OFF the dind-shared volume (onto the test
 # user's HOME) so no dind-side process can race them and no stale root ownership can

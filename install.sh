@@ -165,14 +165,6 @@ for _shared in gh-rate-limited-until gh-call-tally; do
   [ -f "$_shared_path" ] || install -m 0644 /dev/null "$_shared_path"
   chmod 0644 "$_shared_path"
 done
-# The registry-credential dir ecr-public-login.sh refreshes and every reviewer
-# binds read-only. Created here, before the timers are enabled below: the
-# service's ReadWritePaths fails namespace setup on an absent dir, and a
-# docker-auto-created one is root-owned, so the host timer could never write it
-# and every pull would silently stay anonymous. 0755 so the test user can
-# traverse the bind.
-mkdir -p "$INSTALL_DIR/docker-auth"
-chmod 0755 "$INSTALL_DIR/docker-auth"
 for script in "${SCRIPTS[@]}"; do
   src="$REPO_DIR/$script"
   [[ -f "$src" ]] || fail "missing repo script: $src"
@@ -315,9 +307,12 @@ ok "systemd units: ${#units[@]} present, $CHANGED updated"
 #   - pr-reviewer-approve.* / pr-reviewer-re-request.*: the separate /srosro-approve
 #     (60s) + re-request (120s) pollers, merged into pr-reviewer-poll.* (every 2min,
 #     one shared enumerate) to cut the shared-budget fetch rate.
+#   - pr-reviewer-ecr-login.*: registry credentials are no longer exposed to
+#     PR-controlled tests; public images are pulled anonymously.
 for legacy in pr-reviewer.timer pr-reviewer.service \
               pr-reviewer-approve.timer pr-reviewer-approve.service \
-              pr-reviewer-re-request.timer pr-reviewer-re-request.service; do
+              pr-reviewer-re-request.timer pr-reviewer-re-request.service \
+              pr-reviewer-ecr-login.timer pr-reviewer-ecr-login.service; do
   if [[ -f "$SYSTEMD_DIR/$legacy" ]]; then
     info "removing retired legacy unit $legacy (sudo)"
     sudo systemctl disable --now "$legacy" 2>/dev/null || true
@@ -325,6 +320,7 @@ for legacy in pr-reviewer.timer pr-reviewer.service \
     CHANGED=$((CHANGED + 1))
   fi
 done
+rm -f "$INSTALL_DIR/ecr-public-login.sh"
 
 # --- 3. daemon-reload if any unit changed -----------------------------------
 if [[ "$CHANGED" -gt 0 ]]; then
