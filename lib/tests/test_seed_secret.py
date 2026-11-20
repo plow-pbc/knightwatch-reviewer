@@ -46,33 +46,16 @@ class TestSeedSecret(unittest.TestCase):
 
     def test_updates_existing_regular_file(self):
         destination = self.root / "credential"
-        destination.write_text("old")
-        destination.chmod(0o644)
+        for mode in (0o644, 0o000, 0o004):
+            with self.subTest(mode=oct(mode)):
+                destination.unlink(missing_ok=True)
+                destination.write_text("old")
+                destination.chmod(mode)
 
-        seed_secret(str(self.source), str(self.root), "credential")
+                seed_secret(str(self.source), str(self.root), "credential")
 
-        self.assertEqual(destination.read_text(), "TOKEN=secret\n")
-        self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o600)
-
-    def test_updates_existing_mode_zero_file(self):
-        destination = self.root / "credential"
-        destination.write_text("old")
-        destination.chmod(0o000)
-
-        seed_secret(str(self.source), str(self.root), "credential")
-
-        self.assertEqual(destination.read_text(), "TOKEN=secret\n")
-        self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o600)
-
-    def test_updates_unreadable_group_readable_file(self):
-        destination = self.root / "credential"
-        destination.write_text("old")
-        destination.chmod(0o004)
-
-        seed_secret(str(self.source), str(self.root), "credential")
-
-        self.assertEqual(destination.read_text(), "TOKEN=secret\n")
-        self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o600)
+                self.assertEqual(destination.read_text(), "TOKEN=secret\n")
+                self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o600)
 
     def test_replaces_fifo_without_blocking(self):
         destination = self.root / "credential"
