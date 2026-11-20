@@ -115,15 +115,21 @@ RUN npm install -g "@openai/codex@${CODEX_CLI_VERSION}"
 # can't reuse this helper to read private code.
 RUN git config --global credential."https://github.com".helper '!gh auth git-credential'
 
-# Unprivileged user that PR-controlled `just test` runs as (REVIEWER_TEST_USER).
-# It owns its own $HOME but cannot read root-owned /root/.codex or the reviewer
-# tokens — see run_just_test in lib/run-dir.sh. `just test` reaches the dind
-# daemon over DOCKER_HOST (tcp), so no docker-group / socket access is needed.
-RUN useradd --create-home --uid 10001 reviewer-test
+# Separate unprivileged identities for PR-controlled tests and PR-reading Codex.
+# The split is load-bearing: reviewer-test legitimately receives registry auth,
+# while codex-reviewer receives only its own Codex OAuth home. Both homes are
+# private so neither identity can traverse into the other's credentials.
+RUN useradd --create-home --uid 10001 reviewer-test \
+ && useradd --create-home --uid 10002 codex-reviewer \
+ && chmod 700 /home/reviewer-test /home/codex-reviewer
 
 WORKDIR /app
 COPY . /app
-RUN chmod +x review.sh review-loop.sh lib/*.sh
+RUN chmod +x review.sh review-loop.sh lib/*.sh \
+ && runuser -u codex-reviewer -- \
+      env -i PATH=/usr/local/bin:/usr/bin:/bin \
+      HOME=/home/codex-reviewer CODEX_HOME=/home/codex-reviewer/.codex \
+      /app/lib/codex-isolation-probe.sh
 
 # State dirs (STATE_DIR / REPOS_DIR / WORKDIRS_DIR / LOCAL_STATE_DIR) and
 # DOCKER_HOST are provided at runtime by docker-compose.yml.

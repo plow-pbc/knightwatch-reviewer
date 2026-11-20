@@ -232,6 +232,8 @@ x-reviewer-env: &reviewer-env
   WORKDIRS_DIR: /local/workdirs   # per-container
   LOCAL_STATE_DIR: /local/state   # canonical clone/fetch lock + ephemeral KID query copies + the author-trust enumeration cache (per-container for dispatch isolation — every acting gate re-checks live, so this is not an authorization boundary; quota-pause + fatal-auth offline live in shared STATE_DIR/pool/<WORKER_ID>/, just-test semaphore in shared STATE_DIR)
   DOCKER_HOST: tcp://127.0.0.1:2375
+  CODEX_REVIEWER_USER: codex-reviewer
+  CODEX_HOME: /home/codex-reviewer/.codex
   CONFIG_ENV_FILE: /root/.kwr/config.env  # root-only path → reviewer-test (just test) can't read the token file
   REPOS_CONF_FILE: /shared/manifest/repos.conf  # read out of a DIRECTORY mount, not a file mount: docker pins a file bind-mount to the source inode, so an editor's write-temp-then-rename would leave every container serving the pre-edit manifest with no error. config.env stays a file mount above — it carries GH_TOKEN and must stay on the root-only path, off world-readable /shared.
   KWR_CONFIG_DIR: /root/.kwr-config       # mount point of the host-pulled kwr-config cache (read-only; see the per-reviewer volume). KWR_CONFIG_REPO lives in config.env — unset = no-op.
@@ -243,8 +245,9 @@ x-reviewer-env: &reviewer-env
 #     config and refreshes its OAuth token inside its home — a read-only
 #     mount makes every codex call die with "Error loading configuration:
 #     Read-only file system". The creds stay protected by /root's 0700 perms
-#     (the unprivileged test user can't reach /root at all), so dropping :ro
-#     doesn't widen test-user access.
+#     It is mounted only inside codex-reviewer's private home. The trusted root
+#     parent can inspect auth/quota state, while PR-reading Codex cannot traverse
+#     /root to reach GitHub, repo, or operator credentials.
 #   - The kwr-config mount's ${HOME} is left UNEXPANDED (unquoted heredoc,
 #     literal `\${HOME}`): it resolves at `compose up` time, giving one
 #     source of truth with the rendered systemd unit's path instead of
@@ -277,7 +280,7 @@ EOF
       - claims:/shared
       - reviewer$n-local:/local
       - scenario-shared$n:/scenario-shared
-      - $SECRETS_REF/$acct:/root/.codex          # writable: codex refreshes its OAuth token in-home
+      - $SECRETS_REF/$acct:/home/codex-reviewer/.codex  # writable: only codex-reviewer receives this OAuth home
       - $SECRETS_REF/manifest:/shared/manifest:ro
       - $GH_PAUSE_REF:/shared/gh-rate-limited-until   # the ONE pause both halves write; a FILE bind, so the inode is pinned (lib/state-io.sh)
       - $GH_TALLY_REF:/shared/gh-call-tally           # the ONE call tally both halves append to; a FILE bind, inode pinned. UNLIKE the pause above: lossy telemetry, appended unlocked and truncated in place (lib/state-io.sh)
@@ -285,7 +288,7 @@ EOF
       - $SECRETS_REF/repo-env:/root/.kwr/repo-env:ro
       - $SECRETS_REF/claude-standards:/root/.claude:ro
       - \${HOME}/services/kwr-config:/root/.kwr-config:ro
-      - \${HOME}/.pr-reviewer/docker-auth:/etc/kwr/docker-auth:ro   # DOCKER_CONFIG for just test; a DIR bind so ecr-public-login.sh's rename lands
+      - \${HOME}/.pr-reviewer/docker-auth:/home/reviewer-test/.docker:ro  # private reviewer-test home keeps registry auth outside Codex's UID
 EOF
     if [ -n "$KID_ROOT" ]; then
         printf '      - %s:/kwr:ro\n' "$KID_ROOT" >>"$TMP"

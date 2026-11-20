@@ -81,6 +81,7 @@ export REVIEWER_TEST_USER=reviewer-test
 mkdir -p "$d/sshared/plow-scenario-shared"; touch "$d/sshared/plow-scenario-shared/stale"
 : > "$d/docker.calls"   # phase-scope the call ledger: greps below see only this run
 run_just_test /dev/null "$d/repo" "$d/log" 30s 5s
+[ "$(stat -c %a "$d/repo")" = 700 ] || fail "credential-bearing test clone is traversable by other reviewer identities"
 [ ! -e "$d/sshared/plow-scenario-shared" ] || fail "stale bridge entries survived the per-run reset (issue #172 class)"
 [ "$(stat -c %a "$d/sshared")" = "1777" ]  || fail "bridge root not left mode 1777 after the reset"
 grep -q "docker rm -f" "$d/docker.calls" && fail "reap ran docker rm on a clean dind (no orphans — empty-args rm would abort every review)" || true

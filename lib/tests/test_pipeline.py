@@ -197,7 +197,7 @@ def _make_codex_stub(plan=None, default=(0, "### Probe 1\nstub\n"),
     plan = plan or {}
     def side_effect(argv, **kwargs):
         out_path = Path(argv[argv.index("-o") + 1])
-        agent_name = out_path.parent.name
+        agent_name = out_path.parent.parent.name if out_path.parent.name == ".codex-output" else out_path.parent.name
         if before_write is not None:
             before_write(agent_name, out_path)
         if agent_name in plan:
@@ -473,6 +473,15 @@ class TestRunCodex(unittest.TestCase):
         resolves to this test's agent."""
         return Path(self.tmp.name) / "agents" / name
 
+    def _run_isolated_codex(self, agent_dir):
+        with patch.dict(os.environ, {
+            "CODEX_REVIEWER_USER": "codex-reviewer",
+            "CODEX_HOME": "/home/codex-reviewer/.codex",
+        }, clear=False):
+            return pipeline.run_codex(
+                "intent", str(self.repo_dir), "PROMPT", str(agent_dir)
+            )
+
     @patch("pipeline.subprocess.Popen")
     def test_success_path_writes_artifacts(self, mock_popen):
         agent_dir = self._agent_dir("intent")
@@ -483,6 +492,136 @@ class TestRunCodex(unittest.TestCase):
         self.assertTrue((agent_dir / "output.md").stat().st_size > 0)
         self.assertIn("agent=intent starting", (agent_dir / "log.txt").read_text())
         self.assertIn("agent=intent exit=0", (agent_dir / "log.txt").read_text())
+
+    @patch("pipeline.shutil.chown")
+    @patch("pipeline.subprocess.Popen")
+    def test_codex_child_drops_privilege_and_receives_no_token_env(self, mock_popen, mock_chown):
+        """PR-controlled model/tool execution gets only its OAuth home, never
+        the trusted worker's GitHub or other token-bearing environment."""
+        mock_popen.side_effect = _make_codex_stub(plan={"intent": (0, "### Probe 1\nstub\n")})
+        inherited = {
+            "CODEX_REVIEWER_USER": "codex-reviewer",
+            "CODEX_HOME": "/home/codex-reviewer/.codex",
+            "HOME": "/root",
+            "GH_TOKEN": "github-write-secret",
+            "GITHUB_TOKEN": "second-secret",
+            "SOME_API_TOKEN": "third-secret",
+        }
+
+        with patch.dict(os.environ, inherited, clear=False):
+            rc = pipeline.run_codex(
+                "intent", str(self.repo_dir), "PROMPT", str(self._agent_dir("intent"))
+            )
+
+        self.assertEqual(rc, 0)
+        kwargs = mock_popen.call_args.kwargs
+        self.assertEqual(kwargs["user"], "codex-reviewer")
+        self.assertEqual(kwargs["group"], "codex-reviewer")
+        self.assertEqual(kwargs["extra_groups"], [])
+        self.assertEqual(kwargs["umask"], 0o077)
+        self.assertEqual(kwargs["env"]["HOME"], "/home/codex-reviewer")
+        self.assertEqual(kwargs["env"]["CODEX_HOME"], "/home/codex-reviewer/.codex")
+        self.assertEqual(kwargs["env"]["GIT_CONFIG_KEY_0"], "safe.directory")
+        self.assertEqual(kwargs["env"]["GIT_CONFIG_VALUE_0"], "*")
+        self.assertFalse(
+            [name for name in kwargs["env"] if "token" in name.casefold()],
+            kwargs["env"],
+        )
+        mock_chown.assert_called_once_with(
+            self._agent_dir("intent") / ".codex-output",
+            user="codex-reviewer",
+            group="codex-reviewer",
+        )
+        self.assertEqual(
+            stat.S_IMODE(self._agent_dir("intent").stat().st_mode), 0o711
+        )
+
+    @patch("pipeline.shutil.chown")
+    @patch("pipeline.subprocess.Popen")
+    def test_codex_child_cannot_substitute_symlink_for_output(self, mock_popen, mock_chown):
+        secret = Path(self.tmp.name) / "root-secret"
+        secret.write_text("do-not-read")
+
+        def symlink_output(argv, **kwargs):
+            output = Path(argv[argv.index("-o") + 1])
+            output.symlink_to(secret)
+            return FakePopen(returncode=0)
+
+        mock_popen.side_effect = symlink_output
+        agent_dir = self._agent_dir("intent")
+        rc = self._run_isolated_codex(agent_dir)
+
+        self.assertEqual(rc, 3)
+        self.assertEqual(secret.read_text(), "do-not-read")
+        self.assertFalse((agent_dir / "output.md").exists())
+        self.assertIn("rejected unsafe output", (agent_dir / "log.txt").read_text())
+
+    @patch("pipeline.shutil.chown")
+    @patch("pipeline.subprocess.Popen")
+    def test_codex_child_fifo_output_does_not_block_parent(self, mock_popen, mock_chown):
+        def fifo_output(argv, **kwargs):
+            os.mkfifo(argv[argv.index("-o") + 1])
+            return FakePopen(returncode=0)
+
+        mock_popen.side_effect = fifo_output
+        agent_dir = self._agent_dir("intent")
+        started = time.monotonic()
+        rc = self._run_isolated_codex(agent_dir)
+
+        self.assertEqual(rc, 3)
+        self.assertLess(time.monotonic() - started, 1)
+        self.assertFalse((agent_dir / "output.md").exists())
+        self.assertIn("rejected unsafe output", (agent_dir / "log.txt").read_text())
+
+    @patch("pipeline.shutil.chown")
+    @patch("pipeline.subprocess.Popen")
+    def test_legacy_child_owned_agent_symlink_is_reclaimed(self, mock_popen, mock_chown):
+        mock_popen.side_effect = _make_codex_stub(
+            plan={"intent": (0, "safe review output\n")}
+        )
+        agent_dir = self._agent_dir("intent")
+        agent_dir.mkdir(parents=True)
+        secret = Path(self.tmp.name) / "root-secret"
+        secret.write_text("do-not-overwrite")
+        (agent_dir / "output.md").symlink_to(secret)
+
+        rc = self._run_isolated_codex(agent_dir)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(secret.read_text(), "do-not-overwrite")
+        self.assertEqual((agent_dir / "output.md").read_text(), "safe review output\n")
+        self.assertFalse((agent_dir / "output.md").is_symlink())
+
+    @patch("pipeline.shutil.chown")
+    @patch("pipeline.subprocess.Popen")
+    def test_codex_child_invalid_utf8_is_rejected(self, mock_popen, mock_chown):
+        def invalid_output(argv, **kwargs):
+            Path(argv[argv.index("-o") + 1]).write_bytes(b"\xff\xfe")
+            return FakePopen(returncode=0)
+
+        mock_popen.side_effect = invalid_output
+        agent_dir = self._agent_dir("intent")
+        rc = self._run_isolated_codex(agent_dir)
+
+        self.assertEqual(rc, 3)
+        self.assertFalse((agent_dir / "output.md").exists())
+        self.assertIn("rejected unsafe output", (agent_dir / "log.txt").read_text())
+
+    @patch("pipeline.shutil.chown")
+    @patch("pipeline.subprocess.Popen")
+    def test_codex_child_oversized_sparse_output_is_rejected(self, mock_popen, mock_chown):
+        def oversized_output(argv, **kwargs):
+            with open(argv[argv.index("-o") + 1], "wb") as output:
+                output.truncate(pipeline.MAX_CODEX_OUTPUT_BYTES + 1)
+            return FakePopen(returncode=0)
+
+        mock_popen.side_effect = oversized_output
+        agent_dir = self._agent_dir("intent")
+        rc = self._run_isolated_codex(agent_dir)
+
+        self.assertEqual(rc, 3)
+        self.assertFalse((agent_dir / "output.md").exists())
+        self.assertIn("rejected unsafe output", (agent_dir / "log.txt").read_text())
 
     def test_codex_does_not_wait_for_an_inherited_stdin_pipe(self):
         """Codex must not wait for EOF on a worker's inherited open pipe."""

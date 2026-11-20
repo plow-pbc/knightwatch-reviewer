@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -28,6 +29,7 @@ else:
 # regardless of size (the single synthesis step is where a premium budget
 # pays off); see its call site in run_pipeline.
 SMALL_PR_LOC = 500
+MAX_CODEX_OUTPUT_BYTES = 1024 * 1024
 
 
 def _reasoning_effort(diff_loc: int) -> str:
@@ -430,8 +432,17 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
     repo = Path(repo_dir)
     agent = Path(agent_dir)
     agent.mkdir(parents=True, exist_ok=True)
+    # A previous version handed this directory to the child. Reclaim it before
+    # touching any parent-managed path so an upgrade cannot inherit a symlink
+    # planted for a privileged write.
+    os.chown(agent, os.geteuid(), os.getegid())
+    # The child needs search permission to reach its private output directory,
+    # but no write permission on this parent or its trusted artifacts.
+    agent.chmod(0o711)
     prompt_file = agent / "prompt.txt"
     out_file = agent / "output.md"
+    child_output_dir = agent / ".codex-output"
+    child_out_file = child_output_dir / "output.md"
     # log.txt = codex stdout (mostly model reasoning summary, ie PR-influenced
     # content). err.txt = codex stderr (the CLI's own error messages,
     # including the usage-limit notice we parse for the quota sentinel).
@@ -441,9 +452,54 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
     log_file = agent / "log.txt"
     err_file = agent / "err.txt"
 
+    for artifact in (
+        prompt_file, out_file, log_file, err_file,
+        agent / "log.attempt1.txt", agent / "err.attempt1.txt",
+    ):
+        if artifact.is_dir() and not artifact.is_symlink():
+            shutil.rmtree(artifact)
+        else:
+            artifact.unlink(missing_ok=True)
+    if child_output_dir.exists() or child_output_dir.is_symlink():
+        if child_output_dir.is_dir() and not child_output_dir.is_symlink():
+            shutil.rmtree(child_output_dir)
+        else:
+            child_output_dir.unlink()
+
     prompt_file.write_text(prompt)
     with log_file.open("a") as lf:
         lf.write(f"[{_ts()}] agent={name} starting\n")
+
+    codex_home = os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))
+    child_env = {
+        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        "HOME": str(Path(codex_home).parent),
+        "CODEX_HOME": codex_home,
+        # The trusted parent owns the pre-fetched checkout. Codex may inspect
+        # its Git metadata, but its UID still lacks filesystem write access.
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "safe.directory",
+        "GIT_CONFIG_VALUE_0": "*",
+    }
+    for key in ("LANG", "LC_ALL", "TZ"):
+        if key in os.environ:
+            child_env[key] = os.environ[key]
+    child_user = os.environ.get("CODEX_REVIEWER_USER")
+    privilege_kwargs = {}
+    if child_user:
+        # Keep the agent directory and every parent-managed artifact owned by
+        # the trusted process. Codex gets one output-only directory; after it
+        # exits, the parent copies the result through a no-symlink fd.
+        child_output_dir.mkdir(mode=0o700, exist_ok=True)
+        child_output_dir.chmod(0o700)
+        shutil.chown(child_output_dir, user=child_user, group=child_user)
+        child_output_uid = child_output_dir.stat().st_uid
+        privilege_kwargs = {
+            "user": child_user,
+            "group": child_user,
+            "extra_groups": [],
+            "umask": 0o077,
+        }
 
     argv = [
         "codex", "exec",
@@ -451,7 +507,7 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
         "--dangerously-bypass-approvals-and-sandbox",
         "-c", f"model={model_for(name)}",
         "-c", f"model_reasoning_effort={effort}",
-        "-o", str(out_file),
+        "-o", str(child_out_file if child_user else out_file),
         prompt,
     ]
     # Popen + start_new_session puts codex (a node process that spawns tool
@@ -470,6 +526,7 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
                 if err_file.exists():
                     err_file.rename(agent / "err.attempt1.txt")
                 out_file.unlink(missing_ok=True)
+                child_out_file.unlink(missing_ok=True)
                 with log_file.open("a") as lf:
                     lf.write(f"[{_ts()}] agent={name} attempt 2 (see log.attempt1.txt)\n")
             with log_file.open("a") as lf, err_file.open("a") as ef:
@@ -478,7 +535,9 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
                     stdin=subprocess.DEVNULL,
                     stdout=lf,
                     stderr=ef,
+                    env=child_env,
                     start_new_session=True,
+                    **privilege_kwargs,
                 )
             exit_code, kill_reason, retryable = _wait_with_watchdog(proc, log_file, err_file)
             # We retry at most once (attempt 1 → attempt 2); a retryable kill on
@@ -510,6 +569,40 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
             if rate_limited:
                 log(f"{name}: codex 429/capacity — retrying once in {RATE_LIMIT_RETRY_SEC}s")
                 time.sleep(RATE_LIMIT_RETRY_SEC)
+
+    if exit_code == 0 and child_user:
+        try:
+            fd = os.open(
+                child_out_file,
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+            )
+            with os.fdopen(fd, "rb") as child_output:
+                metadata = os.fstat(child_output.fileno())
+                if (not stat.S_ISREG(metadata.st_mode)
+                        or metadata.st_uid != child_output_uid
+                        or metadata.st_nlink != 1
+                        or metadata.st_size > MAX_CODEX_OUTPUT_BYTES):
+                    raise OSError("Codex output failed type, ownership, link-count, or size validation")
+                output_bytes = child_output.read(MAX_CODEX_OUTPUT_BYTES + 1)
+                if len(output_bytes) > MAX_CODEX_OUTPUT_BYTES:
+                    raise OSError("Codex output exceeded the size limit while being read")
+                output_text = output_bytes.decode("utf-8")
+                output_fd = os.open(
+                    out_file,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                    0o600,
+                )
+                with os.fdopen(output_fd, "w") as trusted_output:
+                    trusted_output.write(output_text)
+        except (OSError, UnicodeError) as exc:
+            out_file.unlink(missing_ok=True)
+            with log_file.open("a") as lf:
+                lf.write(f"[{_ts()}] agent={name} rejected unsafe output: {exc}\n")
+            exit_code = 3
+        finally:
+            shutil.rmtree(child_output_dir)
+    elif child_user:
+        shutil.rmtree(child_output_dir)
 
     with log_file.open("a") as lf:
         lf.write(f"[{_ts()}] agent={name} exit={exit_code}\n")

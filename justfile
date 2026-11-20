@@ -48,7 +48,7 @@ test:
     # STATE_DIR/REPOS_DIR/WORKDIRS_DIR (each smoke exports its own sandboxed
     # value). Per-command overrides in a scenario are unaffected; this only
     # clears the environment.
-    unset REPOS_CONF_FILE CONFIG_ENV_FILE REPO_ENV_DIR KWR_CONFIG_DIR LOCAL_STATE_DIR  # x-reviewer-env
+    unset REPOS_CONF_FILE CONFIG_ENV_FILE REPO_ENV_DIR KWR_CONFIG_REPO KWR_CONFIG_DIR LOCAL_STATE_DIR  # x-reviewer-env
     unset KWR_CLONE_ROOT   # lib/render-compose.sh, emitted only when KID_ROOT is set
     unset LOG_FILE         # lib/review-one-pr.sh
 

@@ -374,7 +374,7 @@ run_just_test() {
     # Containerized deployment sets REVIEWER_TEST_USER to an unprivileged
     # account. PR-controlled `just test` is the most dangerous code the reviewer
     # runs, so drop to that user with an allowlisted env: it cannot read the
-    # root-owned /root/.codex login (mode 600) or the reviewer's tokens (kept
+    # codex-reviewer's private OAuth home or the reviewer's tokens (kept
     # out of the env passed in). Trusted-author live creds arrive as FILES in
     # repo_dir (the .env mirror in review-one-pr.sh), which the test user reads
     # from disk after the chown — never from the environment. The redirect to
@@ -382,7 +382,9 @@ run_just_test() {
     # log stays root-owned and readable afterwards. The host/systemd path leaves
     # REVIEWER_TEST_USER unset and runs as the operator, unchanged.
     if [ -n "${REVIEWER_TEST_USER:-}" ]; then
-        chown -R "$REVIEWER_TEST_USER" "$repo_dir"
+        chown -R "$REVIEWER_TEST_USER" "$repo_dir" \
+            && chmod 700 "$repo_dir" \
+            || { log "$PR_ID: FATAL — cannot isolate credential-bearing test clone"; exit 1; }
         # Nested-dind shared dir. A reviewed repo's test stack (e.g. plow's
         # test-scenarios) may write a file the test runner shares with a stack
         # container via a host bind mount — but that mount is resolved by the
@@ -427,7 +429,7 @@ run_just_test() {
         timeout -k "$test_kill_after" "$test_timeout" \
             runuser -u "$REVIEWER_TEST_USER" -- \
             env -i PATH="$PATH" HOME="/home/$REVIEWER_TEST_USER" DOCKER_HOST="$DOCKER_HOST" \
-                DOCKER_CONFIG=/etc/kwr/docker-auth \
+                DOCKER_CONFIG=/home/reviewer-test/.docker \
                 XDG_CACHE_HOME="$scenario_shared" \
                 UV_CACHE_DIR="/home/$REVIEWER_TEST_USER/.cache/uv" \
                 PIP_CACHE_DIR="/home/$REVIEWER_TEST_USER/.cache/pip" \

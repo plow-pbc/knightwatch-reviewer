@@ -206,7 +206,7 @@ def _attention(m, resolved_sources):
         c = f"{PROJECT}-reviewer-{a['account']}-1"
         if a["status"] == "offline":
             out.append((f"Reviewer {a['account']}", "Login required",
-                        _ssh(f"docker exec -it {c} codex login --device-auth", tty=True)))
+                        _ssh(f"docker exec -it {c} runuser -u codex-reviewer -- env HOME=/home/codex-reviewer CODEX_HOME=/home/codex-reviewer/.codex codex login --device-auth", tty=True)))
         elif a["status"] == "not running":
             out.append((f"Reviewer {a['account']}", f"No heartbeat · {_dur(a['tick_age'])}",
                         _ssh(f"docker logs --tail 100 {c}")))
@@ -283,8 +283,7 @@ def _run(*cmd, **kw):
 
 def gather_snapshot():
     """The fleet's /shared snapshot, collected inside a running reviewer."""
-    names = sorted(n for n in _run("docker", "ps", "--filter", f"label=com.docker.compose.project={PROJECT}",
-                                   "--format", "{{.Names}}").split() if n.startswith(f"{PROJECT}-reviewer-"))
+    names = _reviewer_containers()
     if not names:
         raise RuntimeError("no running reviewer container")
     helper = _run("bash", "-c", '. "$1"; declare -f source_path_searchable',
@@ -347,10 +346,7 @@ def _rollout_usage(path):
 
 
 def source_tokens(codex_root, cache_path, now):
-    """{day: {model: [input, cached, output, sessions]}} over every account's codex rollouts.
-
-    Days older than two are settled (a review is capped at 90m), so they come
-    from cache_path; only the last few day dirs are rescanned each build."""
+    """{day: {model: [input, cached, output, sessions]}} beneath an account root or CODEX_HOME."""
     if not Path(codex_root).is_dir():
         raise FileNotFoundError(f"codex root {codex_root}")
     try:
@@ -360,7 +356,9 @@ def source_tokens(codex_root, cache_path, now):
     settled = (datetime.fromtimestamp(now, timezone.utc).date() - timedelta(days=2)).isoformat()
     days = {d: v for d, v in days.items() if d < settled}
     cached = set(days)
-    for daydir in Path(codex_root).glob("codex-account-*/sessions/*/*/*"):
+    root = Path(codex_root)
+    daydirs = list(root.glob("codex-account-*/sessions/*/*/*")) + list(root.glob("sessions/*/*/*"))
+    for daydir in daydirs:
         day = "-".join(daydir.parts[-3:])
         if day in cached:
             continue
@@ -374,6 +372,28 @@ def source_tokens(codex_root, cache_path, now):
                 row[i] += u.get(k, 0)
             row[3] += 1
     _write(cache_path, json.dumps({d: v for d, v in days.items() if d < settled}))
+    return days
+
+
+def _reviewer_containers():
+    return sorted(n for n in _run("docker", "ps", "--filter", f"label=com.docker.compose.project={PROJECT}",
+                                  "--format", "{{.Names}}").split() if n.startswith(f"{PROJECT}-reviewer-"))
+
+
+def source_fleet_tokens(now):
+    """Token days read as root inside each reviewer; OAuth homes stay private on the host."""
+    days = {}
+    if not (names := _reviewer_containers()):
+        raise RuntimeError("no running reviewer container")
+    code = ("import json,sys;from pathlib import Path;sys.path.insert(0,'/app/lib');import status_page;"
+            f"print(json.dumps(status_page.source_tokens('/home/codex-reviewer/.codex',"
+            f"Path('/tmp/kwr-status-token-days.json'),{now!r})))")
+    for name in names:
+        for day, models in json.loads(_run("docker", "exec", name, "python3", "-c", code)).items():
+            for model, values in models.items():
+                row = days.setdefault(day, {}).setdefault(model, [0, 0, 0, 0])
+                for i, value in enumerate(values):
+                    row[i] += value
     return days
 
 
@@ -440,7 +460,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out", type=Path, default=Path.home() / "pages/knightwatch")
     ap.add_argument("--clone-root", default=str(Path.home() / "services/kwr-repos"))
-    ap.add_argument("--codex-root", default=str(Path.home() / "services/knightwatch-reviewer/docker/secrets"))
+    ap.add_argument("--codex-root", help="locally readable account root (tests/manual use; production reads inside reviewers)")
     ap.add_argument("--token-cache", type=Path, default=Path.home() / ".cache/knightwatch-token-days.json")
     ap.add_argument("--bakeoff-db", default=str(Path.home() / ".pr-reviewer/bakeoff.db"))
     args = ap.parse_args(argv)
@@ -459,7 +479,8 @@ def main(argv=None):
     if snap:
         src["snapshot"] = snap
     for name, fn in (("bakeoff", lambda: source_bakeoff(args.bakeoff_db)), ("gh", source_gh),
-                     ("tokens", lambda: source_tokens(args.codex_root, args.token_cache, now))):
+                     ("tokens", lambda: source_tokens(args.codex_root, args.token_cache, now)
+                      if args.codex_root else source_fleet_tokens(now))):
         val = attempt(name, fn)
         if val is not None:
             src[name] = val
