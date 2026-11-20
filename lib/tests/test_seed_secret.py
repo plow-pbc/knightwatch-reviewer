@@ -54,6 +54,23 @@ class TestSeedSecret(unittest.TestCase):
         self.assertEqual(destination.read_text(), "TOKEN=secret\n")
         self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o600)
 
+    def test_updates_existing_mode_zero_file(self):
+        destination = self.root / "credential"
+        destination.write_text("old")
+        destination.chmod(0o000)
+
+        seed_secret(str(self.source), str(self.root), "credential")
+
+        self.assertEqual(destination.read_text(), "TOKEN=secret\n")
+        self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o600)
+
+    def test_rejects_fifo_without_blocking(self):
+        destination = self.root / "credential"
+        os.mkfifo(destination)
+
+        with self.assertRaises(OSError):
+            seed_secret(str(self.source), str(self.root), "credential")
+
     def test_rejects_parent_traversal(self):
         with self.assertRaises(ValueError):
             seed_secret(str(self.source), str(self.root), "../credential")

@@ -2,6 +2,7 @@
 """Atomically seed one secret below a trusted directory without symlink traversal."""
 from __future__ import annotations
 
+import errno
 import os
 import secrets
 import stat
@@ -33,24 +34,31 @@ def seed_secret(source: str, root: str, relative: str) -> None:
 
         destination = parts[-1]
         try:
-            existing = os.stat(destination, dir_fd=directory_fd, follow_symlinks=False)
+            existing_fd = os.open(
+                destination,
+                os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
+                dir_fd=directory_fd,
+            )
         except FileNotFoundError:
-            existing = None
-        if existing is not None:
-            if stat.S_ISLNK(existing.st_mode):
+            pass
+        except PermissionError:
+            existing = os.stat(destination, dir_fd=directory_fd, follow_symlinks=False)
+            if not stat.S_ISREG(existing.st_mode) or stat.S_IMODE(existing.st_mode) & 0o077:
+                raise
+            # A mode-000/owner-only regular file is already private. The atomic
+            # replacement below does not need to open or mutate it first.
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
                 os.unlink(destination, dir_fd=directory_fd)
-            elif stat.S_ISREG(existing.st_mode):
-                existing_fd = os.open(
-                    destination, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd
-                )
-                try:
-                    if not stat.S_ISREG(os.fstat(existing_fd).st_mode):
-                        raise OSError(f"refusing non-file secret destination: {relative}")
-                    os.fchmod(existing_fd, 0o600)
-                finally:
-                    os.close(existing_fd)
             else:
-                raise OSError(f"refusing non-file secret destination: {relative}")
+                raise
+        else:
+            try:
+                if not stat.S_ISREG(os.fstat(existing_fd).st_mode):
+                    raise OSError(f"refusing non-file secret destination: {relative}")
+                os.fchmod(existing_fd, 0o600)
+            finally:
+                os.close(existing_fd)
 
         temporary = f".kwr-seed-{secrets.token_hex(8)}"
         temporary_fd = -1
