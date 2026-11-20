@@ -612,49 +612,18 @@ fi
 # so untrusted authors never receive them. Absent dir = clean no-op (most repos
 # need no live creds). Runs after the KNOWN_SHA skip so a deduped review doesn't
 # seed pointlessly.
-secure_repo_env_parent() {
-    local current="$1" relative_parent="$2" component next
-    local -a components
-    IFS='/' read -r -a components <<< "$relative_parent"
-    for component in "${components[@]}"; do
-        case "$component" in
-            ""|.) continue ;;
-            ..) return 1 ;;
-        esac
-        next="$current/$component"
-        [ ! -L "$next" ] || return 1
-        if [ -e "$next" ]; then
-            [ -d "$next" ] || return 1
-        else
-            mkdir "$next" || return 1
-        fi
-        current="$next"
-    done
-    printf '%s\n' "$current"
-}
-
 repo_env_src="${REPO_ENV_DIR:-/root/.kwr/repo-env}/$REPO_SLUG"
 if [ -d "$repo_env_src" ]; then
     repo_env_seeded=0
     while IFS= read -r -d '' env_file; do
         env_rel="${env_file#"$repo_env_src"/}"
-        env_parent=$(secure_repo_env_parent "$CANONICAL_DIR" "$(dirname "$env_rel")") || {
-            log "$PR_ID: FATAL — repo-env seed of '$env_rel' failed (symlink or invalid parent); aborting before the test runs with missing/stale creds"
-            exit 1
-        }
-        env_dst="$env_parent/$(basename "$env_rel")"
-        env_tmp="${env_dst}.kwr-seed.$$"
         # Fail loud: review-one-pr.sh runs without `set -e`, so an unchecked
         # copy failure would count as seeded and let the test run with missing
-        # or stale live creds. A private same-directory temp keeps new contents
-        # unreadable throughout and makes the replacement atomic.
-        if ! { [ ! -L "$env_dst" ] || rm -f "$env_dst"; } \
-           || ! { [ ! -e "$env_dst" ] || { [ -f "$env_dst" ] && chmod 600 "$env_dst"; }; } \
-           || ! rm -f "$env_tmp" \
-           || ! (umask 077 && cp "$env_file" "$env_tmp") \
-           || ! chmod 600 "$env_tmp" \
-           || ! mv -f "$env_tmp" "$env_dst"; then
-            rm -f "$env_tmp"
+        # or stale live creds. The helper traverses below CANONICAL_DIR through
+        # no-follow directory fds, copies into an exclusively-created 0600 fd,
+        # and atomically replaces the destination within that same directory.
+        if ! python3 "$REVIEWER_LIB_DIR/seed_secret.py" \
+                "$env_file" "$CANONICAL_DIR" "$env_rel"; then
             log "$PR_ID: FATAL — repo-env seed of '$env_rel' failed; aborting before the test runs with missing/stale creds"
             exit 1
         fi
