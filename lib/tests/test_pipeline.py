@@ -197,7 +197,7 @@ def _make_codex_stub(plan=None, default=(0, "### Probe 1\nstub\n"),
     plan = plan or {}
     def side_effect(argv, **kwargs):
         out_path = Path(argv[argv.index("-o") + 1])
-        agent_name = out_path.parent.name
+        agent_name = out_path.parent.parent.name if out_path.parent.name == ".codex-output" else out_path.parent.name
         if before_write is not None:
             before_write(agent_name, out_path)
         if agent_name in plan:
@@ -519,8 +519,34 @@ class TestRunCodex(unittest.TestCase):
             kwargs["env"],
         )
         mock_chown.assert_called_once_with(
-            self._agent_dir("intent"), user="codex-reviewer", group="codex-reviewer"
+            self._agent_dir("intent") / ".codex-output",
+            user="codex-reviewer",
+            group="codex-reviewer",
         )
+
+    @patch("pipeline.shutil.chown")
+    @patch("pipeline.subprocess.Popen")
+    def test_codex_child_cannot_substitute_symlink_for_output(self, mock_popen, mock_chown):
+        secret = Path(self.tmp.name) / "root-secret"
+        secret.write_text("do-not-read")
+
+        def symlink_output(argv, **kwargs):
+            output = Path(argv[argv.index("-o") + 1])
+            output.symlink_to(secret)
+            return FakePopen(returncode=0)
+
+        mock_popen.side_effect = symlink_output
+        with patch.dict(os.environ, {
+            "CODEX_REVIEWER_USER": "codex-reviewer",
+            "CODEX_HOME": "/home/codex-reviewer/.codex",
+        }, clear=False):
+            agent_dir = self._agent_dir("intent")
+            rc = pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(agent_dir))
+
+        self.assertEqual(rc, 3)
+        self.assertEqual(secret.read_text(), "do-not-read")
+        self.assertFalse((agent_dir / "output.md").exists())
+        self.assertIn("rejected unsafe output", (agent_dir / "log.txt").read_text())
 
     def test_codex_does_not_wait_for_an_inherited_stdin_pipe(self):
         """Codex must not wait for EOF on a worker's inherited open pipe."""

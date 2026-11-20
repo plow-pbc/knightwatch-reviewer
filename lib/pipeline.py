@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -431,6 +432,8 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
     agent.mkdir(parents=True, exist_ok=True)
     prompt_file = agent / "prompt.txt"
     out_file = agent / "output.md"
+    child_output_dir = agent / ".codex-output"
+    child_out_file = child_output_dir / "output.md"
     # log.txt = codex stdout (mostly model reasoning summary, ie PR-influenced
     # content). err.txt = codex stderr (the CLI's own error messages,
     # including the usage-limit notice we parse for the quota sentinel).
@@ -461,10 +464,13 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
     child_user = os.environ.get("CODEX_REVIEWER_USER")
     privilege_kwargs = {}
     if child_user:
-        # Codex writes output.md atomically in this directory. The trusted
-        # parent retains ownership of the staged prompt and opened log fds;
-        # only this per-agent output directory crosses the UID boundary.
-        shutil.chown(agent, user=child_user, group=child_user)
+        # Keep the agent directory and every parent-managed artifact owned by
+        # the trusted process. Codex gets one output-only directory; after it
+        # exits, the parent copies the result through a no-symlink fd.
+        child_output_dir.mkdir(mode=0o700, exist_ok=True)
+        child_output_dir.chmod(0o700)
+        shutil.chown(child_output_dir, user=child_user, group=child_user)
+        child_output_uid = child_output_dir.stat().st_uid
         privilege_kwargs = {
             "user": child_user,
             "group": child_user,
@@ -478,7 +484,7 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
         "--dangerously-bypass-approvals-and-sandbox",
         "-c", f"model={model_for(name)}",
         "-c", f"model_reasoning_effort={effort}",
-        "-o", str(out_file),
+        "-o", str(child_out_file if child_user else out_file),
         prompt,
     ]
     # Popen + start_new_session puts codex (a node process that spawns tool
@@ -497,6 +503,7 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
                 if err_file.exists():
                     err_file.rename(agent / "err.attempt1.txt")
                 out_file.unlink(missing_ok=True)
+                child_out_file.unlink(missing_ok=True)
                 with log_file.open("a") as lf:
                     lf.write(f"[{_ts()}] agent={name} attempt 2 (see log.attempt1.txt)\n")
             with log_file.open("a") as lf, err_file.open("a") as ef:
@@ -537,6 +544,25 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
             if rate_limited:
                 log(f"{name}: codex 429 — retrying once in {RATE_LIMIT_RETRY_SEC}s")
                 time.sleep(RATE_LIMIT_RETRY_SEC)
+
+    if exit_code == 0 and child_user:
+        try:
+            fd = os.open(child_out_file, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(fd) as child_output:
+                metadata = os.fstat(child_output.fileno())
+                if (not stat.S_ISREG(metadata.st_mode)
+                        or metadata.st_uid != child_output_uid
+                        or metadata.st_nlink != 1):
+                    raise OSError("Codex output is not a singly-linked regular file owned by its UID")
+                out_file.write_text(child_output.read())
+        except OSError as exc:
+            with log_file.open("a") as lf:
+                lf.write(f"[{_ts()}] agent={name} rejected unsafe output: {exc}\n")
+            exit_code = 3
+        finally:
+            shutil.rmtree(child_output_dir)
+    elif child_user:
+        shutil.rmtree(child_output_dir)
 
     with log_file.open("a") as lf:
         lf.write(f"[{_ts()}] agent={name} exit={exit_code}\n")
