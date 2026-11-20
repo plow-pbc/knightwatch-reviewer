@@ -583,7 +583,8 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
                 )
                 with os.fdopen(output_fd, "w") as trusted_output:
                     trusted_output.write(child_output.read())
-        except OSError as exc:
+        except (OSError, UnicodeError) as exc:
+            out_file.unlink(missing_ok=True)
             with log_file.open("a") as lf:
                 lf.write(f"[{_ts()}] agent={name} rejected unsafe output: {exc}\n")
             exit_code = 3
