@@ -13,9 +13,9 @@
 # layout (which slugs map to which on-disk paths). The PER-REPO sibling
 # allowlist now lives in each repo's .knightwatch/siblings file, read
 # from the base branch only via lib/knightwatch-config.sh. PR-head
-# edits to .knightwatch/siblings don't take effect until merged. When
-# the file is absent, falls back to "all REPOS slugs minus self" — the
-# legacy behavior — so un-onboarded repos keep working.
+# edits to .knightwatch/siblings don't take effect until merged. An
+# absent file is an empty allowlist: a repo searches no sibling until it
+# names one, so onboarding a repo can never expose another repo's code.
 #
 # Per-sibling status:
 #   included      — slug in SOURCE_PATHS AND its checkout exists on
@@ -72,47 +72,33 @@ stage_search_roots() {
     local included=0 missing=0
     local sibling_list
 
-    # Source of truth for the sibling allowlist:
-    #   1. .knightwatch/siblings at <base_ref> (per-repo, future)
-    #   2. "all REPOS slugs except self" (legacy fallback)
-    #
-    # <base_ref> is normally a SHA pinned upstream BEFORE `just test`
-    # ran (so PR-controlled mid-test ref-rewrites can't redirect this
-    # read). The fallback path preserves un-onboarded repos' current
-    # behavior. Once every tracked repo has .knightwatch/siblings
-    # committed, the fallback can be removed.
+    # The sibling allowlist is .knightwatch/siblings at <base_ref>, a SHA
+    # pinned upstream BEFORE `just test` ran (so PR-controlled mid-test
+    # ref-rewrites can't redirect this read). Absent reads as empty.
     local siblings=() excluded=""
     sibling_list=$(read_knightwatch_file "$repo_dir" "$base_ref" "siblings")
     case $? in
-        0)
-            # PRESENT: per-repo allowlist. Parse line-by-line, ignore blanks + # comments.
-            while IFS= read -r line; do
-                line="${line%%#*}"           # strip inline comments
-                line="${line//[[:space:]]/}" # strip whitespace
-                [ -z "$line" ] && continue
-                siblings+=("$line")
-            done <<< "$sibling_list"
-            for sibling_repo in "${REPOS[@]}"; do
-                [ "$sibling_repo" = "$repo" ] && continue
-                [[ " ${siblings[*]} " == *" $sibling_repo "* ]] || excluded+="$sibling_repo excluded allowlist"$'\n'
-            done
-            ;;
-        1)
-            # ABSENT: default to all tracked REPOS minus self
-            for sibling_repo in "${REPOS[@]}"; do
-                [ "$sibling_repo" = "$repo" ] && continue
-                siblings+=("$sibling_repo")
-            done
-            ;;
+        0) ;;
+        1) sibling_list="" ;;
         *)
             # ERROR: knightwatch-config helper had a real failure (missing
             # base ref, corrupt object store, etc.). Fail loud rather than
-            # misread as ABSENT — wrong sibling set silently broadens the
-            # cross-repo grep surface.
+            # misread as ABSENT.
             echo "search-roots: knightwatch-config error reading siblings for $repo" >&2
             return 2
             ;;
     esac
+    # Parse line-by-line, ignore blanks + # comments.
+    while IFS= read -r line; do
+        line="${line%%#*}"           # strip inline comments
+        line="${line//[[:space:]]/}" # strip whitespace
+        [ -z "$line" ] && continue
+        siblings+=("$line")
+    done <<< "$sibling_list"
+    for sibling_repo in "${REPOS[@]}"; do
+        [ "$sibling_repo" = "$repo" ] && continue
+        [[ " ${siblings[*]} " == *" $sibling_repo "* ]] || excluded+="$sibling_repo excluded allowlist"$'\n'
+    done
 
     for sibling_repo in "${siblings[@]}"; do
         [ "$sibling_repo" = "$repo" ] && continue

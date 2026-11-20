@@ -4,7 +4,7 @@
 #
 # Two paths:
 #   1. .knightwatch/siblings exists on base → its content is the allowlist
-#   2. .knightwatch/siblings absent → fall back to "all REPOS minus self"
+#   2. .knightwatch/siblings absent → empty allowlist (no siblings)
 #
 # In both cases each sibling is then classified as `included` (slug in
 # SOURCE_PATHS AND its checkout exists on disk AND it's a git repo, so
@@ -112,19 +112,29 @@ assert_contains "scenario 1: foo included" "acme/foo included .siblings/acme/foo
 assert_contains "scenario 1: bar named as excluded by allowlist" "acme/bar excluded allowlist" "$OUT"
 assert_not_contains "scenario 1: bar never searched" "acme/bar included" "$OUT"
 
-# --- scenario 2: .knightwatch/siblings absent → fall back to REPOS ---
-echo "  scenario 2: fallback to REPOS when .knightwatch absent..."
+# --- scenario 2: .knightwatch/siblings absent → no siblings ---
+# An un-onboarded repo must not search other tracked repos: that would quote
+# one repo's code in another's review.
+echo "  scenario 2: absent .knightwatch/siblings searches no sibling..."
 SELF_REPO=$(make_self_repo no)
 saved_repos=("${REPOS[@]}")
-# acme/optout is set to "" in SOURCE_PATHS: the operator excluding it, not a gap.
+REPOS=("acme/self" "acme/foo" "acme/bar")
+OUT=$(stage_search_roots "acme/self" "$SELF_REPO" "origin/main")
+assert_contains "scenario 2: header same-repo-only" "same-repo-only" "$OUT"
+assert_not_contains "scenario 2: nothing included" " included " "$OUT"
+assert_contains "scenario 2: foo named as excluded" "acme/foo excluded allowlist" "$OUT"
+assert_contains "scenario 2: bar named as excluded" "acme/bar excluded allowlist" "$OUT"
+
+# acme/optout is listed but set to "" in SOURCE_PATHS: the operator excluding
+# it, not a gap.
 SOURCE_PATHS["acme/optout"]=""
-REPOS=("acme/self" "acme/foo" "acme/bar" "acme/optout")
+REPOS=("acme/self" "acme/foo" "acme/optout")
+SELF_REPO=$(make_self_repo yes "acme/foo
+acme/optout")
 OUT=$(stage_search_roots "acme/self" "$SELF_REPO" "origin/main")
 REPOS=("${saved_repos[@]}")
-assert_contains "scenario 2: header full" "# coverage: full" "$OUT"
 assert_contains "scenario 2: optout excluded by operator" "acme/optout excluded operator" "$OUT"
 assert_contains "scenario 2: foo included" "acme/foo included .siblings/acme/foo" "$OUT"
-assert_contains "scenario 2: bar included" "acme/bar included .siblings/acme/bar" "$OUT"
 
 # --- scenario 3: missing on-disk checkout ---
 echo "  scenario 3: missing on-disk checkout..."
@@ -168,8 +178,8 @@ assert_contains "scenario 6: never-configured missing, with why" "acme/never-con
 
 # --- scenario 7: knightwatch-config ERROR propagates as non-zero rc ---
 # When read_knightwatch_file returns ERROR (rc 2 — bad base ref), the
-# caller must NOT silently fall back to legacy REPOS-minus-self —
-# that would silently revive policy with no operator signal. Instead
+# caller must NOT read it as absent — that would silently review with
+# the wrong sibling set and no operator signal. Instead
 # stage_search_roots returns non-zero so its caller can abort loud.
 echo "  scenario 7: ERROR from knightwatch-config propagates → non-zero rc..."
 SELF_REPO=$(make_self_repo no)  # workdir exists, but we'll pass a bad branch name
@@ -221,4 +231,4 @@ OUT=$(GIT_TEST_ASSUME_DIFFERENT_OWNER=1 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe
     stage_search_roots "acme/self" "$SELF_REPO" "origin/main")
 assert_contains "scenario 9: foo included under different-owner git" "acme/foo included .siblings/acme/foo" "$OUT"
 
-echo "  PASS (9 scenarios: knightwatch-allowlist, fallback, missing-on-disk, empty-allowlist, comments, declared-but-unconfigured, error-propagation, non-git-source-missing, different-owner-included)"
+echo "  PASS (9 scenarios: knightwatch-allowlist, absent-means-none, missing-on-disk, empty-allowlist, comments, declared-but-unconfigured, error-propagation, non-git-source-missing, different-owner-included)"
