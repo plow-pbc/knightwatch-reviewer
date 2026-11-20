@@ -40,7 +40,15 @@ def seed_secret(source: str, root: str, relative: str) -> None:
             if stat.S_ISLNK(existing.st_mode):
                 os.unlink(destination, dir_fd=directory_fd)
             elif stat.S_ISREG(existing.st_mode):
-                os.chmod(destination, 0o600, dir_fd=directory_fd, follow_symlinks=False)
+                existing_fd = os.open(
+                    destination, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd
+                )
+                try:
+                    if not stat.S_ISREG(os.fstat(existing_fd).st_mode):
+                        raise OSError(f"refusing non-file secret destination: {relative}")
+                    os.fchmod(existing_fd, 0o600)
+                finally:
+                    os.close(existing_fd)
             else:
                 raise OSError(f"refusing non-file secret destination: {relative}")
 
