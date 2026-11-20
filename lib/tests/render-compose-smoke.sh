@@ -68,7 +68,6 @@ for token in "  dind-1:" "  reviewer-1:" "  dind-4:" "  reviewer-4:" \
              "./secrets/repo-env:/root/.kwr/repo-env:ro" \
              "./secrets/claude-standards:/root/.claude:ro" \
              '${HOME}/services/kwr-config:/root/.kwr-config:ro' \
-             '${HOME}/.pr-reviewer/docker-auth:/home/reviewer-test/.docker:ro' \
              "KWR_CONFIG_DIR: /root/.kwr-config" "REPO_ENV_DIR: /root/.kwr/repo-env" \
              "REPOS_CONF_FILE: /shared/manifest/repos.conf" \
              '${HOME}/.pr-reviewer/gh-rate-limited-until:/shared/gh-rate-limited-until' \
@@ -77,6 +76,8 @@ for token in "  dind-1:" "  reviewer-1:" "  dind-4:" "  reviewer-4:" \
              "image: knightwatch-reviewer:dev-$(git -C "$REPO_ROOT" rev-parse HEAD | cut -c1-12)"; do
     grep -qF "$token" "$SANDBOX/out.yml" || fail "render is missing: $token"
 done
+grep -qF '/home/reviewer-test/.docker' "$SANDBOX/out.yml" \
+    && fail "rendered reviewer service exposes registry credentials to PR-controlled tests"
 grep -qF codex-account-c "$SANDBOX/out.yml" && fail "a commented fleet.conf row was rendered"
 # Same path on BOTH sides of the pair (PR #161).
 [ "$(count 'scenario-shared4:/scenario-shared')" = 2 ] \

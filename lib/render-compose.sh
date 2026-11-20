@@ -288,7 +288,6 @@ EOF
       - $SECRETS_REF/repo-env:/root/.kwr/repo-env:ro
       - $SECRETS_REF/claude-standards:/root/.claude:ro
       - \${HOME}/services/kwr-config:/root/.kwr-config:ro
-      - \${HOME}/.pr-reviewer/docker-auth:/home/reviewer-test/.docker:ro  # private reviewer-test home keeps registry auth outside Codex's UID
 EOF
     if [ -n "$KID_ROOT" ]; then
         printf '      - %s:/kwr:ro\n' "$KID_ROOT" >>"$TMP"
