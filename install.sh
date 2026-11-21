@@ -315,16 +315,15 @@ for legacy in pr-reviewer.timer pr-reviewer.service \
               pr-reviewer-re-request.timer pr-reviewer-re-request.service \
               pr-reviewer-ecr-login.timer pr-reviewer-ecr-login.service; do
   if [[ -f "$SYSTEMD_DIR/$legacy" ]]; then
-    # A headless deploy can't answer a password prompt; an orphan unit is not
-    # worth aborting the rest of the install over.
-    if ! sudo -n true 2>/dev/null && [[ ! -t 0 ]]; then
-      warn "retired legacy unit $legacy left in place (no sudo); remove it with: sudo systemctl disable --now $legacy && sudo rm $SYSTEMD_DIR/$legacy && sudo systemctl daemon-reload"
-      continue
-    fi
     info "removing retired legacy unit $legacy (sudo)"
-    sudo systemctl disable --now "$legacy" 2>/dev/null || true
-    sudo rm -f "$SYSTEMD_DIR/$legacy"
-    CHANGED=$((CHANGED + 1))
+    # -n: a headless deploy can't answer a password prompt, and an orphan unit
+    # is not worth aborting the rest of the install over.
+    sudo -n systemctl disable --now "$legacy" 2>/dev/null || true
+    if sudo -n rm -f "$SYSTEMD_DIR/$legacy"; then
+      CHANGED=$((CHANGED + 1))
+    else
+      warn "retired legacy unit $legacy left in place (no sudo); remove it with: sudo systemctl disable --now $legacy && sudo rm $SYSTEMD_DIR/$legacy && sudo systemctl daemon-reload"
+    fi
   fi
 done
 rm -f "$INSTALL_DIR/ecr-public-login.sh"

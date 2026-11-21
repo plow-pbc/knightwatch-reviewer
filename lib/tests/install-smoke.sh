@@ -472,13 +472,13 @@ MOCK_TIMERS_ENABLED=1 run_install "$OVERLAY_LEGACY/install.sh" || { echo "FAIL s
 [ "$(count_stub 'SYSTEMCTL disable --now pr-reviewer')" = "0" ] || { echo "FAIL scenario 4: legacy disable fired again once units were gone (branch not guarded by -f)"; cat "$STUB_LOG"; exit 1; }
 
 # --- Scenario 4b: no sudo → retired units are left with a warning ------------
-# A headless deploy (no TTY, no passwordless sudo) must not abort on a retired
+# A headless deploy (no passwordless sudo) must not abort on a retired
 # unit it cannot remove: it warns with the exact command and installs the rest.
-echo "  scenario 4b: retired unit + no sudo and no TTY → warned, left in place, install completes..."
+echo "  scenario 4b: retired unit + no sudo → warned, left in place, install completes..."
 printf '[Unit]\nDescription=stale\n' > "$SYSTEMD_DIR/pr-reviewer-ecr-login.timer"
 : > "$STUB_LOG"
 s4b_out=$(MOCK_SUDO_NEEDS_PASSWORD=1 MOCK_TIMERS_ENABLED=1 SECRETS_DIR="$OVERLAY_LEGACY/secrets" PATH="$STUB_BIN:$PATH" \
-    bash "$OVERLAY_LEGACY/install.sh" </dev/null 2>&1) \
+    bash "$OVERLAY_LEGACY/install.sh" 2>&1) \
     || { echo "FAIL scenario 4b: install.sh exited non-zero without sudo"; echo "$s4b_out"; exit 1; }
 grep -qF "sudo systemctl disable --now pr-reviewer-ecr-login.timer" <<<"$s4b_out" \
     || { echo "FAIL scenario 4b: no warning naming the removal command"; echo "$s4b_out"; exit 1; }
