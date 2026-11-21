@@ -50,6 +50,12 @@ sync is re-run.** Learned agent guidance is separately owned by
 
 **Cultural emphasis:** SIMPLIFY at all costs — complexity kills PMF iteration. Subtractive remedies (delete, collapse, retire) are higher-leverage than additive ones at any severity. Cumulative additive LOC across review rounds is the structural-failure signal — see PR#47 contrast pair below. Prompt-engineering changes here cascade into every PR review across every tracked repo; favor precise, falsifiable rules over vague guidance.
 
+The bar is simple, maintainable, extensible code. Push back on speculative
+abstractions, impossible-case guards and configuration nobody asked for.
+Compute costs less than brittle text machinery: flag piles of regex and
+hand-rolled parsing, and prefer a clear model call for semantic work or a
+maintained standard parser for structured input.
+
 **Repo-specific contrast pairs:**
 
 | Architecture bloat — DON'T (in this repo) | Bugfix — DO |
