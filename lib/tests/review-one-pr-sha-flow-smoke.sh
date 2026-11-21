@@ -319,7 +319,7 @@ fi
 
 # ===== Scenario 2: non-default-base PR =====
 # Closes the round-1 [blocking] finding: when the PR's base is NOT the
-# canonical's checked-out default branch, `git fetch origin "$BASE_REF"`
+# canonical's checked-out default branch, the canonical `git fetch origin`
 # updates canonical's `refs/remotes/origin/$BASE_REF` (a remote-tracking
 # ref). `git clone --shared` does NOT propagate that as `origin/<ref>`
 # in the workdir — only `refs/heads/*` does. Capturing BASE_REF_SHA
@@ -483,7 +483,7 @@ fi
 # Fences the update-ref alignment (from cncorp/plow#568) and the
 # --unshallow self-heal (issue #170).
 #
-# The live invariant: `git fetch origin $BASE_REF` advances only the
+# The live invariant: the canonical `git fetch origin` advances only the
 # remote-tracking ref, and `git clone --shared` maps the source's
 # refs/heads/* into the workdir's origin/*. Without the worker's
 # update-ref, the workdir silently diffs against a stale base. So after
@@ -631,6 +631,17 @@ STATE3B="$TMPDIR/state-3b"
 seed_state_dir "$STATE3B"
 CANONICAL3B="$STATE3B/repos/test-org_probe-repo"
 git clone -q "$GITHUB_BARE3" "$CANONICAL3B"
+# A non-base branch lands upstream after this (full, non-shallow) clone —
+# a reviewed repo's `just test` may pin a commit that lives only there.
+(
+    cd "$WORKING3"
+    git checkout -qb side main
+    echo "side" > side.txt
+    git add side.txt
+    git commit -qm "side branch commit (lands after canonical clone)"
+    git push -q origin side
+)
+SIDE_SHA3B=$(git -C "$WORKING3" rev-parse refs/heads/side)
 
 GH_STUB_TRUSTED_USERS="someuser" PATH="$STUB_DIR3B:$PATH" run_worker_in_state "$STATE3B" \
     "test-org/probe-repo" "3" "$PR_SHA3" "feat/test" "Failing diff PR" "false" "someuser" || true
@@ -641,6 +652,13 @@ if [ -z "$RUN_DIR3B" ]; then
     exit 1
 fi
 LOG3B="$RUN_DIR3B/run.log"
+# The test clone's origin is canonical and carries no credentials, so a
+# commit canonical lacks can never reach `just test`: canonical must
+# fetch every upstream branch, not only the base.
+if ! git -C "$CANONICAL3B" cat-file -e "$SIDE_SHA3B^{commit}" 2>/dev/null; then
+    echo "FAIL: scenario 3b — canonical lacks non-base branch commit $SIDE_SHA3B (canonical fetched only the base)"
+    exit 1
+fi
 if ! grep -q "FATAL — git diff" "$LOG3B"; then
     echo "FAIL: scenario 3b — failed git diff did not produce the FATAL diagnostic"
     cat "$LOG3B"

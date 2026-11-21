@@ -548,12 +548,15 @@ fi
 # $PR_BRANCH` so downstream code (per-PR workdir checkout, diff, log
 # messages) can use the human-readable branch name.
 #
-# The base branch is fetched as `origin/$BASE_REF` so the per-PR clone
-# can diff against it locally. Fetches are full-history: a shallow
-# window (--depth=500 until issue #170) silently dropped any PR whose
-# merge base fell outside it.
-if ! git -C "$CANONICAL_DIR" fetch origin "$BASE_REF" --quiet; then
-    log "$PR_ID: canonical fetch of $BASE_REF failed — aborting"
+# Every upstream branch is fetched into `origin/*` (the clone's default
+# refspec), the base included, so the per-PR clone can diff against it
+# locally. Not only the base: the test clone's origin is canonical and
+# carries no credentials, so a commit a repo's `just test` pins on another
+# branch reaches the test only if canonical already holds it. Fetches are
+# full-history: a shallow window (--depth=500 until issue #170) silently
+# dropped any PR whose merge base fell outside it.
+if ! git -C "$CANONICAL_DIR" fetch origin --quiet; then
+    log "$PR_ID: canonical fetch failed — aborting"
     exit 1
 fi
 # Collision guard: a PR head named the same as the base branch
