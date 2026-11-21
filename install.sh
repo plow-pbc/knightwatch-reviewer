@@ -39,6 +39,7 @@ SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}"
 fail() { echo "✗ $1" >&2; exit 1; }
 info() { echo "→ $1"; }
 ok()   { echo "✓ $1"; }
+warn() { echo "⚠ $1" >&2; }
 
 # Refuse to run as root. The systemd unit ExecStart= paths bake in
 # /home/odio/.pr-reviewer/ — under sudo, $HOME becomes /root and
@@ -315,9 +316,14 @@ for legacy in pr-reviewer.timer pr-reviewer.service \
               pr-reviewer-ecr-login.timer pr-reviewer-ecr-login.service; do
   if [[ -f "$SYSTEMD_DIR/$legacy" ]]; then
     info "removing retired legacy unit $legacy (sudo)"
-    sudo systemctl disable --now "$legacy" 2>/dev/null || true
-    sudo rm -f "$SYSTEMD_DIR/$legacy"
-    CHANGED=$((CHANGED + 1))
+    # -n: a headless deploy can't answer a password prompt, and an orphan unit
+    # is not worth aborting the rest of the install over.
+    sudo -n systemctl disable --now "$legacy" 2>/dev/null || true
+    if sudo -n rm -f "$SYSTEMD_DIR/$legacy"; then
+      CHANGED=$((CHANGED + 1))
+    else
+      warn "retired legacy unit $legacy left in place (no sudo); remove it with: sudo systemctl disable --now $legacy && sudo rm $SYSTEMD_DIR/$legacy && sudo systemctl daemon-reload"
+    fi
   fi
 done
 rm -f "$INSTALL_DIR/ecr-public-login.sh"
