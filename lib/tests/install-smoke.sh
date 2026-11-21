@@ -45,9 +45,13 @@ export STUB_LOG
 # `sudo`: drop the wrapper, run the inner cmd directly. SYSTEMD_DIR is
 # already user-writable, so sudo isn't actually needed here — the stub
 # just makes that explicit.
+# MOCK_SUDO_NEEDS_PASSWORD fails every call, as sudo does with no TTY, no
+# cached credential and no passwordless rule.
 cat > "$STUB_BIN/sudo" <<'STUB'
 #!/bin/bash
 echo "SUDO $*" >> "$STUB_LOG"
+[ -z "${MOCK_SUDO_NEEDS_PASSWORD:-}" ] || exit 1
+[ "$1" != "-n" ] || shift
 exec "$@"
 STUB
 chmod +x "$STUB_BIN/sudo"
@@ -467,6 +471,20 @@ done
 MOCK_TIMERS_ENABLED=1 run_install "$OVERLAY_LEGACY/install.sh" || { echo "FAIL scenario 4: install.sh exited non-zero on idempotent rerun"; cat "$STUB_LOG"; exit 1; }
 [ "$(count_stub 'SYSTEMCTL disable --now pr-reviewer')" = "0" ] || { echo "FAIL scenario 4: legacy disable fired again once units were gone (branch not guarded by -f)"; cat "$STUB_LOG"; exit 1; }
 
+# --- Scenario 4b: no sudo → retired units are left with a warning ------------
+# A headless deploy (no TTY, no passwordless sudo) must not abort on a retired
+# unit it cannot remove: it warns with the exact command and installs the rest.
+echo "  scenario 4b: retired unit + no sudo and no TTY → warned, left in place, install completes..."
+printf '[Unit]\nDescription=stale\n' > "$SYSTEMD_DIR/pr-reviewer-ecr-login.timer"
+: > "$STUB_LOG"
+s4b_out=$(MOCK_SUDO_NEEDS_PASSWORD=1 MOCK_TIMERS_ENABLED=1 SECRETS_DIR="$OVERLAY_LEGACY/secrets" PATH="$STUB_BIN:$PATH" \
+    bash "$OVERLAY_LEGACY/install.sh" </dev/null 2>&1) \
+    || { echo "FAIL scenario 4b: install.sh exited non-zero without sudo"; echo "$s4b_out"; exit 1; }
+grep -qF "sudo systemctl disable --now pr-reviewer-ecr-login.timer" <<<"$s4b_out" \
+    || { echo "FAIL scenario 4b: no warning naming the removal command"; echo "$s4b_out"; exit 1; }
+[ -f "$SYSTEMD_DIR/pr-reviewer-ecr-login.timer" ] || { echo "FAIL scenario 4b: unit removed despite no sudo"; exit 1; }
+rm "$SYSTEMD_DIR/pr-reviewer-ecr-login.timer"
+
 # --- Scenario 5: cold-cache activation (KWR_CONFIG_REPO set, no cache yet) ------
 # Fences the producer/consumer ordering: install.sh must create+populate the
 # kwr-config cache BEFORE sourcing tracked-repos.sh, whose overlay fail-louds on a
@@ -541,4 +559,4 @@ rm -f "$TMPDIR/s8-lock-held"
 printf '%s\n' "$s8_out" | grep -q 'could not acquire' \
   || { echo "FAIL scenario 8: install did not fail-loud with the lock-timeout message"; printf '%s\n' "$s8_out" | tail -5; exit 1; }
 
-echo "  PASS (8 scenarios: first-run, idempotent-rerun, new-unit-incremental-enables-new-timer, retired-legacy-unit-removal, cold-cache-activation, deploy-time-origin-swap, unchanged-origin-redeploy-noop, contended-lock-fail-fast)"
+echo "  PASS (9 scenarios: first-run, idempotent-rerun, new-unit-incremental-enables-new-timer, retired-legacy-unit-removal, retired-unit-no-sudo-warns, cold-cache-activation, deploy-time-origin-swap, unchanged-origin-redeploy-noop, contended-lock-fail-fast)"
