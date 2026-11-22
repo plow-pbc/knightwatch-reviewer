@@ -1,5 +1,9 @@
 # Review instructions — knightwatch-reviewer
 
+## Cause-first bug fixes
+
+Fix a bug at its cause so the class can't recur. Never fix it with a layer, guard, link, workaround or hand-edit of data around it. A fix that adds net complexity must state why in the PR. When the bug comes from a duplicated source or identity, remove the duplicate rather than bridging the two.
+
 What is different about reviewing *this* repo: the operating point, and the
 repo-specific calibration below. Universal review policy — voice posture,
 decline rules, review-loop rules — is not here; knightwatch prepends it from
