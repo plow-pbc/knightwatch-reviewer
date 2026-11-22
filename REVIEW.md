@@ -1,5 +1,9 @@
 # Review instructions — knightwatch-reviewer
 
+## Cause-first bug fixes
+
+Fix at the cause; never with a workaround that leaves the cause in place. A guard or check at the boundary where the cause lives is a cause-level fix. If a fix adds a maintained path or net complexity, explain why removing the cause directly is insufficient. Label any authorized temporary containment and state when it can be removed. When the bug comes from a duplicated source or identity, remove the duplicate rather than bridging the two. Limits a REVIEW.md already records as accepted stay out of review unless the diff widens them.
+
 What is different about reviewing *this* repo: the operating point, and the
 repo-specific calibration below. Universal review policy — voice posture,
 decline rules, review-loop rules — is not here; knightwatch prepends it from
